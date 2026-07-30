@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { localeHref } from "@/lib/locale-routes";
-import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 
 const BASE_URL = "https://api.apitoken.sale";
 const MESSAGES_URL = `${BASE_URL}/v1/messages`;
@@ -114,7 +113,7 @@ const copy = {
     openai: "OpenAI-compatible API & Codex",
     sdks: "Official SDKs",
     errors: "Errors",
-    pricing: "Pricing & tiers",
+    pricing: "Pricing",
     eyebrow: "CLAUDE + GPT · CONNECTION GUIDE",
     title: "Connect Claude or GPT in three steps",
     lead: "apiToken.sale provides prepaid, discounted access to the real Anthropic Claude API and an OpenAI-compatible GPT API. Create an sk-pool key, point any compatible client at the right endpoint, and send a standard request — one balance and one discount cover both.",
@@ -185,24 +184,13 @@ const copy = {
       "Log status, model, latency, and request ID; redact keys and sensitive prompts",
       "Alert on low balance and reconcile charges against the dashboard request ledger",
     ],
-    pricingTitle: "Pricing and discount tiers",
-    pricingLead: "Top up any whole-dollar amount into one prepaid balance. Each request receives your active discount, from Starter 60% through Scale 70%.",
+    pricingTitle: "Pricing — flat −50% for everyone",
+    pricingLead: "Top up any whole-dollar amount into one prepaid balance. Every account gets the same flat 50% discount off official provider prices — no tiers, thresholds or spend requirements.",
     billingHead: "How billing works",
-    billingText: "We start with the model's official provider token price (Anthropic or OpenAI), apply your tier discount, and deduct the remainder from your apiToken.sale balance. There are no fixed token packs or recurring subscriptions.",
-    billingExample: "Example — Starter gives a 60% discount, so you pay 40%: $100 of usage at official list prices produces a $40 balance charge. In other words, $40 of balance covers about $100 of official usage (×2.5).",
-    tiersHead: "Discount tiers",
-    tiersText: "Starter is active by default. Cumulative top-ups unlock Builder at $100, Pro at $250, Studio at $500, and Scale at $1,000.",
-    tierColTier: "Tier",
-    tierColDiscount: "Discount",
-    tierColValue: "$1 balance covers",
-    tierColGet: "Cumulative top-ups",
-    tierColKeep: "Spend / rolling 30d",
-    tierBaseCell: "Default · $0",
-    keepHead: "Keeping a tier",
-    keepText: "To keep a paid tier, balance charges in every rolling 30-day window must total at least 50% of that tier's cumulative top-up threshold. If they do not, the account moves down one tier and cumulative progress resets to the new tier's threshold. While the tier is maintained, new top-ups continue toward the next threshold.",
-    keepFree: "Starter 60% is the permanent base tier. It never expires and has no minimum top-up or spend requirement.",
-    exampleHead: "Example from top-up to renewal",
-    exampleText: "Reach $250 in cumulative top-ups to unlock Pro at 65%. Keep Pro by spending at least $125 from the balance in every rolling 30-day window. If spend falls below $125, the account moves to Builder at 62.5%. While Pro remains active, another $250 in top-ups brings the cumulative total to $500 and unlocks Studio at 67.5%.",
+    billingText: "We start with the model's official provider token price (Anthropic or OpenAI), apply the flat 50% discount, and deduct the remainder from your apiToken.sale balance. There are no fixed token packs and no recurring subscriptions.",
+    billingExample: "Example — the flat discount is 50%, so you pay half: $100 of usage at official list prices produces a $50 balance charge. In other words, $1 of balance covers $2 of official usage (×2).",
+    flatHead: "One flat discount",
+    flatText: "The 50% discount applies to every account from the first request, on every Claude and GPT model, on input, output and cache rates alike. It never expires and there is nothing to unlock or maintain. B2B pricing is negotiated separately.",
     footer: "apiToken.sale documentation · Claude and OpenAI-compatible text access",
   },
   ru: {
@@ -217,7 +205,7 @@ const copy = {
     openai: "OpenAI-совместимый API и Codex",
     sdks: "Официальные SDK",
     errors: "Ошибки",
-    pricing: "Цены и тарифы",
+    pricing: "Цены",
     eyebrow: "CLAUDE + GPT · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
     title: "Подключите Claude или GPT за три шага",
     lead: "apiToken.sale предоставляет предоплаченный доступ к настоящему Anthropic Claude API и OpenAI-совместимому GPT API со скидкой. Создайте ключ sk-pool-…, укажите для совместимого клиента нужный адрес и отправьте стандартный запрос — баланс и скидка общие для обоих API.",
@@ -288,24 +276,13 @@ const copy = {
       "Логируйте статус, модель, задержку и ID запроса; скрывайте ключи и конфиденциальные промпты",
       "Настройте уведомления о низком балансе и сверяйте списания с журналом запросов в кабинете",
     ],
-    pricingTitle: "Цены и тарифные скидки",
-    pricingLead: "Пополняйте единый предоплаченный баланс на любую целую сумму в долларах. К каждому запросу применяется активная скидка — от 60% на Starter до 70% на Scale.",
+    pricingTitle: "Цены — плоские −50% для всех",
+    pricingLead: "Пополняйте единый предоплаченный баланс на любую целую сумму в долларах. Каждый аккаунт получает одну и ту же плоскую скидку 50% от официальных цен провайдеров — без тарифов, порогов и требований к расходу.",
     billingHead: "Как рассчитывается стоимость",
-    billingText: "Мы берём официальную стоимость токенов выбранной модели у провайдера (Anthropic или OpenAI), применяем скидку вашего тарифа и списываем остаток с баланса apiToken.sale. Фиксированных пакетов токенов и регулярной подписки нет.",
-    billingExample: "Пример — Starter даёт скидку 60%, поэтому вы платите 40%: использование на $100 по официальным листовым ценам приведёт к списанию $40 с баланса. Иными словами, $40 баланса покрывают около $100 официального использования (×2,5).",
-    tiersHead: "Тарифные скидки",
-    tiersText: "Starter действует по умолчанию. Накопленные пополнения открывают Builder при $100, Pro при $250, Studio при $500 и Scale при $1 000.",
-    tierColTier: "Тариф",
-    tierColDiscount: "Скидка",
-    tierColValue: "$1 баланса покрывает",
-    tierColGet: "Накопленные пополнения",
-    tierColKeep: "Расходы / 30 дней",
-    tierBaseCell: "По умолчанию · $0",
-    keepHead: "Как сохранить тариф",
-    keepText: "Чтобы сохранить платный тариф, списания с баланса за каждые скользящие 30 дней должны составлять не менее 50% от порога накопленных пополнений этого тарифа. Если условие не выполнено, аккаунт опускается на один тариф, а накопленный прогресс сбрасывается до порога нового тарифа. Пока тариф сохраняется, новые пополнения продолжают приближать следующий порог.",
-    keepFree: "Starter со скидкой 60% — постоянный базовый тариф. Он не истекает и не требует минимального пополнения или расхода.",
-    exampleHead: "Пример от пополнения до продления",
-    exampleText: "Накопите $250 пополнений, чтобы открыть Pro со скидкой 65%. Для сохранения Pro расходуйте с баланса не менее $125 за каждые скользящие 30 дней. Если расходы окажутся ниже $125, аккаунт перейдёт на Builder со скидкой 62,5%. Пока Pro остаётся активным, ещё $250 пополнений увеличат общую сумму до $500 и откроют Studio со скидкой 67,5%.",
+    billingText: "Мы берём официальную стоимость токенов выбранной модели у провайдера (Anthropic или OpenAI), применяем плоскую скидку 50% и списываем остаток с баланса apiToken.sale. Фиксированных пакетов токенов и регулярной подписки нет.",
+    billingExample: "Пример — скидка 50%, поэтому вы платите половину: использование на $100 по официальным листовым ценам приведёт к списанию $50 с баланса. Иными словами, $1 баланса покрывает $2 официального использования (×2).",
+    flatHead: "Одна плоская скидка",
+    flatText: "Скидка 50% действует для каждого аккаунта с первого запроса, на все модели Claude и GPT, на вход, выход и кэш-ставки одинаково. Она не истекает, её не нужно открывать или удерживать. B2B-условия обсуждаются отдельно.",
     footer: "Документация apiToken.sale · Claude и OpenAI-совместимый текстовый API",
   },
 } as const;
@@ -411,12 +388,7 @@ export function DocsPortal() {
         <section className="docs-section" id="pricing">
           <div className="docs-section-heading"><span>08</span><div><h2>{t.pricingTitle}</h2><p>{t.pricingLead}</p></div></div>
           <h3 className="docs-h3">{t.billingHead}</h3><p className="docs-para">{t.billingText}</p><div className="docs-notice">{t.billingExample}</div>
-          <h3 className="docs-h3">{t.tiersHead}</h3><p className="docs-para">{t.tiersText}</p>
-          <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.tierColTier}</th><th>{t.tierColDiscount}</th><th>{t.tierColValue}</th><th>{t.tierColGet}</th><th>{t.tierColKeep}</th></tr></thead>
-            <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><td><b>{tier.label}</b></td><td>−{tier.discountPercent}%</td><td>×{(100 / (100 - tier.discountPercent)).toLocaleString(language === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 })}</td><td>{Number(tier.platformSpendUsd) === 0 ? t.tierBaseCell : formatWholeUsd(tier.platformSpendUsd)}</td><td>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</td></tr>)}</tbody>
-          </table></div>
-          <h3 className="docs-h3">{t.keepHead}</h3><p className="docs-para">{t.keepText}</p><div className="docs-notice">{t.keepFree}</div>
-          <h3 className="docs-h3">{t.exampleHead}</h3><p className="docs-para">{t.exampleText}</p>
+          <h3 className="docs-h3">{t.flatHead}</h3><p className="docs-para">{t.flatText}</p>
         </section>
 
         <footer className="docs-footer">{t.footer}</footer>

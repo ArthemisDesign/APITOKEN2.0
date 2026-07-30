@@ -13,7 +13,6 @@ import {
   modelPath,
   MODELS_HUB_PATH,
   openaiModels,
-  priceBest,
   priceFrom,
   type CatalogModel,
 } from "@/lib/models";
@@ -37,17 +36,17 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
 function priceRowsFor(model: CatalogModel) {
   if (model.provider === "anthropic") {
     return [
-      { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
-      { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
-      { rate: "Cache read", official: formatUsd(model.cacheReadPerM), from: priceFrom(model.cacheReadPerM), best: priceBest(model.cacheReadPerM) },
-      { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), from: priceFrom(model.cacheWrite5mPerM), best: priceBest(model.cacheWrite5mPerM) },
+      { rate: "Input", official: formatUsd(model.inputPerM), yours: priceFrom(model.inputPerM) },
+      { rate: "Output", official: formatUsd(model.outputPerM), yours: priceFrom(model.outputPerM) },
+      { rate: "Cache read", official: formatUsd(model.cacheReadPerM), yours: priceFrom(model.cacheReadPerM) },
+      { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), yours: priceFrom(model.cacheWrite5mPerM) },
     ];
   }
   return [
-    { rate: "Input", official: formatUsd(model.inputPerM), from: priceFrom(model.inputPerM), best: priceBest(model.inputPerM) },
-    { rate: "Cached input", official: formatUsd(model.cachedInputPerM), from: priceFrom(model.cachedInputPerM), best: priceBest(model.cachedInputPerM) },
-    { rate: "Cache write", official: formatUsd(model.cacheWritePerM), from: priceFrom(model.cacheWritePerM), best: priceBest(model.cacheWritePerM) },
-    { rate: "Output", official: formatUsd(model.outputPerM), from: priceFrom(model.outputPerM), best: priceBest(model.outputPerM) },
+    { rate: "Input", official: formatUsd(model.inputPerM), yours: priceFrom(model.inputPerM) },
+    { rate: "Cached input", official: formatUsd(model.cachedInputPerM), yours: priceFrom(model.cachedInputPerM) },
+    { rate: "Cache write", official: formatUsd(model.cacheWritePerM), yours: priceFrom(model.cacheWritePerM) },
+    { rate: "Output", official: formatUsd(model.outputPerM), yours: priceFrom(model.outputPerM) },
   ];
 }
 
@@ -56,13 +55,13 @@ const providerCopy = {
     officialCol: "Official Anthropic",
     othersHeading: "Other Claude models",
     howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ANTHROPIC_BASE_URL} with model ID <code>{id}</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
-    cta: (name: string) => `Run ${name} on the same Anthropic API at up to 70% off — instant key, prepaid balance, card or crypto.`,
+    cta: (name: string) => `Run ${name} on the same Anthropic API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   openai: {
     officialCol: "Official OpenAI",
     othersHeading: "Other GPT models",
     howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
-    cta: (name: string) => `Run ${name} on the OpenAI-compatible API at up to 70% off — instant key, prepaid balance, card or crypto.`,
+    cta: (name: string) => `Run ${name} on the OpenAI-compatible API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
 } as const;
 
@@ -139,16 +138,14 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                   <tr>
                     <th>Rate</th>
                     <th>{copy.officialCol}</th>
-                    <th>Here, from (−60%)</th>
-                    <th>Here, best (−70%)</th>
+                    <th>Your price (−50%)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {priceRows.map((row) => <tr key={row.rate}>
                     <td>{row.rate}</td>
                     <td>{row.official}</td>
-                    <td>{row.from}</td>
-                    <td>{row.best}</td>
+                    <td>{row.yours}</td>
                   </tr>)}
                 </tbody>
               </table>
@@ -158,12 +155,11 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                 <h3>{row.rate}</h3>
                 <dl>
                   <div><dt>{copy.officialCol}</dt><dd>{row.official}</dd></div>
-                  <div><dt>Here, from (−60%)</dt><dd>{row.from}</dd></div>
-                  <div><dt>Here, best (−70%)</dt><dd>{row.best}</dd></div>
+                  <div><dt>Your price (−50%)</dt><dd>{row.yours}</dd></div>
                 </dl>
               </article>)}
             </div>
-            <p className="docs-para">Every request is metered at the official rate first, then your progressive B2C discount (60% at the start, up to 70% as cumulative top-ups grow) is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
+            <p className="docs-para">Every request is metered at the official rate first, then the flat 50% discount — the same for every account, with no conditions — is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
           </div>
 
           <div className="learn-section">

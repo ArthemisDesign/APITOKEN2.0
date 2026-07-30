@@ -1,6 +1,7 @@
 export const dashboardSections = [
   "overview",
   "keys",
+  "models",
   "credits",
   "promos",
   "usage",

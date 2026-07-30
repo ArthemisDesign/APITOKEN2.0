@@ -164,42 +164,34 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain("router.refresh()");
   });
 
-  it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
+  it("uses flexible whole-USD top-ups and the flat 50% discount", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
     const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "62.5", "65", "67.5", "70"]) {
-      expect(pricingTiers).toContain(value);
-    }
-    for (const threshold of ["100", "250", "500", "1000"]) {
-      expect(pricingTiers).toContain(`platformSpendUsd: "${threshold}"`);
-    }
+    expect(pricingTiers).toContain("export const FLAT_DISCOUNT_PERCENT = 50");
+    expect(pricingTiers).not.toContain("B2C_PRICING_MILESTONES");
+    expect(pricingTiers).not.toMatch(/62\.5|67\.5|Builder|Studio/);
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
-    expect(pricing).toContain("B2C_PRICING_MILESTONES.map");
-    expect(pricingTiers).toContain('{ code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 62.5');
-    expect(pricingTiers).toContain('{ code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 65');
-    expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 67.5');
-    expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 70');
+    expect(pricing).toContain("FLAT_DISCOUNT_PERCENT");
+    expect(pricing).not.toContain("B2C_PRICING_MILESTONES");
     expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of API usage at official prices");
     expect(messages).toContain("$10 на использование API по официальным ценам");
-    expect(messages).not.toContain("$2.50");
   });
 
-  it("renders dashboard pricing as a complete milestone track", () => {
+  it("renders dashboard pricing as the flat 50% banner", () => {
     const dashboard = dashboardSource();
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
     const styles = [
       readFileSync(join(appRoot, "globals.css"), "utf8"),
       readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
     ].join("\n");
-    expect(dashboardCopy).toContain('monthlyTierProgress: "Tier progress"');
-    expect(dashboardCopy).toContain('spendMore: "Top up {amount} more"');
-    expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
-    expect(styles).toContain(".pricing-milestone-track");
-    expect(styles).toContain("height:var(--tier-progress)");
+    expect(dashboardCopy).toContain('flatRate: "Flat rate −50%"');
+    expect(dashboardCopy).not.toMatch(/monthlyTierProgress|spendMore|tierStarter/);
+    expect(dashboard).toContain("FLAT_DISCOUNT_PERCENT");
+    expect(dashboard).not.toContain("B2C_PRICING_MILESTONES");
     expect(styles).toContain(".app section.pricing-banner{border:1px solid var(--accent-line)}");
   });
 

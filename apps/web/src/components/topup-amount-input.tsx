@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { B2C_PRICING_MILESTONES, tierIndexForTopups } from "@/lib/pricing-tiers";
+import { FLAT_DISCOUNT_PERCENT, FLAT_PRICE_MULTIPLIER } from "@/lib/pricing-tiers";
 import { useI18n } from "./i18n-provider";
 
 export function TopUpAmountInput({ className, initialAmount, showReceive }: { className: string; initialAmount: string; showReceive?: boolean }) {
@@ -24,23 +24,18 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   if (!showReceive) return field;
 
   const amt = Number(amount) || 0;
-  // Hero/marketing preview has no account context → project the tier from a zero prior balance.
-  const proposedNano = amount ? (BigInt(amount) * 1_000_000_000n).toString() : "0";
-  const idx = amount ? tierIndexForTopups("0", proposedNano) : -1;
-  const tier = idx >= 0 ? B2C_PRICING_MILESTONES[idx] : null;
-  const receive = amt / (tier ? (100 - tier.discountPercent) / 100 : 1);
+  // Плоская модель: любая сумма конвертируется по одной ставке −50% (×2 официальной ценности).
+  const receive = amt / FLAT_PRICE_MULTIPLIER;
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
   const sub = amt <= 0
     ? (language === "ru" ? "Введите сумму" : "Enter an amount")
-    : tier
-      ? (language === "ru" ? `официального использования API · тариф ${tier.label}` : `of official API usage · ${tier.label} tier`)
-      : (language === "ru" ? "официального использования API · пополни от $100 для скидки" : "of official API usage · top up from $100 for a discount");
+    : (language === "ru" ? "официального использования API · плоские −50%" : "of official API usage · flat −50%");
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">
       <div className="tlo-row">
         <b>{amt > 0 ? `≈ ${value}` : "—"}</b>
-        {amt > 0 && tier && <span className="tlo-badge">−{tier.discountPercent}%</span>}
+        {amt > 0 && <span className="tlo-badge">−{FLAT_DISCOUNT_PERCENT}%</span>}
       </div>
       <span className="tlo-sub">{sub}</span>
     </div>
