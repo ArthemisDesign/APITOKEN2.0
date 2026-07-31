@@ -269,7 +269,7 @@ admin.apitoken.sale {
 	handle @admin_panel_asset {
 		import engine_backend
 	}
-	@admin_data path /overview /capacity /metrics /subs /spend-stats
+	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history
 	handle @admin_data {
 		reverse_proxy 127.0.0.1:8790 {
 			header_up Host 127.0.0.1:8790

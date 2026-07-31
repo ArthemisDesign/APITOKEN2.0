@@ -14,7 +14,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                           ├─ /                         → engine GET /admin-panel
                           ├─ /admin-panel.js          → engine GET /admin-panel.js
                            ├─ /overview /capacity
-                           │  /metrics /subs           → engine balancer :8790 (+ control key)
+                           │  /metrics /subs
+                           │  /fleet-history           → engine balancer :8790 (+ control key)
                            ├─ /codex-subs              → OpenAI origin :8792 (+ control key)
                            ├─ /gemini-subs             → Gemini origin :8794 (+ control key)
                           ├─ /admin/*                 → commerce balancer :8791 /v1/admin/*
@@ -46,6 +47,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   Однорелизный OpenAI bridge на 8792 описан в `deploy/CADDY.md` и не меняет admin routing.
 - Engine-данные (`/overview`, `/capacity`, `/subs`, `/metrics`) определены в
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
+  `/fleet-history` отдаёт историю metrics.db (минутные снапшоты флота за 90 дней) окнами
+  24h/7d/30d/90d с бакетированием до ≤ ~500 точек, опционально per-sub ряд по маске email.
   `/codex-subs` (per-home статус GPT/Codex-флота) отдаёт только OpenAI-runtime — на Anthropic-
   процессе codex не настроен и endpoint вернул бы `enabled:false`, поэтому Caddy шлёт этот путь
   в стабильный OpenAI origin, а не в engine balancer. `/gemini-subs` аналогично читается только со
@@ -101,6 +104,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   missing-usage settlement counter и точные gaxios/Undici transport attestations.
 - Система: verdict, 1d/5h/7d supply, headroom, coverage, fleet demand, рекомендации и все
   engine accounts; детальный per-sub вид вынесен в «Подписки».
+- Тренды: история флота из metrics.db (окна 24ч/7д/30д/90д) — SVG-графики доступной ёмкости,
+  утилизации, дефицита подписок (gap/subs_needed) и баланса клиентов с потенциальным спросом;
+  per-sub ряд cap/util по маске email показывает деградацию ёмкости подписки. Без автообновления —
+  только ручной refresh и смена окна.
 - Аудит: operator/user/provider события и причины административных действий.
 
 Ручное начисление принимает целые USD, UUID idempotency key и обязательную причину. Положительное

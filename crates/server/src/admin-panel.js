@@ -4,7 +4,7 @@ const errorCenter=document.getElementById('error-center');
 // Единственный источник правды о страницах: сайдбар строится из этого списка.
 const NAV=[
   {group:'Обзор',items:[['dashboard','Сводка','▣']]},
-  {group:'Инфраструктура',items:[['subs','Подписки','◍'],['system','Система','⌘']]},
+  {group:'Инфраструктура',items:[['subs','Подписки','◍'],['system','Система','⌘'],['trends','Тренды','∿']]},
   {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['openkeys','OpenKeys','◈'],['business','B2B','◇']]},
   {group:'Деньги',items:[['topups','Пополнения','＄']]},
   {group:'Управление',items:[['admins','Админы','⚿'],['audit','Аудит','≡']]}
@@ -74,7 +74,7 @@ function showLoading(){shell(NAV.flatMap(group=>group.items).find(item=>item[0]=
   '<div class="loading-grid" role="status" aria-label="Загрузка данных">'+Array.from({length:8},()=>'<div class="skeleton"></div>').join('')+'</div>')}
 const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
-  '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
+  '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/fleet-history':'История флота','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
   '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
   '/openkeys-admin/keys':'Ключи OpenKeys',
   '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
@@ -106,7 +106,7 @@ function scheduleRecoveryProbe(){if(recoveryTimer)return;recoveryTimer=setTimeou
 function scheduleRefresh(){clearTimeout(timer);timer=null;const delay=tab==='system'||tab==='subs'?10000:tab==='dashboard'?30000:0;
   if(delay)timer=setTimeout(()=>{if(document.hidden){scheduleRefresh();return}refresh()},delay)}
 async function refresh(options={}){clearTimeout(timer);refreshController?.abort();refreshController=new AbortController();tab=getTab();try{
-  if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='users')await users();
+  if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='trends')await trends();if(tab==='users')await users();
   if(tab==='accounts')await accounts();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='admins')await admins();if(tab==='audit')await audit();
 }catch(error){if(error?.name!=='AbortError'&&!document.getElementById('shell'))showLoading()}finally{scheduleRefresh()}}
 addEventListener('hashchange',()=>{tab=getTab();showLoading();refresh()});
@@ -645,6 +645,64 @@ async function system(){const result=await Promise.all([api('/overview').catch((
     '<div class="sect"><h2>Аккаунты движка · '+(overview.accounts||[]).length+'</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th class="left">handle</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
     (accountRows||empty(6))+'</tbody></table></div></div><footer>Обновление каждые 10с, пока вкладка видима · «доступно» учитывает сбросы окон · «запас» = доступно ÷ текущее потребление · клиентам ×'+mult+'</footer>';
   shell('Система','ёмкость, спрос и рекомендации по флоту',body,pill(count(overview.subs,'подписка','подписки','подписок'),verdict.kind))}
+
+/* ── Тренды: история флота из metrics.db (/fleet-history) ── */
+let trendsWindow='7d',trendsSub='',trendsSubsPromise=null;
+// Маски подписок грузим один раз за сессию вкладки; при сбое promise сбрасывается, чтобы повторить.
+const trendsSubsList=()=>trendsSubsPromise??=api('/subs').then(data=>(data.subs||[]).map(item=>item.email)).catch(()=>{trendsSubsPromise=null;return []});
+const trendsWindows=[['24h','24 часа'],['7d','7 дней'],['30d','30 дней'],['90d','90 дней']];
+// Ручная генерация SVG (CSP: script-src 'self', внешние chart-библиотеки запрещены).
+// series: [{label,color?,points:[{ts,value}]}]; null/нечисловые value разрывают линию.
+// Оси: min/mid/max по Y с подписями fmt, время начала/середины/конца по X.
+function lineChart(series,opts){opts=opts||{};const W=720,H=190,padL=56,padR=10,padT=10,padB=22,values=[],times=[];
+  series.forEach(item=>item.points.forEach(point=>{times.push(point.ts);if(point.value!=null&&isFinite(point.value))values.push(point.value)}));
+  if(!values.length)return '<div class="empty" style="padding:26px">данных за окно нет</div>';
+  const x0=Math.min.apply(null,times),x1=Math.max.apply(null,times);
+  const y0=opts.min!=null?opts.min:Math.min(0,Math.min.apply(null,values)),yMax=opts.max!=null?opts.max:Math.max.apply(null,values),y1=yMax>y0?yMax:y0+1;
+  const X=ts=>padL+(ts-x0)/Math.max(1,x1-x0)*(W-padL-padR),Y=value=>padT+(1-(value-y0)/(y1-y0))*(H-padT-padB);
+  const fmt=opts.fmt||(value=>String(value)),palette=['var(--accent)','var(--ok)','var(--warn)','var(--bad)'];
+  const grid=[y0,(y0+y1)/2,y1].map(value=>'<line x1="'+padL+'" y1="'+Y(value)+'" x2="'+(W-padR)+'" y2="'+Y(value)+'" stroke="var(--line)" stroke-width="1"/>'+
+    '<text x="'+(padL-6)+'" y="'+(Y(value)+3)+'" text-anchor="end" font-size="10" fill="var(--faint)">'+esc(fmt(value))+'</text>').join('');
+  const timeLabel=ts=>{const at=new Date(ts*1000),hh=String(at.getHours()).padStart(2,'0')+':'+String(at.getMinutes()).padStart(2,'0');
+    return x1-x0>86400?String(at.getDate()).padStart(2,'0')+'.'+String(at.getMonth()+1).padStart(2,'0')+' '+hh:hh};
+  const xAxis=[x0,(x0+x1)/2,x1].map(ts=>'<text x="'+Math.min(Math.max(X(ts),padL+14),W-padR-14)+'" y="'+(H-6)+'" text-anchor="middle" font-size="10" fill="var(--faint)">'+timeLabel(ts)+'</text>').join('');
+  const paths=series.map((item,index)=>{let d='',pen=false;
+    item.points.forEach(point=>{if(point.value==null||!isFinite(point.value)){pen=false;return}
+      d+=(pen?'L':'M')+X(point.ts).toFixed(1)+' '+Y(point.value).toFixed(1);pen=true});
+    return '<path d="'+d+'" fill="none" stroke="'+(item.color||palette[index%palette.length])+'" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'}).join('');
+  const legend=series.map((item,index)=>'<span style="margin-right:12px;white-space:nowrap"><span style="color:'+(item.color||palette[index%palette.length])+'">●</span> '+esc(item.label)+'</span>').join('');
+  return '<div style="margin-bottom:2px">'+legend+'</div><svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="график">'+grid+xAxis+paths+'</svg>'}
+function trendsChart(title,sub,chart){return '<div class="tcard" style="padding:16px;margin-bottom:12px"><div style="font-weight:650">'+esc(title)+'</div><div class="sub" style="margin:2px 0 10px">'+esc(sub)+'</div>'+chart+'</div>'}
+async function trends(){
+  const suffix='?window='+trendsWindow+(trendsSub?'&sub='+encodeURIComponent(trendsSub):'');
+  const result=await Promise.all([api('/fleet-history'+suffix).catch(()=>null),trendsSubsList()]),data=result[0],subs=result[1];
+  const tabs='<div class="spend-tabs">'+trendsWindows.map(item=>'<button type="button" class="btn'+(trendsWindow===item[0]?' on':'')+'" data-trends-window="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>';
+  const options='<option value="">весь флот</option>'+subs.map(email=>'<option value="'+esc(email)+'" '+(trendsSub===email?'selected':'')+'>'+esc(email)+'</option>').join('');
+  const toolbar='<div class="toolbar">'+tabs+'<label class="sr-only" for="trends-sub">Подписка</label><select id="trends-sub">'+options+'</select></div>';
+  if(!data){shell('Тренды','история ёмкости, спроса и дефицита флота',toolbar+'<div class="banner warn"><span class="dot warn"></span><div><b>История флота временно недоступна</b><span class="muted">/fleet-history не отвечает. Остальные разделы работают, источник проверяется автоматически.</span></div></div>',pill('degraded','warn'));bindTrends();return}
+  const series=data.series||[],pt=key=>series.map(point=>({ts:point.ts,value:point[key]})),pct=value=>Math.round(value*100)+'%',integer=value=>String(Math.round(value));
+  const windowText=(trendsWindows.find(item=>item[0]===data.window)||['','окно'])[1].toLowerCase();
+  const banner=series.length?'<div class="banner ok"><span class="dot"></span><div><b>'+(trendsSub?'История подписки '+esc(trendsSub):'История флота')+': '+count(series.length,'точка','точки','точек')+'</b><span class="muted">окно '+windowText+' · бакет '+duration(data.bucket_secs)+' · обновлено '+date(Date.now(),true)+'</span></div></div>':
+    '<div class="banner warn"><span class="dot warn"></span><div><b>За окно «'+windowText+'» данных пока нет</b><span class="muted">Коллектор пишет снапшот в metrics.db раз в минуту'+(trendsSub?'; ряд по маске '+esc(trendsSub)+' пуст — проверьте другую подписку':'')+'.</span></div></div>';
+  const charts=trendsSub?
+    trendsChart('Ёмкость подписки','real-API $ окон 5ч/7д — по спаду cap видно деградацию до отвала',
+      lineChart([{label:'cap 7д',points:pt('cap7d')},{label:'cap 5ч',points:pt('cap5h')}],{fmt:money}))+
+    trendsChart('Утилизация подписки','доля окна, выбранная на момент снапшота',
+      lineChart([{label:'util 7д',points:pt('util7d')},{label:'util 5ч',points:pt('util5h')}],{fmt:pct,min:0,max:1})):
+    trendsChart('Доступная ёмкость флота','real-API $ с учётом сбросов окон',
+      lineChart([{label:'доступно 7д',points:pt('avail_7d')},{label:'доступно 5ч',points:pt('avail_5h')},{label:'доступно 1ч',points:pt('avail_1h')}],{fmt:money}))+
+    trendsChart('Утилизация флота','средняя по routable подпискам',
+      lineChart([{label:'util 5ч',points:pt('util5h')},{label:'util 7д',points:pt('util7d')}],{fmt:pct,min:0,max:1}))+
+    trendsChart('Дефицит подписок','максимум по бакету: сколько докупить для целевого запаса',
+      lineChart([{label:'gap — докупить',points:pt('gap')},{label:'нужно всего',points:pt('subs_needed')}],{fmt:integer,min:0}))+
+    trendsChart('Баланс клиентов и потенциальный спрос','деньги на счетах и их real-API эквивалент',
+      lineChart([{label:'баланс клиентов',points:pt('balance_usd')},{label:'потенциальный спрос',points:pt('potential_realapi')}],{fmt:money}));
+  shell('Тренды','история ёмкости, спроса и дефицита флота',toolbar+banner+charts+
+    '<footer>Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Агрегация бакета: среднее по уровням и деньгам, максимум по gap/«нужно подписок» (планирование по худшей точке). Per-sub ряд строится по префиксу маски: при совпадении первых 4 символов email у двух подписок их ряды склеиваются.</footer>',
+    pill(count(series.length,'точка','точки','точек')+' · '+windowText,series.length?'ok':'warn'));
+  bindTrends()}
+function bindTrends(){document.querySelectorAll('[data-trends-window]').forEach(button=>button.onclick=()=>{trendsWindow=button.dataset.trendsWindow;refresh({force:true})});
+  const select=document.getElementById('trends-sub');if(select)select.onchange=()=>{trendsSub=select.value;refresh({force:true})}}
 
 /* ── Аудит ───────────────────────────────────────────────── */
 async function audit(){const rows=(await api('/admin/audit?limit=200').catch(()=>({rows:[]}))).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+

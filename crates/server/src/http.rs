@@ -6,7 +6,7 @@
 //!   *             — форвардинг на api.anthropic.com (см. forward::forward)
 
 use crate::admin;
-use axum::extract::{ConnectInfo, FromRef, Path, Request, State};
+use axum::extract::{ConnectInfo, FromRef, Path, Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -322,6 +322,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
             .route("/subs", get(subs))
+            .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
             .route("/admin-panel.js", get(admin_panel_js))
@@ -349,6 +350,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
             .route("/subs", get(subs))
+            .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
             .route("/admin-panel.js", get(admin_panel_js))
@@ -2022,6 +2024,117 @@ async fn subs(
     Json(v).into_response()
 }
 
+/// История флота из metrics.db (control-room тренды): минутные снапшоты `poller::metrics_loop`,
+/// прочитанные за окно `window=24h|7d|30d|90d` (дефолт 7d) и сбакетированные до ≤ ~500 точек
+/// (`metrics_store::window_bucket`). Гейт — control-ключ: в флот-ряду те же денежные агрегаты
+/// (balance/spent), что и в /overview. Опциональный `sub=<masked email>` (маска «abcd…», как у
+/// /subs и /capacity) переключает ответ на per-sub ряд cap/util по префиксу email. Чтение — один
+/// indexed SELECT по ts + бакетирование в памяти на blocking-потоке, без TTL-кэша: дёшево, а
+/// свежесть минутная и так. Писателю (metrics_loop) WAL-читатель не мешает.
+#[derive(serde::Deserialize)]
+struct FleetHistoryQuery {
+    window: Option<String>,
+    sub: Option<String>,
+}
+
+async fn fleet_history(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<FleetHistoryQuery>,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let window = q.window.unwrap_or_else(|| "7d".into());
+    let Some((window_secs, bucket_secs)) = crate::metrics_store::window_bucket(&window) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unknown window", "allowed": ["24h", "7d", "30d", "90d"]})),
+        )
+            .into_response();
+    };
+    // Маска «abcd…» → префикс до «…» (голый префикс тоже принимаем). Только email-алфавит:
+    // дальше префикс уходит в GLOB-паттерн metrics_store::sub_history.
+    let sub = q.sub.map(|s| s.trim_end_matches('…').to_string());
+    if let Some(prefix) = &sub {
+        let valid = !prefix.is_empty()
+            && prefix.len() <= 64
+            && prefix.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@')
+            });
+        if !valid {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "bad sub"}))).into_response();
+        }
+    }
+    let since = pool::now() - window_secs;
+    let db = app.data_db_path.as_ref().clone();
+    let read = tokio::task::spawn_blocking(move || -> rusqlite::Result<Value> {
+        // metrics.db лежит рядом с основной data.db — тот же каталог, что у poller::metrics_loop.
+        let mdir = std::path::Path::new(&db)
+            .parent()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".into());
+        let c = crate::metrics_store::open(&format!("{mdir}/metrics.db"))?;
+        let r2 = |x: Option<f64>| x.map(|v| (v * 100.0).round() / 100.0);
+        if let Some(prefix) = sub {
+            let points = crate::metrics_store::sub_history(&c, &prefix, since, bucket_secs)?;
+            return Ok(json!({
+                "now": pool::now(), "window": window, "bucket_secs": bucket_secs,
+                "sub": format!("{prefix}…"),
+                "series": points.iter().map(|p| json!({
+                    "ts": p.ts,
+                    "cap5h": r2(p.cap5h), "cap7d": r2(p.cap7d),
+                    "util5h": r2(p.util5h), "util7d": r2(p.util7d),
+                })).collect::<Vec<_>>(),
+            }));
+        }
+        let points = crate::metrics_store::fleet_history(&c, since, bucket_secs)?;
+        Ok(json!({
+            "now": pool::now(), "window": window, "bucket_secs": bucket_secs,
+            "series": points.iter().map(|p| json!({
+                "ts": p.ts,
+                "avail_1h": r2(p.avail_1h), "avail_5h": r2(p.avail_5h),
+                "avail_1d": r2(p.avail_1d), "avail_7d": r2(p.avail_7d),
+                "util5h": r2(p.util5h), "util7d": r2(p.util7d),
+                "cap5h": r2(p.cap5h), "cap7d": r2(p.cap7d),
+                "cons5h": r2(p.cons5h), "cons7d": r2(p.cons7d),
+                "healthy": p.healthy, "cooling": p.cooling, "subs": p.subs,
+                "balance_usd": r2(p.balance_usd), "reserved_usd": r2(p.reserved_usd),
+                "spent_usd": r2(p.spent_usd), "potential_realapi": r2(p.potential_realapi),
+                "coverage7d": r2(p.coverage7d),
+                "headroom5h": r2(p.headroom5h), "headroom7d": r2(p.headroom7d),
+                "subs_needed": p.subs_needed, "gap": p.gap,
+            })).collect::<Vec<_>>(),
+        }))
+    })
+    .await;
+    match read {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(error)) => {
+            eprintln!("fleet history query failed: {error:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "metrics store unavailable"})),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            eprintln!("fleet history task failed: {error:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "metrics store unavailable"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// GPT (OpenAI Codex) подписки: per-home операционный статус codex gateway для вкладки
 /// «Подписки» панели. Как и /subs — control-authed; деньги тут только official-price оценки
 /// ёмкости (float для UI), money-путь биллинга не трогаем. На Anthropic-процессе codex не
@@ -3622,6 +3735,7 @@ mod tests {
             "/overview",
             "/capacity",
             "/subs",
+            "/fleet-history",
             "/codex-subs",
             "/gemini-subs",
         ] {
@@ -3677,5 +3791,183 @@ mod tests {
             );
         }
         assert!(!panel_source.contains("setInterval(refresh"));
+    }
+
+    fn fleet_history_test_app(tag: &str) -> (AppState, std::path::PathBuf) {
+        let mut app = admin_auth_test_app();
+        // metrics.db открывается рядом с data_db_path — направляем каталог в tempdir, чтобы
+        // тест не оставлял файл в рабочем дереве крейта.
+        let dir = std::env::temp_dir().join(format!("fh_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.data_db_path = Arc::new(dir.join("data.db").to_string_lossy().into_owned());
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn fleet_history_enforces_control_key_and_validates_window() {
+        let (app, dir) = fleet_history_test_app("gate");
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        // В ряду денежные агрегаты (balance/spent) → гейт control, read-only panel-ключ не подходит.
+        for (credential, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("panel-key"), StatusCode::UNAUTHORIZED),
+            (Some("control-key"), StatusCode::OK),
+            (Some("admin-key"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder()
+                .uri("/fleet-history")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            if let Some(key) = credential {
+                request
+                    .headers_mut()
+                    .insert("x-api-key", key.parse().unwrap());
+            }
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected, "credential {credential:?}");
+            if expected == StatusCode::OK {
+                let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["window"], "7d", "дефолтное окно — 7d");
+                assert_eq!(body["bucket_secs"], 1_800);
+                assert_eq!(body["series"], json!([]), "истории ещё нет — пустой ряд");
+                assert!(body["now"].as_i64().unwrap() > 0);
+            }
+        }
+        for uri in [
+            "/fleet-history?window=3d",
+            "/fleet-history?window=",
+            "/fleet-history?sub=%0A",
+        ] {
+            let mut request = Request::builder()
+                .uri(uri)
+                .header("x-api-key", "control-key")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fleet_history_returns_bucketed_fleet_and_per_sub_series() {
+        let (app, dir) = fleet_history_test_app("series");
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        // Сеем три минутных снапшота (как poller::metrics_loop) + per-sub ряд одной подписки.
+        let now = pool::now();
+        let c = crate::metrics_store::open(dir.join("metrics.db").to_str().unwrap()).unwrap();
+        for mins_ago in [0i64, 1, 2] {
+            let ts = now - mins_ago * 60;
+            crate::metrics_store::insert_snapshot(
+                &c,
+                &serde_json::json!({
+                    "now": ts, "subs": 3, "calibrated": true,
+                    "supply": {"avail_usd": {"1h": 10.0, "5h": 20.0, "1d": 30.0, "7d": 40.0},
+                               "cap_usd": {"5h": 20.0, "7d": 100.0},
+                               "consumed_usd": {"5h": 1.0, "7d": 5.0},
+                               "util": {"5h": 0.05, "7d": 0.5}, "health": {"healthy": 2, "cooling": 1}},
+                    "demand": {"balance_usd": 500.0, "reserved_usd": 1.0, "spent_usd": 9.0,
+                               "active_accounts": 4, "potential_realapi_usd": 2500.0},
+                    "headroom": {"5h": null, "7d": 8.0}, "coverage": {"7d": 62.5},
+                    "recommend": {"subs_needed": 1, "gap": -2}
+                }),
+            )
+            .unwrap();
+            crate::metrics_store::insert_sub_snapshots(
+                &c,
+                ts,
+                &[("alpha@example.com".to_string(), 10.0, 100.0, 0.2, 0.4)],
+            )
+            .unwrap();
+        }
+        drop(c);
+        // Флот-ряд: все поля контракта на месте, значения из снапшотов.
+        let mut request = Request::builder()
+            .uri("/fleet-history?window=24h")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["window"], "24h");
+        assert_eq!(body["bucket_secs"], 300);
+        let series = body["series"].as_array().unwrap();
+        assert!(!series.is_empty(), "сеяные снапшоты должны попасть в ряд");
+        let point = &series[0];
+        for field in [
+            "ts",
+            "avail_1h",
+            "avail_5h",
+            "avail_1d",
+            "avail_7d",
+            "util5h",
+            "util7d",
+            "cap5h",
+            "cap7d",
+            "cons5h",
+            "cons7d",
+            "healthy",
+            "cooling",
+            "subs",
+            "balance_usd",
+            "reserved_usd",
+            "spent_usd",
+            "potential_realapi",
+            "coverage7d",
+            "headroom5h",
+            "headroom7d",
+            "subs_needed",
+            "gap",
+        ] {
+            assert!(point.get(field).is_some(), "нет поля {field}");
+        }
+        assert_eq!(point["avail_5h"], 20.0);
+        assert_eq!(point["balance_usd"], 500.0);
+        assert_eq!(point["gap"], -2);
+        assert_eq!(point["subs"], 3);
+        assert!(
+            point["headroom5h"].is_null(),
+            "headroom5h=∞ хранится как NULL → null"
+        );
+        assert_eq!(point["headroom7d"], 8.0);
+        // Per-sub ряд по маске «alph…» (URL-encoded «…»), как его шлёт панель.
+        let mut request = Request::builder()
+            .uri("/fleet-history?window=24h&sub=alph%E2%80%A6")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["sub"], "alph…");
+        let series = body["series"].as_array().unwrap();
+        assert!(!series.is_empty());
+        assert_eq!(series[0]["cap7d"], 100.0);
+        assert_eq!(series[0]["cap5h"], 10.0);
+        assert_eq!(series[0]["util7d"], 0.4);
+        // Чужая маска → пустой ряд, полные email в ответе не светятся.
+        let mut request = Request::builder()
+            .uri("/fleet-history?window=24h&sub=zzzz")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["series"], json!([]));
+        assert!(!body.to_string().contains("alpha@example.com"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -69,8 +69,11 @@
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
   FIFO flush.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
-- Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
-  остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится
+- Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/gemini-subs`,
+  `/admin/*`) — здесь; остальное → форвардинг. `/fleet-history` читает историю metrics.db
+  (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
+  per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
+  агрегатами. `/gemini-subs` существует только в fixed Gemini runtime, гейтится
   `readonly_authed` и сериализует opaque ids/quota/cooling, per-model generation health и
   low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
   Antigravity version без Google identity, project/proxy/OAuth.
@@ -79,7 +82,7 @@
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂
   `control_authed` (admin|control) ⊂ `readonly_authed` (admin|control|panel).
 - `/health` без авторизации (голый liveness); `/pool` — `authed`; `/capacity`,`/metrics` —
-  `readonly_authed`; `/admin/*` — `control_authed`.
+  `readonly_authed`; `/fleet-history` и `/admin/*` — `control_authed`.
 - Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; deploy отдельно требует точного паритета authenticated-home set старого
