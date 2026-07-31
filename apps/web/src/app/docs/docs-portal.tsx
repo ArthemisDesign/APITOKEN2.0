@@ -63,6 +63,7 @@ const copy = {
     a5xx: "Retry with bounded exponential backoff. Keep the request ID and avoid unbounded duplicate attempts.",
     copy: "Copy",
     copied: "Copied",
+    copyPage: "Copy page",
     footer: "apiToken.sale documentation · Claude and OpenAI-compatible text access",
   },
   ru: {
@@ -113,6 +114,7 @@ const copy = {
     a5xx: "Повторите запрос с ограниченной экспоненциальной задержкой. Сохраните ID запроса и не допускайте бесконечных повторов.",
     copy: "Копировать",
     copied: "Скопировано",
+    copyPage: "Копировать страницу",
     footer: "Документация apiToken.sale · Claude и OpenAI-совместимый текстовый API",
   },
 } as const;
@@ -168,7 +170,7 @@ export function DocsPortal() {
     <div className="docs-layout">
       <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav>{sections.map(({ id, label }) => <a key={id} href={`#${id}`} className={activeSection === id ? "active" : ""}>{label}</a>)}</nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
-        <section className="docs-hero" id="overview"><h1>{t.title}</h1><p>{t.lead}</p></section>
+        <section className="docs-hero" id="overview"><div><h1>{t.title}</h1><p>{t.lead}</p></div><CopyPageButton label={t.copyPage} copiedLabel={t.copied} /></section>
 
         <section className="docs-section docs-connect-section" id="agent-setup">
           <article className="docs-agent-card ym-hide-content">
@@ -243,6 +245,22 @@ function CopyControl({ value, label, copiedLabel, className = "", withIcon = fal
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
+}
+
+// Copies the whole page as markdown (served by /md/docs) — the reference
+// "Copy page" affordance for pasting the docs into an LLM.
+function CopyPageButton({ label, copiedLabel }: { label: string; copiedLabel: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    const response = await fetch("/md/docs");
+    if (!response.ok) return;
+    await navigator.clipboard.writeText(await response.text());
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_600);
+  }
+
+  return <button className="btn btn-ghost btn-sm docs-copy-page" type="button" onClick={handleCopy}><CopyIcon copied={copied} /><span>{copied ? copiedLabel : label}</span></button>;
 }
 
 function CopyIcon({ copied }: { copied: boolean }) {
