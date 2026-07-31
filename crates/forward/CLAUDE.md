@@ -344,6 +344,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
+   Antigravity text сохраняет live-verified configured endpoint; image generation всегда идёт на
+   production `cloudcode-pa.googleapis.com`, как официальный LS: sandbox публикует image quota row,
+   но отвечает 503 на генерацию. Literal loopback mocks не перенаправляются.
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
    group и может restart-нуться только до upstream headers. Outbound frames, inbound NDJSON/base64
    staging, OAuth response collections и short-lived header/form strings zeroized. Loopback mocks

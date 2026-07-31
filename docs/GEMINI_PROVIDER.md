@@ -380,6 +380,12 @@ image tool, and the authenticated Google AI Pro catalogue exposes an independent
 `generateContent`/`streamGenerateContent`/`countTokens` envelope and returns generated media as
 `candidates[].content.parts[].inlineData`; images are never written to server disk.
 
+Image requests use `https://cloudcode-pa.googleapis.com`, the production endpoint selected by the
+Antigravity language server and independent working implementations. The configured sandbox host
+continues to serve the live-verified text surface, but its advertised image quota row is not proof
+of an image generation backend: valid image requests there return a generic 503. Explicit literal
+loopback mocks retain their configured origin.
+
 For Antigravity the wrapper uses the complete image identity rather than mixing it with an agent
 turn: `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, no private `sessionId`,
 `candidateCount=1`, and `responseModalities=[TEXT,IMAGE]`. The public affinity binding is still

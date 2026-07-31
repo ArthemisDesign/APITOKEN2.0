@@ -2105,6 +2105,18 @@ mod tests {
             super::super::config::LEGACY_GEMINI_UPSTREAM
         );
         assert_eq!(
+            cfg.generation_upstream_for(OAuthKind::Antigravity, false),
+            "https://daily-cloudcode-pa.sandbox.googleapis.com"
+        );
+        assert_eq!(
+            cfg.generation_upstream_for(OAuthKind::Antigravity, true),
+            super::super::config::ANTIGRAVITY_MEDIA_UPSTREAM
+        );
+        assert_eq!(
+            cfg.generation_upstream_for(OAuthKind::LegacyGeminiCli, true),
+            super::super::config::LEGACY_GEMINI_UPSTREAM
+        );
+        assert_eq!(
             cfg.user_agent(OAuthKind::Antigravity, "gemini-test"),
             "antigravity/hub/2.2.1 darwin/arm64"
         );
