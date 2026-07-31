@@ -196,7 +196,7 @@ Gemini runtime (`config.env` or `server.env`):
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.6-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE=6
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
@@ -309,16 +309,16 @@ For every request the runtime:
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
   an operational counter instead of inventing a usage event or granting a free request.
 
-The model allowlist is local and price-catalog pinned. The default list contains the three text
-models whose non-stream and native stream paths were reconfirmed against the production Google AI
-Pro profile on 2026-07-31: `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
+The model allowlist is local and price-catalog pinned. The default list contains the five text
+models whose non-stream, native stream and token-count paths were reconfirmed against the
+production Google AI Pro profile on 2026-07-31: `gemini-3.6-flash`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
 `gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: its quota bucket reports
 `remainingFraction=1.0`, but both generation paths persistently return `UNAVAILABLE`. Private
-tier ids are never public model names: reviewed 3.6/3.1 mappings stay outside the production unit
-until their current-profile live matrix passes, while 3.5/image/agent/foreign-provider ids have no
-honest public text-model mapping at all.
+tier ids are never public model names, while 3.5/image/agent/foreign-provider ids have no honest
+public text-model mapping at all.
 A configured id still needs a live smoke test against every tier because Google can change private
-model availability independently. The production systemd argv pins this calibrated three-model
+model availability independently. The production systemd argv pins this calibrated five-model
 set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
 
@@ -330,8 +330,8 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | all three buckets present on 2026-07-31; current-profile generate/SSE calibration still required | mapped in code, not yet in the production unit allowlist |
-| `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | both buckets present; current-profile generate/SSE calibration still required | mapped and price-pinned, not yet in the production unit allowlist |
+| `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
+| `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.1-flash-lite` | same id | generate 200, SSE 200 | published |
 | `gemini-2.5-flash` | same id | generate 200, SSE 200 | published |
 | `gemini-2.5-flash-lite` | same id | generate 200, SSE 200 | published |
