@@ -3013,7 +3013,9 @@ mod tests {
         );
         assert!(seen.iter().all(|request| {
             request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
-                && request.google_api_client.is_empty()
+                && request.google_api_client == "google-cloud-sdk vscode_cloudshelleditor/0.1"
+                && request.client_metadata
+                    == r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
         }));
     }
 
@@ -3160,7 +3162,9 @@ mod tests {
         assert_eq!(quota_body, json!({"project": "paid-project-01"}));
         assert!(seen.iter().all(|request| {
             request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
-                && request.google_api_client.is_empty()
+                && request.google_api_client == "google-cloud-sdk vscode_cloudshelleditor/0.1"
+                && request.client_metadata
+                    == r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
         }));
 
         let status = fixture.gateway.operational_status().await;

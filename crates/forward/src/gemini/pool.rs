@@ -162,15 +162,20 @@ impl GeminiProfile {
             ));
         }
         if self.oauth_kind == OAuthKind::Antigravity {
-            // The Antigravity Cloud Code surface requires the client-metadata header on generation
-            // requests; without it streamGenerateContent is rejected with a generic
-            // INVALID_ARGUMENT (generateContent is more lenient). The value is the reviewed
-            // Antigravity identity (macOS/Gemini). The Node helper sorts headers, so insertion
-            // order does not affect the wire fingerprint.
+            // The Antigravity Cloud Code surface accepts streamGenerateContent only when the request
+            // also carries the x-goog-api-client + client-metadata identity that the reviewed
+            // working client sends; without them the streaming method is rejected with a generic
+            // INVALID_ARGUMENT (generateContent is more lenient). Values match the reviewed working
+            // Antigravity request. The Node helper sorts headers, so insertion order does not affect
+            // the wire fingerprint.
+            headers.push((
+                "x-goog-api-client",
+                SecretString::new("google-cloud-sdk vscode_cloudshelleditor/0.1".to_string()),
+            ));
             headers.push((
                 "client-metadata",
                 SecretString::new(
-                    r#"{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}"#
+                    r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
                         .to_string(),
                 ),
             ));
