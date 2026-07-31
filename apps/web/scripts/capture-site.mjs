@@ -482,7 +482,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
     screenHeight: height,
   });
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
+    expression: `localStorage.setItem('theme:v1', ${JSON.stringify(theme)}); localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
   });
   const captureUrl = new URL(route, baseUrl);
   // Force a real navigation even when consecutive captures use the same route.
@@ -496,34 +496,49 @@ async function capturePage(client, [name, route, width, height, theme, language 
     awaitPromise: true,
     expression: `new Promise((resolve) => setTimeout(resolve, 500))`,
   });
-  await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      if (document.documentElement.lang === ${JSON.stringify(language)}) return;
-      const label = ${JSON.stringify(language.toUpperCase())};
-      const control = [...document.querySelectorAll('.lang button, .lang a')]
-        .find((button) => button.textContent?.trim() === label);
-      control?.click();
-    })()`,
-  });
-  try {
-    await waitForCondition(
-      client,
-      `document.documentElement.lang === ${JSON.stringify(language)}`,
-      `${name} language state`,
-    );
-  } catch (error) {
-    const state = await client.send("Runtime.evaluate", {
-      expression: `JSON.stringify({
-        documentLanguage: document.documentElement.lang,
-        storedLanguage: localStorage.getItem('lang'),
-        controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({
-          label: button.textContent?.trim(),
-          active: button.classList.contains('active'),
-        })),
-      })`,
+  // Click the language toggle repeatedly until the document language flips: right after the
+  // load event the dashboard can still show its loading shell (no .lang controls yet), so a
+  // single click attempt races client-side data fetching and silently no-ops.
+  const languageDeadline = Date.now() + 8_000;
+  let languageReady = false;
+  while (Date.now() < languageDeadline) {
+    const result = await client.send("Runtime.evaluate", {
       returnByValue: true,
+      expression: `(() => {
+        if (document.documentElement.lang === ${JSON.stringify(language)}) return true;
+        const label = ${JSON.stringify(language.toUpperCase())};
+        const control = [...document.querySelectorAll('.lang button, .lang a')]
+          .find((button) => button.textContent?.trim() === label);
+        control?.click();
+        return false;
+      })()`,
     });
-    throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${state.result.value}`);
+    if (result.result.value === true) { languageReady = true; break; }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (!languageReady) {
+    try {
+      await waitForCondition(
+        client,
+        `document.documentElement.lang === ${JSON.stringify(language)}`,
+        `${name} language state`,
+        1_000,
+      );
+      languageReady = true;
+    } catch (error) {
+      const state = await client.send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          documentLanguage: document.documentElement.lang,
+          storedLanguage: localStorage.getItem('lang'),
+          controls: [...document.querySelectorAll('.lang button, .lang a')].map((button) => ({
+            label: button.textContent?.trim(),
+            active: button.classList.contains('active'),
+          })),
+        })`,
+        returnByValue: true,
+      });
+      throw new Error(`${error instanceof Error ? error.message : error} Browser state: ${state.result.value}`);
+    }
   }
   await client.send("Runtime.evaluate", {
     awaitPromise: true,
@@ -770,7 +785,7 @@ async function verifyHeroOfferLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/", baseUrl);
     url.searchParams.set("__auditHero", layoutCase.name);
@@ -872,7 +887,7 @@ async function verifyPricingCardsLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/plans", baseUrl);
     url.searchParams.set("__auditPricing", layoutCase.name);
@@ -961,7 +976,7 @@ async function verifyCreditsLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+      expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
     });
     const url = new URL("/dashboard?view=credits", baseUrl);
     url.searchParams.set("__auditCredits", layoutCase.name);
@@ -1037,7 +1052,7 @@ async function verifyCreditsLayout(client) {
 async function verifyUsageByKeyTable(client) {
   await setViewport(client, 1440, 1000);
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=usage", baseUrl).href });
@@ -1087,7 +1102,7 @@ async function verifyApiKeysLayout(client) {
   for (const layoutCase of cases) {
     await setViewport(client, layoutCase.width, layoutCase.height);
     await client.send("Runtime.evaluate", {
-      expression: `localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
+      expression: `localStorage.setItem('theme:v1', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('theme', ${JSON.stringify(layoutCase.theme)}); localStorage.setItem('lang', ${JSON.stringify(layoutCase.language)});`,
     });
     const url = new URL("/dashboard?view=keys", baseUrl);
     url.searchParams.set("__auditKeys", layoutCase.name);
@@ -1378,7 +1393,7 @@ async function verifyDocsTheme(client) {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
   });
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
+    expression: `localStorage.setItem('theme:v1', 'light'); localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
   });
   const url = new URL("/docs", baseUrl);
   url.searchParams.set("__auditDocsTheme", "1");
@@ -1633,7 +1648,7 @@ async function verifyProfileBehavior(client) {
 
 async function verifyPersistentSiteRouting(client) {
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('lang', 'en'); localStorage.setItem('theme', 'dark');`,
+    expression: `localStorage.setItem('lang', 'en'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/", baseUrl).href });
@@ -1706,7 +1721,7 @@ async function verifyPersistentSiteRouting(client) {
 
 async function verifyComplianceRouting(client) {
   await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme', 'dark');`,
+    expression: `localStorage.setItem('lang', 'ru'); localStorage.setItem('theme:v1', 'dark'); localStorage.setItem('theme', 'dark');`,
   });
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/ru/privacy", baseUrl).href });
