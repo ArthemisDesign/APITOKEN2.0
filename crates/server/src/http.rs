@@ -631,6 +631,7 @@ async fn metrics(
          # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
          # TYPE claude_api_key_throttled_total counter\nclaude_api_key_throttled_total {}\n\
          # TYPE claude_api_auth_failures_total counter\nclaude_api_auth_failures_total {}\n\
+         # TYPE claude_api_route_rebind_total counter\nclaude_api_route_rebind_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
          # TYPE claude_api_route_spill_total counter\nclaude_api_route_spill_total {}\n\
          # TYPE claude_api_route_place_total counter\nclaude_api_route_place_total {}\n\
@@ -658,6 +659,7 @@ async fn metrics(
         g(&m.exhausted),
         g(&m.key_throttled),
         g(&m.auth_failures),
+        rs.rebind,
         rs.pin,
         rs.spill,
         rs.place,

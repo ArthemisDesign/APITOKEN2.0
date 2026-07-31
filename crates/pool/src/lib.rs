@@ -451,6 +451,13 @@ struct Inner {
     // Счётчики исходов route (наблюдаемость): pin = cache-hit (сессия на тёплом доме),
     // spill = дом занят, place = новая/пере-привязка. pin/(pin+place) ≈ доля cache-hit.
     route_pin: u64,
+    /// Placements that displaced an EXISTING conversation rather than starting a new one.
+    ///
+    /// A subset of `route_place`, not a replacement for it. Folding the two together made the most
+    /// expensive routing event indistinguishable from the cheapest: a brand new conversation has no
+    /// cache to lose, while a forced migration throws away a warm prompt prefix the customer has
+    /// already paid to build, and makes them pay to build it again on another subscription.
+    route_rebind: u64,
     route_spill: u64,
     route_place: u64,
 }
@@ -461,6 +468,8 @@ pub struct RouteStats {
     pub pin: u64,
     pub spill: u64,
     pub place: u64,
+    /// Subset of `place`: placements that moved an existing conversation off its home.
+    pub rebind: u64,
 }
 
 /// Outcome of routing a shared cache lineage whose preferred home is held outside this crate.
@@ -738,6 +747,7 @@ impl Pool {
                 live: HashMap::new(),
                 bindings: HashMap::new(),
                 route_pin: 0,
+                route_rebind: 0,
                 route_spill: 0,
                 route_place: 0,
             }),
@@ -1052,6 +1062,9 @@ impl Pool {
         let rsv = self.reserve;
         let (p5, p7) = (self.prior5h_usd, self.prior7d_usd);
 
+        // Set when an existing conversation is about to be moved off its home, so the placement
+        // below can be told apart from a genuinely new session.
+        let mut forced_rebind = false;
         // берём привязку как owned-значения → отпускаем borrow таблицы, дальше свободно мутируем g
         if let Some((home, last_seen)) = g
             .bindings
@@ -1106,13 +1119,18 @@ impl Pool {
                     }
                     return selected;
                 }
-                // deep_cooling || over_cap → пере-привязка ниже
+                // deep_cooling || over_cap || home_dead → пере-привязка ниже. Это потеря тёплого
+                // кеша разговора, а не обычное размещение — считаем отдельно.
+                forced_rebind = true;
             }
         }
 
         // новая сессия или пере-привязка → capacity-weighted placement, записать дом
         let chosen = place_best(&g, &HashSet::new(), now, &rsv, p5, p7)?;
         g.route_place += 1;
+        if forced_rebind {
+            g.route_rebind += 1;
+        }
         if g.bindings.len() >= BINDINGS_CAP {
             let cutoff = now - AFFINITY_TTL;
             g.bindings.retain(|_, b| b.last_seen >= cutoff); // сперва протухшие
@@ -1547,6 +1565,7 @@ impl Pool {
         let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
         RouteStats {
             pin: g.route_pin,
+            rebind: g.route_rebind,
             spill: g.route_spill,
             place: g.route_place,
         }
@@ -2072,6 +2091,42 @@ mod tests {
             assert_eq!(selected, home);
             p.mark_done(&selected);
         }
+    }
+
+    #[test]
+    fn a_forced_migration_is_counted_apart_from_a_new_conversation() {
+        // The two events cost very different things. A new conversation has no warm prefix to lose;
+        // moving an existing one throws away a cache the customer already paid to build and makes
+        // them pay to build it again elsewhere. Folded into one counter, the expensive case was
+        // invisible — which is exactly when stickiness regressions go unnoticed.
+        let p = pool(&["a", "b"]);
+        for e in ["a", "b"] {
+            p.set_util(e, Some(0.1), Some(0.1), None, None, None);
+        }
+        let session = 987_654_321u64;
+
+        let home = p.route(session).unwrap().email;
+        p.mark_done(&home);
+        assert_eq!(p.route_stats().place, 1, "new conversation is a placement");
+        assert_eq!(p.route_stats().rebind, 0, "and not a migration");
+
+        // A pin does not touch either counter.
+        let pinned = p.route(session).unwrap().email;
+        p.mark_done(&pinned);
+        assert_eq!(pinned, home);
+        assert_eq!(p.route_stats().rebind, 0);
+
+        // Cool the home well past the rebind threshold: the conversation must move.
+        p.mark_cooling(&home, REBIND_AFTER * 10);
+        let moved = p.route(session).unwrap().email;
+        p.mark_done(&moved);
+        assert_ne!(
+            moved, home,
+            "a deeply cooling home cannot keep its conversation"
+        );
+        assert_eq!(p.route_stats().rebind, 1, "the migration is now visible");
+        // It remains a subset of placements, so existing cache-hit ratios keep their meaning.
+        assert_eq!(p.route_stats().place, 2);
     }
 
     #[test]

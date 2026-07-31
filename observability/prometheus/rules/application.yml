@@ -156,6 +156,17 @@ groups:
           description: 'The subscription window is reported full, so the gateway routes around this home until the window resets. Confirm the remaining homes absorb the load.'
           runbook: 'MONITORING.md#codexhomeratelimited'
 
+      - alert: ConversationsForcedOffTheirHome
+        expr: rate(claude_api_route_rebind_total[15m]) > 0 and rate(claude_api_route_rebind_total[15m]) / clamp_min(rate(claude_api_route_place_total[15m]), 0.001) > 0.3
+        for: 15m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: 'Conversations are being moved off their subscription'
+          description: 'More than a third of placements are migrations of existing conversations rather than new ones. Each migration throws away a warm prompt prefix the customer already paid to build and pays to build it again elsewhere, so this shows up as higher latency and higher cost before it shows up as an error. Usually it means subscriptions are hitting their windows or cooling for long enough to cross the rebind threshold; check pool capacity first.'
+          runbook: 'MONITORING.md#conversationsforcedofftheirhome'
+
       - alert: CodexHomeUnresponsive
         expr: claude_api_codex_home_transport_wedged{provider="openai"} == 1 or claude_api_codex_home_transport_degraded{provider="openai"} == 1
         for: 3m

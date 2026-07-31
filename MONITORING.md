@@ -300,6 +300,20 @@ stays on past the reported reset, verify that `account/rateLimits/read` still an
 recovery depends on that probe succeeding, so a home whose probe is timing out cannot return on its
 own. `CodexHomeSnapshotStale` distinguishes the two cases.
 
+## ConversationsForcedOffTheirHome
+
+A conversation that is pinned to a subscription is being moved to another one. This is not an error
+path — the request is served — but it is the most expensive routing event we have: the warm prompt
+prefix on the old subscription is thrown away, the customer waits longer, and the same prefix is paid
+for again on the new one. It therefore surfaces as latency and cost long before it surfaces as a
+failure, which is why it is measured separately from ordinary placement rather than folded into it.
+
+`claude_api_route_rebind_total` is a subset of `claude_api_route_place_total`; the remainder is
+genuinely new conversations. A sustained high ratio almost always means capacity: subscriptions are
+reaching their windows or cooling long enough to cross the rebind threshold, so their conversations
+cannot stay where their cache is. Check pool capacity and window utilisation before suspecting the
+routing itself. A brief spike right after a deploy or a subscription being retired is expected.
+
 ## CodexHomeUnresponsive
 
 The home's app-server generation is missing RPC deadlines. The gateway has closed admission for new
