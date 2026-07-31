@@ -138,7 +138,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      DATA_SOURCE_NAME: postgresql://apitoken_monitoring:${MONITORING_POSTGRES_PASSWORD:?MONITORING_POSTGRES_PASSWORD is required}@127.0.0.1:5433/postgres?sslmode=disable
+      DATA_SOURCE_NAME: postgresql://apitoken_monitoring:${MONITORING_POSTGRES_PASSWORD:?MONITORING_POSTGRES_PASSWORD is required}@127.0.0.1:5433/postgres?sslmode=disable&application_name=postgres-exporter
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
     command:
       - --web.listen-address=127.0.0.1:9187

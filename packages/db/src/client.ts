@@ -7,7 +7,7 @@ export interface Database {
   db: NodePgDatabase<typeof schema>;
 }
 
-export function createDatabase(connectionString: string): Database {
-  const pool = new Pool({ connectionString, max: 10 });
+export function createDatabase(connectionString: string, applicationName = "commerce-db"): Database {
+  const pool = new Pool({ connectionString, max: 10, application_name: applicationName });
   return { pool, db: drizzle(pool, { schema }) };
 }

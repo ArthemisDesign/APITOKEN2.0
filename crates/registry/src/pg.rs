@@ -27,6 +27,7 @@ const MIGRATION_0010: &str = include_str!("../migrations_pg/0010_codex_window_ca
 
 /// Highest PostgreSQL schema version understood by this engine build.
 pub const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (1, MIGRATION_0001),
@@ -191,7 +192,12 @@ pub fn classify_failure(error: &anyhow::Error) -> FailureClass {
 
 impl PgStore {
     pub fn connect(url: &str) -> Result<Self> {
-        let config: postgres::Config = url.parse().context("parse engine PostgreSQL URL")?;
+        Self::connect_with_application_name(url, DEFAULT_APPLICATION_NAME)
+    }
+
+    pub fn connect_with_application_name(url: &str, application_name: &str) -> Result<Self> {
+        let mut config: postgres::Config = url.parse().context("parse engine PostgreSQL URL")?;
+        config.application_name(application_name);
         let remote_tcp = config.get_hosts().iter().any(|host| match host {
             Host::Tcp(host) => {
                 host != "localhost"

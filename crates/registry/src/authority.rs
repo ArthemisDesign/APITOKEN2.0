@@ -22,9 +22,15 @@ impl AuthorityConfig {
         }
     }
     pub fn connect(&self) -> Result<Authority> {
+        self.connect_with_application_name(crate::pg::DEFAULT_APPLICATION_NAME)
+    }
+    pub fn connect_with_application_name(&self, application_name: &str) -> Result<Authority> {
         Ok(match self {
             Self::Sqlite { path } => Authority::Sqlite(crate::open(path)?),
-            Self::Postgres { url } => Authority::Postgres(PgStore::connect(url)?),
+            Self::Postgres { url } => Authority::Postgres(PgStore::connect_with_application_name(
+                url,
+                application_name,
+            )?),
         })
     }
     pub fn is_postgres(&self) -> bool {

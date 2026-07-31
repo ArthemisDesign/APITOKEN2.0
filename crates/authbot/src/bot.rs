@@ -716,7 +716,7 @@ async fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> an
         cfg.fleet.clone(),
     );
     tokio::task::spawn_blocking(move || {
-        let mut auth = authority.connect()?;
+        let mut auth = authority.connect_with_application_name("claude-authbot")?;
         auth.add(&email, &token, &proxy, &fleet)
     })
     .await

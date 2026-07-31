@@ -7,7 +7,7 @@ export interface OpenkeysDatabase {
   db: NodePgDatabase<typeof schema>;
 }
 
-export function createOpenkeysDatabase(connectionString: string): OpenkeysDatabase {
-  const pool = new Pool({ connectionString, max: 10 });
+export function createOpenkeysDatabase(connectionString: string, applicationName = "openkeys-db"): OpenkeysDatabase {
+  const pool = new Pool({ connectionString, max: 10, application_name: applicationName });
   return { pool, db: drizzle(pool, { schema }) };
 }

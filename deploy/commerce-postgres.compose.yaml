@@ -7,6 +7,7 @@ services:
   commerce-postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_DB: commerce
       POSTGRES_USER: commerce

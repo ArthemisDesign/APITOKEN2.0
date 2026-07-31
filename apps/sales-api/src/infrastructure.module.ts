@@ -23,7 +23,7 @@ class DatabaseShutdown implements OnApplicationShutdown {
       provide: SALES_DATABASE,
       inject: [ConfigService],
       useFactory: (config: ConfigService<Environment, true>) =>
-        createSalesDatabase(config.get("SALES_DATABASE_URL", { infer: true })),
+        createSalesDatabase(config.get("SALES_DATABASE_URL", { infer: true }), "sales-api"),
     },
     {
       provide: WORKER_ID,

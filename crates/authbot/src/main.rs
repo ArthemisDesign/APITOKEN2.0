@@ -216,7 +216,7 @@ pub fn authority_cfg(cfg: &Config) -> registry::authority::AuthorityConfig {
 async fn preflight_authority(authority: registry::authority::AuthorityConfig) -> Result<()> {
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut authority = authority
-            .connect()
+            .connect_with_application_name("claude-authbot")
             .context("authbot не подключился к PostgreSQL authority движка")?;
         authority
             .subs_admin()
@@ -236,7 +236,7 @@ async fn write_proxy_expire(
     ok: bool,
 ) {
     let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(mut a) = auth.connect() {
+        if let Ok(mut a) = auth.connect_with_application_name("claude-authbot") {
             let _ = a.set_proxy_meta(&email, &expire, now, ok);
         }
     })
@@ -266,7 +266,7 @@ async fn proxy_check_once(cfg: &Config, ipr: &iproyal::Iproyal) {
     // subs_admin отдаёт proxy_host без user:pass — proxy_ip это переваривает.
     let ac = authority_cfg(cfg);
     let subs: Vec<(String, String, i64)> = tokio::task::spawn_blocking(move || {
-        ac.connect()
+        ac.connect_with_application_name("claude-authbot")
             .ok()
             .and_then(|mut a| a.subs_admin().ok())
             .map(|rows| {
