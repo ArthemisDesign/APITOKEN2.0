@@ -69,11 +69,18 @@
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
   FIFO flush.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
-- Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/gemini-subs`,
-  `/admin/*`) — здесь; остальное → форвардинг. `/fleet-history` читает историю metrics.db
+- Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
+  `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/fleet-history` читает историю metrics.db
   (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
   per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
-  агрегатами. `/gemini-subs` существует только в fixed Gemini runtime, гейтится
+  агрегатами. `/settlement-health` — денежная диагностика settlement pipeline: counts
+  settlement_outbox по state (pending/done/failed; 'processing' в схеме есть, но не пишется),
+  failed всего/24ч, backlog несеттленых старше 300с, ≤10 последних failed с last_error,
+  урезанным до 200 символов (settle-ошибки — invariant/SQLSTATE детали, без секретов), и лаг
+  pricing-консьюмера (max(ledger.id) vs ledger_consumer_checkpoints, возраст старейшей
+  неподтверждённой строки); читается через registry (`PgStore::settlement_health` / SQLite-twin
+  в registry::settlement_health), server в PG напрямую не лезет. `/gemini-subs` существует
+  только в fixed Gemini runtime, гейтится
   `readonly_authed` и сериализует opaque ids/quota/cooling, per-model generation health и
   low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
   Antigravity version без Google identity, project/proxy/OAuth.
@@ -82,7 +89,7 @@
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂
   `control_authed` (admin|control) ⊂ `readonly_authed` (admin|control|panel).
 - `/health` без авторизации (голый liveness); `/pool` — `authed`; `/capacity`,`/metrics` —
-  `readonly_authed`; `/fleet-history` и `/admin/*` — `control_authed`.
+  `readonly_authed`; `/fleet-history`, `/settlement-health` и `/admin/*` — `control_authed`.
 - Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; deploy отдельно требует точного паритета authenticated-home set старого

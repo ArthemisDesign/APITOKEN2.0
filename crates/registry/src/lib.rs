@@ -3583,6 +3583,185 @@ pub fn spend_by_provider(conn: &Connection, since_ts: i64) -> Result<Vec<SpendPr
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Расход по МОДЕЛИ за окно (ts ≥ `since_ts`): top-`limit` по charge. Группировка по
+/// (model, provider): один и тот же model ID может обслуживаться разными апстримами (см.
+/// UsageDailyProviderAgg). `model` в usage_events — served id из ответа апстрима, по которому
+/// реально посчитан charge (фолбэк — модель запроса), то есть разбивка отражает прайсинг,
+/// а не клиентский алиас.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpendModelAgg {
+    pub model: String,
+    pub provider: String,
+    pub requests: i64,
+    pub charge_nano: i64,
+    pub real_nano: i64,
+}
+
+pub fn spend_by_model(conn: &Connection, since_ts: i64, limit: i64) -> Result<Vec<SpendModelAgg>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(model,''),'(unknown)'), COALESCE(NULLIF(provider,''),'anthropic'), \
+         COUNT(*), COALESCE(SUM(charge_nano),0), COALESCE(SUM(real_nano),0) \
+         FROM usage_events WHERE ts>=?1 GROUP BY 1,2 ORDER BY SUM(charge_nano) DESC, 1, 2 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![since_ts, limit], |r| {
+        Ok(SpendModelAgg {
+            model: r.get(0)?,
+            provider: r.get(1)?,
+            requests: r.get(2)?,
+            charge_nano: r.get(3)?,
+            real_nano: r.get(4)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Одна failed-строка settlement_outbox для операционной диагностики. `last_error` обрезан до
+/// 200 символов: тексты ошибок settle — внутренние invariant/SQLSTATE детали (request_id, суммы,
+/// имена constraint'ов), токенов подписок и ключей там нет, но длинный PG-trace не должен
+/// раздувать ответ панели.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettlementFailure {
+    pub request_id: String,
+    pub actual_nano: i64,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub updated_ts: i64,
+}
+
+/// Лаг durable-консьюмера ledger'а: max(ledger.id) против watermark'ов
+/// `ledger_consumer_checkpoints` + возраст старейшей неподтверждённой строки. Растущий `unacked`
+/// означает, что коммерческий pricing-воркер не дочитывает списания (и ledger_prune остановлен).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LedgerConsumerLag {
+    pub consumer: String,
+    pub ledger_max_id: i64,
+    /// Число (consumer, account_id) watermark'ов; 0 → консьюмер ни разу не подтверждал.
+    pub checkpoints: i64,
+    /// Минимальный last_ledger_id среди watermark'ов (0, когда checkpoint'ов нет).
+    pub checkpoint_min: i64,
+    /// Ledger-строки с id > watermark'а своего аккаунта.
+    pub unacked: i64,
+    /// ts старейшей неподтверждённой строки (0 — лага нет).
+    pub oldest_unacked_ts: i64,
+}
+
+/// Сводка settlement pipeline для панели «тихие деньги»: counts по state, failed всего и за 24ч,
+/// backlog несеттленых старше порога, последние ≤10 failed, лаг pricing-консьюмера. Читается
+/// одинаково на обоих backend'ах: у SQLite-зеркала state 'failed' нет (застревшие ретраи видны
+/// как `pending_with_error`), PostgreSQL паркует permanent-ошибки в 'failed' (миграция 0004);
+/// state 'processing' объявлен в схеме, но пока не пишется ни одним writer'ом.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettlementHealth {
+    pub pending: i64,
+    pub processing: i64,
+    pub done: i64,
+    pub failed: i64,
+    pub failed_24h: i64,
+    /// pending-строки с last_error — ретраи в полёте (единственный сигнал застревания на SQLite).
+    pub pending_with_error: i64,
+    /// Несеттленые (pending|processing), созданные раньше `backlog_before`.
+    pub backlog: i64,
+    /// created_ts старейшей несеттленой строки (0 — несеттленых нет).
+    pub oldest_unsettled_ts: i64,
+    pub recent_failed: Vec<SettlementFailure>,
+    pub ledger_consumer: LedgerConsumerLag,
+}
+
+fn settlement_consumer_lag(conn: &Connection, consumer: &str) -> Result<LedgerConsumerLag> {
+    let ledger_max_id: i64 =
+        conn.query_row("SELECT COALESCE(MAX(id),0) FROM ledger", [], |r| r.get(0))?;
+    let (checkpoints, checkpoint_min): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(MIN(last_ledger_id),0) \
+         FROM ledger_consumer_checkpoints WHERE consumer=?1",
+        rusqlite::params![consumer],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let (unacked, oldest_unacked_ts): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(MIN(l.ts),0) FROM ledger l \
+         JOIN ledger_consumer_checkpoints c ON c.account_id=l.account_id AND c.consumer=?1 \
+         WHERE l.id > c.last_ledger_id",
+        rusqlite::params![consumer],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(LedgerConsumerLag {
+        consumer: consumer.to_string(),
+        ledger_max_id,
+        checkpoints,
+        checkpoint_min,
+        unacked,
+        oldest_unacked_ts,
+    })
+}
+
+pub fn settlement_health(
+    conn: &Connection,
+    backlog_secs: i64,
+    consumer: &str,
+) -> Result<SettlementHealth> {
+    let ts = now();
+    let backlog_before = ts - backlog_secs.max(0);
+    let failed_since = ts - 86_400;
+    let mut health = SettlementHealth::default();
+    {
+        let mut stmt =
+            conn.prepare("SELECT state, COUNT(*) FROM billing_settlement_outbox GROUP BY state")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows {
+            let (state, count) = row?;
+            match state.as_str() {
+                "pending" => health.pending = count,
+                "processing" => health.processing = count,
+                "done" => health.done = count,
+                "failed" => health.failed = count,
+                _ => {}
+            }
+        }
+    }
+    health.failed_24h = conn.query_row(
+        "SELECT COUNT(*) FROM billing_settlement_outbox WHERE state='failed' AND updated_ts>=?1",
+        rusqlite::params![failed_since],
+        |r| r.get(0),
+    )?;
+    health.pending_with_error = conn.query_row(
+        "SELECT COUNT(*) FROM billing_settlement_outbox \
+         WHERE state='pending' AND last_error IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    health.backlog = conn.query_row(
+        "SELECT COUNT(*) FROM billing_settlement_outbox \
+         WHERE state IN ('pending','processing') AND created_ts<?1",
+        rusqlite::params![backlog_before],
+        |r| r.get(0),
+    )?;
+    health.oldest_unsettled_ts = conn.query_row(
+        "SELECT COALESCE(MIN(created_ts),0) FROM billing_settlement_outbox \
+         WHERE state IN ('pending','processing')",
+        [],
+        |r| r.get(0),
+    )?;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT request_id, actual_nano, attempts, last_error, updated_ts \
+             FROM billing_settlement_outbox WHERE state='failed' \
+             ORDER BY updated_ts DESC, request_id LIMIT 10",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let raw: Option<String> = r.get(3)?;
+            Ok(SettlementFailure {
+                request_id: r.get(0)?,
+                actual_nano: r.get(1)?,
+                attempts: r.get(2)?,
+                last_error: raw.map(|e| e.chars().take(200).collect()),
+                updated_ts: r.get(4)?,
+            })
+        })?;
+        health.recent_failed = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    }
+    health.ledger_consumer = settlement_consumer_lag(conn, consumer)?;
+    Ok(health)
+}
+
 /// Обрезать usage_events под масштаб (как ledger_prune): удалить строки старше `older_than_ts`
 /// батчами, отдавая write-lock между ними. Возвращает удалённое.
 pub fn usage_prune(conn: &Connection, older_than_ts: i64) -> Result<usize> {
@@ -7077,6 +7256,150 @@ mod tests {
         let decoded: UsageEventInput = serde_json::from_value(payload).unwrap();
         assert_eq!(decoded.provider, PROVIDER_ANTHROPIC);
         assert_eq!(decoded.model, "claude-opus-5");
+    }
+
+    /// Разбивка расхода по моделям: top-N по charge, группировка по (model, provider) — один
+    /// model ID, обслуженный разными апстримами, не смешивается в одну строку.
+    #[test]
+    fn spend_is_broken_down_by_served_model() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100_000_000_000, 4000);
+        let opus = UsageEventInput {
+            model: "claude-opus-5".into(),
+            real_nano: 20_000_000,
+            ..Default::default()
+        };
+        let gpt = UsageEventInput {
+            model: "gpt-5.6".into(),
+            provider: PROVIDER_OPENAI.into(),
+            real_nano: 5_000_000,
+            ..Default::default()
+        };
+        usage_event_add(&c, "a", Some("k"), &opus, 8_000_000, Some("req1")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &gpt, 2_000_000, Some("req2")).unwrap();
+        usage_event_add(&c, "a", Some("k"), &gpt, 3_000_000, Some("req3")).unwrap();
+
+        let rows = spend_by_model(&c, 0, 20).unwrap();
+        assert_eq!(rows.len(), 2);
+        // сортировка по SUM(charge_nano) DESC → opus первый (8M > 2+3M)
+        assert_eq!(rows[0].model, "claude-opus-5");
+        assert_eq!(rows[0].provider, PROVIDER_ANTHROPIC);
+        assert_eq!(rows[0].requests, 1);
+        assert_eq!(rows[0].charge_nano, 8_000_000);
+        assert_eq!(rows[0].real_nano, 20_000_000);
+        assert_eq!(rows[1].model, "gpt-5.6");
+        assert_eq!(rows[1].provider, PROVIDER_OPENAI);
+        assert_eq!(rows[1].requests, 2);
+        assert_eq!(rows[1].charge_nano, 5_000_000);
+        // limit обрезает выдачу, окно — по ts, как у остальных spend-агрегатов
+        assert_eq!(spend_by_model(&c, 0, 1).unwrap().len(), 1);
+        assert!(spend_by_model(&c, now() + 10_000, 20).unwrap().is_empty());
+    }
+
+    /// Сводка settlement pipeline: counts по state, failed за 24ч, backlog старых несеттленых,
+    /// ≤10 failed с урезанным до 200 символов last_error и лаг pricing-консьюмера ledger'а.
+    #[test]
+    fn settlement_health_reports_outbox_and_consumer_lag() {
+        let c = db();
+        // Пустая БД: везде нули, oldest_* = 0, consumer lag без watermark'ов.
+        let empty = settlement_health(&c, 300, "pricing").unwrap();
+        assert_eq!(empty.pending + empty.done + empty.failed + empty.backlog, 0);
+        assert_eq!(empty.oldest_unsettled_ts, 0);
+        assert!(empty.recent_failed.is_empty());
+        assert_eq!(empty.ledger_consumer.ledger_max_id, 0);
+        assert_eq!(empty.ledger_consumer.checkpoints, 0);
+
+        acct_with_key(&c, "a", "k", 100_000_000_000, 2000);
+        let ts = now();
+        let mut seed_outbox = |request_id: &str,
+                               state: &str,
+                               attempts: i64,
+                               error: Option<&str>,
+                               created: i64,
+                               updated: i64| {
+            c.execute(
+                "INSERT INTO billing_settlement_outbox(request_id,actual_nano,state,attempts, \
+                 next_attempt_ts,last_error,created_ts,updated_ts) \
+                 VALUES(?1,1000,?2,?3,0,?4,?5,?6)",
+                rusqlite::params![request_id, state, attempts, error, created, updated],
+            )
+            .unwrap();
+        };
+        seed_outbox("r-done", "done", 1, None, ts - 100, ts - 90);
+        seed_outbox("r-pending-fresh", "pending", 0, None, ts - 10, ts - 10);
+        seed_outbox(
+            "r-pending-old",
+            "pending",
+            3,
+            Some("transient pg error"),
+            ts - 3600,
+            ts - 60,
+        );
+        seed_outbox(
+            "r-failed-new",
+            "failed",
+            5,
+            Some(&"x".repeat(500)),
+            ts - 7200,
+            ts - 30,
+        );
+        seed_outbox(
+            "r-failed-old",
+            "failed",
+            5,
+            Some("invariant violated"),
+            ts - 200_000,
+            ts - 100_000,
+        );
+
+        let h = settlement_health(&c, 300, "pricing").unwrap();
+        assert_eq!(h.pending, 2);
+        assert_eq!(h.processing, 0);
+        assert_eq!(h.done, 1);
+        assert_eq!(h.failed, 2);
+        assert_eq!(h.failed_24h, 1, "старый failed за пределами 24ч-окна");
+        assert_eq!(h.pending_with_error, 1);
+        assert_eq!(h.backlog, 1, "только r-pending-old старше 300с");
+        assert_eq!(h.oldest_unsettled_ts, ts - 3600);
+        assert_eq!(h.recent_failed.len(), 2);
+        assert_eq!(
+            h.recent_failed[0].request_id, "r-failed-new",
+            "свежий failed первым"
+        );
+        assert_eq!(
+            h.recent_failed[0]
+                .last_error
+                .as_deref()
+                .unwrap()
+                .chars()
+                .count(),
+            200,
+            "last_error урезан до 200 символов"
+        );
+        assert_eq!(
+            h.recent_failed[1].last_error.as_deref(),
+            Some("invariant violated")
+        );
+
+        // Лаг консьюмера: первая topup-строка подтверждена (ack), вторая — ещё нет.
+        let first: i64 = c
+            .query_row("SELECT MIN(id) FROM ledger", [], |r| r.get(0))
+            .unwrap();
+        ledger_ack(&c, "pricing", "a", first).unwrap();
+        account_topup(&c, "a", 1_000_000, None).unwrap();
+        let h = settlement_health(&c, 300, "pricing").unwrap();
+        let lag = &h.ledger_consumer;
+        assert_eq!(lag.consumer, "pricing");
+        assert!(lag.ledger_max_id > first);
+        assert_eq!(lag.checkpoints, 1);
+        assert_eq!(lag.checkpoint_min, first);
+        assert_eq!(lag.unacked, 1, "вторая topup-строка выше watermark'а");
+        assert!(lag.oldest_unacked_ts > 0);
+        // Consumer без watermark'ов не считается отставшим (та же семантика, что у ledger_prune).
+        let h = settlement_health(&c, 300, "unknown").unwrap();
+        assert_eq!(h.ledger_consumer.checkpoints, 0);
+        assert_eq!(h.ledger_consumer.unacked, 0);
+        assert_eq!(h.ledger_consumer.oldest_unacked_ts, 0);
     }
 
     /// settle пишет usage_event В ТОЙ ЖЕ операции (один коммит); при actual=0 usage НЕ пишется.

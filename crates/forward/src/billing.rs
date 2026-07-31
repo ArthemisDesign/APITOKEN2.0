@@ -711,6 +711,16 @@ enum ReadCmd {
         account_id: String,
         reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
     },
+    SpendByModel(
+        i64,
+        i64,
+        oneshot::Sender<anyhow::Result<Vec<registry::SpendModelAgg>>>,
+    ),
+    SettlementHealth(
+        i64,
+        String,
+        oneshot::Sender<anyhow::Result<registry::SettlementHealth>>,
+    ),
 }
 
 enum PricingShadowReadCmd {
@@ -1360,6 +1370,13 @@ impl AsyncBilling {
                                     &account_id,
                                 ));
                             }
+                            ReadCmd::SpendByModel(since, lim, r) => {
+                                let _ = r.send(registry::spend_by_model(&conn, since, lim));
+                            }
+                            ReadCmd::SettlementHealth(backlog, consumer, r) => {
+                                let _ =
+                                    r.send(registry::settlement_health(&conn, backlog, &consumer));
+                            }
                         }
                     }
                     eprintln!("⚠ billing-reader-{i} поток завершён");
@@ -1961,6 +1978,12 @@ impl AsyncBilling {
                             }
                             ReadCmd::PricingReadBundle { account_id, reply } => {
                                 answer!(reply, pg.pricing_read_bundle(&account_id))
+                            }
+                            ReadCmd::SpendByModel(since, lim, r) => {
+                                answer!(r, pg.spend_by_model(since, lim))
+                            }
+                            ReadCmd::SettlementHealth(backlog, consumer, r) => {
+                                answer!(r, pg.settlement_health(backlog, &consumer))
                             }
                         }
                     }
@@ -2622,6 +2645,34 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::SpendByProvider(since_ts, r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+    /// Top-`limit` моделей по charge за окно — разбивка «что реально тарифицировано» для панели.
+    pub async fn spend_by_model(
+        &self,
+        since_ts: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<registry::SpendModelAgg>> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::SpendByModel(since_ts, limit, r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+    /// Сводка settlement pipeline (outbox + лаг ledger-консьюмера) — денежная диагностика панели.
+    pub async fn settlement_health(
+        &self,
+        backlog_secs: i64,
+        consumer: &str,
+    ) -> anyhow::Result<registry::SettlementHealth> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::SettlementHealth(backlog_secs, consumer.into(), r))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await

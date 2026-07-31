@@ -7,6 +7,8 @@ import { AdminFinanceService } from "./admin-finance.service.js";
 import { AdminGuard } from "./admin.guard.js";
 import { AdminOperationsController } from "./admin-operations.controller.js";
 import { AdminOperationsService } from "./admin-operations.service.js";
+import { AdminPipelinesController } from "./admin-pipelines.controller.js";
+import { AdminPipelinesService } from "./admin-pipelines.service.js";
 import { AdminService } from "./admin.service.js";
 import { InternalAdminAuthController } from "./internal-admin-auth.controller.js";
 
@@ -16,8 +18,16 @@ import { InternalAdminAuthController } from "./internal-admin-auth.controller.js
     AdminOperationsController,
     AdminAccountsController,
     AdminFinanceController,
+    AdminPipelinesController,
     InternalAdminAuthController,
   ],
-  providers: [AdminGuard, AdminService, AdminOperationsService, AdminAccountsService, AdminFinanceService],
+  providers: [
+    AdminGuard,
+    AdminService,
+    AdminOperationsService,
+    AdminAccountsService,
+    AdminFinanceService,
+    AdminPipelinesService,
+  ],
 })
 export class AdminModule {}

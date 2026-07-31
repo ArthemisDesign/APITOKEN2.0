@@ -15,7 +15,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                           ├─ /admin-panel.js          → engine GET /admin-panel.js
                            ├─ /overview /capacity
                            │  /metrics /subs
-                           │  /fleet-history           → engine balancer :8790 (+ control key)
+                           │  /fleet-history
+                           │  /settlement-health       → engine balancer :8790 (+ control key)
                            ├─ /codex-subs              → OpenAI origin :8792 (+ control key)
                            ├─ /gemini-subs             → Gemini origin :8794 (+ control key)
                           ├─ /admin/*                 → commerce balancer :8791 /v1/admin/*
@@ -49,6 +50,14 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   `crates/server/src/http.rs`. `/overview` содержит полный список engine accounts без API-ключей.
   `/fleet-history` отдаёт историю metrics.db (минутные снапшоты флота за 90 дней) окнами
   24h/7d/30d/90d с бакетированием до ≤ ~500 точек, опционально per-sub ряд по маске email.
+  `/spend-stats` помимо accounts/providers отдаёт `models[]` — top-20 моделей по charge за
+  каждое окно (served model id из usage_events, тот, что реально тарифицирован).
+  `/settlement-health` — денежная диагностика settlement pipeline: counts settlement_outbox по
+  state (pending/processing/done/failed), failed всего и за 24ч, backlog несеттленых старше
+  5 минут, последние ≤10 failed с last_error (обрезан до 200 символов, секретов в нём нет) и
+  лаг pricing-консьюмера ledger'а (max(ledger.id) против ledger_consumer_checkpoints + возраст
+  старейшей неподтверждённой строки). Растущий backlog/failed/unacked — сигнал «тихо застрявших»
+  денег, раньше видимый только в stderr.
   `/codex-subs` (per-home статус GPT/Codex-флота) отдаёт только OpenAI-runtime — на Anthropic-
   процессе codex не настроен и endpoint вернул бы `enabled:false`, поэтому Caddy шлёт этот путь
   в стабильный OpenAI origin, а не в engine balancer. `/gemini-subs` аналогично читается только со
@@ -101,7 +110,17 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   `GET /admin/finance/{overview,revenue,funnel,top-customers,cohorts,churn-signals}` и
   `GET /admin/refunds`. Суммы — integer nanoUSD-строки, агрегация на стороне PostgreSQL.
   Авторитет статуса возврата — `payments.status`; engine_adjustments (дебет движка по возврату)
-  пока наполняется не полностью. Без автообновления.
+  пока наполняется не полностью. Без автообновления. Внизу вкладки — здоровье денежных
+  пайплайнов: вердикт, карточки и последние сбои `GET /admin/pipeline-health` (кредиты движка,
+  вебхуки, почта, pricing-джобы) плюс settlement движка из `GET /settlement-health` (outbox
+  pending/backlog/failed, лаг pricing-consumer — отставание передачи расхода в коммерцию);
+  при verdict≠ok или settlement failed/backlog сводка показывает warn/bad баннер со ссылкой
+  на эту вкладку. Модалка «Кто тратит» (/spend-stats) показывает и таблицу «по моделям» —
+  top-20 served models активного окна со списанием, real-API эквивалентом и скидкой.
+- Pipeline health: `GET /admin/pipeline-health` за AdminGuard — read-only сводка сбоев денежных
+  пайплайнов (engine_credits/webhook_events/email_outbox/engine_pricing_jobs: counts по
+  статусам, dead, retry-backlog, последние сбои без payload, nano-сумма зависших кредитов) с
+  общим вердиктом ok/warn/bad; суммы — integer nanoUSD-строки.
 - B2B: одноразовые invite-ссылки с индивидуальной скидкой. Email необязателен: с email ссылка
   привязана к адресу и письмо атомарно ставится в durable outbox; без email панель создаёт
   shareable link и сразу копирует его. Активный инвайт можно повторно скопировать, отозвать или

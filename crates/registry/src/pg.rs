@@ -5,8 +5,9 @@
 
 use crate::{
     mask_proxy, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
+    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
+    LedgerConsumerLag, LedgerRow, PoolStateRow, SettlementFailure, SettlementHealth,
+    SpendAccountAgg, SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
     UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
@@ -1872,6 +1873,135 @@ impl PgStore {
                 real_nano: r.get(3),
             })
             .collect())
+    }
+
+    /// Top-`limit` моделей по charge за окно — тот же источник, что и spend_by_provider.
+    /// `model` — served id из ответа апстрима (по нему посчитан charge), см. lib.rs.
+    pub fn spend_by_model(&mut self, since_ts: i64, limit: i64) -> Result<Vec<SpendModelAgg>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT COALESCE(NULLIF(model,''),'(unknown)'), \
+                 COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*)::bigint, \
+                 COALESCE(SUM(charge_nano),0)::bigint, COALESCE(SUM(real_nano),0)::bigint \
+                 FROM usage_events WHERE ts>=$1 GROUP BY 1,2 \
+                 ORDER BY SUM(charge_nano) DESC, 1, 2 LIMIT $2",
+                &[&since_ts, &limit],
+            )?
+            .into_iter()
+            .map(|r| SpendModelAgg {
+                model: r.get(0),
+                provider: r.get(1),
+                requests: r.get(2),
+                charge_nano: r.get(3),
+                real_nano: r.get(4),
+            })
+            .collect())
+    }
+
+    /// Сводка settlement pipeline для панели: counts по state, failed всего/24ч, backlog
+    /// несеттленых старше `backlog_secs`, последние ≤10 failed (last_error урезан до 200
+    /// символов — внутри только invariant/SQLSTATE детали, без секретов) и лаг durable
+    /// ledger-консьюмера. Read-only, без транзакции: счётчики допускают мелкую гонку.
+    pub fn settlement_health(
+        &mut self,
+        backlog_secs: i64,
+        consumer: &str,
+    ) -> Result<SettlementHealth> {
+        let ts = now();
+        let backlog_before = ts - backlog_secs.max(0);
+        let failed_since = ts - 86_400;
+        let mut health = SettlementHealth::default();
+        for row in self.client.query(
+            "SELECT state, COUNT(*)::bigint FROM settlement_outbox GROUP BY state",
+            &[],
+        )? {
+            let state: String = row.get(0);
+            let count: i64 = row.get(1);
+            match state.as_str() {
+                "pending" => health.pending = count,
+                "processing" => health.processing = count,
+                "done" => health.done = count,
+                "failed" => health.failed = count,
+                _ => {}
+            }
+        }
+        health.failed_24h = self
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM settlement_outbox \
+                 WHERE state='failed' AND updated_ts>=$1",
+                &[&failed_since],
+            )?
+            .get(0);
+        health.pending_with_error = self
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM settlement_outbox \
+                 WHERE state='pending' AND last_error IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        health.backlog = self
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM settlement_outbox \
+                 WHERE state IN ('pending','processing') AND created_ts<$1",
+                &[&backlog_before],
+            )?
+            .get(0);
+        health.oldest_unsettled_ts = self
+            .client
+            .query_one(
+                "SELECT COALESCE(MIN(created_ts),0)::bigint FROM settlement_outbox \
+                 WHERE state IN ('pending','processing')",
+                &[],
+            )?
+            .get(0);
+        health.recent_failed = self
+            .client
+            .query(
+                "SELECT request_id, actual_nano, attempts, last_error, updated_ts \
+                 FROM settlement_outbox WHERE state='failed' \
+                 ORDER BY updated_ts DESC, request_id LIMIT 10",
+                &[],
+            )?
+            .into_iter()
+            .map(|r| {
+                let raw: Option<String> = r.get(3);
+                SettlementFailure {
+                    request_id: r.get(0),
+                    actual_nano: r.get(1),
+                    attempts: r.get(2),
+                    last_error: raw.map(|e| e.chars().take(200).collect()),
+                    updated_ts: r.get(4),
+                }
+            })
+            .collect();
+        let ledger_max_id: i64 = self
+            .client
+            .query_one("SELECT COALESCE(MAX(id),0)::bigint FROM ledger", &[])?
+            .get(0);
+        let lag_row = self.client.query_one(
+            "SELECT COUNT(*)::bigint, COALESCE(MIN(last_ledger_id),0)::bigint \
+             FROM ledger_consumer_checkpoints WHERE consumer=$1",
+            &[&consumer],
+        )?;
+        let unacked_row = self.client.query_one(
+            "SELECT COUNT(*)::bigint, COALESCE(MIN(l.ts),0)::bigint FROM ledger l \
+             JOIN ledger_consumer_checkpoints c ON c.account_id=l.account_id AND c.consumer=$1 \
+             WHERE l.id > c.last_ledger_id",
+            &[&consumer],
+        )?;
+        health.ledger_consumer = LedgerConsumerLag {
+            consumer: consumer.to_string(),
+            ledger_max_id,
+            checkpoints: lag_row.get(0),
+            checkpoint_min: lag_row.get(1),
+            unacked: unacked_row.get(0),
+            oldest_unacked_ts: unacked_row.get(1),
+        };
+        Ok(health)
     }
 
     pub fn usage_prune(&mut self, older_than_ts: i64) -> Result<usize> {
@@ -6069,6 +6199,121 @@ mod tests {
         assert_eq!(restored, 0);
         lock_holder
             .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// PostgreSQL contract of the panel health read. Skipped without a live database:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::postgres_settlement_health_contract`
+    #[test]
+    fn postgres_settlement_health_contract() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL settlement health contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,
+                 engine_instances,usage_events,ledger,api_keys,accounts,pool_state,subs
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        // Пустая БД: нули и отсутствие лага.
+        let empty = pg.settlement_health(300, "pricing").unwrap();
+        assert_eq!(empty.pending + empty.done + empty.failed + empty.backlog, 0);
+        assert_eq!(empty.ledger_consumer.checkpoints, 0);
+
+        pg.account_create("health-account", None, 2_000).unwrap();
+        pg.account_topup("health-account", 1_000_000, None).unwrap();
+        let ts = now();
+        let mut seed =
+            |request_id: &str, state: &str, error: Option<&str>, created: i64, updated: i64| {
+                // outbox ссылается на reservations(request_id) — сеем обе строки согласованно.
+                pg.client
+                    .execute(
+                        "INSERT INTO reservations(request_id,account_id,key,hold_nano,state, \
+                     balance_after_reserve_nano,owner_instance,owner_epoch,lease_until, \
+                     created_ts,updated_ts) \
+                     VALUES($1,'health-account','k',1000,'settled',0,'health-test',1,$2,$3,$4)",
+                        &[&request_id, &created, &created, &updated],
+                    )
+                    .unwrap();
+                pg.client
+                    .execute(
+                        "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,state, \
+                     attempts,next_attempt_ts,last_error,created_ts,updated_ts) \
+                     VALUES($1,1000,'settle',$2,3,0,$3,$4,$5)",
+                        &[&request_id, &state, &error, &created, &updated],
+                    )
+                    .unwrap();
+            };
+        seed("r-done", "done", None, ts - 100, ts - 90);
+        seed(
+            "r-pending-old",
+            "pending",
+            Some("transient"),
+            ts - 3600,
+            ts - 60,
+        );
+        seed(
+            "r-failed",
+            "failed",
+            Some(&"x".repeat(500)),
+            ts - 7200,
+            ts - 30,
+        );
+
+        let h = pg.settlement_health(300, "pricing").unwrap();
+        assert_eq!((h.pending, h.done, h.failed), (1, 1, 1));
+        assert_eq!(h.failed_24h, 1);
+        assert_eq!(h.pending_with_error, 1);
+        assert_eq!(h.backlog, 1);
+        assert_eq!(h.oldest_unsettled_ts, ts - 3600);
+        assert_eq!(h.recent_failed.len(), 1);
+        assert_eq!(
+            h.recent_failed[0]
+                .last_error
+                .as_deref()
+                .unwrap()
+                .chars()
+                .count(),
+            200,
+            "last_error урезан до 200 символов, как и в SQLite-twin"
+        );
+
+        // Watermark ниже max(ledger.id) → виден лаг и возраст старейшей неподтверждённой строки.
+        pg.ledger_ack("pricing", "health-account", 0).unwrap();
+        let h = pg.settlement_health(300, "pricing").unwrap();
+        let lag = &h.ledger_consumer;
+        assert_eq!(lag.checkpoints, 1);
+        assert_eq!(lag.checkpoint_min, 0);
+        assert!(lag.ledger_max_id > 0);
+        assert_eq!(lag.unacked, 1, "topup-строка выше watermark'а");
+        assert!(lag.oldest_unacked_ts > 0);
+
+        pg.client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],

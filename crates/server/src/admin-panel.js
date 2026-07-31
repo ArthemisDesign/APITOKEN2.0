@@ -51,6 +51,8 @@ const card=(label,value,hint,clickable)=>'<div class="card'+(clickable?' clickab
 const empty=columns=>'<tr><td colspan="'+columns+'" class="empty">данных нет</td></tr>';
 const duration=seconds=>{seconds=Math.max(0,Number(seconds)||0);const days=seconds/86400|0,hours=(seconds%86400)/3600|0,minutes=(seconds%3600)/60|0;
   return days?days+'д '+hours+'ч':hours?hours+'ч '+minutes+'м':minutes+'м'};
+// Возраст по готовым секундам из *_age_seconds/*_age_secs ответов бэкендов: null → тире.
+const ageText=seconds=>seconds==null?'—':duration(seconds);
 const ratio=value=>value==null?'∞':'×'+Number(value).toLocaleString('en-US',{maximumFractionDigits:Number(value)<10?1:0});
 // Русская плюрализация: plural(1,'подписка','подписки','подписок').
 const plural=(n,one,few,many)=>{const a=Math.abs(n)%100,b=a%10;return a>10&&a<20?many:b>1&&b<5?few:b===1?one:many};
@@ -79,7 +81,8 @@ const sourceName=path=>({
   '/admin/finance/overview':'Финансовая сводка','/admin/finance/revenue':'Выручка по дням','/admin/finance/funnel':'Воронка чекаутов',
   '/admin/finance/top-customers':'Топ клиентов','/admin/refunds':'Возвраты','/admin/finance/cohorts':'Когорты','/admin/finance/churn-signals':'Сигналы оттока',
   '/openkeys-admin/keys':'Ключи OpenKeys',
-  '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
+  '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода',
+  '/admin/pipeline-health':'Здоровье пайплайнов','/settlement-health':'Settlement движка'
 })[path.split('?')[0]]||path.split('?')[0];
 function renderFailures(){errorCenter.innerHTML=[...failures.entries()].filter(([,failure])=>!failure.dismissed).map(([key,failure])=>
   '<section class="error-note" role="alert"><span class="dot bad"></span><div><b>'+esc(sourceName(key))+' временно недоступен</b><p>'+esc(failure.message)+
@@ -117,14 +120,25 @@ const savedTheme=localStorage.getItem('admin-theme');
 document.documentElement.dataset.theme=savedTheme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
 
 /* ── Сводка ──────────────────────────────────────────────── */
-async function dashboard(){const [data,engine,partners]=await Promise.all([
-    api('/admin/dashboard').catch(()=>null),api('/overview').catch(()=>null),api('/partner-admin/overview').catch(()=>null)
+async function dashboard(){const [data,engine,partners,pipes,settle]=await Promise.all([
+    api('/admin/dashboard').catch(()=>null),api('/overview').catch(()=>null),api('/partner-admin/overview').catch(()=>null),
+    api('/admin/pipeline-health').catch(()=>null),api('/settlement-health').catch(()=>null)
   ]),u=data?.users||{},t=data?.topups||{},p=data?.platform||{};
   const engineAccounts=engine?.accounts||[],crm=engineAccounts.find(account=>String(account.handle||'').toLowerCase()==='crm-parsing');
   const degraded=!data||p.engine_error||!engine||!partners||!crm,state=degraded?'warn':'ok';
+  // Денежные пайплайны: warn/bad баннер-строка в начале сводки, клик ведёт на #finance.
+  // Источники деградируют молча (null → без баннера), как соседние контуры.
+  const moneyReasons=[];let moneyKind='';
+  if(pipes&&pipes.verdict&&pipes.verdict!=='ok'){moneyKind=pipes.verdict==='bad'?'bad':'warn';moneyReasons.push(...(pipes.verdict_reasons||[]))}
+  if(settle){const out=settle.outbox||{};
+    if((out.failed_24h||0)>0){moneyKind='bad';moneyReasons.push('settlement: '+out.failed_24h+' failed за 24ч')}
+    if((out.backlog||0)>0){moneyKind=moneyKind||'warn';moneyReasons.push('settlement: backlog '+out.backlog)}}
+  const moneyBanner=moneyKind?'<a class="banner '+moneyKind+'" href="#finance" style="text-decoration:none;color:inherit"><span class="dot '+moneyKind+'"></span><div><b>Проблема в денежных пайплайнах</b>'+
+    '<span class="muted">'+(moneyReasons.length?moneyReasons.map(esc).join(' · ')+' · ':'')+'разбор — вкладка «Финансы»</span></div></a>':'';
   const body='<div class="banner '+state+'"><span class="dot'+(degraded?' warn':'')+'"></span><div><b>'+(degraded?'Есть контуры, требующие внимания':'Все административные контуры доступны')+
     '</b><span class="muted">обновлено '+date(data?.generated_at,true)+' · сессий '+(p.active_sessions??'—')+' · engine errors '+(p.engine_error??'—')+
     ' · CRM '+(crm?esc(crm.status):'account missing')+'</span></div></div>'+
+    moneyBanner+
     '<div class="sect"><h2>Аккаунты по контурам</h2><span class="sect-sub">commerce · engine · partners · CRM</span></div><div class="cards">'+
     card('commerce accounts',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
     card('engine accounts',engine?engineAccounts.length:'—',engine?engineAccounts.filter(account=>account.status==='active').length+' active':'источник недоступен')+
@@ -385,6 +399,8 @@ async function spendStats(){let data,okDir;
     const providerLabel=name=>name==='openai'?'OpenAI (Codex)':name==='anthropic'?'Claude (подписки)':name;
     const providerRows=(period.providers||[]).map(item=>'<tr><td class="left"><b>'+esc(providerLabel(item.provider))+'</b></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
+    const modelRows=(period.models||[]).map(item=>'<tr><td class="left"><b>'+esc(item.model)+'</b></td><td class="left">'+esc(providerLabel(item.provider))+'</td><td>'+item.requests+
+      '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
     const rows=(period.accounts||[]).map(item=>'<tr><td class="left"><b>'+esc(displayName(item.handle))+'</b>'+okBadge(item.handle)+'<div class="sub mono">'+esc(item.handle&&displayName(item.handle)!==item.handle?item.handle:item.account)+'</div>'+okInfo(okDir,item.account)+'</td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td><td>'+ago(item.last_ts*1000)+'</td></tr>').join('');
     // Отдельная сводка по OpenKeys: у портала своя экономика, и смешивать её
@@ -398,6 +414,8 @@ async function spendStats(){let data,okDir;
       card('OpenKeys',money(okReal),ok.length+' ключей · '+okRequests+' запросов · списано '+money(okCharge))+'</div>'+
       '<div class="sect"><h2>По провайдерам</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">провайдер</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th></tr></thead><tbody>'+
       (providerRows||empty(5))+'</tbody></table></div></div>'+
+      '<div class="sect"><h2>По моделям</h2><span class="sect-sub">top-20 по списанию за активное окно</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">модель</th><th class="left">провайдер</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th></tr></thead><tbody>'+
+      (modelRows||empty(6))+'</tbody></table></div></div>'+
       '<div class="sect"><h2>По аккаунтам</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th><th>активность</th></tr></thead><tbody>'+
       (rows||empty(6))+'</tbody></table></div></div>'};
   overlay.innerHTML='<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="spend-title"><h3 id="spend-title">Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент провайдера · топ-50 за окно</p>'+
@@ -583,14 +601,16 @@ const tierName=key=>key==='b2b'?'B2B':({'b2c_tier_0':'Starter','b2c_tier_1':'Bui
 const plainBar=percent=>{percent=Math.min(100,Math.max(0,Math.round(Number(percent)||0)));
   return '<span class="bar"><i style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'};
 async function finance(){
-  const [overview,revenue,funnelData,top,refunds,cohortsData,churn]=await Promise.all([
+  const [overview,revenue,funnelData,top,refunds,cohortsData,churn,pipes,settle]=await Promise.all([
     api('/admin/finance/overview').catch(()=>null),
     api('/admin/finance/revenue?days='+financeWindow).catch(()=>null),
     api('/admin/finance/funnel?days=30').catch(()=>null),
     api('/admin/finance/top-customers?days=30&limit=20').catch(()=>null),
     api('/admin/refunds?limit='+refundPage.limit+'&offset='+refundPage.offset).catch(()=>null),
     api('/admin/finance/cohorts?weeks=8').catch(()=>null),
-    api('/admin/finance/churn-signals?days=14').catch(()=>null)
+    api('/admin/finance/churn-signals?days=14').catch(()=>null),
+    api('/admin/pipeline-health').catch(()=>null),
+    api('/settlement-health').catch(()=>null)
   ]);
   if(refunds&&refundPage.offset>=refunds.total&&refunds.total>0){refundPage.offset=Math.max(0,Math.floor((refunds.total-1)/refundPage.limit)*refundPage.limit);return finance()}
   const tabs='<div class="spend-tabs">'+financeWindows.map(item=>'<button type="button" class="btn'+(financeWindow===item[0]?' on':'')+'" data-finance-window="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>';
@@ -650,10 +670,45 @@ async function finance(){
   let churnBlock='';
   if(churn){const churnRows=(churn.rows||[]).map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td><td>'+ago(item.last_seen_at)+'</td><td>'+date(item.last_paid_at)+'</td><td>'+money(item.spent_30d_usd)+'</td></tr>').join('');
     churnBlock='<div class="sect"><h2>Сигналы оттока</h2><span class="sect-sub">платившие клиенты без сессий и расхода 14 дней</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>был(а)</th><th>последняя оплата</th><th>расход 30д</th></tr></thead><tbody>'+(churnRows||empty(4))+'</tbody></table></div></div>'}
+  // Здоровье денежных пайплайнов (commerce /admin/pipeline-health): вердикт баннером, четыре
+  // карточки и компактные таблицы последних сбоев. last_error обрезан CSS (.json), полный
+  // текст — в title, как в аудите. Таблицы рендерятся только при наличии строк.
+  let pipelineBlock='';
+  if(!pipes)pipelineBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Здоровье пайплайнов недоступно</b><span class="muted">/admin/pipeline-health не отвечает</span></div></div>';
+  else{const credits=pipes.engine_credits||{},cc=credits.counts_by_status||{},webhooks=pipes.webhook_events||{},email=pipes.email_outbox||{},jobs=pipes.engine_pricing_jobs||{},jc=jobs.counts_by_status||{};
+    const kind=pipes.verdict==='bad'?'bad':pipes.verdict==='warn'?'warn':'ok',reasons=(pipes.verdict_reasons||[]).map(esc).join(' · ');
+    const errCell=value=>'<td class="left"><div class="json" title="'+esc(value||'')+'">'+esc(value||'—')+'</div></td>';
+    const webhookRows=(webhooks.recent_failures||[]).map(item=>'<tr><td class="left"><b>'+esc(item.provider)+'</b><div class="sub mono">'+esc(item.event_type)+'</div></td><td>'+(item.attempts??'—')+'</td><td>'+date(item.received_at,true)+'</td>'+errCell(item.last_error)+'</tr>').join('');
+    const emailRows=(email.recent_failures||[]).map(item=>'<tr><td class="left"><b>'+esc(item.template)+'</b></td><td>'+(item.attempts??'—')+'</td>'+errCell(item.last_error)+'</tr>').join('');
+    const jobRows=(jobs.recent_errors||[]).map(item=>'<tr><td class="left"><b>'+esc(item.reason)+'</b><div class="sub mono">'+esc(item.user_id)+' · '+esc(item.engine_account_id)+'</div></td><td>'+pill(item.status||'—',item.status==='retry'?'warn':'bad')+'</td><td>'+(item.attempts??'—')+'</td>'+errCell(item.last_error)+'</tr>').join('');
+    pipelineBlock='<div class="banner '+kind+'"><span class="dot'+(kind==='ok'?'':' '+kind)+'"></span><div><b>'+(kind==='ok'?'Денежные пайплайны в порядке':kind==='bad'?'Денежные пайплайны: есть сбои':'Денежные пайплайны: требуют внимания')+'</b>'+
+      '<span class="muted">'+(reasons||'dead-кредитов, свежих failed-вебхуков и retry-очередей нет')+'</span></div></div>'+
+      '<div class="cards">'+
+      card('кредиты движка',credits.stuck_nano!=null?nanoMoney(credits.stuck_nano):'—','застряло в пути · pending '+(cc.pending??0)+' · retry '+(cc.retry??0)+' · dead '+(credits.dead_count??0)+' · старейший '+ageText(credits.oldest_unconfirmed_age_seconds))+
+      card('вебхуки',webhooks.failed_24h??'—','failed за 24ч · всего failed '+(webhooks.failed_total??'—'))+
+      card('почта',email.failed_total??'—','терминально недоставленные письма')+
+      card('pricing-джобы',jobs.retry_count??'—','retry · pending '+(jc.pending??0)+' · processing '+(jc.processing??0)+' · confirmed '+(jc.confirmed??0)+' · старейшая '+ageText(jobs.oldest_unconfirmed_age_seconds))+'</div>'+
+      (webhookRows?'<div class="sect"><h2>Последние сбои вебхуков</h2><span class="sect-sub">failed всего '+(webhooks.failed_total??'—')+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">провайдер</th><th>попытки</th><th>получен</th><th class="left">ошибка</th></tr></thead><tbody>'+webhookRows+'</tbody></table></div></div>':'')+
+      (emailRows?'<div class="sect"><h2>Недоставленная почта</h2><span class="sect-sub">последние '+(email.recent_failures||[]).length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">шаблон</th><th>попытки</th><th class="left">ошибка</th></tr></thead><tbody>'+emailRows+'</tbody></table></div></div>':'')+
+      (jobRows?'<div class="sect"><h2>Ошибки pricing-джоб</h2><span class="sect-sub">последние '+(jobs.recent_errors||[]).length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">причина</th><th>статус</th><th>попытки</th><th class="left">ошибка</th></tr></thead><tbody>'+jobRows+'</tbody></table></div></div>':'')}
+  // Settlement движка (/settlement-health): outbox расчётов с провайдерами и лаг
+  // pricing-consumer — отставание передачи расхода из engine ledger в коммерцию.
+  let settlementBlock='';
+  if(!settle)settlementBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Settlement движка недоступен</b><span class="muted">/settlement-health не отвечает</span></div></div>';
+  else{const out=settle.outbox||{},lag=settle.pricing_consumer||{};
+    const failedRows=(out.recent_failed||[]).map(item=>'<tr><td class="left mono">'+esc(item.request_id)+'</td><td><b>'+money(item.actual_usd)+'</b></td><td>'+(item.attempts??'—')+'</td><td>'+ago(item.updated_ts*1000)+'</td><td class="left"><div class="json" title="'+esc(item.last_error||'')+'">'+esc(item.last_error||'—')+'</div></td></tr>').join('');
+    settlementBlock='<div class="cards">'+
+      card('settlement outbox',out.pending??'—','pending · backlog '+(out.backlog??0)+' · failed 24ч '+(out.failed_24h??0)+' · всего failed '+(out.failed??0)+' · с ошибкой '+(out.pending_with_error??0))+
+      card('backlog settlement',out.backlog??'—','несеттленых старше '+duration(settle.backlog_threshold_secs)+' · старейшая ждёт '+ageText(out.oldest_unsettled_age_secs))+
+      card('лаг pricing-consumer',lag.unacked??'—','отставание передачи расхода в коммерцию · старейшая ждёт '+ageText(lag.oldest_unacked_age_secs))+
+      card('settlement failed',out.failed_24h??'—','failed за 24ч · всего '+(out.failed??0)+' · done '+(out.done??0))+'</div>'+
+      (failedRows?'<div class="tcard" style="margin-top:12px"><div class="tscroll"><table><thead><tr><th class="left">request id</th><th>сумма</th><th>попытки</th><th>обновлено</th><th class="left">ошибка</th></tr></thead><tbody>'+failedRows+'</tbody></table></div></div>':'')}
   const body=overviewBlock+
     '<div class="sect"><h2>Выручка</h2><span class="sect-sub">paid-платежи по дате оплаты</span></div>'+tabs+chartBlock+
     '<div class="sect"><h2>Воронка чекаутов</h2><span class="sect-sub">30 дней · от создания до оплаты</span></div>'+funnelBlock+
     topBlock+refundsBlock+cohortsBlock+churnBlock+
+    '<div class="sect"><h2>Здоровье пайплайнов</h2><span class="sect-sub">commerce: кредиты движка · вебхуки · почта · pricing-джобы</span></div>'+pipelineBlock+
+    '<div class="sect"><h2>Settlement движка</h2><span class="sect-sub">outbox расчётов и лаг передачи расхода в коммерцию</span></div>'+settlementBlock+
     '<footer>Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Выручка — только подтверждённые платежи (prepay, подписок-продуктов нет). Возвраты: авторитет статуса — payments; движковый дебет по возвратам (engine_adjustments) пока наполняется не полностью. ARPU — выручка на активного за 30д, ARPPU — на платящего.</footer>';
   shell('Финансы','prepay-метрики: выручка, воронка, клиенты и возвраты',body,pill(overview?money(ov.revenue_30d_usd)+' / 30д':'degraded',overview?'ok':'warn'));bindFinance()}
 function bindFinance(){document.querySelectorAll('[data-finance-window]').forEach(button=>button.onclick=()=>{financeWindow=Number(button.dataset.financeWindow)||30;refresh({force:true})});

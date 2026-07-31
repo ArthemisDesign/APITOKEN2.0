@@ -49,6 +49,10 @@ static OVERVIEW_CACHE: DashCache = std::sync::OnceLock::new();
 /// /spend-stats сканирует usage_events за 30 дней — TTL длиннее дашбордного.
 const SPEND_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 static SPEND_CACHE: DashCache = std::sync::OnceLock::new();
+/// Порог backlog для /settlement-health: несеттленая строка outbox старше 5 минут — уже аномалия
+/// (штатный settle синхронен, ретраи идут с backoff в секундах).
+const SETTLEMENT_BACKLOG_SECS: i64 = 300;
+static SETTLEMENT_CACHE: DashCache = std::sync::OnceLock::new();
 static CAPACITY_CACHE: DashCache = std::sync::OnceLock::new();
 static SUBS_CACHE: DashCache = std::sync::OnceLock::new();
 /// Планируемый срок жизни подписки — ровно N дней от добавления токена (`added_ts`). Это НЕ срок
@@ -321,6 +325,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/capacity", get(capacity))
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
+            .route("/settlement-health", get(settlement_health))
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
@@ -349,6 +354,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/capacity", get(capacity))
             .route("/overview", get(overview))
             .route("/spend-stats", get(spend_stats))
+            .route("/settlement-health", get(settlement_health))
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
@@ -1814,6 +1820,32 @@ async fn spend_stats(
                     .into_response();
             }
         };
+        // Top-20 моделей по charge из того же usage_events, что и providers[]. `model` там —
+        // served id из ответа апстрима, по которому реально посчитан charge (фолбэк — модель
+        // запроса): разбивка отражает фактический прайсинг, а не клиентский алиас/`-latest`.
+        // Группировка по (model, provider): один model ID могут обслуживать разные апстримы.
+        let models: Vec<_> = match b.spend_by_model(now - secs, 20).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| {
+                    json!({
+                        "model": row.model,
+                        "provider": row.provider,
+                        "requests": row.requests,
+                        "charge_usd": r2(row.charge_nano),
+                        "real_usd": r2(row.real_nano),
+                    })
+                })
+                .collect(),
+            Err(error) => {
+                eprintln!("billing model spend query failed: {error:#}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error": "billing authority unavailable"})),
+                )
+                    .into_response();
+            }
+        };
         periods.insert(
             key.into(),
             json!({
@@ -1822,11 +1854,116 @@ async fn spend_stats(
                 "requests": requests_total,
                 "accounts": accounts,
                 "providers": providers,
+                "models": models,
             }),
         );
     }
     let v = json!({"now": now, "periods": periods});
     cache_put(&SPEND_CACHE, &v);
+    Json(v).into_response()
+}
+
+/// Здоровье settlement pipeline — «тихие деньги»: зависшие/битые settle и лаг pricing-воркера
+/// коммерции раньше были видны только в stderr. Гейт — control-ключ (денежная диагностика,
+/// как /overview и /spend-stats). Ответ:
+///   outbox.pending/processing/done/failed — counts по state (реально пишутся pending/done/failed;
+///     'processing' объявлен в CHECK миграции 0001/0004, но ни один writer его пока не ставит);
+///   outbox.failed_24h — failed с updated_ts за последние 24ч;
+///   outbox.pending_with_error — ретраи в полёте (state='pending' с last_error): на PostgreSQL это
+///     transient-ошибки до исчерпания классификатора, permanent уходят в 'failed';
+///   outbox.backlog — несеттленые (pending|processing) старше SETTLEMENT_BACKLOG_SECS;
+///   outbox.oldest_unsettled_ts/_age_secs — возраст старейшей несеттленой строки (null, если нет);
+///   outbox.recent_failed — последние ≤10 failed: request_id, actual_usd, attempts, last_error,
+///     updated_ts. last_error обрезан до 200 символов в registry: там только внутренние
+///     invariant/SQLSTATE детали (request_id, суммы, имена constraint'ов) — токенов подписок и
+///     API-ключей в settle-пути нет, обрезка страхует от раздутого PG-trace;
+///   pricing_consumer — лаг durable-консьюмера ledger'а: ledger_max_id против watermark'ов
+///     ledger_consumer_checkpoints (consumer='pricing', тот же, что ack-ит коммерция через
+///     /admin/account/{id}/ledger/ack), unacked — строки ledger с id > watermark'а своего аккаунта,
+///     oldest_unacked_ts/_age_secs — возраст старейшей из них. Растущий unacked = коммерция не
+///     дочитывает списания, а ledger_prune стоит (не удаляет неподтверждённое).
+async fn settlement_health(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(b) = &app.billing else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "billing authority unavailable"})),
+        )
+            .into_response();
+    };
+    if let Some(v) = cache_get(&SETTLEMENT_CACHE) {
+        return Json(v).into_response();
+    }
+    let h = match b
+        .settlement_health(SETTLEMENT_BACKLOG_SECS, "pricing")
+        .await
+    {
+        Ok(h) => h,
+        Err(error) => {
+            eprintln!("billing settlement health query failed: {error:#}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
+            )
+                .into_response();
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let r2 = |nano: i64| (nano as f64 / 1e9 * 100.0).round() / 100.0;
+    let age = |ts: i64| {
+        if ts > 0 {
+            json!((now - ts).max(0))
+        } else {
+            json!(null)
+        }
+    };
+    let lag = &h.ledger_consumer;
+    let v = json!({
+        "now": now,
+        "backlog_threshold_secs": SETTLEMENT_BACKLOG_SECS,
+        "outbox": {
+            "pending": h.pending,
+            "processing": h.processing,
+            "done": h.done,
+            "failed": h.failed,
+            "failed_24h": h.failed_24h,
+            "pending_with_error": h.pending_with_error,
+            "backlog": h.backlog,
+            "oldest_unsettled_ts": h.oldest_unsettled_ts,
+            "oldest_unsettled_age_secs": age(h.oldest_unsettled_ts),
+            "recent_failed": h.recent_failed.iter().map(|f| json!({
+                "request_id": f.request_id,
+                "actual_usd": r2(f.actual_nano),
+                "attempts": f.attempts,
+                "last_error": f.last_error,
+                "updated_ts": f.updated_ts,
+            })).collect::<Vec<_>>(),
+        },
+        "pricing_consumer": {
+            "consumer": lag.consumer,
+            "ledger_max_id": lag.ledger_max_id,
+            "checkpoints": lag.checkpoints,
+            "checkpoint_min": lag.checkpoint_min,
+            "unacked": lag.unacked,
+            "oldest_unacked_ts": lag.oldest_unacked_ts,
+            "oldest_unacked_age_secs": age(lag.oldest_unacked_ts),
+        },
+    });
+    cache_put(&SETTLEMENT_CACHE, &v);
     Json(v).into_response()
 }
 
@@ -3735,6 +3872,7 @@ mod tests {
             "/admin/finance/cohorts",
             "/admin/finance/churn-signals",
             "/admin/refunds",
+            "/admin/pipeline-health",
             "/balance-adjustments",
             "/sessions/revoke",
             "/totp/reset",
@@ -3745,6 +3883,7 @@ mod tests {
             "/fleet-history",
             "/codex-subs",
             "/gemini-subs",
+            "/settlement-health",
         ] {
             assert!(
                 panel_source.contains(route),
@@ -3975,6 +4114,145 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["series"], json!([]));
         assert!(!body.to_string().contains("alpha@example.com"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AppState с настоящим SQLite-биллингом в tempdir — для /spend-stats и /settlement-health
+    /// (AsyncBilling::start сам поднимает writer + reader на том же файле, WAL делит чтения).
+    fn billing_test_app(tag: &str) -> (AppState, std::path::PathBuf) {
+        let mut app = admin_auth_test_app();
+        let dir = std::env::temp_dir().join(format!("billing_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("data.db");
+        let billing = forward::AsyncBilling::start(db.to_string_lossy().into_owned(), 1).unwrap();
+        app.billing = Some(Arc::new(billing));
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn settlement_health_enforces_control_key_and_reports_pipeline() {
+        let (app, dir) = billing_test_app("settlement");
+        // Сеем outbox напрямую: свежий failed с длинным last_error + старый pending (backlog).
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        let ts = pool::now();
+        conn.execute(
+            "INSERT INTO billing_settlement_outbox(request_id,actual_nano,state,attempts, \
+             next_attempt_ts,last_error,created_ts,updated_ts) \
+             VALUES('r-failed',1500000000,'failed',5,0,?1,?2,?3)",
+            rusqlite::params!["x".repeat(500), ts - 7200, ts - 30],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO billing_settlement_outbox(request_id,actual_nano,state,attempts, \
+             next_attempt_ts,last_error,created_ts,updated_ts) \
+             VALUES('r-stuck',1000,'pending',3,0,'transient pg error',?1,?2)",
+            rusqlite::params![ts - 3600, ts - 60],
+        )
+        .unwrap();
+        drop(conn);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        // Денежная диагностика → гейт control, read-only panel-ключ не подходит.
+        for (credential, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("panel-key"), StatusCode::UNAUTHORIZED),
+            (Some("control-key"), StatusCode::OK),
+            (Some("admin-key"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder()
+                .uri("/settlement-health")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            if let Some(key) = credential {
+                request
+                    .headers_mut()
+                    .insert("x-api-key", key.parse().unwrap());
+            }
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected, "credential {credential:?}");
+        }
+        let mut request = Request::builder()
+            .uri("/settlement-health")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert!(body["now"].as_i64().unwrap() > 0);
+        assert_eq!(body["backlog_threshold_secs"], 300);
+        let outbox = &body["outbox"];
+        assert_eq!(outbox["failed"], 1);
+        assert_eq!(outbox["failed_24h"], 1);
+        assert_eq!(outbox["pending"], 1);
+        assert_eq!(outbox["pending_with_error"], 1);
+        assert_eq!(outbox["backlog"], 1, "старый pending старше порога");
+        assert!(outbox["oldest_unsettled_age_secs"].as_i64().unwrap() >= 3000);
+        let failed = outbox["recent_failed"].as_array().unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["request_id"], "r-failed");
+        assert_eq!(failed[0]["actual_usd"], 1.5);
+        assert_eq!(failed[0]["attempts"], 5);
+        assert_eq!(
+            failed[0]["last_error"].as_str().unwrap().chars().count(),
+            200,
+            "last_error урезан до 200 символов"
+        );
+        let consumer = &body["pricing_consumer"];
+        assert_eq!(consumer["consumer"], "pricing");
+        for field in [
+            "ledger_max_id",
+            "checkpoints",
+            "checkpoint_min",
+            "unacked",
+            "oldest_unacked_ts",
+        ] {
+            assert!(consumer.get(field).is_some(), "нет поля {field}");
+        }
+        assert_eq!(consumer["checkpoints"], 0, "консьюмер ещё не ack-ал");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn spend_stats_includes_served_model_breakdown() {
+        let (app, dir) = billing_test_app("spend");
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        registry::account_create(&conn, "acct", None, 2000).unwrap();
+        let usage = registry::UsageEventInput {
+            model: "claude-opus-5".into(),
+            real_nano: 100_000_000,
+            ..Default::default()
+        };
+        registry::usage_event_add(&conn, "acct", None, &usage, 50_000_000, Some("r1")).unwrap();
+        registry::usage_event_add(&conn, "acct", None, &usage, 25_000_000, Some("r2")).unwrap();
+        drop(conn);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/spend-stats")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let d1 = &body["periods"]["d1"];
+        let models = d1["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["model"], "claude-opus-5");
+        assert_eq!(models[0]["provider"], "anthropic");
+        assert_eq!(models[0]["requests"], 2);
+        assert_eq!(models[0]["charge_usd"], 0.08); // (50M+25M) nano → $0.075 → 0.08
+        assert_eq!(models[0]["real_usd"], 0.2);
+        // accounts/providers не потерялись рядом с новой разбивкой.
+        assert_eq!(d1["accounts"].as_array().unwrap().len(), 1);
+        assert_eq!(d1["providers"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
