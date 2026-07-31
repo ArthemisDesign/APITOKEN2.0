@@ -13,6 +13,7 @@ import {
   type IntegrationTool,
 } from "./integration-builder-data";
 import { HighlightedCode } from "./highlighted-code";
+import { Prose } from "./prose";
 
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
@@ -143,7 +144,7 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
         <header className="ib-guide-head">
           <div>
             <h4>{guide.title}</h4>
-            <p>{guide.summary}</p>
+            <p><Prose text={guide.summary} /></p>
             <ul className="ib-chips" aria-label={tr(language, "Current configuration", "Текущая конфигурация")}>
               <li><span className={`ib-icon p-${provider}`} aria-hidden="true" />{activeProvider.name}</li>
               <li><span className={`ib-icon t-${tool}`} aria-hidden="true" />{activeTool.name}</li>
@@ -157,7 +158,7 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
           <span>Endpoint</span><code>{guide.endpoint}</code>
           <button type="button" onClick={copyEndpoint}><CopyIcon copied={copiedEndpoint} />{copiedEndpoint ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button>
         </div>
-        {guide.requirement && <p className="ib-callout"><InfoIcon />{guide.requirement}</p>}
+        {guide.requirement && <p className="ib-callout"><InfoIcon /><Prose text={guide.requirement} /></p>}
 
         <ol className="ib-steps">
           {guide.steps.map((step, index) => <li key={`${tool}-${provider}-${os}-${index}`}>
@@ -165,7 +166,7 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
               <span aria-hidden="true">{index + 1}</span>
               <h5>{step.title}</h5>
             </div>
-            <p>{step.text}</p>
+            <p><Prose text={step.text} /></p>
             <div className="ib-code">
               <div className="ib-code-bar"><i className="ib-dots" aria-hidden="true" /><span>{step.codeLabel}</span><button type="button" onClick={() => copyStep(index, step.code)}><CopyIcon copied={copiedStep === index} />{copiedStep === index ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button></div>
               <pre><code><HighlightedCode code={step.code} /></code></pre>

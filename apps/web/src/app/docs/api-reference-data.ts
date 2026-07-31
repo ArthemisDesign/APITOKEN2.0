@@ -164,8 +164,8 @@ export function buildApiGuide({
     {
       title: localize(language, "Store the key in the environment", "Сохраните ключ в окружении"),
       text: localize(language,
-        "Keep the key server-side: an environment variable or a secret manager, never a browser bundle. On Windows PowerShell use $env:APITOKEN_API_KEY instead.",
-        "Держите ключ на сервере: переменная окружения или менеджер секретов, не браузерный bundle. В Windows PowerShell используйте $env:APITOKEN_API_KEY."),
+        "Keep the key server-side: an environment variable or a secret manager, never a browser bundle. On Windows PowerShell use `$env:APITOKEN_API_KEY` instead.",
+        "Держите ключ на сервере: переменная окружения или менеджер секретов, не браузерный bundle. В Windows PowerShell используйте `$env:APITOKEN_API_KEY`."),
       code: `export APITOKEN_API_KEY="${keyPlaceholder}"`,
       codeLabel: localize(language, "Terminal", "Терминал"),
     },
@@ -175,8 +175,8 @@ export function buildApiGuide({
   steps.push({
     title: localize(language, "Send the first request", "Отправьте первый запрос"),
     text: localize(language,
-      `Every available ${providerName} model answers on this route. Discover the current list with GET /models instead of hardcoding IDs.`,
-      `Все доступные модели ${providerName} отвечают на этом маршруте. Актуальный список получайте через GET /models, а не зашивайте ID в код.`),
+      `Every available ${providerName} model answers on this route. Discover the current list with \`GET /models\` instead of hardcoding IDs.`,
+      `Все доступные модели ${providerName} отвечают на этом маршруте. Актуальный список получайте через \`GET /models\`, а не зашивайте ID в код.`),
     code: requestCode(provider, apiLanguage, model.id),
     codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
   });
@@ -185,11 +185,11 @@ export function buildApiGuide({
     title: `${providerName} API · ${languageName}`,
     summary: provider === "anthropic"
       ? localize(language,
-        "Anthropic Messages API with your sk-pool key in x-api-key. SDKs add anthropic-version automatically.",
-        "Anthropic Messages API с ключом sk-pool в x-api-key. SDK добавляют anthropic-version автоматически.")
+        "Anthropic Messages API with your sk-pool key in `x-api-key`. SDKs add `anthropic-version` automatically.",
+        "Anthropic Messages API с ключом sk-pool в `x-api-key`. SDK добавляют `anthropic-version` автоматически.")
       : localize(language,
-        "OpenAI-compatible Responses API with the same sk-pool key as Authorization: Bearer.",
-        "OpenAI-совместимый Responses API с тем же ключом sk-pool в Authorization: Bearer."),
+        "OpenAI-compatible Responses API with the same sk-pool key as `Authorization: Bearer`.",
+        "OpenAI-совместимый Responses API с тем же ключом sk-pool в `Authorization: Bearer`."),
     endpoint: endpointFor(provider),
     auth: authFor(provider),
     steps,

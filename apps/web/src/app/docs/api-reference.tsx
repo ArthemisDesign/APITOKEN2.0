@@ -6,6 +6,7 @@ import { localeHref } from "@/lib/locale-routes";
 import type { IntegrationLanguage, IntegrationProvider } from "./integration-builder-data";
 import { buildApiGuide, type ApiLanguage } from "./api-reference-data";
 import { HighlightedCode } from "./highlighted-code";
+import { Prose } from "./prose";
 
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
@@ -65,7 +66,7 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
     <section className="ib-guide" aria-live="polite">
       <header className="ib-guide-head">
         <h4>{guide.title}</h4>
-        <p>{guide.summary}</p>
+        <p><Prose text={guide.summary} /></p>
         <ul className="ib-chips" aria-label={tr(language, "Current configuration", "Текущая конфигурация")}>
           <li><span className={`ib-icon p-${provider}`} aria-hidden="true" />{activeProvider.name}</li>
           <li className="ib-chip-model">{guide.auth}</li>
@@ -83,7 +84,7 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
             <span aria-hidden="true">{index + 1}</span>
             <h5>{step.title}</h5>
           </div>
-          <p>{step.text}</p>
+          <p><Prose text={step.text} /></p>
           <div className="ib-code">
             <div className="ib-code-bar"><i className="ib-dots" aria-hidden="true" /><span>{step.codeLabel}</span><button type="button" onClick={() => copyStep(index, step.code)}><CopyIcon copied={copiedStep === index} />{copiedStep === index ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button></div>
             <pre><code><HighlightedCode code={step.code} /></code></pre>

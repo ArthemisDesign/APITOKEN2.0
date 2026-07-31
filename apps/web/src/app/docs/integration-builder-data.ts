@@ -143,7 +143,7 @@ env_key = "APITOKEN_API_KEY"`;
     steps: [
       {
         title: localize(language, "Create a separate profile", "Создайте отдельный профиль"),
-        text: localize(language, `Save this as ${path}. Your normal Codex login and default config stay untouched.`, `Сохраните как ${path}. Обычный логин и основной config Codex не изменятся.`),
+        text: localize(language, `Save this as \`${path}\`. Your normal Codex login and default config stay untouched.`, `Сохраните как \`${path}\`. Обычный логин и основной config Codex не изменятся.`),
         code: profile,
         codeLabel: path,
       },
@@ -195,7 +195,7 @@ function openCodeGuide(provider: IntegrationProvider, model: IntegrationModel, o
     steps: [
       {
         title: localize(language, "Add the provider", "Добавьте провайдера"),
-        text: localize(language, `Save the configuration as ${path}. The key remains an environment reference, not a value in JSON.`, `Сохраните конфигурацию как ${path}. В JSON останется ссылка на переменную, а не сам ключ.`),
+        text: localize(language, `Save the configuration as \`${path}\`. The key remains an environment reference, not a value in JSON.`, `Сохраните конфигурацию как \`${path}\`. В JSON останется ссылка на переменную, а не сам ключ.`),
         code: openCodeConfig(provider, model),
         codeLabel: path,
       },
@@ -239,7 +239,7 @@ function piGuide(provider: IntegrationProvider, model: IntegrationModel, os: Int
   const path = configPath(os, "~/.pi/agent/models.json", "%USERPROFILE%\\.pi\\agent\\models.json");
   const modelRef = `apitoken/${model.id}`;
   const requirement = isWindows(os)
-    ? localize(language, "Pi requires Git Bash on Windows. Install Git for Windows first; Pi detects bash.exe automatically.", "На Windows Pi нужен Git Bash. Сначала установите Git for Windows — Pi сам найдёт bash.exe.")
+    ? localize(language, "Pi requires Git Bash on Windows. Install Git for Windows first; Pi detects `bash.exe` automatically.", "На Windows Pi нужен Git Bash. Сначала установите Git for Windows — Pi сам найдёт `bash.exe`.")
     : undefined;
   return {
     title: `Pi · ${model.name}`,
@@ -249,7 +249,7 @@ function piGuide(provider: IntegrationProvider, model: IntegrationModel, os: Int
     steps: [
       {
         title: localize(language, "Add the model catalog", "Добавьте каталог модели"),
-        text: localize(language, `Save as ${path}. Pi reloads this file when the model picker opens.`, `Сохраните как ${path}. Pi перечитывает файл при открытии выбора модели.`),
+        text: localize(language, `Save as \`${path}\`. Pi reloads this file when the model picker opens.`, `Сохраните как \`${path}\`. Pi перечитывает файл при открытии выбора модели.`),
         code: piConfig(provider, model),
         codeLabel: path,
       },
@@ -281,7 +281,7 @@ function hermesGuide(model: IntegrationModel, os: IntegrationOs, language: Integ
     summary: localize(language, "Advanced general agent with terminal, coding tools, memory, and automation.", "Advanced‑агент с терминалом, coding tools, памятью и автоматизациями."),
     endpoint: OPENAI_BASE_URL,
     requirement: localize(language, "Hermes is broader than a coding-only harness. Choose it when you also need persistent memory, messaging, or automations.", "Hermes шире обычного coding harness. Выбирайте его, если нужны ещё память, мессенджеры или автоматизации."),
-    securityNote: localize(language, "Hermes stores the credential in ~/.hermes. Keep that file private and never commit it.", "Hermes сохраняет ключ в ~/.hermes. Держите эту папку приватной и не коммитьте её."),
+    securityNote: localize(language, "Hermes stores the credential in `~/.hermes`. Keep that file private and never commit it.", "Hermes сохраняет ключ в `~/.hermes`. Держите эту папку приватной и не коммитьте её."),
     steps: [
       {
         title: localize(language, "Install Hermes", "Установите Hermes"),

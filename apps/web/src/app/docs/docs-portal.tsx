@@ -12,6 +12,7 @@ import { ApiReference } from "./api-reference";
 
 const AGENT_GUIDE_URL = "https://apitoken.sale/md/connect";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors"] as const;
 
 const copy = {
   en: {
@@ -120,6 +121,15 @@ export function DocsPortal() {
   const { language, setLanguage } = useI18n();
   const t = copy[language];
   const [supportUrl, setSupportUrl] = useState(SUPPORT_TELEGRAM_URL);
+  const [activeSection, setActiveSection] = useState<string>("overview");
+  const sections: Array<{ id: string; label: string }> = [
+    { id: "overview", label: t.overview },
+    { id: "agent-setup", label: t.agentSetup },
+    { id: "setup-support", label: t.support },
+    { id: "quickstart", label: t.quickstart },
+    { id: "api", label: t.api },
+    { id: "errors", label: t.errors },
+  ];
 
   useEffect(() => {
     let alive = true;
@@ -129,6 +139,19 @@ export function DocsPortal() {
       })
       .catch(() => {/* Public docs keep the non-personalized support URL. */});
     return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) setActiveSection(entry.target.id);
+      }
+    }, { rootMargin: "-15% 0px -75% 0px" });
+    for (const id of SECTION_IDS) {
+      const element = document.getElementById(id);
+      if (element) observer.observe(element);
+    }
+    return () => observer.disconnect();
   }, []);
 
   return <div className="docs-site">
@@ -143,7 +166,7 @@ export function DocsPortal() {
       </div>
     </header>
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#agent-setup">{t.agentSetup}</a><a href="#setup-support">{t.support}</a><a href="#quickstart">{t.quickstart}</a><a href="#api">{t.api}</a><a href="#errors">{t.errors}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav>{sections.map(({ id, label }) => <a key={id} href={`#${id}`} className={activeSection === id ? "active" : ""}>{label}</a>)}</nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
         <section className="docs-hero" id="overview"><h1>{t.title}</h1><p>{t.lead}</p></section>
 
