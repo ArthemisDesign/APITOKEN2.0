@@ -206,7 +206,7 @@ export default function DashboardPage() {
           «Аккаунты»
         </Link>
         . Флоты подписок Claude, GPT и Gemini — на странице{" "}
-        <Link className="link" href="/subs">
+        <Link className="link" href="/subscriptions">
           «Подписки»
         </Link>
         .

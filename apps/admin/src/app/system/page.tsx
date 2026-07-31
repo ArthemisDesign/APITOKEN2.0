@@ -289,7 +289,7 @@ export default function SystemPage() {
 
       <SectionHeader title="Подписки" sub="живой статус флота" />
       <Banner kind="ok" title="Детальный статус подписок — на отдельной странице">
-        <Link className="link" href="/subs">
+        <Link className="link" href="/subscriptions">
           Открыть «Подписки»
         </Link>{" "}
         — окна, cooling, quota, lifecycle и transport по Claude, GPT и Gemini.

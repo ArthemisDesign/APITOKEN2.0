@@ -1,6 +1,8 @@
 // Единственный источник правды о страницах: сайдбар строится из этого списка.
 // Портировано из crates/server/src/admin-panel.js (NAV). Иконки — те же символы.
-// Маршруты App Router: Сводка = "/", остальные — "/<tab>".
+// Маршруты App Router: Сводка = "/", остальные — "/<tab>". Исключение —
+// Подписки = "/subscriptions": путь "/subs" на домене занят data-роутом
+// движка (Caddy @admin_data проксирует его на engine раньше фронтенда).
 export type NavItem = { href: string; label: string; icon: string };
 export type NavGroup = { group: string; items: NavItem[] };
 
@@ -9,7 +11,7 @@ export const NAV: NavGroup[] = [
   {
     group: "Инфраструктура",
     items: [
-      { href: "/subs", label: "Подписки", icon: "◍" },
+      { href: "/subscriptions", label: "Подписки", icon: "◍" },
       { href: "/system", label: "Система", icon: "⌘" },
       { href: "/trends", label: "Тренды", icon: "∿" },
     ],
