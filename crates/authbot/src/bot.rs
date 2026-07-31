@@ -1,7 +1,7 @@
 //! Логика бота: команды, машина создания оффера, флоу продавца. Состояние — в SQLite (db).
 //! Выплаты (Фаза 2) и выпуск setup-token (Фаза 3) пока заглушены — помечены TODO.
 
-use crate::db::Store;
+use crate::db::{AdminState, PurchaseBatch, Store};
 use crate::gemini_oauth;
 use crate::setup_token::{self, Outcome};
 use crate::tg::{Bot, CallbackQuery, Keyboard};
@@ -11,7 +11,8 @@ use std::sync::Arc;
 pub const WELCOME_NEW: &str =
     "👋 <b>Привет!</b>\nЭто бот закупки. Хочешь продавать — жми кнопку ниже, заявка уйдёт на модерацию.";
 pub const ADMIN_HOME: &str = "🛠 <b>Дев-панель</b>\n\nБыстрая покупка: жми продукт на нижней \
-    клавиатуре → пришли цену в $ → оффер уходит выбранному продавцу.";
+    клавиатуре → выбери продавца, цену и источник прокси. Для нескольких подписок используй \
+    🧺 Batch-покупку: продавец обработает позиции по очереди, оплата будет одной транзакцией.";
 
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -48,6 +49,28 @@ fn approve_kb(target: i64) -> Keyboard {
         ("✅ Пустить".into(), format!("reg:approve:{target}")),
         ("🚫 Отклонить".into(), format!("reg:reject:{target}")),
     ]]
+}
+
+const PROXY_SOURCE_BUYER: &str = "buyer";
+const PROXY_SOURCE_SELLER: &str = "seller";
+const PROXY_SOURCE_LEGACY: &str = "legacy";
+
+fn proxy_source_kb(prefix: &str) -> Keyboard {
+    vec![
+        vec![(
+            "🧩 Мои прокси (я передам)".into(),
+            format!("{prefix}:buyer"),
+        )],
+        vec![("👤 Прокси продавца".into(), format!("{prefix}:seller"))],
+    ]
+}
+
+fn proxy_source_label(source: &str) -> &'static str {
+    match source {
+        PROXY_SOURCE_BUYER => "от покупателя",
+        PROXY_SOURCE_SELLER => "от продавца",
+        _ => "по старому сценарию",
+    }
 }
 
 // ── создание оффера: продукт кнопками (без свободного текста) ────────────────
@@ -130,6 +153,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
         vec!["📦 Claude Pro", "📦 Claude 5x", "📦 Claude 20x"],
         vec!["📦 ChatGPT Plus", "📦 ChatGPT Pro"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
+        vec!["🧺 Batch-покупка"],
         vec!["🛠 Панель"],
     ]
 }
@@ -146,6 +170,31 @@ async fn show_admin_home(bot: &Bot, store: &Store, chat: i64) {
             )
             .await;
     }
+}
+
+fn batch_product_kb() -> Keyboard {
+    product_kb()
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|(label, data)| {
+                    let code = data.strip_prefix("noffer:").unwrap_or_default();
+                    (label, format!("nbatch:{code}"))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+const BATCH_PRODUCT_PICK: &str =
+    "🧺 <b>Batch-покупка</b>\nВыбери вариант подписки для всех позиций:";
+const BATCH_QUANTITY_PROMPT: &str = "Сколько подписок купить одним batch? Пришли целое число от <code>2</code> до <code>100</code>. /cancel — отмена.";
+const BATCH_PROXY_PROMPT: &str = "Пришли прокси для позиции <b>{item}</b> из <b>{total}</b> одним сообщением: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>. Прокси сохранится только в защищённой БД и будет передан продавцу после общей оплаты.";
+
+async fn start_batch_product_pick(bot: &Bot, chat: i64) {
+    let _ = bot
+        .send_kb(chat, BATCH_PRODUCT_PICK, Some(&batch_product_kb()))
+        .await;
 }
 /// Цена всегда в долларах: «$20» для целых, «$15.50» иначе.
 fn fmt_usd(a: f64) -> String {
@@ -259,7 +308,10 @@ fn manual_proxy_prompt(step: &str) -> &'static str {
     }
 }
 
-fn accepted_next_step(product: &str) -> &'static str {
+fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
+    if proxy_source == PROXY_SOURCE_SELLER {
+        return "После подтверждения выплаты бот попросит твой персональный прокси, затем даст подробную инструкцию. <b>До этого не создавай и не открывай аккаунт.</b>";
+    }
     match handoff_kind(product) {
         HandoffKind::Claude => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Claude-аккаунт.</b>",
         HandoffKind::Codex => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай ChatGPT-аккаунт.</b>",
@@ -268,18 +320,71 @@ fn accepted_next_step(product: &str) -> &'static str {
 }
 
 fn offer_text(o: &crate::db::Offer) -> String {
-    let guide = seller_offer_guide(&o.product);
+    let guide = seller_offer_guide_for(&o.product, &o.proxy_source);
     format!(
-        "📦 <b>Оффер #{}</b>\nПродукт: <b>{}</b>\nЦена: <b>{}</b>{}",
+        "📦 <b>Оффер #{}</b>\nПродукт: <b>{}</b>\nЦена: <b>{}</b>\nПрокси: <b>{}</b>{}",
         o.id,
         esc(&o.product),
         esc(&o.price),
+        proxy_source_label(&o.proxy_source),
         if guide.is_empty() {
             String::new()
         } else {
             format!("\n\n{guide}")
         }
     )
+}
+
+fn seller_offer_guide_for(product: &str, proxy_source: &str) -> String {
+    let guide = seller_offer_guide(product);
+    let first_step = if proxy_source == PROXY_SOURCE_SELLER {
+        "1. После подтверждения batch/оффера и выплаты прислать свой HTTP-прокси. Бот проверит его и закрепит за этим аккаунтом."
+    } else {
+        "1. Дождаться выплаты и персонального HTTP-прокси от покупателя/бота."
+    };
+    guide.replacen(
+        "1. Дождаться выплаты и персонального HTTP-прокси от бота.",
+        first_step,
+        1,
+    )
+}
+
+fn batch_offer_text(batch: &PurchaseBatch) -> String {
+    let guide = seller_offer_guide_for(&batch.product, &batch.proxy_source);
+    format!(
+        "🧺 <b>Batch #{}</b>\nПродукт: <b>{}</b>\nКоличество: <b>{}</b>\nЦена за 1: <b>{}</b>\nИтого к выплате: <b>{}</b>\nПрокси: <b>{}</b>\n\n{}",
+        batch.id,
+        esc(&batch.product),
+        batch.quantity,
+        esc(&batch.unit_price),
+        esc(&batch.total_price),
+        proxy_source_label(&batch.proxy_source),
+        guide
+    )
+}
+
+fn batch_offer_kb(batch_id: i64) -> Keyboard {
+    vec![vec![
+        (
+            "✅ Принять batch".into(),
+            format!("batch:{batch_id}:accept"),
+        ),
+        ("❌ Отклонить".into(), format!("batch:{batch_id}:reject")),
+    ]]
+}
+
+async fn send_batch_to(bot: &Bot, store: &Store, batch_id: i64, seller_chat: i64) -> bool {
+    let batch = match store.get_batch(batch_id) {
+        Ok(Some(batch)) => batch,
+        _ => return false,
+    };
+    bot.send_kb(
+        seller_chat,
+        &batch_offer_text(&batch),
+        Some(&batch_offer_kb(batch_id)),
+    )
+    .await
+    .is_ok()
 }
 
 /// Отправить АДРЕСНЫЙ оффер одному продавцу. true — доставлено.
@@ -350,6 +455,173 @@ async fn start_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &str) {
         .await;
 }
 
+/// Batch-оффер проходит через того же выбранного продавца, но сохраняет отдельный режим wizard.
+async fn start_batch_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &str) {
+    let sellers = store.by_status("approved").unwrap_or_default();
+    if sellers.is_empty() {
+        let _ = store.clear_admin_state(chat);
+        let _ = bot
+            .send(
+                chat,
+                "Пока нет одобренных продавцов — batch некому направить. Одобри заявку и повтори.",
+            )
+            .await;
+        return;
+    }
+    let _ = store.set_admin_flow(&AdminState {
+        chat_id: chat,
+        step: "batch_seller".into(),
+        product: product.into(),
+        seller_chat: 0,
+        mode: "batch".into(),
+        quantity: 0,
+        unit_price: String::new(),
+        proxy_source: String::new(),
+        draft_proxies: Vec::new(),
+    });
+    let _ = bot
+        .send_kb(
+            chat,
+            &format!(
+                "🧺 Продукт: <b>{}</b>\n\nКому отправить batch? Выбери продавца:",
+                esc(product)
+            ),
+            Some(&seller_pick_kb(&sellers)),
+        )
+        .await;
+}
+
+async fn publish_single_offer(
+    bot: &Bot,
+    store: &Store,
+    admin_chat: i64,
+    product: &str,
+    price: &str,
+    seller_chat: i64,
+    proxy_source: &str,
+    buyer_proxy: &str,
+) {
+    let oid = match store.create_offer_with_proxy(
+        product,
+        price,
+        admin_chat,
+        seller_chat,
+        proxy_source,
+        buyer_proxy,
+    ) {
+        Ok(oid) => oid,
+        Err(error) => {
+            let _ = bot
+                .send(
+                    admin_chat,
+                    &format!("❌ Не удалось создать оффер: {}", esc(&error.to_string())),
+                )
+                .await;
+            return;
+        }
+    };
+    let who = seller_label(store, seller_chat);
+    let delivered = send_offer_to(bot, store, oid, seller_chat).await;
+    let offer = store
+        .get_offer(oid)
+        .ok()
+        .flatten()
+        .map(|offer| offer_text(&offer))
+        .unwrap_or_default();
+    let message = if delivered {
+        format!("✅ <b>Оффер #{oid} отправлен продавцу {who}.</b>\n\n{offer}")
+    } else {
+        format!(
+            "⚠️ Оффер #{oid} создан, но доставить продавцу {who} не удалось (возможно, он не открывал бота).\n\n{offer}"
+        )
+    };
+    let _ = bot.send(admin_chat, &message).await;
+}
+
+async fn publish_batch(
+    bot: &Bot,
+    store: &Store,
+    admin_chat: i64,
+    product: &str,
+    unit_price: &str,
+    quantity: i64,
+    total_price: &str,
+    seller_chat: i64,
+    proxy_source: &str,
+    proxies: &[String],
+) {
+    let batch_id = match store.create_batch(
+        product,
+        unit_price,
+        quantity,
+        total_price,
+        admin_chat,
+        seller_chat,
+        proxy_source,
+        proxies,
+    ) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = bot
+                .send(
+                    admin_chat,
+                    &format!("❌ Не удалось создать batch: {}", esc(&error.to_string())),
+                )
+                .await;
+            return;
+        }
+    };
+    let who = seller_label(store, seller_chat);
+    let delivered = send_batch_to(bot, store, batch_id, seller_chat).await;
+    let batch = store.get_batch(batch_id).ok().flatten();
+    let summary = batch.as_ref().map(batch_offer_text).unwrap_or_default();
+    let message = if delivered {
+        format!("✅ <b>Batch #{batch_id} отправлен продавцу {who}.</b>\n\n{summary}")
+    } else {
+        format!(
+            "⚠️ Batch #{batch_id} создан, но доставить его продавцу {who} не удалось (возможно, он не открывал бота).\n\n{summary}"
+        )
+    };
+    let _ = bot.send(admin_chat, &message).await;
+}
+
+fn batch_pay_kb(batch_id: i64) -> Keyboard {
+    vec![vec![(
+        "💸 Оплатить batch целиком".into(),
+        format!("batchpay:{batch_id}"),
+    )]]
+}
+
+fn batch_payment_review_kb(batch_id: i64) -> Keyboard {
+    vec![vec![(
+        "🔁 Проверил: разрешить повторную оплату".into(),
+        format!("batchpayretry:{batch_id}"),
+    )]]
+}
+
+async fn notify_batch_payment_ready(
+    bot: &Bot,
+    cfg: &Config,
+    batch: &PurchaseBatch,
+    seller: &crate::db::UserRow,
+) {
+    notify_admins(
+        bot,
+        cfg,
+        &format!(
+            "✅ <b>Batch #{} принят продавцом.</b>\n{} × {}\nИтого: <b>{}</b> USDT\nАдрес: <code>{}</code>\nПрокси: {}",
+            batch.id,
+            batch.quantity,
+            esc(&batch.product),
+            esc(&batch.total_price),
+            esc(&seller.address),
+            proxy_source_label(&batch.proxy_source)
+        ),
+        Some(&batch_pay_kb(batch.id)),
+    )
+    .await;
+}
+
 // ── сообщения ────────────────────────────────────────────────────────────────
 pub async fn on_message(
     bot: &Bot,
@@ -371,6 +643,10 @@ pub async fn on_message(
             start_seller_pick(bot, store, chat, name).await;
             return;
         }
+        if text == "🧺 Batch-покупка" {
+            start_batch_product_pick(bot, chat).await;
+            return;
+        }
         if text == "🛠 Панель" {
             show_admin_home(bot, store, chat).await;
             return;
@@ -379,36 +655,152 @@ pub async fn on_message(
 
     // машина создания оффера (persisted) — только админ, не команда
     if admin && !text.starts_with('/') {
-        if let Ok(Some((step, product, seller_chat))) = store.get_admin_state(chat) {
-            if step == "price" {
-                // Правило: цена — всегда в ДОЛЛАРАХ (число).
-                let amount = match parse_amount(text) {
-                    Some(a) if a > 0.0 => a,
-                    _ => {
-                        let _ = bot.send(chat, "Нужна <b>сумма в долларах</b> числом \
-                            (например <code>20</code> или <code>15.5</code>). Пришли ещё раз или /cancel.").await;
+        if let Ok(Some(mut flow)) = store.get_admin_flow(chat) {
+            match flow.step.as_str() {
+                "price" => {
+                    let amount = match parse_amount(text) {
+                        Some(a) if a.is_finite() && a > 0.0 => a,
+                        _ => {
+                            let _ = bot.send(chat, "Нужна <b>сумма в долларах</b> числом \
+                                (например <code>20</code> или <code>15.5</code>). Пришли ещё раз или /cancel.").await;
+                            return;
+                        }
+                    };
+                    flow.unit_price = fmt_usd(amount);
+                    flow.step = "proxy_source".into();
+                    let _ = store.set_admin_flow(&flow);
+                    let _ = bot.send_kb(
+                        chat,
+                        &format!(
+                            "📦 <b>{}</b>\nПродавец выбран. Цена: <b>{}</b> за подписку.\n\nЧьи прокси использовать?",
+                            esc(&flow.product), esc(&flow.unit_price)
+                        ),
+                        Some(&proxy_source_kb("proxy")),
+                    ).await;
+                    return;
+                }
+                "single_proxy" => {
+                    let purl = proxy_url(text);
+                    if purl.is_empty() {
+                        let _ = bot.send(chat, "Не разобрал прокси. Пришли его в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
                         return;
                     }
-                };
-                let _ = store.clear_admin_state(chat);
-                if let Ok(oid) = store.create_offer(&product, &fmt_usd(amount), uid, seller_chat) {
-                    let who = seller_label(store, seller_chat);
-                    let ok = send_offer_to(bot, store, oid, seller_chat).await;
-                    let ot = store
-                        .get_offer(oid)
-                        .ok()
-                        .flatten()
-                        .as_ref()
-                        .map(offer_text)
-                        .unwrap_or_default();
-                    let _ = bot.send(chat, &if ok {
-                        format!("✅ <b>Оффер #{oid} отправлен продавцу {who}.</b>\n\n{ot}")
-                    } else {
-                        format!("⚠️ Оффер #{oid} создан, но доставить продавцу {who} не удалось \
-                            (возможно, он не открывал бота).\n\n{ot}")
-                    }).await;
+                    let product = flow.product.clone();
+                    let price = flow.unit_price.clone();
+                    let seller_chat = flow.seller_chat;
+                    let source = flow.proxy_source.clone();
+                    let _ = store.clear_admin_state(chat);
+                    publish_single_offer(
+                        bot,
+                        store,
+                        chat,
+                        &product,
+                        &price,
+                        seller_chat,
+                        &source,
+                        &purl,
+                    )
+                    .await;
+                    return;
                 }
-                return;
+                "batch_quantity" => {
+                    let quantity = match parse_quantity(text) {
+                        Some(value) if (2..=100).contains(&value) => value,
+                        _ => {
+                            let _ = bot.send(chat, BATCH_QUANTITY_PROMPT).await;
+                            return;
+                        }
+                    };
+                    flow.quantity = quantity;
+                    flow.step = "batch_price".into();
+                    let _ = store.set_admin_flow(&flow);
+                    let _ = bot.send(chat, &format!(
+                        "🧺 Batch из <b>{quantity}</b> подписок «{}».\n\nПришли цену <b>за одну подписку</b> в долларах (например <code>20</code>). Итого будет рассчитано автоматически. /cancel — отмена.",
+                        esc(&flow.product)
+                    )).await;
+                    return;
+                }
+                "batch_price" => {
+                    let amount = match parse_amount(text) {
+                        Some(a) if a.is_finite() && a > 0.0 => a,
+                        _ => {
+                            let _ = bot.send(chat, "Нужна <b>цена за одну подписку</b> в долларах числом (например <code>20</code> или <code>15.5</code>). Пришли ещё раз или /cancel.").await;
+                            return;
+                        }
+                    };
+                    flow.unit_price = fmt_usd(amount);
+                    flow.step = "batch_proxy_source".into();
+                    let _ = store.set_admin_flow(&flow);
+                    let normalized_amount = parse_amount(&flow.unit_price).unwrap_or(amount);
+                    let total = fmt_usd(normalized_amount * flow.quantity as f64);
+                    let _ = bot.send_kb(
+                        chat,
+                        &format!(
+                            "🧺 <b>{} × {}</b>\nЗа 1: <b>{}</b>\nИтого: <b>{}</b>\n\nЧьи прокси использовать для каждой позиции?",
+                            flow.quantity, esc(&flow.product), esc(&flow.unit_price), total
+                        ),
+                        Some(&proxy_source_kb("batchproxy")),
+                    ).await;
+                    return;
+                }
+                "batch_proxy_source" => {}
+                "batch_proxies" => {
+                    let purl = proxy_url(text);
+                    if purl.is_empty() {
+                        let item = flow.draft_proxies.len() as i64 + 1;
+                        let _ = bot
+                            .send(
+                                chat,
+                                &format!(
+                                    "Не разобрал прокси.\n\n{}",
+                                    BATCH_PROXY_PROMPT
+                                        .replace("{item}", &item.to_string())
+                                        .replace("{total}", &flow.quantity.to_string())
+                                ),
+                            )
+                            .await;
+                        return;
+                    }
+                    flow.draft_proxies.push(purl);
+                    if flow.draft_proxies.len() < flow.quantity as usize {
+                        let item = flow.draft_proxies.len() as i64 + 1;
+                        let _ = store.set_admin_flow(&flow);
+                        let _ = bot
+                            .send(
+                                chat,
+                                &BATCH_PROXY_PROMPT
+                                    .replace("{item}", &item.to_string())
+                                    .replace("{total}", &flow.quantity.to_string()),
+                            )
+                            .await;
+                        return;
+                    }
+                    let product = flow.product.clone();
+                    let unit_price = flow.unit_price.clone();
+                    let quantity = flow.quantity;
+                    let seller_chat = flow.seller_chat;
+                    let source = flow.proxy_source.clone();
+                    let proxies = flow.draft_proxies.clone();
+                    let total = parse_amount(&unit_price)
+                        .map(|amount| fmt_usd(amount * quantity as f64))
+                        .unwrap_or_default();
+                    let _ = store.clear_admin_state(chat);
+                    publish_batch(
+                        bot,
+                        store,
+                        chat,
+                        &product,
+                        &unit_price,
+                        quantity,
+                        &total,
+                        seller_chat,
+                        &source,
+                        &proxies,
+                    )
+                    .await;
+                    return;
+                }
+                _ => {}
             }
         }
     }
@@ -497,6 +889,10 @@ pub async fn on_message(
         let _ = bot.send_kb(chat, PRODUCT_PICK, Some(&product_kb())).await;
         return;
     }
+    if admin && text == "/batch" {
+        start_batch_product_pick(bot, chat).await;
+        return;
+    }
 
     // не-админ: строгий режим — принимаем только ожидаемый сейчас ввод (state-machine)
     if !admin {
@@ -507,6 +903,29 @@ pub async fn on_message(
                     let _ = store.set_address(chat, text);
                     let _ = store.set_want(chat, "");
                     let _ = bot.send(chat, "✅ Адрес сохранён. Жди оффер.").await;
+                    for batch in store.accepted_batches_for_seller(chat).unwrap_or_default() {
+                        if let Some(seller) = store.get_user(chat).ok().flatten() {
+                            notify_batch_payment_ready(bot, cfg, &batch, &seller).await;
+                        }
+                    }
+                    for offer in store.accepted_offers_for_seller(chat).unwrap_or_default() {
+                        let pay_kb: Keyboard = vec![vec![(
+                            "💸 Оплатить".into(),
+                            format!("pay:{}:{}", offer.id, chat),
+                        )]];
+                        notify_admins(
+                            bot,
+                            cfg,
+                            &format!(
+                                "✅ Адрес продавца сохранён для оффера #{} «{}».\nАдрес: <code>{}</code>",
+                                offer.id,
+                                esc(&offer.product),
+                                esc(text)
+                            ),
+                            Some(&pay_kb),
+                        )
+                        .await;
+                    }
                 } else {
                     let _ = bot.send(chat, "Это не похоже на BEP-20 адрес (<code>0x</code> + 40 hex). Пришли ещё раз.").await;
                 }
@@ -566,6 +985,16 @@ pub async fn on_message(
             "gm_gid" | "gm_gsecret" | "gm_gproxy" => {
                 if !rec.hproxy.is_empty() {
                     prepare_gemini_account(bot, store, chat, None, rec.hproxy_order).await;
+                } else if let Some((batch, item)) = active_batch_item(store, chat)
+                    .filter(|(batch, _)| batch.proxy_source == PROXY_SOURCE_BUYER)
+                {
+                    // OAuth failure must retry with the buyer-selected egress, never silently
+                    // switch a buyer-proxy batch to a seller-proxy flow.
+                    let _ = bot.send(chat, &format!(
+                        "🔁 Повторяю позицию <b>{}/{}</b> batch #{} через тот же прокси покупателя.",
+                        item.item_no, batch.quantity, batch.id
+                    )).await;
+                    prepare_gemini_account(bot, store, chat, Some(&item.proxy), 0).await;
                 } else {
                     let purl = proxy_url(text.trim());
                     if purl.is_empty() {
@@ -639,6 +1068,14 @@ fn parse_amount(price: &str) -> Option<f64> {
         }
     }
     num.parse().ok()
+}
+
+fn parse_quantity(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 /// Выплата USDT через проверенный bsc_pay (subprocess, web3). Возвращает txhash или текст ошибки.
@@ -794,9 +1231,16 @@ async fn do_feed_token(
                     let _ = store.set_hproxy(chat, "");
                     let _ = bot.send(chat, &format!(
                     "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> в системе. Спасибо за сделку! 🤝", esc(&email))).await;
-                    notify_admins(bot, cfg, &format!(
-                    "✅ <b>Доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
-                    esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
+                    if store.active_batch_for_seller(chat).ok().flatten().is_some() {
+                        notify_admins(bot, cfg, &format!(
+                            "✅ <b>Позиция batch готова</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
+                            esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
+                        complete_batch_item_after_handoff(bot, store, cfg, chat).await;
+                    } else {
+                        notify_admins(bot, cfg, &format!(
+                            "✅ <b>Доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
+                            esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
+                    }
                 }
                 Err(e) => {
                     let _ = store.set_want(chat, "ho_email");
@@ -985,10 +1429,214 @@ fn handoff_steps(store: &Store, oid: i64) -> (&'static str, &'static str) {
         .flatten()
         .map(|offer| handoff_kind(&offer.product))
         .unwrap_or(HandoffKind::Claude);
+    handoff_steps_for_kind(kind)
+}
+
+fn handoff_steps_for_product(product: &str) -> (&'static str, &'static str) {
+    handoff_steps_for_kind(handoff_kind(product))
+}
+
+fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
     match kind {
         HandoffKind::Claude => ("ho_proxy", "ho_email"),
         HandoffKind::Codex => ("cx_proxy", "cx_email"),
         HandoffKind::Gemini => ("gm_gproxy", "gm_ready"),
+    }
+}
+
+fn active_batch_item(
+    store: &Store,
+    seller_chat: i64,
+) -> Option<(PurchaseBatch, crate::db::BatchItem)> {
+    let batch = store.active_batch_for_seller(seller_chat).ok().flatten()?;
+    let item = store
+        .get_batch_item(batch.id, batch.current_item)
+        .ok()
+        .flatten()?;
+    Some((batch, item))
+}
+
+/// Start one persisted batch position. Exactly one item is `processing`, so the seller cannot
+/// accidentally receive all ten account instructions at once.
+async fn start_batch_item(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    batch_id: i64,
+    item_no: i64,
+    payment_hash: Option<&str>,
+) {
+    let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+        return;
+    };
+    let Some(item) = store.get_batch_item(batch_id, item_no).ok().flatten() else {
+        return;
+    };
+    let already_processing = item.status == "processing"
+        && batch.status == "processing"
+        && batch.current_item == item_no;
+    if !store.start_batch_item(batch_id, item_no).unwrap_or(false) && !already_processing {
+        return;
+    }
+    let seller_chat = batch.seller_chat;
+    let (proxy_step, next_step) = handoff_steps_for_product(&item.product);
+    let payment_line = payment_hash
+        .map(|hash| {
+            format!(
+                "💸 <b>Оплата batch отправлена!</b> tx: <code>{}</code>\n\n",
+                esc(hash)
+            )
+        })
+        .unwrap_or_default();
+    let position = format!(
+        "🧺 <b>Batch #{}</b> · позиция <b>{}/{}</b> · <b>{}</b>\n\n",
+        batch.id,
+        item.item_no,
+        batch.quantity,
+        esc(&item.product)
+    );
+
+    if batch.proxy_source == PROXY_SOURCE_BUYER {
+        if item.proxy.is_empty() {
+            let _ = bot
+                .send(
+                    seller_chat,
+                    "⚠️ Для текущей позиции не найден прокси покупателя. Администратор уведомлён.",
+                )
+                .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ В batch #{} отсутствует прокси для позиции {}.",
+                    batch.id, item.item_no
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+        let _ = store.set_hproxy(seller_chat, &item.proxy);
+        let _ = store.set_hproxy_order(seller_chat, 0);
+        let setup = if next_step == "gm_ready" {
+            ""
+        } else {
+            account_setup_prompt(next_step)
+        };
+        let _ = bot
+            .send(
+                seller_chat,
+                &format!(
+            "{payment_line}{position}✅ Используем прокси покупателя:\n<code>{}</code>\n\n{}",
+            esc(&item.proxy), setup
+        ),
+            )
+            .await;
+        if next_step == "gm_ready" {
+            prepare_gemini_account(bot, store, seller_chat, None, 0).await;
+        } else {
+            let _ = store.set_want(seller_chat, next_step);
+        }
+    } else {
+        let _ = store.set_hproxy(seller_chat, "");
+        let _ = store.set_hproxy_order(seller_chat, 0);
+        let _ = store.set_want(seller_chat, proxy_step);
+        let _ = bot
+            .send(
+                seller_chat,
+                &format!(
+                    "{payment_line}{position}Теперь пришли прокси продавца для этой позиции.\n\n{}",
+                    manual_proxy_prompt(proxy_step)
+                ),
+            )
+            .await;
+    }
+}
+
+/// Called after Claude, ChatGPT or Gemini has been published. It advances only the active batch,
+/// preserving the legacy single-offer behavior when there is no processing batch.
+pub async fn complete_batch_item_after_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    seller_chat: i64,
+) {
+    let Some(batch) = store.active_batch_for_seller(seller_chat).ok().flatten() else {
+        return;
+    };
+    let item_no = batch.current_item;
+    let Some(progress) = store.finish_batch_item(batch.id, item_no).ok().flatten() else {
+        return;
+    };
+    let _ = store.set_hproxy(seller_chat, "");
+    let _ = store.set_hproxy_order(seller_chat, 0);
+    let _ = store.set_want(seller_chat, "");
+    if progress.completed {
+        let _ = bot
+            .send(
+                seller_chat,
+                &format!(
+                    "✅ <b>Batch #{} полностью готов.</b> Все {} подписок приняты. Спасибо! 🤝",
+                    batch.id, progress.total
+                ),
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "✅ <b>Batch #{} завершён.</b> Приняты все {} подписок «{}».",
+                batch.id,
+                progress.total,
+                esc(&batch.product)
+            ),
+            None,
+        )
+        .await;
+    } else {
+        let _ = bot
+            .send(
+                seller_chat,
+                &format!(
+                    "✅ Позиция <b>{}/{}</b> в batch #{} принята. Переходим к следующей позиции.",
+                    progress.item_no, progress.total, batch.id
+                ),
+            )
+            .await;
+        start_batch_item(bot, store, cfg, batch.id, progress.item_no + 1, None).await;
+    }
+}
+
+/// Re-open the only states that can be stranded between two Telegram updates. An item that still
+/// has a non-empty seller state is already in progress and must not receive a duplicate prompt.
+pub async fn resume_batches(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>) {
+    for batch in store.batches_needing_payment_review().unwrap_or_default() {
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Batch #{} остался в состоянии оплаты после перезапуска. Транзакция могла уйти, поэтому сначала проверь BscScan/кошелёк продавца. Если выплаты нет, нажми кнопку для разблокировки повторной оплаты.",
+                batch.id
+            ),
+            Some(&batch_payment_review_kb(batch.id)),
+        )
+        .await;
+    }
+    for (batch, item) in store.batches_needing_resume().unwrap_or_default() {
+        let want = store
+            .get_user(batch.seller_chat)
+            .ok()
+            .flatten()
+            .map(|user| user.want)
+            .unwrap_or_default();
+        if batch.status == "paid" || want.is_empty() {
+            let payment_hash = if batch.status == "paid" && !batch.payment_tx.is_empty() {
+                Some(batch.payment_tx.as_str())
+            } else {
+                None
+            };
+            start_batch_item(bot, store, cfg, batch.id, item.item_no, payment_hash).await;
+        }
     }
 }
 
@@ -1049,10 +1697,22 @@ async fn start_codex_handoff(
                 let _ = bot2.send(chat, &format!(
                     "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> принята. Спасибо за сделку! 🤝",
                     esc(&label))).await;
-                notify_admins(&bot2, &cfg2, &format!(
-                    "✅ <b>ChatGPT-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). \
-                     Движок подхватит его ближайшим health-тиком.",
-                    esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
+                if store2
+                    .active_batch_for_seller(chat)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    notify_admins(&bot2, &cfg2, &format!(
+                        "✅ <b>Позиция batch готова</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). Движок подхватит его ближайшим health-тиком.",
+                        esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
+                    complete_batch_item_after_handoff(&bot2, &store2, &cfg2, chat).await;
+                } else {
+                    notify_admins(&bot2, &cfg2, &format!(
+                        "✅ <b>ChatGPT-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). \
+                         Движок подхватит его ближайшим health-тиком.",
+                        esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
+                }
             }
             Ok(crate::codex_login::Outcome::Expired) => {
                 let _ = store2.set_want(chat, "cx_email");
@@ -1160,6 +1820,71 @@ async fn deliver_issued_proxy(
     }
 }
 
+async fn start_buyer_offer_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    seller_chat: i64,
+    oid: i64,
+    hash: &str,
+) {
+    let Some(offer) = store.get_offer(oid).ok().flatten() else {
+        return;
+    };
+    if offer.buyer_proxy.is_empty() {
+        let _ = bot
+            .send(
+                seller_chat,
+                "⚠️ Для оффера не найден прокси покупателя. Администратор уведомлён.",
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            &format!("⚠️ В оффере #{} отсутствует прокси покупателя.", oid),
+            None,
+        )
+        .await;
+        return;
+    }
+    let (_, next_step) = handoff_steps(store, oid);
+    let _ = store.set_hproxy(seller_chat, &offer.buyer_proxy);
+    let _ = store.set_hproxy_order(seller_chat, 0);
+    let setup = if next_step == "gm_ready" {
+        ""
+    } else {
+        account_setup_prompt(next_step)
+    };
+    let _ = bot.send(seller_chat, &format!(
+        "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n✅ <b>Прокси покупателя для аккаунта:</b>\n<code>{}</code>\n\n{}",
+        esc(hash), esc(&offer.buyer_proxy), setup
+    )).await;
+    if next_step == "gm_ready" {
+        prepare_gemini_account(bot, store, seller_chat, None, 0).await;
+    } else {
+        let _ = store.set_want(seller_chat, next_step);
+    }
+}
+
+async fn start_seller_offer_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    seller_chat: i64,
+    oid: i64,
+    hash: &str,
+) {
+    let (proxy_step, _) = handoff_steps(store, oid);
+    let _ = store.set_hproxy(seller_chat, "");
+    let _ = store.set_hproxy_order(seller_chat, 0);
+    let _ = store.set_want(seller_chat, proxy_step);
+    let seller_prompt = format!(
+        "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
+        esc(hash),
+        manual_proxy_prompt(proxy_step)
+    );
+    let _ = bot.send(seller_chat, &seller_prompt).await;
+}
+
 // ── колбэки (кнопки) ─────────────────────────────────────────────────────────
 pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: CallbackQuery) {
     let data = cb.data.clone().unwrap_or_default();
@@ -1260,26 +1985,382 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         return;
     }
 
+    // админ: выбрал продукт для batch → выбор продавца
+    if let Some(code) = data.strip_prefix("nbatch:") {
+        if !admin {
+            return;
+        }
+        if let Some(name) = tier_name(code) {
+            start_batch_seller_pick(bot, store, chat, name).await;
+        }
+        return;
+    }
+
     // админ: выбрал продавца → перейти к цене
     if let Some(rest) = data.strip_prefix("oseller:") {
         if !admin {
             return;
         }
         let seller_chat: i64 = rest.parse().unwrap_or(0);
-        if let Ok(Some((_, product, _))) = store.get_admin_state(chat) {
+        if let Ok(Some(mut flow)) = store.get_admin_flow(chat) {
+            let expected_step = if flow.mode == "batch" {
+                "batch_seller"
+            } else {
+                "seller"
+            };
+            if flow.step != expected_step {
+                return;
+            }
             let who = seller_label(store, seller_chat);
-            let _ = store.set_admin_state(chat, "price", &product, seller_chat);
+            flow.seller_chat = seller_chat;
+            if flow.mode == "batch" {
+                flow.step = "batch_quantity".into();
+                let _ = store.set_admin_flow(&flow);
+                let _ = bot
+                    .send(
+                        chat,
+                        &format!(
+                            "🧺 Продукт: <b>{}</b>\nПродавец: <b>{}</b>\n\n{}",
+                            esc(&flow.product),
+                            who,
+                            BATCH_QUANTITY_PROMPT
+                        ),
+                    )
+                    .await;
+            } else {
+                flow.step = "price".into();
+                let _ = store.set_admin_flow(&flow);
+                let _ = bot
+                    .send(
+                        chat,
+                        &format!(
+                            "📦 Продукт: <b>{}</b>\nПродавец: <b>{}</b>\n\n{}",
+                            esc(&flow.product),
+                            who,
+                            PRICE_PROMPT
+                        ),
+                    )
+                    .await;
+            }
+        }
+        return;
+    }
+
+    // админ: выбрал источник прокси для одиночного оффера
+    if let Some(source) = data.strip_prefix("proxy:") {
+        if !admin || !matches!(source, PROXY_SOURCE_BUYER | PROXY_SOURCE_SELLER) {
+            return;
+        }
+        if let Ok(mut flow) = store
+            .get_admin_flow(chat)
+            .map(|state| state.unwrap_or_default())
+        {
+            if flow.step != "proxy_source" {
+                return;
+            }
+            flow.proxy_source = source.into();
+            if source == PROXY_SOURCE_BUYER {
+                flow.step = "single_proxy".into();
+                let _ = store.set_admin_flow(&flow);
+                let _ = bot.send(chat, "Пришли прокси покупателя для этого аккаунта одним сообщением: <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+            } else {
+                let product = flow.product.clone();
+                let price = flow.unit_price.clone();
+                let seller_chat = flow.seller_chat;
+                let _ = store.clear_admin_state(chat);
+                publish_single_offer(bot, store, chat, &product, &price, seller_chat, source, "")
+                    .await;
+            }
+        }
+        return;
+    }
+
+    // админ: выбрал источник прокси для batch
+    if let Some(source) = data.strip_prefix("batchproxy:") {
+        if !admin || !matches!(source, PROXY_SOURCE_BUYER | PROXY_SOURCE_SELLER) {
+            return;
+        }
+        if let Ok(mut flow) = store
+            .get_admin_flow(chat)
+            .map(|state| state.unwrap_or_default())
+        {
+            if flow.step != "batch_proxy_source" {
+                return;
+            }
+            flow.proxy_source = source.into();
+            if source == PROXY_SOURCE_BUYER {
+                flow.step = "batch_proxies".into();
+                let _ = store.set_admin_flow(&flow);
+                let _ = bot
+                    .send(
+                        chat,
+                        &BATCH_PROXY_PROMPT
+                            .replace("{item}", "1")
+                            .replace("{total}", &flow.quantity.to_string()),
+                    )
+                    .await;
+            } else {
+                let product = flow.product.clone();
+                let unit_price = flow.unit_price.clone();
+                let quantity = flow.quantity;
+                let seller_chat = flow.seller_chat;
+                let total = parse_amount(&unit_price)
+                    .map(|amount| fmt_usd(amount * quantity as f64))
+                    .unwrap_or_default();
+                let _ = store.clear_admin_state(chat);
+                publish_batch(
+                    bot,
+                    store,
+                    chat,
+                    &product,
+                    &unit_price,
+                    quantity,
+                    &total,
+                    seller_chat,
+                    source,
+                    &[],
+                )
+                .await;
+            }
+        }
+        return;
+    }
+
+    // Продавец: принять/отклонить batch целиком. Позиции продавцу будут открываться только после
+    // одной общей выплаты и строго по одной.
+    if let Some(rest) = data.strip_prefix("batch:") {
+        let mut parts = rest.splitn(2, ':');
+        let batch_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let action = parts.next().unwrap_or_default();
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        if batch.seller_chat != chat {
+            return;
+        }
+        if action == "reject" {
+            if store.reject_batch(batch_id, chat).unwrap_or(false) {
+                let _ = bot
+                    .send(chat, &format!("Batch #{} отклонён.", batch_id))
+                    .await;
+                notify_admins(
+                    bot,
+                    cfg,
+                    &format!("🚫 <b>Batch #{}</b> продавец отклонил.", batch_id),
+                    None,
+                )
+                .await;
+            }
+            return;
+        }
+        if action == "accept" {
+            if store.active_batch_for_seller(chat).ok().flatten().is_some() {
+                let _ = bot.send(chat, "Сначала заверши уже обрабатываемый batch — новые позиции запускаются только последовательно.").await;
+                return;
+            }
+            if !store.accept_batch(batch_id, chat).unwrap_or(false) {
+                let _ = bot
+                    .send(chat, "Этот batch уже обработан или больше недоступен.")
+                    .await;
+                return;
+            }
+            let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
+            if rec.address.is_empty() {
+                let _ = store.set_want(chat, "reg_address");
+                let _ = bot.send(chat, &format!(
+                    "✅ <b>Batch #{} принят.</b>\n\nСейчас пришли BEP-20 адрес для общей выплаты.\n\n<b>Затем:</b> {}",
+                    batch_id, accepted_next_step(&batch.product, &batch.proxy_source)
+                )).await;
+                notify_admins(
+                    bot,
+                    cfg,
+                    &format!(
+                        "✅ <b>@{} принял batch #{}</b> «{}» — ждём адрес для общей выплаты.",
+                        esc(&uname),
+                        batch_id,
+                        esc(&batch.product)
+                    ),
+                    None,
+                )
+                .await;
+            } else {
+                let _ = bot.send(chat, &format!(
+                    "✅ <b>Batch #{} принят.</b> Адрес для выплаты уже сохранён. Ожидай одну общую оплату. {}",
+                    batch_id, accepted_next_step(&batch.product, &batch.proxy_source)
+                )).await;
+                notify_batch_payment_ready(bot, cfg, &batch, &rec).await;
+            }
+            return;
+        }
+        return;
+    }
+
+    // Админ: после рестарта подтвердить, что зависшая выплата не ушла, и разблокировать retry.
+    if let Some(rest) = data.strip_prefix("batchpayretry:") {
+        if !admin {
+            return;
+        }
+        let batch_id = rest.parse::<i64>().unwrap_or(0);
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        if batch.status != "paying" {
+            let _ = bot
+                .send(chat, "Для этого batch уже нет незавершённой выплаты.")
+                .await;
+            return;
+        }
+        if !store.reset_batch_payment(batch_id).unwrap_or(false) {
             let _ = bot
                 .send(
                     chat,
-                    &format!(
-                        "📦 Продукт: <b>{}</b>\nПродавец: <b>{}</b>\n\n{}",
-                        esc(&product),
-                        who,
-                        PRICE_PROMPT
-                    ),
+                    "Не удалось разблокировать выплату — попробуй ещё раз.",
                 )
                 .await;
+            return;
+        }
+        let Some(updated) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        let seller = store
+            .get_user(updated.seller_chat)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let _ = bot
+            .send(
+                chat,
+                &format!(
+                    "✅ Batch #{} разблокирован. Если транзакции действительно нет, теперь можно запустить одну повторную выплату.",
+                    batch_id
+                ),
+            )
+            .await;
+        if seller.address.is_empty() {
+            let _ = bot
+                .send(chat, "У продавца нет сохранённого BEP-20 адреса.")
+                .await;
+        } else {
+            notify_batch_payment_ready(bot, cfg, &updated, &seller).await;
+        }
+        return;
+    }
+
+    // Админ: одна выплата за весь batch. Статус paying делает callback идемпотентным.
+    if let Some(rest) = data.strip_prefix("batchpay:") {
+        if !admin {
+            return;
+        }
+        let batch_id = rest.parse::<i64>().unwrap_or(0);
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        let seller = store
+            .get_user(batch.seller_chat)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if seller.address.is_empty() {
+            let _ = bot.send(chat, "У продавца нет BEP-20 адреса.").await;
+            return;
+        }
+        if store
+            .active_batch_for_seller(batch.seller_chat)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = bot.send(chat, "У этого продавца уже обрабатывается другой batch. Дождись его завершения перед следующей выплатой.").await;
+            return;
+        }
+        let amount = match parse_amount(&batch.total_price) {
+            Some(amount) if amount.is_finite() && amount > 0.0 => amount,
+            _ => {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Не понял итоговую сумму batch — проверь цену и создай его заново.",
+                    )
+                    .await;
+                return;
+            }
+        };
+        if !store.claim_batch_payment(batch_id).unwrap_or(false) {
+            let _ = bot
+                .send(chat, "Этот batch уже оплачен или сейчас оплачивается.")
+                .await;
+            return;
+        }
+        let _ = bot
+            .send(
+                chat,
+                &format!(
+                    "⏳ Отправляю <b>{}</b> USDT одной транзакцией на <code>{}</code>…",
+                    amount,
+                    esc(&seller.address)
+                ),
+            )
+            .await;
+        match pay(cfg, &seller.address, amount).await {
+            Ok(hash) => {
+                if !store.mark_batch_paid(batch_id, &hash).unwrap_or(false) {
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "⚠️ Транзакция batch отправлена, но состояние в БД не обновилось. tx: <code>{}</code>. Не нажимай оплату повторно — проверь транзакцию и сообщи администратору.",
+                                esc(&hash)
+                            ),
+                        )
+                        .await;
+                    notify_admins(
+                        bot,
+                        cfg,
+                        &format!(
+                            "⚠️ Batch #{}: выплата отправлена, но не удалось сохранить статус paid. tx: <code>{}</code>",
+                            batch_id,
+                            esc(&hash)
+                        ),
+                        Some(&batch_payment_review_kb(batch_id)),
+                    )
+                    .await;
+                    return;
+                }
+                let _ = bot.send(chat, &format!(
+                    "✅ Batch #{} оплачен одной транзакцией. tx: <code>{}</code>\nhttps://bscscan.com/tx/{}",
+                    batch_id, esc(&hash), esc(&hash)
+                )).await;
+                let _ = bot.send(seller.chat_id, &format!(
+                    "💸 <b>Batch #{} оплачен целиком.</b> Сумма: <b>{}</b> USDT. Начинаем позиции по очереди.",
+                    batch_id, esc(&batch.total_price)
+                )).await;
+                start_batch_item(bot, store, cfg, batch_id, 1, Some(&hash)).await;
+            }
+            Err(error) => {
+                let _ = bot
+                    .send(
+                        chat,
+                        &format!(
+                            "❌ Оплата batch не подтверждена: {}\nСначала проверь BscScan/кошелёк продавца. Для повторной попытки используй кнопку только если транзакции действительно нет.",
+                            esc(&error)
+                        ),
+                    )
+                    .await;
+                notify_admins(
+                    bot,
+                    cfg,
+                    &format!(
+                        "⚠️ Batch #{} остался заблокирован в статусе оплаты после ошибки: {}",
+                        batch_id,
+                        esc(&error)
+                    ),
+                    Some(&batch_payment_review_kb(batch_id)),
+                )
+                .await;
+            }
         }
         return;
     }
@@ -1292,8 +2373,22 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         if parts.len() == 2 {
             let oid: i64 = parts[0].parse().unwrap_or(0);
-            let seller_chat: i64 = parts[1].parse().unwrap_or(0);
-            let o = store.get_offer(oid).ok().flatten();
+            let callback_seller_chat: i64 = parts[1].parse().unwrap_or(0);
+            let Some(o) = store.get_offer(oid).ok().flatten() else {
+                let _ = bot.send(chat, "Оффер не найден.").await;
+                return;
+            };
+            if o.seller_chat != 0 && o.seller_chat != callback_seller_chat {
+                let _ = bot
+                    .send(chat, "Продавец в этой кнопке не совпадает с оффером.")
+                    .await;
+                return;
+            }
+            let seller_chat = if o.seller_chat != 0 {
+                o.seller_chat
+            } else {
+                callback_seller_chat
+            };
             let seller = store
                 .get_user(seller_chat)
                 .ok()
@@ -1303,7 +2398,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 let _ = bot.send(chat, "У продавца нет BEP-20 адреса.").await;
                 return;
             }
-            let amount = match o.as_ref().and_then(|x| parse_amount(&x.price)) {
+            let amount = match parse_amount(&o.price) {
                 Some(a) if a > 0.0 => a,
                 _ => {
                     let _ = bot
@@ -1338,21 +2433,34 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                             ),
                         )
                         .await;
-                    // Прокси авто-выпускается ТОЛЬКО после оплаты, если сумма сделки > $10 и по
-                    // офферу его ещё не выпускали (1 оффер = 1 прокси). Иначе — ручной шаг продавца.
-                    let already = store.offer_proxy_issued(oid).unwrap_or(false);
-                    if amount > 10.0 && !already && !cfg.iproyal_key.is_empty() {
-                        deliver_issued_proxy(bot, store, cfg, chat, seller_chat, oid, &hash).await;
-                    } else {
-                        let (proxy_step, _) = handoff_steps(store, oid);
-                        let _ = store.set_want(seller_chat, proxy_step);
-                        let _ = bot.send(chat, "Продавцу отправлена инструкция по передаче доступа (ручной прокси).").await;
-                        let seller_prompt = format!(
-                            "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
-                            esc(&hash),
-                            manual_proxy_prompt(proxy_step)
-                        );
-                        let _ = bot.send(seller_chat, &seller_prompt).await;
+                    match o.proxy_source.as_str() {
+                        PROXY_SOURCE_BUYER => {
+                            start_buyer_offer_handoff(bot, store, cfg, seller_chat, oid, &hash)
+                                .await;
+                        }
+                        PROXY_SOURCE_SELLER => {
+                            start_seller_offer_handoff(bot, store, seller_chat, oid, &hash).await;
+                        }
+                        _ => {
+                            // Старые офферы сохраняют прежний режим: при наличии IPRoyal бот
+                            // выдаёт прокси сам, иначе просит его у продавца.
+                            let already = store.offer_proxy_issued(oid).unwrap_or(false);
+                            if amount > 10.0 && !already && !cfg.iproyal_key.is_empty() {
+                                deliver_issued_proxy(
+                                    bot,
+                                    store,
+                                    cfg,
+                                    chat,
+                                    seller_chat,
+                                    oid,
+                                    &hash,
+                                )
+                                .await;
+                            } else {
+                                start_seller_offer_handoff(bot, store, seller_chat, oid, &hash)
+                                    .await;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -1387,6 +2495,10 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
                 let o = store.get_offer(oid).ok().flatten();
                 let prod = o.as_ref().map(|x| x.product.clone()).unwrap_or_default();
+                let proxy_source = o
+                    .as_ref()
+                    .map(|offer| offer.proxy_source.as_str())
+                    .unwrap_or(PROXY_SOURCE_LEGACY);
                 if rec.address.is_empty() {
                     let _ = store.set_want(chat, "reg_address");
                     let _ = bot
@@ -1394,7 +2506,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                             chat,
                             &format!(
                                 "✅ <b>Оффер принят!</b>\n\n<b>Сейчас:</b> пришли одним сообщением свой BEP-20 адрес (<code>0x…</code>) для выплаты.\n\n<b>Затем:</b> {}",
-                                accepted_next_step(&prod)
+                                accepted_next_step(&prod, proxy_source)
                             ),
                         )
                         .await;
@@ -1415,7 +2527,7 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                             chat,
                             &format!(
                                 "✅ <b>Оффер принят!</b> Адрес для выплаты уже сохранён.\n\n⏳ Ожидай подтверждение оплаты. {}",
-                                accepted_next_step(&prod)
+                                accepted_next_step(&prod, proxy_source)
                             ),
                         )
                         .await;
@@ -1565,6 +2677,75 @@ mod tests {
     }
 
     #[test]
+    fn batch_product_menu_covers_every_subscription_variant() {
+        let labels = batch_product_kb()
+            .into_iter()
+            .flatten()
+            .map(|(label, data)| {
+                let code = data
+                    .strip_prefix("nbatch:")
+                    .expect("batch product callback");
+                (label, tier_name(code).expect("batch product code"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 7);
+        for (label, product) in labels {
+            assert_eq!(label, product);
+            assert!(matches!(
+                handoff_kind(product),
+                HandoffKind::Claude | HandoffKind::Codex | HandoffKind::Gemini
+            ));
+        }
+    }
+
+    #[test]
+    fn proxy_source_is_visible_and_changes_seller_instructions() {
+        let store = store();
+        let seller_proxy = store
+            .create_offer_with_proxy("Google AI Pro", "$20", 1, 2, PROXY_SOURCE_SELLER, "")
+            .unwrap();
+        let buyer_proxy = store
+            .create_offer_with_proxy(
+                "Google AI Pro",
+                "$20",
+                1,
+                2,
+                PROXY_SOURCE_BUYER,
+                "http://user:pass@1.2.3.4:8080",
+            )
+            .unwrap();
+        let seller_text = offer_text(&store.get_offer(seller_proxy).unwrap().unwrap());
+        let buyer_text = offer_text(&store.get_offer(buyer_proxy).unwrap().unwrap());
+        assert!(seller_text.contains("от продавца"));
+        assert!(seller_text.contains("прислать свой HTTP-прокси"));
+        assert!(buyer_text.contains("от покупателя"));
+        assert!(buyer_text.contains("Дождаться выплаты"));
+        assert!(
+            !buyer_text.contains("user:pass@1.2.3.4"),
+            "proxy must not leak into offer text"
+        );
+    }
+
+    #[test]
+    fn batch_source_keyboard_has_exactly_the_two_requested_flows() {
+        let keyboard = proxy_source_kb("batchproxy");
+        assert_eq!(keyboard.len(), 2);
+        assert_eq!(keyboard[0][0].1, "batchproxy:buyer");
+        assert_eq!(keyboard[1][0].1, "batchproxy:seller");
+        assert_eq!(proxy_source_label(PROXY_SOURCE_BUYER), "от покупателя");
+        assert_eq!(proxy_source_label(PROXY_SOURCE_SELLER), "от продавца");
+    }
+
+    #[test]
+    fn batch_quantity_accepts_only_plain_integers() {
+        assert_eq!(parse_quantity("10"), Some(10));
+        assert_eq!(parse_quantity(" 10 "), Some(10));
+        assert_eq!(parse_quantity("10.0"), None);
+        assert_eq!(parse_quantity("10 подписок"), None);
+        assert_eq!(parse_quantity(""), None);
+    }
+
+    #[test]
     fn every_subscription_offer_prepares_a_first_time_seller() {
         let store = store();
         let claude_id = store.create_offer("Claude Pro", "$20", 1, 2).unwrap();
@@ -1632,7 +2813,7 @@ mod tests {
             CODEX_MANUAL_PROXY,
             GEMINI_MANUAL_PROXY,
             GEMINI_PROXY_PROMPT,
-            accepted_next_step("Google AI Pro"),
+            accepted_next_step("Google AI Pro", PROXY_SOURCE_LEGACY),
         ];
         for copy in seller_copy {
             for internal_term in [

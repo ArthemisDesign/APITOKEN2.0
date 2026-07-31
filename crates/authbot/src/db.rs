@@ -32,7 +32,56 @@ pub struct Offer {
     pub product: String,
     pub price: String,
     pub created_by: i64,
-    pub seller_chat: i64, // адресат оффера (0 = не задан)
+    pub seller_chat: i64,     // адресат оффера (0 = не задан)
+    pub proxy_source: String, // buyer | seller | legacy
+    pub buyer_proxy: String,  // прокси покупателя, если proxy_source=buyer
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AdminState {
+    pub chat_id: i64,
+    pub step: String,
+    pub product: String,
+    pub seller_chat: i64,
+    pub mode: String, // single | batch
+    pub quantity: i64,
+    pub unit_price: String,
+    pub proxy_source: String, // buyer | seller
+    pub draft_proxies: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PurchaseBatch {
+    pub id: i64,
+    pub product: String,
+    pub unit_price: String,
+    pub quantity: i64,
+    pub total_price: String,
+    pub created_by: i64,
+    pub seller_chat: i64,
+    pub proxy_source: String, // buyer | seller
+    pub status: String, // offered | accepted | paying | paid | processing | completed | rejected
+    pub payment_tx: String,
+    pub current_item: i64, // 1-based; 0 until payment
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchItem {
+    pub id: i64,
+    pub batch_id: i64,
+    pub item_no: i64, // 1-based position in the batch
+    pub product: String,
+    pub price: String,
+    pub proxy: String,
+    pub status: String, // pending | processing | completed
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchCompletion {
+    pub batch_id: i64,
+    pub item_no: i64,
+    pub total: i64,
+    pub completed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -89,19 +138,37 @@ impl Store {
                 want TEXT DEFAULT '', hproxy TEXT DEFAULT '', ts INTEGER DEFAULT 0);
              CREATE TABLE IF NOT EXISTS offers(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, product TEXT, price TEXT,
-                created_by INTEGER, ts INTEGER DEFAULT 0);
+                created_by INTEGER, ts INTEGER DEFAULT 0,
+                proxy_source TEXT DEFAULT 'legacy', buyer_proxy TEXT DEFAULT '');
              CREATE TABLE IF NOT EXISTS responses(
                 offer_id INTEGER, uid INTEGER, status TEXT DEFAULT '', address TEXT DEFAULT '',
                 ts INTEGER DEFAULT 0, PRIMARY KEY(offer_id, uid));
              CREATE TABLE IF NOT EXISTS admin_state(
-                chat_id INTEGER PRIMARY KEY, step TEXT, product TEXT DEFAULT '');
+                chat_id INTEGER PRIMARY KEY, step TEXT, product TEXT DEFAULT '',
+                mode TEXT DEFAULT 'single', quantity INTEGER DEFAULT 1,
+                unit_price TEXT DEFAULT '', proxy_source TEXT DEFAULT '',
+                draft_proxies TEXT DEFAULT '');
              CREATE TABLE IF NOT EXISTS gemini_oauth_sessions(
                 state TEXT PRIMARY KEY,
                 chat_id INTEGER NOT NULL UNIQUE,
                 sealed_payload TEXT NOT NULL,
                 expires_ts INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
-                ts INTEGER NOT NULL DEFAULT 0);",
+                ts INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS purchase_batches(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product TEXT NOT NULL, unit_price TEXT NOT NULL,
+                quantity INTEGER NOT NULL, total_price TEXT NOT NULL,
+                created_by INTEGER NOT NULL, seller_chat INTEGER NOT NULL,
+                proxy_source TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'offered',
+                payment_tx TEXT DEFAULT '', current_item INTEGER NOT NULL DEFAULT 0,
+                ts INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS batch_items(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL, item_no INTEGER NOT NULL,
+                product TEXT NOT NULL, price TEXT NOT NULL,
+                proxy TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(batch_id, item_no));",
         )?;
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproxy TEXT DEFAULT ''", []); // мягкая миграция
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
@@ -126,9 +193,37 @@ impl Store {
             [],
         ); // адресный оффер: кому
         let _ = c.execute(
+            "ALTER TABLE offers ADD COLUMN proxy_source TEXT DEFAULT 'legacy'",
+            [],
+        ); // buyer | seller | legacy
+        let _ = c.execute(
+            "ALTER TABLE offers ADD COLUMN buyer_proxy TEXT DEFAULT ''",
+            [],
+        ); // секрет прокси покупателя для одиночного оффера
+        let _ = c.execute(
             "ALTER TABLE admin_state ADD COLUMN seller_chat INTEGER DEFAULT 0",
             [],
         ); // выбранный продавец
+        let _ = c.execute(
+            "ALTER TABLE admin_state ADD COLUMN mode TEXT DEFAULT 'single'",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE admin_state ADD COLUMN quantity INTEGER DEFAULT 1",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE admin_state ADD COLUMN unit_price TEXT DEFAULT ''",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE admin_state ADD COLUMN proxy_source TEXT DEFAULT ''",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE admin_state ADD COLUMN draft_proxies TEXT DEFAULT ''",
+            [],
+        );
         Ok(Store { c: Mutex::new(c) })
     }
 
@@ -351,10 +446,31 @@ impl Store {
         by: i64,
         seller_chat: i64,
     ) -> Result<i64> {
+        self.create_offer_with_proxy(product, price, by, seller_chat, "legacy", "")
+    }
+
+    pub fn create_offer_with_proxy(
+        &self,
+        product: &str,
+        price: &str,
+        by: i64,
+        seller_chat: i64,
+        proxy_source: &str,
+        buyer_proxy: &str,
+    ) -> Result<i64> {
         let c = self.c.lock().unwrap();
         c.execute(
-            "INSERT INTO offers(product,price,created_by,seller_chat,ts) VALUES(?1,?2,?3,?4,?5)",
-            rusqlite::params![product, price, by, seller_chat, now()],
+            "INSERT INTO offers(product,price,created_by,seller_chat,proxy_source,buyer_proxy,ts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                product,
+                price,
+                by,
+                seller_chat,
+                proxy_source,
+                buyer_proxy,
+                now()
+            ],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -362,7 +478,9 @@ impl Store {
     pub fn get_offer(&self, id: i64) -> Result<Option<Offer>> {
         let c = self.c.lock().unwrap();
         Ok(c.query_row(
-            "SELECT id,product,price,created_by,COALESCE(seller_chat,0) FROM offers WHERE id=?1",
+            "SELECT id,product,price,created_by,COALESCE(seller_chat,0),
+                    COALESCE(proxy_source,'legacy'),COALESCE(buyer_proxy,'')
+             FROM offers WHERE id=?1",
             rusqlite::params![id],
             |r| {
                 Ok(Offer {
@@ -371,6 +489,8 @@ impl Store {
                     price: r.get(2)?,
                     created_by: r.get(3)?,
                     seller_chat: r.get(4)?,
+                    proxy_source: r.get(5)?,
+                    buyer_proxy: r.get(6)?,
                 })
             },
         )
@@ -418,22 +538,67 @@ impl Store {
         .optional()?)
     }
 
+    pub fn accepted_offers_for_seller(&self, seller_chat: i64) -> Result<Vec<Offer>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT o.id,o.product,o.price,o.created_by,COALESCE(o.seller_chat,0),
+                    COALESCE(o.proxy_source,'legacy'),COALESCE(o.buyer_proxy,'')
+             FROM offers o
+             WHERE o.seller_chat=?1
+               AND EXISTS (SELECT 1 FROM responses r
+                           WHERE r.offer_id=o.id AND r.status='accepted')
+             ORDER BY o.id",
+        )?;
+        let rows = s.query_map(rusqlite::params![seller_chat], |r| {
+            Ok(Offer {
+                id: r.get(0)?,
+                product: r.get(1)?,
+                price: r.get(2)?,
+                created_by: r.get(3)?,
+                seller_chat: r.get(4)?,
+                proxy_source: r.get(5)?,
+                buyer_proxy: r.get(6)?,
+            })
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
     // ── машина создания оффера (persisted) ────────────────────────────────────
     pub fn get_admin_state(&self, chat: i64) -> Result<Option<(String, String, i64)>> {
-        let c = self.c.lock().unwrap();
-        Ok(c.query_row(
-            "SELECT step,product,COALESCE(seller_chat,0) FROM admin_state WHERE chat_id=?1",
-            rusqlite::params![chat],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .optional()?)
+        Ok(self
+            .get_admin_flow(chat)?
+            .map(|state| (state.step, state.product, state.seller_chat)))
     }
+
+    pub fn get_admin_flow(&self, chat: i64) -> Result<Option<AdminState>> {
+        let c = self.c.lock().unwrap();
+        let state = c
+            .query_row(
+                "SELECT chat_id,step,product,COALESCE(seller_chat,0),
+                        COALESCE(mode,'single'),COALESCE(quantity,1),COALESCE(unit_price,''),
+                        COALESCE(proxy_source,''),COALESCE(draft_proxies,'')
+                 FROM admin_state WHERE chat_id=?1",
+                rusqlite::params![chat],
+                |r| {
+                    let raw_proxies: String = r.get(8)?;
+                    let draft_proxies = serde_json::from_str(&raw_proxies).unwrap_or_default();
+                    Ok(AdminState {
+                        chat_id: r.get(0)?,
+                        step: r.get(1)?,
+                        product: r.get(2)?,
+                        seller_chat: r.get(3)?,
+                        mode: r.get(4)?,
+                        quantity: r.get(5)?,
+                        unit_price: r.get(6)?,
+                        proxy_source: r.get(7)?,
+                        draft_proxies,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(state)
+    }
+
     pub fn set_admin_state(
         &self,
         chat: i64,
@@ -441,10 +606,40 @@ impl Store {
         product: &str,
         seller_chat: i64,
     ) -> Result<()> {
+        self.set_admin_flow(&AdminState {
+            chat_id: chat,
+            step: step.to_string(),
+            product: product.to_string(),
+            seller_chat,
+            mode: "single".into(),
+            quantity: 1,
+            unit_price: String::new(),
+            proxy_source: String::new(),
+            draft_proxies: Vec::new(),
+        })
+    }
+
+    pub fn set_admin_flow(&self, state: &AdminState) -> Result<()> {
+        let draft_proxies = serde_json::to_string(&state.draft_proxies)?;
         self.c.lock().unwrap().execute(
-            "INSERT INTO admin_state(chat_id,step,product,seller_chat) VALUES(?1,?2,?3,?4)
-             ON CONFLICT(chat_id) DO UPDATE SET step=excluded.step, product=excluded.product, seller_chat=excluded.seller_chat",
-            rusqlite::params![chat, step, product, seller_chat])?;
+            "INSERT INTO admin_state(chat_id,step,product,seller_chat,mode,quantity,unit_price,proxy_source,draft_proxies)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(chat_id) DO UPDATE SET
+                step=excluded.step, product=excluded.product, seller_chat=excluded.seller_chat,
+                mode=excluded.mode, quantity=excluded.quantity, unit_price=excluded.unit_price,
+                proxy_source=excluded.proxy_source, draft_proxies=excluded.draft_proxies",
+            rusqlite::params![
+                state.chat_id,
+                state.step,
+                state.product,
+                state.seller_chat,
+                state.mode,
+                state.quantity,
+                state.unit_price,
+                state.proxy_source,
+                draft_proxies
+            ],
+        )?;
         Ok(())
     }
     pub fn clear_admin_state(&self, chat: i64) -> Result<bool> {
@@ -453,6 +648,404 @@ impl Store {
             rusqlite::params![chat],
         )?;
         Ok(n > 0)
+    }
+
+    // ── batch-покупки ─────────────────────────────────────────────────────────
+    pub fn create_batch(
+        &self,
+        product: &str,
+        unit_price: &str,
+        quantity: i64,
+        total_price: &str,
+        by: i64,
+        seller_chat: i64,
+        proxy_source: &str,
+        proxies: &[String],
+    ) -> Result<i64> {
+        if !(2..=100).contains(&quantity) {
+            bail!("batch quantity must be between 2 and 100");
+        }
+        match proxy_source {
+            "buyer" if proxies.len() == quantity as usize => {}
+            "buyer" => bail!("buyer-proxy batch must contain one proxy per item"),
+            "seller" if proxies.is_empty() => {}
+            "seller" => bail!("seller-proxy batch cannot contain buyer proxies"),
+            _ => bail!("unknown batch proxy source"),
+        }
+        if proxies.iter().any(|proxy| proxy.trim().is_empty()) {
+            bail!("batch proxies must not be empty");
+        }
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute(
+            "INSERT INTO purchase_batches(product,unit_price,quantity,total_price,created_by,seller_chat,proxy_source,status,ts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,'offered',?8)",
+            rusqlite::params![
+                product,
+                unit_price,
+                quantity,
+                total_price,
+                by,
+                seller_chat,
+                proxy_source,
+                now()
+            ],
+        )?;
+        let batch_id = tx.last_insert_rowid();
+        for item_no in 1..=quantity {
+            let proxy = proxies
+                .get((item_no - 1) as usize)
+                .map(String::as_str)
+                .unwrap_or("");
+            tx.execute(
+                "INSERT INTO batch_items(batch_id,item_no,product,price,proxy,status)
+                 VALUES(?1,?2,?3,?4,?5,'pending')",
+                rusqlite::params![batch_id, item_no, product, unit_price, proxy],
+            )?;
+        }
+        tx.commit()?;
+        Ok(batch_id)
+    }
+
+    pub fn get_batch(&self, id: i64) -> Result<Option<PurchaseBatch>> {
+        let c = self.c.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id,product,unit_price,quantity,total_price,created_by,seller_chat,
+                    proxy_source,status,COALESCE(payment_tx,''),COALESCE(current_item,0)
+             FROM purchase_batches WHERE id=?1",
+            rusqlite::params![id],
+            |r| {
+                Ok(PurchaseBatch {
+                    id: r.get(0)?,
+                    product: r.get(1)?,
+                    unit_price: r.get(2)?,
+                    quantity: r.get(3)?,
+                    total_price: r.get(4)?,
+                    created_by: r.get(5)?,
+                    seller_chat: r.get(6)?,
+                    proxy_source: r.get(7)?,
+                    status: r.get(8)?,
+                    payment_tx: r.get(9)?,
+                    current_item: r.get(10)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
+    pub fn get_batch_item(&self, batch_id: i64, item_no: i64) -> Result<Option<BatchItem>> {
+        let c = self.c.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id,batch_id,item_no,product,price,COALESCE(proxy,''),status
+             FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+            rusqlite::params![batch_id, item_no],
+            |r| {
+                Ok(BatchItem {
+                    id: r.get(0)?,
+                    batch_id: r.get(1)?,
+                    item_no: r.get(2)?,
+                    product: r.get(3)?,
+                    price: r.get(4)?,
+                    proxy: r.get(5)?,
+                    status: r.get(6)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
+    pub fn batch_items(&self, batch_id: i64) -> Result<Vec<BatchItem>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT id,batch_id,item_no,product,price,COALESCE(proxy,''),status
+             FROM batch_items WHERE batch_id=?1 ORDER BY item_no",
+        )?;
+        let rows = s.query_map(rusqlite::params![batch_id], |r| {
+            Ok(BatchItem {
+                id: r.get(0)?,
+                batch_id: r.get(1)?,
+                item_no: r.get(2)?,
+                product: r.get(3)?,
+                price: r.get(4)?,
+                proxy: r.get(5)?,
+                status: r.get(6)?,
+            })
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    pub fn accept_batch(&self, batch_id: i64, seller_chat: i64) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE purchase_batches SET status='accepted',ts=?3
+             WHERE id=?1 AND seller_chat=?2 AND status='offered'",
+            rusqlite::params![batch_id, seller_chat, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn reject_batch(&self, batch_id: i64, seller_chat: i64) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE purchase_batches SET status='rejected',ts=?3
+             WHERE id=?1 AND seller_chat=?2 AND status='offered'",
+            rusqlite::params![batch_id, seller_chat, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Claim payment before calling the blockchain. Double-clicks and concurrent callbacks can
+    /// therefore never send two payments for one batch.
+    pub fn claim_batch_payment(&self, batch_id: i64) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE purchase_batches AS target SET status='paying',ts=?2
+             WHERE target.id=?1 AND target.status='accepted'
+               AND NOT EXISTS (
+                   SELECT 1 FROM purchase_batches AS active
+                   WHERE active.seller_chat=target.seller_chat
+                     AND active.status IN ('paying','paid','processing')
+               )",
+            rusqlite::params![batch_id, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn mark_batch_paid(&self, batch_id: i64, tx_hash: &str) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE purchase_batches SET status='paid',payment_tx=?1,ts=?3
+             WHERE id=?2 AND status='paying'",
+            rusqlite::params![tx_hash, batch_id, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn reset_batch_payment(&self, batch_id: i64) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE purchase_batches SET status='accepted',ts=?2
+             WHERE id=?1 AND status='paying'",
+            rusqlite::params![batch_id, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// A process can stop after claiming a payment but before the subprocess returns. Keep the
+    /// claim locked until an admin explicitly verifies the chain and releases it for retry; this
+    /// avoids silently turning an uncertain blockchain operation into a duplicate payment.
+    pub fn batches_needing_payment_review(&self) -> Result<Vec<PurchaseBatch>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT id,product,unit_price,quantity,total_price,created_by,seller_chat,
+                    proxy_source,status,COALESCE(payment_tx,''),COALESCE(current_item,0)
+             FROM purchase_batches WHERE status='paying' ORDER BY id",
+        )?;
+        let rows = s.query_map([], |r| {
+            Ok(PurchaseBatch {
+                id: r.get(0)?,
+                product: r.get(1)?,
+                unit_price: r.get(2)?,
+                quantity: r.get(3)?,
+                total_price: r.get(4)?,
+                created_by: r.get(5)?,
+                seller_chat: r.get(6)?,
+                proxy_source: r.get(7)?,
+                status: r.get(8)?,
+                payment_tx: r.get(9)?,
+                current_item: r.get(10)?,
+            })
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    pub fn start_batch_item(&self, batch_id: i64, item_no: i64) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let batch_changed = tx.execute(
+            "UPDATE purchase_batches AS target
+             SET status='processing',current_item=?2,ts=?3
+             WHERE target.id=?1
+               AND (
+                   (target.status='paid' AND target.current_item=0 AND ?2=1)
+                   OR (target.status='processing' AND target.current_item=?2)
+               )
+               AND EXISTS (
+                   SELECT 1 FROM batch_items
+                   WHERE batch_id=target.id AND item_no=?2 AND status='pending'
+               )",
+            rusqlite::params![batch_id, item_no, now()],
+        )?;
+        if batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let item_changed = tx.execute(
+            "UPDATE batch_items SET status='processing'
+             WHERE batch_id=?1 AND item_no=?2 AND status='pending'",
+            rusqlite::params![batch_id, item_no],
+        )?;
+        if item_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Finish one item and atomically move the cursor to the next one. The next item is started
+    /// by the bot after the successful handoff, so Telegram/network work stays outside SQLite.
+    pub fn finish_batch_item(
+        &self,
+        batch_id: i64,
+        item_no: i64,
+    ) -> Result<Option<BatchCompletion>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let changed = tx.execute(
+            "UPDATE batch_items SET status='completed'
+             WHERE batch_id=?1 AND item_no=?2 AND status='processing'
+               AND EXISTS (
+                   SELECT 1 FROM purchase_batches
+                   WHERE id=?1 AND status='processing' AND current_item=?2
+               )",
+            rusqlite::params![batch_id, item_no],
+        )?;
+        if changed != 1 {
+            tx.commit()?;
+            return Ok(None);
+        }
+        let (total, current): (i64, i64) = tx.query_row(
+            "SELECT quantity,current_item FROM purchase_batches WHERE id=?1",
+            rusqlite::params![batch_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if current >= total {
+            let batch_changed = tx.execute(
+                "UPDATE purchase_batches
+                 SET status='completed',current_item=?2,ts=?3
+                 WHERE id=?1 AND status='processing' AND current_item=?4",
+                rusqlite::params![batch_id, total + 1, now(), item_no],
+            )?;
+            if batch_changed != 1 {
+                tx.rollback()?;
+                return Ok(None);
+            }
+            tx.commit()?;
+            return Ok(Some(BatchCompletion {
+                batch_id,
+                item_no,
+                total,
+                completed: true,
+            }));
+        }
+        let batch_changed = tx.execute(
+            "UPDATE purchase_batches SET current_item=?2,ts=?3
+             WHERE id=?1 AND status='processing' AND current_item=?4",
+            rusqlite::params![batch_id, current + 1, now(), item_no],
+        )?;
+        if batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(BatchCompletion {
+            batch_id,
+            item_no,
+            total,
+            completed: false,
+        }))
+    }
+
+    pub fn active_batch_for_seller(&self, seller_chat: i64) -> Result<Option<PurchaseBatch>> {
+        let c = self.c.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id,product,unit_price,quantity,total_price,created_by,seller_chat,
+                    proxy_source,status,COALESCE(payment_tx,''),COALESCE(current_item,0)
+             FROM purchase_batches WHERE seller_chat=?1 AND status='processing'
+             ORDER BY id LIMIT 1",
+            rusqlite::params![seller_chat],
+            |r| {
+                Ok(PurchaseBatch {
+                    id: r.get(0)?,
+                    product: r.get(1)?,
+                    unit_price: r.get(2)?,
+                    quantity: r.get(3)?,
+                    total_price: r.get(4)?,
+                    created_by: r.get(5)?,
+                    seller_chat: r.get(6)?,
+                    proxy_source: r.get(7)?,
+                    status: r.get(8)?,
+                    payment_tx: r.get(9)?,
+                    current_item: r.get(10)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
+    pub fn accepted_batches_for_seller(&self, seller_chat: i64) -> Result<Vec<PurchaseBatch>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT id,product,unit_price,quantity,total_price,created_by,seller_chat,
+                    proxy_source,status,COALESCE(payment_tx,''),COALESCE(current_item,0)
+             FROM purchase_batches WHERE seller_chat=?1 AND status='accepted' ORDER BY id",
+        )?;
+        let rows = s.query_map(rusqlite::params![seller_chat], |r| {
+            Ok(PurchaseBatch {
+                id: r.get(0)?,
+                product: r.get(1)?,
+                unit_price: r.get(2)?,
+                quantity: r.get(3)?,
+                total_price: r.get(4)?,
+                created_by: r.get(5)?,
+                seller_chat: r.get(6)?,
+                proxy_source: r.get(7)?,
+                status: r.get(8)?,
+                payment_tx: r.get(9)?,
+                current_item: r.get(10)?,
+            })
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    /// Batches that were paid or were moving to the next item when the process stopped. The
+    /// caller decides whether to resend an instruction based on the seller's persisted `want`.
+    pub fn batches_needing_resume(&self) -> Result<Vec<(PurchaseBatch, BatchItem)>> {
+        let c = self.c.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT b.id,b.product,b.unit_price,b.quantity,b.total_price,b.created_by,b.seller_chat,
+                    b.proxy_source,b.status,COALESCE(b.payment_tx,''),COALESCE(b.current_item,0),
+                    i.id,i.batch_id,i.item_no,i.product,i.price,COALESCE(i.proxy,''),i.status
+             FROM purchase_batches b
+             JOIN batch_items i ON i.batch_id=b.id
+                AND i.item_no=CASE WHEN b.current_item=0 THEN 1 ELSE b.current_item END
+             WHERE b.status IN ('paid','processing')
+               AND i.status IN ('pending','processing')
+             ORDER BY b.id",
+        )?;
+        let rows = s.query_map([], |r| {
+            Ok((
+                PurchaseBatch {
+                    id: r.get(0)?,
+                    product: r.get(1)?,
+                    unit_price: r.get(2)?,
+                    quantity: r.get(3)?,
+                    total_price: r.get(4)?,
+                    created_by: r.get(5)?,
+                    seller_chat: r.get(6)?,
+                    proxy_source: r.get(7)?,
+                    status: r.get(8)?,
+                    payment_tx: r.get(9)?,
+                    current_item: r.get(10)?,
+                },
+                BatchItem {
+                    id: r.get(11)?,
+                    batch_id: r.get(12)?,
+                    item_no: r.get(13)?,
+                    product: r.get(14)?,
+                    price: r.get(15)?,
+                    proxy: r.get(16)?,
+                    status: r.get(17)?,
+                },
+            ))
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
     pub fn counts(&self) -> (i64, i64) {
@@ -472,10 +1065,13 @@ mod tests {
     use super::*;
 
     fn tmp() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = format!(
-            "{}/authbot_test_{}",
+            "{}/authbot_test_{}_{}",
             std::env::temp_dir().display(),
-            std::process::id()
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         );
         let _ = std::fs::remove_dir_all(&dir);
         format!("{dir}/authbot.db")
@@ -524,6 +1120,145 @@ mod tests {
         let o = s.get_offer(1).unwrap().unwrap();
         assert_eq!(o.product, "Claude Max20x");
         assert_eq!(o.seller_chat, 111);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn batch_has_one_proxy_per_item_and_advances_atomically() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        let proxies = vec![
+            "http://u1:p1@1.1.1.1:1001".to_string(),
+            "http://u2:p2@2.2.2.2:1002".to_string(),
+            "http://u3:p3@3.3.3.3:1003".to_string(),
+        ];
+        let id = s
+            .create_batch("ChatGPT Plus", "$20", 3, "$60", 999, 111, "buyer", &proxies)
+            .unwrap();
+        assert_eq!(s.get_batch(id).unwrap().unwrap().status, "offered");
+        assert_eq!(s.batch_items(id).unwrap().len(), 3);
+        assert_eq!(s.get_batch_item(id, 2).unwrap().unwrap().proxy, proxies[1]);
+        assert!(!s.start_batch_item(id, 2).unwrap());
+        assert!(s.accept_batch(id, 111).unwrap());
+        assert!(s.claim_batch_payment(id).unwrap());
+        s.mark_batch_paid(id, "0xtest").unwrap();
+        let resume = s.batches_needing_resume().unwrap();
+        assert_eq!(resume.len(), 1);
+        assert_eq!(resume[0].1.item_no, 1);
+        assert!(s.start_batch_item(id, 1).unwrap());
+        assert!(!s.start_batch_item(id, 3).unwrap());
+        assert_eq!(
+            s.active_batch_for_seller(111)
+                .unwrap()
+                .unwrap()
+                .current_item,
+            1
+        );
+
+        let first = s.finish_batch_item(id, 1).unwrap().unwrap();
+        assert_eq!(
+            first,
+            BatchCompletion {
+                batch_id: id,
+                item_no: 1,
+                total: 3,
+                completed: false
+            }
+        );
+        assert!(s.start_batch_item(id, 2).unwrap());
+        assert_eq!(
+            s.get_batch_item(id, 2).unwrap().unwrap().status,
+            "processing"
+        );
+        assert!(s.finish_batch_item(id, 2).unwrap().unwrap().completed == false);
+        assert!(s.start_batch_item(id, 3).unwrap());
+        assert!(s.finish_batch_item(id, 3).unwrap().unwrap().completed);
+        assert!(s.active_batch_for_seller(111).unwrap().is_none());
+        assert!(s.finish_batch_item(id, 3).unwrap().is_none());
+
+        let queued = s
+            .create_batch("ChatGPT Plus", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(queued, 111).unwrap());
+        assert!(s.claim_batch_payment(queued).unwrap());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn seller_cannot_claim_two_batch_payments_at_once() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        let first = s
+            .create_batch("Claude Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        let second = s
+            .create_batch("Claude Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(first, 111).unwrap());
+        assert!(s.accept_batch(second, 111).unwrap());
+        assert!(s.claim_batch_payment(first).unwrap());
+        assert_eq!(s.batches_needing_payment_review().unwrap().len(), 1);
+        assert!(!s.claim_batch_payment(second).unwrap());
+        assert!(s.reset_batch_payment(first).unwrap());
+        assert_eq!(s.get_batch(first).unwrap().unwrap().status, "accepted");
+        assert!(s.claim_batch_payment(first).unwrap());
+        s.mark_batch_paid(first, "0xfirst").unwrap();
+        assert!(!s.claim_batch_payment(second).unwrap());
+        assert!(s.start_batch_item(first, 1).unwrap());
+        assert!(!s.claim_batch_payment(second).unwrap());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn uncertain_batch_payment_stays_locked_across_restart() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        {
+            let s = Store::open(&p).unwrap();
+            let id = s
+                .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+                .unwrap();
+            assert!(s.accept_batch(id, 111).unwrap());
+            assert!(s.claim_batch_payment(id).unwrap());
+        }
+        let s = Store::open(&p).unwrap();
+        let review = s.batches_needing_payment_review().unwrap();
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].status, "paying");
+        assert!(s.reset_batch_payment(review[0].id).unwrap());
+        assert_eq!(
+            s.get_batch(review[0].id).unwrap().unwrap().status,
+            "accepted"
+        );
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn admin_batch_draft_survives_restart_without_losing_proxy_order() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        {
+            let s = Store::open(&p).unwrap();
+            s.set_admin_flow(&AdminState {
+                chat_id: 999,
+                step: "batch_proxies".into(),
+                product: "Claude Pro".into(),
+                seller_chat: 111,
+                mode: "batch".into(),
+                quantity: 2,
+                unit_price: "$20".into(),
+                proxy_source: "buyer".into(),
+                draft_proxies: vec!["http://u:p@1.1.1.1:80".into()],
+            })
+            .unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        let state = s.get_admin_flow(999).unwrap().unwrap();
+        assert_eq!(state.mode, "batch");
+        assert_eq!(state.step, "batch_proxies");
+        assert_eq!(state.draft_proxies, vec!["http://u:p@1.1.1.1:80"]);
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 }

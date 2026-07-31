@@ -574,6 +574,13 @@ async fn finish_oauth(
                     )
                     .await;
             }
+            crate::bot::complete_batch_item_after_handoff(
+                &state.bot,
+                &state.store,
+                &state.config,
+                session.chat_id,
+            )
+            .await;
             callback_html(StatusCode::OK, true)
         }
         Err(failure) => {
@@ -648,8 +655,18 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    // The authorization code and its encrypted PKCE transaction cannot be retried. Restart from
-    // the account proxy; Auth Bot will create a fresh Antigravity authorization session.
+    // The authorization code and its encrypted PKCE transaction cannot be retried. Restore only
+    // the already state-bound proxy so a failed callback can restart the same product flow. The
+    // seller can still use /cancel to discard it and provide a replacement when the selected
+    // source is the seller.
+    if let Some(oauth) = state.config.gemini_oauth.as_ref() {
+        if let Some((proxy, proxy_order_id)) = pending_proxy(oauth, session) {
+            let _ = state.store.set_hproxy(session.chat_id, &proxy);
+            let _ = state
+                .store
+                .set_hproxy_order(session.chat_id, proxy_order_id);
+        }
+    }
     let _ = state.store.set_want(session.chat_id, "gm_gproxy");
     let _ = state
         .bot
@@ -670,6 +687,17 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
             ""
         }
     );
+}
+
+fn pending_proxy(config: &Config, session: &GeminiOAuthSession) -> Option<(String, i64)> {
+    let envelope: SealedCredential = serde_json::from_str(&session.sealed_payload).ok()?;
+    let payload = config.keyring.open_secret(&session.state, &envelope).ok()?;
+    let pending = serde_json::from_str::<PendingOAuthSecret>(payload.as_str()).ok()?;
+    if pending.proxy.is_empty() {
+        None
+    } else {
+        Some((pending.proxy.clone(), pending.proxy_order_id))
+    }
 }
 
 fn valid_oauth_value(value: &str, max: usize) -> bool {

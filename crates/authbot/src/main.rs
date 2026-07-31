@@ -457,6 +457,7 @@ async fn main() -> Result<()> {
     let _ = bot.delete_webhook().await;
 
     let uname = bot.get_me().await.unwrap_or_else(|_| "?".into());
+    bot::resume_batches(&bot, &store, &cfg).await;
     let (users, offers) = store.counts();
     let admin_state = if cfg.admins_id.is_empty() && cfg.admins_name.is_empty() {
         "EMPTY"
