@@ -51,11 +51,12 @@
 - При старте PostgreSQL authority только read-only проверяет применённую схему; DDL выполняется
   отдельным `db migrate-engine` до запуска слота blue-green.
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
-- Dormant snapshot bridge preflight читает только здесь
+- Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
-  пары отклоняются. Пока отдельный runtime caller не доставлен, любое enabled-значение обязано
-  завершать startup ошибкой, а не создавать ложное ощущение активного rollout.
+  пары отклоняются. Enabled требует sample `1..=10000` и активирует только atomic actual-snapshot
+  reserve caller Anthropic/OpenAI; policy shadow/resolver он не включает. Rollout выполняется
+  отдельными наблюдаемыми config-ступенями, а не изменением безопасного default.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
   остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится

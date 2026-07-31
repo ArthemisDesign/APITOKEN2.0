@@ -57,23 +57,31 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 Для policy-ключей cap берёт минимум из баланса аккаунта и оставшегося lifetime-лимита. Такие ключи
 обходят auth TTL cache; срок и лимит повторно проверяются в атомарной транзакции reserve.
 
-**Stage 3B1c.2 snapshot reserve handoff — dormant:** отдельный
+**Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** отдельный
 `ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned
 typed snapshot как единственный источник request/account/hold и вызывает guarded registry commit.
 Его guard может отменить только `PENDING → CANCELED` до commit gate. После
 `COMMIT_DECIDED` компенсационный `CancelReserve` запрещён: lost reply оставляет active reservation
 для exact replay либо штатного lease recovery, без terminal reservation/outbox. PostgreSQL
 повторяет transient operation только до commit decision; неоднозначная commit-ошибка возвращается
-как ошибка и разрешается последующим exact replay. Существующий live `Reserve` и его прежняя
-RAII-компенсация не изменены. Рядом существует только dormant bridge preflight: validated config
+как ошибка и разрешается последующим exact replay. Существующий scalar `Reserve` и его прежняя
+RAII-компенсация не изменены. Bridge preflight использует validated config
 (`disabled/0` или `sampled/1..=10000 bp`), SHA-256 v1 sampler по trusted fixed provider и внутреннему
 canonical lowercase UUIDv4 request ID, stable typed decisions/reasons. Sampler не читает clock/DB,
-не пишет метрики и пока недостижим из runtime. Dormant provider-owned builders рядом с текущими
+а provider-owned builders рядом с текущими
 legacy quote implementations сами выводят canonical/tariff/modifier identity через `metering` и
 строят validated snapshot из одного frozen timestamp. Anthropic builder вызывает неизменённый
 `cap_to_balance`, OpenAI pricing builder — неизменённый `reserve_cost`; provider/canonical/tariff и
-hold caller не задаёт. Оба модуля не имеют DB/config/metrics/caller. Live admission и traffic
-activation отсутствуют, поэтому config, builders и новый actor command не участвуют в production.
+hold caller не задаёт.
+
+Live metered Anthropic/OpenAI admission теперь применяет sampler до денег. Disabled/not-sampled и
+typed pre-money fallback идут в byte-equivalent scalar reserve без snapshot; selected request
+атомарно сохраняет reservation+actual snapshot. После выбора atomic path invariant/DB/handoff или
+idempotency conflict fail closed без второго scalar reserve. Успешный hold продолжает прежний
+mark-delivering/cancel/settlement lifecycle. Default config остаётся `false/0`; включение требует
+явного bounded sample. Метрики имеют только фиксированные provider/reason labels и fixed-bucket
+atomic reserve latency histogram. Gemini, policy read/resolver, shadow queue, readiness и
+settlement pricing этим caller не затронуты.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),

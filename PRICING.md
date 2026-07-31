@@ -51,6 +51,30 @@ creates a durable pricing job when the tier changes. A separate job step calls t
 endpoint. Failed synchronization is retried; PostgreSQL and the engine never need a distributed
 transaction.
 
+### Atomic legacy snapshot bridge rollout
+
+The engine can durably attach an immutable legacy pricing snapshot to a sampled Anthropic/OpenAI
+reservation without changing the scalar price or settlement formula. This is rollout plumbing for
+`MULTI-DISCOUNT.md`, not policy enforcement: it does not read policy state, enable Gemini, change
+`/ready`, or make a shadow result affect a customer response.
+
+The only valid configuration pairs are:
+
+- `CLAUDE_API_PRICING_BRIDGE_ENABLED=false` and
+  `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=0` (the production default);
+- `CLAUDE_API_PRICING_BRIDGE_ENABLED=true` and an integer sample from `1` through `10000` basis
+  points.
+
+Activation is staged at `100`, `1000`, then `10000` basis points, with at least one complete peak
+traffic interval observed between stages. Before each increase, compare the fixed-provider atomic
+reserve histogram `claude_api_pricing_bridge_atomic_reserve_duration_seconds` with the pre-bridge
+request/reserve baseline and inspect PostgreSQL connections, locks, CPU, memory, customer 5xx, and
+the bounded bridge counters. `failure_total > 0` or `conflict_total > 0` is an immediate stop;
+unexpected constraint errors, a material p95/p99 regression, DB pressure, or a customer-visible
+status/body difference also requires returning to `false/0`. Disabling the bridge restores the
+scalar reserve path without rolling back schema. The bridge must cover all eligible fixed-plane
+traffic before the separate shadow worker can claim 100% coverage.
+
 ## B2B pricing
 
 B2B accounts bypass the progressive table. An operator creates a one-time, email-bound invitation

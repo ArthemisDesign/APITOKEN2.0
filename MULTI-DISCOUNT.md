@@ -9,10 +9,12 @@ checkpoint: pure tariff/model identities и dormant actual snapshot/reserve уж
 typed shadow evaluation persistence и полное runtime manifest evidence также доставлены. Pure
 typed shadow work-item/evaluation builder в `forward`, без caller/config/traffic, уже доставлен.
 Строгий default-off bridge config и versioned deterministic sampler также доставлены. Настоящий
-безопасный provider-builder checkpoint добавляет только pure Anthropic/OpenAI quote+snapshot
-builders поверх существующих legacy reserve formulas. Любая попытка включить config в этом dormant
-binary по-прежнему отклоняется при старте: runtime caller, метрики, queue и traffic activation
-отсутствуют.
+безопасный provider-builder checkpoint с pure Anthropic/OpenAI quote+snapshot builders поверх
+существующих legacy reserve formulas также доставлен. Текущая итерация подключает только atomic
+legacy snapshot bridge к live metered reserve-путям Anthropic/OpenAI: default остаётся `false/0`,
+невыбранные и заранее неeligible запросы сохраняют scalar reserve, а выбранный atomic path не
+делает опасный второй scalar reserve после ошибки. Policy read/resolver, shadow queue/worker,
+settlement tariff pinning и влияние на клиентский admission в этот checkpoint не входят.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -45,7 +47,10 @@ foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Этот prefl
 добавляет миграций и live caller: он только делает конфигурацию и выборку заранее проверяемыми, не
 затрагивая деньги или production traffic. Dormant config/sampler preflight доставлен commit
 `778d303377f4f5b55f4c680b89e79ed19dff7d69`. Следующий provider-builder checkpoint сохраняет ту же
-границу и не меняет существующий admission.
+границу и не меняет существующий admission; он доставлен commit
+`7f93766350b1364097259ba10e78d1f1fc1be221`. Текущий live-caller checkpoint впервые делает
+sampled config достижимым, но после merge остаётся выключенным существующим production default и
+активируется только отдельной наблюдаемой config-ступенью.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1656,20 +1661,53 @@ PostgreSQL автоматически повторяет transient attempt то�
 actor turn. SQLite и real PostgreSQL tests доказывают полный rollback закрытого gate, а actor tests —
 отсутствие durable строк при pre-commit cancel и ровно один active reserve без outbox при lost reply.
 
-Production bridge всё ещё не подключён. Доставленный preflight содержит только SHA-256 v1 sampler,
-входами которого служат trusted fixed provider и внутренний canonical lowercase UUIDv4 request ID,
-и typed config с допустимыми состояниями `disabled/0` либо `enabled/1..=10000 bp`. Server читает
-`CLAUDE_API_PRICING_BRIDGE_ENABLED` и `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP` строго, default —
-`false/0`; пока runtime caller не доставлен, любое enabled-значение намеренно останавливает startup.
-Dormant provider-owned builders теперь существуют отдельно для обеих fixed product planes. Они
-сами получают canonical/tariff/modifier identity из `metering`, фиксируют один quote timestamp и
-строят validated snapshot, не принимая provider/canonical/tariff/amount identity от caller.
-Anthropic builder вызывает неизменённый `cap_to_balance`; OpenAI pricing builder — неизменённый
-`reserve_cost`, поэтому второй денежной формулы нет. Их parity tests покрывают все audited модели,
-premium modifiers, тарифные/long-context границы, scalar, balance cap, overflow и typed fallback.
-Canonicalizer call из admission, telemetry и live caller всё ещё отсутствуют. Поэтому старые reserve
-paths сохраняют прежнее поведение, а dormant actor command, sampler и builders без отдельного caller
-не создают production snapshots и не меняют трафик.
+Доставленный preflight содержит SHA-256 v1 sampler, входами которого служат trusted fixed provider
+и внутренний canonical lowercase UUIDv4 request ID, и typed config с допустимыми состояниями
+`disabled/0` либо `enabled/1..=10000 bp`. Server читает
+`CLAUDE_API_PRICING_BRIDGE_ENABLED` и `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP` строго; default остаётся
+`false/0`, а enabled-конфигурация теперь разрешает только явно заданный bounded sample.
+Provider-owned builders существуют отдельно для обеих fixed product planes. Они сами получают
+canonical/tariff/modifier identity из `metering`, фиксируют один quote timestamp и строят validated
+snapshot, не принимая provider/canonical/tariff/amount identity от caller. Anthropic builder
+вызывает неизменённый `cap_to_balance`; OpenAI pricing builder — неизменённый `reserve_cost`, поэтому
+второй денежной формулы нет. Их parity tests покрывают все audited модели, premium modifiers,
+тарифные/long-context границы, scalar, balance cap, overflow и typed fallback.
+
+Текущий application checkpoint подключает эти контракты к live reserve следующим образом:
+
+- только metered billable Anthropic/OpenAI request использует engine-owned UUIDv4 для
+  deterministic sample decision; admin/free endpoints и Gemini не участвуют;
+- `disabled`, `not_sampled`, unsupported identity/modifier и pre-money size/range fallback идут в
+  прежний scalar reserve path и не создают snapshot;
+- выбранный запрос строит snapshot из тех же quote inputs, а
+  `reserve_request_with_legacy_snapshot` атомарно фиксирует reservation+actual snapshot; Anthropic
+  сохраняет прежние четыре строго уменьшающиеся balance-cap попытки, OpenAI — прежний single
+  reserve outcome;
+- после входа в выбранный atomic path builder invariant, DB/constraint/handoff error или
+  idempotency conflict fail closed как retryable provider-native unavailable и никогда не запускает
+  второй scalar reserve с тем же request ID;
+- обычный `NotReserved` остаётся low-balance, а успешный hold продолжает прежние
+  mark-delivering/cancel/settlement lifecycle и не меняет фактическую формулу charge;
+- `/metrics` публикует только bounded provider/reason counters: selected, inserted, exact replay,
+  not-reserved, failure, conflict и заранее перечисленные fallback reasons; account/key/request/model
+  IDs в labels отсутствуют; отдельная fixed-bucket histogram измеряет полный selected atomic
+  quote+reserve latency по двум fixed providers без денежных или пользовательских labels;
+- integration tests доказывают для обеих плоскостей, что `10000 bp` sample создаёт actual snapshot
+  до обычного cancel lifecycle, а default-off оставляет scalar reservation без snapshot и в обоих
+  случаях полностью возвращает hold.
+
+Этот checkpoint после доставки остаётся production-disabled до отдельной config-активации и не
+читает policy, не запускает resolver/shadow worker, не меняет `/ready` и не переводит settlement на
+pinned tariff schedule. Поэтому наличие snapshot не выдаётся за завершённое shadow или end-to-end
+policy billing.
+
+Локальная проверка application checkpoint 2026-07-31 завершена: полный
+`pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` зелёный;
+`cargo clippy -p forward -p claude-api --all-targets` завершился без ошибок (только существующие
+несвязанные warnings); `bash deploy/sccache-cargo.sh cargo test --locked --workspace` зелёный,
+включая 303 forward tests (2 explicit live-dependency ignores), 31 server, 70 registry и 40
+metering tests; shell syntax gate и `git diff --check` зелёные. Production activation этой
+проверкой не выполнялась и будет отдельной наблюдаемой ступенью после delivery/watchdog.
 
 Это единственный новый critical-path write в Stage 3B1c. Его failure атомарно откатывает reserve;
 после входа в eligible bridge DB/constraint failure не делает fallback-второй reserve с тем же

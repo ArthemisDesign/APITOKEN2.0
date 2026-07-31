@@ -11,8 +11,12 @@
 
 mod anthropic_snapshot;
 
+use self::anthropic_snapshot::{
+    prepare_anthropic_legacy_quote, AnthropicLegacyQuoteInput, PreparedAnthropicLegacyQuote,
+};
 use crate::meter::{BillCtx, MeterCtx, TeeMeter};
 use crate::metrics::Metrics;
+use crate::pricing::{EnginePricingRequestId, PricingBridgeDecision, PricingBridgePrepare};
 use crate::state::AppState;
 use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
@@ -20,6 +24,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
+use registry::pricing::{LegacyScalarReserveOutcome, SnapshotProvider};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -1039,6 +1044,79 @@ pub async fn forward(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or(0);
+        let bridge_provider = SnapshotProvider::Anthropic;
+        let bridge_prepared: Option<PreparedAnthropicLegacyQuote> = if app
+            .cfg
+            .pricing_bridge
+            .enabled()
+        {
+            let Some(request_id) = EnginePricingRequestId::from_engine_uuid_v4(&engine_request_id)
+            else {
+                app.metrics.pricing_bridge_failure(bridge_provider);
+                eprintln!("pricing bridge rejected the engine-owned request identity");
+                return local_err_for(LocalErr::Overloaded, "pricing_bridge_invariant", Some(2));
+            };
+            match app
+                .cfg
+                .pricing_bridge
+                .decision(bridge_provider, &request_id)
+            {
+                PricingBridgeDecision::Fallback(reason) => {
+                    app.metrics.pricing_bridge_fallback(bridge_provider, reason);
+                    None
+                }
+                PricingBridgeDecision::Selected => {
+                    app.metrics.pricing_bridge_selected(bridge_provider);
+                    let modifiers = metering::AnthropicAdmissionModifiers {
+                        speed: if requested_fast {
+                            metering::AnthropicSpeed::Fast
+                        } else {
+                            metering::AnthropicSpeed::Standard
+                        },
+                        inference_geo: if requested_us_inference {
+                            metering::AnthropicInferenceGeo::Us
+                        } else {
+                            metering::AnthropicInferenceGeo::Global
+                        },
+                    };
+                    match prepare_anthropic_legacy_quote(AnthropicLegacyQuoteInput {
+                        request_id,
+                        account_id: account_id.clone(),
+                        requested_model_id: model.clone(),
+                        quote_ts: price_ts,
+                        payable_multiplier_bp: *mult_bp,
+                        modifiers,
+                        input_token_upper_bound: (raw.len() + app.cfg.identity.len())
+                            .max(1)
+                            .min(u64::MAX as usize)
+                            as u64,
+                        web_search_requests: web_uses,
+                        requested_max_output_tokens: max_tokens,
+                    }) {
+                        Ok(PricingBridgePrepare::Eligible(prepared)) => Some(prepared),
+                        Ok(PricingBridgePrepare::Fallback(reason)) => {
+                            app.metrics.pricing_bridge_fallback(bridge_provider, reason);
+                            None
+                        }
+                        Err(error) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("Anthropic pricing bridge preparation failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_invariant",
+                                Some(2),
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            app.metrics.pricing_bridge_fallback(
+                bridge_provider,
+                crate::pricing::PricingBridgeFallbackReason::BridgeDisabled,
+            );
+            None
+        };
         let mut p = metering::model_prices_reserve_for_speed_at(&model, price_ts, requested_fast);
         if requested_us_inference {
             p = metering::premium_prices_ceil(p, 11_000);
@@ -1058,46 +1136,144 @@ pub async fn forward(
         // output под него+буфер и повторяем. None-путь reserve строки НЕ создаёт → тот же request_id
         // безопасно повторить с меньшим hold (идемпотентность не триггерится). Ограничено 4 попытками:
         // строго убывающий hold сходится быстро; иначе честный 402 (реально за полом даже с буфером).
-        let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
         let mut reserved_pair: Option<(u64, i64)> = None;
-        for _ in 0..4 {
-            let (eff_mt, hold) = match cur {
-                Some(x) => x,
-                None => break,
-            };
-            match billing
-                .reserve_request(&engine_request_id, account_id, key, hold)
-                .await
-            {
-                Ok(Some(_)) => {
-                    reserved_pair = Some((eff_mt, hold));
+        if let Some(prepared) = bridge_prepared {
+            let _bridge_latency = app.metrics.pricing_bridge_latency_timer(bridge_provider);
+            let mut current_balance = bal;
+            for _ in 0..4 {
+                let quote = match prepared.quote(current_balance) {
+                    Ok(Some(quote)) => quote,
+                    Ok(None) => break,
+                    Err(error) => {
+                        app.metrics.pricing_bridge_failure(bridge_provider);
+                        eprintln!("Anthropic pricing bridge quote failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "pricing_bridge_invariant",
+                            Some(2),
+                        );
+                    }
+                };
+                let eff_mt = quote.effective_max_output_tokens();
+                let hold = quote.snapshot().charged_hold_nano();
+                match billing
+                    .reserve_request_with_legacy_snapshot(key, quote.into_snapshot())
+                    .await
+                {
+                    Ok(LegacyScalarReserveOutcome::Inserted(_)) => {
+                        app.metrics.pricing_bridge_inserted(bridge_provider);
+                        reserved_pair = Some((eff_mt, hold));
+                        break;
+                    }
+                    Ok(LegacyScalarReserveOutcome::Unchanged(_)) => {
+                        app.metrics.pricing_bridge_unchanged(bridge_provider);
+                        reserved_pair = Some((eff_mt, hold));
+                        break;
+                    }
+                    Ok(LegacyScalarReserveOutcome::NotReserved) => {
+                        app.metrics.pricing_bridge_not_reserved(bridge_provider);
+                    }
+                    Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
+                        app.metrics.pricing_bridge_conflict(bridge_provider);
+                        eprintln!("Anthropic pricing bridge reserve conflict: {conflict:?}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "pricing_bridge_conflict",
+                            Some(2),
+                        );
+                    }
+                    Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
+                        app.metrics.pricing_bridge_failure(bridge_provider);
+                        eprintln!("Anthropic pricing bridge commit handoff was aborted");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "pricing_bridge_handoff_aborted",
+                            Some(2),
+                        );
+                    }
+                    Err(error) => {
+                        app.metrics.pricing_bridge_failure(bridge_provider);
+                        eprintln!("Anthropic pricing bridge reservation failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "pricing_bridge_reservation_unavailable",
+                            Some(2),
+                        );
+                    }
+                }
+                let fresh = match billing.account(account_id).await {
+                    Ok(Some(account)) => account.balance_nano as i128,
+                    Ok(None) => 0,
+                    Err(error) => {
+                        app.metrics.pricing_bridge_failure(bridge_provider);
+                        eprintln!("billing balance refresh failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "billing_balance_refresh_unavailable",
+                            Some(2),
+                        );
+                    }
+                };
+                let next_hold = match prepared.quote(fresh) {
+                    Ok(Some(quote)) => quote.snapshot().charged_hold_nano(),
+                    Ok(None) => break,
+                    Err(error) => {
+                        app.metrics.pricing_bridge_failure(bridge_provider);
+                        eprintln!("Anthropic pricing bridge requote failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "pricing_bridge_invariant",
+                            Some(2),
+                        );
+                    }
+                };
+                if next_hold < hold {
+                    current_balance = fresh;
+                } else {
                     break;
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    eprintln!("billing reservation failed: {error:#}");
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "billing_reservation_unavailable",
-                        Some(2),
-                    );
-                }
             }
-            let fresh = match billing.account(account_id).await {
-                Ok(Some(account)) => account.balance_nano as i128,
-                Ok(None) => 0,
-                Err(error) => {
-                    eprintln!("billing balance refresh failed: {error:#}");
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "billing_balance_refresh_unavailable",
-                        Some(2),
-                    );
+        } else {
+            let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
+            for _ in 0..4 {
+                let (eff_mt, hold) = match cur {
+                    Some(x) => x,
+                    None => break,
+                };
+                match billing
+                    .reserve_request(&engine_request_id, account_id, key, hold)
+                    .await
+                {
+                    Ok(Some(_)) => {
+                        reserved_pair = Some((eff_mt, hold));
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("billing reservation failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "billing_reservation_unavailable",
+                            Some(2),
+                        );
+                    }
                 }
-            };
-            match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
-                Some((e, h)) if h < hold => cur = Some((e, h)), // строго меньше → сходится, ретрай
-                _ => break,                                     // не уменьшить/не влезает → 402
+                let fresh = match billing.account(account_id).await {
+                    Ok(Some(account)) => account.balance_nano as i128,
+                    Ok(None) => 0,
+                    Err(error) => {
+                        eprintln!("billing balance refresh failed: {error:#}");
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "billing_balance_refresh_unavailable",
+                            Some(2),
+                        );
+                    }
+                };
+                match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
+                    Some((e, h)) if h < hold => cur = Some((e, h)),
+                    _ => break,
+                }
             }
         }
         let (eff_mt, hold) = match reserved_pair {
@@ -1743,6 +1919,138 @@ fn stream_back(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::affinity::AffinityStore;
+    use crate::billing::AsyncBilling;
+    use crate::breaker::Breaker;
+    use crate::config::ProxyConfig;
+    use crate::keylimiter::KeyLimiter;
+    use crate::upstream::Clients;
+    use crate::{PricingBridgeConfig, PricingBridgeFallbackReason, ProviderMode};
+    use axum::body::Body;
+    use axum::extract::{ConnectInfo, State};
+    use pool::{Pool, Reserve};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static NEXT_ANTHROPIC_BRIDGE_DB: AtomicU64 = AtomicU64::new(0);
+
+    fn anthropic_bridge_proxy_config(pricing_bridge: PricingBridgeConfig) -> Arc<ProxyConfig> {
+        Arc::new(ProxyConfig {
+            api_keys: Vec::new(),
+            control_keys: Vec::new(),
+            panel_keys: Vec::new(),
+            default_mult_bp: 10_000,
+            pricing_bridge,
+            trust_loopback: false,
+            upstream: "http://127.0.0.1:1".to_string(),
+            max_tries: 1,
+            max_inflight_per_key: 10,
+            util_cap: 1.0,
+            cool_secs: 1,
+            smooth_wait_ms: 0,
+            affinity_wait_ms: 0,
+            affinity_wait_min_bytes: 0,
+            poll: false,
+            inject_identity: false,
+            identity: String::new(),
+            inject_billing: false,
+            cc_version: String::new(),
+            cc_entrypoint: String::new(),
+            default_beta: String::new(),
+            user_agent: "pricing-bridge-test".to_string(),
+            user_agents: Vec::new(),
+            ua_spread: 0,
+            anthropic_version: "2023-06-01".to_string(),
+            connect_timeout: 1,
+            x_app: String::new(),
+            stainless_lang: String::new(),
+            stainless_runtime: String::new(),
+            stainless_runtime_version: String::new(),
+            stainless_package_version: String::new(),
+            stainless_os: String::new(),
+            stainless_arch: String::new(),
+        })
+    }
+
+    fn anthropic_bridge_app(
+        billing: Arc<AsyncBilling>,
+        pricing_bridge: PricingBridgeConfig,
+    ) -> AppState {
+        let cfg = anthropic_bridge_proxy_config(pricing_bridge);
+        AppState {
+            provider: ProviderMode::Anthropic,
+            authority: Arc::new(registry::authority::AuthorityConfig::new(
+                ":memory:".to_string(),
+                None,
+            )),
+            data_db_path: Arc::new(":memory:".to_string()),
+            pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: None,
+            gemini: None,
+            billing: Some(billing),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            key_limiter: Arc::new(KeyLimiter::new()),
+            concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
+            probe_poke: None,
+            cfg,
+        }
+    }
+
+    async fn invoke_anthropic_bridge(
+        pricing_bridge: PricingBridgeConfig,
+    ) -> (AppState, Arc<AsyncBilling>, std::path::PathBuf) {
+        const ACCOUNT: &str = "anthropic-bridge-account";
+        const KEY: &str = "sk-pool-anthropic-bridge";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_ANTHROPIC_BRIDGE_DB.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-bridge-{}-{unique}-{sequence}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start Anthropic bridge test billing"),
+        );
+        billing.create_account(ACCOUNT, None, 2_000).await.unwrap();
+        billing
+            .topup(ACCOUNT, 20_000_000, Some("anthropic-bridge-seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let app = anthropic_bridge_app(Arc::clone(&billing), pricing_bridge);
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", KEY)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), 529);
+        billing.flush().await.unwrap();
+        (app, billing, path)
+    }
 
     fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
         Limits {
@@ -2035,6 +2343,94 @@ mod tests {
         assert_eq!(second.0, "a-valid");
         assert_eq!(first.1.account_id, second.1.account_id);
 
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sampled_anthropic_request_persists_snapshot_before_legacy_cancel_lifecycle() {
+        let config = PricingBridgeConfig::from_parts(true, 10_000).unwrap();
+        let (app, billing, path) = invoke_anthropic_bridge(config).await;
+
+        assert_eq!(
+            app.metrics
+                .pricing_bridge_selected_count(SnapshotProvider::Anthropic),
+            1
+        );
+        assert_eq!(
+            app.metrics
+                .pricing_bridge_inserted_count(SnapshotProvider::Anthropic),
+            1
+        );
+        assert_eq!(
+            app.metrics
+                .pricing_bridge_latency_count(SnapshotProvider::Anthropic),
+            1
+        );
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let request_id: String = connection
+            .query_row(
+                "SELECT request_id FROM pricing_admission_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let snapshot =
+            registry::pricing::sqlite_legacy_scalar_admission_snapshot(&connection, &request_id)
+                .unwrap()
+                .expect("sampled Anthropic request must persist its actual snapshot");
+        assert_eq!(snapshot.provider(), SnapshotProvider::Anthropic);
+        assert_eq!(snapshot.account_id(), "anthropic-bridge-account");
+        assert_eq!(snapshot.requested_model_id(), "claude-sonnet-4-6");
+        let account = billing
+            .account("anthropic-bridge-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, 20_000_000);
+        assert_eq!(account.reserved_nano, 0);
+
+        drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn disabled_anthropic_bridge_preserves_scalar_reserve_without_snapshot() {
+        let (app, billing, path) = invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
+
+        assert_eq!(
+            app.metrics
+                .pricing_bridge_selected_count(SnapshotProvider::Anthropic),
+            0
+        );
+        assert_eq!(
+            app.metrics.pricing_bridge_fallback_count(
+                SnapshotProvider::Anthropic,
+                PricingBridgeFallbackReason::BridgeDisabled,
+            ),
+            1
+        );
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let snapshot_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_admission_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshot_count, 0);
+        let account = billing
+            .account("anthropic-bridge-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, 20_000_000);
+        assert_eq!(account.reserved_nano, 0);
+
+        drop(connection);
+        drop(app);
         drop(billing);
         let _ = std::fs::remove_file(path);
     }

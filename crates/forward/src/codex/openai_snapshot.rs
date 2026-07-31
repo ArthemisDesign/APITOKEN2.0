@@ -1,10 +1,8 @@
-//! Dormant OpenAI legacy quote/snapshot builder.
+//! OpenAI legacy quote/snapshot builder for the default-off atomic bridge.
 //!
 //! Pricing comes from the existing private `billing::reserve_cost` function and the audited
-//! `metering` capability. The live admission path is intentionally unchanged and this module has
-//! no DB, config, metrics, clock or runtime caller.
-
-#![allow(dead_code)]
+//! `metering` capability. The caller owns rollout selection and persistence; this module has no DB,
+//! env, metrics or clock and cannot invent provider, tariff, modifier or hold identity.
 
 use super::{billing::reserve_cost, CodexModel};
 use crate::pricing::{

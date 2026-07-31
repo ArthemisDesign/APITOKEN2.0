@@ -1,10 +1,8 @@
-//! Dormant Anthropic legacy quote/snapshot builder.
+//! Anthropic legacy quote/snapshot builder for the default-off atomic bridge.
 //!
 //! This child module deliberately calls the existing private `cap_to_balance` implementation. It
-//! therefore cannot drift to a second balance-cap formula, while the live caller remains entirely
-//! unchanged. No DB, clock, config, metrics or runtime route reaches this module yet.
-
-#![allow(dead_code)]
+//! therefore cannot drift to a second balance-cap formula. The caller owns rollout selection and
+//! persistence; this module has no DB, env, metrics or clock.
 
 use super::cap_to_balance;
 use crate::pricing::{

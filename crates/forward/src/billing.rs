@@ -1496,8 +1496,8 @@ impl AsyncBilling {
         }
     }
     /// Atomically persists a legacy scalar reservation together with its immutable pricing
-    /// snapshot. This is a dormant bridge primitive: existing request paths keep using
-    /// `reserve_request` until a separately guarded caller is introduced.
+    /// snapshot. Default-off sampled Anthropic/OpenAI callers use this path; scalar fallbacks keep
+    /// using `reserve_request` and never retry through this method after an atomic-path failure.
     pub async fn reserve_request_with_legacy_snapshot(
         &self,
         key: &str,

@@ -120,21 +120,13 @@ fn parse_pricing_bridge_config(
     let sample_bp = sample_bp.unwrap_or("0").parse::<i64>().map_err(|_| {
         "CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP: expected an integer in 0..=10000".to_string()
     })?;
-    let config = PricingBridgeConfig::from_parts(enabled, sample_bp).map_err(|error| {
+    PricingBridgeConfig::from_parts(enabled, sample_bp).map_err(|error| {
         format!(
             "invalid pricing bridge config ({}): disabled requires sample 0; enabled requires \
              sample 1..=10000",
             error.code()
         )
-    })?;
-    if config.enabled() {
-        return Err(
-            "CLAUDE_API_PRICING_BRIDGE_ENABLED=true is unavailable in this dormant binary; \
-             the runtime caller has not been delivered"
-                .to_string(),
-        );
-    }
-    Ok(config)
+    })
 }
 
 fn parse_codex_transport(value: Option<&str>) -> Result<CodexTransport, String> {
@@ -906,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn pricing_bridge_config_is_strict_default_off_and_cannot_activate_dormant_code() {
+    fn pricing_bridge_config_is_strict_default_off_and_accepts_only_bounded_rollout_samples() {
         let disabled = parse_pricing_bridge_config(None, None).unwrap();
         assert!(!disabled.enabled());
         assert_eq!(disabled.sample_bp(), 0);
@@ -925,11 +917,12 @@ mod tests {
         }
         assert!(parse_pricing_bridge_config(Some("false"), Some("1")).is_err());
         assert!(parse_pricing_bridge_config(Some("true"), Some("0")).is_err());
-        for (enabled, sample) in [("true", "1"), ("1", "10000")] {
-            assert!(parse_pricing_bridge_config(Some(enabled), Some(sample))
-                .unwrap_err()
-                .contains("unavailable in this dormant binary"));
-        }
+        let sampled = parse_pricing_bridge_config(Some("true"), Some("1")).unwrap();
+        assert!(sampled.enabled());
+        assert_eq!(sampled.sample_bp(), 1);
+        let full = parse_pricing_bridge_config(Some("1"), Some("10000")).unwrap();
+        assert!(full.enabled());
+        assert_eq!(full.sample_bp(), 10_000);
     }
 
     #[test]

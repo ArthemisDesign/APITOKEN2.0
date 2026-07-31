@@ -1,12 +1,9 @@
-//! Dormant, side-effect-free preflight for the legacy-scalar snapshot bridge.
+//! Side-effect-free preflight for the default-off legacy-scalar snapshot bridge.
 //!
 //! This module owns only an impossible-to-misconfigure mode and a versioned deterministic sampler.
-//! It has no clock, database, HTTP, metrics or runtime caller. Provider snapshot builders are added
-//! beside their respective legacy quote implementations so this common layer cannot invent prices.
-
-// The sampler entrypoint and its engine-owned ID stay crate-private until the separately reviewed
-// runtime caller lands. They are intentionally unreachable in this dormant checkpoint.
-#![allow(dead_code)]
+//! It has no clock, database, HTTP or metrics. The live reserve callers supply only their trusted
+//! fixed provider and engine-owned request ID; provider snapshot builders remain beside their
+//! respective legacy quote implementations so this common layer cannot invent prices.
 
 use registry::pricing::SnapshotProvider;
 use sha2::{Digest, Sha256};
@@ -122,7 +119,7 @@ pub(crate) enum PricingBridgePrepare<T> {
     Fallback(PricingBridgeFallbackReason),
 }
 
-/// Stable, low-cardinality reasons shared by the future bridge decision and provider builders.
+/// Stable, low-cardinality reasons shared by the bridge decision and provider builders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PricingBridgeFallbackReason {
     BridgeDisabled,
@@ -146,8 +143,8 @@ impl PricingBridgeFallbackReason {
     }
 }
 
-/// An engine-owned CSPRNG UUIDv4. Keeping this constructor crate-private prevents a future public
-/// adapter from accidentally sampling on a client/upstream identifier.
+/// An engine-owned CSPRNG UUIDv4. Keeping this constructor crate-private prevents a public adapter
+/// from accidentally sampling on a client/upstream identifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EnginePricingRequestId(String);
 

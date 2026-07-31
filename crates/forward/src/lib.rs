@@ -43,7 +43,7 @@ pub use gemini::{
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use keylimiter::KeyLimiter;
-pub use metrics::Metrics;
+pub use metrics::{Metrics, PRICING_BRIDGE_LATENCY_BUCKETS_MS};
 pub use pricing::{
     build_pricing_shadow_evaluation, resolve_pricing, PricingBridgeConfig,
     PricingBridgeConfigError, PricingBridgeDecision, PricingBridgeFallbackReason,

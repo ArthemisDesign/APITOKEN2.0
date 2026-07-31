@@ -16,8 +16,10 @@ use forward::{
     authed, client_keys, control_authed, forward, gemini_api, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
-    resolve_client_keys, AppState, Metrics, TerminalErrorReason,
+    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason, TerminalErrorReason,
+    PRICING_BRIDGE_LATENCY_BUCKETS_MS,
 };
+use registry::pricing::SnapshotProvider;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -717,6 +719,66 @@ async fn metrics(
         g(&m.gemini_malformed_responses),
         g(&m.gemini_stream_start_failures),
     );
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_pricing_bridge_selected_total counter\n\
+         # TYPE claude_api_pricing_bridge_snapshot_inserted_total counter\n\
+         # TYPE claude_api_pricing_bridge_snapshot_replayed_total counter\n\
+         # TYPE claude_api_pricing_bridge_not_reserved_total counter\n\
+         # TYPE claude_api_pricing_bridge_failure_total counter\n\
+         # TYPE claude_api_pricing_bridge_conflict_total counter\n\
+         # TYPE claude_api_pricing_bridge_fallback_total counter\n\
+         # TYPE claude_api_pricing_bridge_atomic_reserve_duration_seconds histogram"
+    );
+    for provider in [SnapshotProvider::Anthropic, SnapshotProvider::OpenAi] {
+        let provider_id = provider.as_str();
+        let _ = writeln!(
+            body,
+            "claude_api_pricing_bridge_selected_total{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_snapshot_inserted_total{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_snapshot_replayed_total{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_not_reserved_total{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_failure_total{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_conflict_total{{provider=\"{provider_id}\"}} {}",
+            m.pricing_bridge_selected_count(provider),
+            m.pricing_bridge_inserted_count(provider),
+            m.pricing_bridge_unchanged_count(provider),
+            m.pricing_bridge_not_reserved_count(provider),
+            m.pricing_bridge_failure_count(provider),
+            m.pricing_bridge_conflict_count(provider),
+        );
+        for reason in [
+            PricingBridgeFallbackReason::BridgeDisabled,
+            PricingBridgeFallbackReason::NotSampled,
+            PricingBridgeFallbackReason::UnsupportedModelIdentity,
+            PricingBridgeFallbackReason::UnsupportedModifier,
+            PricingBridgeFallbackReason::SnapshotIdentityOversized,
+            PricingBridgeFallbackReason::OfficialHoldOutOfRange,
+        ] {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_bridge_fallback_total{{provider=\"{provider_id}\",reason=\"{}\"}} {}",
+                reason.code(),
+                m.pricing_bridge_fallback_count(provider, reason),
+            );
+        }
+        for (bucket_index, upper_ms) in PRICING_BRIDGE_LATENCY_BUCKETS_MS.iter().enumerate() {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_bridge_atomic_reserve_duration_seconds_bucket{{provider=\"{provider_id}\",le=\"{}\"}} {}",
+                *upper_ms as f64 / 1_000.0,
+                m.pricing_bridge_latency_bucket_count(provider, bucket_index),
+            );
+        }
+        let latency_count = m.pricing_bridge_latency_count(provider);
+        let _ = writeln!(
+            body,
+            "claude_api_pricing_bridge_atomic_reserve_duration_seconds_bucket{{provider=\"{provider_id}\",le=\"+Inf\"}} {latency_count}\n\
+             claude_api_pricing_bridge_atomic_reserve_duration_seconds_sum{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_bridge_atomic_reserve_duration_seconds_count{{provider=\"{provider_id}\"}} {latency_count}",
+            m.pricing_bridge_latency_sum_seconds(provider),
+        );
+    }
     let _ = writeln!(
         body,
         "# TYPE claude_api_codex_enabled gauge\nclaude_api_codex_enabled {}",
