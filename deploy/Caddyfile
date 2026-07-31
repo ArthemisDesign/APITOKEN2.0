@@ -253,21 +253,16 @@ monitoring.apitoken.sale {
 }
 
 # Unified administration site for commerce, engine capacity, partner accounts and CRM visibility.
+# The UI is the standalone Next.js app `apps/admin` on 127.0.0.1:3700 (own deploy lane); the
+# engine only serves the data routes below, which the app polls same-origin behind managed auth.
+# The app sends its own security headers via next.config.ts; the two headers here are defence in
+# depth that must not depend on the app release.
 admin.apitoken.sale {
 	import managed_admin_auth
 	encode zstd gzip
-	# The panel JavaScript is served as a same-origin resource. This keeps the script policy strict
-	# without a hash that has to be manually synchronized with every embedded panel change. Styles
-	# remain inline because live utilization bars use bounded width values. Do not add unsafe-inline
-	# for scripts.
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
-	}
-	@admin_panel_asset path /admin-panel.js
-	handle @admin_panel_asset {
-		import engine_backend
 	}
 	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health
 	handle @admin_data {
@@ -316,8 +311,7 @@ admin.apitoken.sale {
 		import sales_admin_backend
 	}
 	handle {
-		rewrite * /admin-panel
-		import engine_backend
+		reverse_proxy 127.0.0.1:3700
 	}
 }
 

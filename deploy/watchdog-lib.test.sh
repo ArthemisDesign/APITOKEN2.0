@@ -259,7 +259,7 @@ verification_probe() {
   return 98
 }
 reconcile_engine_runtime() { printf 'runtime\n' >>"$verification_barrier_log"; }
-final_verify_admin_panel() { verification_probe panel; }
+final_verify_admin_data() { verification_probe panel; }
 final_verify_admin_routing() { verification_probe routing; }
 final_verify_monitoring() { verification_probe monitoring; }
 final_verify_codex_surface() { verification_probe codex; }
@@ -1528,15 +1528,19 @@ grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile
 grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
 grep -Fq 'Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"' \
   "$ROOT/deploy/Caddyfile"
-grep -Fq "script-src 'self'" "$ROOT/deploy/Caddyfile"
+# The admin UI is the standalone Next.js app on :3700 (own deploy lane) and sends its own
+# security headers via next.config.ts; the vhost must not pin a CSP for the retired embedded
+# panel, and no hand-maintained inline script hash may exist anywhere.
+! grep -Fq 'Content-Security-Policy' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'admin vhost must not carry the retired embedded-panel CSP'
 ! grep -Fq "script-src 'sha256-" "$ROOT/deploy/Caddyfile" \
   || wd_die 'admin CSP must not depend on a hand-maintained inline script hash'
-grep -Fq '<script src="/admin-panel.js" defer></script>' \
-  "$ROOT/crates/server/src/admin-panel.html"
-! grep -Fq '<script>' "$ROOT/crates/server/src/admin-panel.html" \
-  || wd_die 'admin panel HTML must not contain executable inline scripts'
-grep -Fq '@admin_panel_asset path /admin-panel.js' "$ROOT/deploy/Caddyfile"
-grep -Fq 'route("/admin-panel.js", get(admin_panel_js))' "$ROOT/crates/server/src/http.rs"
+! grep -Fq 'admin-panel' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'admin vhost must not route the retired embedded panel'
+! grep -Fq 'admin_panel' "$ROOT/crates/server/src/http.rs" \
+  || wd_die 'engine must not serve the retired embedded panel'
+grep -Fq 'reverse_proxy 127.0.0.1:3700' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'admin vhost must proxy the UI to the standalone Next.js app on :3700'
 ! grep -Fq 'header_up x-admin-actor' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'header_up x-admin-account-id' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]
@@ -1641,19 +1645,17 @@ grep -Fq "require_permitted 'Codex promotion helper'" \
   "$ROOT/deploy/install-sudoers.sh" \
   || wd_die "sudo policy installer does not verify Codex promotion access"
 
-grep -Fq 'final_verify_admin_panel' "$ROOT/deploy/watchdog.sh"
-# The panel check runs immediately after cutover, while the stable listener still round-robins the
-# retiring slot. It must require a streak of current answers rather than accepting the first one,
-# and its window must stay well above Caddy's 2s active-health convergence: a one-second window
-# quarantined a correct promotion on 2026-07-25.
+grep -Fq 'final_verify_admin_data' "$ROOT/deploy/watchdog.sh"
+# The admin data check runs immediately after cutover, while the stable listener still round-robins
+# the retiring slot. It must require a streak of expected answers rather than accepting the first
+# one, and its window must stay well above Caddy's 2s active-health convergence: a one-second
+# window quarantined a correct promotion on 2026-07-25.
 grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the admin-panel check must require consecutive current answers, not a single one"
+  || wd_die "the admin data check must require consecutive expected answers, not a single one"
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
-grep -Fq 'http://127.0.0.1:8790/admin-panel.js' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the admin-panel check must verify the external JavaScript asset"
-grep -Fq "showLoading();" "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the admin-panel asset check must verify non-empty JavaScript content"
+  || wd_die "the admin data convergence window must outlast blue-green cutover and health checks"
+grep -Fq 'http://127.0.0.1:8790/overview' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the admin data check must probe the engine data route the admin app polls"
 for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
   final_verify_codex_surface final_verify_gemini_surface; do
   grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \
@@ -1827,7 +1829,7 @@ final_verification_contract=(
   'run_github_status_lane success deploy/openkeys'
   'run_github_status_lane success deploy/admin'
   'wd_final_verification_plan "$delivery_infra_scope" "$engine_changed"'
-  'run_final_verification_lane final_verify_admin_panel &'
+  'run_final_verification_lane final_verify_admin_data &'
   'run_final_verification_lane final_verify_admin_routing &'
   'run_final_verification_lane final_verify_monitoring &'
   'run_final_verification_lane final_verify_codex_surface &'
@@ -1847,7 +1849,7 @@ final_verification_body=$(sed -n '/^run_final_verification_plan()/,/^}/p' \
   "$ROOT/deploy/watchdog.sh")
 runtime_line=$(grep -nF 'reconcile_engine_runtime "$engine_sha"' \
   <<<"$final_verification_body" | cut -d: -f1)
-panel_lane_line=$(grep -nF 'run_final_verification_lane final_verify_admin_panel &' \
+panel_lane_line=$(grep -nF 'run_final_verification_lane final_verify_admin_data &' \
   <<<"$final_verification_body" | cut -d: -f1)
 [[ -n $runtime_line && -n $panel_lane_line && $runtime_line -lt $panel_lane_line ]] \
   || wd_die "runtime reconciliation can race the read-only final verification lanes"
@@ -2187,11 +2189,13 @@ grep -Fq 'require_retired_vhost panel.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost content-studio.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'require_admin_auth_vhost monitoring.apitoken.sale' "$ROOT/deploy/watchdog.sh"
 grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
-# Маркер версии обязателен — по нему выкат проверяет, что движок отдаёт панель из
-# кандидата. Номер не фиксируем: он поднимается при каждом изменении панели, а
-# watchdog читает ожидаемое значение из самого кандидата.
-grep -Eq 'data-admin-panel-version="[0-9]+"' "$ROOT/crates/server/src/admin-panel.html"
-grep -Fq 'expected_version=$(sed -n' "$ROOT/deploy/watchdog.sh"
+# Встроенной панели в движке больше нет: UI — standalone Next.js app на :3700 (свой deploy
+# lane), а engine отдаёт только data routes. Ни HTML/JS-панели, ни её version marker в
+# candidate быть не должно; watchdog проверяет data surface через /overview.
+[[ ! -e "$ROOT/crates/server/src/admin-panel.html" ]]
+[[ ! -e "$ROOT/crates/server/src/admin-panel.js" ]]
+! grep -Fq 'data-admin-panel-version' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog must not verify the retired embedded panel version marker'
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
 render_live="$TEMP/live.Caddyfile"

@@ -11,8 +11,7 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                           │
                           ▼
                        Caddy (admin.apitoken.sale)
-                          ├─ /                         → engine GET /admin-panel
-                          ├─ /admin-panel.js          → engine GET /admin-panel.js
+                          ├─ / (весь UI)              → Next.js `apps/admin` :3700
                            ├─ /overview /capacity
                            │  /metrics /subs
                            │  /fleet-history
@@ -27,10 +26,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                                                          (+ sales admin key)
 ```
 
-- HTML и JavaScript живут только в `crates/server/src/admin-panel.html` и
-  `crates/server/src/admin-panel.js`; оба вкомпилированы в engine как `GET /admin-panel` и
-  `GET /admin-panel.js`. Статических копий и второго panel HTML нет. JavaScript загружается как
-  same-origin asset, чтобы CSP не зависела от ручного SHA-256 после каждого изменения панели.
+- UI — standalone Next.js app `apps/admin` на `127.0.0.1:3700` с собственным deploy lane; engine
+  больше не отдаёт HTML/JS панели, только data routes из диаграммы выше. Security headers
+  присылает сам app через `next.config.ts`; Caddy добавляет лишь defence-in-depth
+  Permissions Policy и запрет индексации.
 - Caddy `forward_auth` — единый human gate. Commerce PostgreSQL хранит только password hashes,
   статус и grants для четырёх управляемых доменов. Control, commerce-admin и sales-admin ключи
   инжектятся только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
@@ -88,9 +87,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 - Автообновление включено только для live-страниц: сводка — 30 секунд, система и подписки —
   10 секунд; в фоновой вкладке polling приостанавливается. Пользователи и partner accounts
   загружаются страницами, а live engine balances для commerce page читаются одним batch-запросом.
-- Caddy сжимает ответы `zstd`/`gzip` и задаёт CSP, Permissions Policy и запрет индексации.
-  CSP разрешает скрипты только с того же origin (`script-src 'self'`); inline JavaScript в HTML
-  панели запрещён и проверяется тестом.
+- Caddy сжимает ответы `zstd`/`gzip`; CSP и прочие security headers задаёт сам Next.js app через
+  `next.config.ts`, а Caddy добавляет только Permissions Policy и запрет индексации.
 
 ## Возможности
 
@@ -201,9 +199,10 @@ actor, причина, старая и новая ставка записыва�
 3. Sales: endpoint за `AdminKeyGuard`; main admin использует `/partner-admin/*`.
 4. OpenKeys: internal endpoint проверяет credential, инжектированный Caddy после human gate;
    публичный OpenKeys vhost обязан блокировать `/api/internal/*`.
-5. UI: вкладка/ветка `refresh()` в `admin-panel.html`. Частичный источник должен показывать
+5. UI: страница/виджет в `apps/admin`. Частичный источник должен показывать
    degraded state, а не просить секрет у оператора.
-6. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет marker HTML, 401 human-auth
+6. Деплой: обычный push в master. Watchdog применяет Caddy, проверяет data routes engine
+   (`/overview` отвечает 401 своим auth-gate), 401 human-auth
    gate на четырёх active managed hosts и отсутствие трёх retired hosts.
 
 ## Секреты

@@ -1623,29 +1623,24 @@ require_retired_vhost() {
   esac
 }
 
-final_verify_admin_panel() {
-  local panel panel_js matched=0 streak=0 expected_version candidate_panel
-  # Ожидаемую версию берём из самого кандидата, а не из константы здесь: версия панели
-  # уже живёт в HTML и в тесте крейта, и третья её копия в watchdog означала, что любой
-  # бамп версии валит выкат, который на деле корректен (так и случилось на b6b048c).
-  candidate_panel="$(candidate_for "$CANDIDATE_SHA")/crates/server/src/admin-panel.html"
-  [[ -f $candidate_panel ]] || wd_die "candidate admin panel is missing: $candidate_panel"
-  expected_version=$(sed -n 's/.*data-admin-panel-version="\([0-9]\{1,\}\)".*/\1/p' "$candidate_panel" | head -1)
-  [[ -n $expected_version ]] || wd_die "candidate admin panel has no version marker"
+final_verify_admin_data() {
+  local status matched=0 streak=0
+  # The admin UI is the standalone Next.js app behind admin.apitoken.sale (own deploy lane); the
+  # engine now serves only the data routes that app polls. Prove the deployed engine still exposes
+  # that surface: /overview without the control key must be rejected by the engine's own auth
+  # gate. The engine answers 401 with its JSON envelope, which the provider fallback (upstream
+  # proxy) cannot produce, so this fails if the route is ever dropped from the router.
   # The stable listener round-robins both engine slots with a 2s active-health interval, so for
-  # several seconds after a cutover the retiring slot can still answer 200 with the previous panel.
-  # One matching answer is therefore not proof: require a short streak of them, over a window
-  # comfortably longer than health convergence plus drain, so this asserts the old slot has left
-  # rotation rather than racing it.
-  #
-  # Observed on 2026-07-25: cutover completed at 08:53:19 and the previous 6x1s window gave up at
-  # 08:53:27, quarantining a promotion that was in fact correct — the panel served the new version
-  # moments later. The check only ever fires on a panel-version bump, which is exactly when it has
-  # to be trustworthy.
+  # several seconds after a cutover the retiring slot can still answer. Require a short streak of
+  # expected answers over a window comfortably longer than health convergence plus drain, so this
+  # asserts the steady state rather than racing the cutover. The window must stay well above
+  # Caddy's 2s active-health convergence: a one-second window quarantined a correct promotion on
+  # 2026-07-25.
   for _ in $(seq 1 20); do
-    panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-      http://127.0.0.1:8790/admin-panel 2>/dev/null || true)
-    if grep -Fq "data-admin-panel-version=\"$expected_version\"" <<<"$panel"; then
+    status=$(curl --noproxy '*' --silent --show-error --max-time 5 \
+      -o /dev/null -w '%{http_code}' \
+      http://127.0.0.1:8790/overview 2>/dev/null || true)
+    if [[ $status == 401 ]]; then
       streak=$((streak + 1))
       if (( streak >= 3 )); then
         matched=1
@@ -1656,11 +1651,7 @@ final_verify_admin_panel() {
     fi
     sleep 3
   done
-  [[ $matched == 1 ]] || wd_die "deployed engine does not contain the current admin panel"
-  panel_js=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-    http://127.0.0.1:8790/admin-panel.js 2>/dev/null || true)
-  [[ -n $panel_js ]] && grep -Fq 'showLoading();' <<<"$panel_js" \
-    || wd_die "deployed engine does not serve the admin panel JavaScript asset"
+  [[ $matched == 1 ]] || wd_die "deployed engine does not serve the admin data routes (/overview must reject an unauthenticated probe with 401)"
 }
 
 final_verify_admin_routing() {
@@ -1698,7 +1689,7 @@ final_verify_monitoring() {
 
 # Post-promotion smoke for the optional OpenAI-compatible surface.
 #
-# The Claude path is verified by /ready and the panel check, but a Codex regression is invisible to
+# The Claude path is verified by /ready and the admin data check, but a Codex regression is invisible to
 # both: the provider can be enabled while its app-server is dead, every home is unauthenticated, or
 # the public routes have silently fallen back to the Anthropic path. None needs an API key to detect.
 # Routable headroom is deliberately not a deployment invariant: subscription windows can exhaust
@@ -1850,7 +1841,7 @@ run_final_verification_plan() {
     reconcile_engine_runtime "$engine_sha"
   fi
   if wd_verification_plan_has "$verification_plan" panel; then
-    run_final_verification_lane final_verify_admin_panel &
+    run_final_verification_lane final_verify_admin_data &
     panel_pid=$!
   fi
   if wd_verification_plan_has "$verification_plan" routing; then

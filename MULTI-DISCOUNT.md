@@ -1255,7 +1255,7 @@ min(tier multiplier, referral multiplier)
 | `crates/registry` | Engine policy/catalog/switch persistence, funding buckets, snapshot reservations, immutable attribution, PG migrations и SQLite/import parity. |
 | `crates/forward` | Resolver до reserve, fixed provider identity, policy-native admission errors, один snapshot через Anthropic/OpenAI settlement; Gemini fail-closed без правил. |
 | `crates/server` | Versioned Control API, CAS/ACK/readiness, validation, expanded ledger/usage responses. |
-| `crates/server/src/admin-panel.html` | Catalog, switches, B2C/B2B/service editors, model overrides, effective preview и sync status. |
+| `apps/admin` | Catalog, switches, B2C/B2B/service editors, model overrides, effective preview и sync status. |
 | `packages/contracts` | Generic catalog-backed provider IDs, policy/rule unions, versioned payloads, funding/ledger attribution, invite/admin/account views. |
 | `packages/engine-client` | Catalog/policy/switch install/read/ack, expanded ledger parsing, удаление scalar-only assumptions. |
 | `packages/db` | Product catalogs, policy owners/rules/versions, invite snapshots, effective bindings/jobs, eligibility/funding attribution, expand migrations. |
@@ -2254,7 +2254,7 @@ commerce integration tests с PostgreSQL, а не только unit snapshots.
 - `crates/registry/migrations_pg`
 - `crates/server/src/admin.rs`
 - `crates/server/src/http.rs`
-- `crates/server/src/admin-panel.html`
+- `apps/admin`
 - `deploy/Caddyfile`
 - `systemd/claude-api-anthropic@.service`
 - `systemd/claude-api-openai.service`

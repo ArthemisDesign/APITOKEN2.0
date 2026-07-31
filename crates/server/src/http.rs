@@ -30,10 +30,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Unified self-contained administration UI. Data is routed by the admin Caddy vhost.
-const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
-/// Admin UI logic is a same-origin asset so the Caddy CSP does not need a hand-maintained hash.
-const ADMIN_PANEL_JS: &str = include_str!("admin-panel.js");
 /// One-release migration marker used only by the `Combined` bridge. Fixed provider routers never
 /// inspect it, and Caddy strips/overwrites client input while the bridge is present.
 const API_PLANE_HEADER: &str = "x-apitoken-api-plane";
@@ -331,8 +327,6 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
-            .route("/admin-panel", get(admin_panel))
-            .route("/admin-panel.js", get(admin_panel_js))
             .merge(admin)
             // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
             // services are installed. Fixed provider modes below never inspect this header.
@@ -360,8 +354,6 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
-            .route("/admin-panel", get(admin_panel))
-            .route("/admin-panel.js", get(admin_panel_js))
             .merge(admin)
             .fallback(forward),
         forward::ProviderMode::OpenAi => common
@@ -1560,32 +1552,6 @@ fn gemini_window_totals(
         }
     }
     totals
-}
-
-/// Unified admin.apitoken.sale UI. Human and data authorization is enforced by Caddy.
-async fn admin_panel() -> Response {
-    (
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        ADMIN_PANEL_HTML,
-    )
-        .into_response()
-}
-
-/// Same-origin JavaScript for the unified admin panel. Keep it uncached: the HTML and asset are
-/// embedded in the same engine release, and a browser must not retain an old panel bundle after a
-/// blue-green cutover.
-async fn admin_panel_js() -> Response {
-    (
-        [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (axum::http::header::CACHE_CONTROL, "no-store"),
-        ],
-        ADMIN_PANEL_JS,
-    )
-        .into_response()
 }
 
 /// Доступная ёмкость пула в USD real-API-эквиваленте на горизонты 1ч/5ч/1д/7д.
@@ -3905,128 +3871,6 @@ mod tests {
             billing_limit_reason(Some(&account), &key),
             "account_and_key_limit"
         );
-    }
-
-    #[test]
-    fn embedded_admin_panel_exposes_all_operational_workflows_without_secrets() {
-        // Маркер версии обязателен: по нему выкат сверяет, что запущенный движок отдаёт
-        // панель из кандидата. Номер не фиксируем — он растёт при каждом изменении панели,
-        // а третья копия константы уже однажды завалила корректный выкат.
-        let marker = "data-admin-panel-version=\"";
-        let start = ADMIN_PANEL_HTML
-            .find(marker)
-            .expect("admin panel must carry a version marker")
-            + marker.len();
-        let rest = &ADMIN_PANEL_HTML[start..];
-        let version = &rest[..rest.find('"').expect("version marker must be quoted")];
-        assert!(
-            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()),
-            "admin panel version must be numeric, got {version:?}"
-        );
-        let panel_source = format!("{ADMIN_PANEL_HTML}{ADMIN_PANEL_JS}");
-        // The spend breakdown must separate the Claude fleet from the Codex pool: both settle into
-        // the same money tables, so an unattributed total hides which upstream earned it.
-        assert!(panel_source.contains("period.providers"));
-        assert!(panel_source.contains("OpenAI (Codex)"));
-        assert!(panel_source.contains("остаток / вместимость API $"));
-        assert!(panel_source.contains("остаток из "));
-        assert!(panel_source.contains("ждём завершённый %-интервал"));
-        assert!(panel_source.contains("накоплено интервалов"));
-        assert!(panel_source.contains(" · evidence "));
-        assert!(panel_source.contains("w.cap_usd"));
-        for route in [
-            "/admin/dashboard",
-            "/admin/users",
-            "/admin/topups",
-            "/admin/business-invites",
-            "/admin/audit",
-            "/admin/audit/actions",
-            "/admin/admin-accounts",
-            "/admin/finance/overview",
-            "/admin/finance/revenue",
-            "/admin/finance/funnel",
-            "/admin/finance/top-customers",
-            "/admin/finance/cohorts",
-            "/admin/finance/churn-signals",
-            "/admin/refunds",
-            "/admin/pipeline-health",
-            "/balance-adjustments",
-            "/sessions/revoke",
-            "/totp/reset",
-            "/partner-admin/partner-analytics",
-            "/partner-admin/overview",
-            "/partner-admin/payout-list",
-            "/partner-admin/payouts",
-            "/partner-admin/payouts/engine",
-            "/partner-admin/payouts/batches",
-            "/overview",
-            "/capacity",
-            "/subs",
-            "/fleet-history",
-            "/codex-subs",
-            "/gemini-subs",
-            "/settlement-health",
-        ] {
-            assert!(
-                panel_source.contains(route),
-                "missing admin workflow route {route}"
-            );
-        }
-        for legacy_capability in [
-            "systemVerdict",
-            "target_headroom",
-            "coverage['7d']",
-            "reset5h_in",
-            "peak_cap5h_usd",
-            "Аккаунты движка",
-            "crm-parsing",
-        ] {
-            assert!(
-                panel_source.contains(legacy_capability),
-                "missing migrated legacy capability {legacy_capability}"
-            );
-        }
-        assert!(!panel_source.contains("COMMERCIAL_ADMIN_KEY"));
-        assert!(!panel_source.contains("CONTROL_KEY"));
-        assert!(!panel_source.contains("SALES_ADMIN_KEY"));
-        assert!(panel_source.contains("expected_ja3"));
-        assert!(panel_source.contains("expected_ja4"));
-        assert!(panel_source.contains("userinfo_expected_ja3"));
-        assert!(panel_source.contains("userinfo_expected_ja4"));
-        assert!(panel_source.contains("usage_metadata_missing"));
-        assert!(panel_source.contains("sessionStorage.setItem(pendingKey"));
-        assert!(panel_source.contains("idempotency_key:idempotencyKey"));
-        assert!(panel_source.contains("Пароль (минимум 8)"));
-        assert!(panel_source.contains("minlength=\"8\""));
-        assert!(panel_source.contains("(values.first||'').length<8"));
-        assert!(ADMIN_PANEL_HTML.contains("<script src=\"/admin-panel.js\" defer></script>"));
-        assert!(!ADMIN_PANEL_HTML.contains("<script>"));
-        assert!(!ADMIN_PANEL_JS.is_empty());
-        assert!(ADMIN_PANEL_JS.contains("showLoading();"));
-        for resilience_capability in [
-            "class=\"error-center\"",
-            "scheduleRecoveryProbe",
-            "location.reload()",
-            "refreshController?.abort()",
-            "visibilitychange",
-            "class=\"loading-grid\"",
-            "customer_type=b2b",
-            "data-page=users",
-            // Качество данных: серверные сортировки/фильтры, пагинация и ручная CSV-выгрузка
-            // текущей страницы, произвольный диапазон «Кто тратит».
-            "downloadCsv",
-            "payments_total",
-            "data-page=topups",
-            "data-page=audit",
-            "spent_30d",
-            "spend-custom",
-        ] {
-            assert!(
-                panel_source.contains(resilience_capability),
-                "missing admin resilience capability {resilience_capability}"
-            );
-        }
-        assert!(!panel_source.contains("setInterval(refresh"));
     }
 
     fn fleet_history_test_app(tag: &str) -> (AppState, std::path::PathBuf) {

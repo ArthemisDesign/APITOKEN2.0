@@ -16,8 +16,9 @@
 - `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) из env.
 - `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + startup-fixed
   Claude/OpenAI/Gemini router. Production provider выбирает systemd unit, не request; Caddy marker остаётся
-  только в одноразовом `Combined` migration bridge и никогда не принимается от клиента. + `/admin-panel`
-  (единый `admin-panel.html` для admin.apitoken.sale; архитектура — корневой `PANEL.md`) +
+  только в одноразовом `Combined` migration bridge и никогда не принимается от клиента. +
+  data routes для admin.apitoken.sale (`/overview`, `/capacity`, `/subs` и др.; UI — standalone
+  Next.js `apps/admin`, архитектура — корневой `PANEL.md`) +
   `/admin/*` (control-плоскость,
   см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,
   а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.

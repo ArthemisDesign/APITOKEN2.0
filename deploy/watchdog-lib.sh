@@ -562,6 +562,8 @@ wd_final_verification_plan() {
     && monitoring_infrastructure=1
 
   if (( engine_changed == 1 || broad_infrastructure == 1 )); then
+    # The "panel" lane is final_verify_admin_data: the UI moved to the standalone Next.js admin
+    # app, so the engine-side smoke now verifies the admin data routes the app polls.
     checks+=(runtime panel)
   fi
   if (( caddy_infrastructure == 1 || broad_infrastructure == 1 )); then
