@@ -26,7 +26,7 @@
 .docs-sidebar a{padding:9px 11px;border-radius:7px;font-family:var(--font-mono);font-size:13px;line-height:1.35;color:var(--txt-3);transition:color .14s ease,background-color .14s ease}
 .docs-sidebar a:hover{background:var(--accent-soft);color:var(--accent)}
 .docs-main{width:100%;max-width:1180px;padding:42px 56px 90px}
-.docs-main>section{padding:0;border:0;scroll-margin-top:92px}
+.docs-main section{padding:0;border:0;scroll-margin-top:92px}
 .docs-hero{margin-bottom:26px;max-width:940px;font-family:var(--font-ui)}
 .docs-hero h1{margin:0 0 8px;font-family:var(--font-ui);font-size:clamp(34px,4.2vw,48px);font-weight:680;line-height:1.08;letter-spacing:-.035em;text-wrap:balance}
 .docs-hero p{max-width:900px;margin:0;color:var(--txt-2);font-size:18px;line-height:1.55}
@@ -109,7 +109,7 @@
 .ib-select select{width:100%;min-width:0;padding:13px 38px 13px 14px;border:1px solid var(--line);border-radius:12px;outline:0;appearance:none;background:var(--bg-card);color:var(--txt);font-family:var(--font-ui);font-size:14px;font-weight:550;cursor:pointer}
 .ib-select select:hover{background:var(--bg-soft)}
 .ib-select svg{position:absolute;top:50%;right:14px;transform:translateY(-50%);color:var(--txt-3);pointer-events:none}
-.ib-guide{min-width:0;padding:28px 32px 28px}
+.docs-integration-builder .ib-guide{min-width:0;padding:28px 32px 28px}
 .ib-guide-head{min-width:0}
 .ib-guide-head h4{margin:0;font-family:var(--font-ui);font-size:22px;font-weight:650;line-height:1.25;letter-spacing:-.02em;text-wrap:balance}
 .ib-guide-head p{margin:6px 0 0;max-width:660px;color:var(--txt-3);font-size:14.5px;line-height:1.5}
@@ -258,7 +258,7 @@
   .ib-head h3{font-size:24px}
   .ib-controls{display:flex;flex-direction:column;padding:20px 18px 22px}
   .ib-group,.ib-group:last-child{margin-bottom:22px}
-  .ib-guide{padding:22px 18px}
+  .docs-integration-builder .ib-guide{padding:22px 18px}
   .ib-guide-head h4{font-size:19px}
   .ib-steps>li{padding:18px 0}
   .ib-steps>li>p{margin-left:0}
