@@ -196,7 +196,7 @@ Gemini runtime (`config.env` or `server.env`):
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.6-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE=6
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
@@ -309,16 +309,19 @@ For every request the runtime:
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
   an operational counter instead of inventing a usage event or granting a free request.
 
-The model allowlist is local and price-catalog pinned. The default list contains the five text
+The model allowlist is local and price-catalog pinned. The default list contains the six text
 models whose non-stream, native stream and token-count paths were reconfirmed against the
-production Google AI Pro profile on 2026-07-31: `gemini-3.6-flash`,
+production Google AI Pro profile on 2026-07-31: `gemini-3.6-flash`, `gemini-3.5-flash`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
-`gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: its quota bucket reports
-`remainingFraction=1.0`, but both generation paths persistently return `UNAVAILABLE`. Private
-tier ids are never public model names, while 3.5/image/agent/foreign-provider ids have no honest
-public text-model mapping at all.
+`gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: it is absent from the
+official Antigravity reasoning-model table, and its residual quota bucket does not produce a
+working generation route. Private tier ids are never public model names, while
+image/agent/foreign-provider ids have no honest public text-model mapping.
+A Developer API price entry proves only that the gateway can meter a model; it does not prove that
+an Antigravity subscription can serve it. Publication additionally requires an official
+Antigravity model contract, an exact canonical-to-private route and live generation evidence.
 A configured id still needs a live smoke test against every tier because Google can change private
-model availability independently. The production systemd argv pins this calibrated five-model
+model availability independently. The production systemd argv pins this calibrated six-model
 set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
 
@@ -331,20 +334,30 @@ text-generation check. A quota row by itself is never admission evidence.
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
+| `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.1-flash-lite` | same id | generate 200, SSE 200 | published |
 | `gemini-2.5-flash` | same id | generate 200, SSE 200 | published |
 | `gemini-2.5-flash-lite` | same id | generate 200, SSE 200 | published |
-| `gemini-2.5-pro` | same id | quota says 1.0, but generate and SSE return persistent `UNAVAILABLE` | rejected even if requested through env |
-| `gemini-3.5-flash` | no honest current mapping | old 3.5 private ids now resolve to 3.6 tiers in current Antigravity implementations | rejected: serving 3.6 under a 3.5 name/price would be false billing and model identity |
-| `gemini-3.5-flash-lite` | absent | no current Antigravity bucket | rejected |
+| `gemini-2.5-pro` | same id | not listed for any Antigravity plan; residual Pro quota row exists, but fresh probe gives generate → 503 `UNAVAILABLE`, SSE/countTokens → 429 `RESOURCE_EXHAUSTED` | rejected even if requested through env |
+| `gemini-3.5-flash-lite` | absent | Developer API model, but absent from the Antigravity model table and the live Pro subscription catalogue | rejected on every currently documented Antigravity plan |
 | `gemini-3.6-flash-tiered` | unknown private semantics | quota-only row without a display contract | never published |
+
+Antigravity's official model table marks Gemini 3.6 Flash, Gemini 3.5 Flash and Gemini 3.1 Pro as
+available on Free/Google AI Plus, Google AI Pro, Google AI Ultra and Enterprise. Pro and Ultra
+change quota size and refresh cadence, not that model set; Ultra therefore does not unlock
+`gemini-2.5-pro` or `gemini-3.5-flash-lite`. The gateway still requires a live check for each
+profile type because documented product access and a working private API route are separate facts.
 
 Official evidence reviewed on 2026-07-31:
 
 - model catalogue and lifecycle: <https://ai.google.dev/gemini-api/docs/models>;
+- Antigravity model availability by plan: <https://antigravity.google/docs/models>;
+- Antigravity plan and quota differences: <https://antigravity.google/docs/plans>;
 - Gemini 3.6 Flash shape (1,048,576 input / 65,536 output, text output):
   <https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash>;
+- Gemini 3.5 Flash shape (1,048,576 input / 65,536 output, text output):
+  <https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash>;
 - Gemini 3.1 Pro Preview shape: <https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview>;
 - paid standard prices: <https://ai.google.dev/gemini-api/docs/pricing>;
 - thinking-level defaults and supported values: <https://ai.google.dev/gemini-api/docs/thinking#thinking-levels>;

@@ -305,7 +305,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         // supported thinking level of the current subscription profile. In particular, 2.5 Pro
         // advertises quota but generation returns persistent UNAVAILABLE; quota evidence alone
         // never enables a model.
-        "gemini-3.6-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)

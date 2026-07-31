@@ -2774,6 +2774,18 @@ mod tests {
         }
         assert!(flash.wire_model_id(Some("future")).is_err());
 
+        let flash_35 = catalog_model("gemini-3.5-flash");
+        for (level, expected) in [
+            (None, "gemini-3.5-flash-low"),
+            (Some("minimal"), "gemini-3.5-flash-extra-low"),
+            (Some("low"), "gemini-3.5-flash-low"),
+            (Some("medium"), "gemini-3.5-flash-low"),
+            (Some("high"), "gemini-3.5-flash-low"),
+        ] {
+            assert_eq!(flash_35.wire_model_id(level), Ok(expected));
+        }
+        assert!(flash_35.wire_model_id(Some("future")).is_err());
+
         let pro = catalog_model("gemini-3.1-pro-preview");
         for (level, expected) in [
             (None, "gemini-pro-agent"),
