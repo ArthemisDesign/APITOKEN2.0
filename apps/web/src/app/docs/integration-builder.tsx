@@ -12,20 +12,26 @@ import {
   type IntegrationProvider,
   type IntegrationTool,
 } from "./integration-builder-data";
+import { highlightCode } from "./integration-highlight";
 
-const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string; mark: string }> = [
-  { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный Claude agent", mark: "✦" },
-  { id: "codex", name: "Codex", en: "Responses API agent", ru: "Responses API agent", mark: "⌁" },
-  { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал", mark: "OC" },
-  { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness", mark: "π" },
-  { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced", mark: "☤" },
+const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
+  { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
+  { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
 ];
 
-const operatingSystems: Array<{ id: IntegrationOs; name: string; detail: string; mark: string }> = [
-  { id: "macos", name: "macOS", detail: "zsh", mark: "⌘" },
-  { id: "linux", name: "Linux", detail: "bash", mark: ">_" },
-  { id: "powershell", name: "Windows", detail: "PowerShell", mark: "PS" },
-  { id: "cmd", name: "Windows", detail: "CMD", mark: "C:\\" },
+const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }> = [
+  { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },
+  { id: "codex", name: "Codex", en: "Responses API agent", ru: "Агент Responses API" },
+  { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал" },
+  { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness" },
+  { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced" },
+];
+
+const operatingSystems: Array<{ id: IntegrationOs; name: string; detail: string }> = [
+  { id: "macos", name: "macOS", detail: "zsh" },
+  { id: "linux", name: "Linux", detail: "bash" },
+  { id: "powershell", name: "Windows", detail: "PowerShell" },
+  { id: "cmd", name: "Windows", detail: "CMD" },
 ];
 
 const defaultTool: Record<IntegrationProvider, IntegrationTool> = {
@@ -43,8 +49,13 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
   const [os, setOs] = useState<IntegrationOs>("macos");
   const [modelId, setModelId] = useState(INTEGRATION_MODELS.anthropic[0].id);
   const [copiedStep, setCopiedStep] = useState<number | null>(null);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
 
   const guide = useMemo(() => buildIntegrationGuide({ provider, tool, os, modelId, language }), [provider, tool, os, modelId, language]);
+  const activeProvider = providers.find((candidate) => candidate.id === provider)!;
+  const activeTool = tools.find((candidate) => candidate.id === tool)!;
+  const activeOs = operatingSystems.find((candidate) => candidate.id === os)!;
+  const activeModel = INTEGRATION_MODELS[provider].find((model) => model.id === modelId) ?? INTEGRATION_MODELS[provider][0];
 
   function setProvider(nextProvider: IntegrationProvider) {
     setProviderState(nextProvider);
@@ -58,85 +69,112 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
     window.setTimeout(() => setCopiedStep((current) => current === index ? null : current), 1_200);
   }
 
+  async function copyEndpoint() {
+    await navigator.clipboard.writeText(guide.endpoint);
+    setCopiedEndpoint(true);
+    window.setTimeout(() => setCopiedEndpoint(false), 1_200);
+  }
+
   return <article className="docs-integration-builder ym-hide-content">
-    <header className="docs-builder-head">
-      <div>
-        <span className="docs-builder-eyebrow">{tr(language, "Integrations", "Интеграции")}</span>
-        <h3>{tr(language, "Connect your coding agent", "Подключите coding agent")}</h3>
-        <p>{tr(language, "Choose a model provider, coding environment, and operating system. The guide updates instantly.", "Выберите провайдера модели, coding‑среду и операционную систему. Инструкция обновится сразу.")}</p>
-      </div>
-      <span className="docs-builder-live"><i aria-hidden="true" />{tr(language, "Live setup", "Живая инструкция")}</span>
+    <header className="ib-head">
+      <span className="ib-eyebrow">{tr(language, "Integrations", "Интеграции")}</span>
+      <h3>{tr(language, "Connect your coding agent", "Подключите coding agent")}</h3>
+      <p>{tr(language, "Choose a provider, a coding agent, and your operating system — the guide updates instantly.", "Выберите провайдера, coding agent и операционную систему — инструкция обновится сразу.")}</p>
     </header>
 
-    <div className="docs-builder-layout">
-      <div className="docs-builder-controls">
-        <fieldset className="docs-builder-field">
-          <legend><b>1</b><span>{tr(language, "Model provider", "Провайдер модели")}</span></legend>
-          <div className="docs-provider-options">
-            <button type="button" className={provider === "anthropic" ? "active" : ""} aria-pressed={provider === "anthropic"} onClick={() => setProvider("anthropic")}>
-              <ProviderIcon provider="anthropic" /><span><strong>Claude</strong><small>Anthropic API</small></span><CheckMark />
-            </button>
-            <button type="button" className={provider === "openai" ? "active" : ""} aria-pressed={provider === "openai"} onClick={() => setProvider("openai")}>
-              <ProviderIcon provider="openai" /><span><strong>GPT</strong><small>OpenAI-compatible</small></span><CheckMark />
-            </button>
-          </div>
-          <label className="docs-model-select">
-            <span>{tr(language, "Model", "Модель")}</span>
-            <select value={modelId} onChange={(event) => setModelId(event.target.value)}>
-              {INTEGRATION_MODELS[provider].map((model) => <option value={model.id} key={model.id}>{model.name}</option>)}
-            </select>
-          </label>
-        </fieldset>
-
-        <fieldset className="docs-builder-field">
-          <legend><b>2</b><span>{tr(language, "Coding agent", "Coding agent")}</span></legend>
-          <div className="docs-tool-options">
-            {tools.map((candidate) => {
-              const compatible = isToolCompatible(candidate.id, provider);
-              return <button type="button" key={candidate.id} disabled={!compatible} className={tool === candidate.id ? "active" : ""} aria-pressed={tool === candidate.id} onClick={() => setTool(candidate.id)}>
-                <ToolMark mark={candidate.mark} tool={candidate.id} />
-                <span><strong>{candidate.name}</strong><small>{compatible ? (language === "ru" ? candidate.ru : candidate.en) : tr(language, provider === "anthropic" ? "GPT only" : "Claude only", provider === "anthropic" ? "Только GPT" : "Только Claude")}</small></span>
-                {tool === candidate.id && <CheckMark />}
+    <div className="ib-layout">
+      <div className="ib-controls">
+        <section className="ib-group" aria-label={tr(language, "Model provider", "Провайдер модели")}>
+          <h6>{tr(language, "Provider", "Провайдер")}</h6>
+          <div className="ib-rows">
+            {providers.map((candidate) => {
+              const active = provider === candidate.id;
+              return <button type="button" key={candidate.id} className={active ? "ib-row active" : "ib-row"} aria-pressed={active} onClick={() => setProvider(candidate.id)}>
+                <span className={`ib-icon p-${candidate.id}`} aria-hidden="true" />
+                <span className="ib-row-text"><strong>{candidate.name}</strong><small>{tr(language, candidate.en, candidate.ru)}</small></span>
+                {active && <CheckIcon />}
               </button>;
             })}
           </div>
-        </fieldset>
+        </section>
 
-        <fieldset className="docs-builder-field">
-          <legend><b>3</b><span>{tr(language, "Operating system", "Операционная система")}</span></legend>
-          <div className="docs-os-options">
-            {operatingSystems.map((candidate) => <button type="button" key={candidate.id} className={os === candidate.id ? "active" : ""} aria-pressed={os === candidate.id} onClick={() => setOs(candidate.id)}>
-              <span className="docs-os-mark" aria-hidden="true">{candidate.mark}</span><span><strong>{candidate.name}</strong><small>{candidate.detail}</small></span>
-            </button>)}
+        <section className="ib-group" aria-label={tr(language, "Model", "Модель")}>
+          <h6>{tr(language, "Model", "Модель")}</h6>
+          <label className="ib-select">
+            <select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label={tr(language, "Model", "Модель")}>
+              {INTEGRATION_MODELS[provider].map((model) => <option value={model.id} key={model.id}>{model.name}</option>)}
+            </select>
+            <ChevronIcon />
+          </label>
+        </section>
+
+        <section className="ib-group" aria-label={tr(language, "Coding agent", "Coding agent")}>
+          <h6>{tr(language, "Coding agent", "Coding agent")}</h6>
+          <div className="ib-rows">
+            {tools.map((candidate) => {
+              const compatible = isToolCompatible(candidate.id, provider);
+              const active = tool === candidate.id;
+              return <button type="button" key={candidate.id} disabled={!compatible} className={active ? "ib-row active" : "ib-row"} aria-pressed={active} onClick={() => setTool(candidate.id)}>
+                <span className={`ib-icon t-${candidate.id}`} aria-hidden="true" />
+                <span className="ib-row-text"><strong>{candidate.name}</strong><small>{tr(language, candidate.en, candidate.ru)}</small></span>
+                {active
+                  ? <CheckIcon />
+                  : !compatible && <em className="ib-row-tag">{tr(language, provider === "anthropic" ? "GPT only" : "Claude only", provider === "anthropic" ? "Только GPT" : "Только Claude")}</em>}
+              </button>;
+            })}
           </div>
-        </fieldset>
+        </section>
+
+        <section className="ib-group" aria-label={tr(language, "Operating system", "Операционная система")}>
+          <h6>{tr(language, "Operating system", "Операционная система")}</h6>
+          <div className="ib-rows">
+            {operatingSystems.map((candidate) => {
+              const active = os === candidate.id;
+              return <button type="button" key={candidate.id} className={active ? "ib-row active" : "ib-row"} aria-pressed={active} onClick={() => setOs(candidate.id)}>
+                <span className={`ib-icon o-${candidate.id === "powershell" || candidate.id === "cmd" ? "windows" : candidate.id}`} aria-hidden="true" />
+                <span className="ib-row-text"><strong>{candidate.name}</strong><small>{candidate.detail}</small></span>
+                {active && <CheckIcon />}
+              </button>;
+            })}
+          </div>
+        </section>
       </div>
 
-      <section className="docs-builder-output" aria-live="polite">
-        <header>
-          <ToolMark mark={tools.find((candidate) => candidate.id === tool)?.mark ?? ""} tool={tool} />
-          <div><span>{tr(language, "Your setup", "Ваша инструкция")}</span><h4>{guide.title}</h4><p>{guide.summary}</p></div>
-          <span className="docs-builder-ready"><CheckMark />{tr(language, "Ready", "Готово")}</span>
+      <section className="ib-guide" aria-live="polite">
+        <header className="ib-guide-head">
+          <div>
+            <h4>{guide.title}</h4>
+            <p>{guide.summary}</p>
+            <ul className="ib-chips" aria-label={tr(language, "Current configuration", "Текущая конфигурация")}>
+              <li><span className={`ib-icon p-${provider}`} aria-hidden="true" />{activeProvider.name}</li>
+              <li><span className={`ib-icon t-${tool}`} aria-hidden="true" />{activeTool.name}</li>
+              <li><span className={`ib-icon o-${os === "powershell" || os === "cmd" ? "windows" : os}`} aria-hidden="true" />{activeOs.name} · {activeOs.detail}</li>
+              <li className="ib-chip-model">{activeModel.name}</li>
+            </ul>
+          </div>
         </header>
 
-        <div className="docs-builder-endpoint"><span>Endpoint</span><code>{guide.endpoint}</code></div>
-        {guide.requirement && <div className="docs-builder-requirement"><InfoIcon /><span>{guide.requirement}</span></div>}
-
-        <div className="docs-builder-steps">
-          {guide.steps.map((step, index) => <article key={`${tool}-${provider}-${os}-${index}`}>
-            <span className="docs-builder-step-number">{String(index + 1).padStart(2, "0")}</span>
-            <div className="docs-builder-step-body">
-              <h5>{step.title}</h5>
-              <p>{step.text}</p>
-              <div className="docs-builder-code">
-                <div><span>{step.codeLabel}</span><button type="button" onClick={() => copyStep(index, step.code)}><CopyIcon copied={copiedStep === index} />{copiedStep === index ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button></div>
-                <pre><code>{step.code}</code></pre>
-              </div>
-            </div>
-          </article>)}
+        <div className="ib-endpoint">
+          <span>Endpoint</span><code>{guide.endpoint}</code>
+          <button type="button" onClick={copyEndpoint}><CopyIcon copied={copiedEndpoint} />{copiedEndpoint ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button>
         </div>
+        {guide.requirement && <p className="ib-callout"><InfoIcon />{guide.requirement}</p>}
 
-        <footer>
+        <ol className="ib-steps">
+          {guide.steps.map((step, index) => <li key={`${tool}-${provider}-${os}-${index}`}>
+            <div className="ib-step-head">
+              <span aria-hidden="true">{index + 1}</span>
+              <h5>{step.title}</h5>
+            </div>
+            <p>{step.text}</p>
+            <div className="ib-code">
+              <div className="ib-code-bar"><i className="ib-dots" aria-hidden="true" /><span>{step.codeLabel}</span><button type="button" onClick={() => copyStep(index, step.code)}><CopyIcon copied={copiedStep === index} />{copiedStep === index ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button></div>
+              <pre><code><HighlightedCode code={step.code} /></code></pre>
+            </div>
+          </li>)}
+        </ol>
+
+        <footer className="ib-guide-foot">
           <span><ShieldIcon />{guide.securityNote ?? tr(language, "The full key stays in your terminal, never in project files.", "Полный ключ остаётся в терминале и не попадает в файлы проекта.")}</span>
           <Link href={localeHref("/dashboard?view=keys", language)}>{tr(language, "Get API key", "Получить API‑ключ")}<ArrowIcon /></Link>
         </footer>
@@ -145,34 +183,35 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
   </article>;
 }
 
-function ProviderIcon({ provider }: { provider: IntegrationProvider }) {
-  return provider === "anthropic"
-    ? <span className="docs-provider-mark anthropic" aria-hidden="true" />
-    : <span className="docs-provider-mark openai" aria-hidden="true" />;
+function HighlightedCode({ code }: { code: string }) {
+  const tokens = useMemo(() => highlightCode(code), [code]);
+  return <>{tokens.map((part, index) => part.cls
+    ? <span key={index} className={`tk-${part.cls}`}>{part.text}</span>
+    : <span key={index}>{part.text}</span>)}</>;
 }
 
-function ToolMark({ mark, tool }: { mark: string; tool: IntegrationTool }) {
-  return <span className={`docs-tool-mark tool-${tool}`} aria-hidden="true">{mark}</span>;
+function CheckIcon() {
+  return <svg className="ib-check" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5.5" /></svg>;
 }
 
-function CheckMark() {
-  return <svg className="docs-builder-check" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5.5" /></svg>;
+function ChevronIcon() {
+  return <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5.5 7.5 4.5 4.5 4.5-4.5" /></svg>;
 }
 
 function CopyIcon({ copied }: { copied: boolean }) {
   return copied
-    ? <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5.5" /></svg>
-    : <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" /><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" /></svg>;
+    ? <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5.5" /></svg>
+    : <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" /><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" /></svg>;
 }
 
 function InfoIcon() {
-  return <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="10" r="7.5" /><path d="M10 9v5M10 6.2h.01" /></svg>;
+  return <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="10" r="7.5" /><path d="M10 9v5M10 6.2h.01" /></svg>;
 }
 
 function ShieldIcon() {
-  return <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m10 2.5 6 2.6v4.2c0 3.8-2.5 6.4-6 7.7-3.5-1.3-6-3.9-6-7.7V5.1l6-2.6Z" /><path d="m7.5 9.8 1.6 1.6 3.5-3.6" /></svg>;
+  return <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m10 2.5 6 2.6v4.2c0 3.8-2.5 6.4-6 7.7-3.5-1.3-6-3.9-6-7.7V5.1l6-2.6Z" /><path d="m7.5 9.8 1.6 1.6 3.5-3.6" /></svg>;
 }
 
 function ArrowIcon() {
-  return <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.5 10h13M11.5 5l5 5-5 5" /></svg>;
+  return <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.5 10h13M11.5 5l5 5-5 5" /></svg>;
 }

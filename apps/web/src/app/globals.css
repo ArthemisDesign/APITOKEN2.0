@@ -845,8 +845,8 @@ body, .nav, .stat, .step, .feat, .price, .tier, .dcard, .keyrow, .usage,
 .docs-checklist, .docs-checklist h3, .docs-checklist li, .docs-h3, .docs-para,
 .docs-footer, .docs-agent-card, .docs-agent-bottom, .docs-agent-points li,
 .docs-connect-support, .docs-support-copy, .docs-agent-actions .btn, .docs-support-actions .btn,
-.docs-integration-builder, .docs-builder-head, .docs-builder-controls, .docs-builder-output,
-.docs-builder-field, .docs-builder-code, .docs-builder-endpoint, .docs-builder-requirement{
+.docs-integration-builder, .ib-head, .ib-controls, .ib-guide,
+.ib-group, .ib-rows, .ib-code, .ib-endpoint, .ib-callout{
   transition:background-color .35s ease, border-color .35s ease, color .35s ease, box-shadow .35s ease;
 }
 /* Dashboard surfaces cross-fade on theme switch too — without this the big app-main / sidebar / header
