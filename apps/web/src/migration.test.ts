@@ -139,7 +139,7 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain("app ym-hide-content");
     expect(docs).toContain("docs-agent-card ym-hide-content");
     expect(docs).not.toContain('id="docs-api-key"');
-    expect(docs).toContain("docs-code-card ym-hide-content");
+    expect(docs).toContain("ApiReference");
   });
 
   it("keeps reloadable dashboard views in the localized canonical dashboard routes", () => {
@@ -239,6 +239,7 @@ describe("completed Next.js migration", () => {
 
   it("serves documentation as a standalone copyable portal", () => {
     const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
+    const apiReference = readFileSync(join(appRoot, "docs", "api-reference-data.ts"), "utf8");
     const agentGuideRoute = readFileSync(join(appRoot, "md", "connect", "route.ts"), "utf8");
     const dynamicRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     expect(docs).toContain("docs-layout");
@@ -250,8 +251,8 @@ describe("completed Next.js migration", () => {
     expect(docs).not.toContain("Connection details");
     expect(docs).not.toContain("Параметры подключения");
     expect(agentGuideRoute).toContain("buildAgentSetupMarkdown");
-    expect(docs).toContain("ANTHROPIC_BASE_URL");
-    expect(docs).toContain("Python SDK");
+    expect(apiReference).toContain("ANTHROPIC_BASE_URL");
+    expect(apiReference).toContain("Python SDK");
     expect(dynamicRoute).not.toContain("DocsPage");
   });
 

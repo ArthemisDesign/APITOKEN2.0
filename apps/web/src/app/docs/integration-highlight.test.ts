@@ -11,6 +11,8 @@ describe("detectHighlightLang", () => {
     expect(detectHighlightLang('model = "gpt-5.6-sol"\nmodel_provider = "apitoken"')).toBe("toml");
     expect(detectHighlightLang('export ANTHROPIC_BASE_URL="https://api.apitoken.sale"')).toBe("shell");
     expect(detectHighlightLang('$env:APITOKEN_API_KEY = "sk-pool-•••"')).toBe("shell");
+    expect(detectHighlightLang('import os\nfrom anthropic import Anthropic')).toBe("code");
+    expect(detectHighlightLang('import OpenAI from "openai";\n\nconst client = new OpenAI({});')).toBe("code");
   });
 });
 
@@ -45,6 +47,16 @@ describe("highlightCode", () => {
     expect(classesFor(code, '"responses"')).toContain("s");
   });
 
+  it("marks Python/TypeScript keywords, strings and comments", () => {
+    const code = 'import os\nfrom anthropic import Anthropic\n\n# Reads the key from the environment\nfor block in message.content:\n    print("connected")';
+    expect(classesFor(code, "import")).toContain("k");
+    expect(classesFor(code, "from")).toContain("k");
+    expect(classesFor(code, "for")).toContain("k");
+    expect(classesFor(code, "print")).toContain("k");
+    expect(classesFor(code, '"connected"')).toContain("s");
+    expect(highlightCode(code).some((token) => token.cls === "c" && token.text.startsWith("# Reads"))).toBe(true);
+  });
+
   it("round-trips the source text exactly", () => {
     const samples = [
       'export A="b"\n\nclaude --model claude-opus-4-8',
@@ -52,6 +64,8 @@ describe("highlightCode", () => {
       'model = "x"\n[model_providers.apitoken]\nbase_url = "https://openai.api.apitoken.sale/v1"',
       '/status\n\nReply with exactly: connected',
       'hermes model\n\nProvider: Custom endpoint (self-hosted / VLLM / etc.)',
+      'import os\nfrom openai import OpenAI\nprint(response.output_text)',
+      'import Anthropic from "@anthropic-ai/sdk";\nconst client = new Anthropic({});\n// comment',
     ];
     for (const sample of samples) {
       expect(highlightCode(sample).map((token) => token.text).join("")).toBe(sample);

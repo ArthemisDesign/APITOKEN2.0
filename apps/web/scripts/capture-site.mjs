@@ -1427,8 +1427,8 @@ async function verifyDocsTheme(client) {
       return JSON.stringify({
         site: style('.docs-site').backgroundColor,
         header: style('.docs-header').backgroundColor,
-        code: style('.docs-code-card pre').backgroundColor,
-        durations: ['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => style(selector).transitionDuration),
+        code: style('.ib-code').backgroundColor,
+        durations: ['.docs-site', '.docs-header', '.docs-sidebar', '.docs-agent-card', '.docs-integration-builder', '.ib-code', '.docs-errors', '.docs-footer'].map((selector) => style(selector).transitionDuration),
       });
     })()`,
     returnByValue: true,
@@ -1451,7 +1451,7 @@ async function verifyDocsTheme(client) {
       return JSON.stringify({
         site: style('.docs-site').backgroundColor,
         header: style('.docs-header').backgroundColor,
-        code: style('.docs-code-card pre').backgroundColor,
+        code: style('.ib-code').backgroundColor,
       });
     })()`,
     returnByValue: true,
@@ -1484,7 +1484,7 @@ async function verifyDocsTheme(client) {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
   const reducedResult = await client.send("Runtime.evaluate", {
-    expression: `JSON.stringify(['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => getComputedStyle(document.querySelector(selector)).transitionDuration))`,
+    expression: `JSON.stringify(['.docs-site', '.docs-header', '.docs-sidebar', '.docs-agent-card', '.docs-integration-builder', '.ib-code', '.docs-errors', '.docs-footer'].map((selector) => getComputedStyle(document.querySelector(selector)).transitionDuration))`,
     returnByValue: true,
   });
   const reducedDurations = JSON.parse(reducedResult.result.value);
