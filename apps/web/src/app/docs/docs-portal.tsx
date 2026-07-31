@@ -8,22 +8,11 @@ import { ThemeToggle } from "@/components/site-chrome";
 import { api } from "@/lib/api";
 import { localeHref } from "@/lib/locale-routes";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
+import { IntegrationBuilder } from "./integration-builder";
 
 const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 const AGENT_GUIDE_URL = "https://apitoken.sale/md/connect";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const CURL = `curl https://api.apitoken.sale/v1/messages \
-  -H "x-api-key: $APITOKEN_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{
-    "model": "claude-opus-4-8",
-    "max_tokens": 1024,
-    "messages": [{ "role": "user", "content": "Hello" }]
-  }'`;
-const ENVIRONMENT = `export ANTHROPIC_BASE_URL="https://api.apitoken.sale"
-export ANTHROPIC_API_KEY="sk-pool-•••"
-export APITOKEN_API_KEY="$ANTHROPIC_API_KEY"`;
 const CLAUDE_CODE = `# Set for the current shell or add to your shell profile
 export ANTHROPIC_BASE_URL="https://api.apitoken.sale"
 export ANTHROPIC_API_KEY="sk-pool-•••"
@@ -149,11 +138,7 @@ API key: REDACTED (last 4 characters only):`,
     diagnosticCopied: "Error template copied",
     baseUrl: "Base URL",
     authHeader: "Authentication header",
-    quickstartText: "Export the connection settings, then run the minimal cURL request. A successful response confirms the key, balance, endpoint, and model are ready.",
-    requestTitle: "Send your first request",
-    requestText: "This sends one user message to claude-opus-4-8. To stream a response, add \"stream\": true; the endpoint returns standard Anthropic SSE events.",
-    envTitle: "Set environment variables",
-    envText: "Claude Code and the official SDKs read the ANTHROPIC variables. APITOKEN_API_KEY is a local alias used by the cURL example below.",
+    quickstartText: "Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.",
     toolsText: "Use each tool's Anthropic provider settings. Keep the model ID and API format unchanged; replace only the base URL and API key.",
     claudeCode: "Claude Code",
     claudeCodeText: "Set the endpoint and key in the shell, then run Claude Code normally. No project configuration is required.",
@@ -271,11 +256,7 @@ API‑ключ: СКРЫТ (только последние 4 символа):`,
     diagnosticCopied: "Шаблон ошибки скопирован",
     baseUrl: "Базовый URL",
     authHeader: "Заголовок аутентификации",
-    quickstartText: "Сначала задайте параметры подключения, затем выполните минимальный cURL-запрос. Успешный ответ подтверждает, что ключ, баланс, адрес и модель готовы к работе.",
-    requestTitle: "Отправьте первый запрос",
-    requestText: "Запрос отправляет одно сообщение модели claude-opus-4-8. Для потокового ответа добавьте \"stream\": true; сервер вернёт стандартные SSE-события Anthropic.",
-    envTitle: "Задайте переменные окружения",
-    envText: "Claude Code и официальные SDK читают переменные ANTHROPIC. APITOKEN_API_KEY — локальный псевдоним, который используется в cURL-примере ниже.",
+    quickstartText: "Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.",
     toolsText: "Выберите в инструменте провайдера Anthropic. Не меняйте ID модели и формат API — замените только базовый URL и API-ключ.",
     claudeCode: "Claude Code",
     claudeCodeText: "Задайте адрес и ключ в оболочке, затем запускайте Claude Code как обычно. Настраивать проект не требуется.",
@@ -412,8 +393,7 @@ export function DocsPortal() {
 
         <section className="docs-section" id="quickstart">
           <div className="docs-section-heading"><span>02</span><div><h2>{t.quickstart}</h2><p>{t.quickstartText}</p></div></div>
-          <CodeBlock title={t.envTitle} description={t.envText} code={ENVIRONMENT} copyLabel={t.copy} copiedLabel={t.copied} />
-          <CodeBlock title={t.requestTitle} description={t.requestText} code={CURL} copyLabel={t.copy} copiedLabel={t.copied} />
+          <IntegrationBuilder language={language} />
         </section>
 
         <section className="docs-section" id="authentication">
