@@ -42,6 +42,10 @@ permission_check_body=$(sed -n '/^source_repo_readability_check()/,/^}/p' \
 eval "$permission_repair_body"
 eval "$permission_check_body"
 run_as_ci() {
+  if [[ ${FORCE_CI_ERROR:-0} == 1 ]]; then
+    printf 'synthetic unreadable Git object\n' >&2
+    return 0
+  fi
   # The test account owns the temporary checkout, so emulate the production reader boundary before
   # repair: an isolated user must reject any object-store path lacking group/other access.
   if [[ ${1:-} == git && -n ${SOURCE_REPO:-} ]]; then
@@ -87,6 +91,12 @@ git -c safe.directory="$permission_checkout" -C "$permission_checkout" \
 permission_unreadable=$(find "$permission_checkout/.git/objects" \
   \( -type d ! -perm -0055 -o -type f ! -perm -0044 \) -print -quit)
 [[ -z $permission_unreadable ]] || wd_die 'source object repair left unreadable Git paths'
+if ( FORCE_CI_ERROR=1 source_repo_readability_check >"$TEMP/source-permission-check.stdout" \
+    2>"$TEMP/source-permission-check.stderr" ); then
+  wd_die 'source reader stderr was accepted as a clean readability check'
+fi
+grep -Fq 'reported read errors' "$TEMP/source-permission-check.stderr" \
+  || wd_die 'source reader stderr did not fail closed'
 
 # Controller-only handoff uses exec, so the new process must retain the same open-file-description
 # lock rather than reacquiring by pathname. Exercise that Linux contract when flock/procfs exist.

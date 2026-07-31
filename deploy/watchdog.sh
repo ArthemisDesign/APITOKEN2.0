@@ -186,13 +186,21 @@ repair_source_repo_permissions() {
 }
 
 source_repo_readability_check() {
-  local invalid
+  local invalid errors
   repair_source_repo_permissions
+  errors=$(mktemp)
   if ! invalid=$(run_as_ci git -c safe.directory="$SOURCE_REPO" -C "$SOURCE_REPO" \
       cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' \
+      2>"$errors" \
       | awk '$2 == "missing" || NF != 2 { if (bad == "") bad = $0 } END { if (bad != "") print bad }'); then
+    rm -f -- "$errors"
     wd_die "source Git object store cannot be read by $CI_USER"
   fi
+  if [[ -s $errors ]]; then
+    rm -f -- "$errors"
+    wd_die "source Git object store reported read errors for $CI_USER"
+  fi
+  rm -f -- "$errors"
   [[ -z $invalid ]] || wd_die "source Git object store contains an unreadable object: $invalid"
 }
 
