@@ -979,9 +979,16 @@ async fn serve() -> Result<()> {
     // Биллинг — async DB-акторы (синхронный SQLite на выделенных потоках, не на воркерах рантайма):
     // 1 writer + N reader-потоков (WAL параллелит чтения). N ограничен диапазоном 4..=16.
     let billing = if s.billing {
-        let readers = std::thread::available_parallelism()
-            .map(|n| n.get().clamp(4, 16))
-            .unwrap_or(4);
+        // Sized from the host by default, but capped by an explicit budget because the engine is
+        // not the only tenant of the authority database.
+        //
+        // Each slot opens one writer plus this many readers, and blue-green deliberately runs two
+        // generations at once, so the real demand is (slots + 1) * (readers + 1). With four slots on
+        // a 16-core host that is 85 of a 100-connection server before commerce, CRM, sales and
+        // openkeys are counted — and a cutover that cannot open its connections fails closed with
+        // `remaining connection slots are reserved for roles with the SUPERUSER attribute`, which
+        // reads like a database outage rather than a capacity plan that no longer fits.
+        let readers = s.billing_readers;
         // TTL-кэш key_auth (мс): срезает read/запрос под нагрузкой; reserve перечитывает баланс
         // атомарно, а кэш чистится при смене статуса ключа/аккаунта.
         let billing_authority = authority.clone();

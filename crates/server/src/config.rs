@@ -15,12 +15,14 @@ pub struct Settings {
     pub instance_id: String,
     pub bind: String,
     pub fleet: Option<String>,
-    pub billing: bool,       // включён ли учёт баланса ключей (таблица api_keys)
-    pub mult_bp: i64,        // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
-    pub cap5h_usd: f64,      // прайор ёмкости 5h окна (USD; 0 → дефолт пула под Max 20x)
-    pub cap7d_usd: f64,      // прайор ёмкости 7d окна
-    pub reserve5h: f64,      // запас 5h-окна (доля; деф 0.10 = бережём 10%)
-    pub reserve7d: f64,      // запас 7d-окна (доля; деф 0.03)
+    pub billing: bool, // включён ли учёт баланса ключей (таблица api_keys)
+    /// Reader connections this slot opens against the authority. See `CLAUDE_API_BILLING_READERS`.
+    pub billing_readers: usize,
+    pub mult_bp: i64,   // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
+    pub cap5h_usd: f64, // прайор ёмкости 5h окна (USD; 0 → дефолт пула под Max 20x)
+    pub cap7d_usd: f64, // прайор ёмкости 7d окна
+    pub reserve5h: f64, // запас 5h-окна (доля; деф 0.10 = бережём 10%)
+    pub reserve7d: f64, // запас 7d-окна (доля; деф 0.03)
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва
@@ -745,6 +747,17 @@ impl Settings {
             bind: format!("{host}:{port}"),
             fleet: ev("SUBS_FLEET").filter(|f| f != "all"),
             billing: ev_bool("CLAUDE_API_BILLING", true),
+            // Default preserves the previous host-sized behaviour; the bound exists so a deployment
+            // whose authority is shared can fit every slot — plus the extra generation a blue-green
+            // cutover runs — inside the server's connection limit.
+            billing_readers: bounded_usize(
+                "CLAUDE_API_BILLING_READERS",
+                std::thread::available_parallelism()
+                    .map(|n| n.get().clamp(4, 16))
+                    .unwrap_or(4),
+                1,
+                64,
+            ),
             // Наценка по умолчанию: клиент платит 20% от реального API-эквивалента (×0.20).
             mult_bp,
             // Прайоры ёмкости окон (0 → дефолт пула под Max 20x; калибровка их уточняет).
