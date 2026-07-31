@@ -161,6 +161,231 @@ export const createEngineAccountSchema = z.object({
 
 export type CreateEngineAccount = z.infer<typeof createEngineAccountSchema>;
 
+const pricingIdentifierSchema = z.string().min(1).max(200)
+  .refine((value) => value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value),
+    "pricing identifier contains unsupported whitespace or control characters");
+const pricingVersionSchema = z.number().int().safe().positive();
+
+export const pricingVersionTargetSchema = z.object({
+  version: pricingVersionSchema,
+  content_digest: pricingIdentifierSchema,
+}).strict();
+export type PricingVersionTarget = z.infer<typeof pricingVersionTargetSchema>;
+
+export const pricingActiveExpectationSchema = z.union([
+  z.literal("absent"),
+  z.object({ exact: pricingVersionTargetSchema }).strict(),
+]);
+export type PricingActiveExpectation = z.infer<typeof pricingActiveExpectationSchema>;
+
+export const pricingCatalogEntrySchema = z.object({
+  provider_id: pricingIdentifierSchema,
+  canonical_model_id: pricingIdentifierSchema,
+  enabled: z.boolean(),
+}).strict();
+
+export const pricingCatalogSpecSchema = z.object({
+  product_id: pricingIdentifierSchema,
+  generation: pricingVersionSchema,
+  schema_version: pricingVersionSchema,
+  capability_generation: pricingVersionSchema,
+  capability_digest: pricingIdentifierSchema,
+  content_digest: pricingIdentifierSchema,
+  entries: z.array(pricingCatalogEntrySchema),
+}).strict();
+export type PricingCatalogSpec = z.infer<typeof pricingCatalogSpecSchema>;
+
+export const providerSwitchScopeSchema = z.union([
+  z.literal("master"),
+  z.object({
+    product: z.object({ product_id: pricingIdentifierSchema }).strict(),
+  }).strict(),
+  z.object({
+    segment: z.object({
+      product_id: pricingIdentifierSchema,
+      segment: z.enum(["b2c", "b2b"]),
+    }).strict(),
+  }).strict(),
+]);
+
+export const providerSwitchEntrySchema = z.object({
+  provider_id: pricingIdentifierSchema,
+  scope: providerSwitchScopeSchema,
+  catalog_generation: pricingVersionSchema.nullable(),
+  enabled: z.boolean(),
+}).strict();
+
+export const providerSwitchSpecSchema = z.object({
+  generation: pricingVersionSchema,
+  schema_version: pricingVersionSchema,
+  capability_generation: pricingVersionSchema,
+  capability_digest: pricingIdentifierSchema,
+  content_digest: pricingIdentifierSchema,
+  entries: z.array(providerSwitchEntrySchema),
+}).strict();
+export type ProviderSwitchSpec = z.infer<typeof providerSwitchSpecSchema>;
+
+export const accountPolicyBindingSchema = z.object({
+  policy_enforcement: z.enum(["legacy_scalar", "shadow", "strict"]),
+  funding_enforcement: z.enum(["legacy_single", "shadow", "strict"]),
+  reconciliation_state: z.enum(["pending", "verified", "exception"]),
+}).strict();
+export type AccountPolicyBinding = z.infer<typeof accountPolicyBindingSchema>;
+
+export const accountPolicyRuleSchema = z.object({
+  rule_id: pricingIdentifierSchema,
+  rule_digest: pricingIdentifierSchema,
+  scope: z.union([
+    z.object({
+      provider: z.object({ provider_id: pricingIdentifierSchema }).strict(),
+    }).strict(),
+    z.object({
+      model: z.object({
+        provider_id: pricingIdentifierSchema,
+        canonical_model_id: pricingIdentifierSchema,
+      }).strict(),
+    }).strict(),
+  ]),
+  pricing_mode: z.enum(["track", "discount"]),
+  rule_origin: z.enum(["managed", "legacy"]),
+  discount_bps: z.number().int().min(0).max(10_000).nullable(),
+  payable_multiplier_bp: z.number().int().min(0).max(10_000),
+  track_eligible: z.boolean(),
+  retention_eligible: z.boolean(),
+  commission_eligible: z.boolean(),
+}).strict();
+
+export const accountPolicySpecSchema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  effective_version: pricingVersionSchema,
+  policy_id: pricingIdentifierSchema,
+  policy_version: pricingVersionSchema,
+  source_policy_digest: pricingIdentifierSchema,
+  owner_type: z.enum(["global_b2c", "b2b_client", "open_keys", "service"]),
+  owner_id: pricingIdentifierSchema,
+  account_class: z.enum(["b2c", "b2b", "open_keys", "service"]),
+  product_id: pricingIdentifierSchema,
+  schema_version: pricingVersionSchema,
+  catalog_generation: pricingVersionSchema,
+  switch_generation: pricingVersionSchema,
+  content_digest: pricingIdentifierSchema,
+  replacement_locked: z.boolean(),
+  rules: z.array(accountPolicyRuleSchema),
+}).strict();
+export type AccountPolicySpec = z.infer<typeof accountPolicySpecSchema>;
+
+export const activePolicyTargetSchema = z.object({
+  target: pricingVersionTargetSchema,
+  binding: accountPolicyBindingSchema,
+}).strict();
+
+export const policyActiveExpectationSchema = z.union([
+  z.literal("unbound"),
+  z.object({ inactive: accountPolicyBindingSchema }).strict(),
+  z.object({ exact: activePolicyTargetSchema }).strict(),
+]);
+export type PolicyActiveExpectation = z.infer<typeof policyActiveExpectationSchema>;
+
+export const pricingPolicySnapshotSchema = z.union([
+  z.literal("unbound"),
+  z.object({
+    inactive: z.object({
+      product_id: pricingIdentifierSchema,
+      account_class: z.enum(["b2c", "b2b", "open_keys", "service"]),
+      binding: accountPolicyBindingSchema,
+    }).strict(),
+  }).strict(),
+  z.object({
+    active: z.object({
+      policy: accountPolicySpecSchema,
+      binding: accountPolicyBindingSchema,
+    }).strict(),
+  }).strict(),
+]);
+export type PricingPolicySnapshot = z.infer<typeof pricingPolicySnapshotSchema>;
+
+export const pricingRejectionSchema = z.union([
+  z.object({ invalid: z.object({ reason: z.string() }).strict() }).strict(),
+  z.object({ missing_dependency: z.object({ dependency: z.string() }).strict() }).strict(),
+  z.object({ stale: z.object({ actual: pricingVersionTargetSchema.nullable() }).strict() }).strict(),
+  z.literal("version_conflict"),
+  z.object({ cas_mismatch: z.object({ actual: pricingVersionTargetSchema.nullable() }).strict() }).strict(),
+  z.object({
+    policy_cas_mismatch: z.object({ actual: z.union([
+      z.literal("unbound"),
+      z.object({ inactive: accountPolicyBindingSchema }).strict(),
+      z.object({ active: activePolicyTargetSchema }).strict(),
+    ]) }).strict(),
+  }).strict(),
+  z.literal("locked"),
+]);
+
+const pricingMutationSuccessAckSchema = z.object({
+  result: z.enum(["stored", "applied", "unchanged"]),
+  identity: z.unknown(),
+}).strict();
+
+const pricingMutationRejectedAckSchema = z.discriminatedUnion("code", [
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("invalid"),
+    identity: z.unknown(),
+    rejection: z.object({ invalid: z.object({ reason: z.string() }).strict() }).strict(),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("missing_dependency"),
+    identity: z.unknown(),
+    rejection: z.object({
+      missing_dependency: z.object({ dependency: z.string() }).strict(),
+    }).strict(),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("stale"),
+    identity: z.unknown(),
+    rejection: z.object({ stale: z.object({
+      actual: pricingVersionTargetSchema.nullable(),
+    }).strict() }).strict(),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("version_conflict"),
+    identity: z.unknown(),
+    rejection: z.literal("version_conflict"),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("cas_mismatch"),
+    identity: z.unknown(),
+    rejection: z.object({ cas_mismatch: z.object({
+      actual: pricingVersionTargetSchema.nullable(),
+    }).strict() }).strict(),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("policy_cas_mismatch"),
+    identity: z.unknown(),
+    rejection: z.object({ policy_cas_mismatch: z.object({ actual: z.union([
+      z.literal("unbound"),
+      z.object({ inactive: accountPolicyBindingSchema }).strict(),
+      z.object({ active: activePolicyTargetSchema }).strict(),
+    ]) }).strict() }).strict(),
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("locked"),
+    identity: z.unknown(),
+    rejection: z.literal("locked"),
+  }).strict(),
+]);
+
+export const pricingMutationAckSchema = z.union([
+  pricingMutationSuccessAckSchema,
+  pricingMutationRejectedAckSchema,
+]);
+export type PricingMutationAck = z.infer<typeof pricingMutationAckSchema>;
+
 export const enqueueCreditSchema = z.object({
   paymentId: z.string().uuid(),
   engineAccountId: z.string().startsWith("acct_"),

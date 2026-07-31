@@ -13,6 +13,22 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
+import type {
+  AccountPolicyBinding,
+  AccountPolicySpec,
+  PricingCatalogSpec,
+  ProviderSwitchSpec,
+} from "@claude-api/contracts";
+import {
+  claimNextPricingControlJob,
+  claimNextPricingJob,
+  confirmPricingControlJob,
+  createDatabase,
+  recoverStalePricingControlJobs,
+  stageAccountPolicyControlJob,
+  stagePricingCatalogControlJob,
+  stageProviderSwitchControlJob,
+} from "./index.js";
 import { MIGRATIONS_FOLDER } from "./migrate.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -402,8 +418,8 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
     b2bUserId: randomUUID(),
     b2cEngineRecordId: randomUUID(),
     b2bEngineRecordId: randomUUID(),
-    b2cEngineAccountId: `engine-b2c-${randomUUID()}`,
-    b2bEngineAccountId: `engine-b2b-${randomUUID()}`,
+    b2cEngineAccountId: `acct_b2c_${randomUUID()}`,
+    b2bEngineAccountId: `acct_b2b_${randomUUID()}`,
   };
 
   await client.query("BEGIN");
@@ -819,6 +835,198 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
       await peer.end().catch(() => undefined);
       await database.close();
       await rm(migrationsThrough0022, { recursive: true, force: true });
+    }
+  }, TEST_TIMEOUT_MS);
+
+  it("claims catalog, switches, and policy in dependency order and persists exact ACKs", async () => {
+    const temporary = await createTemporaryDatabase("controljobs");
+    const database = createDatabase(temporary.connectionString, "multi-discount-control-job-test");
+    try {
+      await applyMigrations(temporary.client, MIGRATIONS_FOLDER);
+      const graph = await insertValidGraph(temporary.client);
+      const catalog: PricingCatalogSpec = {
+        product_id: "main",
+        generation: 1,
+        schema_version: 1,
+        capability_generation: 1,
+        capability_digest: "capability-v1",
+        content_digest: "catalog-main-v1",
+        entries: [
+          { provider_id: "anthropic", canonical_model_id: "claude-sonnet", enabled: true },
+          { provider_id: "openai", canonical_model_id: "gpt-5", enabled: true },
+        ],
+      };
+      const switches: ProviderSwitchSpec = {
+        generation: 1,
+        schema_version: 1,
+        capability_generation: 1,
+        capability_digest: "capability-v1",
+        content_digest: "switch-v1",
+        entries: [
+          { provider_id: "anthropic", scope: "master", catalog_generation: null, enabled: true },
+          {
+            provider_id: "anthropic",
+            scope: { segment: { product_id: "main", segment: "b2b" } },
+            catalog_generation: 1,
+            enabled: true,
+          },
+          {
+            provider_id: "anthropic",
+            scope: { segment: { product_id: "main", segment: "b2c" } },
+            catalog_generation: 1,
+            enabled: true,
+          },
+          { provider_id: "openai", scope: "master", catalog_generation: null, enabled: true },
+          {
+            provider_id: "openai",
+            scope: { segment: { product_id: "main", segment: "b2b" } },
+            catalog_generation: 1,
+            enabled: true,
+          },
+          {
+            provider_id: "openai",
+            scope: { segment: { product_id: "main", segment: "b2c" } },
+            catalog_generation: 1,
+            enabled: true,
+          },
+        ],
+      };
+      const policy: AccountPolicySpec = {
+        account_id: graph.b2bEngineAccountId,
+        effective_version: 1,
+        policy_id: graph.b2bPolicyId,
+        policy_version: 1,
+        source_policy_digest: "policy-b2b-v1",
+        owner_type: "b2b_client",
+        owner_id: graph.b2bUserId,
+        account_class: "b2b",
+        product_id: "main",
+        schema_version: 1,
+        catalog_generation: 1,
+        switch_generation: 1,
+        content_digest: "account-b2b-v1",
+        replacement_locked: false,
+        rules: [{
+          rule_id: "b2b-anthropic",
+          rule_digest: "effective-b2b-anthropic",
+          scope: { provider: { provider_id: "anthropic" } },
+          pricing_mode: "discount",
+          rule_origin: "legacy",
+          discount_bps: null,
+          payable_multiplier_bp: 3750,
+          track_eligible: false,
+          retention_eligible: false,
+          commission_eligible: false,
+        }],
+      };
+      const binding: AccountPolicyBinding = {
+        policy_enforcement: "shadow",
+        funding_enforcement: "legacy_single",
+        reconciliation_state: "pending",
+      };
+
+      const catalogJobId = await stagePricingCatalogControlJob(database, {
+        ...catalog,
+        entries: [...catalog.entries].reverse(),
+      });
+      await expect(stagePricingCatalogControlJob(database, catalog)).resolves.toBe(catalogJobId);
+      const switchJobId = await stageProviderSwitchControlJob(database, {
+        ...switches,
+        entries: [...switches.entries].reverse(),
+      });
+      await expect(stageProviderSwitchControlJob(database, switches)).resolves.toBe(switchJobId);
+      const policyJobId = await stageAccountPolicyControlJob(database, { policy, binding });
+      await expect(stageAccountPolicyControlJob(database, { policy, binding })).resolves.toBe(policyJobId);
+      await temporary.client.query(`
+        INSERT INTO engine_pricing_jobs (
+          id, user_id, engine_account_id, multiplier_bp, reason
+        ) VALUES ($1, $2, $3, 3750, 'legacy_pending')
+      `, [randomUUID(), graph.b2bUserId, graph.b2bEngineAccountId]);
+
+      const catalogJob = await claimNextPricingControlJob(database, "worker-control");
+      expect(catalogJob).toMatchObject({ kind: "catalog", id: catalogJobId, attempts: 1, spec: catalog });
+      if (!catalogJob || catalogJob.kind !== "catalog") throw new Error("catalog job was not claimed");
+      // The engine committed this activation, but the commerce worker lost the ACK before it
+      // could confirm the job. Lease recovery must replay the same immutable target and accept the
+      // engine's idempotent `unchanged` acknowledgement.
+      await temporary.client.query(`
+        UPDATE engine_catalog_jobs
+        SET locked_at = now() - interval '6 minutes'
+        WHERE id = $1
+      `, [catalogJob.id]);
+      await expect(recoverStalePricingControlJobs(database)).resolves.toBe(1);
+      const replayedCatalogJob = await claimNextPricingControlJob(database, "worker-control-replay");
+      expect(replayedCatalogJob).toMatchObject({
+        kind: "catalog",
+        id: catalogJob.id,
+        attempts: 2,
+        spec: catalog,
+      });
+      if (!replayedCatalogJob || replayedCatalogJob.kind !== "catalog") {
+        throw new Error("catalog job was not replayed after its lost ACK");
+      }
+      await confirmPricingControlJob(database, replayedCatalogJob, {
+        result: "unchanged",
+        identity: {
+          catalog,
+          expectation: { exact: { version: 1, content_digest: "catalog-main-v1" } },
+        },
+      });
+
+      const switchJob = await claimNextPricingControlJob(database, "worker-control");
+      expect(switchJob).toMatchObject({ kind: "switches", id: switchJobId, attempts: 1, spec: switches });
+      if (!switchJob || switchJob.kind !== "switches") throw new Error("switch job was not claimed");
+      await confirmPricingControlJob(database, switchJob, {
+        result: "applied",
+        identity: { switches, expectation: "absent" },
+      });
+
+      const policyJob = await claimNextPricingControlJob(database, "worker-control");
+      expect(policyJob).toMatchObject({
+        kind: "policy",
+        id: policyJobId,
+        attempts: 1,
+        bindingId: graph.b2bBindingId,
+        spec: policy,
+        binding,
+      });
+      if (!policyJob || policyJob.kind !== "policy") throw new Error("policy job was not claimed");
+      await confirmPricingControlJob(database, policyJob, {
+        result: "applied",
+        identity: {
+          policy,
+          activation: {
+            account_id: graph.b2bEngineAccountId,
+            effective_version: 1,
+            content_digest: "account-b2b-v1",
+            binding,
+          },
+          expectation: "unbound",
+        },
+      });
+
+      await expect(claimNextPricingControlJob(database, "worker-control")).resolves.toBeNull();
+      await expect(claimNextPricingJob(database, "worker-scalar")).resolves.toBeNull();
+      const state = await temporary.client.query(`
+        SELECT
+          (SELECT status FROM engine_catalog_jobs WHERE product_id = 'main') AS catalog_status,
+          (SELECT status FROM engine_switch_jobs WHERE generation = 1) AS switch_status,
+          (SELECT status FROM engine_policy_jobs WHERE binding_id = $1) AS policy_status,
+          (SELECT sync_state FROM account_policy_bindings WHERE id = $1) AS sync_state,
+          (SELECT applied_effective_version::text FROM account_policy_bindings WHERE id = $1) AS applied_version,
+          (SELECT reason FROM engine_pricing_jobs WHERE user_id = $2) AS scalar_reason
+      `, [graph.b2bBindingId, graph.b2bUserId]);
+      expect(state.rows).toEqual([{
+        catalog_status: "confirmed",
+        switch_status: "confirmed",
+        policy_status: "confirmed",
+        sync_state: "confirmed",
+        applied_version: "1",
+        scalar_reason: "drained_to_versioned_policy:legacy_pending",
+      }]);
+    } finally {
+      await database.pool.end();
+      await temporary.close();
     }
   }, TEST_TIMEOUT_MS);
 

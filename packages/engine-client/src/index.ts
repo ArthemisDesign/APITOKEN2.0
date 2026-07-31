@@ -1,5 +1,7 @@
 import JSONbigFactory from "json-bigint";
 import {
+  accountPolicyBindingSchema,
+  accountPolicySpecSchema,
   engineAccountSchema,
   engineAccountListSchema,
   engineApiKeyListSchema,
@@ -7,6 +9,14 @@ import {
   engineLedgerSchema,
   engineUsageSchema,
   issuedEngineApiKeySchema,
+  policyActiveExpectationSchema,
+  pricingActiveExpectationSchema,
+  pricingCatalogSpecSchema,
+  pricingMutationAckSchema,
+  pricingPolicySnapshotSchema,
+  providerSwitchSpecSchema,
+  type AccountPolicyBinding,
+  type AccountPolicySpec,
   type CreateEngineAccount,
   type EngineAccount,
   type EngineApiKey,
@@ -14,7 +24,14 @@ import {
   type EngineLedgerEntry,
   type EngineUsage,
   type IssuedEngineApiKey,
+  type PolicyActiveExpectation,
+  type PricingActiveExpectation,
+  type PricingCatalogSpec,
+  type PricingMutationAck,
+  type PricingPolicySnapshot,
+  type ProviderSwitchSpec,
 } from "@claude-api/contracts";
+import { z } from "zod";
 
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
 
@@ -47,7 +64,32 @@ export interface ReplaceEngineKeyPolicyOptions {
   expiresAt: Date | null;
 }
 
+export type TypedPricingMutationAck<Identity> =
+  | { result: "stored" | "applied" | "unchanged"; identity: Identity }
+  | (Extract<PricingMutationAck, { result: "rejected" }> & { identity: Identity });
+
 const maxSignedI64 = 9_223_372_036_854_775_807n;
+const catalogPrepareIdentitySchema = z.object({ catalog: pricingCatalogSpecSchema }).strict();
+const catalogActivationIdentitySchema = z.object({
+  catalog: pricingCatalogSpecSchema,
+  expectation: pricingActiveExpectationSchema,
+}).strict();
+const switchPrepareIdentitySchema = z.object({ switches: providerSwitchSpecSchema }).strict();
+const switchActivationIdentitySchema = z.object({
+  switches: providerSwitchSpecSchema,
+  expectation: pricingActiveExpectationSchema,
+}).strict();
+const policyPrepareIdentitySchema = z.object({ policy: accountPolicySpecSchema }).strict();
+const policyActivationIdentitySchema = z.object({
+  policy: accountPolicySpecSchema,
+  activation: z.object({
+    account_id: z.string(),
+    effective_version: z.number().int().safe().positive(),
+    content_digest: z.string(),
+    binding: accountPolicyBindingSchema,
+  }).strict(),
+  expectation: policyActiveExpectationSchema,
+}).strict();
 
 export class EngineClient {
   private readonly baseUrl: string;
@@ -282,6 +324,215 @@ export class EngineClient {
     });
   }
 
+  async preparePricingCatalog(
+    input: PricingCatalogSpec,
+  ): Promise<TypedPricingMutationAck<{ catalog: PricingCatalogSpec }>> {
+    const catalog = pricingCatalogSpecSchema.parse(input);
+    return this.pricingMutation(
+      "/admin/pricing/catalog/prepare",
+      catalog,
+      catalogPrepareIdentitySchema,
+      { catalog },
+    );
+  }
+
+  async getPricingCatalogVersion(
+    productId: string,
+    generation: number,
+  ): Promise<PricingCatalogSpec | null> {
+    const target = pricingCatalogSpecSchema.pick({ product_id: true, generation: true }).parse({
+      product_id: productId,
+      generation,
+    });
+    const { response, payload } = await this.request(
+      `/admin/pricing/catalog/${encodeURIComponent(target.product_id)}/version/${target.generation}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(
+      z.object({ catalog: pricingCatalogSpecSchema }).strict(),
+      payload,
+      response,
+    ).catalog;
+  }
+
+  async getActivePricingCatalog(productId: string): Promise<PricingCatalogSpec | null> {
+    const target = pricingCatalogSpecSchema.pick({ product_id: true }).parse({ product_id: productId });
+    const { response, payload } = await this.request(
+      `/admin/pricing/catalog/${encodeURIComponent(target.product_id)}/active`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(
+      z.object({ catalog: pricingCatalogSpecSchema }).strict(),
+      payload,
+      response,
+    ).catalog;
+  }
+
+  async activatePricingCatalog(
+    input: PricingCatalogSpec,
+    expectation: PricingActiveExpectation,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof catalogActivationIdentitySchema>>> {
+    const catalog = pricingCatalogSpecSchema.parse(input);
+    const expected = pricingActiveExpectationSchema.parse(expectation);
+    return this.pricingMutation(
+      `/admin/pricing/catalog/${encodeURIComponent(catalog.product_id)}/activate`,
+      { catalog, expectation: expected },
+      catalogActivationIdentitySchema,
+      { catalog, expectation: expected },
+    );
+  }
+
+  async prepareProviderSwitches(
+    input: ProviderSwitchSpec,
+  ): Promise<TypedPricingMutationAck<{ switches: ProviderSwitchSpec }>> {
+    const switches = providerSwitchSpecSchema.parse(input);
+    return this.pricingMutation(
+      "/admin/pricing/switches/prepare",
+      switches,
+      switchPrepareIdentitySchema,
+      { switches },
+    );
+  }
+
+  async getProviderSwitchVersion(generation: number): Promise<ProviderSwitchSpec | null> {
+    if (!Number.isSafeInteger(generation) || generation <= 0) {
+      throw new RangeError("generation must be a positive safe integer");
+    }
+    const { response, payload } = await this.request(
+      `/admin/pricing/switches/version/${generation}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(
+      z.object({ switches: providerSwitchSpecSchema }).strict(),
+      payload,
+      response,
+    ).switches;
+  }
+
+  async getActiveProviderSwitches(): Promise<ProviderSwitchSpec | null> {
+    const { response, payload } = await this.request(
+      "/admin/pricing/switches/active",
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(
+      z.object({ switches: providerSwitchSpecSchema }).strict(),
+      payload,
+      response,
+    ).switches;
+  }
+
+  async activateProviderSwitches(
+    input: ProviderSwitchSpec,
+    expectation: PricingActiveExpectation,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof switchActivationIdentitySchema>>> {
+    const switches = providerSwitchSpecSchema.parse(input);
+    const expected = pricingActiveExpectationSchema.parse(expectation);
+    return this.pricingMutation(
+      "/admin/pricing/switches/activate",
+      { switches, expectation: expected },
+      switchActivationIdentitySchema,
+      { switches, expectation: expected },
+    );
+  }
+
+  async prepareAccountPolicy(
+    input: AccountPolicySpec,
+  ): Promise<TypedPricingMutationAck<{ policy: AccountPolicySpec }>> {
+    const policy = accountPolicySpecSchema.parse(input);
+    return this.pricingMutation(
+      "/admin/pricing/policy/prepare",
+      policy,
+      policyPrepareIdentitySchema,
+      { policy },
+    );
+  }
+
+  async getAccountPolicyVersion(
+    accountId: string,
+    effectiveVersion: number,
+  ): Promise<AccountPolicySpec | null> {
+    if (!Number.isSafeInteger(effectiveVersion) || effectiveVersion <= 0) {
+      throw new RangeError("effectiveVersion must be a positive safe integer");
+    }
+    const { response, payload } = await this.request(
+      `/admin/pricing/policy/${encodeURIComponent(accountId)}/version/${effectiveVersion}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(
+      z.object({ policy: accountPolicySpecSchema }).strict(),
+      payload,
+      response,
+    ).policy;
+  }
+
+  async getActiveAccountPolicy(accountId: string): Promise<{
+    policy: AccountPolicySpec;
+    binding: AccountPolicyBinding;
+  } | null> {
+    const { response, payload } = await this.request(
+      `/admin/pricing/policy/${encodeURIComponent(accountId)}/active`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    return this.parsePricingResponse(z.object({
+      active: z.object({
+        policy: accountPolicySpecSchema,
+        binding: accountPolicyBindingSchema,
+      }).strict(),
+    }).strict(), payload, response).active;
+  }
+
+  async getAccountPricingState(accountId: string): Promise<PricingPolicySnapshot> {
+    const { response, payload } = await this.request(
+      `/admin/pricing/policy/${encodeURIComponent(accountId)}/state`,
+    );
+    const state = this.parsePricingResponse(z.object({
+      state: z.object({
+        account_id: z.string(),
+        policy: pricingPolicySnapshotSchema,
+      }).passthrough(),
+    }).strict(), payload, response).state;
+    if (state.account_id !== accountId) {
+      throw new EngineClientError("engine returned pricing state for a different account", response.status, false);
+    }
+    return state.policy;
+  }
+
+  async activateAccountPolicy(
+    input: AccountPolicySpec,
+    binding: AccountPolicyBinding,
+    expectation: PolicyActiveExpectation,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof policyActivationIdentitySchema>>> {
+    const policy = accountPolicySpecSchema.parse(input);
+    const targetBinding = accountPolicyBindingSchema.parse(binding);
+    const expected = policyActiveExpectationSchema.parse(expectation);
+    const ack = await this.pricingMutation(
+      `/admin/pricing/policy/${encodeURIComponent(policy.account_id)}/activate`,
+      { policy, binding: targetBinding, expectation: expected },
+      policyActivationIdentitySchema,
+      undefined,
+    );
+    const expectedIdentity = {
+      policy,
+      activation: {
+        account_id: policy.account_id,
+        effective_version: policy.effective_version,
+        content_digest: policy.content_digest,
+        binding: targetBinding,
+      },
+      expectation: expected,
+    };
+    if (JSON.stringify(ack.identity) !== JSON.stringify(expectedIdentity)) {
+      throw new EngineClientError("engine pricing ACK identity does not match the request", undefined, false);
+    }
+    return ack;
+  }
+
   async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {
     if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
       throw new RangeError("multiplierBp must be an integer from 0 to 10000");
@@ -298,7 +549,12 @@ export class EngineClient {
 
   private async request(
     path: string,
-    options: { method?: string; body?: string; authenticated?: boolean } = {},
+    options: {
+      method?: string;
+      body?: string;
+      authenticated?: boolean;
+      acceptedStatuses?: readonly number[];
+    } = {},
   ): Promise<{ response: Response; payload: unknown }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -315,7 +571,7 @@ export class EngineClient {
       if (options.body !== undefined) request.body = options.body;
       response = await this.fetchImpl(`${this.baseUrl}${path}`, request);
       const text = await response.text();
-      return { response, payload: this.parse(response, text) };
+      return { response, payload: this.parse(response, text, options.acceptedStatuses ?? []) };
     } catch (error) {
       if (error instanceof EngineClientError) throw error;
       const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
@@ -330,13 +586,43 @@ export class EngineClient {
     }
   }
 
+  private async pricingMutation<Identity>(
+    path: string,
+    body: unknown,
+    identitySchema: z.ZodType<Identity>,
+    expectedIdentity: Identity | undefined,
+  ): Promise<TypedPricingMutationAck<Identity>> {
+    const { response, payload } = await this.request(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+      acceptedStatuses: [400, 409, 423],
+    });
+    const ack = this.parsePricingResponse(pricingMutationAckSchema, payload, response);
+    const identity = this.parsePricingResponse(identitySchema, ack.identity, response);
+    if (expectedIdentity !== undefined && JSON.stringify(identity) !== JSON.stringify(expectedIdentity)) {
+      throw new EngineClientError("engine pricing ACK identity does not match the request", undefined, false);
+    }
+    return {
+      ...ack,
+      identity,
+    } as TypedPricingMutationAck<Identity>;
+  }
+
+  private parsePricingResponse<T>(schema: z.ZodType<T>, payload: unknown, response: Response): T {
+    const result = schema.safeParse(payload);
+    if (!result.success) {
+      throw new EngineClientError("engine returned a malformed pricing response", response.status, false);
+    }
+    return result.data;
+  }
+
   private assertAccount(actualAccountId: string, expectedAccountId: string, response: Response): void {
     if (actualAccountId !== expectedAccountId) {
       throw new EngineClientError("engine returned a response for a different account", response.status, false);
     }
   }
 
-  private parse(response: Response, text: string): unknown {
+  private parse(response: Response, text: string, acceptedStatuses: readonly number[]): unknown {
     let payload: unknown;
     try {
       payload = JSONbig.parse(text);
@@ -350,7 +636,7 @@ export class EngineClient {
       }
       throw new EngineClientError("engine returned invalid JSON", response.status, response.status >= 500);
     }
-    if (!response.ok) {
+    if (!response.ok && !acceptedStatuses.includes(response.status)) {
       const error = typeof payload === "object" && payload !== null && "error" in payload
         ? String((payload as { error: unknown }).error)
         : `engine returned HTTP ${response.status}`;

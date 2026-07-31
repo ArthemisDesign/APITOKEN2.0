@@ -75,6 +75,22 @@ status/body difference also requires returning to `false/0`. Disabling the bridg
 scalar reserve path without rolling back schema. The bridge must cover all eligible fixed-plane
 traffic before the separate shadow worker can claim 100% coverage.
 
+### Versioned full-policy delivery checkpoint
+
+The multi-discount rollout keeps the scalar multiplier authoritative until production policy data
+is seeded and reconciled. In parallel, commerce can now stage immutable full catalog, switch and
+effective account-policy snapshots for the authenticated engine Control API. Delivery is durable
+and dependency ordered: a policy cannot be claimed until its referenced catalog and switch
+generation have confirmed engine ACKs. Versions are monotonic, the same version and digest replay
+idempotently, and the same version with a different digest is a permanent conflict.
+
+Once an account binding has a desired effective policy version and digest, pending/retry scalar
+jobs for that account are retained as confirmed audit rows with a drained reason and are no longer
+sent to the engine. This fence is deliberately per-account: before Stage 5 creates desired policy
+state, all existing scalar pricing behavior remains unchanged. New-key provisioning is gated on a
+confirmed policy only after the corresponding authority data has been seeded, so this checkpoint
+does not strand new users against empty version streams.
+
 ## B2B pricing
 
 B2B accounts bypass the progressive table. An operator creates a one-time, email-bound invitation

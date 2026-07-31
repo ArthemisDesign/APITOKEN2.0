@@ -310,6 +310,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@claude-api/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@claude-api/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -365,6 +368,9 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.22.0
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/pg':
         specifier: ^8.15.0
@@ -384,6 +390,9 @@ importers:
       json-bigint:
         specifier: ^1.0.0
         version: 1.0.0
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/json-bigint':
         specifier: ^1.0.4

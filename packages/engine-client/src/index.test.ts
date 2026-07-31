@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EngineClient } from "./index.js";
+import { EngineClient, EngineClientError } from "./index.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -318,6 +318,179 @@ describe("EngineClient", () => {
       body: '{"mult_bp":3500}',
     });
     await expect(client.setAccountMultiplier("acct_test", 10_001)).rejects.toThrow("multiplierBp");
+  });
+
+  it("preserves complete immutable pricing identities through prepare, state, and activate", async () => {
+    const catalog = {
+      product_id: "main",
+      generation: 1,
+      schema_version: 1,
+      capability_generation: 1,
+      capability_digest: "capability-v1",
+      content_digest: "catalog-v1",
+      entries: [{
+        provider_id: "anthropic",
+        canonical_model_id: "claude-sonnet",
+        enabled: true,
+      }],
+    };
+    const policy = {
+      account_id: "acct_test",
+      effective_version: 1,
+      policy_id: "global-b2c",
+      policy_version: 1,
+      source_policy_digest: "source-policy-v1",
+      owner_type: "global_b2c" as const,
+      owner_id: "global",
+      account_class: "b2c" as const,
+      product_id: "main",
+      schema_version: 1,
+      catalog_generation: 1,
+      switch_generation: 1,
+      content_digest: "account-policy-v1",
+      replacement_locked: false,
+      rules: [{
+        rule_id: "anthropic-track",
+        rule_digest: "anthropic-track-v1",
+        scope: { provider: { provider_id: "anthropic" } },
+        pricing_mode: "track" as const,
+        rule_origin: "managed" as const,
+        discount_bps: null,
+        payable_multiplier_bp: 4000,
+        track_eligible: true,
+        retention_eligible: true,
+        commission_eligible: true,
+      }],
+    };
+    const binding = {
+      policy_enforcement: "shadow" as const,
+      funding_enforcement: "legacy_single" as const,
+      reconciliation_state: "pending" as const,
+    };
+    const requests: Array<{ url: string; body: unknown }> = [];
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        const url = String(input);
+        const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+        requests.push({ url, body });
+        if (url.endsWith("/catalog/prepare")) {
+          return Response.json({ result: "stored", identity: { catalog } });
+        }
+        if (url.endsWith("/catalog/main/active")) {
+          return Response.json({ error: "no active catalog" }, { status: 404 });
+        }
+        if (url.endsWith("/catalog/main/activate")) {
+          return Response.json({ result: "applied", identity: body });
+        }
+        if (url.endsWith("/policy/prepare")) {
+          return Response.json({ result: "stored", identity: { policy } });
+        }
+        if (url.endsWith("/policy/acct_test/state")) {
+          return Response.json({ state: { account_id: "acct_test", policy: "unbound" } });
+        }
+        if (url.endsWith("/policy/acct_test/activate")) {
+          return Response.json({
+            result: "applied",
+            identity: {
+              policy,
+              activation: {
+                account_id: "acct_test",
+                effective_version: 1,
+                content_digest: "account-policy-v1",
+                binding,
+              },
+              expectation: "unbound",
+            },
+          });
+        }
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+
+    await expect(client.preparePricingCatalog(catalog)).resolves.toMatchObject({ result: "stored" });
+    await expect(client.getActivePricingCatalog("main")).resolves.toBeNull();
+    await expect(client.activatePricingCatalog(catalog, "absent")).resolves.toMatchObject({
+      result: "applied",
+      identity: { catalog, expectation: "absent" },
+    });
+    await expect(client.prepareAccountPolicy(policy)).resolves.toMatchObject({ result: "stored" });
+    await expect(client.getAccountPricingState("acct_test")).resolves.toBe("unbound");
+    await expect(client.activateAccountPolicy(policy, binding, "unbound")).resolves.toMatchObject({
+      result: "applied",
+      identity: { policy, expectation: "unbound" },
+    });
+    expect(requests.find((request) => request.url.endsWith("/catalog/main/activate"))?.body)
+      .toEqual({ catalog, expectation: "absent" });
+    expect(requests.find((request) => request.url.endsWith("/policy/acct_test/activate"))?.body)
+      .toEqual({ policy, binding, expectation: "unbound" });
+  });
+
+  it("returns typed pricing conflicts but rejects a forged successful ACK", async () => {
+    const catalog = {
+      product_id: "main",
+      generation: 1,
+      schema_version: 1,
+      capability_generation: 1,
+      capability_digest: "capability-v1",
+      content_digest: "catalog-v1",
+      entries: [],
+    };
+    let forged = false;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => forged
+        ? Response.json({
+            result: "applied",
+            identity: { catalog: { ...catalog, capability_digest: "forged" }, expectation: "absent" },
+          })
+        : Response.json({
+            result: "rejected",
+            code: "cas_mismatch",
+            identity: { catalog, expectation: "absent" },
+            rejection: { cas_mismatch: { actual: null } },
+          }, { status: 409 }),
+    });
+
+    await expect(client.activatePricingCatalog(catalog, "absent")).resolves.toMatchObject({
+      result: "rejected",
+      code: "cas_mismatch",
+    });
+    forged = true;
+    await expect(client.activatePricingCatalog(catalog, "absent"))
+      .rejects.toThrow("ACK identity does not match");
+  });
+
+  it("treats malformed pricing responses as permanent protocol failures", async () => {
+    const catalog = {
+      product_id: "main",
+      generation: 1,
+      schema_version: 1,
+      capability_generation: 1,
+      capability_digest: "capability-v1",
+      content_digest: "catalog-v1",
+      entries: [],
+    };
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        result: "rejected",
+        code: "locked",
+        identity: { catalog, expectation: "absent" },
+        rejection: { cas_mismatch: { actual: null } },
+      }, { status: 423 }),
+    });
+
+    const failure = await client.activatePricingCatalog(catalog, "absent").catch((error) => error);
+    expect(failure).toBeInstanceOf(EngineClientError);
+    expect(failure).toMatchObject({
+      message: "engine returned a malformed pricing response",
+      status: 423,
+      retryable: false,
+    });
   });
 
   it("updates account status through the control API", async () => {

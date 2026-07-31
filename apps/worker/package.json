@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@claude-api/contracts": "workspace:*",
     "@claude-api/db": "workspace:*",
     "@claude-api/engine-client": "workspace:*",
     "@claude-api/payments": "workspace:*",

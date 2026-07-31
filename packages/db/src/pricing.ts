@@ -933,12 +933,34 @@ export async function claimNextPricingJob(
       WHERE status = 'processing'
         AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
     `);
+    // Once commerce has a desired full policy, the unversioned scalar stream is no longer allowed
+    // to race that account's monotonic policy jobs. Existing rows are retained as an audit record
+    // but drained without another engine write. Stage 5 switches writers only after it can
+    // materialize a replacement policy for every future scalar change.
+    await client.query(`
+      UPDATE engine_pricing_jobs legacy
+      SET status = 'confirmed',
+          reason = 'drained_to_versioned_policy:' || legacy.reason,
+          confirmed_at = COALESCE(legacy.confirmed_at, now()),
+          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+      FROM account_policy_bindings binding
+      WHERE binding.user_id = legacy.user_id
+        AND binding.desired_effective_version IS NOT NULL
+        AND binding.desired_digest IS NOT NULL
+        AND legacy.status IN ('pending', 'retry')
+    `);
     const result = await client.query<{
       id: string; user_id: string; engine_account_id: string; multiplier_bp: number; attempts: number;
     }>(`
       SELECT id, user_id, engine_account_id, multiplier_bp, attempts
       FROM engine_pricing_jobs
       WHERE status IN ('pending', 'retry') AND next_attempt_at <= now()
+        AND NOT EXISTS (
+          SELECT 1 FROM account_policy_bindings binding
+          WHERE binding.user_id = engine_pricing_jobs.user_id
+            AND binding.desired_effective_version IS NOT NULL
+            AND binding.desired_digest IS NOT NULL
+        )
       ORDER BY next_attempt_at, created_at
       FOR UPDATE SKIP LOCKED LIMIT 1
     `);
@@ -969,6 +991,18 @@ export async function claimNextPricingJob(
 
 export async function confirmPricingJob(database: Database, job: ClaimedPricingJob): Promise<void> {
   await database.pool.query(`
+    UPDATE engine_pricing_jobs legacy
+    SET status = 'confirmed',
+        reason = 'drained_to_versioned_policy_after_processing:' || legacy.reason,
+        confirmed_at = now(), locked_at = NULL, locked_by = NULL,
+        last_error = NULL, updated_at = now()
+    FROM account_policy_bindings binding
+    WHERE legacy.id = $1 AND legacy.status = 'processing'
+      AND binding.user_id = legacy.user_id
+      AND binding.desired_effective_version IS NOT NULL
+      AND binding.desired_digest IS NOT NULL
+  `, [job.id]);
+  await database.pool.query(`
     UPDATE engine_pricing_jobs job
     SET engine_account_id = COALESCE(ea.engine_account_id, job.engine_account_id),
         multiplier_bp = cp.multiplier_bp,
@@ -992,6 +1026,18 @@ export async function confirmPricingJob(database: Database, job: ClaimedPricingJ
 }
 
 export async function retryPricingJob(database: Database, job: ClaimedPricingJob, error: string): Promise<void> {
+  await database.pool.query(`
+    UPDATE engine_pricing_jobs legacy
+    SET status = 'confirmed',
+        reason = 'drained_to_versioned_policy_after_processing:' || legacy.reason,
+        confirmed_at = now(), locked_at = NULL, locked_by = NULL,
+        last_error = NULL, updated_at = now()
+    FROM account_policy_bindings binding
+    WHERE legacy.id = $1 AND legacy.status = 'processing'
+      AND binding.user_id = legacy.user_id
+      AND binding.desired_effective_version IS NOT NULL
+      AND binding.desired_digest IS NOT NULL
+  `, [job.id]);
   const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(job.attempts, 10)));
   await database.pool.query(`
     UPDATE engine_pricing_jobs job

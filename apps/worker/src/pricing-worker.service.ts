@@ -2,21 +2,32 @@ import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit } from 
 import { ConfigService } from "@nestjs/config";
 import {
   applyPricingLedgerPage,
+  claimNextPricingControlJob,
   claimNextPricingJob,
   closeElapsedTierWindows,
   completePricingUsageSync,
+  confirmPricingControlJob,
   confirmPricingJob,
   getPricingUsageCursor,
   listPricingSyncTargets,
   reconcileTierLadderMultipliers,
+  recoverStalePricingControlJobs,
   recoverStalePricingJobs,
   refreshTierWindowUsage,
+  releasePricingControlJob,
   retryPricingJob,
   utcMonthStart,
   type Database,
+  type ClaimedPricingControlJob,
+  type PricingControlJobDisposition,
   type PricingSyncTarget,
 } from "@claude-api/db";
-import { EngineClient } from "@claude-api/engine-client";
+import type {
+  PolicyActiveExpectation,
+  PricingActiveExpectation,
+  PricingMutationAck,
+} from "@claude-api/contracts";
+import { EngineClient, EngineClientError } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
@@ -36,6 +47,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   ) {}
 
   async onModuleInit(): Promise<void> {
+    const recoveredControl = await recoverStalePricingControlJobs(this.database);
+    if (recoveredControl > 0) {
+      this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
+    }
     const recovered = await recoverStalePricingJobs(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
     // После изменения констант лестницы существующие профили сходятся к ней на первом старте;
@@ -60,6 +75,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // processing lease until process restart.
         const recovered = await recoverStalePricingJobs(this.database);
         if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
+        const recoveredControl = await recoverStalePricingControlJobs(this.database);
+        if (recoveredControl > 0) {
+          this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
+        }
 
         const now = new Date();
         // getPricingUsageCursor reconciles durable confirmed-credit accrual markers, including
@@ -94,6 +113,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
             this.logger.log(`closed ${closed} elapsed pricing windows`);
           }
         }
+        await this.flushPricingControlJobs();
         await this.flushPricingJobs();
       } catch (error) {
         this.logger.error(message(error));
@@ -121,6 +141,107 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       await this.engine.acknowledgeLedger(target.engineAccountId, cursor);
       if (entries.length < 1000) return;
     }
+  }
+
+  private async flushPricingControlJobs(): Promise<void> {
+    for (;;) {
+      const job = await claimNextPricingControlJob(this.database, this.workerId);
+      if (!job) return;
+      try {
+        const ack = await this.deliverPricingControlJob(job);
+        await confirmPricingControlJob(this.database, job, ack);
+      } catch (error) {
+        const disposition = pricingControlDisposition(error);
+        try {
+          await releasePricingControlJob(this.database, job, disposition, message(error));
+        } catch (releaseError) {
+          this.logger.error(`failed to release pricing-control job ${job.id}: ${message(releaseError)}`);
+          throw releaseError;
+        }
+        if (disposition === "dead") {
+          this.logger.error(`pricing-control job ${job.id} failed permanently: ${message(error)}`);
+        }
+      }
+    }
+  }
+
+  private async deliverPricingControlJob(job: ClaimedPricingControlJob): Promise<PricingMutationAck> {
+    if (job.kind === "catalog") {
+      requirePricingMutation(
+        await this.engine.preparePricingCatalog(job.spec),
+        ["stored", "unchanged"],
+        "catalog prepare",
+      );
+      const active = await this.engine.getActivePricingCatalog(job.spec.product_id);
+      const expectation: PricingActiveExpectation = active === null
+        ? "absent"
+        : { exact: { version: active.generation, content_digest: active.content_digest } };
+      fenceVersion(
+        active?.generation,
+        active?.content_digest,
+        job.spec.generation,
+        job.spec.content_digest,
+        "catalog",
+      );
+      const ack = await this.engine.activatePricingCatalog(job.spec, expectation);
+      requirePricingMutation(ack, ["applied", "unchanged"], "catalog activation");
+      return ack;
+    }
+
+    if (job.kind === "switches") {
+      requirePricingMutation(
+        await this.engine.prepareProviderSwitches(job.spec),
+        ["stored", "unchanged"],
+        "provider-switch prepare",
+      );
+      const active = await this.engine.getActiveProviderSwitches();
+      const expectation: PricingActiveExpectation = active === null
+        ? "absent"
+        : { exact: { version: active.generation, content_digest: active.content_digest } };
+      fenceVersion(
+        active?.generation,
+        active?.content_digest,
+        job.spec.generation,
+        job.spec.content_digest,
+        "provider switches",
+      );
+      const ack = await this.engine.activateProviderSwitches(job.spec, expectation);
+      requirePricingMutation(ack, ["applied", "unchanged"], "provider-switch activation");
+      return ack;
+    }
+
+    requirePricingMutation(
+      await this.engine.prepareAccountPolicy(job.spec),
+      ["stored", "unchanged"],
+      "account-policy prepare",
+    );
+    const state = await this.engine.getAccountPricingState(job.spec.account_id);
+    let expectation: PolicyActiveExpectation;
+    if (state === "unbound") {
+      expectation = "unbound";
+    } else if ("inactive" in state) {
+      expectation = { inactive: state.inactive.binding };
+    } else {
+      fenceVersion(
+        state.active.policy.effective_version,
+        state.active.policy.content_digest,
+        job.spec.effective_version,
+        job.spec.content_digest,
+        "account policy",
+      );
+      expectation = {
+        exact: {
+          target: {
+            version: state.active.policy.effective_version,
+            content_digest: state.active.policy.content_digest,
+          },
+          binding: state.active.binding,
+        },
+      };
+    }
+    const ack = await this.engine.activateAccountPolicy(job.spec, job.binding, expectation);
+    requirePricingMutation(ack, ["applied", "unchanged"], "account-policy activation");
+    return ack;
   }
 
   private async flushPricingJobs(): Promise<void> {
@@ -158,4 +279,59 @@ function afterMonthCloseGrace(now: Date, graceMs: number): boolean {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "pricing worker failed";
+}
+
+class PricingControlDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly disposition: PricingControlJobDisposition,
+  ) {
+    super(message);
+    this.name = "PricingControlDeliveryError";
+  }
+}
+
+function fenceVersion(
+  activeVersion: number | undefined,
+  activeDigest: string | undefined,
+  targetVersion: number,
+  targetDigest: string,
+  targetName: string,
+): void {
+  if (activeVersion === undefined) return;
+  if (activeVersion > targetVersion) {
+    throw new PricingControlDeliveryError(
+      `${targetName} target version ${targetVersion} is older than engine version ${activeVersion}`,
+      "superseded",
+    );
+  }
+  if (activeVersion === targetVersion && activeDigest !== targetDigest) {
+    throw new PricingControlDeliveryError(
+      `${targetName} version ${targetVersion} has a different engine digest`,
+      "dead",
+    );
+  }
+}
+
+export function requirePricingMutation(
+  ack: PricingMutationAck,
+  accepted: ReadonlyArray<PricingMutationAck["result"]>,
+  phase: string,
+): void {
+  if (ack.result !== "rejected") {
+    if (accepted.includes(ack.result)) return;
+    throw new PricingControlDeliveryError(`${phase} returned unexpected result ${ack.result}`, "dead");
+  }
+  const disposition: PricingControlJobDisposition =
+    ack.code === "stale" ? "superseded"
+      : ack.code === "invalid" || ack.code === "version_conflict" || ack.code === "locked"
+        ? "dead"
+        : "retry";
+  throw new PricingControlDeliveryError(`${phase} rejected with ${ack.code}`, disposition);
+}
+
+export function pricingControlDisposition(error: unknown): PricingControlJobDisposition {
+  if (error instanceof PricingControlDeliveryError) return error.disposition;
+  if (error instanceof EngineClientError) return error.retryable ? "retry" : "dead";
+  return "retry";
 }

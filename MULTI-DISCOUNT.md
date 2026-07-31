@@ -1866,7 +1866,7 @@ Exit gate Stage 3B1c: atomic actual snapshots проходят per-request св�
 durable evaluation rows выборочно сверены с actual snapshots; bridge и producer отключаются
 независимыми операционными шагами без rollback schema.
 
-### Этап 3C. Versioned Control API без strict enforcement — текущий application-checkpoint
+### Этап 3C. Versioned Control API без strict enforcement — доставлен
 
 - Добавить аутентифицированные prepare/read/activate endpoints для catalog, switches и account
   policy поверх Stage 3A Authority API.
@@ -1897,13 +1897,37 @@ HTTP integration test проходит полный catalog → switches → pol
 dual-lineage read и stale expectation conflict; registry PostgreSQL CAS matrix остаётся
 authoritative backend parity proof.
 
-### Этап 4. Authority и durable synchronization в commerce
+### Этап 4. Authority и durable synchronization в commerce — текущий application-checkpoint
 
 - Добавить полные atomic policy jobs.
 - Ввести monotonic CAS/digest/ACK.
 - Новые provisioning flows всегда создают policy до key.
 - Scalar job либо переводится в policy job, либо дренируется.
 - Старый scalar job не может перезаписать более новую policy version.
+
+Commerce checkpoint использует уже доставленные expand/invariant migrations `0022` и `0023`:
+новая миграция не нужна, потому что version streams, binding state и durable job tables были
+намеренно созданы пустыми до появления writer. Shared contracts теперь валидируют полные catalog,
+switch и effective account-policy specs, binding-aware CAS и типизированные rejection ACK. Typed
+engine client не принимает усечённый или поддельный ACK и классифицирует malformed protocol
+response как permanent failure, а не бесконечный retry.
+
+Три независимые очереди `engine_catalog_jobs`, `engine_switch_jobs` и `engine_policy_jobs` получают
+только payload, точно совпадающий с immutable commerce rows. Claim соблюдает зависимость
+catalog → switches → policy, восстанавливает истёкшие leases, supersede-ит устаревшие desired
+targets и сохраняет полный durable ACK. Worker выводит CAS expectation из coherent engine state;
+lost-ACK replay той же версии подтверждается через `unchanged`, более новая engine version
+fence-ит старую job, а same-version/different-digest уходит в permanent failure. Release policy
+job и обновление binding sync state выполняются одной PostgreSQL-транзакцией.
+
+Scalar coexistence fail-safe включается только для аккаунта, у которого уже установлен полный
+`desired_effective_version`/digest: pending/retry scalar rows сохраняются как audit и дренируются,
+а уже захваченная scalar job не возвращается в очередь после появления desired policy. Пустые
+version streams не меняют существующих пользователей, provisioning, keys или цену до Stage 5.
+Policy-before-key gate нельзя включать раньше seed/backfill: иначе новый аккаунт не сможет получить
+ещё не существующую materialized policy. Stage 5 атомарно создаёт authority data и jobs; после
+подтверждённого ACK gate включается для commerce provisioning, а OpenKeys делает то же в своём
+отдельном Stage 7 cutover.
 
 ### Этап 5. Backfill каталогов и политик
 

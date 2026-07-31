@@ -60,6 +60,20 @@ Transactional email and self-hosted SMTP configuration are documented in `EMAIL_
 B2C progressive tiers, B2B invitations/manual pricing, month-close behavior and the engine sync
 pipeline are documented in `PRICING.md`.
 
+The multi-discount rollout adds a second, versioned synchronization lane beside the legacy scalar
+multiplier lane. Commerce remains the policy authority: immutable catalog, provider-switch and
+effective account-policy rows are staged into `engine_catalog_jobs`, `engine_switch_jobs` and
+`engine_policy_jobs`. The worker claims them in catalog → switches → policy order, derives an exact
+CAS expectation from the engine's active state, and stores the complete durable ACK before marking
+the desired binding confirmed. Expired leases replay safely, including a lost ACK after the engine
+commit; same-version/different-digest and malformed protocol responses are permanent failures.
+
+This application checkpoint does not seed or activate production policies. A legacy scalar job is
+drained only after its account has a non-null desired full-policy version and digest, so empty
+version streams cannot alter current users. Provisioning becomes policy-before-key only after the
+Stage 5 seed/backfill has created and delivered the relevant account policy; OpenKeys follows its
+separate Stage 7 cutover.
+
 ## Authenticated client API
 
 All private routes use the HttpOnly session cookie and derive the owner from that session. Engine
@@ -111,4 +125,6 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.
 - B2C tier progress comes only from authoritative engine `charge` ledger rows and is deduplicated by
   `(engine_account_id, ledger_entry_id)`.
-- Pricing changes are persisted as durable jobs before the engine multiplier is updated.
+- Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
+  updated. Once an account has a desired full policy, that scalar lane is audit-drained and only
+  the monotonic versioned policy lane may advance its engine pricing state.
