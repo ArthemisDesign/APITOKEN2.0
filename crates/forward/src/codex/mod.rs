@@ -1713,6 +1713,28 @@ impl CodexGateway {
                         // routable indefinitely: the one failure mode with no consequence became
                         // the one that took the pool down.
                         let deadline = matches!(error, ProcessError::Timeout(_));
+                        // A busy home is not a silent one.
+                        //
+                        // The app-server serializes work per home, so while a turn is generating —
+                        // and a turn may legitimately run for minutes — a control call queues behind
+                        // it and cannot answer inside the probe deadline. Treating that as evidence
+                        // of a dead transport is backwards: the home is proving its liveness by
+                        // serving, and the only thing the timeout measures is our own traffic.
+                        //
+                        // In production this took out exactly the homes that were working. The
+                        // freshest, highest-capacity home took the load, missed three probes behind
+                        // its own turns, and was recycled for it, which moved the load to the next
+                        // home and repeated. A probe deadline therefore only counts against a home
+                        // that has nothing in flight.
+                        let busy = home.inflight() > 0;
+                        if deadline && busy {
+                            eprintln!(
+                                "Codex home {} probe deferred while serving {} turn(s)",
+                                home.id(),
+                                home.inflight()
+                            );
+                            return;
+                        }
                         home.note_process_error(&error);
                         // Every probe failure is reported, not only the deadlines. Logging one
                         // class and swallowing the rest produced a home whose quota reading had
