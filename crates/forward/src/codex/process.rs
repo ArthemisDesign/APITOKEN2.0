@@ -738,6 +738,18 @@ impl CodexProcess {
         remove_ready_marker_path(self.ready_marker.clone()).await
     }
 
+    /// Send one JSON-RPC frame, bounded in time.
+    ///
+    /// Both awaits below can block forever against a peer that is gone without closing: the shared
+    /// writer lock, and the write itself once the socket buffer stops draining. Neither was covered
+    /// by the request deadline, which only bounds *waiting for a reply*, so a single stuck send
+    /// pinned the writer lock and every later request on that home queued behind it with no
+    /// deadline at all — turns parked forever, and their load slots were never released.
+    ///
+    /// A send that misses the deadline may have left a partial frame on the wire, which
+    /// desynchronises the stream for every sibling turn on this generation. The generation is
+    /// therefore poisoned rather than reused, and the deadline surfaces as a normal transport
+    /// deadline that the admission policy already knows how to act on.
     async fn write_value(&self, value: &Value) -> Result<(), ProcessError> {
         if !self.is_live() {
             return Err(ProcessError::Closed);
@@ -749,6 +761,18 @@ impl CodexProcess {
                 "outgoing JSON-RPC frame exceeded 32 MiB".to_string(),
             ));
         }
+        let deadline = std::time::Duration::from_millis(self.cfg.request_timeout_ms.max(1));
+        match tokio::time::timeout(deadline, self.write_encoded(encoded)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let error = ProcessError::Timeout("app-server write");
+                self.shared.close(error.clone()).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn write_encoded(&self, encoded: String) -> Result<(), ProcessError> {
         let mut writer = self.writer.lock().await;
         match &mut *writer {
             AppServerWriter::JsonLines(writer) => {
