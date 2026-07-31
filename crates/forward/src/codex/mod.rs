@@ -1714,17 +1714,22 @@ impl CodexGateway {
                         // the one that took the pool down.
                         let deadline = matches!(error, ProcessError::Timeout(_));
                         home.note_process_error(&error);
-                        if deadline {
-                            // Attribute the stall to a home. The previous log named only the RPC
-                            // stage, so an operator could see that *something* was stuck but not
-                            // which subscription, and had to infer it from snapshot-age metrics.
-                            eprintln!(
-                                "Codex home {} probe timed out [{}] (streak {})",
-                                home.id(),
-                                error.diagnostic_class(),
-                                home.health().deadline_streak
-                            );
-                        }
+                        // Every probe failure is reported, not only the deadlines. Logging one
+                        // class and swallowing the rest produced a home whose quota reading had
+                        // been frozen for five hours with nothing in the journal to explain it:
+                        // the probe was failing before it ever reached the refresh, and that exit
+                        // left no trace at all. A failure the sweep acts on must be a failure the
+                        // sweep can be questioned about.
+                        eprintln!(
+                            "Codex home {} probe failed [{}]{}",
+                            home.id(),
+                            error.diagnostic_class(),
+                            if deadline {
+                                format!(" (deadline streak {})", home.health().deadline_streak)
+                            } else {
+                                String::new()
+                            }
+                        );
                         // Replace the generation only once the policy says it is provably unusable.
                         // Recycling on a single deadline would kill every sibling turn multiplexed
                         // over the same child; recycling never is how a bridge to a replaced daemon
