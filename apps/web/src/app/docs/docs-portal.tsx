@@ -121,21 +121,6 @@ const copy = {
     supportLead: "IDE, SDK, endpoint, models, and request errors.",
     openSupport: "Telegram",
     supportOnline: "AI 24/7 · human when needed",
-    diagnosticBrief: `Please help me connect apiToken.sale.
-
-Operating system and version:
-Client / IDE / CLI / SDK and version:
-Runtime and shell:
-What I am trying to connect:
-API surface or endpoint used:
-Model ID:
-HTTP status and exact error text:
-Approximate time and timezone:
-Request ID, if present:
-What I already tried:
-API key: REDACTED (last 4 characters only):`,
-    copyDiagnostic: "Diagnostics",
-    diagnosticCopied: "Error template copied",
     baseUrl: "Base URL",
     authHeader: "Authentication header",
     quickstartText: "Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.",
@@ -239,21 +224,6 @@ API key: REDACTED (last 4 characters only):`,
     supportLead: "IDE, SDK, endpoint, модели и ошибки запросов.",
     openSupport: "Telegram",
     supportOnline: "AI 24/7 · человек при необходимости",
-    diagnosticBrief: `Помогите подключить apiToken.sale.
-
-Операционная система и версия:
-Клиент / IDE / CLI / SDK и версия:
-Runtime и оболочка:
-Что именно подключаю:
-Используемый API или endpoint:
-ID модели:
-HTTP‑статус и точный текст ошибки:
-Примерное время и часовой пояс:
-Request ID, если есть:
-Что уже пробовал:
-API‑ключ: СКРЫТ (только последние 4 символа):`,
-    copyDiagnostic: "Диагностика",
-    diagnosticCopied: "Шаблон ошибки скопирован",
     baseUrl: "Базовый URL",
     authHeader: "Заголовок аутентификации",
     quickstartText: "Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.",
@@ -385,7 +355,6 @@ export function DocsPortal() {
             </div>
             <div className="docs-support-actions">
               <a className="btn btn-primary" href={supportUrl} target="_blank" rel="noreferrer"><TelegramIcon />{t.openSupport}</a>
-              <CopyControl className="docs-diagnostic-copy" withIcon value={t.diagnosticBrief} label={t.copyDiagnostic} copiedLabel={t.diagnosticCopied} />
               <span><i aria-hidden="true" />{t.supportOnline}</span>
             </div>
           </article>
