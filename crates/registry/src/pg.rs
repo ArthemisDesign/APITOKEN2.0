@@ -2306,8 +2306,8 @@ impl PgStore {
                    observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
                    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                    last_measured_at,estimator_version,updated_ts,version \
-                 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CAST($11 AS numeric),\
-                          CAST($12 AS numeric),$13,$14,$15,$16,$17,$18,$19,$20,$21,1) \
+                 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CAST(CAST($11 AS text) AS numeric),\
+                          CAST(CAST($12 AS text) AS numeric),$13,$14,$15,$16,$17,$18,$19,$20,$21,1) \
                  ON CONFLICT(profile_id,bucket_id) DO NOTHING RETURNING version",
                 &[
                     &state.profile_id,
@@ -2338,7 +2338,8 @@ impl PgStore {
                 "UPDATE gemini_window_calibrations SET window_kind=$3,window_duration_mins=$4,\
                    resets_at=$5,anchor_used_fraction_units=$6,anchor_spend_nano=$7,\
                    anchor_ready=$8,used_fraction_units=$9,observed_at=$10,\
-                   sum_used_sq=CAST($11 AS numeric),sum_used_spend_nano=CAST($12 AS numeric),\
+                   sum_used_sq=CAST(CAST($11 AS text) AS numeric),\
+                   sum_used_spend_nano=CAST(CAST($12 AS text) AS numeric),\
                    observed_fraction_units=$13,samples=$14,current_capacity_nano=$15,\
                    current_low_nano=$16,current_high_nano=$17,current_confidence_bp=$18,\
                    last_measured_at=$19,estimator_version=$20,updated_ts=$21,version=version+1 \
