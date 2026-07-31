@@ -1887,6 +1887,70 @@ fn smooth_step(hint_secs: i64, remaining_ms: u128) -> Option<std::time::Duration
 /// Отдать ответ апстрима клиенту байт-в-байт (стримом — работает и для SSE).
 /// Если задан `meter` — оборачиваем тело в tee-метеринг: клиент получает те же байты,
 /// а на завершении стрима списываем стоимость с ключа (тело клиенту НЕ задерживается).
+/// Terminate a broken SSE body with the error event the protocol defines for it.
+///
+/// A transport failure after the first byte cannot be retried — another attempt would replay or
+/// interleave output the client has already seen. What it must not do is end the body silently:
+/// an SDK reading `text/event-stream` sees a stream that simply stops, which is indistinguishable
+/// from a completed response until a parse fails somewhere further up, and many clients hang on it.
+///
+/// `event: error` is part of the Anthropic stream protocol, so emitting one is not a deviation from
+/// byte-for-byte transparency — it restores it. A real upstream that failed mid-stream would send
+/// exactly this frame, and the client's existing error path handles it. The payload carries the
+/// same anonymised overload wording the local error path uses: the cause belongs in our metrics and
+/// logs, never in a customer's response body.
+struct SseErrorTail {
+    inner: ResponseByteStream,
+    /// Set once the inner stream has failed, so the tail frame is emitted exactly once.
+    failed: bool,
+    done: bool,
+}
+
+impl SseErrorTail {
+    fn new(inner: ResponseByteStream) -> Self {
+        Self {
+            inner,
+            failed: false,
+            done: false,
+        }
+    }
+
+    fn frame() -> bytes::Bytes {
+        bytes::Bytes::from_static(
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        )
+    }
+}
+
+impl Stream for SseErrorTail {
+    type Item = Result<bytes::Bytes, std::io::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        if self.done {
+            return Poll::Ready(None);
+        }
+        if self.failed {
+            self.done = true;
+            return Poll::Ready(Some(Ok(Self::frame())));
+        }
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Err(_))) => {
+                // Swallow the transport error and end the body with a protocol frame instead.
+                // Propagating it would abort the response, which is precisely the silent truncation
+                // this exists to remove.
+                self.failed = true;
+                self.done = true;
+                Poll::Ready(Some(Ok(Self::frame())))
+            }
+            other => other,
+        }
+    }
+}
+
 fn stream_back(
     st: StatusCode,
     resp: wreq::Response,
@@ -1900,6 +1964,7 @@ fn stream_back(
             builder = builder.header(name.as_str(), value.as_bytes());
         }
     }
+    let event_stream = is_event_stream(&resp);
     let stream = resp
         .bytes_stream()
         .map(|chunk| chunk.map_err(std::io::Error::other));
@@ -1907,13 +1972,81 @@ fn stream_back(
     if key_guard.is_some() || request_permit.is_some() {
         stream = Box::pin(KeyGuardStream::new(stream, key_guard, request_permit));
     }
-    let body = match meter {
-        Some(ctx) => Body::from_stream(TeeMeter::new(stream, ctx)),
-        None => Body::from_stream(stream),
+    let mut stream: ResponseByteStream = match meter {
+        Some(ctx) => Box::pin(TeeMeter::new(stream, ctx)),
+        None => stream,
     };
+    // Outermost, so metering never observes the synthetic frame: usage belongs to the upstream that
+    // produced it, and a failure tail is not usage.
+    if event_stream {
+        stream = Box::pin(SseErrorTail::new(stream));
+    }
+    let body = Body::from_stream(stream);
     builder
         .body(body)
         .unwrap_or_else(|_| local_err(LocalErr::Internal, None))
+}
+
+#[cfg(test)]
+mod sse_tail_tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    fn body_of(chunks: Vec<Result<bytes::Bytes, std::io::Error>>) -> ResponseByteStream {
+        Box::pin(futures_util::stream::iter(chunks))
+    }
+
+    #[tokio::test]
+    async fn a_broken_stream_ends_with_the_protocol_error_frame() {
+        // Without this the body just stops. An SDK cannot tell a truncated stream from a finished
+        // one until something further up fails to parse, and many clients wait forever instead.
+        let inner = body_of(vec![
+            Ok(bytes::Bytes::from_static(b"event: message_start\n\n")),
+            Err(std::io::Error::other("upstream vanished")),
+        ]);
+        let collected: Vec<_> = SseErrorTail::new(inner).collect().await;
+        assert_eq!(collected.len(), 2);
+        let tail = collected[1].as_ref().expect("tail frame is not an error");
+        let tail = String::from_utf8(tail.to_vec()).unwrap();
+        assert!(tail.starts_with("event: error\n"), "{tail}");
+        assert!(tail.contains("\"type\":\"error\""), "{tail}");
+        // The cause belongs in metrics and logs; the customer gets the anonymised overload wording.
+        assert!(!tail.contains("upstream vanished"), "{tail}");
+        assert!(tail.ends_with("\n\n"), "{tail}");
+    }
+
+    #[tokio::test]
+    async fn a_clean_stream_is_passed_through_untouched() {
+        let inner = body_of(vec![
+            Ok(bytes::Bytes::from_static(b"event: message_start\n\n")),
+            Ok(bytes::Bytes::from_static(b"event: message_stop\n\n")),
+        ]);
+        let collected: Vec<_> = SseErrorTail::new(inner).collect().await;
+        assert_eq!(collected.len(), 2);
+        assert!(collected.iter().all(|chunk| chunk.is_ok()));
+        let joined: Vec<u8> = collected
+            .into_iter()
+            .flat_map(|chunk| chunk.unwrap().to_vec())
+            .collect();
+        // A successful stream must be byte-for-byte what the upstream sent.
+        assert_eq!(
+            String::from_utf8(joined).unwrap(),
+            "event: message_start\n\nevent: message_stop\n\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_error_frame_is_emitted_exactly_once() {
+        let inner = body_of(vec![
+            Err(std::io::Error::other("first")),
+            Ok(bytes::Bytes::from_static(b"never reached")),
+        ]);
+        let collected: Vec<_> = SseErrorTail::new(inner).collect().await;
+        assert_eq!(collected.len(), 1);
+        assert!(String::from_utf8(collected[0].as_ref().unwrap().to_vec())
+            .unwrap()
+            .starts_with("event: error\n"));
+    }
 }
 
 #[cfg(test)]
