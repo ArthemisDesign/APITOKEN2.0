@@ -1524,7 +1524,8 @@ impl CodexGateway {
         // until two copies exist, then prefer the least-loaded warm home.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, _, _, home)) = candidates.iter().find(|(_, _, _, home)| home.id() == id) {
+            if let Some((_, _, _, home)) = candidates.iter().find(|(_, _, _, home)| home.id() == id)
+            {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
@@ -1806,12 +1807,19 @@ impl CodexHome {
             // A missed deadline is now evidence rather than nothing. On its own it still changes
             // no verdict; a streak of them closes admission, and a corroborated streak recycles.
             ProcessError::Timeout(_) => health::HealthSignal::Deadline,
+            // Ownership of the home is held by another generation. This is transport state, not a
+            // verdict about the subscription: it resolves the moment the other owner exits, which
+            // is exactly what happens during a blue-green handoff or after an invalidated child is
+            // reaped. Condemning the account for it was wrong twice over — the account is fine, and
+            // the verdict is durable, so a few seconds of ordinary lock contention would have
+            // outlived the restart that cleared it and kept a healthy subscription out of the pool.
+            ProcessError::HomeInUse | ProcessError::HomeLockUnavailable => {
+                health::HealthSignal::TransportClosed
+            }
             // A configuration or attestation fault is not transient and must not be retried in a
             // hot loop; the deployment gate is the place that fixes it. Treated as a permanent
             // account-level verdict so the home stays out until an operator acts.
-            ProcessError::HomeInUse
-            | ProcessError::HomeLockUnavailable
-            | ProcessError::InvalidConfig(_)
+            ProcessError::InvalidConfig(_)
             | ProcessError::DigestMismatch { .. }
             | ProcessError::VersionMismatch { .. }
             | ProcessError::Disabled => health::HealthSignal::AuthRejected { permanent: true },

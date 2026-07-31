@@ -837,7 +837,35 @@ fn validate_config(cfg: &CodexConfig, home: &str) -> Result<(), ProcessError> {
     Ok(())
 }
 
+/// Paths whose digest this process has already verified.
+///
+/// The pinned binary is immutable and its path carries its own digest, so a second full hash of the
+/// same file can only ever produce the same answer. Recomputing it was not free: it re-read the
+/// whole multi-hundred-megabyte binary on every bridge (re)establish, and that happens on the
+/// RECOVERY path — once per sweep, per home, for as long as a home fails to come back, and now
+/// potentially on several homes at once. The attestation must stay, but it belongs to the first
+/// launch of a given binary, not to every attempt to reconnect while the pool is already degraded.
+static VERIFIED_BINARIES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn binary_already_verified(path: &str) -> bool {
+    VERIFIED_BINARIES
+        .get_or_init(Default::default)
+        .lock()
+        .map(|seen| seen.contains(path))
+        .unwrap_or(false)
+}
+
+fn remember_verified_binary(path: &str) {
+    if let Ok(mut seen) = VERIFIED_BINARIES.get_or_init(Default::default).lock() {
+        seen.insert(path.to_string());
+    }
+}
+
 async fn verify_binary_digest(cfg: &CodexConfig) -> Result<(), ProcessError> {
+    if binary_already_verified(&cfg.binary) {
+        return Ok(());
+    }
     let path = cfg.binary.clone();
     let actual = tokio::task::spawn_blocking(move || {
         let mut file =
@@ -863,6 +891,9 @@ async fn verify_binary_digest(cfg: &CodexConfig) -> Result<(), ProcessError> {
             actual,
         });
     }
+    // Only a verified digest is remembered, so a mismatch is re-checked every time rather than
+    // being cached into silence.
+    remember_verified_binary(&cfg.binary);
     Ok(())
 }
 

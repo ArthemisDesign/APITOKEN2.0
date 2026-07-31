@@ -739,6 +739,22 @@ mod tests {
     }
 
     #[test]
+    fn losing_a_race_for_the_home_is_not_a_verdict_about_the_account() {
+        // Ownership contention resolves the moment the other generation exits — it happens on every
+        // blue-green handoff. Treating it as an account verdict was wrong twice: the subscription is
+        // fine, and the verdict is durable, so seconds of ordinary contention would have outlived
+        // the restart that cleared it and kept a healthy subscription out of the pool for good.
+        let mut health = HomeHealth::new();
+        health.apply(HealthSignal::TransportClosed, 100);
+        assert_eq!(health.account, AccountState::Healthy);
+        assert_eq!(health.transport, TransportState::Wedged);
+        // And it clears itself as soon as the home serves again.
+        health.apply(HealthSignal::ProbeOk, 200);
+        assert_eq!(health.transport, TransportState::Responsive);
+        assert!(!health.is_cooling(200));
+    }
+
+    #[test]
     fn a_forced_probe_request_is_consumed_once() {
         let mut health = HomeHealth::new();
         health.apply(HealthSignal::Deadline, 100);
