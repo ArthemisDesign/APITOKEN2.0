@@ -449,7 +449,8 @@ Every successful turn (billed or admin) atomically credits its exact official-pr
 nanoUSD to the serving home. Calibration identity is `(home_id, windowDurationMins, resetsAt)`; the
 provider's primary/secondary names are presentation only. The first snapshot sets an anchor and
 returns `cap_usd: null`, because no honest absolute dollar capacity can be inferred from one
-percentage reading. Every later positive interval contributes to integer weighted least squares:
+percentage reading. Every later positive interval with settled positive official-price spend
+contributes to integer weighted least squares:
 
 ```text
 capacityNano = 100 * Σ(ΔusedPercent * ΔgatewaySpendNano) / Σ(ΔusedPercent²)
@@ -458,6 +459,9 @@ remainingNano = capacityNano * (100 - usedPercent) / 100
 
 There is no `$1500` fallback, configured prior, minimum percentage movement, EMA, plausibility
 range, foreign-share rejection or jump clamp. One percentage point is valid evidence immediately.
+Provider snapshots and gateway settlements are independent streams: if a new percentage arrives
+with zero spend delta, calibration retains the earlier anchor and waits for positive settlement
+evidence instead of publishing a transient `$0` capacity. The raw snapshot is still persisted.
 Provider integer quantisation is exposed through `low_usd`, `high_usd`, `confidence` and `samples`,
 not hidden by rejecting observations. On reset or a backwards counter, the current measured result
 becomes `measured_previous_window`, current sufficient statistics are cleared and the new snapshot

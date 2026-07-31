@@ -2,8 +2,8 @@
 //!
 //! The provider gives integer utilisation and an explicit duration/reset; the gateway gives exact
 //! official API-price spend in integer nanodollars. One snapshot is only an anchor and therefore
-//! cannot reveal an absolute capacity. Every later positive movement contributes to a weighted
-//! least-squares estimate through the origin:
+//! cannot reveal an absolute capacity. Every later positive movement with settled positive spend
+//! contributes to a weighted least-squares estimate through the origin:
 //!
 //! `capacity_nano = 100 * Σ(Δused_percent * Δgateway_spend_nano) / Σ(Δused_percent²)`.
 //!
@@ -13,7 +13,7 @@
 
 use registry::{CodexCalibrationRow, CodexWindowObservation};
 
-pub const ESTIMATOR_VERSION: i64 = 1;
+pub const ESTIMATOR_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -158,6 +158,14 @@ impl WindowCalibration {
             return;
         }
         let delta_spend = spend - self.row.anchor_spend_nano;
+        // The provider snapshot and gateway settlement are independent durable streams. A fresh
+        // utilisation percentage can therefore arrive before the requests which caused it have
+        // finished settling. Publishing that transient pair as a real sample creates a false $0
+        // capacity and advances the anchor past the spend. Keep the old anchor until positive
+        // official-price evidence catches up; raw observations are still persisted by the caller.
+        if delta_spend == 0 {
+            return;
+        }
         let x = i128::from(delta_used);
         let y = i128::from(delta_spend);
         self.row.sum_used_sq = saturating_i64(i128::from(self.row.sum_used_sq) + x * x);
@@ -171,7 +179,14 @@ impl WindowCalibration {
     }
 
     fn roll_window(&mut self, resets_at: i64, used: i64, spend: i64, observed_at: i64) {
-        if let Some(capacity) = self.row.current_capacity_nano {
+        // Zero-capacity estimates from estimator v1 were produced by a provider-snapshot /
+        // settlement race, not by positive dollar evidence. Never let an estimator upgrade turn
+        // such a poisoned current value into the durable previous-window fallback.
+        if let Some(capacity) = self
+            .row
+            .current_capacity_nano
+            .filter(|capacity| *capacity > 0)
+        {
             self.row.last_capacity_nano = Some(capacity);
             self.row.last_low_nano = self.row.current_low_nano;
             self.row.last_high_nano = self.row.current_high_nano;
@@ -305,6 +320,47 @@ mod tests {
         assert_eq!(estimate.capacity_nano, 2_000_000_000_000);
         assert_eq!(estimate.source, CapacitySource::MeasuredCurrentWindow);
         assert!(estimate.high_nano.is_none());
+    }
+
+    #[test]
+    fn percentage_snapshot_waits_for_its_positive_settlement_evidence() {
+        let row = next(None, 17, 126_000_000_000, 100);
+        let row = next(Some(row), 18, 126_000_000_000, 101);
+        assert_eq!(row.anchor_used_percent, 17);
+        assert_eq!(row.anchor_spend_nano, 126_000_000_000);
+        assert_eq!(row.samples, 0);
+        assert_eq!(WindowCalibration::from_row(row.clone()).estimate(), None);
+
+        // The percentage is unchanged, but settlement has now caught up. Because the anchor was
+        // retained, this is the real paired one-point/$5 interval rather than a zero-capacity row.
+        let row = next(Some(row), 18, 131_000_000_000, 102);
+        let estimate = WindowCalibration::from_row(row.clone()).estimate().unwrap();
+        assert_eq!(estimate.capacity_nano, 500_000_000_000);
+        assert_eq!(row.anchor_used_percent, 18);
+        assert_eq!(row.anchor_spend_nano, 131_000_000_000);
+        assert_eq!(row.samples, 1);
+    }
+
+    #[test]
+    fn estimator_upgrade_discards_false_zero_without_losing_previous_measurement() {
+        let mut row = next(None, 17, 126_000_000_000, 100);
+        row.estimator_version = ESTIMATOR_VERSION - 1;
+        row.current_capacity_nano = Some(0);
+        row.current_low_nano = Some(0);
+        row.current_confidence_bp = 3_333;
+        row.last_capacity_nano = Some(125_000_000_000);
+        row.last_low_nano = Some(100_000_000_000);
+        row.last_high_nano = Some(150_000_000_000);
+        row.last_confidence_bp = 8_000;
+        row.last_measured_at = Some(99);
+
+        let row = next(Some(row), 18, 131_000_000_000, 101);
+        assert_eq!(row.estimator_version, ESTIMATOR_VERSION);
+        assert_eq!(row.current_capacity_nano, None);
+        assert_eq!(row.last_capacity_nano, Some(125_000_000_000));
+        let estimate = WindowCalibration::from_row(row).estimate().unwrap();
+        assert_eq!(estimate.capacity_nano, 125_000_000_000);
+        assert_eq!(estimate.source, CapacitySource::MeasuredPreviousWindow);
     }
 
     #[test]

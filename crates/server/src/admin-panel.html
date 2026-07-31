@@ -159,7 +159,7 @@ main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-col
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 </style>
 </head>
-<body data-admin-panel-version="17">
+<body data-admin-panel-version="18">
 <div id="app"></div>
 <div id="error-center" class="error-center" aria-live="polite"></div>
 <script>
@@ -387,16 +387,17 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
   const gptRows=homes.map(h=>{const windows=h.windows||[];
     const bySlot=slot=>windows.find(w=>w.slot===slot);
     const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.source==='unknown'?' · ждём Δused':w.source==='measured_previous_window'?' · оценка прошлого окна':' · факт, confidence '+Math.round(Number(w.confidence||0)*100)+'%')+'</div>':'—';
+    const budgetCell=w=>w?'<b>'+(w.remaining_usd==null?'—':money(w.remaining_usd))+'</b><div class="sub">остаток из '+(w.cap_usd==null?'—':money(w.cap_usd))+' · '+windowLabel(w.window_minutes)+'</div>':'—';
     const rl=h.rate_limits||{};
     const resetCell=w=>w&&w.resets_at?duration(w.resets_at-Date.now()/1000):'—';
     return '<tr><td class="left"><b class="mono">'+esc(h.id)+'</b></td><td>'+homeStatus(h)+'</td><td>'+h.inflight+'</td>'+
       '<td>'+winCell(bySlot('primary'))+(bySlot('primary')?'<div class="sub">сброс '+resetCell(rl.primary)+'</div>':'')+'</td>'+
       '<td>'+winCell(bySlot('secondary'))+(bySlot('secondary')?'<div class="sub">сброс '+resetCell(rl.secondary)+'</div>':'')+'</td>'+
-      '<td><b>'+(bySlot('primary')?.remaining_usd==null?'—':money(bySlot('primary').remaining_usd))+'</b><div class="sub">'+windowLabel(bySlot('secondary')?.window_minutes)+' '+(bySlot('secondary')?.remaining_usd==null?'—':money(bySlot('secondary').remaining_usd))+'</div></td>'+
+      '<td>'+budgetCell(bySlot('primary'))+(bySlot('secondary')?'<div class="sub" style="margin-top:5px">secondary</div>'+budgetCell(bySlot('secondary')):'')+'</td>'+
       '<td><b>'+money(h.spend_usd_total)+'</b><div class="sub">official-price</div></td></tr>'}).join('');
   const gptTable=gptDown?'<div class="empty" style="padding:26px">OpenAI-runtime недоступен — /codex-subs не отвечает</div>':
     gptOff?'<div class="empty" style="padding:26px">Codex-контур выключен на этом runtime</div>':
-    '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>primary (факт. окно)</th><th>secondary (факт. окно)</th><th>остаток API $</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
+    '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>primary (факт. окно)</th><th>secondary (факт. окно)</th><th>остаток / вместимость API $</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
   // Gemini: официальный per-model quota catalogue и exact transport attestation.
   const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
   const geminiCards=geminiOff?card('Gemini подписки','выкл.','Gemini runtime без профилей'):

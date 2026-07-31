@@ -2423,6 +2423,9 @@ mod tests {
         // the same money tables, so an unattributed total hides which upstream earned it.
         assert!(ADMIN_PANEL_HTML.contains("period.providers"));
         assert!(ADMIN_PANEL_HTML.contains("OpenAI (Codex)"));
+        assert!(ADMIN_PANEL_HTML.contains("остаток / вместимость API $"));
+        assert!(ADMIN_PANEL_HTML.contains("остаток из "));
+        assert!(ADMIN_PANEL_HTML.contains("w.cap_usd"));
         for route in [
             "/admin/dashboard",
             "/admin/users",

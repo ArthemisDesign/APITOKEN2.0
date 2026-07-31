@@ -261,6 +261,10 @@ movement has produced an estimate; `claude_api_codex_window_measured_homes` vers
 age and samples explain estimate quality and source. There is no configured capacity prior. Because
 the provider percentage can include usage outside this gateway, investigate divergence between raw
 observations and gateway spend rather than assuming high confidence from sample count alone.
+An estimate intentionally remains unknown when a new percentage snapshot arrives before its
+positive gateway settlement; it should appear as soon as settlement catches up, without waiting for
+another percentage point. A persistent unknown with rising spend indicates a calibration writer or
+authority problem rather than a reason to impose an admission limit.
 
 ## CodexHomeUnauthenticated
 

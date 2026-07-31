@@ -268,7 +268,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    admin) durable-кредитует home exact official-price cost в integer nanoUSD; snapshot принимается
    только с реальными `windowDurationMins` + `resetsAt` и хранится отдельно по `(home,duration)`.
    Первый snapshot — только anchor, поэтому capacity/remaining остаются `null`/без Prometheus
-   sample до первого положительного `ΔusedPercent`. Затем every positive interval входит в integer
+   sample до первого положительного `ΔusedPercent`. Новый процент с ещё нулевым `Δspend` ждёт,
+   пока independent settlement stream догонит snapshot, чтобы их краткая гонка не публиковала
+   ложную `$0` capacity и не сдвигала anchor. Затем every positive-spend interval входит в integer
    weighted least squares `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без minimum delta, prior, EMA,
    plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/confidence, а
    не отбрасыванием evidence. Reset сохраняет только реально измеренный previous-window estimate и
