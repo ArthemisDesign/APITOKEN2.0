@@ -33,7 +33,7 @@ const FAQ = [
   },
   {
     q: "How can I make the Claude API cheaper?",
-    a: "apiToken.sale serves the exact same Anthropic Messages API on one key and one balance, billed at up to 70% below official prices. Point any Anthropic-compatible tool (Claude Code, Cursor, Cline, the SDK) at our endpoint — same models, same responses, lower price per call. New accounts start 60% below official rates for free.",
+    a: "apiToken.sale serves the exact same Anthropic Messages API on one key and one balance, billed at a flat 50% below official prices for every account. Point any Anthropic-compatible tool (Claude Code, Cursor, Cline, the SDK) at our endpoint — same models, same responses, half the price per call.",
   },
   {
     q: "What is a token?",
@@ -88,7 +88,7 @@ export default function CostCalculatorPage() {
           <h1>Claude API Cost Calculator</h1>
           <p>
             Pick a real task — write an article, build a game, a month of coding — then switch between Claude and GPT models
-            to compare official provider rates with your price at up to 70% off. No sign-up, no card.
+            to compare official provider rates with your price at a flat 50% off. No sign-up, no card.
           </p>
         </div>
       </div>

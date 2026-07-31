@@ -52,7 +52,7 @@ export default function AboutPage() {
         <div className="wrap learn-body">
           <div className="learn-section">
             <h2 className="docs-h3">What {SITE_NAME} is</h2>
-            <p className="docs-para">{SITE_NAME} (also written API Token Sale) is an independent gateway to the Claude and GPT APIs. Developers, agencies and startups point their existing tools — Claude Code, Codex, Cursor, Cline, opencode, Zed and the official SDKs — at our endpoints and pay for the same Claude and GPT models at up to 70% below official spend.</p>
+            <p className="docs-para">{SITE_NAME} (also written API Token Sale) is an independent gateway to the Claude and GPT APIs. Developers, agencies and startups point their existing tools — Claude Code, Codex, Cursor, Cline, opencode, Zed and the official SDKs — at our endpoints and pay for the same Claude and GPT models at a flat 50% below official spend.</p>
             <p className="docs-para">We exist for the developers the official providers do not serve conveniently: those without a supported billing country, those who want to pay by crypto, and those who simply want the same models cheaper and without a monthly plan.</p>
           </div>
 

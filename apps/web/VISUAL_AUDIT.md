@@ -140,7 +140,7 @@ reviewed independently of page content.
 
 The landing hero-offer matrix covers English and Russian, light and dark themes, and desktop and
 mobile layouts. `verifyHeroOfferLayout()` checks the card hierarchy, compact height, metadata
-alignment, vertical rhythm, equal tier-row heights, exact top-up/discount/API values, shared table
+alignment, vertical rhythm, equal offer-row heights, exact top-up/discount/API values, shared table
 columns, clipping, and horizontal overflow. Run that matrix on its own with:
 
 ```bash

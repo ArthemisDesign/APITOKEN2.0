@@ -137,10 +137,6 @@ const dashboardCaptures = [
   ["dashboard-keys-dark", "/dashboard?view=keys", 1440, 1000, "dark"],
   ["dashboard-keys-russian-light", "/dashboard?view=keys", 1440, 1000, "light", "ru"],
   ["dashboard-keys-russian-dark", "/dashboard?view=keys", 1440, 1000, "dark", "ru"],
-  ["dashboard-keys-setup-light", "/dashboard?view=keys", 1440, 1100, "light", "en", "key-setup-open"],
-  ["dashboard-keys-setup-russian-dark", "/dashboard?view=keys", 1440, 1100, "dark", "ru", "key-setup-open"],
-  ["dashboard-keys-setup-codex-light", "/dashboard?view=keys", 1440, 1100, "light", "en", "key-setup-codex-open"],
-  ["dashboard-keys-setup-codex-russian-dark", "/dashboard?view=keys", 1440, 1100, "dark", "ru", "key-setup-codex-open"],
   ["dashboard-keys-create-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-create-open"],
   ["dashboard-keys-edit-light", "/dashboard?view=keys", 1440, 1000, "light", "en", "key-edit-open"],
   ["dashboard-keys-revoke-dark", "/dashboard?view=keys", 1440, 1000, "dark", "en", "key-revoke-open"],
@@ -168,8 +164,6 @@ const dashboardCaptures = [
   ["dashboard-keys-mobile-dark", "/dashboard?view=keys", 390, 844, "dark"],
   ["dashboard-keys-mobile-russian-light", "/dashboard?view=keys", 390, 844, "light", "ru"],
   ["dashboard-keys-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru"],
-  ["dashboard-keys-setup-mobile-dark", "/dashboard?view=keys", 390, 1000, "dark", "en", "key-setup-open"],
-  ["dashboard-keys-setup-mobile-russian-light", "/dashboard?view=keys", 390, 1000, "light", "ru", "key-setup-open"],
   ["dashboard-keys-create-mobile-dark", "/dashboard?view=keys", 390, 844, "dark", "en", "key-create-open"],
   ["dashboard-keys-edit-mobile-russian-dark", "/dashboard?view=keys", 390, 844, "dark", "ru", "key-edit-open"],
   ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
@@ -230,20 +224,14 @@ const dashboardFixtureScript = `(() => {
     status: "active",
     pricing: {
       customerType: "b2c",
-      pricingMode: "progressive",
+      pricingMode: "flat",
       monthStart: "2026-07-01T00:00:00.000Z",
-      tier: "starter",
-      discountPercent: 60,
-      multiplierBp: 4000,
+      tier: "flat",
+      discountPercent: 50,
+      multiplierBp: 5000,
       spentNano: "0",
       retentionSpendNano: "0",
-      nextTier: {
-        tier: "builder",
-        discountPercent: 62.5,
-        spendThresholdNano: "100000000000",
-        remainingNano: "100000000000",
-        visibleOfficialUsageUsd: "600.43",
-      },
+      nextTier: null,
     },
   };
   const keys = [{
@@ -319,7 +307,7 @@ const dashboardFixtureScript = `(() => {
     [8, "1050000000", "claude-opus-4-8"], [8, "300000000", "claude-sonnet-5"],
   ];
   const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
-  entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
+  entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 50, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const todayUtc = Math.floor(nowS / DAY) * DAY;
   const usage = {
     window: "30d", sinceTs: nowS - 30 * DAY, untilTs: nowS, requests: 71, totalOfficialNano: "26679893050", totalChargedNano: "10671957220",
@@ -564,16 +552,6 @@ async function capturePage(client, [name, route, width, height, theme, language 
   if (state === "key-create-open") {
     await clickSelector(client, ".keys-create-button");
     await waitForCondition(client, `Boolean(document.querySelector('.key-modal[role="dialog"]'))`, `${name} create-key dialog`);
-  }
-  if (state === "key-setup-open") {
-    await clickSelector(client, ".agent-connect-summary");
-    await waitForCondition(client, `document.querySelector('.agent-connect-summary')?.getAttribute('aria-expanded') === 'true'`, `${name} persistent terminal setup`);
-  }
-  if (state === "key-setup-codex-open") {
-    await clickSelector(client, ".agent-connect-summary");
-    await waitForCondition(client, `document.querySelector('.agent-connect-summary')?.getAttribute('aria-expanded') === 'true'`, `${name} persistent terminal setup`);
-    await clickSelector(client, ".agent-connect-tabs button:nth-of-type(2)");
-    await waitForCondition(client, `document.querySelector('.agent-terminal pre')?.textContent?.includes('model_provider')`, `${name} codex terminal setup`);
   }
   if (state === "key-revoke-open") {
     await client.send("Runtime.evaluate", { expression: `document.querySelector('.key-row')?.scrollIntoView({ block: 'center' })` });
@@ -870,8 +848,8 @@ async function verifyHeroOfferLayout(client) {
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    const expectedValues = [["$10", "$25"], ["$100", "$267"], ["$1,000", "$3,333"]];
-    const expectedDiscounts = ["−60%", "−62.5%", "−70%"];
+    const expectedValues = [["$10", "$20"], ["$100", "$200"], ["$1,000", "$2,000"]];
+    const expectedDiscounts = ["−50%", "−50%", "−50%"];
     if (state.language !== layoutCase.language || state.theme !== layoutCase.theme || state.overflow > 1 || state.label !== layoutCase.label || !state.cardFits || !state.compactCard || !state.metaAligned || !state.hierarchy || !state.verticalRhythm || !state.rowsEqual || !state.columnCentersAligned || !state.rowTextFits || JSON.stringify(state.values) !== JSON.stringify(expectedValues) || JSON.stringify(state.discounts) !== JSON.stringify(expectedDiscounts)) {
       throw new Error(`Hero offer ${layoutCase.name} layout failed: ${JSON.stringify(state)}`);
     }
@@ -975,9 +953,9 @@ async function verifyPricingCardsLayout(client) {
 
 async function verifyCreditsLayout(client) {
   const cases = [
-    { name: "desktop", width: 1440, height: 1000, statRows: 1, statusRows: 1, converterRow: true, mobileHistory: false },
-    { name: "tablet", width: 768, height: 1024, statRows: 1, statusRows: 3, converterRow: true, mobileHistory: false },
-    { name: "mobile", width: 390, height: 844, statRows: 3, statusRows: 3, converterRow: false, mobileHistory: true },
+    { name: "desktop", width: 1440, height: 1000, statRows: 1, converterRow: true, mobileHistory: false },
+    { name: "tablet", width: 768, height: 1024, statRows: 1, converterRow: true, mobileHistory: false },
+    { name: "mobile", width: 390, height: 844, statRows: 1, converterRow: false, mobileHistory: true },
   ];
 
   for (const layoutCase of cases) {
@@ -992,7 +970,7 @@ async function verifyCreditsLayout(client) {
     await loaded;
     await waitForCondition(
       client,
-      `Boolean(document.querySelector('.credits-stack .topup-convert')) && document.querySelectorAll('.pricing-status-item').length === 3 && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
+      `Boolean(document.querySelector('.credits-stack .topup-convert')) && Boolean(document.querySelector('.pricing-banner-business')) && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
       `${layoutCase.name} Credits layout`,
     );
     await client.send("Runtime.evaluate", {
@@ -1005,7 +983,6 @@ async function verifyCreditsLayout(client) {
         const rects = (selector) => [...document.querySelectorAll(selector)].map((element) => element.getBoundingClientRect());
         const rowCount = (items) => new Set(items.map((rect) => Math.round(rect.top))).size;
         const stats = rects('.credits-stack .tc-stats .ovstat');
-        const statuses = rects('.pricing-milestone-status .pricing-status-item');
         const input = document.querySelector('.tc-input')?.getBoundingClientRect();
         const receive = document.querySelector('.tc-receive')?.getBoundingClientRect();
         const rail = ['.credits-stack .tc-stats', '.credits-stack .topup-convert', '.credits-stack .pricing-banner', '.credits-history']
@@ -1017,7 +994,7 @@ async function verifyCreditsLayout(client) {
         return JSON.stringify({
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           statRows: rowCount(stats),
-          statusRows: rowCount(statuses),
+          flatPricing: document.querySelector('.pricing-banner-business')?.textContent?.includes('50%') && !document.querySelector('.pricing-milestone-status'),
           converterRow: Boolean(input && receive && Math.abs(input.top - receive.top) < 2),
           aligned: rail.length === 4 && Math.max(...rail.map((rect) => rect.left)) - Math.min(...rail.map((rect) => rect.left)) < 2 && Math.max(...rail.map((rect) => rect.right)) - Math.min(...rail.map((rect) => rect.right)) < 2,
           historyFits: Boolean(history && history.scrollWidth <= history.clientWidth + 1),
@@ -1028,13 +1005,13 @@ async function verifyCreditsLayout(client) {
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    if (state.overflow > 1 || state.statRows !== layoutCase.statRows || state.statusRows !== layoutCase.statusRows || state.converterRow !== layoutCase.converterRow) {
+    if (state.overflow > 1 || state.statRows !== layoutCase.statRows || !state.flatPricing || state.converterRow !== layoutCase.converterRow) {
       throw new Error(`Credits ${layoutCase.name} responsive layout failed: ${JSON.stringify(state)}`);
     }
     if (layoutCase.name === "desktop" && !state.aligned) {
       throw new Error(`Credits desktop rail is not aligned: ${JSON.stringify(state)}`);
     }
-    if (!state.historyFits || state.mobileHistory !== layoutCase.mobileHistory) {
+    if (layoutCase.mobileHistory ? !state.mobileHistory : !state.historyFits || state.mobileHistory) {
       throw new Error(`Credits ${layoutCase.name} history layout failed: ${JSON.stringify(state)}`);
     }
 
@@ -1171,7 +1148,6 @@ async function verifyApiKeysLayout(client) {
       expression: `(() => {
         const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect();
         const heading = rect('.keys-heading-row');
-        const dock = rect('.agent-connect-dock');
         const manager = rect('.keys-manager-head');
         const createButton = rect('.keys-create-button');
         const toolbar = rect('.keys-toolbar');
@@ -1185,9 +1161,9 @@ async function verifyApiKeysLayout(client) {
           language: document.documentElement.lang,
           theme: document.documentElement.dataset.theme || 'light',
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          aligned: Boolean(heading && dock && manager && toolbar && keys &&
-            Math.max(heading.left, dock.left, manager.left, toolbar.left, keys.left) - Math.min(heading.left, dock.left, manager.left, toolbar.left, keys.left) < 2 &&
-            Math.max(dock.right, manager.right, toolbar.right, keys.right) - Math.min(dock.right, manager.right, toolbar.right, keys.right) < 2),
+          aligned: Boolean(heading && manager && toolbar && keys &&
+            Math.max(heading.left, manager.left, toolbar.left, keys.left) - Math.min(heading.left, manager.left, toolbar.left, keys.left) < 2 &&
+            Math.max(manager.right, toolbar.right, keys.right) - Math.min(manager.right, toolbar.right, keys.right) < 2),
           separated: Boolean(toolbar && key && key.top - toolbar.bottom >= 12),
           distinctSurface: toolbarStyle.backgroundColor !== keyStyle.backgroundColor && toolbarStyle.borderRadius !== keyStyle.borderRadius,
           createButtonCount: document.querySelectorAll('.keys-create-button').length,
@@ -1263,8 +1239,7 @@ async function verifyApiKeysLayout(client) {
             payload: window.__auditLastApiKeyCreate,
             modalOpen: Boolean(document.querySelector('.key-modal')),
             secretVisible: Boolean(document.querySelector('.secret-card')),
-            dockClass: document.querySelector('.agent-connect-dock')?.className,
-            dockText: document.querySelector('.agent-connect-dock')?.textContent?.slice(0, 300),
+            secretText: document.querySelector('.key-issued-reveal')?.textContent?.slice(0, 300),
           })`,
           returnByValue: true,
         });
@@ -1276,17 +1251,17 @@ async function verifyApiKeysLayout(client) {
       if (payload.spendLimitUsd !== "25.50" || payload.expiresAt !== expectedExpiration || payload.totpCode !== "123456") {
         throw new Error(`API keys create payload failed: ${JSON.stringify(payload)}`);
       }
-      const setupResult = await client.send("Runtime.evaluate", {
+      const secretResult = await client.send("Runtime.evaluate", {
         expression: `JSON.stringify({
-          commands: [...document.querySelectorAll('.agent-terminal-line')].map((line) => line.textContent).join('\\n'),
-          summary: document.querySelector('.agent-connect-main small')?.textContent?.trim(),
-          note: document.querySelector('.agent-connect-note')?.textContent?.trim(),
+          secret: document.querySelector('.key-issued-reveal code')?.textContent?.trim(),
+          setupDock: Boolean(document.querySelector('.agent-connect-dock')),
+          terminalSetup: Boolean(document.querySelector('.agent-terminal')),
         })`,
         returnByValue: true,
       });
-      const setup = JSON.parse(setupResult.result.value);
-      if (setup.commands.split("\n").length !== 4 || !setup.commands.includes(">> ~/.zshrc") || !setup.commands.includes("source ~/.zshrc") || !setup.commands.includes("sk-pool-audit-secret") || setup.commands.includes("/apitoken/claude.env") || !setup.summary.includes("~/.zshrc") || !setup.note.includes("~/.zshrc")) {
-        throw new Error(`API keys persistent setup failed: ${JSON.stringify(setup)}`);
+      const secret = JSON.parse(secretResult.result.value);
+      if (secret.secret !== "sk-pool-audit-secret" || secret.setupDock || secret.terminalSetup) {
+        throw new Error(`API keys issuance-only panel failed: ${JSON.stringify(secret)}`);
       }
     } else {
       await clickSelector(client, ".key-modal-close");

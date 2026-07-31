@@ -17,7 +17,7 @@ describe("CostCalculator", () => {
     expect(container.textContent).toContain("Every Claude model for this task");
     expect(container.textContent).toContain("claude-opus-4-8");
     expect(container.textContent).not.toContain("gpt-5.6-sol");
-    expect(container.querySelector(".calc-now")?.textContent).toBe("$54.50");
+    expect(container.querySelector(".calc-now")?.textContent).toBe("$68.13");
 
     const gptButton = [...container.querySelectorAll("button")]
       .find((button) => button.textContent === "GPT models");
@@ -32,7 +32,7 @@ describe("CostCalculator", () => {
     expect(container.textContent).toContain("gpt-5.4");
     expect(container.textContent).not.toContain("claude-opus-4-8");
     expect(container.textContent).toContain("official OpenAI price");
-    expect(container.querySelector(".calc-now")?.textContent).toBe("$59.50");
+    expect(container.querySelector(".calc-now")?.textContent).toBe("$74.38");
     expect(container.querySelector(".calc-was")?.textContent).toContain("$148.75");
 
     await act(async () => root.unmount());
