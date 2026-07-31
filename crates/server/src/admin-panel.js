@@ -6,7 +6,7 @@ const NAV=[
   {group:'Обзор',items:[['dashboard','Сводка','▣']]},
   {group:'Инфраструктура',items:[['subs','Подписки','◍'],['system','Система','⌘'],['trends','Тренды','∿']]},
   {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['openkeys','OpenKeys','◈'],['business','B2B','◇']]},
-  {group:'Деньги',items:[['topups','Пополнения','＄']]},
+  {group:'Деньги',items:[['topups','Пополнения','＄'],['finance','Финансы','∑']]},
   {group:'Управление',items:[['admins','Админы','⚿'],['audit','Аудит','≡']]}
 ];
 const validTabs=NAV.flatMap(group=>group.items.map(item=>item[0]));
@@ -76,6 +76,8 @@ const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
   '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/fleet-history':'История флота','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
   '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
+  '/admin/finance/overview':'Финансовая сводка','/admin/finance/revenue':'Выручка по дням','/admin/finance/funnel':'Воронка чекаутов',
+  '/admin/finance/top-customers':'Топ клиентов','/admin/refunds':'Возвраты','/admin/finance/cohorts':'Когорты','/admin/finance/churn-signals':'Сигналы оттока',
   '/openkeys-admin/keys':'Ключи OpenKeys',
   '/admin/admin-accounts':'Администраторы','/admin/admin-accounts/domains':'Домены администраторов','/spend-stats':'Статистика расхода'
 })[path.split('?')[0]]||path.split('?')[0];
@@ -107,7 +109,7 @@ function scheduleRefresh(){clearTimeout(timer);timer=null;const delay=tab==='sys
   if(delay)timer=setTimeout(()=>{if(document.hidden){scheduleRefresh();return}refresh()},delay)}
 async function refresh(options={}){clearTimeout(timer);refreshController?.abort();refreshController=new AbortController();tab=getTab();try{
   if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='trends')await trends();if(tab==='users')await users();
-  if(tab==='accounts')await accounts();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='admins')await admins();if(tab==='audit')await audit();
+  if(tab==='accounts')await accounts();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='finance')await finance();if(tab==='admins')await admins();if(tab==='audit')await audit();
 }catch(error){if(error?.name!=='AbortError'&&!document.getElementById('shell'))showLoading()}finally{scheduleRefresh()}}
 addEventListener('hashchange',()=>{tab=getTab();showLoading();refresh()});
 addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>30000)refresh()});
@@ -569,6 +571,93 @@ async function topups(){const data=await api('/admin/topups?limit=200').catch(()
     '<th>сумма</th><th>статус</th><th>создан</th><th>истекает</th><th class="left">provider id</th></tr></thead><tbody>'+(checkoutRows||empty(7))+
     '</tbody></table></div></div><footer>Последние 200 записей. Worker зачисляет баланс только после верифицированного платежа.</footer>';
   shell('Пополнения','платежи и checkout-воронка',body,pill(count(payments.length,'платёж','платежа','платежей'),'ok'))}
+
+/* ── Финансы: выручка, воронка, топ клиентов, возвраты ───── */
+// Read-only агрегаты commerce БД (apps/api /admin/finance/*). Без автообновления — только
+// ручной refresh и смена окна графика. Каждый источник деградирует независимо (null → блок
+// с предупреждением, остальные секции рендерятся). Деньги приходят usd/nano-строками;
+// Number() используется только для отображения (график и money()), не для учёта.
+let financeWindow=30,refundPage={offset:0,limit:25};
+const financeWindows=[[7,'7 дней'],[30,'30 дней'],[90,'90 дней']];
+const tierName=key=>key==='b2b'?'B2B':({'b2c_tier_0':'Starter','b2c_tier_1':'Builder','b2c_tier_2':'Pro','b2c_tier_3':'Studio','b2c_tier_4':'Scale'})[key]||key.replace('b2c_tier_','Tier ');
+const plainBar=percent=>{percent=Math.min(100,Math.max(0,Math.round(Number(percent)||0)));
+  return '<span class="bar"><i style="width:'+percent+'%"></i></span><span class="bar-label">'+percent+'%</span>'};
+async function finance(){
+  const [overview,revenue,funnelData,top,refunds,cohortsData,churn]=await Promise.all([
+    api('/admin/finance/overview').catch(()=>null),
+    api('/admin/finance/revenue?days='+financeWindow).catch(()=>null),
+    api('/admin/finance/funnel?days=30').catch(()=>null),
+    api('/admin/finance/top-customers?days=30&limit=20').catch(()=>null),
+    api('/admin/refunds?limit='+refundPage.limit+'&offset='+refundPage.offset).catch(()=>null),
+    api('/admin/finance/cohorts?weeks=8').catch(()=>null),
+    api('/admin/finance/churn-signals?days=14').catch(()=>null)
+  ]);
+  if(refunds&&refundPage.offset>=refunds.total&&refunds.total>0){refundPage.offset=Math.max(0,Math.floor((refunds.total-1)/refundPage.limit)*refundPage.limit);return finance()}
+  const tabs='<div class="spend-tabs">'+financeWindows.map(item=>'<button type="button" class="btn'+(financeWindow===item[0]?' on':'')+'" data-finance-window="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>';
+  // Карточки сводки: выручка с дельтой к предыдущим 30д, ARPPU/ARPU, доля платящих, тиры.
+  const ov=overview||{},delta=ov.revenue_delta_pct,deltaText=delta==null?'—':(delta>0?'+':'')+delta+'%';
+  const tierText=(ov.tiers||[]).map(item=>esc(tierName(item.tier))+' '+item.users).join(' · ');
+  const overviewBlock=overview?'<div class="cards">'+
+    card('выручка 30 дней',money(ov.revenue_30d_usd),'пред. '+money(ov.revenue_prev_30d_usd)+' · дельта '+esc(deltaText))+
+    card('ARPPU 30д',ov.arppu_30d_usd==null?'—':money(ov.arppu_30d_usd),'ARPU '+(ov.arpu_30d_usd==null?'—':money(ov.arpu_30d_usd))+' · средний чек '+(ov.avg_check_30d_usd==null?'—':money(ov.avg_check_30d_usd)))+
+    card('платящие 30д',ov.paying_users_30d??'—','доля '+(ov.paying_share_pct==null?'—':esc(ov.paying_share_pct+'%'))+' от '+(ov.active_users_30d??'—')+' активных · платежей '+(ov.payments_30d_count??'—'))+
+    card('тиры клиентов',(ov.tiers||[]).reduce((sum,item)=>sum+Number(item.users||0),0)||'—',tierText||'профилей нет')+'</div>':
+    '<div class="banner warn"><span class="dot warn"></span><div><b>Финансовая сводка недоступна</b><span class="muted">/admin/finance/overview не отвечает — остальные блоки ниже работают независимо</span></div></div>';
+  // SVG-график выручки по дням: итог + линия на провайдера (хелпер lineChart вкладки «Тренды»).
+  let chartBlock='';
+  if(!revenue)chartBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Ряд выручки недоступен</b><span class="muted">/admin/finance/revenue не отвечает</span></div></div>';
+  else{const rows=revenue.series||[],providers=Object.keys(revenue.totals?.by_provider||{}),dayTs=day=>Date.parse(day+'T00:00:00Z')/1000;
+    const chartSeries=[{label:'выручка $/день',points:rows.map(point=>({ts:dayTs(point.day),value:Number(point.total_usd)}))}]
+      .concat(providers.map(name=>({label:name,points:rows.map(point=>({ts:dayTs(point.day),value:point.by_provider&&point.by_provider[name]!=null?Number(point.by_provider[name])/1e9:null}))})));
+    const totals=revenue.totals||{};
+    chartBlock=trendsChart('Выручка по дням','окно '+(financeWindows.find(item=>item[0]===financeWindow)||[0,''])[1].toLowerCase()+' · итого '+money(totals.total_usd)+' · '+(totals.payments_count??'—')+' платежей',lineChart(chartSeries,{fmt:money}))}
+  // Воронка чекаутов за 30д: доли от созданных барами, разбивка по провайдерам таблицей.
+  let funnelBlock='';
+  if(!funnelData)funnelBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Воронка чекаутов недоступна</b><span class="muted">/admin/finance/funnel не отвечает</span></div></div>';
+  else{const ft=funnelData.totals||{},created=Number(ft.created)||0;
+    const stage=(label,value)=>{const share=created?Math.round(Number(value||0)/created*1000)/10:0;
+      return '<tr><td class="left">'+label+'</td><td><b>'+Number(value||0)+'</b></td><td>'+plainBar(share)+'</td></tr>'};
+    const providerRows=(funnelData.by_provider||[]).map(item=>'<tr><td class="left"><b>'+esc(item.provider)+'</b></td><td>'+item.created+'</td><td>'+item.paid+'</td><td>'+(item.conversion_pct==null?'—':item.conversion_pct+'%')+'</td><td>'+(item.avg_seconds_to_pay==null?'—':duration(item.avg_seconds_to_pay))+'</td><td>'+(item.avg_check_usd==null?'—':money(item.avg_check_usd))+'</td></tr>').join('');
+    funnelBlock='<div class="cards">'+card('конверсия в оплату',ft.conversion_pct==null?'—':ft.conversion_pct+'%','время до оплаты '+(ft.avg_seconds_to_pay==null?'—':duration(ft.avg_seconds_to_pay))+' · средний чек '+(ft.avg_check_usd==null?'—':money(ft.avg_check_usd)))+
+      card('создано чекаутов',created,'оплачено '+(ft.paid??'—')+' · ждут '+(ft.pending??'—'))+
+      card('потери воронки',Number(ft.canceled||0)+Number(ft.failed||0)+Number(ft.expired||0),'отменено '+(ft.canceled??'—')+' · ошибки '+(ft.failed??'—')+' · истекло '+(ft.expired??'—'))+'</div>'+
+      '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">стадия за 30 дней</th><th>число</th><th>доля от созданных</th></tr></thead><tbody>'+
+      stage('создано чекаутов',ft.created)+stage('оплачено',ft.paid)+stage('отменено',ft.canceled)+stage('ошибка провайдера',ft.failed)+stage('истекло без оплаты',ft.expired)+stage('ждут оплаты',ft.pending)+
+      '</tbody></table></div></div>'+
+      (providerRows?'<div class="tcard" style="margin-top:12px"><div class="tscroll"><table><thead><tr><th class="left">провайдер</th><th>создано</th><th>оплачено</th><th>конверсия</th><th>время до оплаты</th><th>средний чек</th></tr></thead><tbody>'+providerRows+'</tbody></table></div></div>':'')}
+  // Топ клиентов: два списка — по пополнениям и по расходу, доля от суммы окна.
+  let topBlock='';
+  if(!top)topBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Топ клиентов недоступен</b><span class="muted">/admin/finance/top-customers не отвечает</span></div></div>';
+  else{const topRows=(items,moneyField,withCount)=>(items||[]).map((item,index)=>'<tr><td>'+(index+1)+'</td><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td>'+
+      '<td><b>'+money(item[moneyField])+'</b>'+(withCount?'<div class="sub">'+item.payments_count+' шт.</div>':'')+'</td><td>'+(item.share_pct==null?'—':plainBar(item.share_pct))+'</td></tr>').join('');
+    const topTotals=top.totals||{};
+    topBlock='<div class="sect"><h2>Топ по пополнениям</h2><span class="sect-sub">30 дней · окно '+money(topTotals.topups_usd)+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th>#</th><th class="left">клиент</th><th>пополнено</th><th>доля окна</th></tr></thead><tbody>'+(topRows(top.topups,'total_usd',true)||empty(4))+'</tbody></table></div></div>'+
+      '<div class="sect"><h2>Топ по расходу</h2><span class="sect-sub">30 дней · окно '+money(topTotals.spend_usd)+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th>#</th><th class="left">клиент</th><th>списано</th><th>доля окна</th></tr></thead><tbody>'+(topRows(top.spend,'spent_usd',false)||empty(4))+'</tbody></table></div></div>'}
+  // Возвраты/диспуты: авторитет — payments.status (см. комментарий в admin-finance.service).
+  let refundsBlock='';
+  if(!refunds)refundsBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Список возвратов недоступен</b><span class="muted">/admin/refunds не отвечает</span></div></div>';
+  else{const refundRows=(refunds.rows||[]).map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+
+      '</td><td><b>'+money(item.amount_usd)+'</b></td><td>'+pill(item.status,item.status==='refunded'?'warn':'bad')+'</td><td>'+date(item.paid_at,true)+'</td><td>'+date(item.updated_at,true)+
+      '</td><td class="left mono muted">'+esc(item.provider_payment_id)+'</td></tr>').join('');
+    refundsBlock='<div class="sect"><h2>Возвраты и диспуты</h2><span class="sect-sub">'+refunds.total+' · страница '+money(refunds.page_amount_usd)+' · всего '+money(refunds.total_amount_usd)+'</span></div>'+
+      '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th><th>сумма</th><th>статус</th><th>оплачен</th><th>возврат</th><th class="left">provider id</th></tr></thead><tbody>'+(refundRows||empty(7))+'</tbody></table></div></div>'+
+      pager(refundPage.offset,refundPage.limit,refunds.total,'refunds')}
+  // Когорты регистраций по неделям и сигналы оттока (stretch-блоки бэкенда).
+  let cohortsBlock='';
+  if(cohortsData){const cohortRows=(cohortsData.cohorts||[]).map(item=>'<tr><td>'+date(item.week)+'</td><td>'+item.registered+'</td><td>'+(item.paid_share_pct==null?'—':item.paid_share_pct+'%')+
+      '<div class="sub">'+item.paid_users+' оплатили</div></td><td>'+(item.median_days_to_first_payment==null?'—':item.median_days_to_first_payment+' д')+'</td><td><b>'+money(item.revenue_usd)+'</b></td></tr>').join('');
+    cohortsBlock='<div class="sect"><h2>Когорты регистраций</h2><span class="sect-sub">по неделям · 8 недель</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th>неделя</th><th>регистраций</th><th>оплатили</th><th>медиана до оплаты</th><th>выручка когорты</th></tr></thead><tbody>'+(cohortRows||empty(5))+'</tbody></table></div></div>'}
+  let churnBlock='';
+  if(churn){const churnRows=(churn.rows||[]).map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td><td>'+ago(item.last_seen_at)+'</td><td>'+date(item.last_paid_at)+'</td><td>'+money(item.spent_30d_usd)+'</td></tr>').join('');
+    churnBlock='<div class="sect"><h2>Сигналы оттока</h2><span class="sect-sub">платившие клиенты без сессий и расхода 14 дней</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>был(а)</th><th>последняя оплата</th><th>расход 30д</th></tr></thead><tbody>'+(churnRows||empty(4))+'</tbody></table></div></div>'}
+  const body=overviewBlock+
+    '<div class="sect"><h2>Выручка</h2><span class="sect-sub">paid-платежи по дате оплаты</span></div>'+tabs+chartBlock+
+    '<div class="sect"><h2>Воронка чекаутов</h2><span class="sect-sub">30 дней · от создания до оплаты</span></div>'+funnelBlock+
+    topBlock+refundsBlock+cohortsBlock+churnBlock+
+    '<footer>Ручное обновление по кнопке ↻ и при смене окна — автообновления у вкладки нет. Выручка — только подтверждённые платежи (prepay, подписок-продуктов нет). Возвраты: авторитет статуса — payments; движковый дебет по возвратам (engine_adjustments) пока наполняется не полностью. ARPU — выручка на активного за 30д, ARPPU — на платящего.</footer>';
+  shell('Финансы','prepay-метрики: выручка, воронка, клиенты и возвраты',body,pill(overview?money(ov.revenue_30d_usd)+' / 30д':'degraded',overview?'ok':'warn'));bindFinance()}
+function bindFinance(){document.querySelectorAll('[data-finance-window]').forEach(button=>button.onclick=()=>{financeWindow=Number(button.dataset.financeWindow)||30;refresh({force:true})});
+  document.querySelectorAll('[data-page=refunds]').forEach(button=>button.onclick=()=>{refundPage.offset=Number(button.dataset.offset)||0;refresh({force:true})})}
 
 /* ── B2B ─────────────────────────────────────────────────── */
 async function business(){const clientLimit=50,[inviteData,userData]=await Promise.all([
