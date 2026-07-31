@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { localeHref } from "@/lib/locale-routes";
 import type { IntegrationLanguage, IntegrationProvider } from "./integration-builder-data";
 import { buildApiGuide, type ApiLanguage } from "./api-reference-data";
-import { highlightCode } from "./integration-highlight";
+import { HighlightedCode } from "./highlighted-code";
 
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
@@ -97,13 +97,6 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
       </footer>
     </section>
   </article>;
-}
-
-function HighlightedCode({ code }: { code: string }) {
-  const tokens = useMemo(() => highlightCode(code), [code]);
-  return <>{tokens.map((part, index) => part.cls
-    ? <span key={index} className={`tk-${part.cls}`}>{part.text}</span>
-    : <span key={index}>{part.text}</span>)}</>;
 }
 
 function CopyIcon({ copied }: { copied: boolean }) {
