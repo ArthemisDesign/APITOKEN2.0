@@ -34,8 +34,10 @@
 .chart-svg .cg0{stop-color:var(--accent);stop-opacity:.28}
 .chart-svg .cg1{stop-color:var(--accent);stop-opacity:0}
 .chart-svg .cline{fill:none;stroke:var(--accent);stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round}
-.chart-svg .cdot{fill:var(--bg-card);stroke:var(--accent);stroke-width:2;transition:r .15s}
-.chart-svg .cdot:hover{r:5}
+/* hover-grow via transform (compositor) instead of animating the r geometry property */
+.chart-svg .cdot{fill:var(--bg-card);stroke:var(--accent);stroke-width:2;transition:transform .15s;
+  transform-box:fill-box;transform-origin:center}
+.chart-svg .cdot:hover{transform:scale(1.25)}
 
 /* spend by model */
 .dash-cols{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
@@ -142,7 +144,10 @@
 
 /* Transactions history — grouped by day, expandable (no infinite flat list) */
 .txh{display:flex;flex-direction:column;gap:14px}
-.txh-day{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg-card)}
+/* Long ledgers: skip rendering off-screen day groups; auto keeps the last rendered size,
+   ~280px is a typical date header + a few events + charges summary. */
+.txh-day{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg-card);
+  content-visibility:auto;contain-intrinsic-size:auto 280px}
 .txh-date{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-4);padding:11px 18px;border-bottom:1px solid var(--line);background:var(--bg-soft)}
 .txh-ev{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);font-family:var(--font-mono);font-size:13px}
 .txh-ev:last-child{border-bottom:0}
@@ -209,6 +214,18 @@
   box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 0 0 1px rgba(255,255,255,.07)}
 [data-theme="dark"] .keys-filter-tab b{background:rgba(255,255,255,.08);color:rgba(255,255,255,.72)}
 [data-theme="dark"] .keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent)}
+/* Dark-mode contrast fixes. */
+/* Corner affordance marks on overview stat cards: bg-soft fill on a bg-card surface with an
+   8%-alpha border was near-invisible in dark — lift fill, border, and glyph. */
+[data-theme="dark"] .overview-metric-mark{border-color:rgba(255,255,255,.20);background:rgba(255,255,255,.06);color:var(--txt-2)}
+/* Native date-picker indicator follows color-scheme; declare it explicitly on the dialog date
+   inputs so the calendar icon is not dark-on-dark where UA inheritance falls short. */
+.key-modal input.set-in[type="date"]{color-scheme:light}
+[data-theme="dark"] .key-modal input.set-in[type="date"]{color-scheme:dark}
+/* Disabled «Save changes» on the dark key-edit modal: bg-soft fill on bg-card with quiet text
+   read as a hole in the dialog — give it a visible fill, border, and legible label. */
+[data-theme="dark"] .key-modal .btn.btn-primary[disabled]{background:rgba(255,255,255,.07);
+  border-color:rgba(255,255,255,.16);color:var(--txt-3)}
 .key-table-wrap{border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
 .key-table{width:100%;border-collapse:collapse;table-layout:fixed;font-family:var(--font-mono);font-size:11px;color:var(--txt-3)}
 .key-table th{padding:11px 13px;text-align:left;background:var(--bg-soft);border-bottom:1px solid var(--line);
@@ -230,8 +247,8 @@
 .key-usage-cell>div span{color:var(--txt-4);font-size:10px}.key-usage-cell>small{display:block;margin-top:6px;overflow:hidden;color:var(--txt-4);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 .key-usage-track{display:block;width:100%;height:5px;margin-top:8px;overflow:hidden;border-radius:99px;background:var(--bg-soft)}
 .key-usage-track i{display:block;height:100%;border-radius:inherit;background:var(--accent)}.key-usage-track.warn i{background:#d97706}
-.key-guardrail-cell>span{display:flex;flex-direction:column;gap:3px}.key-guardrail-cell b{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--txt-4)}
-.key-guardrail-cell em{font-size:10px;font-style:normal;color:var(--txt-2);white-space:nowrap}.key-guardrail-cell small{font-size:10px;color:#d97706;text-transform:uppercase}
+.key-guardrail-cell>span{display:flex;flex-direction:column;gap:3px}
+.key-guardrail-cell em{font-size:10px;font-style:normal;color:var(--txt-2);white-space:nowrap}
 .key-num{text-align:right!important;font-variant-numeric:tabular-nums;white-space:nowrap}
 .key-policy-warn{display:flex;flex-direction:column;color:var(--txt-2);white-space:nowrap}
 .key-policy-warn small{margin-top:3px;color:#d97706;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
@@ -258,14 +275,16 @@
 .keys-help-txt span{font-family:var(--font-mono);font-size:10.5px;color:var(--txt-3);line-height:1.45}
 .keys-help .btn{flex:none}
 .modal-backdrop{position:fixed;z-index:200;inset:0;display:grid;place-items:center;padding:24px;background:rgba(3,7,18,.66);backdrop-filter:blur(5px)}
-.key-modal{width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto;padding:26px;border:1px solid var(--line-strong);border-radius:14px;background:var(--bg-card);box-shadow:0 30px 90px rgba(0,0,0,.36)}
+.key-modal{width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto;overscroll-behavior:contain;padding:26px;border:1px solid var(--line-strong);border-radius:14px;background:var(--bg-card);box-shadow:0 30px 90px rgba(0,0,0,.36)}
 .key-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.key-modal-head h2{margin:7px 0 6px;font-size:23px;letter-spacing:-.03em}.key-modal-head p{margin:0;color:var(--txt-3);font-size:12px;line-height:1.55}
 .key-modal-close{width:40px;height:40px;flex:none;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--txt-3);font-size:22px;cursor:pointer}.key-modal-close:hover{background:var(--bg-soft);color:var(--txt)}
 .key-modal-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0}.key-field{display:flex;flex-direction:column;gap:7px}.key-field-wide{grid-column:1/-1}
 .key-field>span{font:600 11px var(--font-mono);color:var(--txt-2)}.key-field>span small{color:var(--txt-4);font-weight:400}.key-field>em{color:var(--txt-4);font:normal 10px/1.45 var(--font-mono)}
 .key-field .set-in{width:100%;max-width:none}.key-money-field{position:relative}.key-money-field b{position:absolute;z-index:1;left:12px;top:11px;color:var(--txt-4);font-size:13px}.key-money-field .set-in{padding-left:28px}
 .key-create-guardrails{grid-column:1/-1;margin:0;padding:15px 16px 17px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft)}
-.key-create-guardrails legend{padding:0 6px;color:var(--txt);font:700 11px var(--font-mono)}.key-create-guardrails legend small{color:var(--txt-4);font-weight:400}
+/* Legend reads as a fieldset tab straddling the border, not text sitting flush on the corner. */
+.key-create-guardrails legend{margin-left:4px;padding:2px 8px;border:1px solid var(--line);border-radius:6px;
+  background:var(--bg-soft);color:var(--txt);font:700 11px var(--font-mono)}.key-create-guardrails legend small{color:var(--txt-4);font-weight:400}
 .key-create-guardrails>p{margin:0 0 14px;color:var(--txt-4);font:10px/1.5 var(--font-mono)}.key-create-guardrail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .key-edit-modal{width:min(620px,100%)}
 .key-policy-summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;margin-top:20px;padding:14px 16px;border:1px solid var(--line);border-radius:9px;background:var(--bg-soft)}
@@ -290,7 +309,12 @@
   .key-table td::before{content:attr(data-label);color:var(--txt-4);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}.key-table .key-name-cell{padding-top:0}.key-name-cell>strong,.key-name-cell>span{grid-column:2}.key-name-cell::before{grid-row:1/3}
   .key-credential-cell>.key-mask,.key-credential-cell>span,.key-usage-cell>div,.key-usage-cell>.key-usage-track,.key-usage-cell>small,.key-guardrail-cell>span{grid-column:2}
   .key-credential-cell::before{grid-row:1/3}.key-usage-cell::before{grid-row:1/4}.key-guardrail-cell::before{grid-row:1/2}
-  .key-table .empty-cell{display:block;padding:30px 12px}.key-table .empty-cell::before{display:none}.key-mask{white-space:normal;overflow-wrap:anywhere}.key-actions-cell{width:auto;padding-bottom:0!important}.key-actions-cell .key-actions{grid-column:2;justify-self:end}.key-menu-pop{top:auto;right:0;bottom:44px}
+  .key-table .empty-cell{display:block;padding:30px 12px}.key-table .empty-cell::before{display:none}
+  /* Masked token stays on one line (ellipsis instead of breaking mid-token); status chips stay compact pills. */
+  .key-mask{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.key-table .key-status{justify-self:start}
+  /* Long key lists: skip rendering off-screen row cards (only safe once rows are grid cards, not table rows). */
+  .key-table tbody tr{content-visibility:auto;contain-intrinsic-size:auto 360px}
+  .key-actions-cell{width:auto;padding-bottom:0!important}.key-actions-cell .key-actions{grid-column:2;justify-self:end}.key-menu-pop{top:auto;right:0;bottom:44px}
   .key-modal-fields{grid-template-columns:1fr}.key-field{grid-column:1!important}
 }
 @media(max-width:520px){
@@ -316,7 +340,7 @@
 .trend-ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .seg{display:inline-flex;background:var(--bg-soft);border:1px solid var(--line);border-radius:999px;padding:3px}
 .seg button{background:transparent;border:0;cursor:pointer;font-family:var(--font-mono);font-size:12px;
-  color:var(--txt-4);padding:5px 13px;border-radius:999px;transition:.15s;letter-spacing:.02em}
+  color:var(--txt-4);padding:5px 13px;border-radius:999px;transition:background-color .15s,color .15s;letter-spacing:.02em}
 .seg button.on{background:var(--accent);color:#fff}
 .chart-card{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .chart-legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-family:var(--font-mono);font-size:12px;color:var(--txt-3)}
@@ -374,19 +398,27 @@
    sidebar surface reads full-height (light theme showed a bg-soft gap below the fold). On mobile the
    single-column .app-main paints bg-soft over it, so this is invisible there. */
 .app{display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;position:relative;z-index:2;background:var(--bg-card)}
+/* No double-tap-zoom delay on dashboard controls; panning/pinch stay intact. */
+.app button,.app a,.app summary,.app select,.app .btn{touch-action:manipulation}
+/* App-shell scroll model: the sidebar itself never scrolls — only the nav does (min-height:0
+   lets the flex item shrink below its content height). The footer (user/logout) stays anchored
+   at the bottom of the 100vh column regardless of nav/legal height; previously a tall nav pushed
+   the footer into the sidebar's own scroll area and the avatar got sliced at compact widths. */
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
-  background:var(--bg-card);border-right:1px solid var(--line);padding:24px 18px;overflow-y:auto;overscroll-behavior:contain}
+  background:var(--bg-card);border-right:1px solid var(--line);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
 .side-brand{margin:2px 10px 24px;font-size:18px}
-.side-nav{display:flex;flex-direction:column;gap:4px;flex:1;padding-bottom:20px}
+.side-nav{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:20px}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:42px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
-  font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:.14s}
+  font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
 .side-nav button:hover{background:var(--bg-soft);color:var(--txt)}
 .side-nav button.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
 .side-nav button:focus-visible,.side-nav .side-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .side-nav .si{width:18px;display:inline-flex;align-items:center;justify-content:center;flex:none;opacity:.9}
 .side-nav .si svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.side-foot{display:flex;flex-direction:column;gap:14px;padding:18px 2px 0;border-top:1px solid var(--line)}
+/* Footer never leaves the visible column: the nav above absorbs overflow (see .side/.side-nav). */
+.side-foot{display:flex;flex-direction:column;gap:14px;padding:18px 2px 0;border-top:1px solid var(--line);
+  flex:none;margin-top:12px;background:var(--bg-card)}
 .side-tools{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .side-legal{display:flex;gap:5px 11px;flex-wrap:wrap;padding:0 4px}
 .side-legal a{font-family:var(--font-mono);font-size:10px;color:var(--txt-4);transition:color .15s ease}
@@ -414,7 +446,10 @@
   background:color-mix(in srgb,var(--bg-card) 92%,transparent);backdrop-filter:blur(16px)}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1360px;min-height:71px;margin:0 auto}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
-.app-title{font-family:var(--font-ui);font-weight:680;font-size:22px;letter-spacing:-.025em;flex:1}
+/* Keep the section title on one line ("Promo codes" wrapped at 390px and grew the top bar
+   taller than sibling sections); truncate instead of wrapping. */
+.app-title{font-family:var(--font-ui);font-weight:680;font-size:22px;letter-spacing:-.025em;flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .app-top-actions{display:flex;align-items:center;gap:12px}
 .app-top-bal{display:inline-flex;align-items:center;gap:9px;padding:8px 15px;border-radius:11px;
   background:linear-gradient(180deg,var(--bg-card),var(--bg-soft));border:1px solid var(--accent-line);
@@ -451,7 +486,7 @@
 .set-in:disabled{opacity:.6}
 .set-card .btn{align-self:flex-start;margin-top:16px}
 .set-saved{align-self:flex-start;margin-top:8px;font-family:var(--font-mono);font-size:12px;
-  color:#16a34a;opacity:0;transition:.2s}
+  color:#16a34a;opacity:0;transition:opacity .2s}
 .set-saved.show{opacity:1}
 .set-danger{border-color:rgba(220,38,38,.3)}
 
@@ -463,8 +498,9 @@ body.app-body .bg-decor{display:none!important}
 .side-group{font-family:var(--font-mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;
   color:var(--txt-4);padding:18px 12px 7px}
 .side-nav .side-link{display:flex;align-items:center;gap:12px;min-height:42px;padding:10px 12px;border:1px solid transparent;border-radius:8px;
-  font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:.14s}
+  font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
 .side-nav .side-link:hover{background:var(--bg-soft);color:var(--txt)}
+.side-nav .side-link.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
 /* RU labels are wider and the legal row wraps to two lines, which pushes the 100vh sidebar a few
    dozen px past the fold and shows a scrollbar (EN fits). Tighten the vertical rhythm for RU only
    so the whole menu + footer fits without scrolling; EN spacing stays untouched. */
@@ -472,7 +508,7 @@ body.app-body .bg-decor{display:none!important}
 .side[data-lang="ru"] .side-nav{gap:3px;padding-bottom:10px}
 .side[data-lang="ru"] .side-nav button,.side[data-lang="ru"] .side-nav .side-link{min-height:38px}
 .side[data-lang="ru"] .side-foot{gap:10px;padding-top:12px}
-.app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2}
+.app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
 .page-heading{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:28px}
 .page-heading .eyebrow{margin-bottom:12px;font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
@@ -505,6 +541,10 @@ body.app-body .bg-decor{display:none!important}
 /* Shared dashboard surfaces adopt the overview card geometry (16px radius, soft border/shadow). */
 .app .table-scroll,.app .key-table-wrap,.app .uchart,.app .usum,.app .txh-day,.app .empty-box{border-radius:var(--overview-radius)}
 .app .table-scroll,.app .key-table-wrap,.app .uchart,.app .txh-day{border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
+/* Header row hugs the wrap's 16px corners (base 9px th radius left white notches that read
+   as a detached grey card floating over the table body). */
+.app .key-table th:first-child{border-top-left-radius:calc(var(--overview-radius) - 1px)}
+.app .key-table th:last-child{border-top-right-radius:calc(var(--overview-radius) - 1px)}
 .app .ubreak-sum,.app .tok-buckets,.app .pricing-banner{border-radius:var(--overview-radius)}
 .app .banner{border-radius:12px}
 /* Support panel inside the dashboard follows the same sans hierarchy; the public /support page keeps its own. */
@@ -574,7 +614,9 @@ body.app-body .bg-decor{display:none!important}
 .overview-metric-card{display:flex;min-height:202px;flex-direction:column;padding:24px 26px}
 .overview-metric-mark{display:grid;place-items:center;width:32px;height:32px;border:1px solid color-mix(in srgb,var(--line) 84%,transparent);
   border-radius:9px;background:var(--bg-soft);font:600 12px var(--font-mono);color:var(--txt-4)}
-.overview-metric-card>strong{display:block;margin-top:22px;font-size:25px;font-weight:680;line-height:1.12;letter-spacing:-.035em;color:var(--txt);overflow-wrap:anywhere}
+/* Headlines wrap at word boundaries only — overflow-wrap:anywhere split the RU headline
+   "Единая ставка" mid-word ("Едина/я") on narrow cards. */
+.overview-metric-card>strong{display:block;margin-top:22px;font-size:25px;font-weight:680;line-height:1.12;letter-spacing:-.035em;color:var(--txt);overflow-wrap:break-word;hyphens:none}
 .overview-pricing-card>strong{margin-bottom:18px}
 .overview-metric-card>p{margin:9px 0 13px;font-size:12.5px;line-height:1.5;color:var(--txt-3)}
 .overview-metric-card>p b{color:var(--accent)}
@@ -649,7 +691,9 @@ body.app-body .bg-decor{display:none!important}
   display:flex;flex-direction:column;justify-content:center;gap:6px;
   background:linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
   box-shadow:var(--overview-shadow)}
-.ovstat .dlabel{font-family:var(--font-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
+/* Labels reserve two lines so sibling card values share one baseline when a long label wraps. */
+.ovstat .dlabel{font-family:var(--font-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4);
+  line-height:1.4;min-height:2.8em}
 .ovstat .num{font-family:var(--font-ui);font-weight:680;font-size:25px;color:var(--txt);line-height:1.15;letter-spacing:-.04em}
 .ovstat .num.accent{color:var(--accent)}
 .ovstat .dtrend{font-family:var(--font-mono);font-size:12px;color:var(--txt-4)}
@@ -660,7 +704,7 @@ body.app-body .bg-decor{display:none!important}
 .ov-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:20px}
 .ov-tiles-two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .ov-tile{display:flex;align-items:center;gap:14px;text-align:left;background:var(--bg-card);
-  border:1px solid var(--line);border-radius:10px;padding:18px 20px;cursor:pointer;transition:.14s;width:100%;box-shadow:var(--shadow);color:var(--txt)}
+  border:1px solid var(--line);border-radius:10px;padding:18px 20px;cursor:pointer;transition:border-color .14s,background-color .14s;width:100%;box-shadow:var(--shadow);color:var(--txt)}
 .ov-tile:hover{border-color:var(--accent-line);background:var(--accent-soft)}
 .ovt-ic{width:34px;height:34px;flex:none;display:flex;align-items:center;justify-content:center;
   border-radius:8px;background:var(--accent-soft);color:var(--accent);font-size:16px}
@@ -748,12 +792,12 @@ body.app-body .bg-decor{display:none!important}
 .tg-head b{font-size:16px}
 .profile-id-row{align-items:center}
 .uid-wrap{display:grid;grid-template-columns:minmax(0,1fr) 112px;align-items:center;gap:12px;width:min(520px,72%)}
-.uid-wrap .set-in{width:100%;min-width:0;font-family:var(--font-mono);font-size:12px;letter-spacing:-.02em}
+.uid-wrap .set-in{width:100%;min-width:0;font-family:var(--font-mono);font-size:12px;letter-spacing:-.02em;text-overflow:ellipsis}
 .profile-email-input{min-width:0;text-overflow:ellipsis}
 .dashboard-data-notice{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .dashboard-data-notice .btn{flex:none}
 .table-scroll-hint{display:none;margin:0 0 8px;font-family:var(--font-mono);font-size:11px;color:var(--txt-4)}
-.tc-tier-name{font-size:clamp(18px,2vw,25px)!important;line-height:1.15;overflow-wrap:anywhere}
+.tc-tier-name{font-size:clamp(18px,2vw,25px)!important;line-height:1.15;overflow-wrap:break-word;hyphens:none}
 .promo-ledger-label{font-family:var(--font-mono);font-size:12px;color:var(--txt-2)}
 .promo-hint{margin:10px 0 0;font-family:var(--font-mono);font-size:11px;line-height:1.6;color:var(--txt-4)}
 
@@ -774,6 +818,20 @@ body.app-body .bg-decor{display:none!important}
 .mdist-legend>span{display:inline-flex;align-items:center;min-width:0}
 .mdist-legend i{width:9px;height:9px;border-radius:3px;flex:none;margin-right:7px}
 .mdist-legend b{margin-left:7px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums}
+/* Horizontal scroll affordance for ledger tables: the right-edge fade tells the user there is
+   more content (top-up history and usage tables hard-clipped columns mid-word, e.g. "LIS…"),
+   and every table-scroll can actually scroll — usage tables carry min-width:640px but the
+   container only switched to overflow-x:auto ≤560px. The fade is masked only ≤640px, where
+   those min-width ledgers always overflow; promo-history wraps and credits-history transforms
+   into labeled cards instead of scrolling. */
+@media(max-width:820px){
+  .app .table-scroll{overflow-x:auto}
+}
+@media(max-width:640px){
+  .app .table-scroll{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%);
+    mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%)}
+  .app .promo-history .table-scroll,.app .credits-history .table-scroll{-webkit-mask-image:none;mask-image:none}
+}
 @media(max-width:700px){
   .promo-history .table-scroll{overflow:visible}
   .promo-history .mtable{min-width:0!important;table-layout:fixed}
@@ -789,17 +847,17 @@ body.app-body .bg-decor{display:none!important}
 .tgl-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:11px 0;
   border-top:1px solid var(--line);font-family:var(--font-mono);font-size:13px;color:var(--txt-2);cursor:pointer}
 .tgl{width:38px;height:22px;border-radius:99px;background:var(--bg-soft);border:1px solid var(--line);
-  position:relative;flex:none;transition:.18s}
+  position:relative;flex:none;transition:background-color .18s,border-color .18s}
 .tgl::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:.18s}
+  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .18s}
 .tgl.on{background:var(--accent);border-color:var(--accent)}
-.tgl.on::after{left:18px}
+.tgl.on::after{transform:translateX(16px)}
 
 /* tabs (usage) */
 .utabs{display:inline-flex;gap:4px;background:var(--bg-soft);border:1px solid var(--line);
   border-radius:8px;padding:4px;margin-bottom:16px}
 .utab{border:0;background:none;font-family:var(--font-mono);font-size:13px;color:var(--txt-3);
-  padding:6px 14px;border-radius:6px;cursor:pointer;transition:.14s}
+  padding:6px 14px;border-radius:6px;cursor:pointer;transition:background-color .14s,color .14s,box-shadow .14s}
 .utab.on{background:var(--bg-card);color:var(--txt);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .us-cards{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:18px}
 .us-route-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
@@ -844,7 +902,7 @@ body.app-body .bg-decor{display:none!important}
     transition:transform .22s ease}
   .side.open{transform:none;box-shadow:0 0 40px rgba(0,0,0,.25)}
   .side-scrim{display:block;position:fixed;inset:0;z-index:55;background:rgba(0,0,0,.4);
-    opacity:0;pointer-events:none;transition:.2s}
+    opacity:0;pointer-events:none;transition:opacity .2s}
   .side-scrim.show{opacity:1;pointer-events:auto}
   .app-burger{display:block}
   .app-top{padding:0 24px}
