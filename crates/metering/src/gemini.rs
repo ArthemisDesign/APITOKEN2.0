@@ -113,14 +113,18 @@ const fn flat_prices(
     }
 }
 
+// Official standard paid-tier rates, rechecked 2026-07-31:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.6-flash
 const GEMINI_36_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: flat_prices(1_500, 1_500, 150, 150, 7_500, SEARCH_GEMINI_3),
 }];
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash
 const GEMINI_35_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: flat_prices(1_500, 1_500, 150, 150, 9_000, SEARCH_GEMINI_3),
 }];
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite
 const GEMINI_31_FLASH_LITE: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: flat_prices(250, 500, 25, 50, 1_500, SEARCH_GEMINI_3),
@@ -443,7 +447,143 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prices_exact_per_million() {
+    fn standard_paid_catalog_matches_the_official_rates() {
+        let cases = [
+            (
+                "gemini-3.6-flash",
+                GeminiPrices {
+                    input: 1_500,
+                    audio_input: 1_500,
+                    cached_input: 150,
+                    cached_audio_input: 150,
+                    output: 7_500,
+                    long_context_threshold: u64::MAX,
+                    long_input: 1_500,
+                    long_audio_input: 1_500,
+                    long_cached_input: 150,
+                    long_cached_audio_input: 150,
+                    long_output: 7_500,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
+                "gemini-3.5-flash",
+                GeminiPrices {
+                    input: 1_500,
+                    audio_input: 1_500,
+                    cached_input: 150,
+                    cached_audio_input: 150,
+                    output: 9_000,
+                    long_context_threshold: u64::MAX,
+                    long_input: 1_500,
+                    long_audio_input: 1_500,
+                    long_cached_input: 150,
+                    long_cached_audio_input: 150,
+                    long_output: 9_000,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
+                "gemini-3.1-flash-lite",
+                GeminiPrices {
+                    input: 250,
+                    audio_input: 500,
+                    cached_input: 25,
+                    cached_audio_input: 50,
+                    output: 1_500,
+                    long_context_threshold: u64::MAX,
+                    long_input: 250,
+                    long_audio_input: 500,
+                    long_cached_input: 25,
+                    long_cached_audio_input: 50,
+                    long_output: 1_500,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
+                "gemini-3.1-pro-preview",
+                GeminiPrices {
+                    input: 2_000,
+                    audio_input: 2_000,
+                    cached_input: 200,
+                    cached_audio_input: 200,
+                    output: 12_000,
+                    long_context_threshold: 200_000,
+                    long_input: 4_000,
+                    long_audio_input: 4_000,
+                    long_cached_input: 400,
+                    long_cached_audio_input: 400,
+                    long_output: 18_000,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
+                "gemini-2.5-pro",
+                GeminiPrices {
+                    input: 1_250,
+                    audio_input: 1_250,
+                    cached_input: 125,
+                    cached_audio_input: 125,
+                    output: 10_000,
+                    long_context_threshold: 200_000,
+                    long_input: 2_500,
+                    long_audio_input: 2_500,
+                    long_cached_input: 250,
+                    long_cached_audio_input: 250,
+                    long_output: 15_000,
+                    search: GeminiSearchBilling::PerGroundedPrompt { nano: 35_000_000 },
+                },
+            ),
+            (
+                "gemini-2.5-flash",
+                GeminiPrices {
+                    input: 300,
+                    audio_input: 1_000,
+                    cached_input: 30,
+                    cached_audio_input: 100,
+                    output: 2_500,
+                    long_context_threshold: u64::MAX,
+                    long_input: 300,
+                    long_audio_input: 1_000,
+                    long_cached_input: 30,
+                    long_cached_audio_input: 100,
+                    long_output: 2_500,
+                    search: GeminiSearchBilling::PerGroundedPrompt { nano: 35_000_000 },
+                },
+            ),
+            (
+                "gemini-2.5-flash-lite",
+                GeminiPrices {
+                    input: 100,
+                    audio_input: 300,
+                    cached_input: 10,
+                    cached_audio_input: 30,
+                    output: 400,
+                    long_context_threshold: u64::MAX,
+                    long_input: 100,
+                    long_audio_input: 300,
+                    long_cached_input: 10,
+                    long_cached_audio_input: 30,
+                    long_output: 400,
+                    search: GeminiSearchBilling::PerGroundedPrompt { nano: 35_000_000 },
+                },
+            ),
+        ];
+        let catalog = gemini_catalog_at(0);
+        assert_eq!(catalog.len(), cases.len());
+        for (model, expected) in cases {
+            assert_eq!(gemini_prices_at(model, 0), Some(expected), "{model}");
+            let spec = catalog
+                .iter()
+                .find(|spec| spec.id == model)
+                .expect("official model must be catalogued");
+            assert_eq!(spec.input_token_limit, 1_048_576, "{model} input limit");
+            assert_eq!(spec.output_token_limit, 65_536, "{model} output limit");
+        }
+    }
+
+    #[test]
+    fn one_million_tokens_uses_the_pinned_rate_exactly() {
         for model in gemini_catalog_at(0) {
             let one_million = GeminiUsage {
                 input_tokens: 1_000_000,
