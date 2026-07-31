@@ -41,6 +41,7 @@
 }
 /* ---- DARK theme = toggle (full dark side) ---- */
 [data-theme="dark"]{
+  color-scheme:dark;
   --bg:#0a0a0a;
   --bg-soft:#111111;
   --bg-card:#0e0e0e;

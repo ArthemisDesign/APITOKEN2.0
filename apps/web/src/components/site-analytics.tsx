@@ -1,12 +1,24 @@
 "use client";
 
-import { Analytics, type BeforeSendEvent } from "@vercel/analytics/next";
+import type { BeforeSendEvent } from "@vercel/analytics/next";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { detectAiSource } from "@/lib/ai-source";
 import { documentLanguageForPathname } from "@/lib/locale-routes";
 import { coarseAcquisition, trackFirstProductEvent } from "@/lib/product-analytics";
 import { YANDEX_METRIKA_ID } from "@/lib/yandex-metrika";
+
+// Vercel Analytics и Speed Insights не нужны для первого рендера — грузим их
+// отдельным чанком после гидратации, а не в основном бандле каждой страницы.
+const Analytics = dynamic(
+  () => import("@vercel/analytics/next").then((mod) => mod.Analytics),
+  { ssr: false },
+);
+const SpeedInsights = dynamic(
+  () => import("@vercel/speed-insights/next").then((mod) => mod.SpeedInsights),
+  { ssr: false },
+);
 
 type YandexMetrika = (counterId: number, method: string, ...args: unknown[]) => void;
 
@@ -106,4 +118,8 @@ export function SiteAnalytics() {
       url: withoutSensitiveUrlData(event.url),
     })} />
   </>;
+}
+
+export function SiteSpeedInsights() {
+  return <SpeedInsights />;
 }

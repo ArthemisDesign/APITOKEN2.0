@@ -29,7 +29,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const setLanguage = useCallback((next: Language) => {
     const destination = localeRoute(pathname, next);
     if (!destination) return;
-    try { window.localStorage.setItem("lang", next); } catch { /* ignore */ }
+    try { window.localStorage.setItem("lang:v1", next); } catch { /* ignore */ }
     const suffix = `${window.location.search}${window.location.hash}`;
     if (destination !== pathname) router.push(`${destination}${suffix}`);
   }, [pathname, router]);

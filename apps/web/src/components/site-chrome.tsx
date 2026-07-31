@@ -121,12 +121,25 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   </header>;
 }
 
+const THEME_STORAGE_KEY = "theme:v1";
+const LEGACY_THEME_STORAGE_KEY = "theme";
+
+function readSavedTheme(): "light" | "dark" {
+  try {
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
+    return saved === "light" ? "light" : "dark";
+  } catch {
+    // localStorage может быть недоступен (приватный режим) — остаёмся на тёмной теме.
+    return "dark";
+  }
+}
+
 export function ThemeToggle() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     // Тема по умолчанию — тёмная; светлая только если пользователь её явно сохранил.
-    const saved = window.localStorage.getItem("theme") === "light" ? "light" : "dark";
+    const saved = readSavedTheme();
     const timer = window.setTimeout(() => {
       setTheme(saved);
       setMounted(true);
@@ -137,7 +150,11 @@ export function ThemeToggle() {
     if (!mounted) return;
     if (theme === "dark") document.documentElement.dataset.theme = "dark";
     else delete document.documentElement.dataset.theme;
-    window.localStorage.setItem("theme", theme);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // localStorage может быть недоступен (приватный режим) — тема просто не сохранится.
+    }
   }, [mounted, theme]);
   return <button className="theme-tgl" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button>;
 }

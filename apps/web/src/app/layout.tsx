@@ -1,12 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
-import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 import "./anim.css";
 import { I18nProvider } from "@/components/i18n-provider";
 import { PersistentRouteShell } from "@/components/persistent-route-shell";
-import { SiteAnalytics } from "@/components/site-analytics";
+import { SiteAnalytics, SiteSpeedInsights } from "@/components/site-analytics";
 import { RefCapture } from "@/components/ref-capture";
 import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
@@ -63,7 +62,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#0a0a0a" };
 
-const themeScript = `(()=>{try{const t=localStorage.getItem('theme')||'dark';document.documentElement.dataset.theme=t}catch{}})()`;
+const themeScript = `(()=>{try{const t=localStorage.getItem('theme:v1')||localStorage.getItem('theme')||'dark';document.documentElement.dataset.theme=t}catch{}})()`;
 
 export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   const documentLanguage = (await headers()).get("x-document-language") ?? "en";
@@ -80,7 +79,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           <PersistentRouteShell>{children}</PersistentRouteShell>
         </I18nProvider>
         <SiteAnalytics />
-        <SpeedInsights />
+        <SiteSpeedInsights />
         <RefCapture />
         <noscript>
           <div>
