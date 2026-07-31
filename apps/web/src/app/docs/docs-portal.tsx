@@ -12,7 +12,7 @@ import { ApiReference } from "./api-reference";
 
 const AGENT_GUIDE_URL = "https://apitoken.sale/md/connect";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors", "next"] as const;
 
 const copy = {
   en: {
@@ -64,6 +64,14 @@ const copy = {
     copy: "Copy",
     copied: "Copied",
     copyPage: "Copy page",
+    nextSteps: "Next steps",
+    nextStepsText: "Everything referenced from this page, in one place.",
+    nextModels: "Models",
+    nextModelsText: "Exact model IDs, context windows, and token prices.",
+    nextPricing: "Pricing",
+    nextPricingText: "Top-ups, discount tiers, and how billing works.",
+    nextGuides: "Guides",
+    nextGuidesText: "Step-by-step integration walkthroughs.",
     footer: "apiToken.sale documentation · Claude and OpenAI-compatible text access",
   },
   ru: {
@@ -115,6 +123,14 @@ const copy = {
     copy: "Копировать",
     copied: "Скопировано",
     copyPage: "Копировать страницу",
+    nextSteps: "Дальше",
+    nextStepsText: "Всё, на что ссылается эта страница, в одном месте.",
+    nextModels: "Модели",
+    nextModelsText: "Точные ID моделей, контекстные окна и цены за токены.",
+    nextPricing: "Цены",
+    nextPricingText: "Пополнения, тарифные скидки и принцип расчёта.",
+    nextGuides: "Гайды",
+    nextGuidesText: "Пошаговые инструкции по интеграции.",
     footer: "Документация apiToken.sale · Claude и OpenAI-совместимый текстовый API",
   },
 } as const;
@@ -131,6 +147,7 @@ export function DocsPortal() {
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
     { id: "errors", label: t.errors },
+    { id: "next", label: t.nextSteps },
   ];
 
   useEffect(() => {
@@ -219,6 +236,15 @@ export function DocsPortal() {
         <section className="docs-section" id="errors">
           <div className="docs-section-heading"><span>04</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
+        </section>
+
+        <section className="docs-section docs-next" id="next">
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="learn-related">
+            <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
+            <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>
+            <Link className="learn-related-card" href={localeHref("/docs/learn", language)}><strong>{t.nextGuides}</strong><span>{t.nextGuidesText}</span></Link>
+          </div>
         </section>
 
         <footer className="docs-footer">{t.footer}</footer>
