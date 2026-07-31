@@ -23,7 +23,8 @@ Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имею�
 приоритета заголовка: достаточно любого валидного. Это критично для Claude Code,
 который может одновременно прислать stale `ANTHROPIC_API_KEY` и актуальный `ANTHROPIC_AUTH_TOKEN`.
 
-**Multi-provider pricing Stage 3B1b/3B1c.1 (`pricing.rs`, `pricing/shadow.rs`) — dormant:** pure
+**Multi-provider pricing Stage 3B1b/3B1c (`pricing.rs`, `pricing/shadow.rs`,
+`pricing/runtime.rs`):** pure
 fail-closed resolver consumes
 one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
 scalar, exact policy dependencies and current admission heads), provider-fixed identities and a
@@ -38,12 +39,16 @@ work-item pins only the validated actual snapshot reference, full registry-canon
 evidence and explicit enqueue timestamp. Its builder derives request/manifest identity internally,
 resolves exactly one coherent bundle, verifies manifest/provider/model identity and converts all
 resolved/rejected/read-error variants into a validated immutable registry input. It rejects early
-timestamps and balance-capped actuals before any future enqueue; a bundle for another outer account
+timestamps and balance-capped actuals before enqueue; a bundle for another outer account
 is an integrity error, not a durable rejection carrying that account's scalar. The modules have no
-DB, HTTP, env, clock, metrics, queue, manifest singleton or runtime caller. Do not wire them into
-`authorize`, provider admission, reserve/settle, `/ready` or snapshots without a separate
-production-shadow rollout: even a read-only call adds per-request DB/queue/latency risk, and the
-actual charge remains legacy scalar.
+HTTP/env and never feed shadow output into admission, reserve, settlement or `/ready`. The
+default-off runtime producer is called only after successful atomic Anthropic/OpenAI snapshot
+reserve, applies deterministic sampling, byte limits and an integer token bucket, then performs
+exactly one `try_send`. Its bounded PostgreSQL-only workers use separate read actors, the existing
+billing writer for immutable insert, per-operation PostgreSQL timeouts, queue expiry `<24h` and
+fixed-cardinality metrics. Full/closed/rate-limited/oversized/balance-capped work drops fail-open;
+read/write/timeout/replay/conflict outcomes never change customer response or money. SQLite keeps
+API/test parity but cannot start live shadow readers.
 
 **Биллинг (async, `billing.rs` + tee-метеринг `meter.rs`):** авторизация (`authorize`, async):
 env-админ проверяется ПЕРВЫМ в памяти; иначе клиентский ключ → `key_account` (JOIN ключ→аккаунт)
@@ -56,6 +61,8 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 → клиент не получит ни токена/цента сверх баланса. 4xx/ошибки/ротация НЕ тарифицируются.
 Для policy-ключей cap берёт минимум из баланса аккаунта и оставшегося lifetime-лимита. Такие ключи
 обходят auth TTL cache; срок и лимит повторно проверяются в атомарной транзакции reserve.
+Pricing shadow adds a separately sized PostgreSQL read-actor pool; evaluation inserts remain on the
+same single writer and deliberately do not use the normal five-second money-operation retry loop.
 
 **Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** отдельный
 `ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned

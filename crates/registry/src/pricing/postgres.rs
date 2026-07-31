@@ -358,11 +358,30 @@ pub(crate) fn postgres_insert_pricing_shadow_admission_evaluation(
     client: &mut Client,
     input: &PricingShadowAdmissionEvaluationInput,
 ) -> Result<PricingShadowEvaluationWrite> {
+    postgres_insert_pricing_shadow_admission_evaluation_inner(client, input, None)
+}
+
+pub(crate) fn postgres_insert_pricing_shadow_admission_evaluation_with_timeout(
+    client: &mut Client,
+    input: &PricingShadowAdmissionEvaluationInput,
+    timeout_ms: u64,
+) -> Result<PricingShadowEvaluationWrite> {
+    postgres_insert_pricing_shadow_admission_evaluation_inner(client, input, Some(timeout_ms))
+}
+
+fn postgres_insert_pricing_shadow_admission_evaluation_inner(
+    client: &mut Client,
+    input: &PricingShadowAdmissionEvaluationInput,
+    timeout_ms: Option<u64>,
+) -> Result<PricingShadowEvaluationWrite> {
     let candidate = input.to_evaluation()?;
     let row = candidate.storage_row()?;
     let mut transaction = client
         .transaction()
         .context("begin PostgreSQL pricing shadow evaluation transaction")?;
+    if let Some(timeout_ms) = timeout_ms {
+        set_shadow_transaction_timeout(&mut transaction, timeout_ms)?;
+    }
     shadow_evaluation_advisory_lock(&mut transaction, candidate.actual().request_id())?;
 
     if let Some(existing) = postgres_shadow_evaluation_in_transaction(
@@ -510,6 +529,23 @@ pub(crate) fn postgres_insert_pricing_shadow_admission_evaluation(
         .commit()
         .context("commit PostgreSQL shadow evaluation conflict transaction")?;
     Ok(outcome)
+}
+
+fn set_shadow_transaction_timeout(
+    transaction: &mut postgres::Transaction<'_>,
+    timeout_ms: u64,
+) -> Result<()> {
+    if !(1..=15_000).contains(&timeout_ms) {
+        bail!("pricing shadow database timeout must be in 1..=15000 milliseconds");
+    }
+    let timeout = format!("{timeout_ms}ms");
+    transaction
+        .query_one(
+            "SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true)",
+            &[&timeout],
+        )
+        .context("configure bounded PostgreSQL pricing shadow transaction")?;
+    Ok(())
 }
 
 fn catalog_by_generation<C: GenericClient>(
@@ -1000,6 +1036,22 @@ pub(crate) fn postgres_pricing_read_bundle(
     client: &mut Client,
     account_id: &str,
 ) -> Result<PricingReadBundle> {
+    postgres_pricing_read_bundle_inner(client, account_id, None)
+}
+
+pub(crate) fn postgres_pricing_read_bundle_with_timeout(
+    client: &mut Client,
+    account_id: &str,
+    timeout_ms: u64,
+) -> Result<PricingReadBundle> {
+    postgres_pricing_read_bundle_inner(client, account_id, Some(timeout_ms))
+}
+
+fn postgres_pricing_read_bundle_inner(
+    client: &mut Client,
+    account_id: &str,
+    timeout_ms: Option<u64>,
+) -> Result<PricingReadBundle> {
     require_id("account id", account_id)?;
     let mut transaction = client
         .build_transaction()
@@ -1007,6 +1059,9 @@ pub(crate) fn postgres_pricing_read_bundle(
         .read_only(true)
         .start()
         .context("begin PostgreSQL pricing read snapshot")?;
+    if let Some(timeout_ms) = timeout_ms {
+        set_shadow_transaction_timeout(&mut transaction, timeout_ms)?;
+    }
     let account_multiplier_bp = transaction
         .query_opt("SELECT mult_bp FROM accounts WHERE id=$1", &[&account_id])?
         .map(|row| row.get::<_, i64>(0))

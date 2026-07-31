@@ -3,7 +3,8 @@
 
 use forward::{
     CodexConfig, CodexModel, CodexTransport, GeminiConfig, GeminiModel, PricingBridgeConfig,
-    ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY,
+    PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
+    CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
 
@@ -38,6 +39,8 @@ pub struct Settings {
     pub codex: Option<CodexConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
+    /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
+    pub pricing_shadow_manifest: registry::pricing::PricingRuntimeManifestEvidence,
     pub proxy: ProxyConfig,
 }
 
@@ -129,6 +132,101 @@ fn parse_pricing_bridge_config(
             error.code()
         )
     })
+}
+
+const PRICING_SHADOW_ENV_KEYS: [&str; 11] = [
+    "CLAUDE_API_PRICING_SHADOW_ENABLED",
+    "CLAUDE_API_PRICING_SHADOW_SAMPLE_BP",
+    "CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY",
+    "CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY",
+    "CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS",
+    "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS",
+    "CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES",
+    "CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES",
+    "CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC",
+    "CLAUDE_API_PRICING_SHADOW_RATE_BURST",
+    "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
+];
+
+fn parse_pricing_shadow_config(
+    values: &BTreeMap<String, String>,
+) -> Result<PricingShadowConfig, String> {
+    let defaults = PricingShadowConfigValues::default();
+    let parse_i64 = |name: &str, default: i64| -> Result<i64, String> {
+        values.get(name).map_or(Ok(default), |value| {
+            value
+                .parse::<i64>()
+                .map_err(|_| format!("{name}: expected a base-10 integer"))
+        })
+    };
+    let parse_u64 = |name: &str, default: u64| -> Result<u64, String> {
+        values.get(name).map_or(Ok(default), |value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{name}: expected a non-negative base-10 integer"))
+        })
+    };
+    let parse_usize = |name: &str, default: usize| -> Result<usize, String> {
+        let value = parse_u64(name, default as u64)?;
+        usize::try_from(value).map_err(|_| format!("{name}: value does not fit usize"))
+    };
+    let configured = PricingShadowConfigValues {
+        enabled: parse_strict_bool(
+            "CLAUDE_API_PRICING_SHADOW_ENABLED",
+            values
+                .get("CLAUDE_API_PRICING_SHADOW_ENABLED")
+                .map(String::as_str),
+            defaults.enabled,
+        )?,
+        sample_bp: parse_i64("CLAUDE_API_PRICING_SHADOW_SAMPLE_BP", defaults.sample_bp)?,
+        queue_capacity: parse_usize(
+            "CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY",
+            defaults.queue_capacity,
+        )?,
+        worker_concurrency: parse_usize(
+            "CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY",
+            defaults.worker_concurrency,
+        )?,
+        timeout_ms: parse_u64("CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS", defaults.timeout_ms)?,
+        max_queue_age_secs: parse_i64(
+            "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS",
+            defaults.max_queue_age_secs,
+        )?,
+        max_field_bytes: parse_usize(
+            "CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES",
+            defaults.max_field_bytes,
+        )?,
+        max_item_bytes: parse_usize(
+            "CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES",
+            defaults.max_item_bytes,
+        )?,
+        rate_per_sec: parse_u64(
+            "CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC",
+            defaults.rate_per_sec,
+        )?,
+        rate_burst: parse_u64("CLAUDE_API_PRICING_SHADOW_RATE_BURST", defaults.rate_burst)?,
+        db_read_connections: parse_usize(
+            "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
+            defaults.db_read_connections,
+        )?,
+    };
+    PricingShadowConfig::from_values(configured).map_err(|error| {
+        format!(
+            "invalid pricing shadow config ({}); see bounded rollout limits",
+            error.code()
+        )
+    })
+}
+
+fn pricing_shadow_runtime_manifest() -> registry::pricing::PricingRuntimeManifestEvidence {
+    let capability = registry::pricing::PricingRuntimeCapabilityEvidence::new(
+        registry::pricing::PRICING_SCHEMA_VERSION,
+        1,
+        "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd",
+    )
+    .expect("built-in pricing evaluator capability is valid");
+    registry::pricing::PricingRuntimeManifestEvidence::new(1, vec![capability])
+        .expect("built-in pricing evaluator manifest is valid")
 }
 
 fn parse_codex_transport(value: Option<&str>) -> Result<CodexTransport, String> {
@@ -727,6 +825,12 @@ impl Settings {
             ev("CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP").as_deref(),
         )
         .unwrap_or_else(|message| panic!("{message}"));
+        let pricing_shadow_values = PRICING_SHADOW_ENV_KEYS
+            .into_iter()
+            .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
+            .collect::<BTreeMap<_, _>>();
+        let pricing_shadow = parse_pricing_shadow_config(&pricing_shadow_values)
+            .unwrap_or_else(|message| panic!("{message}"));
         let redis_url = ev("CLAUDE_API_REDIS_URL");
         let affinity_secret = ev("CLAUDE_API_AFFINITY_SECRET");
         let codex = if provider.serves_openai() {
@@ -803,12 +907,14 @@ impl Settings {
             ),
             codex,
             gemini,
+            pricing_shadow_manifest: pricing_shadow_runtime_manifest(),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
                 panel_keys,
                 default_mult_bp: mult_bp,
                 pricing_bridge,
+                pricing_shadow,
                 trust_loopback,
                 // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
@@ -944,6 +1050,80 @@ mod tests {
         let full = parse_pricing_bridge_config(Some("1"), Some("10000")).unwrap();
         assert!(full.enabled());
         assert_eq!(full.sample_bp(), 10_000);
+    }
+
+    #[test]
+    fn pricing_shadow_config_is_strict_default_off_and_all_limits_are_validated() {
+        let empty = BTreeMap::new();
+        let disabled = parse_pricing_shadow_config(&empty).unwrap();
+        assert!(!disabled.enabled());
+        assert_eq!(disabled.sample_bp(), 0);
+        assert_eq!(disabled.queue_capacity(), 256);
+        assert_eq!(disabled.worker_concurrency(), 2);
+        assert_eq!(disabled.timeout_ms(), 750);
+        assert_eq!(disabled.max_queue_age_secs(), 300);
+        assert_eq!(disabled.max_field_bytes(), 512);
+        assert_eq!(disabled.max_item_bytes(), 16 * 1024);
+        assert_eq!(disabled.rate_per_sec(), 20);
+        assert_eq!(disabled.rate_burst(), 40);
+        assert_eq!(disabled.db_read_connections(), 2);
+
+        let mut enabled = BTreeMap::from([
+            (
+                "CLAUDE_API_PRICING_SHADOW_ENABLED".to_owned(),
+                "true".to_owned(),
+            ),
+            (
+                "CLAUDE_API_PRICING_SHADOW_SAMPLE_BP".to_owned(),
+                "1".to_owned(),
+            ),
+        ]);
+        assert!(parse_pricing_shadow_config(&enabled).unwrap().enabled());
+        enabled.insert(
+            "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS".to_owned(),
+            (24 * 60 * 60).to_string(),
+        );
+        assert!(parse_pricing_shadow_config(&enabled).is_err());
+        enabled.insert(
+            "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS".to_owned(),
+            "300".to_owned(),
+        );
+        for (name, value) in [
+            ("CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY", "0"),
+            ("CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY", "33"),
+            ("CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS", "0"),
+            ("CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES", "1"),
+            ("CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES", "999"),
+            ("CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC", "0"),
+            ("CLAUDE_API_PRICING_SHADOW_RATE_BURST", "0"),
+            ("CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS", "0"),
+        ] {
+            let mut invalid = enabled.clone();
+            invalid.insert(name.to_owned(), value.to_owned());
+            assert!(parse_pricing_shadow_config(&invalid).is_err(), "{name}");
+        }
+        enabled.insert(
+            "CLAUDE_API_PRICING_SHADOW_ENABLED".to_owned(),
+            "false".to_owned(),
+        );
+        assert!(parse_pricing_shadow_config(&enabled).is_err());
+    }
+
+    #[test]
+    fn pricing_shadow_manifest_is_fixed_registry_canonical_evidence() {
+        let manifest = pricing_shadow_runtime_manifest();
+        assert_eq!(manifest.manifest_generation(), 1);
+        assert_eq!(manifest.capabilities().len(), 1);
+        assert_eq!(
+            manifest.capabilities()[0].pricing_schema_version(),
+            registry::pricing::PRICING_SCHEMA_VERSION
+        );
+        assert_eq!(manifest.capabilities()[0].capability_generation(), 1);
+        assert_eq!(
+            manifest.capabilities()[0].capability_digest(),
+            "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd"
+        );
+        assert!(manifest.manifest_digest().starts_with("sha256:v1:"));
     }
 
     #[test]

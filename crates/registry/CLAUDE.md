@@ -71,8 +71,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   OpenKeys validation гоняется с multiplier writer. Registry только материализует данные;
   независимые policy/admission gates выполняет чистый resolver в `forward`. Нельзя собирать bundle
   последовательностью отдельных `active_*`/`*_by_generation` reads — это смешивает поколения.
-  Runtime callers, billing actor command, telemetry, readiness и writes пока запрещены.
-- **Stage 3B1a shadow schema — dormant:** PostgreSQL migration `0009` и SQLite parity создают
+  Единственный runtime caller — default-off bounded Stage 3B1c worker: он читает bundle только
+  через отдельный PostgreSQL shadow-reader actor и не участвует в readiness/admission/money.
+- **Stage 3B1a shadow schema:** PostgreSQL migration `0009` и SQLite parity создают
   отдельную immutable `pricing_shadow_admission_evaluations`. Она не подменяет actual
   `pricing_admission_snapshots`: shadow-строка ссылается на уже зафиксированный actual snapshot и
   хранит обе lineage-пары (`policy_*` и `admission_*`), runtime manifest, scalar comparison и typed
@@ -82,10 +83,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   вычисляет `evaluation_digest`. Exact replay с другими timestamps/diagnostics возвращает первую
   строку; отличный semantic digest — typed conflict, а не update. Manifest members служат
   insert-time evidence и в строке не дублируются; standalone read подтверждает manifest identity,
-  но без исходного manifest не перечисляет members заново. Миграция не устанавливает runtime
-  caller, queue/worker, heads, policies или данные. Live shadow запрещён до отдельного bounded
-  worker и атомарного actual snapshot + reserve.
-- **Stage 3B1c.1/3B1c.2 actual legacy snapshot foundation — dormant:** typed
+  но без исходного manifest не перечисляет members заново. Default-off Stage 3B1c worker теперь
+  может писать эти строки только после атомарного actual snapshot; migration сама по-прежнему не
+  создаёт heads, policies или seed data.
+- **Stage 3B1c.1/3B1c.2 actual legacy snapshot foundation:** typed
   `LegacyScalarAdmissionSnapshot` фиксирует exact request/account, fixed-plane provider
   (`anthropic|openai`), requested/canonical model, alias/tariff identities, timestamps, scalar,
   official/charged hold и provider-typed premium modifiers. Registry сам строит и при каждом чтении
@@ -101,9 +102,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   всех fallible writes и финального owner fence, непосредственно перед commit; закрытый gate
   полностью откатывает попытку как `AbortedBeforeCommit`. `NotReserved`, conflict и более ранняя
   ошибка gate не вызывают. Старые reserve API не изменены и snapshot не создают. Миграции не
-  добавлялись: используется actual schema `0006`. Runtime caller, sampler, config, policy read,
-  shadow producer и traffic activation отсутствуют; dormant actor primitive сам по себе
-  production-строк не пишет.
+  добавлялись: используется actual schema `0006`. Default-off live sampler и atomic caller
+  обслуживают Anthropic/OpenAI; только snapshot-bearing success может передать работу bounded
+  shadow producer. Production config остаётся выключенным.
   Новый PostgreSQL writer после потенциального ожидания request-lock повторно проверяет owner через
   `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
   race test доказывает rollback старого epoch без money/orphan writes. Snapshot constructor
@@ -118,7 +119,7 @@ side effect. `serve` may only perform the read-only schema verification before c
   queue `max_age <24h`. SQLite и PostgreSQL сохраняют унаследованные разные balance gates
   (full-cover против overdraft floor);
   parity этого checkpoint относится к atomic snapshot/replay/conflict, а не к `NotReserved`.
-- **Stage 3B1c.1 shadow evaluation persistence — dormant:** `ShadowActualSnapshotRef` строится
+- **Stage 3B1c shadow evaluation persistence:** `ShadowActualSnapshotRef` строится
   только из validated actual snapshot; fixed-plane identity, scalar и holds нельзя независимо
   подменить caller-ом. Registry вычисляет policy hold checked integer half-up, сам выводит
   `equal|different` и отклоняет balance-capped actual hold, для которого первый shadow rollout ещё
@@ -128,10 +129,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   bytes, NUL, depth и items. PostgreSQL сериализует request через отдельный advisory namespace и
   держит parent actual `FOR KEY SHARE` до immutable insert; SQLite использует `BEGIN IMMEDIATE`.
   API не читает current heads и не re-resolve-ит historical evidence. Pure forward work-item/builder
-  теперь использует registry-owned eligibility gate до будущего enqueue, выводит resolver manifest
+  использует registry-owned typed eligibility gate до enqueue, выводит resolver manifest
   только из canonical evidence и сверяет identity до формирования input. Read-only outcome getter
-  не выполняет persistence и нужен только pure builder/tests. Runtime caller, DB reader, queue,
-  worker и config по-прежнему отсутствуют.
+  не выполняет persistence. Timed PostgreSQL wrappers set transaction-local statement/lock timeout;
+  live reads use a separate bounded actor budget, while inserts pass through the existing billing
+  writer without transient retry. SQLite APIs remain for parity/tests and have no live producer.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

@@ -43,14 +43,18 @@ pub use gemini::{
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use keylimiter::KeyLimiter;
-pub use metrics::{Metrics, PRICING_BRIDGE_LATENCY_BUCKETS_MS};
+pub use metrics::{
+    Metrics, PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
+};
 pub use pricing::{
     build_pricing_shadow_evaluation, resolve_pricing, PricingBridgeConfig,
     PricingBridgeConfigError, PricingBridgeDecision, PricingBridgeFallbackReason,
     PricingDependencyKind, PricingResolution, PricingResolutionLineage, PricingResolutionRejection,
-    PricingResolutionRequest, PricingShadowEvaluationSource, PricingShadowReadFailure,
-    PricingShadowWorkItem, ResolvedPricingDependency, ResolvedPricingLineage, ResolvedPricingRule,
-    RuntimePricingCapability, RuntimePricingManifest,
+    PricingResolutionRequest, PricingShadowConfig, PricingShadowConfigError,
+    PricingShadowConfigValues, PricingShadowEnqueueResult, PricingShadowEvaluationSource,
+    PricingShadowProcessingResult, PricingShadowReadFailure, PricingShadowRuntime,
+    PricingShadowWorkItem, PricingShadowWorkItemError, ResolvedPricingDependency,
+    ResolvedPricingLineage, ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{
     authed, client_keys, control_authed, forward, readonly_authed, resolve_client_key,

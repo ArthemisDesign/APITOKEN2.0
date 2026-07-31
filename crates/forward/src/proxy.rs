@@ -1160,13 +1160,19 @@ pub async fn forward(
                     .reserve_request_with_legacy_snapshot(key, quote.into_snapshot())
                     .await
                 {
-                    Ok(LegacyScalarReserveOutcome::Inserted(_)) => {
+                    Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
                         app.metrics.pricing_bridge_inserted(bridge_provider);
+                        if let Some(shadow) = &app.pricing_shadow {
+                            shadow.try_enqueue(&receipt.snapshot);
+                        }
                         reserved_pair = Some((eff_mt, hold));
                         break;
                     }
-                    Ok(LegacyScalarReserveOutcome::Unchanged(_)) => {
+                    Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
                         app.metrics.pricing_bridge_unchanged(bridge_provider);
+                        if let Some(shadow) = &app.pricing_shadow {
+                            shadow.try_enqueue(&receipt.snapshot);
+                        }
                         reserved_pair = Some((eff_mt, hold));
                         break;
                     }
@@ -2073,6 +2079,7 @@ mod tests {
             panel_keys: Vec::new(),
             default_mult_bp: 10_000,
             pricing_bridge,
+            pricing_shadow: crate::pricing::PricingShadowConfig::default(),
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 1,
@@ -2122,6 +2129,7 @@ mod tests {
             codex: None,
             gemini: None,
             billing: Some(billing),
+            pricing_shadow: None,
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),

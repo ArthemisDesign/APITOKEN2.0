@@ -16,10 +16,14 @@ use forward::{
     authed, client_keys, control_authed, forward, gemini_api, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
-    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason, TerminalErrorReason,
-    PRICING_BRIDGE_LATENCY_BUCKETS_MS,
+    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
+    PricingShadowEnqueueResult, PricingShadowProcessingResult, TerminalErrorReason,
+    PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
 };
-use registry::pricing::SnapshotProvider;
+use registry::pricing::{
+    PricingMode, PricingShadowComparison, PricingShadowReadErrorCode, PricingShadowRejectionCode,
+    SnapshotProvider,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -783,6 +787,138 @@ async fn metrics(
              claude_api_pricing_bridge_atomic_reserve_duration_seconds_sum{{provider=\"{provider_id}\"}} {}\n\
              claude_api_pricing_bridge_atomic_reserve_duration_seconds_count{{provider=\"{provider_id}\"}} {latency_count}",
             m.pricing_bridge_latency_sum_seconds(provider),
+        );
+    }
+    let shadow = app.pricing_shadow.as_ref();
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_pricing_shadow_enabled gauge\n\
+         claude_api_pricing_shadow_enabled {}\n\
+         # TYPE claude_api_pricing_shadow_sample_basis_points gauge\n\
+         claude_api_pricing_shadow_sample_basis_points {}\n\
+         # TYPE claude_api_pricing_shadow_queue_capacity gauge\n\
+         claude_api_pricing_shadow_queue_capacity {}\n\
+         # TYPE claude_api_pricing_shadow_worker_concurrency gauge\n\
+         claude_api_pricing_shadow_worker_concurrency {}\n\
+         # TYPE claude_api_pricing_shadow_timeout_milliseconds gauge\n\
+         claude_api_pricing_shadow_timeout_milliseconds {}\n\
+         # TYPE claude_api_pricing_shadow_max_queue_age_seconds gauge\n\
+         claude_api_pricing_shadow_max_queue_age_seconds {}\n\
+         # TYPE claude_api_pricing_shadow_max_field_bytes gauge\n\
+         claude_api_pricing_shadow_max_field_bytes {}\n\
+         # TYPE claude_api_pricing_shadow_max_item_bytes gauge\n\
+         claude_api_pricing_shadow_max_item_bytes {}\n\
+         # TYPE claude_api_pricing_shadow_rate_per_second gauge\n\
+         claude_api_pricing_shadow_rate_per_second {}\n\
+         # TYPE claude_api_pricing_shadow_rate_burst gauge\n\
+         claude_api_pricing_shadow_rate_burst {}\n\
+         # TYPE claude_api_pricing_shadow_db_read_connections gauge\n\
+         claude_api_pricing_shadow_db_read_connections {}\n\
+         # TYPE claude_api_pricing_shadow_queue_depth gauge\n\
+         claude_api_pricing_shadow_queue_depth {}\n\
+         # TYPE claude_api_pricing_shadow_queue_high_water gauge\n\
+         claude_api_pricing_shadow_queue_high_water {}\n\
+         # TYPE claude_api_pricing_shadow_enqueue_total counter\n\
+         # TYPE claude_api_pricing_shadow_processing_total counter\n\
+         # TYPE claude_api_pricing_shadow_rejected_total counter\n\
+         # TYPE claude_api_pricing_shadow_read_error_total counter\n\
+         # TYPE claude_api_pricing_shadow_resolved_total counter\n\
+         # TYPE claude_api_pricing_shadow_queue_age_seconds histogram",
+        u8::from(shadow.is_some_and(|runtime| runtime.config().enabled())),
+        shadow.map_or(0, |runtime| runtime.config().sample_bp()),
+        shadow.map_or(0, |runtime| runtime.config().queue_capacity()),
+        shadow.map_or(0, |runtime| runtime.config().worker_concurrency()),
+        shadow.map_or(0, |runtime| runtime.config().timeout_ms()),
+        shadow.map_or(0, |runtime| runtime.config().max_queue_age_secs()),
+        shadow.map_or(0, |runtime| runtime.config().max_field_bytes()),
+        shadow.map_or(0, |runtime| runtime.config().max_item_bytes()),
+        shadow.map_or(0, |runtime| runtime.config().rate_per_sec()),
+        shadow.map_or(0, |runtime| runtime.config().rate_burst()),
+        shadow.map_or(0, |runtime| runtime.config().db_read_connections()),
+        m.pricing_shadow_queue_depth(),
+        m.pricing_shadow_queue_high_water(),
+    );
+    if let Some(runtime) = shadow {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_pricing_shadow_runtime_manifest_info gauge\n\
+             claude_api_pricing_shadow_runtime_manifest_info{{generation=\"{}\",digest=\"{}\"}} 1",
+            runtime.manifest().manifest_generation(),
+            runtime.manifest().manifest_digest(),
+        );
+    }
+    for provider in [SnapshotProvider::Anthropic, SnapshotProvider::OpenAi] {
+        let provider_id = provider.as_str();
+        for result in PricingShadowEnqueueResult::ALL {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_shadow_enqueue_total{{provider=\"{provider_id}\",result=\"{}\"}} {}",
+                result.code(),
+                m.pricing_shadow_enqueue_count(provider, result),
+            );
+        }
+        for result in PricingShadowProcessingResult::ALL {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_shadow_processing_total{{provider=\"{provider_id}\",result=\"{}\"}} {}",
+                result.code(),
+                m.pricing_shadow_processing_count(provider, result),
+            );
+        }
+        for reason in PricingShadowRejectionCode::ALL {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_shadow_rejected_total{{provider=\"{provider_id}\",reason=\"{}\"}} {}",
+                reason.as_str(),
+                m.pricing_shadow_rejection_count(provider, *reason),
+            );
+        }
+        for reason in PricingShadowReadErrorCode::ALL {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_shadow_read_error_total{{provider=\"{provider_id}\",reason=\"{}\"}} {}",
+                reason.as_str(),
+                m.pricing_shadow_read_error_count(provider, *reason),
+            );
+        }
+        for mode in [PricingMode::Track, PricingMode::Discount] {
+            let mode_id = match mode {
+                PricingMode::Track => "track",
+                PricingMode::Discount => "discount",
+            };
+            for (model_scope, scope_id) in [(false, "provider"), (true, "model")] {
+                for comparison in [
+                    PricingShadowComparison::Equal,
+                    PricingShadowComparison::Different,
+                ] {
+                    let _ = writeln!(
+                        body,
+                        "claude_api_pricing_shadow_resolved_total{{provider=\"{provider_id}\",mode=\"{mode_id}\",scope=\"{scope_id}\",comparison=\"{}\"}} {}",
+                        comparison.as_str(),
+                        m.pricing_shadow_resolved_count(
+                            provider,
+                            mode,
+                            model_scope,
+                            comparison,
+                        ),
+                    );
+                }
+            }
+        }
+        for (bucket, upper) in PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.iter().enumerate() {
+            let _ = writeln!(
+                body,
+                "claude_api_pricing_shadow_queue_age_seconds_bucket{{provider=\"{provider_id}\",le=\"{upper}\"}} {}",
+                m.pricing_shadow_queue_age_bucket_count(provider, bucket),
+            );
+        }
+        let count = m.pricing_shadow_queue_age_count(provider);
+        let _ = writeln!(
+            body,
+            "claude_api_pricing_shadow_queue_age_seconds_bucket{{provider=\"{provider_id}\",le=\"+Inf\"}} {count}\n\
+             claude_api_pricing_shadow_queue_age_seconds_sum{{provider=\"{provider_id}\"}} {}\n\
+             claude_api_pricing_shadow_queue_age_seconds_count{{provider=\"{provider_id}\"}} {count}",
+            m.pricing_shadow_queue_age_sum_seconds(provider),
         );
     }
     let _ = writeln!(
@@ -2156,6 +2292,7 @@ mod tests {
             codex: None,
             gemini: None,
             billing: None,
+            pricing_shadow: None,
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(forward::Breaker::new(0)),
             metrics: Arc::new(Metrics::new()),
@@ -2382,6 +2519,111 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], 404);
         assert_eq!(body["error"]["status"], "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn pricing_shadow_metrics_expose_only_bounded_labels_and_default_off_config() {
+        let mut app = admin_auth_test_app();
+        let metrics = Arc::new(Metrics::new());
+        let manifest = registry::pricing::PricingRuntimeManifestEvidence::new(
+            1,
+            vec![registry::pricing::PricingRuntimeCapabilityEvidence::new(
+                registry::pricing::PRICING_SCHEMA_VERSION,
+                1,
+                "metrics-capability-v1",
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let manifest_digest = manifest.manifest_digest().to_owned();
+        app.pricing_shadow = Some(
+            forward::PricingShadowRuntime::start(
+                forward::PricingShadowConfig::default(),
+                manifest,
+                None,
+                Arc::clone(&metrics),
+            )
+            .unwrap(),
+        );
+        app.metrics = metrics;
+
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = router(app, Arc::new(AtomicBool::new(true)))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        for sample in [
+            "claude_api_pricing_shadow_enabled 0",
+            "claude_api_pricing_shadow_sample_basis_points 0",
+            "claude_api_pricing_shadow_queue_capacity 256",
+            "claude_api_pricing_shadow_worker_concurrency 2",
+            "claude_api_pricing_shadow_timeout_milliseconds 750",
+            "claude_api_pricing_shadow_max_queue_age_seconds 300",
+            "claude_api_pricing_shadow_max_field_bytes 512",
+            "claude_api_pricing_shadow_max_item_bytes 16384",
+            "claude_api_pricing_shadow_rate_per_second 20",
+            "claude_api_pricing_shadow_rate_burst 40",
+            "claude_api_pricing_shadow_db_read_connections 2",
+        ] {
+            assert!(body.contains(sample), "missing shadow metric {sample}");
+        }
+        assert!(body.contains(&format!(
+            "claude_api_pricing_shadow_runtime_manifest_info{{generation=\"1\",digest=\"{manifest_digest}\"}} 1"
+        )));
+
+        let shadow_samples = body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_pricing_shadow_") && !line.starts_with('#'))
+            .collect::<Vec<_>>();
+        for forbidden_label in [
+            "account=",
+            "account_id=",
+            "key=",
+            "key_id=",
+            "request=",
+            "request_id=",
+            "model=",
+            "model_id=",
+        ] {
+            assert!(
+                shadow_samples
+                    .iter()
+                    .all(|sample| !sample.contains(forbidden_label)),
+                "pricing shadow metrics leaked unbounded label {forbidden_label}"
+            );
+        }
+        for provider in ["anthropic", "openai"] {
+            assert!(body.contains(&format!(
+                "claude_api_pricing_shadow_enqueue_total{{provider=\"{provider}\",result=\"accepted\"}} 0"
+            )));
+            assert!(body.contains(&format!(
+                "claude_api_pricing_shadow_processing_total{{provider=\"{provider}\",result=\"cancelled\"}} 0"
+            )));
+            assert!(body.contains(&format!(
+                "claude_api_pricing_shadow_rejected_total{{provider=\"{provider}\",reason=\"missing_rule\"}} 0"
+            )));
+            assert!(body.contains(&format!(
+                "claude_api_pricing_shadow_read_error_total{{provider=\"{provider}\",reason=\"evaluation_timeout\"}} 0"
+            )));
+            assert!(body.contains(&format!(
+                "claude_api_pricing_shadow_resolved_total{{provider=\"{provider}\",mode=\"discount\",scope=\"model\",comparison=\"different\"}} 0"
+            )));
+        }
     }
 
     #[tokio::test]

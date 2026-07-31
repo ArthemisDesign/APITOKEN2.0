@@ -15,18 +15,23 @@ use registry::pricing::{
 use std::collections::BTreeMap;
 
 mod bridge;
+mod runtime;
 mod shadow;
 
+pub(crate) use bridge::{
+    snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgePrepare,
+};
 pub use bridge::{
     PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,
     PricingBridgeFallbackReason,
 };
-pub(crate) use bridge::{
-    snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgePrepare,
+pub use runtime::{
+    PricingShadowConfig, PricingShadowConfigError, PricingShadowConfigValues,
+    PricingShadowEnqueueResult, PricingShadowProcessingResult, PricingShadowRuntime,
 };
 pub use shadow::{
     build_pricing_shadow_evaluation, PricingShadowEvaluationSource, PricingShadowReadFailure,
-    PricingShadowWorkItem,
+    PricingShadowWorkItem, PricingShadowWorkItemError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

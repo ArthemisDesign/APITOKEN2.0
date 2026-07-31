@@ -15,7 +15,8 @@ use registry::pricing::{
     PricingShadowAdmissionEvaluationInput, PricingShadowDependency, PricingShadowEvaluationOutcome,
     PricingShadowLineage, PricingShadowPolicyIdentity, PricingShadowReadErrorCode,
     PricingShadowRejectionCode, PricingShadowResolved, PricingShadowResolvedInput,
-    ShadowActualSnapshotRef, ShadowDiagnosticContext, PRICING_SCHEMA_VERSION,
+    ShadowActualSnapshotRef, ShadowDiagnosticContext, ShadowEligibilityError,
+    PRICING_SCHEMA_VERSION,
 };
 
 /// Bounded immutable data needed to evaluate one future pricing shadow request.
@@ -30,17 +31,62 @@ pub struct PricingShadowWorkItem {
     enqueued_ts: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PricingShadowWorkItemError {
+    InvalidActualSnapshot,
+    InvalidEnqueueTimestamp,
+    EnqueuedBeforeAdmission,
+    InvalidActualAmount,
+    BalanceCappedActual,
+}
+
+impl PricingShadowWorkItemError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidActualSnapshot => "invalid_actual_snapshot",
+            Self::InvalidEnqueueTimestamp => "invalid_enqueue_timestamp",
+            Self::EnqueuedBeforeAdmission => "enqueued_before_admission",
+            Self::InvalidActualAmount => "invalid_actual_amount",
+            Self::BalanceCappedActual => "balance_capped_actual",
+        }
+    }
+}
+
+impl std::fmt::Display for PricingShadowWorkItemError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code())
+    }
+}
+
+impl std::error::Error for PricingShadowWorkItemError {}
+
 impl PricingShadowWorkItem {
     pub fn new(
         snapshot: &LegacyScalarAdmissionSnapshot,
         runtime_manifest: PricingRuntimeManifestEvidence,
         enqueued_ts: i64,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, PricingShadowWorkItemError> {
         let actual = ShadowActualSnapshotRef::from_snapshot(snapshot)
-            .context("construct shadow actual snapshot reference")?;
+            .map_err(|_| PricingShadowWorkItemError::InvalidActualSnapshot)?;
         actual
             .validate_shadow_eligibility(enqueued_ts)
-            .context("validate pricing shadow work eligibility")?;
+            .map_err(|error| match error {
+                ShadowEligibilityError::InvalidActualSnapshot => {
+                    PricingShadowWorkItemError::InvalidActualSnapshot
+                }
+                ShadowEligibilityError::InvalidEnqueueTimestamp => {
+                    PricingShadowWorkItemError::InvalidEnqueueTimestamp
+                }
+                ShadowEligibilityError::EnqueuedBeforeAdmission => {
+                    PricingShadowWorkItemError::EnqueuedBeforeAdmission
+                }
+                ShadowEligibilityError::InvalidActualAmount => {
+                    PricingShadowWorkItemError::InvalidActualAmount
+                }
+                ShadowEligibilityError::BalanceCappedActual => {
+                    PricingShadowWorkItemError::BalanceCappedActual
+                }
+            })?;
         Ok(Self {
             actual,
             runtime_manifest,
@@ -54,6 +100,10 @@ impl PricingShadowWorkItem {
 
     pub fn account_id(&self) -> &str {
         self.actual.account_id()
+    }
+
+    pub const fn provider(&self) -> registry::pricing::SnapshotProvider {
+        self.actual.provider()
     }
 
     pub const fn enqueued_ts(&self) -> i64 {

@@ -976,6 +976,21 @@ async fn serve() -> Result<()> {
     }
     let n = subs.len();
 
+    if s.proxy.pricing_shadow.enabled() {
+        if !authority.is_postgres() {
+            bail!("pricing shadow producer requires PostgreSQL authority");
+        }
+        if !s.billing {
+            bail!("pricing shadow producer requires billing to be enabled");
+        }
+        if !matches!(
+            s.provider,
+            forward::ProviderMode::Anthropic | forward::ProviderMode::OpenAi
+        ) {
+            bail!("pricing shadow producer requires a fixed Anthropic or OpenAI provider plane");
+        }
+    }
+
     // Биллинг — async DB-акторы (синхронный SQLite на выделенных потоках, не на воркерах рантайма):
     // 1 writer + N reader-потоков (WAL параллелит чтения). N ограничен диапазоном 4..=16.
     let billing = if s.billing {
@@ -993,8 +1008,19 @@ async fn serve() -> Result<()> {
         // атомарно, а кэш чистится при смене статуса ключа/аккаунта.
         let billing_authority = authority.clone();
         let billing_owner = owner.clone();
+        let pricing_shadow_readers = if s.proxy.pricing_shadow.enabled() {
+            s.proxy.pricing_shadow.db_read_connections()
+        } else {
+            0
+        };
         let actor = tokio::task::spawn_blocking(move || {
-            forward::AsyncBilling::start_authority(billing_authority, billing_owner, readers, 0)
+            forward::AsyncBilling::start_authority_with_pricing_shadow(
+                billing_authority,
+                billing_owner,
+                readers,
+                pricing_shadow_readers,
+                0,
+            )
         })
         .await
         .context("billing authority startup task failed")??;
@@ -1065,6 +1091,28 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let metrics = Arc::new(forward::Metrics::new());
+    let pricing_shadow = Some(forward::PricingShadowRuntime::start(
+        s.proxy.pricing_shadow,
+        s.pricing_shadow_manifest.clone(),
+        billing.clone(),
+        metrics.clone(),
+    )?);
+    if s.proxy.pricing_shadow.enabled() {
+        eprintln!(
+            "pricing shadow: enabled sample={}bp queue={} workers={} timeout={}ms max_age={}s rate={}/s burst={} db_readers={}",
+            s.proxy.pricing_shadow.sample_bp(),
+            s.proxy.pricing_shadow.queue_capacity(),
+            s.proxy.pricing_shadow.worker_concurrency(),
+            s.proxy.pricing_shadow.timeout_ms(),
+            s.proxy.pricing_shadow.max_queue_age_secs(),
+            s.proxy.pricing_shadow.rate_per_sec(),
+            s.proxy.pricing_shadow.rate_burst(),
+            s.proxy.pricing_shadow.db_read_connections(),
+        );
+    } else {
+        eprintln!("pricing shadow: disabled (default-off)");
+    }
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1081,9 +1129,10 @@ async fn serve() -> Result<()> {
         codex,
         gemini,
         billing,
+        pricing_shadow,
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
-        metrics: Arc::new(forward::Metrics::new()),
+        metrics,
         key_limiter: Arc::new(forward::KeyLimiter::new()),
         // Глобальный потолок одновременной обработки (анти-DoS). Permit живёт до EOF/drop response;
         // 24 максимальных 32 MiB JSON-ответа держат accumulator-envelope не выше 768 MiB.
@@ -1271,6 +1320,9 @@ async fn serve() -> Result<()> {
         // Detached Gemini streams continue draining to the authoritative final usageMetadata after
         // a client disconnect. Hold the billing FIFO open until those settlements are queued.
         gemini.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(pricing_shadow) = &flush_app.pricing_shadow {
+        pricing_shadow.shutdown_until(shutdown_deadline).await;
     }
     eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

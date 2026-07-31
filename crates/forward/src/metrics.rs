@@ -3,13 +3,25 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::pricing::PricingBridgeFallbackReason;
-use registry::pricing::SnapshotProvider;
+use crate::pricing::{
+    PricingBridgeFallbackReason, PricingShadowEnqueueResult, PricingShadowProcessingResult,
+};
+use registry::pricing::{
+    PolicyRuleScope, PricingMode, PricingShadowComparison, PricingShadowEvaluationOutcome,
+    PricingShadowReadErrorCode, PricingShadowRejectionCode, SnapshotProvider,
+};
 
 const PRICING_BRIDGE_PROVIDER_COUNT: usize = 2;
 const PRICING_BRIDGE_FALLBACK_REASON_COUNT: usize = 6;
 pub const PRICING_BRIDGE_LATENCY_BUCKETS_MS: [u64; 10] =
     [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000];
+pub const PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS: [u64; 9] =
+    [0, 1, 5, 15, 60, 300, 900, 3_600, 21_600];
+const PRICING_SHADOW_ENQUEUE_RESULT_COUNT: usize = PricingShadowEnqueueResult::ALL.len();
+const PRICING_SHADOW_PROCESSING_RESULT_COUNT: usize = PricingShadowProcessingResult::ALL.len();
+const PRICING_SHADOW_REJECTION_COUNT: usize = PricingShadowRejectionCode::ALL.len();
+const PRICING_SHADOW_READ_ERROR_COUNT: usize = PricingShadowReadErrorCode::ALL.len();
+const PRICING_SHADOW_RESOLVED_DIMENSION_COUNT: usize = 8;
 
 fn pricing_bridge_provider_index(provider: SnapshotProvider) -> usize {
     match provider {
@@ -29,6 +41,23 @@ fn pricing_bridge_fallback_index(reason: PricingBridgeFallbackReason) -> usize {
     }
 }
 
+const fn pricing_shadow_resolved_index(
+    mode: PricingMode,
+    model_scope: bool,
+    comparison: PricingShadowComparison,
+) -> usize {
+    let mode = match mode {
+        PricingMode::Track => 0,
+        PricingMode::Discount => 1,
+    };
+    let scope = if model_scope { 1 } else { 0 };
+    let comparison = match comparison {
+        PricingShadowComparison::Equal => 0,
+        PricingShadowComparison::Different => 1,
+    };
+    mode * 4 + scope * 2 + comparison
+}
+
 struct PricingBridgeMetrics {
     selected: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT],
     inserted: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT],
@@ -41,6 +70,43 @@ struct PricingBridgeMetrics {
     latency_buckets:
         [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_BRIDGE_LATENCY_BUCKETS_MS.len()],
     fallbacks: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_BRIDGE_FALLBACK_REASON_COUNT],
+}
+
+struct PricingShadowMetrics {
+    enqueue: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_ENQUEUE_RESULT_COUNT],
+    processing: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_PROCESSING_RESULT_COUNT],
+    resolved: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_RESOLVED_DIMENSION_COUNT],
+    rejected: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_REJECTION_COUNT],
+    read_error: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_READ_ERROR_COUNT],
+    queue_depth: AtomicU64,
+    queue_high_water: AtomicU64,
+    queue_age_count: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT],
+    queue_age_sum_secs: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT],
+    queue_age_buckets:
+        [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.len()],
+}
+
+impl Default for PricingShadowMetrics {
+    fn default() -> Self {
+        Self {
+            enqueue: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_ENQUEUE_RESULT_COUNT],
+            processing: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_PROCESSING_RESULT_COUNT],
+            resolved: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_RESOLVED_DIMENSION_COUNT],
+            rejected: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_REJECTION_COUNT],
+            read_error: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_READ_ERROR_COUNT],
+            queue_depth: AtomicU64::new(0),
+            queue_high_water: AtomicU64::new(0),
+            queue_age_count: [const { AtomicU64::new(0) }; PRICING_BRIDGE_PROVIDER_COUNT],
+            queue_age_sum_secs: [const { AtomicU64::new(0) }; PRICING_BRIDGE_PROVIDER_COUNT],
+            queue_age_buckets: [const { AtomicU64::new(0) };
+                PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.len()],
+        }
+    }
 }
 
 impl Default for PricingBridgeMetrics {
@@ -82,6 +148,7 @@ pub struct Metrics {
     pub gemini_malformed_responses: AtomicU64,
     pub gemini_stream_start_failures: AtomicU64,
     pricing_bridge: PricingBridgeMetrics,
+    pricing_shadow: PricingShadowMetrics,
 }
 
 pub struct PricingBridgeLatencyGuard<'a> {
@@ -228,6 +295,182 @@ impl Metrics {
         let index = pricing_bridge_provider_index(provider) * PRICING_BRIDGE_FALLBACK_REASON_COUNT
             + pricing_bridge_fallback_index(reason);
         Self::get(&self.pricing_bridge.fallbacks[index])
+    }
+
+    pub fn pricing_shadow_enqueue(
+        &self,
+        provider: SnapshotProvider,
+        result: PricingShadowEnqueueResult,
+    ) {
+        let index = pricing_bridge_provider_index(provider) * PRICING_SHADOW_ENQUEUE_RESULT_COUNT
+            + result as usize;
+        Self::inc(&self.pricing_shadow.enqueue[index]);
+    }
+
+    pub fn pricing_shadow_processing(
+        &self,
+        provider: SnapshotProvider,
+        result: PricingShadowProcessingResult,
+    ) {
+        let index = pricing_bridge_provider_index(provider)
+            * PRICING_SHADOW_PROCESSING_RESULT_COUNT
+            + result as usize;
+        Self::inc(&self.pricing_shadow.processing[index]);
+    }
+
+    pub fn pricing_shadow_outcome(
+        &self,
+        provider: SnapshotProvider,
+        outcome: &PricingShadowEvaluationOutcome,
+    ) {
+        let provider = pricing_bridge_provider_index(provider);
+        match outcome {
+            PricingShadowEvaluationOutcome::Resolved(resolved) => {
+                let model_scope = matches!(&resolved.rule.scope, PolicyRuleScope::Model { .. });
+                let index = provider * PRICING_SHADOW_RESOLVED_DIMENSION_COUNT
+                    + pricing_shadow_resolved_index(
+                        resolved.rule.pricing_mode,
+                        model_scope,
+                        resolved.comparison(),
+                    );
+                Self::inc(&self.pricing_shadow.resolved[index]);
+            }
+            PricingShadowEvaluationOutcome::Rejected { reason, .. } => {
+                let index = provider * PRICING_SHADOW_REJECTION_COUNT + reason.metric_index();
+                Self::inc(&self.pricing_shadow.rejected[index]);
+            }
+            PricingShadowEvaluationOutcome::ReadError { reason } => {
+                let index = provider * PRICING_SHADOW_READ_ERROR_COUNT + reason.metric_index();
+                Self::inc(&self.pricing_shadow.read_error[index]);
+            }
+        }
+    }
+
+    /// Reserve one process-local queue-depth slot immediately before the sole `try_send`.
+    /// The sender mutex serializes producers, while the worker cannot receive the item before this
+    /// increment, so a fast consumer cannot race the depth permanently above zero.
+    pub fn pricing_shadow_queue_try_begin(&self) -> u64 {
+        self.pricing_shadow
+            .queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
+    pub fn pricing_shadow_queue_accepted(&self, accepted_depth: u64) {
+        let _ = self.pricing_shadow.queue_high_water.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.max(accepted_depth)),
+        );
+    }
+
+    pub fn pricing_shadow_queue_rejected(&self) {
+        self.pricing_shadow_queue_started();
+    }
+
+    pub fn pricing_shadow_queue_started(&self) {
+        let _ = self.pricing_shadow.queue_depth.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
+    }
+
+    pub fn observe_pricing_shadow_queue_age(&self, provider: SnapshotProvider, age_secs: u64) {
+        let provider = pricing_bridge_provider_index(provider);
+        Self::inc(&self.pricing_shadow.queue_age_count[provider]);
+        let _ = self.pricing_shadow.queue_age_sum_secs[provider].fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(age_secs)),
+        );
+        for (bucket, upper) in PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.iter().enumerate() {
+            if age_secs <= *upper {
+                let index = provider * PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.len() + bucket;
+                Self::inc(&self.pricing_shadow.queue_age_buckets[index]);
+            }
+        }
+    }
+
+    pub fn pricing_shadow_enqueue_count(
+        &self,
+        provider: SnapshotProvider,
+        result: PricingShadowEnqueueResult,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider) * PRICING_SHADOW_ENQUEUE_RESULT_COUNT
+            + result as usize;
+        Self::get(&self.pricing_shadow.enqueue[index])
+    }
+
+    pub fn pricing_shadow_processing_count(
+        &self,
+        provider: SnapshotProvider,
+        result: PricingShadowProcessingResult,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider)
+            * PRICING_SHADOW_PROCESSING_RESULT_COUNT
+            + result as usize;
+        Self::get(&self.pricing_shadow.processing[index])
+    }
+
+    pub fn pricing_shadow_rejection_count(
+        &self,
+        provider: SnapshotProvider,
+        reason: PricingShadowRejectionCode,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider) * PRICING_SHADOW_REJECTION_COUNT
+            + reason.metric_index();
+        Self::get(&self.pricing_shadow.rejected[index])
+    }
+
+    pub fn pricing_shadow_read_error_count(
+        &self,
+        provider: SnapshotProvider,
+        reason: PricingShadowReadErrorCode,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider) * PRICING_SHADOW_READ_ERROR_COUNT
+            + reason.metric_index();
+        Self::get(&self.pricing_shadow.read_error[index])
+    }
+
+    pub fn pricing_shadow_resolved_count(
+        &self,
+        provider: SnapshotProvider,
+        mode: PricingMode,
+        model_scope: bool,
+        comparison: PricingShadowComparison,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider)
+            * PRICING_SHADOW_RESOLVED_DIMENSION_COUNT
+            + pricing_shadow_resolved_index(mode, model_scope, comparison);
+        Self::get(&self.pricing_shadow.resolved[index])
+    }
+
+    pub fn pricing_shadow_queue_depth(&self) -> u64 {
+        Self::get(&self.pricing_shadow.queue_depth)
+    }
+
+    pub fn pricing_shadow_queue_high_water(&self) -> u64 {
+        Self::get(&self.pricing_shadow.queue_high_water)
+    }
+
+    pub fn pricing_shadow_queue_age_count(&self, provider: SnapshotProvider) -> u64 {
+        Self::get(&self.pricing_shadow.queue_age_count[pricing_bridge_provider_index(provider)])
+    }
+
+    pub fn pricing_shadow_queue_age_sum_seconds(&self, provider: SnapshotProvider) -> u64 {
+        Self::get(&self.pricing_shadow.queue_age_sum_secs[pricing_bridge_provider_index(provider)])
+    }
+
+    pub fn pricing_shadow_queue_age_bucket_count(
+        &self,
+        provider: SnapshotProvider,
+        bucket: usize,
+    ) -> u64 {
+        let index = pricing_bridge_provider_index(provider)
+            * PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.len()
+            + bucket;
+        Self::get(&self.pricing_shadow.queue_age_buckets[index])
     }
 }
 

@@ -8,6 +8,7 @@ use crate::config::ProxyConfig;
 use crate::gemini::GeminiGateway;
 use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
+use crate::pricing::PricingShadowRuntime;
 use crate::upstream::Clients;
 use pool::Pool;
 use std::sync::atomic::AtomicBool;
@@ -67,6 +68,9 @@ pub struct AppState {
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,
+    /// Default-off evaluation-time pricing shadow. Its producer uses one non-blocking enqueue;
+    /// policy reads and persistence remain on its bounded background worker.
+    pub pricing_shadow: Option<Arc<PricingShadowRuntime>>,
     /// Live dependency health. PostgreSQL heartbeat toggles this and request admission fails closed.
     pub authority_ready: Arc<AtomicBool>,
     /// Глобальный circuit breaker апстрима (анти-амплификация при брауноуте api.anthropic.com).

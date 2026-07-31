@@ -194,6 +194,58 @@ cancel that timer once the policy is active. Either let it fire and re-run the i
   startup only verifies the schema and never issues DDL. Never edit an already-applied migration.
 - The one-time SQLite-to-PostgreSQL cutover is complete. Do not rerun it for a normal release.
 
+## Pricing evaluation-shadow rollout
+
+The Stage 3B1c.3 application release is safe to deploy with the producer disabled. Shipping the
+binary is not authorization to activate it: production activation is a separate observed config
+checkpoint after the default-off SHA has a green exact-SHA `deploy/watchdog`. The producer may run
+only on the PostgreSQL-backed fixed Anthropic or OpenAI plane with billing enabled. It must never be
+enabled on Gemini or a live SQLite composition.
+
+The startup validator rejects unknown boolean spellings, incoherent enabled/sample pairs, and every
+value outside these bounds:
+
+| Environment variable | Default | Accepted bound |
+|---|---:|---:|
+| `CLAUDE_API_PRICING_SHADOW_ENABLED` | `false` | strict `0|1|false|true` |
+| `CLAUDE_API_PRICING_SHADOW_SAMPLE_BP` | `0` | disabled: `0`; enabled: `1..=10000` |
+| `CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY` | `256` | `1..=4096` |
+| `CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY` | `2` | `1..=32`, not above queue capacity |
+| `CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS` | `750` | `10..=15000` |
+| `CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS` | `300` | `1..=86399` (`<24h`) |
+| `CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES` | `512` | `64..=4096` |
+| `CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES` | `16384` | `1024..=131072`, not below field limit |
+| `CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC` | `20` | `1..=10000` |
+| `CLAUDE_API_PRICING_SHADOW_RATE_BURST` | `40` | `1..=rate_per_sec*60` |
+| `CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS` | `2` | `1..=8` |
+
+Keep every ceiling fixed while changing only one rollout dimension at a time. The required order is:
+default-off binary → bridge small sample → bridge target sample → bridge 100% of eligible traffic →
+shadow small sample → wider shadow sample → 100% of snapshot-bearing eligible traffic. Observe a
+complete peak traffic interval between steps. Before each increase, compare customer admission and
+reserve p95/p99, customer 5xx/status/body, billing FIFO depth, engine PostgreSQL connections and lock
+waits, shadow queue depth/high-water/age, enqueue drop ratio, processing/read/write errors, CPU, and
+memory against the recorded pre-activation baseline. Early shadow before policy backfill validates
+transport and persistence only; it is not Stage 8 financial-parity evidence.
+
+Disable the independent shadow switch immediately, without changing schema or using shadow output
+as a rollback input, when any of these stop criteria occurs:
+
+- customer response, readiness, reserve, settlement, or actual charge depends on a shadow result;
+- sustained queue saturation/drop ratio exceeds the pre-recorded allowance;
+- PostgreSQL connection/lock pressure, admission/reserve p95/p99, customer 5xx, CPU, or memory
+  materially regresses from baseline;
+- an idempotency conflict, invariant alert, continuous read/write error storm, or unexplained
+  timeout/cancellation spike appears;
+- an actual snapshot reference or resolved lineage cannot be proven from durable rows.
+
+An eligible atomic-bridge DB/constraint failure is a separate bridge stop condition: disable the
+bridge rather than falling back to a second reserve. Queue full/closed, rate/size/balance-cap drops,
+shadow timeouts, and shadow read/write failures remain metrics-only and must not alter customer
+traffic or money. Use the `claude_api_pricing_shadow_*` bounded series and the single runtime
+manifest info sample for rollout evidence; account, key, request, and model identities belong only
+in protected durable attribution, never metric labels or error storms.
+
 ## Local pre-push test gate
 
 ```bash

@@ -46,6 +46,37 @@ pub struct ShadowActualSnapshotRef {
     actual_snapshot_digest: String,
 }
 
+/// Stable producer-facing classification for the first shadow rollout eligibility gate.
+///
+/// The producer must distinguish a balance-capped actual from malformed evidence without
+/// duplicating the registry-owned checked nanoUSD calculation or parsing error strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadowEligibilityError {
+    InvalidActualSnapshot,
+    InvalidEnqueueTimestamp,
+    EnqueuedBeforeAdmission,
+    InvalidActualAmount,
+    BalanceCappedActual,
+}
+
+impl std::fmt::Display for ShadowEligibilityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidActualSnapshot => "shadow actual snapshot is invalid",
+            Self::InvalidEnqueueTimestamp => "shadow enqueue timestamp must be positive",
+            Self::EnqueuedBeforeAdmission => {
+                "shadow work cannot be enqueued before actual admission"
+            }
+            Self::InvalidActualAmount => "shadow actual amount cannot be represented exactly",
+            Self::BalanceCappedActual => {
+                "balance-capped legacy holds are not eligible for the first shadow rollout"
+            }
+        })
+    }
+}
+
+impl std::error::Error for ShadowEligibilityError {}
+
 impl ShadowActualSnapshotRef {
     pub fn from_snapshot(snapshot: &LegacyScalarAdmissionSnapshot) -> Result<Self> {
         snapshot.validate()?;
@@ -108,17 +139,57 @@ impl ShadowActualSnapshotRef {
     ///
     /// This is the single registry-owned gate for timestamp ordering and the first-rollout rule
     /// that excludes balance-capped legacy holds. It performs no reads or writes.
-    pub fn validate_shadow_eligibility(&self, enqueued_ts: i64) -> Result<()> {
-        if enqueued_ts < self.admission_ts {
-            bail!("shadow work cannot be enqueued before actual admission");
-        }
-        let expected =
-            apply_multiplier_nano(self.official_hold_nano, self.authorized_multiplier_bp)?;
-        if expected != self.legacy_hold_nano {
-            bail!("balance-capped legacy holds are not eligible for the first shadow rollout");
-        }
-        Ok(())
+    pub fn validate_shadow_eligibility(
+        &self,
+        enqueued_ts: i64,
+    ) -> std::result::Result<(), ShadowEligibilityError> {
+        validate_shadow_eligibility_fields(
+            self.admission_ts,
+            self.official_hold_nano,
+            self.authorized_multiplier_bp,
+            self.legacy_hold_nano,
+            enqueued_ts,
+        )
     }
+
+    /// Apply the same registry-owned gate directly to a validated snapshot before the producer
+    /// spends rate budget or clones the bounded work item.
+    pub fn validate_snapshot_shadow_eligibility(
+        snapshot: &LegacyScalarAdmissionSnapshot,
+        enqueued_ts: i64,
+    ) -> std::result::Result<(), ShadowEligibilityError> {
+        snapshot
+            .validate()
+            .map_err(|_| ShadowEligibilityError::InvalidActualSnapshot)?;
+        validate_shadow_eligibility_fields(
+            snapshot.admission_ts(),
+            snapshot.official_hold_nano(),
+            snapshot.payable_multiplier_bp(),
+            snapshot.charged_hold_nano(),
+            enqueued_ts,
+        )
+    }
+}
+
+fn validate_shadow_eligibility_fields(
+    admission_ts: i64,
+    official_hold_nano: i64,
+    authorized_multiplier_bp: i64,
+    legacy_hold_nano: i64,
+    enqueued_ts: i64,
+) -> std::result::Result<(), ShadowEligibilityError> {
+    if enqueued_ts <= 0 {
+        return Err(ShadowEligibilityError::InvalidEnqueueTimestamp);
+    }
+    if enqueued_ts < admission_ts {
+        return Err(ShadowEligibilityError::EnqueuedBeforeAdmission);
+    }
+    let expected = apply_multiplier_nano(official_hold_nano, authorized_multiplier_bp)
+        .map_err(|_| ShadowEligibilityError::InvalidActualAmount)?;
+    if expected != legacy_hold_nano {
+        return Err(ShadowEligibilityError::BalanceCappedActual);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -445,11 +516,18 @@ impl PricingShadowResolved {
 macro_rules! rejection_codes {
     ($( $variant:ident => $value:literal ),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(usize)]
         pub enum PricingShadowRejectionCode {
             $( $variant, )+
         }
 
         impl PricingShadowRejectionCode {
+            pub const ALL: &'static [Self] = &[$( Self::$variant, )+];
+
+            pub const fn metric_index(self) -> usize {
+                self as usize
+            }
+
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $( Self::$variant => $value, )+
@@ -511,6 +589,7 @@ rejection_codes!(
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
 pub enum PricingShadowReadErrorCode {
     PricingReadFailed,
     EvaluationTimeout,
@@ -520,6 +599,18 @@ pub enum PricingShadowReadErrorCode {
 }
 
 impl PricingShadowReadErrorCode {
+    pub const ALL: &'static [Self] = &[
+        Self::PricingReadFailed,
+        Self::EvaluationTimeout,
+        Self::EvaluationCancelled,
+        Self::InvalidActualSnapshot,
+        Self::InvalidResolvedAmount,
+    ];
+
+    pub const fn metric_index(self) -> usize {
+        self as usize
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PricingReadFailed => "pricing_read_failed",

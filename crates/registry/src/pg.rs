@@ -197,6 +197,18 @@ pub fn classify_failure(error: &anyhow::Error) -> FailureClass {
     FailureClass::Permanent
 }
 
+/// True only for PostgreSQL's server-side statement or lock timeout SQLSTATEs. Shadow workers use
+/// this typed classification to distinguish an exhausted evaluation budget from other read/write
+/// failures without parsing error text or retrying the operation.
+pub fn is_statement_or_lock_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<postgres::Error>()
+            .and_then(postgres::Error::as_db_error)
+            .is_some_and(|db| matches!(db.code().code(), "55P03" | "57014"))
+    })
+}
+
 impl PgStore {
     pub fn connect(url: &str) -> Result<Self> {
         Self::connect_with_application_name(url, DEFAULT_APPLICATION_NAME)
@@ -2754,11 +2766,35 @@ impl PgStore {
         )
     }
 
+    pub fn insert_pricing_shadow_admission_evaluation_with_timeout(
+        &mut self,
+        input: &crate::pricing::PricingShadowAdmissionEvaluationInput,
+        timeout_ms: u64,
+    ) -> Result<crate::pricing::PricingShadowEvaluationWrite> {
+        crate::pricing::postgres::postgres_insert_pricing_shadow_admission_evaluation_with_timeout(
+            &mut self.client,
+            input,
+            timeout_ms,
+        )
+    }
+
     pub fn pricing_read_bundle(
         &mut self,
         account_id: &str,
     ) -> Result<crate::pricing::PricingReadBundle> {
         crate::pricing::postgres::postgres_pricing_read_bundle(&mut self.client, account_id)
+    }
+
+    pub fn pricing_read_bundle_with_timeout(
+        &mut self,
+        account_id: &str,
+        timeout_ms: u64,
+    ) -> Result<crate::pricing::PricingReadBundle> {
+        crate::pricing::postgres::postgres_pricing_read_bundle_with_timeout(
+            &mut self.client,
+            account_id,
+            timeout_ms,
+        )
     }
 
     pub fn pricing_catalog_by_generation(
@@ -3864,6 +3900,100 @@ mod tests {
             first_evaluated_ts,
             json!({"writer": "concurrent"}),
         );
+
+        // The live worker uses transaction-local limits on both its read-only snapshot and its
+        // immutable insert. Exercise them against real PostgreSQL locks: this proves set_config is
+        // accepted inside REPEATABLE READ READ ONLY and that neither timeout leaks to the session.
+        let timed_bundle = pg
+            .pricing_read_bundle_with_timeout("shadow-pg-account", 250)
+            .unwrap();
+        assert_eq!(timed_bundle.account_id, "shadow-pg-account");
+        assert_eq!(
+            pg.client
+                .query_one("SHOW statement_timeout", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            "15s"
+        );
+
+        let mut read_blocker = PgStore::connect(&url).unwrap();
+        read_blocker
+            .client
+            .batch_execute("BEGIN; LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE")
+            .unwrap();
+        let read_started = std::time::Instant::now();
+        let read_timeout = pg
+            .pricing_read_bundle_with_timeout("shadow-pg-account", 50)
+            .unwrap_err();
+        assert!(is_statement_or_lock_timeout(&read_timeout));
+        assert!(
+            read_started.elapsed() < std::time::Duration::from_secs(2),
+            "timed shadow read exceeded its bounded lock wait"
+        );
+        read_blocker.client.batch_execute("ROLLBACK").unwrap();
+        assert_eq!(
+            pg.pricing_read_bundle_with_timeout("shadow-pg-account", 250)
+                .unwrap()
+                .account_multiplier_bp,
+            2_000
+        );
+
+        let timed_snapshot = legacy_snapshot(
+            "shadow-pg-timeout-request",
+            "shadow-pg-account",
+            500_000_000,
+            100_000_000,
+        );
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "shadow-pg-key", 60, &timed_snapshot,)
+                .unwrap(),
+            LegacyScalarReserveOutcome::Inserted(_)
+        ));
+        let timed_input = shadow_pg_input(
+            &timed_snapshot,
+            PricingShadowEvaluationOutcome::ReadError {
+                reason: PricingShadowReadErrorCode::PricingReadFailed,
+            },
+            timed_snapshot.admission_ts() + 1,
+            timed_snapshot.admission_ts() + 2,
+            json!({}),
+        );
+        let mut write_blocker = PgStore::connect(&url).unwrap();
+        write_blocker.client.batch_execute("BEGIN").unwrap();
+        write_blocker
+            .client
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&"multi-discount:shadow-evaluation:shadow-pg-timeout-request"],
+            )
+            .unwrap();
+        let write_started = std::time::Instant::now();
+        let write_timeout = pg
+            .insert_pricing_shadow_admission_evaluation_with_timeout(&timed_input, 50)
+            .unwrap_err();
+        assert!(is_statement_or_lock_timeout(&write_timeout));
+        assert!(
+            write_started.elapsed() < std::time::Duration::from_secs(2),
+            "timed shadow insert exceeded its bounded lock wait"
+        );
+        assert!(pg
+            .pricing_shadow_admission_evaluation("shadow-pg-timeout-request")
+            .unwrap()
+            .is_none());
+        write_blocker.client.batch_execute("ROLLBACK").unwrap();
+        assert!(matches!(
+            pg.insert_pricing_shadow_admission_evaluation_with_timeout(&timed_input, 250)
+                .unwrap(),
+            Write::Inserted(_)
+        ));
+        assert_eq!(
+            pg.client
+                .query_one("SHOW lock_timeout", &[])
+                .unwrap()
+                .get::<_, String>(0),
+            "5s"
+        );
+
         let money_before: (i64, i64, i64, String) = {
             let row = pg
                 .client

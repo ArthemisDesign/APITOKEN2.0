@@ -10,11 +10,12 @@ typed shadow evaluation persistence и полное runtime manifest evidence т
 typed shadow work-item/evaluation builder в `forward`, без caller/config/traffic, уже доставлен.
 Строгий default-off bridge config и versioned deterministic sampler также доставлены. Настоящий
 безопасный provider-builder checkpoint с pure Anthropic/OpenAI quote+snapshot builders поверх
-существующих legacy reserve formulas также доставлен. Текущая итерация подключает только atomic
-legacy snapshot bridge к live metered reserve-путям Anthropic/OpenAI: default остаётся `false/0`,
-невыбранные и заранее неeligible запросы сохраняют scalar reserve, а выбранный atomic path не
-делает опасный второй scalar reserve после ошибки. Policy read/resolver, shadow queue/worker,
-settlement tariff pinning и влияние на клиентский admission в этот checkpoint не входят.
+существующих legacy reserve formulas также доставлен. Atomic legacy snapshot bridge уже подключён
+к live metered reserve-путям Anthropic/OpenAI и доставлен default-off. Текущая application-итерация
+добавляет PostgreSQL-only bounded evaluation-time shadow: producer выполняет единственный
+неблокирующий enqueue только после atomic actual snapshot, а отдельные read actors и background
+worker не влияют на HTTP, reserve, settlement или readiness. Production activation, settlement
+tariff pinning и использование shadow outcome в admission в этот checkpoint не входят.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -48,9 +49,12 @@ foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Этот prefl
 затрагивая деньги или production traffic. Dormant config/sampler preflight доставлен commit
 `778d303377f4f5b55f4c680b89e79ed19dff7d69`. Следующий provider-builder checkpoint сохраняет ту же
 границу и не меняет существующий admission; он доставлен commit
-`7f93766350b1364097259ba10e78d1f1fc1be221`. Текущий live-caller checkpoint впервые делает
-sampled config достижимым, но после merge остаётся выключенным существующим production default и
-активируется только отдельной наблюдаемой config-ступенью.
+`7f93766350b1364097259ba10e78d1f1fc1be221`. Live-caller checkpoint Stage 3B1c.2 доставлен commit
+`2946a582249f716fa0c1da81db44da79951af399`: trusted validation и exact-SHA
+`deploy/watchdog` зелёные, а production configuration сохранила безопасный default
+`CLAUDE_API_PRICING_BRIDGE_ENABLED=false` / `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=0`. Ни bridge,
+ни текущий shadow worker не активируются самим фактом доставки application-кода; каждый rollout
+выполняется отдельной наблюдаемой config-ступенью.
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
@@ -1768,6 +1772,63 @@ Schema/capability generations запрещены как metric labels: теку�
 До Stage 5 active bindings/policies ещё отсутствуют, поэтому ранний shadow в основном проверяет
 transport, bounds, persistence и ожидаемые typed rejections. Он не считается доказательством
 финансового parity; такое доказательство относится к Stage 8 после утверждённого backfill.
+
+Текущий Stage 3B1c.3 application-checkpoint реализует этот runtime-контракт без production
+activation:
+
+- server собирает fixed trusted manifest generation `1` из schema `1` и capability generation `1`
+  с capability digest
+  `sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd`;
+  manifest не принимается из HTTP, request model или mutable database head;
+- enabled startup разрешён только с billing, PostgreSQL authority и fixed Anthropic/OpenAI plane;
+  Gemini и live SQLite composition fail closed до запуска worker;
+- producer использует SHA-256 v1 sampling по fixed provider и внутреннему canonical UUIDv4,
+  проверяет каждое поле и полный work-item до clone, применяет integer token bucket и выполняет
+  ровно один `try_send`; full/closed/rate/size/balance-cap drop остаётся metrics-only;
+- очередь истекает до authority access. Concurrency ограничена, read выполняется отдельным
+  PostgreSQL actor budget, insert проходит через существующего single writer без обычного
+  пятисекундного retry money-operation, а обе DB-транзакции получают transaction-local
+  `statement_timeout` и `lock_timeout`;
+- exact replay возвращает первую immutable evaluation, semantic conflict не обновляет строку и
+  выдаёт один process-local operator alert без request/account/model identity; graceful shutdown
+  сначала закрывает producer и дренирует worker, затем выполняет billing FIFO flush, а forced
+  in-flight cancellation учитывается только по fixed provider;
+- `/metrics` публикует заранее перечисленные enqueue/processing/rejection/read-error и
+  mode/scope/comparison series, queue depth/high-water/age histogram, effective config gauges и
+  один manifest info sample. Customer, key, request и model identities не являются labels.
+
+Строгие env defaults и допустимые границы checkpoint:
+
+| Переменная | Default | Допустимое значение |
+|---|---:|---:|
+| `CLAUDE_API_PRICING_SHADOW_ENABLED` | `false` | strict `0|1|false|true` |
+| `CLAUDE_API_PRICING_SHADOW_SAMPLE_BP` | `0` | disabled: `0`; enabled: `1..=10000` |
+| `CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY` | `256` | `1..=4096` |
+| `CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY` | `2` | `1..=32` и не больше capacity |
+| `CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS` | `750` | `10..=15000` |
+| `CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS` | `300` | `1..=86399`, всегда `<24h` |
+| `CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES` | `512` | `64..=4096` |
+| `CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES` | `16384` | `1024..=131072` и не меньше field limit |
+| `CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC` | `20` | `1..=10000` |
+| `CLAUDE_API_PRICING_SHADOW_RATE_BURST` | `40` | `1..=rate_per_sec*60` |
+| `CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS` | `2` | `1..=8` |
+
+Непоследовательные enabled/sample пары и любое значение вне границ отклоняют startup. Эти defaults
+являются resource ceilings, а не разрешением включить producer: в SHA этого application-checkpoint
+production activation отсутствует и effective `enabled/sample` должны остаться `false/0` до
+отдельной rollout-итерации из 3B1c.4.
+
+Локальная проверка application-checkpoint 2026-07-31 завершена. Полный коммерческий gate
+`pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` зелёный;
+`bash deploy/sccache-cargo.sh cargo test --locked --workspace` зелёный, включая 330 forward tests
+(2 explicit live-dependency ignores), 34 server, 70 registry и 40 metering tests. Отдельные
+PostgreSQL contract tests на disposable real PostgreSQL подтвердили bounded read/insert при lock,
+transaction-local cleanup и повторное использование соединения, immutable replay/conflict и
+retention. `cargo build` зелёный; `cargo clippy -p registry -p forward -p claude-api --all-targets`
+завершился без ошибок (только существующие несвязанные warnings); shell syntax gate,
+`rustfmt --check` изменённых Rust-файлов и `git diff --check` зелёные. Production activation этой
+проверкой не выполнялась: checkpoint должен быть доставлен с effective `enabled=false`,
+`sample_bp=0`.
 
 #### 3B1c.4. Rollout и stop-критерии
 

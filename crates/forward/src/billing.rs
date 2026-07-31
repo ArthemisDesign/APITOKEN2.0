@@ -16,7 +16,10 @@
 //! рантайма). Гарантия денег: durable reservation/outbox переживает краш, а периодический recovery
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
-use registry::pricing::{LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome};
+use registry::pricing::{
+    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PricingReadBundle,
+    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
+};
 use registry::{
     AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, KeyAuth,
     KeyPolicyUpdate, KeyRow,
@@ -30,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 /// retaining an arbitrary number of commands while PostgreSQL/SQLite is unavailable.
 const WRITE_QUEUE_CAPACITY: usize = 4_096;
 const READ_QUEUE_CAPACITY: usize = 1_024;
+const PRICING_SHADOW_READ_QUEUE_CAPACITY: usize = 256;
 const PG_OPERATION_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 
 const RESERVE_HANDOFF_PENDING: u8 = 0;
@@ -483,6 +487,11 @@ enum WriteCmd {
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
     },
+    InsertPricingShadowEvaluation {
+        input: PricingShadowAdmissionEvaluationInput,
+        timeout_ms: u64,
+        reply: oneshot::Sender<anyhow::Result<PricingShadowEvaluationWrite>>,
+    },
     CancelReserve {
         request_id: String,
         account_id: String,
@@ -629,12 +638,24 @@ enum ReadCmd {
     ),
 }
 
+enum PricingShadowReadCmd {
+    Bundle {
+        account_id: String,
+        timeout_ms: u64,
+        reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
+    },
+}
+
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
 pub struct AsyncBilling {
     writer: mpsc::Sender<WriteCmd>,
     detached: Arc<DetachedDispatchTracker>,
     readers: Vec<mpsc::Sender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
+    /// PostgreSQL-only connections reserved for evaluation-time shadow reads. They never share
+    /// the customer authorization reader budget and are absent from live SQLite composition.
+    pricing_shadow_readers: Vec<mpsc::Sender<PricingShadowReadCmd>>,
+    pricing_shadow_rr: AtomicUsize,
 }
 
 impl AsyncBilling {
@@ -743,14 +764,29 @@ impl AsyncBilling {
         readers: usize,
         _auth_ttl_ms: u64,
     ) -> anyhow::Result<Self> {
+        Self::start_authority_with_pricing_shadow(config, owner, readers, 0, _auth_ttl_ms)
+    }
+
+    /// Start the billing actors plus a separate PostgreSQL-only pricing-shadow read budget.
+    /// Shadow evaluation inserts still use the one existing billing writer.
+    pub fn start_authority_with_pricing_shadow(
+        config: registry::authority::AuthorityConfig,
+        owner: Option<registry::pg::Owner>,
+        readers: usize,
+        pricing_shadow_readers: usize,
+        _auth_ttl_ms: u64,
+    ) -> anyhow::Result<Self> {
         match config {
             registry::authority::AuthorityConfig::Sqlite { path } => {
+                if pricing_shadow_readers != 0 {
+                    anyhow::bail!("live pricing shadow readers require PostgreSQL authority");
+                }
                 Self::start_with(path, readers, 0)
             }
             registry::authority::AuthorityConfig::Postgres { url } => {
                 let owner = owner
                     .ok_or_else(|| anyhow::anyhow!("PostgreSQL billing requires owner epoch"))?;
-                Self::start_postgres(url, owner, readers, 0)
+                Self::start_postgres(url, owner, readers, pricing_shadow_readers, 0)
             }
         }
     }
@@ -928,6 +964,13 @@ impl AsyncBilling {
                         );
                         finish_snapshot_reserve(&handoff, reply, result);
                     }
+                    WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms: _, reply } => {
+                        let _ = reply.send(
+                            registry::pricing::sqlite_insert_pricing_shadow_admission_evaluation(
+                                &conn, &input,
+                            ),
+                        );
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -1056,6 +1099,8 @@ impl AsyncBilling {
             detached: Arc::new(DetachedDispatchTracker::default()),
             readers: rtxs,
             rr: AtomicUsize::new(0),
+            pricing_shadow_readers: Vec::new(),
+            pricing_shadow_rr: AtomicUsize::new(0),
         })
     }
 
@@ -1063,6 +1108,7 @@ impl AsyncBilling {
         url: String,
         owner: registry::pg::Owner,
         readers: usize,
+        pricing_shadow_readers: usize,
         _auth_ttl_ms: u64,
     ) -> anyhow::Result<Self> {
         const RESERVATION_LEASE_SECS: i64 = 3600;
@@ -1250,6 +1296,15 @@ impl AsyncBilling {
                                 );
                             }
                             finish_snapshot_reserve(&handoff, reply, result);
+                        }
+                        WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms, reply } => {
+                            // Shadow is deliberately best-effort: one bounded database attempt,
+                            // with no five-second retry loop that could head-of-line block money.
+                            let result = pg.insert_pricing_shadow_admission_evaluation_with_timeout(
+                                &input,
+                                timeout_ms,
+                            );
+                            let _ = reply.send(result);
                         }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
@@ -1472,17 +1527,103 @@ impl AsyncBilling {
                 })?;
             rtxs.push(rtx);
         }
+        let mut pricing_shadow_rtxs = Vec::with_capacity(pricing_shadow_readers);
+        for i in 0..pricing_shadow_readers {
+            let (rtx, mut rrx) =
+                mpsc::channel::<PricingShadowReadCmd>(PRICING_SHADOW_READ_QUEUE_CAPACITY);
+            let mut pg = registry::pg::PgStore::connect(&url)?;
+            let reader_url = url.clone();
+            std::thread::Builder::new()
+                .name(format!("billing-pg-pricing-shadow-reader-{i}"))
+                .spawn(move || {
+                    while let Some(cmd) = rrx.blocking_recv() {
+                        match cmd {
+                            PricingShadowReadCmd::Bundle {
+                                account_id,
+                                timeout_ms,
+                                reply,
+                            } => {
+                                let result =
+                                    pg.pricing_read_bundle_with_timeout(&account_id, timeout_ms);
+                                if result.is_err() {
+                                    // No per-request log: bounded counters in the worker own
+                                    // observability and prevent account/error-storm disclosure.
+                                    if let Ok(next) = registry::pg::PgStore::connect(&reader_url) {
+                                        pg = next;
+                                    }
+                                }
+                                let _ = reply.send(result);
+                            }
+                        }
+                    }
+                })?;
+            pricing_shadow_rtxs.push(rtx);
+        }
+
         Ok(AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
             readers: rtxs,
             rr: AtomicUsize::new(0),
+            pricing_shadow_readers: pricing_shadow_rtxs,
+            pricing_shadow_rr: AtomicUsize::new(0),
         })
     }
 
     fn reader(&self) -> &mpsc::Sender<ReadCmd> {
         let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len();
         &self.readers[i]
+    }
+
+    fn pricing_shadow_reader(&self) -> anyhow::Result<&mpsc::Sender<PricingShadowReadCmd>> {
+        if self.pricing_shadow_readers.is_empty() {
+            anyhow::bail!("pricing shadow reader budget is disabled");
+        }
+        let i = self.pricing_shadow_rr.fetch_add(1, Ordering::Relaxed)
+            % self.pricing_shadow_readers.len();
+        Ok(&self.pricing_shadow_readers[i])
+    }
+
+    pub(crate) fn pricing_shadow_readers_enabled(&self) -> bool {
+        !self.pricing_shadow_readers.is_empty()
+    }
+
+    pub async fn pricing_shadow_read_bundle(
+        &self,
+        account_id: &str,
+        timeout_ms: u64,
+    ) -> anyhow::Result<PricingReadBundle> {
+        let (reply, result) = oneshot::channel();
+        self.pricing_shadow_reader()?
+            .send(PricingShadowReadCmd::Bundle {
+                account_id: account_id.to_owned(),
+                timeout_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("pricing shadow reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("pricing shadow reader stopped"))?
+    }
+
+    pub async fn insert_pricing_shadow_evaluation(
+        &self,
+        input: PricingShadowAdmissionEvaluationInput,
+        timeout_ms: u64,
+    ) -> anyhow::Result<PricingShadowEvaluationWrite> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::InsertPricingShadowEvaluation {
+                input,
+                timeout_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
     pub async fn key_auth(&self, key: &str) -> anyhow::Result<Option<KeyAuth>> {
@@ -2053,6 +2194,18 @@ mod tests {
             },
         })
         .unwrap()
+    }
+
+    #[test]
+    fn live_pricing_shadow_reader_budget_is_postgres_only() {
+        let result = AsyncBilling::start_authority_with_pricing_shadow(
+            registry::authority::AuthorityConfig::new(":memory:".to_owned(), None),
+            None,
+            1,
+            1,
+            0,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

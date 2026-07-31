@@ -57,6 +57,12 @@
   пары отклоняются. Enabled требует sample `1..=10000` и активирует только atomic actual-snapshot
   reserve caller Anthropic/OpenAI; policy shadow/resolver он не включает. Rollout выполняется
   отдельными наблюдаемыми config-ступенями, а не изменением безопасного default.
+- Pricing shadow config читается только здесь под `CLAUDE_API_PRICING_SHADOW_*`. Default —
+  disabled/0 bp; queue 256, workers 2, timeout 750ms, max age 300s, field 512 B, item 16 KiB,
+  rate 20/s burst 40, PostgreSQL readers 2. Все значения strict-validated; max age всегда `<24h`.
+  Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI plane. Server собирает fixed
+  versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
+  FIFO flush.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
   остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится

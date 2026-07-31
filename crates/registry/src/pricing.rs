@@ -19,7 +19,7 @@ pub use shadow::{
     PricingShadowEvaluationOutcome, PricingShadowEvaluationWrite, PricingShadowLineage,
     PricingShadowPolicyIdentity, PricingShadowReadErrorCode, PricingShadowRejectionCode,
     PricingShadowResolved, PricingShadowResolvedInput, ShadowActualSnapshotRef,
-    ShadowDiagnosticContext, ShadowEvaluationDigestV1,
+    ShadowDiagnosticContext, ShadowEligibilityError, ShadowEvaluationDigestV1,
 };
 pub(crate) use snapshots::{
     validate_legacy_snapshot_request_id, validate_request_lifecycle_prune_cutoff,
