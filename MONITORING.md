@@ -261,9 +261,12 @@ Capacity planning reads `claude_api_codex_window_remaining_usd{window_minutes}` 
 movement has produced an estimate; `claude_api_codex_window_measured_homes` versus
 `..._observed_homes` shows how many homes are still unknown. Per-home
 `claude_api_codex_home_window_estimate_available`, `..._confidence_ratio`, low/high bounds, data
-age and samples explain estimate quality and source. There is no configured capacity prior. Because
-the provider percentage can include usage outside this gateway, investigate divergence between raw
-observations and gateway spend rather than assuming high confidence from sample count alone.
+age and samples explain estimate quality and source. The compatibility metric named
+`..._confidence_ratio` is evidence coverage, not probability: it rises by 0.05 per completed
+percentage point and saturates at 1.0 after 20 points; low/high use aggregate coverage ±1 point.
+There is no configured capacity prior. Because the provider percentage can include usage outside
+this gateway, investigate divergence between raw observations and gateway spend even at 100%
+evidence.
 An estimate intentionally remains unknown when a new percentage snapshot arrives before its
 positive gateway settlement; it should appear as soon as settlement catches up, without waiting for
 another percentage point. A persistent unknown with rising spend indicates a calibration writer or

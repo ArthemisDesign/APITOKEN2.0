@@ -498,13 +498,21 @@ subscription to reach 100%. Provider snapshots and gateway settlements are indep
 a new percentage arrives with zero spend delta, calibration retains the earlier anchor and waits
 for positive settlement evidence instead of publishing a transient `$0` capacity. The raw snapshot
 is still persisted. Provider integer quantisation is exposed through `low_usd`, `high_usd`,
-`confidence` and `samples`, not hidden by rejecting observations.
+`confidence` and `samples`, not hidden by rejecting observations. Internal percentage boundaries
+telescope, so the bounds use total completed coverage `observedPoints ± 1`, not one full point of
+error per sample. The compatibility field `confidence` is deterministic evidence maturity
+`min(observedPoints / 20, 1)`: it reaches 100% after 20 completed percentage points. It is not a
+statistical probability and does not prove exclusive gateway attribution or a stationary model
+mix. Different models and token mixes contribute their exact metered official-price spend, so the
+estimate continuously measures the average API-dollar capacity of the traffic actually observed.
 
-OpenAI currently jitters `resetsAt` for the same concrete window by a few seconds. Values within a
-strict 60-second tolerance of the stored boundary are canonicalized as one window; a real reset is
-one duration away and therefore cannot be merged by that tolerance. A real reset rearms the
-partially-observed first bucket but keeps cumulative measured intervals. Backwards utilisation
-snapshots remain raw evidence but cannot lower the monotonic high-water or duplicate a sample.
+OpenAI derives `resetsAt` independently for each snapshot and can drift by more than a minute inside
+the same concrete window. A timestamp shift smaller than half of `windowDurationMins` is therefore
+canonicalized as the same window. A shift of at least half a duration starts a newer window or, in
+the negative direction, identifies a late older-window snapshot. A real reset is one full duration
+away, rearms the partially-observed first bucket and keeps cumulative measured intervals. Backwards
+utilisation snapshots remain raw evidence but cannot lower the monotonic high-water or duplicate a
+sample.
 
 The engine authority durably stores cumulative home spend, CAS-versioned duration state and
 deduplicated raw observations. This survives process restart and overlapping blue-green writers;

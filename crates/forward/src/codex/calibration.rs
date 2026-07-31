@@ -15,12 +15,11 @@
 
 use registry::{CodexCalibrationRow, CodexWindowObservation};
 
-pub const ESTIMATOR_VERSION: i64 = 4;
+pub const ESTIMATOR_VERSION: i64 = 5;
 
-// The provider computes `resetsAt` independently across snapshots and currently jitters the same
-// weekly boundary by a few seconds. A real next window is one duration away, so a tightly bounded
-// minute only canonicalizes timestamp noise and cannot merge adjacent concrete windows.
-const RESET_JITTER_TOLERANCE_SECS: i64 = 60;
+// This is evidence maturity, not a statistical probability. Twenty complete percentage points
+// bound aggregate endpoint quantisation to roughly five percent of covered usage.
+const FULL_EVIDENCE_POINTS: i128 = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -140,13 +139,18 @@ impl WindowCalibration {
             return;
         }
         let reset_delta = i128::from(resets_at) - i128::from(self.row.resets_at);
-        if reset_delta > i128::from(RESET_JITTER_TOLERANCE_SECS) {
+        // The provider derives `resetsAt` independently for every snapshot. It can drift by more
+        // than a minute inside one concrete window, while adjacent windows are one full duration
+        // apart. Half a duration is therefore the stable identity boundary in both directions.
+        let window_identity_boundary_secs =
+            (i128::from(self.row.window_duration_mins.max(1)) * 60 / 2).max(1);
+        if reset_delta >= window_identity_boundary_secs {
             self.begin_window(resets_at, used, spend, observed_at);
             return;
         }
         // A late snapshot from an older reset is useful raw evidence for diagnosis, but it cannot
         // move the active window backwards or replace its monotonic high-water anchor.
-        if reset_delta < -i128::from(RESET_JITTER_TOLERANCE_SECS) {
+        if reset_delta <= -window_identity_boundary_secs {
             return;
         }
 
@@ -213,18 +217,20 @@ impl WindowCalibration {
         let capacity = round_nonnegative(numerator, denominator);
         self.row.current_capacity_nano = Some(capacity);
 
-        // Each reported integer delta may carry roughly one percentage point of endpoint
-        // quantisation. Bounds widen accordingly; the one-point/one-sample upper bound is
-        // intentionally unknown instead of pretending to precision we do not have.
+        // Internal percentage boundaries telescope across cumulative coverage, leaving roughly
+        // one percentage point of aggregate endpoint quantisation rather than one full point per
+        // sample. A single covered point still has no finite upper bound. `confidence_bp` remains
+        // the wire/storage name for compatibility, but its value is deterministic evidence
+        // maturity: 20 complete percentage points reach 100%, not a probabilistic guarantee.
         let points = i128::from(self.row.observed_points.max(0));
-        let samples = i128::from(self.row.samples.max(0));
         self.row.current_low_nano = Some(saturating_i64(
-            i128::from(capacity) * points / (points + samples).max(1),
+            i128::from(capacity) * points / (points + 1).max(1),
         ));
-        self.row.current_high_nano = (points > samples)
-            .then(|| saturating_i64(i128::from(capacity) * points / (points - samples).max(1)));
+        self.row.current_high_nano =
+            (points > 1).then(|| saturating_i64(i128::from(capacity) * points / (points - 1)));
         self.row.current_confidence_bp =
-            saturating_i64(10_000i128 * points / (points + 2 * samples).max(1)).clamp(0, 10_000);
+            saturating_i64(10_000i128 * points.min(FULL_EVIDENCE_POINTS) / FULL_EVIDENCE_POINTS)
+                .clamp(0, 10_000);
     }
 }
 
@@ -379,8 +385,34 @@ mod tests {
         let row = next(Some(row), 42, 140_000_000_000, 102);
         let estimate = WindowCalibration::from_row(row.clone()).estimate().unwrap();
         assert_eq!(estimate.capacity_nano, 2_000_000_000_000);
+        assert_eq!(estimate.low_nano, Some(1_000_000_000_000));
+        assert_eq!(estimate.high_nano, None);
+        assert_eq!(estimate.confidence_bp, 500);
         assert_eq!(estimate.source, CapacitySource::MeasuredCumulative);
         assert_eq!(row.samples, 1);
+    }
+
+    #[test]
+    fn bounds_and_evidence_follow_total_covered_points() {
+        let row = next(None, 10, 0, 100);
+        let row = next(Some(row), 11, 10_000_000_000, 101); // censored
+        let row = next(Some(row), 12, 30_000_000_000, 102); // one covered point
+        assert_eq!(row.observed_points, 1);
+        assert_eq!(row.current_confidence_bp, 500);
+
+        let row = next(Some(row), 14, 70_000_000_000, 103); // three covered points total
+        assert_eq!(row.samples, 2);
+        assert_eq!(row.observed_points, 3);
+        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(row.current_low_nano, Some(1_500_000_000_000));
+        assert_eq!(row.current_high_nano, Some(3_000_000_000_000));
+        assert_eq!(row.current_confidence_bp, 1_500);
+
+        let row = next(Some(row), 31, 410_000_000_000, 104); // twenty covered points
+        assert_eq!(row.observed_points, 20);
+        assert_eq!(row.current_low_nano, Some(1_904_761_904_761));
+        assert_eq!(row.current_high_nano, Some(2_105_263_157_894));
+        assert_eq!(row.current_confidence_bp, 10_000);
     }
 
     #[test]
@@ -489,6 +521,60 @@ mod tests {
     }
 
     #[test]
+    fn old_window_snapshot_cannot_move_a_new_window_backwards() {
+        let row = next(None, 10, 0, 100);
+        let row = next(Some(row), 11, 10_000_000_000, 101);
+        let row = next(Some(row), 12, 30_000_000_000, 102);
+        let new_reset = RESET + DURATION * 60;
+        let row = apply_observation(
+            Some(row),
+            &observation_at(new_reset, 3, 40_000_000_000, 103),
+        );
+        let row = apply_observation(
+            Some(row),
+            &observation_at(RESET + 1, 99, 900_000_000_000, 104),
+        );
+        assert_eq!(row.resets_at, new_reset);
+        assert_eq!(row.used_percent, 3);
+        assert_eq!(row.observed_at, 103);
+        assert_eq!(row.samples, 1);
+    }
+
+    #[test]
+    fn duration_aware_reset_identity_recovers_minute_scale_outlier_history() {
+        let weekly_duration = 10_080;
+        let weekly = |resets_at, used_percent, spend_nano, observed_at| {
+            let mut observation = observation_at(resets_at, used_percent, spend_nano, observed_at);
+            observation.window_duration_mins = weekly_duration;
+            observation
+        };
+        let history = vec![
+            weekly(RESET, 0, 0, 100),
+            weekly(RESET + 413, 0, 0, 101),
+            weekly(RESET, 1, 10_000_000_000, 102),
+            weekly(RESET, 2, 30_000_000_000, 103),
+            weekly(RESET, 3, 50_000_000_000, 104),
+        ];
+
+        // Estimator v4 accepted the +413-second outlier as a new window, then rejected every
+        // normal timestamp as old. A v5 replay must recover the already stored raw intervals.
+        let mut poisoned =
+            WindowCalibration::anchor(HOME, weekly_duration, RESET + 413, 0, 0, 101).into_row();
+        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
+        poisoned.version = 11;
+
+        let rebuilt =
+            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap());
+        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
+        assert_eq!(rebuilt.version, 11);
+        assert_eq!(rebuilt.resets_at, RESET);
+        assert_eq!(rebuilt.used_percent, 3);
+        assert_eq!(rebuilt.samples, 2);
+        assert_eq!(rebuilt.observed_points, 2);
+        assert_eq!(rebuilt.current_capacity_nano, Some(2_000_000_000_000));
+    }
+
+    #[test]
     fn production_like_raw_history_replays_to_stable_capacity() {
         let spends = [
             (12, 0),
@@ -521,6 +607,8 @@ mod tests {
         let row = replay_observations(&history, 7).unwrap();
         assert_eq!(row.version, 7);
         assert_eq!(row.samples, 16);
+        assert_eq!(row.observed_points, 16);
+        assert_eq!(row.current_confidence_bp, 8_000);
         assert_eq!(row.current_capacity_nano, Some(2_468_732_387_500));
     }
 

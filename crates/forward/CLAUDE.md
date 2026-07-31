@@ -308,10 +308,13 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    settlement stream догонит snapshot, чтобы их краткая гонка не публиковала ложную `$0` capacity
    и не сдвигала anchor. Затем every positive-spend high-water interval входит в cumulative integer
    weighted least squares `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без minimum delta, prior, EMA,
-   plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/confidence, а
-   не отбрасыванием evidence. Несколько секунд jitter в `resetsAt` одного concrete window
-   canonicalize-ятся в пределах строгой минуты; настоящий reset rearm-ит censored boundary, но не
-   стирает накопленные измеренные интервалы. Cumulative spend, CAS-versioned state и raw
+   plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/evidence, а
+   не отбрасыванием данных: endpoint uncertainty телескопируется как `observedPoints±1`, а wire-поле
+   `confidence` означает deterministic coverage maturity и достигает 100% после 20 завершённых
+   процентных пунктов, не статистическую вероятность. Дрейф `resetsAt` меньше половины реальной
+   длительности считается тем же concrete window; сдвиг минимум на полдлительности начинает новый
+   либо признаётся старым окном. Настоящий reset rearm-ит censored boundary, но не стирает
+   накопленные измеренные интервалы. Cumulative spend, CAS-versioned state и raw
    observations живут в engine authority, переживают restart/blue-green и переигрываются при
    estimator upgrade. `usedPercent=100` выводит home из
    ротации немедленно, вместе с явным provider reached-флагом: подписка, о заполнении окна которой
