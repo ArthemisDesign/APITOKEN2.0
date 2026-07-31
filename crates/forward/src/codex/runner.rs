@@ -99,6 +99,18 @@ pub(crate) struct CodexTurnResult {
     pub usage: CodexUsage,
 }
 
+/// The native backend caps `prompt_cache_key` at 64 bytes (verified live: 129-byte affinity
+/// keys are rejected with `string_above_max_length`). Client keys up to that size pass through
+/// verbatim; anything longer collapses to a keyed 64-hex digest, preserving tenant-level cache
+/// affinity without exposing the composite affinity key's structure upstream.
+pub(crate) fn bounded_cache_key(key: &str) -> String {
+    if key.len() <= 64 {
+        key.to_string()
+    } else {
+        blake3::hash(key.as_bytes()).to_hex().to_string()
+    }
+}
+
 /// Assemble the exact upstream Responses body for one stateless turn.
 ///
 /// The body contains only what the client owns: explicit base instructions, the replayed history
@@ -161,7 +173,7 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
         "stream": true,
     });
     if let Some(key) = &request.prompt_cache_key {
-        body["prompt_cache_key"] = Value::String(key.clone());
+        body["prompt_cache_key"] = Value::String(bounded_cache_key(key));
     }
     if let Some(tier) = &request.service_tier {
         body["service_tier"] = Value::String(tier.clone());
@@ -691,6 +703,18 @@ mod tests {
             output_schema: None,
             verbosity: None,
         }
+    }
+
+    #[test]
+    fn cache_key_stays_within_the_upstream_limit() {
+        assert_eq!(bounded_cache_key("short-key"), "short-key");
+        let affinity_shaped = format!("{}:{}", "a".repeat(64), "b".repeat(64));
+        let bounded = bounded_cache_key(&affinity_shaped);
+        assert_eq!(bounded.len(), 64);
+        assert!(bounded.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        // Deterministic and tenant-stable, never the raw composite key.
+        assert_eq!(bounded, bounded_cache_key(&affinity_shaped));
+        assert_ne!(bounded, affinity_shaped);
     }
 
     #[test]

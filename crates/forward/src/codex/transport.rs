@@ -10,6 +10,7 @@
 //! zeroizing secret, is never logged, and is refreshed only through the pinned OAuth token
 //! endpoint owned by `codex-credential`.
 
+use super::runner::bounded_cache_key;
 use super::CodexConfig;
 use codex_credential::SecretString;
 use serde_json::{json, Value};
@@ -272,7 +273,7 @@ impl ProfileTransport {
         rate_limits: Arc<Mutex<Option<CodexRateLimits>>>,
     ) -> Result<TurnEvents, ProcessError> {
         let session_id = prompt_cache_key
-            .map(str::to_string)
+            .map(bounded_cache_key)
             .unwrap_or_else(uuid);
         let headers = self.wire_headers(auth, &session_id);
         let response = self

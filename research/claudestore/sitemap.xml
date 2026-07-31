@@ -1,0 +1,802 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="/sitemap.xsl"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+   <url>
+     <loc>https://claudestore.store/</loc>
+     <lastmod>2026-05-06</lastmod>
+     <changefreq>weekly</changefreq>
+     <priority>1.0</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/about/</loc>
+     <lastmod>2026-04-18</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/about/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/about/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/about/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/contacts/</loc>
+     <lastmod>2026-04-29</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/contacts/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/kontakty/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/contacts/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/plans/</loc>
+     <lastmod>2026-05-06</lastmod>
+     <changefreq>weekly</changefreq>
+     <priority>0.9</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/plans/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/tarify/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/plans/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/</loc>
+     <lastmod>2026-06-09</lastmod>
+     <changefreq>weekly</changefreq>
+     <priority>0.8</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/" />
+     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/opus-4-8/</loc>
+     <lastmod>2026-05-29</lastmod>
+     <changefreq>weekly</changefreq>
+     <priority>0.9</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/opus-4-8/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/opus-4-8/" />
+     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/opus-4-8/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/opus-4-8/" />
+   </url>
+  <!-- Getting Started -->
+  <url>
+    <loc>https://claudestore.store/docs/getting-started/</loc>
+    <lastmod>2026-06-09</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/getting-started/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/getting-started/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/getting-started/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/getting-started/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/getting-started/introduction/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/getting-started/introduction/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/getting-started/vvedenie/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/getting-started/introduction/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/getting-started/models/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/getting-started/models/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/getting-started/modeli/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/getting-started/models/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/getting-started/quickstart/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/getting-started/quickstart/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/getting-started/bystryj-start/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/getting-started/quickstart/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/getting-started/authentication/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/getting-started/authentication/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/getting-started/autentifikaciya/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/getting-started/authentication/" />
+  </url>
+  <!-- API Reference -->
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/</loc>
+    <lastmod>2026-06-09</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/api-reference/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/overview/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/overview/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/obzor/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/overview/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/messages/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/messages/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/soobscheniya/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/messages/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/models/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/models/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/modeli/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/models/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/openai/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/openai/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/openai-sovmestimost/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/openai/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/cursor-ide/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/cursor-ide/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/cursor-ide/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/cursor-ide/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/streaming/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/streaming/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/striming/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/streaming/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/api-reference/errors/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/errors/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/oshibki/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/errors/" />
+  </url>
+  <!-- Guides -->
+  <url>
+    <loc>https://claudestore.store/docs/guides/</loc>
+    <lastmod>2026-06-09</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/guides/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/ide-integration/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/ide-integration/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/integratsiya-ide/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/ide-integration/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/cursor/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/cursor/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/cursor/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/cursor/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/claude-code/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/claude-code/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/claude-code/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/claude-code/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/vscode-extensions/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/vscode-extensions/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/vscode-rasshireniya/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/vscode-extensions/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/opencode/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/opencode/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/opencode/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/opencode/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/openclaw/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/openclaw/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/openclaw/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/guides/openclaw/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/openclaw/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/api-key-configuration/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/api-key-configuration/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/nastrojka-api-klyucha/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/api-key-configuration/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/best-practices/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/best-practices/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/luchshie-praktiki/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/best-practices/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/rate-limits/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/rate-limits/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/limity-zaprosov/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/rate-limits/" />
+  </url>
+  <!-- SDKs -->
+  <url>
+    <loc>https://claudestore.store/docs/sdks/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/sdks/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/sdks/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/docs/sdks/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/sdks/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/sdks/python/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/sdks/python/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/sdks/python/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/sdks/python/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/sdks/typescript/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/sdks/typescript/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/sdks/typescript/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/sdks/typescript/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/sdks/curl/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/sdks/curl/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/sdks/curl/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/sdks/curl/" />
+  </url>
+  <!-- Learn -->
+  <url>
+    <loc>https://claudestore.store/docs/learn/how-to-buy-claude-api-key/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/how-to-buy-claude-api-key/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/kupit-claude-api-klyuch/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/how-to-buy-claude-api-key/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-quick-setup/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-quick-setup/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/bystraya-nastrojka-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-quick-setup/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-key-for-cursor/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-key-for-cursor/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-klyuch-dlya-cursor/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-key-for-cursor/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-for-vscode/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-for-vscode/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-dlya-vscode/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-for-vscode/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-without-waitlist/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-without-waitlist/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-bez-ocheredi/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-without-waitlist/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/cheapest-claude-api/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/cheapest-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/samyj-deshyovyj-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/cheapest-claude-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-vs-openai-api/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-vs-openai-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-vs-openai/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-vs-openai-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-vs-direct/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-vs-direct/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-vs-napryamuyu/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-vs-direct/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/pricing-explained/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/pricing-explained/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/obyasnenie-tsen/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/pricing-explained/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/save-tokens-claude-api/</loc>
+    <lastmod>2026-05-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/save-tokens-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/ekonomiya-tokenov/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/docs/learn/save-tokens-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/save-tokens-claude-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-crypto-payment/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-crypto-payment/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-kripto-oplata/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-crypto-payment/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-gateway/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-gateway/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-shlyuz/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-gateway/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-for-russia/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-for-russia/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-api-dlya-rossii/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-for-russia/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/openai-compatible-claude-api/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/openai-compatible-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/openai-sovmestimyj-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/openai-compatible-claude-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/cursor-without-anthropic-account/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/cursor-without-anthropic-account/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/cursor-bez-akkaunta-anthropic/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/cursor-without-anthropic-account/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/why-choose-claudestore/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/why-choose-claudestore/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/pochemu-claudestore/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/why-choose-claudestore/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/supported-countries/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/supported-countries/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/podderzhivaemye-strany/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/supported-countries/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/how-billing-works/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/how-billing-works/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/kak-rabotaet-oplata/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/how-billing-works/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/activation-time/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/activation-time/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/vremya-aktivatsii/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/activation-time/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/refund-policy/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/refund-policy/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/politika-vozvratov/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/refund-policy/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-code-free/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-code-free/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-code-besplatno/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-code-free/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/free-claude-api-key/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/free-claude-api-key/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/besplatnyj-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/free-claude-api-key/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-opus-free-api/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-opus-free-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-opus-besplatno/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-opus-free-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-sonnet-free-api/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-sonnet-free-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-sonnet-besplatno/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-sonnet-free-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-haiku-free-api/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-haiku-free-api/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-haiku-besplatno/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-haiku-free-api/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-api-free-trial/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-api-free-trial/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/probnyj-period-claude-api/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-api-free-trial/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claude-3-5-vs-4-6/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-3-5-vs-4-6/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-3-5-vs-4-6/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-3-5-vs-4-6/" />
+  </url>
+  <!-- Billing -->
+  <url>
+    <loc>https://claudestore.store/docs/billing/</loc>
+    <lastmod>2026-06-09</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/billing/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/billing/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/billing/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/billing/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/billing/pricing/</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/billing/pricing/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/billing/tseny/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/billing/pricing/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/billing/credits/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/billing/credits/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/billing/kredity/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/billing/credits/" />
+  </url>
+  <!-- Other -->
+  <url>
+    <loc>https://claudestore.store/ai-context/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/changelog/</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <!-- AI Discovery -->
+  <url>
+    <loc>https://claudestore.store/llms.txt</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://claudestore.store/llms-full.txt</loc>
+    <lastmod>2026-04-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://claudestore.store/llms-zh.txt</loc>
+    <lastmod>2026-04-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://claudestore.store/llms-zh-full.txt</loc>
+    <lastmod>2026-04-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/one-prompt-setup/</loc>
+    <lastmod>2026-04-15</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/one-prompt-setup/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/nastrojka-za-odin-prompt/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/one-prompt-setup/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claudestore-vs-proxyapi/</loc>
+    <lastmod>2026-04-18</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claudestore-vs-proxyapi/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claudestore-vs-proxyapi/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claudestore-vs-proxyapi/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claudestore-vs-vsellm/</loc>
+    <lastmod>2026-04-18</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claudestore-vs-vsellm/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claudestore-vs-vsellm/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claudestore-vs-vsellm/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claudestore-vs-openrouter/</loc>
+    <lastmod>2026-04-18</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claudestore-vs-openrouter/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claudestore-vs-openrouter/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claudestore-vs-openrouter/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/learn/claudestore-vs-portkey/</loc>
+    <lastmod>2026-04-18</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claudestore-vs-portkey/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claudestore-vs-portkey/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claudestore-vs-portkey/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/legal/offer/</loc>
+    <lastmod>2026-04-27</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.5</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/legal/offer/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/legal/oferta/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/legal/offer/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/terms-and-conditions/</loc>
+    <lastmod>2026-04-27</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.5</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/terms-and-conditions/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/terms-and-conditions/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/terms-and-conditions/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/terms-and-conditions/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/legal/privacy/</loc>
+    <lastmod>2026-04-27</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.5</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/legal/privacy/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/privacy/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/privacy/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/legal/privacy/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/legal/refund/</loc>
+    <lastmod>2026-04-27</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.5</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/legal/refund/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/legal/vozvraty/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/legal/refund/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/status/</loc>
+    <lastmod>2026-04-29</lastmod>
+    <changefreq>hourly</changefreq>
+    <priority>0.6</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/status/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/status/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/status/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/status/" />
+  </url>
+  <url>
+    <loc>https://claudestore.store/docs/guides/referral-program/</loc>
+    <lastmod>2026-05-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+    <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/referral-program/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/referralnaya-programma/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://claudestore.store/zh/docs/guides/referral-program/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/referral-program/" />
+  </url>
+   <url>
+     <loc>https://claudestore.store/docs/api-reference/codex/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/api-reference/codex/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/api-reference/codex/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/api-reference/codex/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/guides/codex-cli/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/codex-cli/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/codex-cli/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/codex-cli/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/guides/openai-ides/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/guides/openai-ides/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/guides/openai-ides/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/guides/openai-ides/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/learn/openai-api/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/openai-api/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/openai-api/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/openai-api/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/learn/codex-cli-api/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/codex-cli-api/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/codex-cli-api/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/codex-cli-api/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/learn/openai-compatible-api/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/openai-compatible-api/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/openai-compatible-api/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/openai-compatible-api/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/learn/cheapest-openai-api/</loc>
+     <lastmod>2026-06-20</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.7</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/cheapest-openai-api/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/cheapest-openai-api/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/cheapest-openai-api/" />
+   </url>
+   <url>
+     <loc>https://claudestore.store/docs/learn/claude-x20-max-subscription/</loc>
+     <lastmod>2026-07-07</lastmod>
+     <changefreq>monthly</changefreq>
+     <priority>0.9</priority>
+     <xhtml:link rel="alternate" hreflang="en" href="https://claudestore.store/docs/learn/claude-x20-max-subscription/" />
+     <xhtml:link rel="alternate" hreflang="ru" href="https://claudestore.store/ru/docs/learn/claude-x20-max-podpiska/" />
+     <xhtml:link rel="alternate" hreflang="zh-CN" href="https://claudestore.store/zh/docs/learn/claude-x20-max-subscription/" />
+     <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://claudestore.store/zh/docs/learn/claude-x20-max-subscription/" />
+     <xhtml:link rel="alternate" hreflang="x-default" href="https://claudestore.store/docs/learn/claude-x20-max-subscription/" />
+   </url>
+</urlset>
