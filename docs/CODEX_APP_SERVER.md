@@ -480,11 +480,11 @@ rather than inferring it from the model string.
 ### Window-capacity calibration
 
 Every successful turn (billed or admin) atomically credits its exact official-price cost in integer
-nanoUSD to the serving home. Calibration identity is `(home_id, windowDurationMins, resetsAt)`; the
-provider's primary/secondary names are presentation only. The first snapshot sets an anchor and
-returns `cap_usd: null`, because no honest absolute dollar capacity can be inferred from one
-percentage reading. Every later positive interval with settled positive official-price spend
-contributes to integer weighted least squares:
+nanoUSD to the serving home. Calibration state is isolated by `(home_id, windowDurationMins)` and
+tracks the concrete `resetsAt`; the provider's primary/secondary names are presentation only. The
+first snapshot and first positive movement delimit a potentially partial integer percentage bucket,
+so both remain anchors and return `cap_usd: null`. Every later complete high-water interval with
+settled positive official-price spend contributes to cumulative integer weighted least squares:
 
 ```text
 capacityNano = 100 * Σ(ΔusedPercent * ΔgatewaySpendNano) / Σ(ΔusedPercent²)
@@ -492,20 +492,27 @@ remainingNano = capacityNano * (100 - usedPercent) / 100
 ```
 
 There is no `$1500` fallback, configured prior, minimum percentage movement, EMA, plausibility
-range, foreign-share rejection or jump clamp. One percentage point is valid evidence immediately.
-Provider snapshots and gateway settlements are independent streams: if a new percentage arrives
-with zero spend delta, calibration retains the earlier anchor and waits for positive settlement
-evidence instead of publishing a transient `$0` capacity. The raw snapshot is still persisted.
-Provider integer quantisation is exposed through `low_usd`, `high_usd`, `confidence` and `samples`,
-not hidden by rejecting observations. On reset or a backwards counter, the current measured result
-becomes `measured_previous_window`, current sufficient statistics are cleared and the new snapshot
-is only an anchor. A previous estimate is carried only if it was actually measured.
+range, foreign-share rejection or jump clamp. A one-percentage-point interval is valid evidence as
+soon as both of its boundaries and positive spend are observed; calibration never waits for the
+subscription to reach 100%. Provider snapshots and gateway settlements are independent streams: if
+a new percentage arrives with zero spend delta, calibration retains the earlier anchor and waits
+for positive settlement evidence instead of publishing a transient `$0` capacity. The raw snapshot
+is still persisted. Provider integer quantisation is exposed through `low_usd`, `high_usd`,
+`confidence` and `samples`, not hidden by rejecting observations.
+
+OpenAI currently jitters `resetsAt` for the same concrete window by a few seconds. Values within a
+strict 60-second tolerance of the stored boundary are canonicalized as one window; a real reset is
+one duration away and therefore cannot be merged by that tolerance. A real reset rearms the
+partially-observed first bucket but keeps cumulative measured intervals. Backwards utilisation
+snapshots remain raw evidence but cannot lower the monotonic high-water or duplicate a sample.
 
 The engine authority durably stores cumulative home spend, CAS-versioned duration state and
 deduplicated raw observations. This survives process restart and overlapping blue-green writers;
-production startup refuses Codex without that authority. `/codex-subs` reports `source` as
-`unknown`, `measured_current_window` or `measured_previous_window`, and groups fleet totals by real
-`window_minutes`. Prometheus omits dollar gauges while unknown and exposes
+production startup refuses Codex without that authority. An estimator-version change replays this
+raw history once, so corrected reset identity recovers already-observed percentage intervals rather
+than waiting for fresh full-window consumption. `/codex-subs` reports `source` as `unknown` or
+`measured_cumulative`, and groups fleet totals by real `window_minutes`. Prometheus omits dollar
+gauges while unknown and exposes
 `claude_api_codex_home_window_estimate_available`, confidence/bounds/samples/data age and
 `claude_api_codex_home_calibration_persistence_ok`; measured pool totals use the actual
 `window_minutes` label rather than a fixed 5h/7d slot.

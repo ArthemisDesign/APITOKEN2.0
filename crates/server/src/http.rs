@@ -2835,6 +2835,7 @@ mod tests {
         assert!(panel_source.contains("OpenAI (Codex)"));
         assert!(panel_source.contains("остаток / вместимость API $"));
         assert!(panel_source.contains("остаток из "));
+        assert!(panel_source.contains("ждём завершённый %-интервал"));
         assert!(panel_source.contains("накоплено интервалов"));
         assert!(panel_source.contains("w.cap_usd"));
         for route in [

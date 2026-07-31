@@ -15,7 +15,12 @@
 
 use registry::{CodexCalibrationRow, CodexWindowObservation};
 
-pub const ESTIMATOR_VERSION: i64 = 3;
+pub const ESTIMATOR_VERSION: i64 = 4;
+
+// The provider computes `resetsAt` independently across snapshots and currently jitters the same
+// weekly boundary by a few seconds. A real next window is one duration away, so a tightly bounded
+// minute only canonicalizes timestamp noise and cannot merge adjacent concrete windows.
+const RESET_JITTER_TOLERANCE_SECS: i64 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -134,13 +139,14 @@ impl WindowCalibration {
         if self.row.estimator_version != ESTIMATOR_VERSION {
             return;
         }
-        if resets_at > self.row.resets_at {
+        let reset_delta = i128::from(resets_at) - i128::from(self.row.resets_at);
+        if reset_delta > i128::from(RESET_JITTER_TOLERANCE_SECS) {
             self.begin_window(resets_at, used, spend, observed_at);
             return;
         }
         // A late snapshot from an older reset is useful raw evidence for diagnosis, but it cannot
         // move the active window backwards or replace its monotonic high-water anchor.
-        if resets_at < self.row.resets_at {
+        if reset_delta < -i128::from(RESET_JITTER_TOLERANCE_SECS) {
             return;
         }
 
@@ -410,7 +416,7 @@ mod tests {
         let row = next(Some(row), 12, 40_000_000_000, 101); // censored
         let row = next(Some(row), 16, 140_000_000_000, 102); // x=4, y=$100
         let row = next(Some(row), 18, 190_000_000_000, 103); // x=2, y=$50
-        // 100 * (4*100 + 2*50) / (4² + 2²) = $2500.
+                                                             // 100 * (4*100 + 2*50) / (4² + 2²) = $2500.
         let estimate = WindowCalibration::from_row(row).estimate().unwrap();
         assert_eq!(estimate.capacity_nano, 2_500_000_000_000);
     }
@@ -441,7 +447,7 @@ mod tests {
         let row = next(Some(row), 12, 30_000_000_000, 102);
         let row = apply_observation(
             Some(row),
-            &observation_at(RESET + 300, 3, 40_000_000_000, 103),
+            &observation_at(RESET + DURATION * 60, 3, 40_000_000_000, 103),
         );
         assert!(!row.anchor_ready);
         assert_eq!(row.samples, 1);
@@ -449,15 +455,35 @@ mod tests {
 
         let row = apply_observation(
             Some(row),
-            &observation_at(RESET + 300, 4, 50_000_000_000, 104),
+            &observation_at(RESET + DURATION * 60, 4, 50_000_000_000, 104),
         );
         assert!(row.anchor_ready);
         assert_eq!(row.samples, 1);
 
         let row = apply_observation(
             Some(row),
-            &observation_at(RESET + 300, 5, 70_000_000_000, 105),
+            &observation_at(RESET + DURATION * 60, 5, 70_000_000_000, 105),
         );
+        assert_eq!(row.samples, 2);
+        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
+    }
+
+    #[test]
+    fn reset_timestamp_jitter_stays_inside_one_concrete_window() {
+        let mut row = next(None, 10, 0, 100);
+        row = apply_observation(
+            Some(row),
+            &observation_at(RESET + 1, 11, 10_000_000_000, 101),
+        );
+        row = apply_observation(
+            Some(row),
+            &observation_at(RESET + 3, 12, 30_000_000_000, 102),
+        );
+        row = apply_observation(
+            Some(row),
+            &observation_at(RESET - 1, 13, 50_000_000_000, 103),
+        );
+        assert_eq!(row.resets_at, RESET);
         assert_eq!(row.samples, 2);
         assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
     }
@@ -477,16 +503,25 @@ mod tests {
             (21, 201_788_240_000),
             (22, 225_680_889_000),
             (23, 250_799_095_000),
+            (24, 273_130_781_000),
+            (25, 296_306_725_000),
+            (26, 320_387_890_000),
+            (27, 345_686_973_000),
+            (28, 369_732_609_500),
+            (29, 400_792_089_000),
         ];
+        let reset_jitter = [0, 1, 3, -1, 2, 1, 0, -2, 2, 0, 1, 3, -1, 2, 1, 3, 0, -2];
         let history: Vec<_> = spends
             .into_iter()
             .enumerate()
-            .map(|(index, (used, spend))| observation(used, spend, 100 + index as i64))
+            .map(|(index, (used, spend))| {
+                observation_at(RESET + reset_jitter[index], used, spend, 100 + index as i64)
+            })
             .collect();
         let row = replay_observations(&history, 7).unwrap();
         assert_eq!(row.version, 7);
-        assert_eq!(row.samples, 10);
-        assert_eq!(row.current_capacity_nano, Some(2_450_041_880_000));
+        assert_eq!(row.samples, 16);
+        assert_eq!(row.current_capacity_nano, Some(2_468_732_387_500));
     }
 
     #[test]

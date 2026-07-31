@@ -298,15 +298,18 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 8. **Калибровка ёмкости окна — только по фактическим данным.** Каждый успешный turn (billed ИЛИ
    admin) durable-кредитует home exact official-price cost в integer nanoUSD; snapshot принимается
    только с реальными `windowDurationMins` + `resetsAt` и хранится отдельно по `(home,duration)`.
-   Первый snapshot — только anchor, поэтому capacity/remaining остаются `null`/без Prometheus
-   sample до первого положительного `ΔusedPercent`. Новый процент с ещё нулевым `Δspend` ждёт,
-   пока independent settlement stream догонит snapshot, чтобы их краткая гонка не публиковала
-   ложную `$0` capacity и не сдвигала anchor. Затем every positive-spend interval входит в integer
+   Первый snapshot и первое последующее движение — только границы частично наблюдённого
+   процентного bucket, поэтому capacity/remaining остаются `null`/без Prometheus sample до
+   следующего завершённого %-интервала. Новый процент с ещё нулевым `Δspend` ждёт, пока independent
+   settlement stream догонит snapshot, чтобы их краткая гонка не публиковала ложную `$0` capacity
+   и не сдвигала anchor. Затем every positive-spend high-water interval входит в cumulative integer
    weighted least squares `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без minimum delta, prior, EMA,
    plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/confidence, а
-   не отбрасыванием evidence. Reset сохраняет только реально измеренный previous-window estimate и
-   очищает current sufficient statistics. Cumulative spend, CAS-versioned state и raw observations
-   живут в engine authority и переживают restart/blue-green. `usedPercent=100` выводит home из
+   не отбрасыванием evidence. Несколько секунд jitter в `resetsAt` одного concrete window
+   canonicalize-ятся в пределах строгой минуты; настоящий reset rearm-ит censored boundary, но не
+   стирает накопленные измеренные интервалы. Cumulative spend, CAS-versioned state и raw
+   observations живут в engine authority, переживают restart/blue-green и переигрываются при
+   estimator upgrade. `usedPercent=100` выводит home из
    ротации немедленно, вместе с явным provider reached-флагом: подписка, о заполнении окна которой
    отчитался провайдер, перестаёт отвечать, и каждый turn на ней сжигает клиентский запрос.
    Selection fail-closed — исключённый home отдаёт `429 + Retry-After` до reset окна. Admission
