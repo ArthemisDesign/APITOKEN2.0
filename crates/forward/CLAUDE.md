@@ -336,9 +336,12 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future
    server tools fail-closed до появления authoritative ledger dimensions; нельзя proxy-ить paid SKU
-   бесплатно. Metered non-stream без authoritative usage не доставляется и refund-ится; stream после
-   первого байта без final usage списывает conservative hold без fake usage event. Public synthetic
-   errors только native Google-shaped и без profile/project/key/upstream.
+   бесплатно. Image response с explicit `candidatesTokensDetails[IMAGE]` использует provider split;
+   если private Antigravity отдаёт только aggregate candidates, реально доставленный `inlineData`
+   выделяет официальный fixed token SKU requested size, а остаток остаётся text/thinking. Refusal
+   без image не получает media charge. Metered non-stream без authoritative usage не доставляется и
+   refund-ится; stream после первого байта без final usage списывает conservative hold без fake usage
+   event. Public synthetic errors только native Google-shaped и без profile/project/key/upstream.
 7. Gemini capacity не выводится из цены подписки или дневного request-count. Antigravity
    `retrieveUserQuotaSummary` принимается только для exact `gemini-5h`/`gemini-weekly`; `3p-*`
    исключены. Каждый успешный generation (billed или admin) durable-кредитует обслуживший opaque

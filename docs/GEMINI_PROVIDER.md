@@ -401,11 +401,21 @@ than being silently dropped.
 Official paid-standard equivalence is pinned as integer nanoUSD: `$0.50/M` input tokens,
 `$3/M` text plus thinking output tokens, and `$60/M` generated-image tokens. Authoritative
 settlement splits `usageMetadata.candidatesTokensDetails[modality=IMAGE]` from ordinary candidate
-tokens, then charges the two output SKUs separately. Preflight reserves the complete requested
-image without silently lowering its quality: 747 image tokens for 0.5K (`$0.04482`), 1,120 for 1K
-(`$0.0672`), 1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded text/input and
-grounding. Final money always follows the provider's actual usage metadata; the size table is a
-fail-closed hold when delivery usage is missing.
+tokens, then charges the two output SKUs separately. The private production response can omit that
+detail while retaining only aggregate `candidatesTokenCount`; when it actually delivered
+`inlineData`, settlement splits out the official fixed token count for the requested size and
+prices the aggregate remainder as text/thinking. An explicit provider modality split always wins,
+and a refusal/text-only response never receives an image charge. Preflight reserves the complete
+requested image without silently lowering its quality: 747 image tokens for 0.5K (`$0.04482`),
+1,120 for 1K (`$0.0672`), 1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded
+text/input and grounding. A stream that delivered bytes but never supplied final usage settles the
+conservative hold without inventing a token event.
+
+For money, the paid-tier pricing table is authoritative. On 2026-07-31 Google's separate image
+generation resolution table showed different 2K/4K processing-token figures; those describe the
+generation surface but do not override the pricing page's explicit billable-token counts and USD
+equivalents. The gateway therefore pins the pricing SKUs above and prefers an explicit provider
+modality breakdown whenever one is returned.
 
 ### Video is a separate provider surface
 

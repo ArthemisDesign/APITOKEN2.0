@@ -825,6 +825,10 @@ const IMAGE_MIME_TYPES: &[&str] = &[
 ];
 
 fn image_output_tokens(body: &Value) -> u64 {
+    // Billing follows the paid-tier pricing table, which is the authoritative source for
+    // Developer API dollar equivalence. The image-generation resolution table currently lists
+    // different 2K/4K processing-token figures; those must not replace the explicitly published
+    // billable image-token SKUs below.
     match body
         .pointer("/generationConfig/imageConfig/imageSize")
         .and_then(Value::as_str)
@@ -1397,6 +1401,59 @@ fn retain_public_fields(value: &mut Value, fields: &[&str]) -> Result<(), ()> {
     Ok(())
 }
 
+fn response_has_inline_image(value: &Value) -> bool {
+    value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|candidate| {
+            candidate
+                .pointer("/content/parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .any(|part| {
+            ["inlineData", "inline_data"].into_iter().any(|field| {
+                part.get(field)
+                    .and_then(|inline| inline.get("data"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|data| !data.is_empty())
+            })
+        })
+}
+
+/// The private Antigravity image response currently omits `candidatesTokensDetails`, although the
+/// official Developer API bills a fixed number of IMAGE tokens for the requested size. Its aggregate
+/// candidate count still contains that image component. Split the official fixed component out of
+/// text/thinking only when a real image was delivered and Google did not provide the authoritative
+/// modality breakdown; an explicit breakdown always wins.
+fn apply_image_usage_fallback(
+    usage: &mut metering::GeminiUsage,
+    image_output_tokens: u64,
+    image_delivered: bool,
+) {
+    if !image_delivered || image_output_tokens == 0 || usage.image_output_tokens > 0 {
+        return;
+    }
+    usage.output_tokens = usage.output_tokens.saturating_sub(image_output_tokens);
+    usage.image_output_tokens = image_output_tokens;
+}
+
+fn settlement_usage_from_response(
+    value: &Value,
+    image_output_tokens: u64,
+) -> Option<metering::GeminiUsage> {
+    let mut usage = metering::gemini::usage_from_response_value(value)?;
+    apply_image_usage_fallback(
+        &mut usage,
+        image_output_tokens,
+        response_has_inline_image(value),
+    );
+    Some(usage)
+}
+
 struct SseTranslator {
     pending: Vec<u8>,
     usage: metering::GeminiUsage,
@@ -1406,10 +1463,16 @@ struct SseTranslator {
     public_model: String,
     framing: StreamFraming,
     started: bool,
+    image_output_tokens: u64,
+    image_delivered: bool,
 }
 
 impl SseTranslator {
-    fn new(framing: StreamFraming, public_model: &str) -> Self {
+    fn new_with_image_usage(
+        framing: StreamFraming,
+        public_model: &str,
+        image_output_tokens: u64,
+    ) -> Self {
         Self {
             pending: Vec::new(),
             usage: metering::GeminiUsage::default(),
@@ -1419,6 +1482,8 @@ impl SseTranslator {
             public_model: public_model.to_string(),
             framing,
             started: false,
+            image_output_tokens,
+            image_delivered: false,
         }
     }
 
@@ -1515,7 +1580,13 @@ impl SseTranslator {
             // Unknown/private response-only events have no public representation.
             return Ok(None);
         }
+        self.image_delivered |= response_has_inline_image(&native);
         metering::gemini::merge_stream_response_value(&mut self.usage, &native);
+        apply_image_usage_fallback(
+            &mut self.usage,
+            self.image_output_tokens,
+            self.image_delivered,
+        );
         // Real Gemini SSE chunks carry a stable responseId for the whole response; mirror it.
         if let Some(object) = native.as_object_mut() {
             if object.contains_key("modelVersion") {
@@ -2019,6 +2090,11 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     );
+    let requested_image_output_tokens = if generation && model.is_image_generation() {
+        image_output_tokens(&value)
+    } else {
+        0
+    };
     let upstream_session_id = (generation && !model.is_image_generation()).then(|| {
         affinity_input
             .as_ref()
@@ -2042,7 +2118,7 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     ) {
-        let (input, output, image_output, grounding) =
+        let (input, output, _, grounding) =
             generation_controls(&value, &model, gateway.config().reserve_overhead_tokens);
         let (admission, effective_output) = pending
             .reserve(
@@ -2050,7 +2126,7 @@ async fn api_inner(
                 &model,
                 input,
                 output,
-                image_output,
+                requested_image_output_tokens,
                 grounding,
                 !model.is_image_generation(),
             )
@@ -2198,7 +2274,11 @@ async fn api_inner(
 
         if status.is_success() && route.operation == Operation::StreamGenerate {
             let mut stream = response.bytes_stream();
-            let mut translator = SseTranslator::new(framing, &model.id);
+            let mut translator = SseTranslator::new_with_image_usage(
+                framing,
+                &model.id,
+                requested_image_output_tokens,
+            );
             let (stream_start_max_bytes, stream_start_max_chunks) = if model.is_image_generation() {
                 (GEMINI_BODY_LIMIT, IMAGE_STREAM_START_MAX_CHUNKS)
             } else {
@@ -2439,7 +2519,9 @@ async fn api_inner(
                 let usage = if route.operation == Operation::Generate {
                     serde_json::from_slice::<Value>(&native_body)
                         .ok()
-                        .and_then(|value| metering::gemini::usage_from_response_value(&value))
+                        .and_then(|value| {
+                            settlement_usage_from_response(&value, requested_image_output_tokens)
+                        })
                         .filter(|usage| !usage.is_zero())
                 } else {
                     None
@@ -3230,7 +3312,8 @@ mod tests {
         assert_eq!(native["modelVersion"], "gemini-3.6-flash");
         assert!(native.get("traceId").is_none());
 
-        let mut stream = SseTranslator::new(StreamFraming::Sse, "gemini-3.6-flash");
+        let mut stream =
+            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-3.6-flash", 0);
         let chunks = stream
             .push(
                 b"data: {\"response\":{\"candidates\":[],\"modelVersion\":\"gemini-3.6-flash-high\"}}\n\n",
@@ -3505,8 +3588,11 @@ mod tests {
 
     #[test]
     fn json_array_framing_wraps_elements_and_closes() {
-        let mut translator =
-            SseTranslator::new(StreamFraming::JsonArray, "gemini-integration-model");
+        let mut translator = SseTranslator::new_with_image_usage(
+            StreamFraming::JsonArray,
+            "gemini-integration-model",
+            0,
+        );
         let first = translator.frame(&json!({"a": 1})).unwrap();
         let second = translator.frame(&json!({"b": 2})).unwrap();
         let close = translator.finish_stream().unwrap();
@@ -3514,10 +3600,15 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&whole).unwrap();
         assert_eq!(parsed, json!([{"a": 1}, {"b": 2}]));
         // An empty JSON-array stream still closes as a valid empty array.
-        let mut empty = SseTranslator::new(StreamFraming::JsonArray, "gemini-integration-model");
+        let mut empty = SseTranslator::new_with_image_usage(
+            StreamFraming::JsonArray,
+            "gemini-integration-model",
+            0,
+        );
         assert_eq!(empty.finish_stream().unwrap().as_ref(), b"[]");
         // SSE framing has no terminator and keeps the data: envelope.
-        let mut sse = SseTranslator::new(StreamFraming::Sse, "gemini-integration-model");
+        let mut sse =
+            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-integration-model", 0);
         let frame = sse.frame(&json!({"a": 1})).unwrap();
         assert!(frame.starts_with(b"data: "));
         assert!(sse.finish_stream().is_none());
@@ -5211,7 +5302,8 @@ mod tests {
 
     #[test]
     fn incremental_sse_tracker_keeps_last_usage_across_chunk_boundaries() {
-        let mut tracker = SseTranslator::new(StreamFraming::Sse, "gemini-integration-model");
+        let mut tracker =
+            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-integration-model", 0);
         tracker
             .push(b"data: {\"response\":{\"usageMetadata\":{\"promptToken")
             .unwrap();
@@ -5232,6 +5324,79 @@ mod tests {
                 ..metering::GeminiUsage::default()
             }
         );
+    }
+
+    #[test]
+    fn image_usage_without_private_modality_details_uses_the_official_size_sku() {
+        let response = json!({
+            "candidates": [{
+                "content": {"parts": [{
+                    "inlineData": {"mimeType": "image/jpeg", "data": "AQID"}
+                }]}
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 21,
+                "candidatesTokenCount": 1_387
+            }
+        });
+        let usage = settlement_usage_from_response(&response, 1_120).unwrap();
+        assert_eq!(
+            usage,
+            metering::GeminiUsage {
+                input_tokens: 21,
+                output_tokens: 267,
+                image_output_tokens: 1_120,
+                ..metering::GeminiUsage::default()
+            }
+        );
+
+        let no_image = json!({
+            "candidates": [{"content": {"parts": [{"text": "refused"}]}}],
+            "usageMetadata": {"candidatesTokenCount": 1_387}
+        });
+        assert_eq!(
+            settlement_usage_from_response(&no_image, 1_120)
+                .unwrap()
+                .output_tokens,
+            1_387
+        );
+
+        let detailed = json!({
+            "candidates": [{
+                "content": {"parts": [{
+                    "inlineData": {"mimeType": "image/jpeg", "data": "AQID"}
+                }]}
+            }],
+            "usageMetadata": {
+                "candidatesTokenCount": 901,
+                "candidatesTokensDetails": [
+                    {"modality": "TEXT", "tokenCount": 1},
+                    {"modality": "IMAGE", "tokenCount": 900}
+                ]
+            }
+        });
+        let usage = settlement_usage_from_response(&detailed, 1_120).unwrap();
+        assert_eq!(usage.output_tokens, 1);
+        assert_eq!(usage.image_output_tokens, 900);
+    }
+
+    #[test]
+    fn image_stream_fallback_survives_separate_media_and_usage_frames() {
+        let mut tracker =
+            SseTranslator::new_with_image_usage(StreamFraming::Sse, "image-model", 747);
+        tracker
+            .push(
+                b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"AQID\"}}]}}]}}\n\n",
+            )
+            .unwrap();
+        tracker
+            .push(
+                b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":800}}}\n\n",
+            )
+            .unwrap();
+        assert_eq!(tracker.usage.input_tokens, 10);
+        assert_eq!(tracker.usage.output_tokens, 53);
+        assert_eq!(tracker.usage.image_output_tokens, 747);
     }
 
     #[test]
