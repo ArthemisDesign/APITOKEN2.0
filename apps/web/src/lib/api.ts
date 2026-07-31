@@ -52,27 +52,15 @@ export interface LedgerEntry {
 
 export interface B2CPricing {
   customerType: "b2c";
-  pricingMode: "progressive";
-  monthStart: string;
-  tier: string;
+  // Плоская модель: единая скидка 50% на каждый запрос, без тиров и порогов пополнения.
+  pricingMode: "flat";
   discountPercent: number;
   multiplierBp: number;
   // Фиксированная партнёрская скидка (реф-ссылка сейлза). 0 = нет. Если > 0 — реальная ставка/скидка
-  // берутся из effective* (пол переопределяет тир), и дашборд показывает «партнёрскую ставку».
+  // берутся из effective* (поле переопределяет плоскую ставку), и дашборд показывает «партнёрскую ставку».
   referralFloorBps?: number;
   effectiveMultiplierBp?: number;
   effectiveDiscountPercent?: number;
-  spentNano: string;
-  retentionSpendNano: string;
-  windowSpentNano?: string;
-  windowStart?: string | null;
-  nextTier: null | {
-    tier: string;
-    discountPercent: number;
-    spendThresholdNano: string;
-    remainingNano: string;
-    visibleOfficialUsageUsd: string;
-  };
 }
 
 export interface B2BPricing {

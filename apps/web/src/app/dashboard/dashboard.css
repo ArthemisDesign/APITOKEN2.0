@@ -522,7 +522,7 @@ body.app-body .bg-decor{display:none!important}
 .overview-alert>div>span{font-size:12.5px;line-height:1.5;color:var(--txt-3)}
 
 .overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.68fr) minmax(320px,.82fr);gap:20px}
-.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.overview-metrics-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
 .overview-card-head{display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0}
 .overview-card-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
@@ -580,15 +580,12 @@ body.app-body .bg-decor{display:none!important}
 .overview-metric-card>p b{color:var(--accent)}
 .overview-card-link{align-self:flex-start;margin-top:auto;font-family:var(--font-ui);font-size:12.5px;font-weight:600;color:var(--accent)}
 .overview-card-link:hover{text-decoration:underline;text-underline-offset:3px}
-.overview-pricing-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin-top:auto;overflow:hidden;
+.overview-pricing-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;overflow:hidden;
   border:1px solid var(--line);border-radius:10px;background:var(--line)}
 .overview-pricing-facts>span{display:flex;min-width:0;flex-direction:column;gap:3px;padding:11px 13px;background:var(--bg-card)}
 .overview-pricing-facts small{font:650 8.5px/1.35 var(--font-mono);letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
 .overview-pricing-facts b{font:700 14px/1.35 var(--font-ui);color:var(--txt)}
 .overview-pricing-facts>span:first-child b{color:var(--accent)}
-.overview-progress{height:6px;margin:1px 0 11px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--accent) 12%,var(--bg-soft))}
-.overview-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent)}
-.overview-milestone-card>small{display:block;margin-bottom:12px;font-size:10.5px;line-height:1.45;color:var(--txt-4)}
 
 .overview-activity{--overview-activity-line:var(--line);padding:0;overflow:hidden;border-color:transparent;
   box-shadow:inset 0 0 0 1px var(--overview-activity-line),var(--overview-shadow)}
@@ -865,7 +862,6 @@ body.app-body .bg-decor{display:none!important}
 }
 @media(max-width:1180px){
   .overview-metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .overview-milestone-card{grid-column:1/-1}
 }
 @media(max-width:960px){
   .overview-primary-grid{grid-template-columns:1fr}
@@ -873,11 +869,9 @@ body.app-body .bg-decor{display:none!important}
   .overview-access-card{min-height:164px}
 }
 @media(max-width:820px){
-  .pricing-milestone-status{grid-template-columns:1fr}
   .pricing-status-item+.pricing-status-item{border-left:0;border-top:1px solid var(--accent-line)}
   .overview-primary-grid{grid-template-columns:1fr}
   .overview-metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .overview-milestone-card{grid-column:1/-1}
 }
 @media(max-width:560px){
   /* connect-card header: eyebrow+title vs action buttons no longer share one row —
@@ -916,7 +910,6 @@ body.app-body .bg-decor{display:none!important}
   .overview-onboarding ol{grid-template-columns:1fr;gap:12px}
   .overview-onboarding>.btn{width:100%;justify-content:center}
   .overview-metric-card{min-height:0;padding:21px}
-  .overview-milestone-card{grid-column:auto}
   .overview-activity{padding:0}
   .overview-activity-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;padding:19px 20px}
   .overview-activity-head .overview-card-link{font-size:11px;text-align:right;white-space:nowrap}
@@ -931,14 +924,7 @@ body.app-body .bg-decor{display:none!important}
   .pricing-banner{padding:20px;gap:16px}
   .pricing-summary{align-items:flex-end}
   .pricing-discount{flex-direction:column;align-items:flex-end;gap:4px}
-  .pricing-milestone-status{grid-template-columns:1fr}
   .pricing-status-item+.pricing-status-item{border-left:0;border-top:1px solid var(--accent-line)}
-  .pricing-milestone-track{padding:2px 0}
-  .pricing-track-line{top:15px;bottom:15px;left:14px;right:auto;width:3px;height:auto}
-  .pricing-track-line span{width:100%;height:var(--tier-progress)}
-  .pricing-milestone-list{grid-template-columns:1fr;gap:15px}
-  .pricing-milestone{display:grid;grid-template-columns:31px minmax(0,1fr);gap:13px;text-align:left;align-items:center}
-  .pricing-milestone>div{align-items:flex-start}
   .analytics-placeholder{grid-template-columns:1fr}
   .code-card code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
   .app .table-scroll{overflow-x:auto}
@@ -956,17 +942,10 @@ body.app-body .bg-decor{display:none!important}
 /* Dashboard cards stay balanced; profile-side cards participate in the parent grid. */
 .prof-side{display:contents}
 
-/* Dashboard tier cards use their full width; helper copy no longer collapses into microtext. */
-.pricing-milestone>div{width:100%}
-.pricing-milestone>div>span{font-size:11px;line-height:1.45;color:var(--txt-3)}
-.pricing-milestone small{font-size:11px;line-height:1.5;color:var(--txt-3)}
 @media(max-width:560px){
   .pricing-status-item{grid-template-columns:minmax(0,1fr);align-items:start;gap:4px}
   .pricing-status-item>span,.pricing-status-item strong,.pricing-status-item small{grid-column:1;width:100%}
   .pricing-status-item small{font-size:11px;line-height:1.5}
-  .pricing-milestone{align-items:start}
-  .pricing-milestone>div{width:100%;padding-right:4px}
-  .pricing-milestone>div>span,.pricing-milestone small{font-size:11.5px;line-height:1.5}
   .keyrow .kmeta{display:grid;align-items:start;gap:4px}
   .keyrow .kmeta span{display:block;overflow:hidden;text-indent:-2ch}
   .prof-grid .set-row{align-items:stretch;flex-direction:column}

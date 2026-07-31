@@ -165,42 +165,36 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain("router.refresh()");
   });
 
-  it("uses flexible whole-USD top-ups and the authoritative pricing tiers", () => {
+  it("uses flexible whole-USD top-ups and one flat 50% B2C discount", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
     const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    for (const value of ["starter", "builder", "pro", "studio", "scale", "60", "62.5", "65", "67.5", "70"]) {
-      expect(pricingTiers).toContain(value);
-    }
-    for (const threshold of ["100", "250", "500", "1000"]) {
-      expect(pricingTiers).toContain(`platformSpendUsd: "${threshold}"`);
-    }
+    expect(pricingTiers).toContain("B2C_DISCOUNT_PERCENT = 50");
+    expect(pricingTiers).not.toMatch(/milestone|Starter|Builder|Studio|Scale|62\.5|67\.5|tierIndex/);
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
-    expect(pricing).toContain("B2C_PRICING_MILESTONES.map");
-    expect(pricingTiers).toContain('{ code: "builder", label: "Builder", messageKey: "tier_builder", discountPercent: 62.5');
-    expect(pricingTiers).toContain('{ code: "pro", label: "Pro", messageKey: "tier_pro", discountPercent: 65');
-    expect(pricingTiers).toContain('{ code: "studio", label: "Studio", messageKey: "tier_studio", discountPercent: 67.5');
-    expect(pricingTiers).toContain('{ code: "scale", label: "Scale", messageKey: "tier_scale", discountPercent: 70');
+    expect(pricing).not.toContain("B2C_PRICING_MILESTONES");
     expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of API usage at official prices");
     expect(messages).toContain("$10 на использование API по официальным ценам");
     expect(messages).not.toContain("$2.50");
   });
 
-  it("renders dashboard pricing as a complete milestone track", () => {
+  it("renders dashboard pricing as one flat 50% rate", () => {
     const dashboard = dashboardSource();
     const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
     const styles = [
       readFileSync(join(appRoot, "globals.css"), "utf8"),
       readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
     ].join("\n");
-    expect(dashboardCopy).toContain('monthlyTierProgress: "Tier progress"');
-    expect(dashboardCopy).toContain('spendMore: "Top up {amount} more"');
-    expect(dashboard).toContain("B2C_PRICING_MILESTONES.map");
-    expect(styles).toContain(".pricing-milestone-track");
-    expect(styles).toContain("height:var(--tier-progress)");
+    expect(dashboardCopy).toContain('flatRate: "50% off every request"');
+    expect(dashboardCopy).toContain('flatRate: "Скидка 50% на каждый запрос"');
+    expect(dashboard).toContain("pricing-banner-flat");
+    expect(dashboard).not.toContain("B2C_PRICING_MILESTONES");
+    expect(dashboard).not.toContain("pricing-milestone-track");
+    expect(dashboardCopy).not.toContain("tierStarter");
+    expect(styles).toContain(".pricing-banner-flat{");
     expect(styles).toContain(".app section.pricing-banner{border:1px solid var(--accent-line)}");
   });
 
@@ -225,7 +219,7 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain("app-main-overview");
     expect(dashboard).not.toContain("app-top-up");
     expect(styles).toContain(".overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.68fr) minmax(320px,.82fr);gap:20px}");
-    expect(styles).toContain(".overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}");
+    expect(styles).toContain(".overview-metrics-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}");
     expect(styles).toContain(".overview-panel{display:grid;gap:20px}");
     expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
     expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
@@ -321,7 +315,7 @@ describe("completed Next.js migration", () => {
     expect(home).not.toContain('k="hero_note"');
     expect(home).toContain('k="offer_free_eyebrow"');
     expect(home).toContain('className="offer-value-table"');
-    expect(home).toContain("−{tier.discount}%");
+    expect(home).toContain("−{row.discount}%");
     expect(animations).not.toContain(".feat:hover{");
     expect(motion).toContain("transform={`translate(${waveWidth} 0)`}");
     expect(animations).toContain("translateX(-50%)");

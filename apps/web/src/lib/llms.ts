@@ -26,7 +26,7 @@ type LlmsCopy = {
 const copy: Record<Locale, LlmsCopy> = {
   en: {
     heading: "# apiToken.sale — Claude & GPT API access",
-    summary: "> apiToken.sale is an independent multi-provider API gateway. It serves the standard Anthropic Messages API with the full supported Claude line (Opus, Sonnet, Haiku) and an OpenAI-compatible API (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one API key at a progressive discount of 60% up to 70% off official spend. No Anthropic or OpenAI account, waitlist, or billing-country requirement; pay by bank card or cryptocurrency.",
+    summary: "> apiToken.sale is an independent multi-provider API gateway. It serves the standard Anthropic Messages API with the full supported Claude line (Opus, Sonnet, Haiku) and an OpenAI-compatible API (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one API key at a flat 50% discount off official spend on every request. No Anthropic or OpenAI account, waitlist, or billing-country requirement; pay by bank card or cryptocurrency.",
     factsHeading: "## Key facts",
     facts: [
       "Website: " + SITE_ORIGIN,
@@ -34,7 +34,7 @@ const copy: Record<Locale, LlmsCopy> = {
       "OpenAI-compatible API base URL: https://openai.api.apitoken.sale/v1 (Responses + Chat Completions, Authorization: Bearer, GET /v1/models)",
       "Claude models: Claude Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6, Haiku 4.5",
       "GPT models: gpt-5.6-sol (alias gpt-5.6), gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 — text and image input, SSE streaming",
-      "Billing: prepaid, per-token at official rates minus a 60–70% B2C discount shared by both providers; balance never expires",
+      "Billing: prepaid, per-token at official rates minus a flat 50% B2C discount shared by both providers; balance never expires",
       "Payment: bank card or cryptocurrency",
       "Free start: new Google/GitHub accounts get $10 of API usage at official prices; email/password accounts are ineligible",
       "Onboarding: instant, self-serve, no Anthropic or OpenAI account",
@@ -45,7 +45,7 @@ const copy: Record<Locale, LlmsCopy> = {
   },
   ru: {
     heading: "# apiToken.sale — доступ к Claude и GPT API",
-    summary: "> apiToken.sale — независимый мультипровайдерный API-шлюз. Он предоставляет стандартный Anthropic Messages API со всей линейкой Claude (Opus, Sonnet, Haiku) и OpenAI-совместимый API (Responses и Chat Completions) с линейкой GPT-5 — с единого предоплаченного баланса и одного API-ключа со скидкой 60–70% от официальной стоимости. Без аккаунтов Anthropic и OpenAI, без очереди и ограничений по стране; оплата картой или криптовалютой.",
+    summary: "> apiToken.sale — независимый мультипровайдерный API-шлюз. Он предоставляет стандартный Anthropic Messages API со всей линейкой Claude (Opus, Sonnet, Haiku) и OpenAI-совместимый API (Responses и Chat Completions) с линейкой GPT-5 — с единого предоплаченного баланса и одного API-ключа с единой скидкой 50% от официальной стоимости на каждый запрос. Без аккаунтов Anthropic и OpenAI, без очереди и ограничений по стране; оплата картой или криптовалютой.",
     factsHeading: "## Ключевые факты",
     facts: [
       "Сайт: " + SITE_ORIGIN,
@@ -53,7 +53,7 @@ const copy: Record<Locale, LlmsCopy> = {
       "Базовый URL OpenAI-совместимого API: https://openai.api.apitoken.sale/v1 (Responses + Chat Completions, Authorization: Bearer, GET /v1/models)",
       "Модели Claude: Claude Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6, Haiku 4.5",
       "Модели GPT: gpt-5.6-sol (псевдоним gpt-5.6), gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 — текст и изображения на входе, SSE-стриминг",
-      "Оплата за токены по официальным ставкам минус скидка 60–70% для B2C, общая для обоих провайдеров; баланс не сгорает",
+      "Оплата за токены по официальным ставкам минус единая скидка 50% для B2C, общая для обоих провайдеров; баланс не сгорает",
       "Способы оплаты: банковская карта или криптовалюта",
       "Бесплатный старт: новые аккаунты через Google/GitHub получают $10 использования API по официальным ценам; аккаунты по email/паролю не участвуют",
       "Подключение: мгновенно, без аккаунтов Anthropic и OpenAI",
@@ -64,7 +64,7 @@ const copy: Record<Locale, LlmsCopy> = {
   },
   zh: {
     heading: "# apiToken.sale — Claude 与 GPT API 接入",
-    summary: "> apiToken.sale 是独立的多提供商 API 网关。它以标准 Anthropic Messages API 提供完整的 Claude 系列（Opus、Sonnet、Haiku），并以 OpenAI 兼容 API（Responses 与 Chat Completions）提供 GPT-5 系列——共用一个预付余额和一个 API 密钥，按官方价格的 60%–70% 折扣计费。无需 Anthropic 或 OpenAI 账户、无需排队、不限国家；支持银行卡或加密货币付款。",
+    summary: "> apiToken.sale 是独立的多提供商 API 网关。它以标准 Anthropic Messages API 提供完整的 Claude 系列（Opus、Sonnet、Haiku），并以 OpenAI 兼容 API（Responses 与 Chat Completions）提供 GPT-5 系列——共用一个预付余额和一个 API 密钥，每个请求统一按官方价格的 50% 折扣计费。无需 Anthropic 或 OpenAI 账户、无需排队、不限国家；支持银行卡或加密货币付款。",
     factsHeading: "## 关键信息",
     facts: [
       "网站: " + SITE_ORIGIN,
@@ -72,7 +72,7 @@ const copy: Record<Locale, LlmsCopy> = {
       "OpenAI 兼容 API 基址: https://openai.api.apitoken.sale/v1 (Responses + Chat Completions, Authorization: Bearer, GET /v1/models)",
       "Claude 模型: Claude Opus 4.8、Opus 4.7、Sonnet 5、Sonnet 4.6、Haiku 4.5",
       "GPT 模型: gpt-5.6-sol（别名 gpt-5.6）、gpt-5.6-terra、gpt-5.6-luna、gpt-5.5、gpt-5.4 —— 支持文本与图片输入、SSE 流式输出",
-      "计费: 预付、按 token 以官方价格计费再减去 60–70% 的 B2C 折扣（两家提供商共用）；余额永不过期",
+      "计费: 预付、按 token 以官方价格计费再减去统一的 50% B2C 折扣（两家提供商共用）；余额永不过期",
       "支付: 银行卡或加密货币",
       "免费起步: 通过 Google/GitHub 创建的新账户可获 $10 的官方价格 API 额度；邮箱密码账户不参与",
       "开通: 即时、自助、无需 Anthropic 或 OpenAI 账户",
@@ -83,7 +83,7 @@ const copy: Record<Locale, LlmsCopy> = {
   },
   ko: {
     heading: "# apiToken.sale — Claude & GPT API 액세스",
-    summary: "> apiToken.sale은 독립적인 멀티 프로바이더 API 게이트웨이입니다. 표준 Anthropic Messages API로 전체 Claude 라인업(Opus, Sonnet, Haiku)을, OpenAI 호환 API(Responses 및 Chat Completions)로 GPT-5 라인업을 제공합니다 — 하나의 선불 잔액과 하나의 API 키로 공식 요금 대비 60~70% 할인된 가격입니다. Anthropic이나 OpenAI 계정, 대기열, 국가 제한이 없으며 신용카드 또는 암호화폐로 결제할 수 있습니다.",
+    summary: "> apiToken.sale은 독립적인 멀티 프로바이더 API 게이트웨이입니다. 표준 Anthropic Messages API로 전체 Claude 라인업(Opus, Sonnet, Haiku)을, OpenAI 호환 API(Responses 및 Chat Completions)로 GPT-5 라인업을 제공합니다 — 하나의 선불 잔액과 하나의 API 키로 모든 요청에 공식 요금 대비 50% 통일 할인이 적용됩니다. Anthropic이나 OpenAI 계정, 대기열, 국가 제한이 없으며 신용카드 또는 암호화폐로 결제할 수 있습니다.",
     factsHeading: "## 핵심 정보",
     facts: [
       "웹사이트: " + SITE_ORIGIN,
@@ -91,7 +91,7 @@ const copy: Record<Locale, LlmsCopy> = {
       "OpenAI 호환 API 기본 URL: https://openai.api.apitoken.sale/v1 (Responses + Chat Completions, Authorization: Bearer, GET /v1/models)",
       "Claude 모델: Claude Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6, Haiku 4.5",
       "GPT 모델: gpt-5.6-sol(별칭 gpt-5.6), gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 — 텍스트·이미지 입력, SSE 스트리밍",
-      "과금: 선불, 공식 요금 기준 토큰당 과금에서 B2C 60~70% 할인(두 프로바이더 공통); 잔액은 만료되지 않음",
+      "과금: 선불, 공식 요금 기준 토큰당 과금에서 B2C 50% 통일 할인(두 프로바이더 공통); 잔액은 만료되지 않음",
       "결제: 신용카드 또는 암호화폐",
       "무료 시작: Google/GitHub로 만든 신규 계정은 공식 가격 기준 $10 상당의 API 사용량을 받으며, 이메일/비밀번호 계정은 제외",
       "온보딩: 즉시, 셀프서비스, Anthropic·OpenAI 계정 불필요",
@@ -118,7 +118,7 @@ export function buildLlms(locale: Locale): string {
     `- API reference (base URLs, model IDs, streaming, tools, errors): ${SITE_ORIGIN}/md/docs`,
     `- Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models`,
     `- Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors`,
-    `- Pricing & discount tiers: ${SITE_ORIGIN}/md/plans`,
+    `- Pricing & flat 50% discount: ${SITE_ORIGIN}/md/plans`,
     `- Markdown index of everything: ${SITE_ORIGIN}/md`,
     `- Any guide as Markdown: append its slug to the gateway, e.g. ${SITE_ORIGIN}${learnMarkdownPath("cheapest-claude-api", locale)}`,
     `- Sitemap: ${SITE_ORIGIN}/sitemap.xml`,

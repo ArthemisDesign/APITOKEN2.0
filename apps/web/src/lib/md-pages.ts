@@ -1,19 +1,18 @@
 // Machine-readable Markdown for the core sections, generated from the same data as the HTML pages.
 // Served by static route handlers under /md so crawlers and AI agents can consume every public
-// section as clean text. Add a model or tier to the data and its Markdown updates on the next build.
+// section as clean text. Add a model to the data and its Markdown updates on the next build.
 import {
   ANTHROPIC_BASE_URL,
   OPENAI_BASE_URL,
   catalogModelBySlug,
   claudeModels,
   formatUsd,
-  DISCOUNT_BASE,
-  DISCOUNT_MAX,
+  DISCOUNT_FLAT,
   modelPath,
   openaiModels,
   type CatalogModel,
 } from "./models";
-import { B2C_PRICING_MILESTONES, formatWholeUsd } from "./pricing-tiers";
+import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
 import { API_ERRORS } from "./api-errors";
 
@@ -365,7 +364,7 @@ export function buildApiReferenceMarkdown(): string {
     }) +
     `# API reference — apiToken.sale
 
-apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a 60–70% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
+apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
 
 ## Surface 1 — Anthropic Messages API (Claude models)
 
@@ -374,7 +373,7 @@ apiToken.sale is an independent multi-provider gateway. It serves the **standard
 - **Headers:** \`x-api-key: sk-pool-…\` and \`anthropic-version: 2023-06-01\`
 - **Auth:** on this surface the \`sk-pool-…\` key is sent in \`x-api-key\` (not as a bearer token).
 
-Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay 60% less by default and up to 70% less at higher tiers.
+Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay a flat 50% less on every request.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -388,7 +387,7 @@ ${claudeRows}
 - **Auth:** the same \`sk-pool-…\` key sent as \`Authorization: Bearer sk-pool-…\` (x-api-key is not accepted on this surface).
 - **Modalities:** text and image input, text output. Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent OpenAI-compatible service, not the OpenAI Platform.
 
-Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same 60–70% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
+Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -487,11 +486,11 @@ Envelope: \`{"error":{"message","type","param","code"}}\`.
 | 402 | insufficient_quota | Prepaid balance too low | Top up any whole-dollar amount; retry after crediting. |
 | 404 | model_not_found | Unknown or disabled model ID | List enabled IDs with \`GET /v1/models\`; check for typos. |
 | 429 | rate_limit_error | Rate or concurrency limit | Honor \`Retry-After\`; back off with jitter, cap concurrency. |
-| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another tier if urgent. |
+| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another model if urgent. |
 
 ## Pricing
 
-Prepaid, per-token at official provider rates minus your tier discount (${pct(DISCOUNT_BASE)} base, up to ${pct(DISCOUNT_MAX)}), shared by both surfaces. No fixed packages or subscriptions; balance never expires. Full tier table: ${SITE_ORIGIN}/md/plans.
+Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by both surfaces. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
 
 ## Get started
 
@@ -504,13 +503,11 @@ Prepaid, per-token at official provider rates minus your tier discount (${pct(DI
   );
 }
 
-/** Model catalog with exact IDs, context, limits and discounted price ranges. */
+/** Model catalog with exact IDs, context, limits and discounted per-token prices. */
 export function buildModelsMarkdown(): string {
   const sectionFor = (m: CatalogModel): string => {
-    const inFrom = formatUsd(m.inputPerM * (1 - DISCOUNT_BASE));
-    const inBest = formatUsd(m.inputPerM * (1 - DISCOUNT_MAX));
-    const outFrom = formatUsd(m.outputPerM * (1 - DISCOUNT_BASE));
-    const outBest = formatUsd(m.outputPerM * (1 - DISCOUNT_MAX));
+    const inHere = formatUsd(m.inputPerM * (1 - DISCOUNT_FLAT));
+    const outHere = formatUsd(m.outputPerM * (1 - DISCOUNT_FLAT));
     const surface = m.provider === "anthropic"
       ? `- **Surface:** Anthropic Messages API at \`${API_BASE_URL}\``
       : `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`;
@@ -525,7 +522,7 @@ export function buildModelsMarkdown(): string {
       `- **Context window:** ${m.context}`,
       `- **Max output:** ${m.maxOutput}`,
       `- **Official price (per 1M):** $${m.inputPerM} input / $${m.outputPerM} output${cached}`,
-      `- **Your price (per 1M):** input ${inFrom} → ${inBest}, output ${outFrom} → ${outBest} (${pct(DISCOUNT_BASE)}–${pct(DISCOUNT_MAX)} off)`,
+      `- **Your price (per 1M):** input ${inHere}, output ${outHere} (flat ${pct(DISCOUNT_FLAT)} off)`,
       surface,
       `- **Best for:** ${m.bestFor.join(" ")}`,
       `- **Detail page:** ${SITE_ORIGIN}${modelPath(m.slug)}`,
@@ -553,39 +550,31 @@ ${claudeModels.map(sectionFor).join("\n\n")}
 ${openaiModels.map(sectionFor).join("\n\n")}
 
 ---
-API reference: ${SITE_ORIGIN}/md/docs · Pricing tiers: ${SITE_ORIGIN}/md/plans
+API reference: ${SITE_ORIGIN}/md/docs · Pricing: ${SITE_ORIGIN}/md/plans
 `
   );
 }
 
-/** Progressive discount tiers, generated from the live B2C pricing model. */
+/** Flat 50% B2C pricing, generated from the live pricing model. */
 export function buildPlansMarkdown(): string {
-  const rows = B2C_PRICING_MILESTONES.map((t) => {
-    const topUp = Number(t.platformSpendUsd) === 0 ? "— (default)" : formatWholeUsd(t.platformSpendUsd);
-    const keep = Number(t.holdUsd) === 0 ? "—" : `${formatWholeUsd(t.holdUsd)} / 30 days`;
-    const usage = Number(t.visibleOfficialUsageUsd) === 0 ? "—" : formatWholeUsd(t.visibleOfficialUsageUsd);
-    const mult = (100 / (100 - t.discountPercent)).toFixed(2);
-    return `| ${t.label} | ${t.discountPercent}% (×${mult}) | ${topUp} | ${keep} | ${usage} |`;
-  }).join("\n");
-
   return (
     frontmatter({
-      title: "apiToken.sale — API pricing tiers (Claude & GPT)",
+      title: "apiToken.sale — API pricing (Claude & GPT)",
       description:
-        "apiToken.sale progressive discount tiers: 60% off by default, up to 70% off with cumulative top-ups. Prepaid per-token billing at official Anthropic and OpenAI rates.",
+        "apiToken.sale flat pricing: 50% off official provider rates on every request, for every account and any top-up amount. Prepaid per-token billing at official Anthropic and OpenAI rates.",
       url: `${SITE_ORIGIN}/plans`,
       language: "en",
     }) +
-    `# Pricing & discount tiers
+    `# Pricing — flat ${B2C_DISCOUNT_PERCENT}% off
 
-Top up any whole-dollar amount. Each request is billed at the official provider token price, then your active tier discount is applied and deducted from balance. One balance and one discount track cover Claude and GPT models alike. No fixed packages, no subscriptions, balance never expires.
+Top up any whole-dollar amount. Each request is billed at the official provider token price, then the flat ${B2C_DISCOUNT_PERCENT}% discount is applied and deducted from balance. One balance and one rate cover Claude and GPT models alike. No fixed packages, no subscriptions, no tiers, balance never expires.
 
-| Tier | Discount (value multiplier) | Top up to reach | Keep the tier | Approx. official usage |
-|---|---|---|---|---|
-${rows}
+| Top up | Discount (value multiplier) | Official API value |
+|---|---|---|
+| Any whole USD amount | ${B2C_DISCOUNT_PERCENT}% (×${B2C_VALUE_MULTIPLIER}) | top-up × ${B2C_VALUE_MULTIPLIER} — e.g. $50 → $100 |
 
-- **Starter (${B2C_PRICING_MILESTONES[0]!.discountPercent}%)** is the permanent base tier — free, no minimum, never expires.
-- Higher tiers are unlocked by **cumulative top-ups** and kept by spending ≥ 50% of the tier's threshold every rolling 30 days; otherwise the account drops one tier.
+- The same ${B2C_DISCOUNT_PERCENT}% discount applies to **every request** — no thresholds, no monthly targets, nothing to unlock or keep.
+- Official API value = top-up ÷ the share paid after the discount; billing itself is exact.
 - B2B pricing is negotiated separately.
 
 ---
@@ -596,10 +585,8 @@ API reference: ${SITE_ORIGIN}/md/docs · Models: ${SITE_ORIGIN}/md/models
 
 /** One model's full spec (exact ID, context, limits, pricing, best-for, notes, FAQ). */
 export function buildModelMarkdown(model: CatalogModel): string {
-  const inFrom = formatUsd(model.inputPerM * (1 - DISCOUNT_BASE));
-  const inBest = formatUsd(model.inputPerM * (1 - DISCOUNT_MAX));
-  const outFrom = formatUsd(model.outputPerM * (1 - DISCOUNT_BASE));
-  const outBest = formatUsd(model.outputPerM * (1 - DISCOUNT_MAX));
+  const inHere = formatUsd(model.inputPerM * (1 - DISCOUNT_FLAT));
+  const outHere = formatUsd(model.outputPerM * (1 - DISCOUNT_FLAT));
   const surfaceLine = model.provider === "anthropic"
     ? `- **Base URL:** \`${API_BASE_URL}\` · **Endpoint:** \`POST /v1/messages\``
     : `- **Base URL:** \`${OPENAI_BASE_URL}\` · **Endpoints:** \`POST /v1/responses\`, \`POST /v1/chat/completions\` (Authorization: Bearer)`;
@@ -633,7 +620,7 @@ ${model.dek}
 - **Context window:** ${model.context}
 - **Max output:** ${model.maxOutput}
 - **Official price (per 1M):** $${model.inputPerM} input / $${model.outputPerM} output
-- **Your price (per 1M):** input ${inFrom} → ${inBest}, output ${outFrom} → ${outBest} (${pct(DISCOUNT_BASE)}–${pct(DISCOUNT_MAX)} off)
+- **Your price (per 1M):** input ${inHere}, output ${outHere} (flat ${pct(DISCOUNT_FLAT)} off)
 ${surfaceLine}
 
 ## Best for
@@ -847,7 +834,7 @@ Every public section of apiToken.sale is available as clean Markdown. Private da
 - Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors
 - Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models
 - Per-model spec: append the model slug to ${SITE_ORIGIN}/md/models/<slug> (${[...claudeModels, ...openaiModels].map((m) => m.slug).join(", ")})
-- Pricing & discount tiers: ${SITE_ORIGIN}/md/plans
+- Pricing & flat 50% discount: ${SITE_ORIGIN}/md/plans
 - Integrations (all tools): ${SITE_ORIGIN}/md/int
 - Per-tool setup: append the slug to ${SITE_ORIGIN}/md/int/<slug> (${integrationSlugs.join(", ")})
 

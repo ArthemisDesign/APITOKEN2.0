@@ -93,24 +93,13 @@ function account(): AccountView {
     reservedNano: "0",
     spentNano: "262752000000",
     balanceUsd: (Number(balanceNano) / 1e9).toFixed(2),
-    markupBasisPoints: 4000,
+    markupBasisPoints: 5000,
     status: "active",
     pricing: {
       customerType: "b2c",
-      pricingMode: "progressive",
-      monthStart: "2026-07-01T00:00:00.000Z",
-      tier: "starter",
-      discountPercent: 60,
-      multiplierBp: 4000,
-      spentNano: "0",
-      retentionSpendNano: "0",
-      nextTier: {
-        tier: "builder",
-        discountPercent: 62.5,
-        spendThresholdNano: "100000000000",
-        remainingNano: "100000000000",
-        visibleOfficialUsageUsd: "600.43",
-      },
+      pricingMode: "flat",
+      discountPercent: 50,
+      multiplierBp: 5000,
     },
   };
 }

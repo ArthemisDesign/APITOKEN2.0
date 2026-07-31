@@ -1,7 +1,14 @@
 import Link from "next/link";
-import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
+import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER, officialUsageForTopup } from "@/lib/pricing-tiers";
 import { T } from "./translated";
 import { TopUpAmountInput } from "./topup-amount-input";
+
+// Примеры конверсии по плоской модели: пополнение × 2 = официальное использование API.
+const exampleTopups = [50, 100, 1000] as const;
+
+function usd(value: number): string {
+  return `$${value.toLocaleString("en-US")}`;
+}
 
 export function PricingOverview() {
   return <div className="pricing-overview">
@@ -32,28 +39,27 @@ export function PricingOverview() {
     </div>
     <div className="tier-section">
       <div className="tier-heading">
-        <div className="tier-heading-copy"><T k="b2c_tag" as="span" className="tag">B2C · Progressive pricing</T><T k="b2c_h" as="h3">Your discount grows with monthly usage</T></div>
+        <div className="tier-heading-copy"><T k="b2c_tag" as="span" className="tag">B2C · Flat pricing</T><T k="b2c_h" as="h3">One flat 50% discount on every request</T></div>
         <div className="tier-rule">
-          <div className="tier-rule-item"><T k="tier_rule_keep_label" as="span">Carry forward</T><T k="tier_rule_keep" as="strong">Keep your achieved tier next month</T></div>
-          <div className="tier-rule-item"><T k="tier_rule_miss_label" as="span">If you miss the target</T><T k="tier_rule_miss" as="strong">Move down only one tier</T></div>
+          <div className="tier-rule-item"><T k="flat_rule_rate_label" as="span">Every request</T><T k="flat_rule_rate" as="strong">50% off official provider prices</T></div>
+          <div className="tier-rule-item"><T k="flat_rule_topup_label" as="span">Every top-up</T><T k="flat_rule_topup" as="strong">Any whole USD amount at the same rate</T></div>
         </div>
       </div>
       <div className="tier-table-wrap">
         <table className="tier-table">
-          <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Top up to reach</T><T k="hold_col" as="th">Keep / 30 days</T><T k="official_usage_col" as="th">Approx. Claude API</T></tr></thead>
-          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong> <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></td><td>{Number(tier.platformSpendUsd) === 0 ? "—" : formatWholeUsd(tier.platformSpendUsd)}</td><td>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</td><td>{Number(tier.visibleOfficialUsageUsd) === 0 ? "—" : formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
+          <thead><tr><T k="flat_topup_col" as="th">Top up</T><T k="discount_col" as="th">Discount</T><T k="flat_receive_col" as="th">Official API value</T></tr></thead>
+          <tbody>{exampleTopups.map((topup) => <tr key={topup}><td>{usd(topup)}</td><td><strong>{B2C_DISCOUNT_PERCENT}%</strong> <em className="tier-mult">×{B2C_VALUE_MULTIPLIER}</em></td><td>{usd(officialUsageForTopup(topup))}</td></tr>)}</tbody>
         </table>
       </div>
       <div className="tier-cards">
-        {B2C_PRICING_MILESTONES.map((tier) => <div className="tier-mobile" key={tier.code}>
-          <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}% <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></b></div>
-          <div className="tier-mobile-row"><T k="local_spend_col">Top up to reach</T><span>{Number(tier.platformSpendUsd) === 0 ? "—" : formatWholeUsd(tier.platformSpendUsd)}</span></div>
-          <div className="tier-mobile-row"><T k="hold_col">Keep / 30 days</T><span>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</span></div>
-          <div className="tier-mobile-row"><T k="official_usage_col">Approx. Claude API</T><span>{Number(tier.visibleOfficialUsageUsd) === 0 ? "—" : formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
+        {exampleTopups.map((topup) => <div className="tier-mobile" key={topup}>
+          <div className="tier-mobile-head"><strong>{usd(topup)}</strong><b>{B2C_DISCOUNT_PERCENT}% <em className="tier-mult">×{B2C_VALUE_MULTIPLIER}</em></b></div>
+          <div className="tier-mobile-row"><T k="discount_col">Discount</T><span>−{B2C_DISCOUNT_PERCENT}%</span></div>
+          <div className="tier-mobile-row"><T k="flat_receive_col">Official API value</T><span>{usd(officialUsageForTopup(topup))}</span></div>
         </div>)}
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Displayed official API usage equals monthly platform spend ÷ the share paid after discount. Values are rounded only for display; billing remains exact.</T>
-      <Link className="tier-docs-link" href="/docs#pricing"><T k="tier_docs">Read the full pricing guide</T> →</Link>
+      <T k="flat_footnote" as="p" className="tier-footnote">Official API value = top-up ÷ the share paid after the 50% discount. Values are rounded only for display; billing remains exact.</T>
+      <Link className="tier-docs-link" href="/tools/claude-api-cost-calculator"><T k="flat_calc_link">Estimate your cost in the free calculator</T> →</Link>
     </div>
   </div>;
 }

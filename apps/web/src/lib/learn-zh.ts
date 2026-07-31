@@ -21,7 +21,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "通过安全的收银服务商用银行卡或加密货币支付。",
           "每次请求都会先换算为官方 Anthropic API 消费，再套用你当前的折扣。",
-          "B2C 账户起步即比官方消费低 60%，随着累计充值增加最高可达 70% 折扣。",
+          "B2C 账户每个请求统一享受比官方消费低 50% 的折扣。",
         ] },
       ] },
       { h2: "拿到密钥能做什么", blocks: [
@@ -44,17 +44,17 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
   },
   "cheapest-claude-api": {
-    title: "最便宜的 Claude API——最高立省 70%",
+    title: "最便宜的 Claude API——统一立省 50%",
     h1: "使用 Claude API 最省钱的方式",
-    description: "把 Claude API 成本最高削减 70%。apitoken.sale 以预付折扣价出售一模一样的 Anthropic Messages API——同样的模型、同样的接口、更低的每 token 单价。",
+    description: "把 Claude API 成本统一削减 50%。apitoken.sale 以预付折扣价出售一模一样的 Anthropic Messages API——同样的模型、同样的接口、更低的每 token 单价。",
     keywords: ["最便宜的 claude api", "claude api 折扣", "便宜的 claude api", "claude api 价格", "节省 anthropic api 费用", "比 anthropic 更便宜的 claude api"],
-    dek: "Claude API 按 token 计费，而在漫长的编码会话中这些 token 累积得很快。apitoken.sale 通过汇集预付余额并套用递进折扣，让你以最高低 70% 的价格用上完全相同的 API。",
+    dek: "Claude API 按 token 计费，而在漫长的编码会话中这些 token 累积得很快。apitoken.sale 通过汇集预付余额并套用统一折扣，让你以低 50% 的价格用上完全相同的 API。",
     sections: [
       { h2: "为什么更便宜", blocks: [
         { type: "p", text: "你向同一套 Anthropic Messages API 发送同样的请求，得到同样的响应。底层唯一不同的是计费：每次调用按官方费率计量，然后在扣减你的余额前先减去你的折扣。" },
         { type: "list", items: [
-          "B2C 账户从比官方消费低 60% 起步。",
-          "随着累计充值增加，折扣最高可达 70%。",
+          "B2C 账户统一享受比官方消费低 50% 的折扣。",
+          "每个请求适用同一费率——无需解锁。",
           "B2B 批量定价单独商议。",
         ] },
       ] },
@@ -70,15 +70,15 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "p", text: "没有加价，也没有单独的廉价模型——你得到的是对完全相同的 Claude API 的折扣访问。" },
         { type: "list", items: [
           "每次请求按官方 Anthropic token 费率计量。",
-          "减去你的递进折扣（60% 直至 70%）。",
+          "减去你的统一 50% 折扣。",
           "净额从你的预付余额中扣除。",
         ] },
-        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−70%）"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
-          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
-          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站（−50%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
         ] },
         { type: "link", text: "每个模型的完整价格（含缓存费率）", href: "/models" },
         { type: "link", text: "用免费计算器估算你的月度成本", href: "/tools/claude-api-cost-calculator" },
@@ -86,9 +86,9 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "这真的是同一套 Claude API 吗？", a: "是的——同一套 Anthropic Messages API、相同的模型 ID、相同的请求与响应格式。只有每次调用的价格更低。" },
-      { q: "我能省多少？", a: "B2C 定价从比官方 API 消费低 60% 起步，随着累计充值提高最多可达 70% 折扣。" },
+      { q: "我能省多少？", a: "B2C 定价为每个请求统一比官方 API 消费低 50%。" },
       { q: "有没有隐藏费用或订阅？", a: "没有。余额为预付制、永不过期，仅由真实 API 用量消耗——没有月费。" },
-      { q: "有比直接从 Anthropic 购买更便宜的 Claude API 吗？", a: "有。apiToken.sale 以最高 70% 的递进折扣出售一模一样的 Anthropic API，且没有订阅。" },
+      { q: "有比直接从 Anthropic 购买更便宜的 Claude API 吗？", a: "有。apiToken.sale 以统一 50% 的折扣出售一模一样的 Anthropic API，且没有订阅。" },
     ],
   },
   "claude-api-for-russia": {
@@ -272,7 +272,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "我如何开始试用？", a: "通过 Google 或 GitHub 创建新账户，价值 $10 的官方价用量会自动添加；邮箱密码账户不参与。" },
-      { q: "免费用量用完后会怎样？", a: "充值任意整数美元金额即可继续；你的递进折扣会立即生效。" },
+      { q: "免费用量用完后会怎样？", a: "充值任意整数美元金额即可继续；你的统一折扣会立即生效。" },
     ],
   },
   "claude-code-without-subscription": {
@@ -303,7 +303,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-opus-api": {
     title: "Claude Opus API 访问",
     h1: "通过 API 使用 Claude Opus 4.8",
-    description: "通过一把 apitoken.sale 密钥以最高低于官方费率 70% 的价格访问 Claude Opus 4.8 和 4.7。最适合复杂推理、重构与长时间的智能体会话。",
+    description: "通过一把 apitoken.sale 密钥以统一低于官方费率 50% 的价格访问 Claude Opus 4.8 和 4.7。最适合复杂推理、重构与长时间的智能体会话。",
     keywords: ["claude opus api", "claude opus 4.8 api", "opus api 密钥", "claude opus 价格", "claude opus 折扣"],
     dek: "Opus 是 Claude 能力最强的档位——面对高难度推理、架构设计和长时间智能体运行时应当选它。apitoken.sale 让你在与其他模型相同的密钥和余额上使用 Opus 4.8 和 4.7。",
     sections: [
@@ -316,9 +316,9 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "在你的余额上使用 Opus", blocks: [
         { type: "p", text: "Opus 4.8（模型 ID claude-opus-4-8）和 Opus 4.7 按官方 token 费率减去你的折扣计费，因此你能以标价的一小部分用上顶级档位。" },
-        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−70%）"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站（−50%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
         ] },
         { type: "link", text: "Claude Opus 4.8 详细价格（缓存、上下文、FAQ）", href: "/models/claude-opus-4-8" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
@@ -332,7 +332,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-sonnet-api": {
     title: "Claude Sonnet API 访问",
     h1: "通过 API 使用 Claude Sonnet",
-    description: "通过 apitoken.sale 使用 Claude Sonnet 5 和 Sonnet 4.6——日常编码与智能体的默认模型，最高享受官方 API 价格 70% 的折扣。",
+    description: "通过 apitoken.sale 使用 Claude Sonnet 5 和 Sonnet 4.6——日常编码与智能体的默认模型，统一享受官方 API 价格 50% 的折扣。",
     keywords: ["claude sonnet api", "claude sonnet 5 api", "sonnet api 密钥", "claude sonnet 价格", "最适合编码的 claude 模型"],
     dek: "Sonnet 是主力：足够快，适合交互式编码；又足够聪明，胜任真正的智能体工作流。apitoken.sale 在一份折扣余额上提供 Sonnet 5 和 Sonnet 4.6。",
     sections: [
@@ -341,9 +341,9 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "Sonnet 定价说明", blocks: [
         { type: "p", text: "Claude Sonnet 5（claude-sonnet-5）采用介绍期官方费率，引擎始终在套用你的折扣前应用当前有效费率。Sonnet 4.6 仍可在同一把密钥上使用。" },
-        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−70%）"], rows: [
-          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站（−50%）"], rows: [
+          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
         ] },
         { type: "link", text: "Claude Sonnet 5 详细价格（缓存、上下文、FAQ）", href: "/models/claude-sonnet-5" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
@@ -371,8 +371,8 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "一把密钥混用多种模型", blocks: [
         { type: "p", text: "由于所有模型共用一把密钥和余额，你可以把廉价工作路由给 Haiku（claude-haiku-4-5），只把高难度请求升级到 Sonnet 或 Opus。" },
-        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−70%）"], rows: [
-          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站（−50%）"], rows: [
+          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
         ] },
         { type: "link", text: "Claude Haiku 4.5 详细价格（缓存、上下文、FAQ）", href: "/models/claude-haiku-4-5" },
       ] },
@@ -385,7 +385,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "用于 Cursor 的 Claude API 密钥",
     h1: "在 Cursor 中使用 Claude API 密钥",
-    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic Base URL 设为 api.apitoken.sale，粘贴密钥，选择模型，即可以最高 70% 折扣编码。",
+    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic Base URL 设为 api.apitoken.sale，粘贴密钥，选择模型，即可以统一 50% 折扣编码。",
     keywords: ["用于 cursor 的 claude api 密钥", "cursor claude api", "cursor anthropic 密钥", "在 cursor 中用 claude", "不买 cursor pro 用 cursor"],
     dek: "Cursor 允许你自带 Anthropic 密钥，这意味着你可以用折扣预付余额在 Cursor 中运行 Claude，而不必依赖捆绑套餐。",
     sections: [
@@ -449,7 +449,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "cursor-without-anthropic-account": {
     title: "无需 Anthropic 账户在 Cursor 中用 Claude",
     h1: "无需 Anthropic 账户在 Cursor 中运行 Claude",
-    description: "没有 Anthropic 账户？改用 apitoken.sale 密钥在 Cursor 中使用 Claude。即时开通，支持银行卡或加密货币支付，官方费率最高立省 70%。",
+    description: "没有 Anthropic 账户？改用 apitoken.sale 密钥在 Cursor 中使用 Claude。即时开通，支持银行卡或加密货币支付，官方费率统一立省 50%。",
     keywords: ["无 anthropic 账户用 cursor", "cursor claude 无 anthropic", "cursor claude api 密钥", "不用 anthropic 账户用 claude"],
     dek: "如果你无法或不愿创建 Anthropic 账户，apitoken.sale 会签发自己的密钥，Cursor 会把它当作 Anthropic 提供方来接受。",
     sections: [
@@ -505,7 +505,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "apitoken-vs-anthropic-direct": {
     title: "apitoken.sale 对比 Anthropic 官方直购",
     h1: "apitoken.sale 对比直接向 Anthropic 购买",
-    description: "对比 apitoken.sale 与 Anthropic 官方直购：完全相同的 Messages API 和模型，但最高立省 70%、无需账户、支持银行卡或加密货币支付。",
+    description: "对比 apitoken.sale 与 Anthropic 官方直购：完全相同的 Messages API 和模型，但统一立省 50%、无需账户、支持银行卡或加密货币支付。",
     keywords: ["claude api 对比 anthropic 官方", "apitoken 对比 anthropic", "anthropic api 替代", "比 anthropic api 更便宜", "claude api 转售"],
     dek: "apitoken.sale 并不是另一套 API——它就是同一套 Anthropic Messages API，从预付余额中以折扣价转售。下面说明真正改变了什么、又没有改变什么。",
     sections: [
@@ -518,7 +518,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "发生改变的部分", blocks: [
         { type: "list", items: [
-          "价格：B2C 最高比官方消费低 70%。",
+          "价格：B2C 统一比官方消费低 50%。",
           "开通：无需 Anthropic 账户、排队或开票国家要求。",
           "支付：银行卡或加密货币。",
         ] },
@@ -530,7 +530,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "apitoken.sale 是真正的 Claude API 吗？", a: "是的——它提供同一套 Anthropic Messages API 和模型。只有定价和开通方式不同。" },
-      { q: "为什么它比 Anthropic 官方直购更便宜？", a: "余额是预付且汇集的，并对官方消费套用最高 70% 的递进折扣。" },
+      { q: "为什么它比 Anthropic 官方直购更便宜？", a: "余额是预付且汇集的，并对官方消费套用统一 50% 的折扣。" },
     ],
   },
   "apitoken-vs-openrouter": {
@@ -545,7 +545,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "是预付折扣，不是加价", blocks: [
         { type: "list", items: [
-          "递进式 B2C 折扣，官方 Claude 消费最高立省 70%。",
+          "B2C 统一折扣，官方 Claude 消费立省 50%。",
           "一把密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
           "银行卡或加密货币充值，永不过期。",
         ] },
@@ -579,7 +579,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "note", text: "由于一把密钥同时覆盖两者，你可以为每项任务路由到合适的档位，而无需在多个提供方之间来回切换。" },
         { type: "table", headers: ["", "Claude Opus 4.8", "Claude Sonnet 5"], rows: [
           ["官方价格（输入 / 输出 / 1M）", "$5 / $25", "$3 / $15"],
-          ["本站起价 −60%", "$2 / $10", "$1.20 / $6"],
+          ["本站（−50%）", "$2.50 / $12.50", "$1.50 / $7.50"],
           ["上下文窗口", "1M token", "1M token"],
           ["最适合", "高难推理、长程智能体运行", "日常编码与智能体"],
         ] },
@@ -595,7 +595,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-pricing-explained": {
     title: "Claude API 定价详解",
     h1: "Claude API 定价如何运作",
-    description: "了解 Claude API 定价：按 token 的输入与输出费率、提示缓存，以及 apitoken.sale 如何套用最高 70% 的递进折扣。",
+    description: "了解 Claude API 定价：按 token 的输入与输出费率、提示缓存，以及 apitoken.sale 如何套用统一 50% 的折扣。",
     keywords: ["claude api 定价", "claude api 成本", "claude api 定价如何运作", "claude token 定价", "anthropic api 定价详解"],
     dek: "Claude 按 token 计费——输入和输出分别计价——对缓存内容有折扣。apitoken.sale 保持这些机制完全一致，并在其上叠加一层折扣。",
     sections: [
@@ -610,25 +610,25 @@ export const learnZh: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "apitoken.sale 的折扣", blocks: [
-        { type: "p", text: "每次调用先换算为官方 Anthropic 消费，再减去你的折扣：B2C 从 60% 折扣起步，随累计充值增长最高可达 70%。每次请求都在控制台中以 token 级别的明细可见。" },
+        { type: "p", text: "每次调用先换算为官方 Anthropic 消费，再减去你的折扣：B2C 每个请求统一减去 50%。每次请求都在控制台中以 token 级别的明细可见。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "按模型划分的 Claude API token 价格", blocks: [
         { type: "p", text: "更大的模型每 token 更贵：Opus 是高端档，Sonnet 是均衡的默认选择，Haiku 最便宜。你的折扣适用于所有模型，因此排序不变，但每个价格都更低。" },
-        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站起价（−60%）", "最优（−70%）"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
-          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
-          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
+        { type: "table", headers: ["模型", "官方 输入 / 输出（$ / 1M）", "本站（−50%）"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
         ] },
         { type: "link", text: "含缓存费率与上下文窗口的模型页面", href: "/models" },
       ] },
     ],
     faq: [
       { q: "Claude API 如何定价？", a: "按 token 计费，分为输入和输出，缓存读取另有更便宜的费率。更大的模型每 token 成本更高。" },
-      { q: "折扣如何套用？", a: "先计算官方消费，再在扣减余额前减去你的 B2C 折扣（60% 直至 70%）。" },
-      { q: "Claude API 的 token 如何计价？", a: "按 token 计费，分输入和输出，缓存读取更便宜。apiToken.sale 在官方 token 费率之上再套用你 60–70% 的折扣。" },
+      { q: "折扣如何套用？", a: "先计算官方消费，再在扣减余额前减去你的 B2C 统一 50% 折扣。" },
+      { q: "Claude API 的 token 如何计价？", a: "按 token 计费，分输入和输出，缓存读取更便宜。apiToken.sale 在官方 token 费率之上再套用你 50% 的统一折扣。" },
     ],
   },
   "save-tokens-on-claude-api": {
@@ -661,7 +661,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "how-billing-works": {
     title: "apitoken.sale 的计费如何运作",
     h1: "计费如何运作",
-    description: "了解 apitoken.sale 的计费：预付余额、按官方费率的逐次请求计量、你的递进折扣，以及控制台中的 token 级用量。",
+    description: "了解 apitoken.sale 的计费：预付余额、按官方费率的逐次请求计量、你的统一折扣，以及控制台中的 token 级用量。",
     keywords: ["claude api 计费", "apitoken 计费如何运作", "预付 claude api", "claude api 用量追踪", "claude api 余额"],
     dek: "计费是预付且透明的。你充入一份余额，每次请求按官方消费减去你的折扣扣减，并提供可供你审计的完整明细。",
     sections: [
@@ -671,7 +671,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "逐次请求计量", blocks: [
         { type: "list", items: [
           "每次调用按 token 换算为官方 Anthropic 消费。",
-          "减去你当前的折扣（B2C 为 60% 直至 70%）。",
+          "减去你的统一折扣（B2C 为 50%）。",
           "净额从你的预付余额中扣除。",
         ] },
       ] },
@@ -771,7 +771,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "apitoken-vs-proxyapi": {
     title: "Claude 场景下 apiToken.sale 与 ProxyAPI 对比",
     h1: "apiToken.sale 与 ProxyAPI 对比",
-    description: "对比 Claude API 转售商：apiToken.sale 提供原生 Anthropic 端点、60–70% 的递进折扣、银行卡或加密货币支付，一把密钥通用所有模型。",
+    description: "对比 Claude API 转售商：apiToken.sale 提供原生 Anthropic 端点、统一 50% 折扣、银行卡或加密货币支付，一把密钥通用所有模型。",
     keywords: ["proxyapi 替代品", "apitoken 对比 proxyapi", "claude api 转售", "proxyapi claude", "不用 proxyapi 用 claude api"],
     dek: "两者都能让你无需 Anthropic 账户就用上 Claude。差别在于付款方式、能省多少，以及端点是否真正 Anthropic 原生。",
     sections: [
@@ -780,7 +780,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "是折扣，不是加价", blocks: [
         { type: "list", items: [
-          "递进式 B2C 折扣，官方 Claude 消费最高立省 70%。",
+          "B2C 统一折扣，官方 Claude 消费立省 50%。",
           "一把预付密钥、一份余额，通用 Opus、Sonnet 和 Haiku。",
           "银行卡或加密货币充值，永不过期。",
         ] },
@@ -788,14 +788,14 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "分别适合什么", blocks: [
         { type: "list", items: [
-          "apiToken.sale——带递进折扣、密钥终身累计消费上限和可选到期日期的原生 Anthropic 端点。",
+          "apiToken.sale——带统一折扣、密钥终身累计消费上限和可选到期日期的原生 Anthropic 端点。",
           "通用转售商——如果你已经在用它的其他提供方，可能适合你。",
           "两者都移除了 Anthropic 账户门槛；差别在于价格，以及 Claude 接入有多原生。",
         ] },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale 比普通转售商更便宜吗？", a: "它对官方 Claude 消费套用最高 70% 的递进折扣，而不是在标价之上再加价。" },
+      { q: "apiToken.sale 比普通转售商更便宜吗？", a: "它对官方 Claude 消费套用统一 50% 的折扣，而不是在标价之上再加价。" },
       { q: "我的 Anthropic 工具还能用吗？", a: "能——它是原生的 Anthropic Messages API，因此 Claude Code、Cursor 和 SDK 只需改一下 Base URL。" },
     ],
   },
@@ -808,7 +808,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     sections: [
       { h2: "各司其职", blocks: [
         { type: "p", text: "Portkey 在你自带的 API 密钥之上增加路由、缓存和可观测能力。它并不向你出售 Claude 权限或折扣——背后你仍需一个已充值的 Anthropic 账户。" },
-        { type: "p", text: "apitoken.sale 才是密钥和余额的来源：一个位于 https://api.apitoken.sale 的原生 Anthropic 端点，最高立省 70%，且无需 Anthropic 账户。" },
+        { type: "p", text: "apitoken.sale 才是密钥和余额的来源：一个位于 https://api.apitoken.sale 的原生 Anthropic 端点，统一立省 50%，且无需 Anthropic 账户。" },
       ] },
       { h2: "两者甚至可以组合", blocks: [
         { type: "p", text: "如果你喜欢 Portkey 的可观测能力，可以把 apiToken.sale 密钥设为它的 Anthropic 厂商，从而在底层享受折扣。" },
@@ -831,7 +831,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "LiteLLM：你自己运行和维护代理，并且仍要自行为每个提供方充值。",
           "apiToken.sale：完全托管的原生 Anthropic 端点，无需管理任何基础设施。",
-          "apiToken.sale 对 Claude 消费提供 60–70% 的折扣，这是裸代理做不到的。",
+          "apiToken.sale 对 Claude 消费提供 50% 的统一折扣，这是裸代理做不到的。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
@@ -874,7 +874,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-max-plan-vs-api": {
     title: "Claude Max 订阅与 Claude API 对比",
     h1: "Claude Max 订阅与 API 对比",
-    description: "何时该用 Claude 订阅、何时该用 Claude API。apiToken.sale 提供按量付费的全模型 API 权限，无月费，最高立省 70%。",
+    description: "何时该用 Claude 订阅、何时该用 Claude API。apiToken.sale 提供按量付费的全模型 API 权限，无月费，统一立省 50%。",
     keywords: ["claude max 订阅", "claude 订阅还是 api", "claude max 对比 api", "claude api 按量付费", "claude 免订阅"],
     dek: "固定的 Claude 订阅和按量付费的 API 计费适合不同的使用场景。对于程序化和突发式的使用，预付余额上的 API 通常更划算。",
     sections: [
@@ -885,7 +885,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "只为实际用掉的 token 付费——没有月度保底。",
           "一把密钥驱动 Claude Code、Cursor、智能体和生产环境调用。",
-          "apiToken.sale 在官方 token 费率上再享最高 70% 折扣。",
+          "apiToken.sale 在官方 token 费率上再享统一 50% 折扣。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
@@ -918,14 +918,14 @@ export const learnZh: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "为什么选择 apiToken.sale",
     h1: "为什么选择 apiToken.sale",
-    description: "开发者选择 apiToken.sale 使用 Claude 和 GPT 的理由：官方 Anthropic 与 OpenAI 兼容 API 最高便宜 70%，无需提供商账户即时开通，支持银行卡或加密货币支付。",
+    description: "开发者选择 apiToken.sale 使用 Claude 和 GPT 的理由：官方 Anthropic 与 OpenAI 兼容 API 统一便宜 50%，无需提供商账户即时开通，支持银行卡或加密货币支付。",
     keywords: ["为什么选 apitoken.sale", "最佳 claude api 服务商", "claude api 折扣服务商", "openai 兼容 api", "claude api 无需 anthropic 账号"],
     dek: "apiToken.sale 只为一件事而生：同一套 Claude 和 GPT API，更便宜、更好上手。一个密钥、一份余额、两个官方 API 表面——以下是它在实践中的意义。",
     sections: [
       { h2: "一句话版本", blocks: [
         { type: "list", items: [
           "一模一样的 Anthropic Messages API 和所有当前的 Claude 模型，外加带 GPT-5 系列的 OpenAI 兼容 API（Responses 与 Chat Completions）。",
-          "在永不过期的预付余额上，官方消费最高立省 70%——同一条折扣轨道覆盖两家提供商。",
+          "在永不过期的预付余额上，官方消费统一立省 50%——同一费率覆盖两家提供商。",
           "即时、自助开通——无需 Anthropic 或 OpenAI 账户、无需排队、不限计费国家。",
           "支持银行卡或加密货币付款。",
           "每把密钥可选终身累计消费上限和到期日期，并在控制台查看 token 级用量明细。",
@@ -933,19 +933,19 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获价值 $10 的 Claude 官方价格用量；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "同一余额上的折扣 API token", blocks: [
-        { type: "p", text: "把它当作打折出售的 Claude 和 GPT API token：你一次性充值余额，享受官方 token 费率最高 70% 的折扣，并在两家提供商的所有模型和工具上使用。余额永不过期，也没有订阅。" },
+        { type: "p", text: "把它当作打折出售的 Claude 和 GPT API token：你一次性充值余额，享受官方 token 费率统一 50% 的折扣，并在两家提供商的所有模型和工具上使用。余额永不过期，也没有订阅。" },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude 和 GPT API，最高便宜 70%，即时开通、无需提供商账户，支持银行卡或加密货币付款。" },
+      { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude 和 GPT API，统一便宜 50%，即时开通、无需提供商账户，支持银行卡或加密货币付款。" },
       { q: "API 有任何改动吗？", a: "没有——协议、模型和响应都是标准的 Anthropic 与 OpenAI 兼容版本。只有价格和开通方式不同。" },
-      { q: "apiToken.sale 是什么？", a: "一个独立的多提供商 API 网关，以折扣价预付出售官方 Anthropic API 和 OpenAI 兼容 API 的访问权——同样的模型，最高便宜 70%，无需提供商账户。" },
+      { q: "apiToken.sale 是什么？", a: "一个独立的多提供商 API 网关，以折扣价预付出售官方 Anthropic API 和 OpenAI 兼容 API 的访问权——同样的模型，统一便宜 50%，无需提供商账户。" },
     ],
   },
   "claude-api-gateway": {
     title: "什么是 Claude API 网关？",
     h1: "Claude API 网关是什么",
-    description: "Claude API 网关位于你的工具和 Anthropic 之间，增加接入、计费和管控能力。apitoken.sale 是一个带 60–70% 折扣的原生网关。",
+    description: "Claude API 网关位于你的工具和 Anthropic 之间，增加接入、计费和管控能力。apitoken.sale 是一个带统一 50% 折扣的原生网关。",
     keywords: ["claude api 网关", "什么是 api 网关", "anthropic 网关", "claude 代理", "claude api 接入层"],
     dek: "网关是介于你的代码和模型提供方之间的一层薄薄的中间层。好的 Claude 网关对你的工具是透明的，同时改善接入、价格和管控。",
     sections: [
@@ -1082,7 +1082,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-code-api-key": {
     title: "用 API 密钥配置 Claude Code",
     h1: "用 apitoken.sale 密钥运行 Claude Code",
-    description: "只需两个环境变量即可为 Claude Code 配置 apitoken.sale 密钥，用预付余额以最高 70% 折扣运行所有 Claude 模型。",
+    description: "只需两个环境变量即可为 Claude Code 配置 apitoken.sale 密钥，用预付余额以统一 50% 折扣运行所有 Claude 模型。",
     keywords: ["claude code api 密钥", "claude code 配置", "claude code anthropic base url", "claude code 自定义密钥", "低成本运行 claude code"],
     dek: "Claude Code 读取两个环境变量。把它们指向 apitoken.sale，即可保留全部功能，同时按折扣预付余额计费。",
     sections: [
@@ -1108,9 +1108,9 @@ export const learnZh: Record<string, LocalizedContent> = {
   "openai-api-quickstart": {
     title: "OpenAI 兼容 API 快速上手——一个密钥调用 GPT-5.6",
     h1: "OpenAI 兼容 API 快速上手：Responses 与 Chat Completions",
-    description: "通过 apiToken.sale 的 OpenAI 兼容 API 运行 GPT-5.6 模型——Responses 与 Chat Completions 支持 SSE 流式输出，一个 sk-pool 密钥与 Claude 共用余额，享 60–70% 折扣。",
+    description: "通过 apiToken.sale 的 OpenAI 兼容 API 运行 GPT-5.6 模型——Responses 与 Chat Completions 支持 SSE 流式输出，一个 sk-pool 密钥与 Claude 共用余额，享统一 50% 折扣。",
     keywords: ["openai 兼容 api", "gpt-5.6 api", "responses api", "chat completions 自定义 base url", "openai sdk base_url", "gpt api 密钥", "gpt-5.6 价格"],
-    dek: "你的 sk-pool 密钥不只是 Claude 专用。同一个密钥和预付余额还通过 OpenAI 兼容端点提供 GPT-5 系列——标准的 Responses 与 Chat Completions 调用、官方 OpenAI SDK、SSE 流式输出，以及同样的 60–70% 折扣。",
+    dek: "你的 sk-pool 密钥不只是 Claude 专用。同一个密钥和预付余额还通过 OpenAI 兼容端点提供 GPT-5 系列——标准的 Responses 与 Chat Completions 调用、官方 OpenAI SDK、SSE 流式输出，以及同样的统一 50% 折扣。",
     sections: [
       { h2: "三步完成第一次 GPT 调用", blocks: [
         { type: "steps", items: [
@@ -1140,7 +1140,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "推理强度可按请求调整——所有模型支持 none 到 xhigh，GPT-5.6 系列还支持 max。",
           "所有模型支持文本与图片输入，并在 Responses 和 Chat Completions 上提供 SSE 流式输出。",
           "超过 272K 输入 token 的请求按 OpenAI 长上下文费率计费：整个请求输入 2 倍、输出 1.5 倍。",
-          "你的 B2C 折扣与 Claude 用量完全一致——一个余额、一个档位，按官方费用 60–70% 折扣。",
+          "你的 B2C 折扣与 Claude 用量完全一致——一个余额、一个费率，按官方费用 50% 折扣。",
         ] },
         { type: "link", text: "完整的模型规格与折后价格", href: "/models" },
       ] },
@@ -1153,15 +1153,15 @@ export const learnZh: Record<string, LocalizedContent> = {
       { q: "同一个密钥真的能同时用于 Claude 和 GPT 吗？", a: "能。一个 sk-pool 密钥和一个预付余额覆盖两个表面：api.apitoken.sale 上的 Anthropic Messages API 用于 Claude 模型，openai.api.apitoken.sale/v1 上的 OpenAI 兼容 API 用于 GPT 模型。折扣也共用。" },
       { q: "OpenAI 兼容端点使用哪个认证头？", a: "Authorization: Bearer sk-pool-…。x-api-key 仅用于 Anthropic 表面——把它发给 OpenAI 端点会返回 401。" },
       { q: "选 Responses 还是 Chat Completions？", a: "两者都支持 SSE 流式输出。新代码和官方 SDK 用 Responses；需要经典形状的客户端和框架用 Chat Completions。" },
-      { q: "GPT 用量如何计费？", a: "按官方 OpenAI 费率逐 token 计费——包括缓存输入和长上下文定价——然后在计入预付余额前减去你当前的 60–70% B2C 折扣，与 Claude 用量完全一致。" },
+      { q: "GPT 用量如何计费？", a: "按官方 OpenAI 费率逐 token 计费——包括缓存输入和长上下文定价——然后在计入预付余额前减去你的 50% B2C 统一折扣，与 Claude 用量完全一致。" },
     ],
   },
   "codex-cli-setup": {
     title: "用 apiToken.sale 配置 Codex CLI——GPT-5.6 配置档",
     h1: "在 apiToken.sale 上运行 Codex CLI",
-    description: "用指向 apiToken.sale OpenAI 兼容端点的命名 model_providers 配置档配置 Codex CLI——GPT-5.6 模型按预付余额最高 70% 折扣计费，无需 ChatGPT 账户。",
+    description: "用指向 apiToken.sale OpenAI 兼容端点的命名 model_providers 配置档配置 Codex CLI——GPT-5.6 模型按预付余额统一 50% 折扣计费，无需 ChatGPT 账户。",
     keywords: ["codex cli 配置", "codex config.toml", "codex 自定义模型提供商", "codex api 密钥", "codex cli gpt-5.6", "codex responses api", "codex cli 无需 chatgpt"],
-    dek: "只要给 Codex CLI 一个自定义模型提供商，它就能完全以 API 密钥认证运行。一个 TOML 配置档把它指向 apiToken.sale，预付余额覆盖每次会话——无需登录 ChatGPT，比官方费用最多便宜 70%。",
+    dek: "只要给 Codex CLI 一个自定义模型提供商，它就能完全以 API 密钥认证运行。一个 TOML 配置档把它指向 apiToken.sale，预付余额覆盖每次会话——无需登录 ChatGPT，比官方费用统一便宜 50%。",
     sections: [
       { h2: "创建配置档", blocks: [
         { type: "p", text: "将以下内容保存为 ~/.codex/apitoken.config.toml。命名配置档不会改动你的默认 Codex 配置和可能的 ChatGPT 登录——每次运行显式选择启用。" },
@@ -1191,7 +1191,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     faq: [
       { q: "需要 ChatGPT 账户或订阅吗？", a: "不需要。配置好自定义 model_providers 配置档并把提供商的 API 密钥放入环境后，Codex 完全以 API 密钥认证运行——auth.json 里的 ChatGPT 登录与此无关。" },
       { q: "这会改变我的默认 Codex 配置吗？", a: "不会。配置档在独立文件中，只有传入 --profile apitoken 时才生效。默认配置和登录保持不变。" },
-      { q: "折扣与 Claude 相同吗？", a: "相同。GPT-5.6 用量按官方 OpenAI token 费率计量，你当前的 B2C 折扣——60% 到 70%——作用于同一个预付余额。" },
+      { q: "折扣与 Claude 相同吗？", a: "相同。GPT-5.6 用量按官方 OpenAI token 费率计量，你的 B2C 统一 50% 折扣作用于同一个预付余额。" },
       { q: "wire_api 选 Responses 还是 Chat Completions？", a: "用 wire_api = \"responses\"——网关两者都提供，而 Codex 围绕 Responses 流构建。Chat Completions 形状是为需要的客户端准备的。" },
     ],
   },
@@ -1286,7 +1286,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-langchain": {
     title: "在 LangChain 中使用 Claude API",
     h1: "在 LangChain 中使用 Claude API",
-    description: "通过 apitoken.sale 将 LangChain 接入 Claude：把 ChatAnthropic 指向 api.apitoken.sale，模型 ID 保持不变，每 token 费用降低 60–70%。",
+    description: "通过 apitoken.sale 将 LangChain 接入 Claude：把 ChatAnthropic 指向 api.apitoken.sale，模型 ID 保持不变，每 token 费用降低 50%。",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 密钥"],
     dek: "LangChain 的 Anthropic 集成支持自定义 API URL，因此只改两行，你的链和智能体就能通过 apitoken.sale 运行 Claude——同样的模型，更低的 token 单价。",
     sections: [
@@ -1316,7 +1316,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-litellm": {
     title: "在 LiteLLM 中使用 Claude API",
     h1: "在 LiteLLM 中使用 Claude API",
-    description: "通过 apitoken.sale 将 LiteLLM 路由到 Claude：在 litellm_params 或代理配置中把 api_base 设为 api.apitoken.sale，每 token 费用降低 60–70%。",
+    description: "通过 apitoken.sale 将 LiteLLM 路由到 Claude：在 litellm_params 或代理配置中把 api_base 设为 api.apitoken.sale，每 token 费用降低 50%。",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 代理 claude"],
     dek: "LiteLLM 原生支持 Anthropic，并允许为每个模型覆盖端点——一行配置即可把你全部的 Claude 流量送经折扣网关。",
     sections: [
@@ -1345,7 +1345,7 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-aider": {
     title: "在 Aider 中使用 Claude API",
     h1: "在 Aider 中使用 Claude API",
-    description: "通过 apitoken.sale 在 Claude 上运行 Aider：导出 ANTHROPIC_API_BASE 和密钥，选一个 Claude 模型，以 60–70% 的折扣在终端结对编程。",
+    description: "通过 apitoken.sale 在 Claude 上运行 Aider：导出 ANTHROPIC_API_BASE 和密钥，选一个 Claude 模型，以统一 50% 的折扣在终端结对编程。",
     keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api 密钥"],
     dek: "Aider 是终端里的结对程序员，长会话烧 token 很快。用两个环境变量把它指向折扣网关，工作流保持原样。",
     sections: [
@@ -1366,13 +1366,13 @@ export const learnZh: Record<string, LocalizedContent> = {
     faq: [
       { q: "Aider 支持自定义 Claude 端点吗？", a: "支持。Aider 对 Anthropic 模型使用 LiteLLM，而 LiteLLM 读取 ANTHROPIC_API_BASE 环境变量——把它设为 https://api.apitoken.sale，然后正常启动 Aider 即可。" },
       { q: "在 Aider 里哪个 Claude 模型最好？", a: "claude-sonnet-5 是大多数编码工作的最佳默认；最难的多文件任务切到 claude-opus-4-8。两者共用同一把密钥。" },
-      { q: "长 Aider 会话能便宜多少？", a: "每个请求按官方 token 费率计费再减去你 60–70% 的折扣，直连要花 $10 的会话在这里只需 $3–4。" },
+      { q: "长 Aider 会话能便宜多少？", a: "每个请求按官方 token 费率计费再减去你 50% 的统一折扣，直连要花 $10 的会话在这里只需 $5。" },
     ],
   },
   "claude-api-roo-code": {
     title: "在 Roo Code 中使用 Claude API",
     h1: "在 Roo Code 中使用 Claude API",
-    description: "通过 apitoken.sale 将 VS Code 中的 Roo Code 接入 Claude：选择 Anthropic 提供方，启用自定义 base URL，粘贴密钥，以 60–70% 的折扣编码。",
+    description: "通过 apitoken.sale 将 VS Code 中的 Roo Code 接入 Claude：选择 Anthropic 提供方，启用自定义 base URL，粘贴密钥，以统一 50% 的折扣编码。",
     keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code 自定义 base url", "roo code api 密钥"],
     dek: "Roo Code 是带原生 Anthropic 提供方和自定义 base URL 选项的智能体 VS Code 扩展——在折扣网关上两分钟即可完成设置。",
     sections: [
@@ -1385,7 +1385,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "note", text: "新账户开通即获得价值 $10 的 Claude 用量（按官方 API 价格计），足够你接通工具并在充值前跑通真实调用。" },
       ] },
       { h2: "Roo Code 为什么烧 token——以及如何少花钱", blocks: [
-        { type: "p", text: "智能体扩展会循环地读文件、规划、编辑、复查，一个任务可能跑很多次模型调用。这正是按 token 折扣最有价值的负载：同样的会话便宜 60–70%，控制台里还有 token 级明细。" },
+        { type: "p", text: "智能体扩展会循环地读文件、规划、编辑、复查，一个任务可能跑很多次模型调用。这正是按 token 折扣最有价值的负载：同样的会话便宜 50%，控制台里还有 token 级明细。" },
         { type: "list", items: [
           "日常任务走 claude-sonnet-5，难题交给 claude-opus-4-8。",
           "提示缓存按更便宜的官方缓存费率计费，再叠加你的折扣。",

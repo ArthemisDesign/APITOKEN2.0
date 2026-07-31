@@ -359,11 +359,11 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
     ? [...ledger].sort((left, right) => ledgerMs(right.timestamp) - ledgerMs(left.timestamp)).slice(0, 3)
     : [];
   const pricing = account.pricing;
-  const progressivePricing = pricing?.customerType === "b2c" && !isPartnerRate(account) ? pricing : null;
-  const isProgressive = progressivePricing !== null;
+  const flatPricing = pricing?.customerType === "b2c" && !isPartnerRate(account) ? pricing : null;
+  const isFlat = flatPricing !== null;
   const pricingTitle = !pricing ? copy.standardPricing
     : pricing.customerType === "b2b" ? copy.businessAgreement
-      : isPartnerRate(account) ? copy.partnerRate : tierName(copy, pricing.tier);
+      : isPartnerRate(account) ? copy.partnerRate : copy.flatRate;
   const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
 
   let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
@@ -442,27 +442,12 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
       <article className="card overview-metric-card overview-pricing-card">
         <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
         <strong>{pricingTitle}</strong>
+        <p>{isFlat ? copy.flatRateSummary : copy.fixedRateSummary}</p>
         <div className="overview-pricing-facts">
           <span><small>{copy.discount}</small><b>{discount}%</b></span>
           <span><small>{copy.valueMultiplier}</small><b>{formatMultiplier(multiplierBp)}</b></span>
         </div>
-      </article>
-
-      <article className="card overview-metric-card overview-milestone-card">
-        {progressivePricing?.nextTier ? <>
-          <div className="overview-card-head"><span className="overview-card-label">{copy.nextMilestone}</span><span className="overview-metric-mark" aria-hidden="true">→</span></div>
-          <strong>{tierName(copy, progressivePricing.nextTier.tier)} · {progressivePricing.nextTier.discountPercent}%</strong>
-          <p>{interpolate(copy.remainingToUnlock, { amount: formatNanoUsd(progressivePricing.nextTier.remainingNano) })}</p>
-          <div className="overview-progress" role="progressbar" aria-label={copy.tierProgressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano)))}>
-            <span style={{ width: `${boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano))}%` }} />
-          </div>
-          <small>{interpolate(copy.topupsTowardTier, { current: formatNanoUsd(progressivePricing.spentNano), target: formatNanoUsd(progressivePricing.nextTier.spendThresholdNano) })}</small>
-        </> : <>
-          <div className="overview-card-head"><span className="overview-card-label">{isProgressive ? copy.milestonesComplete : copy.pricingTerms}</span><span className="overview-metric-mark" aria-hidden="true">✓</span></div>
-          <strong>{isProgressive ? copy.highestTierReached : copy.fixedRate}</strong>
-          <p>{isProgressive ? copy.highestTierSummary : copy.fixedRateSummary}</p>
-        </>}
-        <Link className="link overview-card-link" href={`${DOCS_URL}#pricing`}>{copy.howTiersWork} →</Link>
+        <Link className="link overview-card-link" href="/plans">{copy.howPricingWorks} →</Link>
       </article>
     </div>
 
@@ -526,21 +511,14 @@ function formatOverviewActivityTime(timestamp: string, language: "en" | "ru"): s
   });
 }
 
-function tierName(copy: DashboardCopy, tier: string): string {
-  const names: Record<string, string> = {
-    starter: copy.tierStarter, builder: copy.tierBuilder, pro: copy.tierPro, studio: copy.tierStudio, scale: copy.tierScale,
-  };
-  return names[tier] ?? tier;
-}
-
 function interpolate(template: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
 // --- Партнёрская (фиксированная) скидка по реф-ссылке сейлза ---
 // Реферал остаётся b2c, но commerce ставит ему «пол» скидки (referral_floor_bps): фиксированная
-// ставка поверх/вместо прогрессивных тиров. Если floor > 0 — дашборд показывает её как партнёрскую,
-// а реальная доля оплаты берётся из effectiveMultiplierBp (пол переопределяет тир).
+// ставка вместо плоских 50%. Если floor > 0 — дашборд показывает её как партнёрскую,
+// а реальная доля оплаты берётся из effectiveMultiplierBp (поле переопределяет плоскую ставку).
 function partnerFloorBps(account: AccountView): number {
   const p = account.pricing;
   return p && p.customerType === "b2c" ? (p.referralFloorBps ?? 0) : 0;
@@ -550,15 +528,15 @@ function isPartnerRate(account: AccountView): boolean {
 }
 
 // --- Скидка → сколько реального Claude API получает клиент ---
-// multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
+// multiplierBp = доля оплаты в базисных пунктах (5000 = платит 50% = скидка 50% = ×2 ценности).
 function paymentBasisPoints(account: AccountView): bigint {
   const p = account.pricing;
-  // Партнёрский пол перекрывает тир: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
+  // Партнёрский пол перекрывает плоскую ставку: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
   if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0 && p.effectiveMultiplierBp && p.effectiveMultiplierBp > 0) {
     return BigInt(p.effectiveMultiplierBp);
   }
   const bp = p?.multiplierBp ?? account.markupBasisPoints;
-  return BigInt(bp && bp > 0 ? bp : 4_000);
+  return BigInt(bp && bp > 0 ? bp : 5_000);
 }
 function discountOf(account: AccountView): number {
   const p = account.pricing;
@@ -607,15 +585,6 @@ function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits
   const whole = scaled / scale;
   const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
   return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
-}
-function boundedRatio(numerator: bigint, denominator: bigint): number {
-  if (denominator <= 0n || numerator <= 0n) return 0;
-  const scale = 1_000_000n;
-  const bounded = bigintMax(0n, numerator > denominator ? denominator : numerator);
-  return Number(bounded * scale / denominator) / Number(scale);
-}
-function boundedPercent(numerator: bigint, denominator: bigint): number {
-  return boundedRatio(numerator, denominator) * 100;
 }
 function bigintMax(left: bigint, right: bigint): bigint { return left > right ? left : right; }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }

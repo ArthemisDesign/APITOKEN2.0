@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { DOCS_URL } from "@/lib/site-links";
 import { JsonLd } from "@/components/json-ld";
-import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
+import { B2C_DISCOUNT_PERCENT, officialUsageForTopup } from "@/lib/pricing-tiers";
 import { PricingOverview } from "@/components/pricing-overview";
 import { CostCalculator } from "@/components/cost-calculator";
 import { T } from "@/components/translated";
@@ -39,7 +39,7 @@ const flow = [
 ] as const;
 
 const faqItems = [
-  { question: "q1", answer: "a1", q: "How much does API access cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C progresses from 60% to 70% off, while B2B pricing is negotiated." },
+  { question: "q1", answer: "a1", q: "How much does API access cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C takes a flat 50% off every request, while B2B pricing is negotiated." },
   { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $10 of API usage at official prices, valid on Claude and GPT models. Email and password accounts are not eligible." },
   { question: "q3", answer: "a3", q: "Which models are available?", a: "The Claude line — Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5 — plus the GPT line — GPT-5.6 Sol, Terra and Luna, GPT-5.5 and GPT-5.4. One balance and one API key cover every model." },
   { question: "q4", answer: "a4", q: "Which model is best for coding?", a: "For agentic coding and long sessions, Claude Opus and Sonnet and GPT-5.6 Sol give the best results; Claude Haiku and GPT-5.6 Luna are ideal for fast, cheap calls." },
@@ -108,7 +108,7 @@ const homeJsonLd = {
 
 export default function HomePage() {
   return <><JsonLd data={homeJsonLd} /><main>
-      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="10+" label="stat1" /><Stat value="2" label="stat2" /><Stat value="60–70%" label="stat3" /><Stat value="2" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
+      <div className="hero"><div className="wrap hero-grid"><div><T k="hero_eyebrow" as="span" className="eyebrow">Claude API · One gateway</T><h1 className="hero-h1"><T k="hero_h1a" as="span" className="hero-h1-main">Buy Claude API access</T><T k="hero_h1b" as="span" className="hero-sub">Same as official, but cheaper</T></h1><ul className="hero-points">{heroPoints.map((point) => <li key={point.k}><span className="hp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">{heroIcons[point.ic]}</svg></span><T k={point.k}>{point.en}</T></li>)}</ul><div className="hero-cta"><Link className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></Link><Link className="btn btn-ghost" href={DOCS_URL} target="_blank" rel="noreferrer"><T k="hero_cta2">Read documentation</T></Link></div></div><HeroDiscount /></div><div className="wrap home-stats"><div className="stats reveal"><Stat value="10+" label="stat1" /><Stat value="2" label="stat2" /><Stat value="50%" label="stat3" /><Stat value="2" label="stat4" /><div className="stat"><T k="stat5v" as="b">minutes</T><T k="stat5">Setup time</T></div></div></div></div>
       <section id="products"><div className="wrap"><SectionHead eyebrow="prod_eyebrow" title="prod_h2" lead="prod_lead" />
         <div className="home-calc" data-reveal><CostCalculator /><p className="home-calc-more"><Link href="/tools/claude-api-cost-calculator"><T k="home_calc_more">Full calculator — prompt caching, every model &amp; pricing FAQ →</T></Link></p></div>
       </div></section>
@@ -137,10 +137,9 @@ export default function HomePage() {
     </main></>;
 }
 
-// Сколько официального Claude API получит клиент за пополнение `payUsd`: тир по накопленной сумме → скидка → номинал.
+// Сколько официального Claude API получит клиент за пополнение `payUsd`: плоская скидка 50% → номинал ×2.
 function pricingForTopup(payUsd: number) {
-  const tier = B2C_PRICING_MILESTONES.filter((milestone) => payUsd >= Number(milestone.platformSpendUsd)).at(-1) ?? B2C_PRICING_MILESTONES[0];
-  return { pay: payUsd, get: Math.round(payUsd / (1 - tier.discountPercent / 100)), discount: tier.discountPercent };
+  return { pay: payUsd, get: Math.round(officialUsageForTopup(payUsd)), discount: B2C_DISCOUNT_PERCENT };
 }
 const heroTopups = [10, 100, 1000].map(pricingForTopup);
 
@@ -158,7 +157,7 @@ function HeroDiscount() {
     </div>
     <div className="offer-rate-head">
       <T k="offer_note" as="h3">Your balance goes further</T>
-      <T k="offer_note_detail" as="p">B2C discounts start at 60% off</T>
+      <T k="offer_note_detail" as="p">Flat 50% B2C discount on every request</T>
     </div>
     <div className="offer-value-table">
       <div className="offer-table-head">
@@ -166,10 +165,10 @@ function HeroDiscount() {
         <T k="offer_discount" as="span">Discount</T>
         <T k="offer_in_api" as="span">Claude API value</T>
       </div>
-      <ul className="offer-tiers">{heroTopups.map((tier, index) => <li key={tier.pay} className={index === heroTopups.length - 1 ? "ot ot-best" : "ot"}>
-        <span className="ot-pay"><b>${tier.pay.toLocaleString("en-US")}</b></span>
-        <span className="ot-rate"><i>−{tier.discount}%</i><span aria-hidden="true">→</span></span>
-        <span className="ot-get"><b>${tier.get.toLocaleString("en-US")}</b></span>
+      <ul className="offer-tiers">{heroTopups.map((row, index) => <li key={row.pay} className={index === heroTopups.length - 1 ? "ot ot-best" : "ot"}>
+        <span className="ot-pay"><b>${row.pay.toLocaleString("en-US")}</b></span>
+        <span className="ot-rate"><i>−{row.discount}%</i><span aria-hidden="true">→</span></span>
+        <span className="ot-get"><b>${row.get.toLocaleString("en-US")}</b></span>
       </li>)}</ul>
     </div>
   </aside>;

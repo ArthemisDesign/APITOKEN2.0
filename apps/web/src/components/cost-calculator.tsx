@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { claudeModels, openaiModels } from "@/lib/models";
-import { B2C_PRICING_MILESTONES } from "@/lib/pricing-tiers";
+import { B2C_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 
 /**
  * Free Claude/GPT API cost calculator — framed around whole real tasks, not single requests.
@@ -150,13 +150,9 @@ const TASKS: Task[] = [
 
 const DEFAULT_TASK = 0; // "A month of coding"
 
-// Discount tiers mirror the live B2C ladder — never a local copy that can drift.
-const TIERS = B2C_PRICING_MILESTONES.map((milestone) => ({
-  label: milestone.label,
-  discount: milestone.discountPercent,
-  free: milestone.platformSpendUsd === "0",
-  topup: Number(milestone.platformSpendUsd),
-}));
+// Flat B2C pricing: one 50% discount on every request — no tiers to pick.
+const DISCOUNT = B2C_DISCOUNT_PERCENT;
+const MULT = 1 - DISCOUNT / 100;
 
 function usd(v: number): string {
   if (!isFinite(v) || v <= 0) return "$0.00";
@@ -189,15 +185,14 @@ export function CostCalculator() {
   const [outTok, setOutTok] = useState(TASKS[DEFAULT_TASK].output);
   const [cacheR, setCacheR] = useState(TASKS[DEFAULT_TASK].cacheR);
   const [cacheW, setCacheW] = useState(TASKS[DEFAULT_TASK].cacheW);
-  const [tier, setTier] = useState(0);
   const [selected, setSelected] = useState(CLAUDE_MODELS[0].id);
   const [advanced, setAdvanced] = useState(false);
 
   const providerInfo = PROVIDERS[provider];
   const models = providerInfo.models;
   const task = TASKS[taskIdx];
-  const discount = TIERS[tier].discount;
-  const mult = 1 - discount / 100;
+  const discount = DISCOUNT;
+  const mult = MULT;
 
   function pickTask(i: number) {
     const t = TASKS[i];
@@ -301,22 +296,10 @@ export function CostCalculator() {
 
           <div className="calc-field" style={{ marginBottom: 0 }}>
             <label>
-              Your discount <span>Starter is free — bigger tiers unlock as you top up</span>
+              Your discount <span>one flat rate — no tiers, no minimums</span>
             </label>
-            <div className="calc-tiers">
-              {TIERS.map((t, i) => (
-                <button key={t.label} type="button" className={`calc-tier ${tier === i ? "on" : ""}`} onClick={() => setTier(i)}>
-                  <b>−{t.discount}%</b>
-                  <em>{t.free ? "Free" : t.label}</em>
-                </button>
-              ))}
-            </div>
             <Link className="calc-tier-cta" href="/#pricing">
-              <span>
-                {TIERS[tier].free
-                  ? "You’re on Starter — −60%, free. See how bigger discounts unlock"
-                  : `Top up $${TIERS[tier].topup.toLocaleString("en-US")} total to unlock −${discount}%`}
-              </span>
+              <span>Flat −{DISCOUNT}% off official prices on every request — see how billing works</span>
               <span className="calc-tier-cta-arrow" aria-hidden="true">→</span>
             </Link>
           </div>

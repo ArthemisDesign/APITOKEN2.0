@@ -632,39 +632,18 @@ footer{padding:64px 0 40px;border-bottom:0}
 .pricing-discount{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
 .pricing-discount b{font-size:28px;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
 .pricing-discount span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3)}
-.pricing-banner-business p{margin:0;color:var(--txt-2);font-size:13px}
+.pricing-banner-business p,.pricing-banner-flat p{margin:0;color:var(--txt-2);font-size:13px}
 .pricing-banner-partner{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:16px}
 .pricing-partner-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
   overflow:hidden;border:1px solid var(--accent-line);border-radius:8px;background:var(--bg-card)}
 @media (max-width:640px){.pricing-partner-facts{grid-template-columns:1fr}
   .pricing-partner-facts .pricing-status-item+.pricing-status-item{border-left:0;border-top:1px solid var(--accent-line)}}
-.pricing-banner-milestones{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:18px}
-.pricing-milestone-status{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr) minmax(0,.9fr);
-  overflow:hidden;border:1px solid var(--accent-line);border-radius:8px;background:var(--bg-card)}
+.pricing-banner-flat{background:color-mix(in srgb,var(--accent) 6%,var(--bg-card));gap:18px}
 .pricing-status-item{display:grid;grid-template-columns:auto 1fr;align-items:baseline;column-gap:12px;row-gap:2px;padding:15px 18px;min-width:0}
 .pricing-status-item+.pricing-status-item{border-left:1px solid var(--accent-line)}
 .pricing-status-item>span{grid-column:1/-1;font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
 .pricing-status-item strong{font-size:16px;line-height:1.35;color:var(--txt);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .pricing-status-item small{font-size:11px;color:var(--txt-3);overflow-wrap:anywhere}
-.pricing-status-next{background:var(--accent-soft)}
-.pricing-status-next strong{color:var(--accent)}
-.pricing-milestone-track{--tier-progress:0%;position:relative;padding:6px 0 2px}
-.pricing-track-line{position:absolute;z-index:0;top:20px;left:10%;right:10%;height:3px;border-radius:99px;
-  background:color-mix(in srgb,var(--accent) 16%,var(--bg-soft));overflow:hidden}
-.pricing-track-line span{display:block;width:var(--tier-progress);height:100%;border-radius:inherit;background:var(--accent);
-  transition:width .45s ease,height .45s ease}
-.pricing-milestone-list{position:relative;z-index:1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
-  gap:0;margin:0;padding:0;list-style:none}
-.pricing-milestone{display:flex;min-width:0;flex-direction:column;align-items:center;gap:9px;text-align:center;color:var(--txt-4)}
-.pricing-milestone-dot{display:grid;place-items:center;width:31px;height:31px;border:2px solid var(--line-strong);border-radius:50%;
-  background:var(--bg-card);color:var(--txt-4);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
-.pricing-milestone.complete .pricing-milestone-dot{border-color:var(--accent);background:var(--accent);color:#fff}
-.pricing-milestone.current .pricing-milestone-dot{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 5px var(--accent-soft)}
-.pricing-milestone>div{display:flex;min-width:0;flex-direction:column;align-items:center;gap:2px}
-.pricing-milestone strong{font-size:12px;line-height:1.35;color:var(--txt)}
-.pricing-milestone>div>span{font-size:10px;color:var(--txt-3)}
-.pricing-milestone.current>div>span{color:var(--accent);font-weight:600}
-.pricing-milestone small{font-size:9px;line-height:1.35;color:var(--txt-4)}
 .key-create{display:flex;gap:10px;align-items:center}
 .key-create .set-in{min-width:220px}
 .secret-card{position:relative;overflow:hidden;margin:22px 0 28px;padding:24px;border-color:var(--accent-line);display:grid;gap:18px;
@@ -1125,7 +1104,6 @@ a.step:hover .step-cta::after{margin-left:4px}
 .tc-actions{display:flex}
 .tc-actions .btn{white-space:nowrap}
 .pricing-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--txt-3);margin-top:2px;letter-spacing:.02em}
-.pm-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent);margin-top:1px;letter-spacing:.02em}
 @media(max-width:700px){
   .credits-stack .tc-stats{grid-template-columns:1fr}
   .tc-body{grid-template-columns:1fr;gap:14px}
@@ -1185,7 +1163,6 @@ a.step:hover .step-cta::after{margin-left:4px}
 [data-theme="dark"] .step-cta,
 [data-theme="dark"] .model-badge,
 [data-theme="dark"] .tier-mult,
-[data-theme="dark"] .pm-mult,
 [data-theme="dark"] .tier-table td strong,
 [data-theme="dark"] .tier-mobile-head b,
 [data-theme="dark"] .kmeta code,
@@ -1283,13 +1260,6 @@ a.step:hover .step-cta::after{margin-left:4px}
 
 .calc-divider{height:1px;background:var(--line);margin:20px 0}
 
-.calc-tiers{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
-.calc-tier{display:flex;flex-direction:column;align-items:center;gap:3px;padding:12px 6px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg);cursor:pointer;transition:.14s}
-.calc-tier:hover{border-color:var(--accent-line)}
-.calc-tier b{font-family:var(--font-mono);font-size:15px;font-weight:700;color:var(--txt);letter-spacing:-.02em}
-.calc-tier em{font-family:var(--font-mono);font-size:10px;font-style:normal;letter-spacing:.03em;text-transform:uppercase;color:var(--txt-4)}
-.calc-tier.on{background:var(--accent-soft);border-color:var(--accent)}
-.calc-tier.on b,.calc-tier.on em{color:var(--accent)}
 .calc-tier-cta{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:12px 16px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);font-family:var(--font-mono);font-size:12.5px;line-height:1.4;color:var(--accent);text-decoration:none;transition:.15s}
 .calc-tier-cta:hover{background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:var(--accent)}
 .calc-tier-cta-arrow{flex:0 0 auto;font-size:15px;transition:transform .15s}
@@ -1336,7 +1306,6 @@ a.step:hover .step-cta::after{margin-left:4px}
   .calc-mtable{min-width:640px}
 }
 @media(max-width:520px){
-  .calc-tiers{grid-template-columns:repeat(3,1fr)}
   .calc-field input{font-size:22px}
 }
 /* calculator embedded on the home page (#products) */

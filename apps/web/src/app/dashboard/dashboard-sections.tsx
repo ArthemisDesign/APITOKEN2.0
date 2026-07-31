@@ -3,10 +3,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type TotpSetup, type UsageView } from "@/lib/api";
 import { normalizeUsd } from "@/lib/money";
-import { B2C_PRICING_MILESTONES, formatWholeUsd, pricingMilestoneProgress } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
 import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
@@ -67,7 +66,6 @@ const localDashboardCopy = {
     never: "Never", neverUsed: "No billed usage", unlimited: "Unlimited", expiredStatus: "Expired", limitReachedStatus: "Limit reached", expiresSoonStatus: "Expires soon", nearLimitStatus: "Near limit", moreActions: "More actions", openDocs: "Integration guide", revokeKey: "Revoke key",
     revokeTitle: "Revoke this key?", revokeBody: "Requests using this key will stop immediately. This action cannot be undone.", confirmRevoke: "Revoke key", noSearchResults: "No API keys match your search.",
     partialLedger: "Showing only the latest 100 ledger entries. Earlier transaction and top-up details are not shown.",
-    topupNextRemaining: "Add {amount} more to reach {tier} (−{discount}%).",
     payWith: "Payment method",
   },
   ru: {
@@ -90,7 +88,6 @@ const localDashboardCopy = {
     never: "Никогда", neverUsed: "Списаний не было", unlimited: "Без лимита", expiredStatus: "Истёк", limitReachedStatus: "Лимит исчерпан", expiresSoonStatus: "Скоро истечёт", nearLimitStatus: "Лимит близко", moreActions: "Другие действия", openDocs: "Инструкция подключения", revokeKey: "Отозвать ключ",
     revokeTitle: "Отозвать этот ключ?", revokeBody: "Запросы с этим ключом сразу перестанут работать. Действие нельзя отменить.", confirmRevoke: "Отозвать ключ", noSearchResults: "По вашему запросу ключи не найдены.",
     partialLedger: "Показаны только последние 100 записей журнала. Более ранние операции и пополнения не показаны.",
-    topupNextRemaining: "Добавьте ещё {amount}, чтобы получить {tier} (−{discount}%).",
     payWith: "Способ оплаты",
   },
 } as const;
@@ -112,13 +109,11 @@ function Stat({ label, value, detail, onClick }: { label: string; value: string;
 
 function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
-  // Read "now" once at mount — Date.now() in render is impure (see the same pattern in Usage).
-  const [now] = useState(() => Date.now());
   const pricing = account.pricing;
   if (!pricing) return null;
   if (pricing.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div></div><p>{copy.negotiatedRate}</p></section>;
   // Партнёрская фиксированная ставка (реф-ссылка сейлза). Реферал остаётся b2c, но платит по «полу»
-  // скидки, а не по прогрессивным тирам — прячем лестницу/удержание, показываем фикс-ставку.
+  // скидки, а не по плоской ставке — показываем его фикс-ставку вместо стандартных 50%.
   if (isPartnerRate(account)) {
     const paymentBp = paymentBasisPoints(account);
     const discount = discountOf(account);
@@ -136,41 +131,14 @@ function PricingBanner({ account }: { account: AccountView }) {
       <p>{copy.partnerExplainer}</p>
     </section>;
   }
-  const currentIndex = Math.max(0, B2C_PRICING_MILESTONES.findIndex((tier) => tier.code === pricing.tier));
-  const currentTier = B2C_PRICING_MILESTONES[currentIndex]!;
-  const progress = pricingMilestoneProgress(pricing.tier, pricing.spentNano);
-  const trackStyle = { "--tier-progress": `${progress}%` } as CSSProperties;
-  const isBase = currentTier.code === "starter";
-  const holdNano = BigInt(pricing.retentionSpendNano);
-  const windowSpent = BigInt(pricing.windowSpentNano ?? "0");
-  const held = windowSpent >= holdNano;
-  const daysLeft = pricing.windowStart ? Math.max(0, Math.ceil(30 - (now - new Date(pricing.windowStart).getTime()) / 86_400_000)) : 30;
-  return <section className="pricing-banner pricing-banner-milestones">
+  // Плоская B2C-модель: единая скидка на каждый запрос, без тиров, порогов и окон удержания.
+  return <section className="pricing-banner pricing-banner-flat">
     <div className="pricing-summary">
-      <div><span className="pricing-kicker">{copy.monthlyTierProgress}</span><strong>{tierName(copy, currentTier.code)}</strong></div>
+      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.flatRate}</strong></div>
       <div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent)} {copy.valueMultiplier}</em></div>
     </div>
-    <div className="pricing-milestone-status">
-      <div className="pricing-status-item"><span>{copy.thisMonth}</span><strong>{formatNanoUsd(pricing.spentNano)}</strong><small>{copy.platformSpend}</small></div>
-      {pricing.nextTier ? <div className="pricing-status-item pricing-status-next"><span>{copy.nextMilestone}</span><strong>{interpolate(copy.spendMore, { amount: formatNanoUsd(pricing.nextTier.remainingNano) })}</strong><small>{interpolate(copy.unlockTier, { tier: tierName(copy, pricing.nextTier.tier), discount: pricing.nextTier.discountPercent })}</small></div> :
-        <div className="pricing-status-item pricing-status-next"><span>{copy.milestonesComplete}</span><strong>{copy.highestTierReached}</strong><small>{copy.tierScale} · {pricing.discountPercent}% {copy.discount}</small></div>}
-      {isBase
-        ? <div className="pricing-status-item"><span>{copy.keepTier}</span><strong>{copy.baseTierKept}</strong><small>{copy.freeForever}</small></div>
-        : <div className={`pricing-status-item ${held ? "pricing-status-ok" : "pricing-status-warn"}`}><span>{copy.keepTier}</span><strong>{formatNanoUsd(pricing.windowSpentNano ?? "0")} / {formatNanoUsd(pricing.retentionSpendNano)}</strong><small>{interpolate(held ? copy.daysLeftOk : copy.daysLeftWarn, { days: daysLeft })}</small></div>}
-    </div>
-    <div className="pricing-milestone-track" style={trackStyle} aria-label={`${Math.round(progress)}% progress through pricing milestones`}>
-      <div className="pricing-track-line" aria-hidden="true"><span /></div>
-      <ol className="pricing-milestone-list">
-        {B2C_PRICING_MILESTONES.map((tier, index) => {
-          const state = index < currentIndex ? "complete" : index === currentIndex ? "current" : "upcoming";
-          return <li className={`pricing-milestone ${state}`} key={tier.code}>
-            <span className="pricing-milestone-dot" aria-hidden="true">{index < currentIndex ? "✓" : index + 1}</span>
-            <div><strong>{tierName(copy, tier.code)}</strong><span>{tier.discountPercent}% {copy.discount}</span><em className="pm-mult">{multFromDiscount(tier.discountPercent)} {copy.valueMultiplier}</em><small>{BigInt(tier.platformSpendUsd) === 0n ? copy.tierBaseHint : interpolate(copy.tierGetHold, { get: formatWholeUsd(tier.platformSpendUsd), hold: formatWholeUsd(tier.holdUsd) })}</small></div>
-          </li>;
-        })}
-      </ol>
-    </div>
-    <div className="pricing-howto-row"><p className="pricing-howto-text">{copy.tierExplainer}</p><Link className="link pricing-howto-link" href={`${DOCS_URL}#pricing`}>{copy.howTiersWork} →</Link></div>
+    <p>{copy.flatRateExplainer}</p>
+    <div className="pricing-howto-row"><p className="pricing-howto-text">{copy.flatRateHowto}</p><Link className="link pricing-howto-link" href="/plans">{copy.howPricingWorks} →</Link></div>
   </section>;
 }
 
@@ -712,33 +680,18 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
     finally { setBusy(false); }
   }
 
-  // Prepay-модель: тир определяется НАКОПЛЕННОЙ суммой пополнений (не расходом). Показываем, какой
-  // тир даёт пополнение на введённую сумму, ценность по его скидке и условие удержания (50%/30 дней).
+  // Плоская модель: скидка 50% одна для любой суммы пополнения — конверсия показывается
+  // по текущей ставке аккаунта (партнёрская фикс-ставка перекрывает её через effective*).
   const pricing = account.pricing;
-  // Партнёрская фикс-ставка → выходим из прогрессивной тир-логики (ставка не зависит от суммы пополнения).
   const partnerRate = isPartnerRate(account);
   const isB2c = pricing?.customerType === "b2c" && !partnerRate;
   const fixedRateName = partnerRate ? copy.partnerRate : copy.businessRate;
   const amountNano = amountValid ? BigInt(amount) * NANO_PER_USD : 0n;
-  const currentIdx = pricing?.customerType === "b2c" ? B2C_PRICING_MILESTONES.findIndex((milestone) => milestone.code === pricing.tier) : -1;
-  const cumulativeNano = pricing?.customerType === "b2c" ? BigInt(pricing.spentNano) + amountNano : amountNano;
-  const projectedIdx = isB2c ? tierIndexForCumulativeNano(cumulativeNano) : -1;
-  const reachedIdx = isB2c ? Math.max(currentIdx, projectedIdx) : -1;
-  const reachedTier = reachedIdx >= 0 ? B2C_PRICING_MILESTONES[reachedIdx] : null;
-  const discount = isB2c ? (reachedTier?.discountPercent ?? 0) : discountOf(account);
-  const topupPaymentBp = isB2c ? bpFromDiscount(discount) : paymentBasisPoints(account);
-  const hasTier = discount > 0;
+  const discount = discountOf(account);
+  const topupPaymentBp = paymentBasisPoints(account);
   const apiValueNano = officialNanoFromCharged(amountNano, topupPaymentBp);
-  const nextTier = isB2c && reachedIdx + 1 < B2C_PRICING_MILESTONES.length ? B2C_PRICING_MILESTONES[reachedIdx + 1] : null;
-  const nextTierRemainingNano = nextTier ? bigintMax(0n, BigInt(nextTier.spendThresholdNano) - cumulativeNano) : 0n;
-  const balanceApiNano = officialNanoFromCharged(BigInt(account.balanceNano), paymentBasisPoints(account));
-  const apiValueForPreset = (preset: number) => {
-    const presetNano = BigInt(preset) * NANO_PER_USD;
-    if (!isB2c || pricing?.customerType !== "b2c") return officialNanoFromCharged(presetNano, paymentBasisPoints(account));
-    const index = Math.max(currentIdx, tierIndexForCumulativeNano(BigInt(pricing.spentNano) + presetNano));
-    const tier = B2C_PRICING_MILESTONES[Math.max(0, index)]!;
-    return officialNanoFromCharged(presetNano, bpFromDiscount(tier.discountPercent));
-  };
+  const balanceApiNano = officialNanoFromCharged(BigInt(account.balanceNano), topupPaymentBp);
+  const apiValueForPreset = (preset: number) => officialNanoFromCharged(BigInt(preset) * NANO_PER_USD, topupPaymentBp);
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
 
@@ -747,7 +700,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
       <div className="ov-stats bill3 tc-stats">
         <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(balanceApiNano) }) : copy.available}</span></div>
         <Stat label={copy.used} value={formatNanoUsd(account.spentNano)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{partnerRate ? copy.partnerRateLabel : copy.currentTier}</span><b className="num tc-tier-name">{isB2c ? (currentIdx >= 0 ? tierName(copy, B2C_PRICING_MILESTONES[currentIdx].code) : copy.noTierYet) : fixedRateName}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
+        <div className="ovstat"><span className="dlabel">{partnerRate ? copy.partnerRateLabel : copy.currentPricing}</span><b className="num tc-tier-name">{isB2c ? copy.flatRate : fixedRateName}</b><span className="dtrend">{discountOf(account)}% {copy.discount} · {formatMultiplier(paymentBasisPoints(account))} {copy.valueMultiplier}</span></div>
       </div>
 
       <div className="card topup-convert">
@@ -758,17 +711,14 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
             <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{formatNanoUsd(apiValueForPreset(preset))}</span></button>)}</div>
           </div>
           <div className="tc-arrow" aria-hidden="true">→</div>
-          <div className={`tc-receive ${hasTier ? "tc-receive-up" : ""}`}>
+          <div className="tc-receive tc-receive-up">
             <span className="tc-recv-label">{copy.youReceive}</span>
             <b className="tc-recv-value">{amountNano > 0n ? `≈ ${formatNanoUsd(apiValueNano)}` : "—"}</b>
-            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : hasTier ? `${copy.inClaudeApi} · ${interpolate(copy.atTier, { tier: reachedTier ? tierName(copy, reachedTier.code) : fixedRateName, discount })}` : `${copy.inClaudeApi} · ${copy.noDiscountYet}`}</span>
+            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : `${copy.inClaudeApi} · ${interpolate(copy.atFlatDiscount, { discount })}`}</span>
             <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{formatMultiplier(topupPaymentBp)} {copy.valueMultiplier}</span></div>
           </div>
         </div>
-        {isB2c && amountNano > 0n && reachedTier && BigInt(reachedTier.holdUsd) > 0n &&
-          <p className="tc-upgrade"><span className="tc-upgrade-ic" aria-hidden="true">ⓘ</span>{interpolate(copy.topupReach, { tier: tierName(copy, reachedTier.code), discount, hold: formatWholeUsd(reachedTier.holdUsd) })}</p>}
-        <p className="tc-explain">{hasTier ? interpolate(copy.perDollar, { mult: formatPerDollar(topupPaymentBp) }) : copy.perDollarNone}</p>
-        {isB2c && amountNano > 0n && nextTier && nextTierRemainingNano > 0n && <p className="tc-nudge">↑ {interpolate(localCopy.topupNextRemaining, { amount: formatNanoUsd(nextTierRemainingNano), tier: tierName(copy, nextTier.code), discount: nextTier.discountPercent })}</p>}
+        <p className="tc-explain">{interpolate(copy.perDollar, { mult: formatPerDollar(topupPaymentBp) })}</p>
         <div className="tc-pay">
           <span className="tc-pay-label">{localCopy.payWith}</span>
           <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
@@ -1287,21 +1237,14 @@ function formatLedgerTime(timestamp: string, language: "en" | "ru"): string {
   return new Date(milliseconds).toLocaleString(language === "ru" ? "ru-RU" : "en-US");
 }
 
-function tierName(copy: DashboardCopy, tier: string): string {
-  const names: Record<string, string> = {
-    starter: copy.tierStarter, builder: copy.tierBuilder, pro: copy.tierPro, studio: copy.tierStudio, scale: copy.tierScale,
-  };
-  return names[tier] ?? tier;
-}
-
 function interpolate(template: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
 // --- Партнёрская (фиксированная) скидка по реф-ссылке сейлза ---
 // Реферал остаётся b2c, но commerce ставит ему «пол» скидки (referral_floor_bps): фиксированная
-// ставка поверх/вместо прогрессивных тиров. Если floor > 0 — дашборд показывает её как партнёрскую,
-// а реальная доля оплаты берётся из effectiveMultiplierBp (пол переопределяет тир).
+// ставка вместо плоских 50%. Если floor > 0 — дашборд показывает её как партнёрскую,
+// а реальная доля оплаты берётся из effectiveMultiplierBp (поле переопределяет плоскую ставку).
 function partnerFloorBps(account: AccountView): number {
   const p = account.pricing;
   return p && p.customerType === "b2c" ? (p.referralFloorBps ?? 0) : 0;
@@ -1311,15 +1254,15 @@ function isPartnerRate(account: AccountView): boolean {
 }
 
 // --- Скидка → сколько реального Claude API получает клиент ---
-// multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
+// multiplierBp = доля оплаты в базисных пунктах (5000 = платит 50% = скидка 50% = ×2 ценности).
 function paymentBasisPoints(account: AccountView): bigint {
   const p = account.pricing;
-  // Партнёрский пол перекрывает тир: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
+  // Партнёрский пол перекрывает плоскую ставку: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
   if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0 && p.effectiveMultiplierBp && p.effectiveMultiplierBp > 0) {
     return BigInt(p.effectiveMultiplierBp);
   }
   const bp = p?.multiplierBp ?? account.markupBasisPoints;
-  return BigInt(bp && bp > 0 ? bp : 4_000);
+  return BigInt(bp && bp > 0 ? bp : 5_000);
 }
 function discountOf(account: AccountView): number {
   const p = account.pricing;
@@ -1371,16 +1314,9 @@ function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits
 function multFromDiscount(discountPercent: number): string {
   return formatMultiplier(bpFromDiscount(discountPercent));
 }
-// discountPercent может быть дробным (62.5) — BigInt(100 - d) на таком падает, поэтому через bp.
+// discountPercent может быть дробным (партнёрские ставки) — BigInt(100 - d) на таком падает, поэтому через bp.
 function bpFromDiscount(discountPercent: number): bigint {
   return BigInt(Math.round((100 - discountPercent) * 100));
-}
-function tierIndexForCumulativeNano(spentNano: bigint): number {
-  let index = -1;
-  B2C_PRICING_MILESTONES.forEach((milestone, milestoneIndex) => {
-    if (spentNano >= BigInt(milestone.spendThresholdNano)) index = milestoneIndex;
-  });
-  return index;
 }
 function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): string | null {
   try {

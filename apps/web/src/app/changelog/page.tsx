@@ -12,7 +12,8 @@ export const metadata: Metadata = {
 };
 
 const entries = [
-  { date: "2026-07", title: "GPT-5.6 on the same key — apiToken.sale is now multi-provider", body: "The OpenAI-compatible API at openai.api.apitoken.sale/v1 serves the GPT-5.6 line (sol, terra, luna), gpt-5.5 and gpt-5.4 through Responses and Chat Completions with SSE streaming. One sk-pool key, one prepaid balance and the same 60–70% discount cover both Claude and GPT." },
+  { date: "2026-07", title: "One flat 50% discount — tiers retired", body: "B2C pricing is now a flat 50% off official provider spend on every request, for every account and any top-up amount. The Starter/Builder/Pro/Studio/Scale ladder, cumulative top-up thresholds and 30-day tier retention are gone — there is nothing to unlock and nothing to keep." },
+  { date: "2026-07", title: "GPT-5.6 on the same key — apiToken.sale is now multi-provider", body: "The OpenAI-compatible API at openai.api.apitoken.sale/v1 serves the GPT-5.6 line (sol, terra, luna), gpt-5.5 and gpt-5.4 through Responses and Chat Completions with SSE streaming. One sk-pool key and one prepaid balance cover both Claude and GPT." },
   { date: "2026-07", title: "Tier ladder rebalanced", body: "B2C tier discounts now progress from 60% to 70% off official spend (Starter 60%, Builder 62.5%, Pro 65%, Studio 67.5%, Scale 70%). Thresholds and 30-day holds are unchanged; Starter stays free at 60%." },
   { date: "2026-07", title: "Guides in Russian and Chinese", body: "The full Claude API guide library is now available in English, Russian and Simplified Chinese with per-language URLs." },
   { date: "2026-07", title: "Guide library expanded", body: "Added new guides covering gateways, rate limits, streaming, prompt caching, key security, and building AI agents on Claude." },

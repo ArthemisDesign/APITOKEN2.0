@@ -12,7 +12,7 @@ type Localized = { title: string; description: string };
 export const coreRu: Record<string, Localized> = {
   home: {
     title: "Купить доступ к Claude и GPT API со скидкой — один ключ",
-    description: "Доступ к API Claude и GPT со скидкой — один ключ и предоплаченный баланс для Claude Opus, Sonnet, Haiku и линейки GPT-5. Официальные API Anthropic и OpenAI-совместимый, до 70% дешевле, готово для Claude Code, Codex и Cursor.",
+    description: "Доступ к API Claude и GPT со скидкой — один ключ и предоплаченный баланс для Claude Opus, Sonnet, Haiku и линейки GPT-5. Официальные API Anthropic и OpenAI-совместимый, единые 50% дешевле, готово для Claude Code, Codex и Cursor.",
   },
   models: {
     title: "Модели Claude и GPT, контекст и цены API",
@@ -24,7 +24,7 @@ export const coreRu: Record<string, Localized> = {
   },
   plans: {
     title: "Цены API, скидки и предоплата — Claude и GPT",
-    description: "Гибкие пополнения в USD, прогрессивные B2C-скидки, требования тира за 30 дней, оценка официальной ценности API и договорные B2B-цены для моделей Claude и GPT.",
+    description: "Гибкие пополнения в USD, единая скидка B2C 50% на каждый запрос, оценка официальной ценности API и договорные B2B-цены для моделей Claude и GPT.",
   },
   privacy: {
     title: "Политика конфиденциальности",
