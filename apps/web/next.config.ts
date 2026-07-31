@@ -16,10 +16,32 @@ const shortLinks: Record<string, string> = {
   vibe: "/?utm_source=telegram&utm_medium=community&utm_campaign=vibe_code_community",
 };
 
+// The web/v2 Vercel preview is a dashboard-only design environment. The production
+// backend accepts the production browser origin, so preview builds use local stateful
+// fixtures and open as an already authenticated account. Production builds never set
+// this flag and keep the normal authentication flow.
+const previewFixtures = process.env.VERCEL_ENV === "preview" || process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1";
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  env: { NEXT_PUBLIC_PREVIEW_FIXTURES: previewFixtures ? "1" : "" },
   async redirects() {
     return [
+      ...(previewFixtures ? [
+        { source: "/", destination: "/dashboard", permanent: false },
+        { source: "/login", destination: "/dashboard", permanent: false },
+        { source: "/register", destination: "/dashboard", permanent: false },
+        { source: "/forgot-password", destination: "/dashboard", permanent: false },
+        { source: "/reset-password", destination: "/dashboard", permanent: false },
+        { source: "/verify-email", destination: "/dashboard", permanent: false },
+        { source: "/auth/callback", destination: "/dashboard", permanent: false },
+        { source: "/ru", destination: "/ru/dashboard", permanent: false },
+        { source: "/ru/login", destination: "/ru/dashboard", permanent: false },
+        { source: "/ru/register", destination: "/ru/dashboard", permanent: false },
+        { source: "/ru/forgot-password", destination: "/ru/dashboard", permanent: false },
+        { source: "/ru/reset-password", destination: "/ru/dashboard", permanent: false },
+        { source: "/ru/verify-email", destination: "/ru/dashboard", permanent: false },
+      ] : []),
       ...legacyPages.map((page) => ({ source: `/${page}.html`, destination: `/${page}`, permanent: true })),
       ...dashboardSections.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
       ...Object.entries(shortLinks).map(([slug, destination]) => ({ source: `/go/${slug}`, destination, permanent: false })),

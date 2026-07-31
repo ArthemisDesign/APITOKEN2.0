@@ -1,6 +1,10 @@
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "https://backend.apitoken.sale/v1")
   .replace(/\/$/, "");
 
+// web/v2 previews run as an already authenticated dashboard against browser-local
+// stateful fixtures. This branch is statically disabled in production builds.
+const PREVIEW_FIXTURES = process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1";
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -167,6 +171,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (PREVIEW_FIXTURES) {
+    const { previewRequest } = await import("./preview-fixtures");
+    return previewRequest<T>(path, init);
+  }
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(`${API_BASE_URL}${path}`, {
