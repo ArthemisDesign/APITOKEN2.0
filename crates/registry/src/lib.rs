@@ -1108,6 +1108,7 @@ pub fn open(path: &str) -> Result<Connection> {
            last_high_nano INTEGER CHECK(last_high_nano IS NULL OR last_high_nano >= 0), \
            last_confidence_bp INTEGER NOT NULL DEFAULT 0 CHECK(last_confidence_bp BETWEEN 0 AND 10000), \
            last_measured_at INTEGER CHECK(last_measured_at IS NULL OR last_measured_at > 0), \
+           anchor_ready INTEGER NOT NULL DEFAULT 0 CHECK(anchor_ready IN (0,1)), \
            estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
            version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
            updated_ts INTEGER NOT NULL, \
@@ -1128,6 +1129,12 @@ pub fn open(path: &str) -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS codex_window_observations_window \
            ON codex_window_observations(home_id,window_duration_mins,resets_at,observed_at);",
     )?;
+    // Expand-only compatibility for SQLite databases created before estimator v3. The ignored
+    // duplicate-column error is expected on every later open and on freshly created databases.
+    let _ = c.execute(
+        "ALTER TABLE codex_window_calibrations ADD COLUMN anchor_ready INTEGER NOT NULL DEFAULT 0 CHECK(anchor_ready IN (0,1))",
+        [],
+    );
     // Разбивка расхода по токенам/моделям для клиентских дашбордов (per-request). НЕ money-БД:
     // авторитет денег — accounts.balance_nano + ledger. Эта таблица — аналитика (что реально
     // потрачено по корзинам токенов и моделям), пишется рядом с charge, обрезается по ретенции.
@@ -5122,6 +5129,7 @@ mod tests {
         assert!(!columns.iter().any(|name| name.contains("prior")));
         assert!(columns.contains(&"window_duration_mins".to_owned()));
         assert!(columns.contains(&"resets_at".to_owned()));
+        assert!(columns.contains(&"anchor_ready".to_owned()));
     }
 
     #[test]
