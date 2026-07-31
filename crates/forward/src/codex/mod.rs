@@ -118,6 +118,26 @@ impl TurnRouting {
 
 /// Fallback wait advertised to a client when every home is limited but no window published a reset.
 const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
+/// Utilisation below which quota does not influence ordering at all.
+///
+/// Steering exists to avoid draining a subscription that is near its wall while another has room.
+/// Below this line every home has plenty of room, so ranking them against each other would only
+/// break fan-out: the emptiest home would win every tie and absorb the pool, which is the same
+/// herding the rotation cursor exists to prevent. An unmeasured home ranks here too — no reading is
+/// no reason to steer, and the sweep supplies one within a cadence.
+const QUOTA_STEER_FLOOR_PERCENT: i64 = 50;
+/// Granularity of quota steering above the floor. Coarse on purpose: homes within a few points of
+/// each other are equally good choices and must stay tied so the rotation cursor still spreads them.
+const QUOTA_STEER_BUCKET_PERCENT: i64 = 10;
+
+/// Ordering rank derived from window utilisation. Lower is preferred; `0` means "do not steer".
+fn quota_rank(used_percent: Option<i64>) -> i64 {
+    used_percent
+        .unwrap_or(0)
+        .saturating_sub(QUOTA_STEER_FLOOR_PERCENT)
+        .max(0)
+        / QUOTA_STEER_BUCKET_PERCENT
+}
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
 /// two competitive homes so independent sessions do not collapse onto the first subscription.
 const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
@@ -1450,7 +1470,14 @@ impl CodexGateway {
             let limits = home.rate_limits().await;
             match home.admission(limits.as_ref(), now) {
                 health::Admission::Admit { snapshot_stale } => {
-                    candidates.push((snapshot_stale, home.inflight(), home.clone()));
+                    // Remaining window, normalised per subscription by the provider itself. That
+                    // normalisation is what makes this tier-aware for free: 40% of a small plan and
+                    // 40% of a large one are equally close to their own wall, which is the thing
+                    // selection must equalise. The USD calibration answers a different question —
+                    // how much capacity is left in money — and stays empty until a window turns over.
+                    let used =
+                        quota_rank(limits.as_ref().and_then(|limits| limits.max_used_percent()));
+                    candidates.push((snapshot_stale, home.inflight(), used, home.clone()));
                 }
                 health::Admission::Reject { ready_at, .. } => {
                     if let Some(ready_at) = ready_at {
@@ -1473,16 +1500,23 @@ impl CodexGateway {
         } as usize
             % width;
         candidates.sort_by(
-            |(stale_a, inflight_a, home_a), (stale_b, inflight_b, home_b)| {
+            |(stale_a, inflight_a, used_a, home_a), (stale_b, inflight_b, used_b, home_b)| {
                 let rotated_a = (home_a.order() + width - cursor) % width;
                 let rotated_b = (home_b.order() + width - cursor) % width;
                 // A home whose quota evidence has gone stale is still routable — the snapshot is
                 // observational and must never become a hard dependency — but it must never win a tie
                 // against a home whose evidence is current. A frozen reading looks arbitrarily
                 // optimistic, and ranking on it is how one unresponsive home absorbed the whole pool.
+                //
+                // Below that, ordering mirrors the Claude pool's `select_best`: the load envelope is
+                // a full tier of its own, and only within it does remaining window decide. Ranking on
+                // capacity first would pile concurrent turns onto whichever subscription is emptiest.
+                // Quota steering is bucketed and only engages near the wall, so comparable homes stay
+                // tied and the rotation cursor keeps spreading them.
                 stale_a
                     .cmp(stale_b)
                     .then_with(|| inflight_a.cmp(inflight_b))
+                    .then_with(|| used_a.cmp(used_b))
                     .then_with(|| rotated_a.cmp(&rotated_b))
             },
         );
@@ -1490,30 +1524,30 @@ impl CodexGateway {
         // until two copies exist, then prefer the least-loaded warm home.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
+            if let Some((_, _, _, home)) = candidates.iter().find(|(_, _, _, home)| home.id() == id) {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
             let warm_count = candidates
                 .iter()
-                .filter(|(_, _, home)| warm.iter().any(|id| id == home.id()))
+                .filter(|(_, _, _, home)| warm.iter().any(|id| id == home.id()))
                 .count();
             let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
                 candidates
                     .iter()
-                    .position(|(_, _, home)| !warm.iter().any(|id| id == home.id()))
+                    .position(|(_, _, _, home)| !warm.iter().any(|id| id == home.id()))
             } else {
                 candidates
                     .iter()
-                    .position(|(_, _, home)| warm.iter().any(|id| id == home.id()))
+                    .position(|(_, _, _, home)| warm.iter().any(|id| id == home.id()))
             }
             .unwrap_or(0);
-            ordered.push(candidates[primary].2.clone());
+            ordered.push(candidates[primary].3.clone());
         }
         // If the primary choice is currently sampling, another warm copy is the next best spill;
         // remaining candidates stay in global capacity order.
         if place_cache_root {
-            for (_, _, home) in &candidates {
+            for (_, _, _, home) in &candidates {
                 if warm.iter().any(|id| id == home.id())
                     && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
                 {
@@ -1521,7 +1555,7 @@ impl CodexGateway {
                 }
             }
         }
-        for (_, _, home) in candidates {
+        for (_, _, _, home) in candidates {
             if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
                 ordered.push(home);
             }

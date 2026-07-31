@@ -2104,7 +2104,7 @@ done
     }
 
     #[tokio::test]
-    async fn high_observed_percent_without_reached_flag_remains_routable() {
+    async fn a_home_near_its_wall_stays_admitted_but_yields_to_one_with_room() {
         let (gateway, _workspace, logs) = fake_pool_gateway(&["near_limit", "text"]);
         // Preflight populates the 97% observational snapshot without a provider reached flag.
         gateway.preflight().await.unwrap();
@@ -2112,9 +2112,21 @@ done
             .run_turn(turn_request(test_model()), None, None)
             .await
             .unwrap();
-        assert!(served_turn(&logs[0]), "97% is not an admission restriction");
+
         let status = gateway.operational_status().await;
+        // A high observation is not an admission restriction: only an explicit provider verdict or
+        // a full window removes a home, and this home would still serve if it were the only one.
         assert_eq!(status.available, 2);
+        assert!(
+            status.homes[0].admitted,
+            "97% is not an admission restriction"
+        );
+        // But while a home with room exists, quota steering prefers it. Spreading turns evenly in
+        // absolute count drains whichever subscription is closest to its own wall first, which is
+        // exactly the skew production showed: one home at 100% having served a fraction of the
+        // spend of another sitting at 32%.
+        assert!(served_turn(&logs[1]), "the home with room must take it");
+        assert!(!served_turn(&logs[0]));
     }
 
     #[tokio::test]

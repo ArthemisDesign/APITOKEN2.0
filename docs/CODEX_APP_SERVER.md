@@ -251,6 +251,14 @@ it also never kills the sibling turns multiplexed over the same child. Snapshot 
 stale quota evidence neither rejects a home nor wins a tie, while evidence that has never arrived
 ranks equal to fresh so the first home to report cannot become a permanent magnet.
 
+Selection orders admitted homes the way the Claude pool's `select_best` does: fresh quota evidence
+before stale, then the in-flight load envelope as a tier of its own, then remaining window, then the
+rotation cursor. Quota steering is bucketed and only engages above 50% utilisation, because below
+that every home has room and ranking them would let the emptiest absorb the pool. `usedPercent` is
+normalised per subscription by the provider, so steering is tier-aware without the USD calibration:
+40% of a small plan and 40% of a large one are equally close to their own wall. Spreading turns
+evenly in absolute count instead drains whichever subscription is nearest its own limit first.
+
 A turn is bounded twice, because two different questions are being asked.
 `CLAUDE_API_CODEX_TURN_TIMEOUT_MS` (default 600s) bounds total duration and must stay generous: a
 reasoning model legitimately thinks for minutes. `CLAUDE_API_CODEX_TURN_SILENCE_TIMEOUT_MS`
