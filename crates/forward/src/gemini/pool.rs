@@ -161,6 +161,20 @@ impl GeminiProfile {
                 SecretString::new(self.google_api_client.clone()),
             ));
         }
+        if self.oauth_kind == OAuthKind::Antigravity {
+            // The Antigravity Cloud Code surface requires the client-metadata header on generation
+            // requests; without it streamGenerateContent is rejected with a generic
+            // INVALID_ARGUMENT (generateContent is more lenient). The value is the reviewed
+            // Antigravity identity (macOS/Gemini). The Node helper sorts headers, so insertion
+            // order does not affect the wire fingerprint.
+            headers.push((
+                "client-metadata",
+                SecretString::new(
+                    r#"{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}"#
+                        .to_string(),
+                ),
+            ));
+        }
         if let Some(accept) = accept {
             headers.push(("accept", SecretString::new(accept.to_string())));
         }
