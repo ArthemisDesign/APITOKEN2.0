@@ -10,6 +10,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use forward::AppState;
+use registry::pricing::{
+    validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
+    validate_policy_active_expectation, validate_pricing_catalog, validate_provider_switches,
+    AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation,
+    PolicyActiveExpectation, PricingCatalogSpec, PricingMutation, PricingRejection,
+    ProviderSwitchSpec,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -818,8 +825,7 @@ fn summarize_usage(aggs: &[registry::UsageModelAgg]) -> UsageSummary {
         summary.input_tokens += model.input_tokens;
         summary.output_tokens += model.output_tokens;
         summary.cache_read_tokens += model.cache_read_tokens;
-        summary.cache_write_tokens +=
-            model.cache_write_5m_tokens + model.cache_write_1h_tokens;
+        summary.cache_write_tokens += model.cache_write_5m_tokens + model.cache_write_1h_tokens;
         summary.web_search_requests += model.web_search_requests;
         summary.total_official_nano += model.real_nano as i128;
         summary.total_charged_nano += model.charge_nano as i128;
@@ -939,6 +945,491 @@ pub async fn list_usage(
         "keys": keys,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogActivationReq {
+    catalog: PricingCatalogSpec,
+    expectation: ActiveExpectation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderSwitchActivationReq {
+    switches: ProviderSwitchSpec,
+    expectation: ActiveExpectation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyActivationReq {
+    policy: AccountPolicySpec,
+    binding: AccountPolicyBindingSpec,
+    expectation: PolicyActiveExpectation,
+}
+
+fn pricing_mutation_response(mutation: PricingMutation, identity: Value) -> Response {
+    match mutation {
+        PricingMutation::Stored => Json(json!({
+            "result": "stored",
+            "identity": identity,
+        }))
+        .into_response(),
+        PricingMutation::Applied => Json(json!({
+            "result": "applied",
+            "identity": identity,
+        }))
+        .into_response(),
+        PricingMutation::Unchanged => Json(json!({
+            "result": "unchanged",
+            "identity": identity,
+        }))
+        .into_response(),
+        PricingMutation::Rejected(rejection) => {
+            let (status, code) = match &rejection {
+                PricingRejection::Invalid { .. } => (StatusCode::BAD_REQUEST, "invalid"),
+                PricingRejection::MissingDependency { .. } => {
+                    (StatusCode::CONFLICT, "missing_dependency")
+                }
+                PricingRejection::Stale { .. } => (StatusCode::CONFLICT, "stale"),
+                PricingRejection::VersionConflict => (StatusCode::CONFLICT, "version_conflict"),
+                PricingRejection::CasMismatch { .. } => (StatusCode::CONFLICT, "cas_mismatch"),
+                PricingRejection::PolicyCasMismatch { .. } => {
+                    (StatusCode::CONFLICT, "policy_cas_mismatch")
+                }
+                PricingRejection::Locked => (StatusCode::LOCKED, "locked"),
+            };
+            (
+                status,
+                Json(json!({
+                    "result": "rejected",
+                    "code": code,
+                    "identity": identity,
+                    "rejection": rejection,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn invalid_pricing_request(reason: impl Into<String>, identity: Value) -> Response {
+    pricing_mutation_response(
+        PricingMutation::Rejected(PricingRejection::Invalid {
+            reason: reason.into(),
+        }),
+        identity,
+    )
+}
+
+fn invalid_pricing_path(message: &'static str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
+}
+
+fn valid_pricing_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 200
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+/// POST /admin/pricing/catalog/prepare — store one immutable product catalog generation.
+pub async fn prepare_pricing_catalog(
+    State(app): State<AppState>,
+    Json(spec): Json<PricingCatalogSpec>,
+) -> Response {
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    let identity = json!({"catalog": spec.clone()});
+    match b.prepare_pricing_catalog(spec).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing catalog prepare", error),
+    }
+}
+
+/// GET /admin/pricing/catalog/{product_id}/active — read the durable active head and full version.
+pub async fn active_pricing_catalog(
+    State(app): State<AppState>,
+    Path(product_id): Path<String>,
+) -> Response {
+    if !valid_pricing_id(&product_id) {
+        return invalid_pricing_path("invalid product_id");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.active_pricing_catalog(&product_id).await {
+        Ok(Some(catalog)) => Json(json!({"catalog": catalog})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no active catalog"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("active pricing catalog read", error),
+    }
+}
+
+/// GET /admin/pricing/catalog/{product_id}/version/{generation} — immutable version lookup.
+pub async fn pricing_catalog_version(
+    State(app): State<AppState>,
+    Path((product_id, generation)): Path<(String, i64)>,
+) -> Response {
+    if !valid_pricing_id(&product_id) || generation <= 0 {
+        return invalid_pricing_path("invalid product_id or generation");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b
+        .pricing_catalog_by_generation(&product_id, generation)
+        .await
+    {
+        Ok(Some(catalog)) => Json(json!({"catalog": catalog})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown catalog"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("pricing catalog version read", error),
+    }
+}
+
+/// POST /admin/pricing/catalog/{product_id}/activate — monotonic CAS of the product head.
+pub async fn activate_pricing_catalog(
+    State(app): State<AppState>,
+    Path(product_id): Path<String>,
+    Json(req): Json<CatalogActivationReq>,
+) -> Response {
+    if !valid_pricing_id(&product_id) {
+        return invalid_pricing_path("invalid product_id");
+    }
+    let CatalogActivationReq {
+        catalog,
+        expectation,
+    } = req;
+    let identity = json!({
+        "catalog": catalog.clone(),
+        "expectation": expectation.clone(),
+    });
+    if catalog.product_id != product_id {
+        return invalid_pricing_request(
+            "catalog product_id does not match the activation URL",
+            identity,
+        );
+    }
+    if let Err(error) =
+        validate_pricing_catalog(&catalog).and_then(|()| validate_active_expectation(&expectation))
+    {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b
+        .pricing_catalog_by_generation(&product_id, catalog.generation)
+        .await
+    {
+        Ok(Some(prepared)) if prepared == catalog => {}
+        Ok(Some(_)) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::VersionConflict),
+                identity,
+            )
+        }
+        Ok(None) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::MissingDependency {
+                    dependency: format!(
+                        "prepared catalog {product_id} generation {}",
+                        catalog.generation
+                    ),
+                }),
+                identity,
+            )
+        }
+        Err(error) => return authority_unavailable("pricing catalog activation preflight", error),
+    }
+    let target = catalog.target();
+    match b
+        .activate_pricing_catalog(&product_id, target, expectation)
+        .await
+    {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing catalog activation", error),
+    }
+}
+
+/// POST /admin/pricing/switches/prepare — store one immutable global switch generation.
+pub async fn prepare_provider_switches(
+    State(app): State<AppState>,
+    Json(spec): Json<ProviderSwitchSpec>,
+) -> Response {
+    let identity = json!({"switches": spec.clone()});
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.prepare_provider_switches(spec).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("provider switches prepare", error),
+    }
+}
+
+pub async fn active_provider_switches(State(app): State<AppState>) -> Response {
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.active_provider_switches().await {
+        Ok(Some(switches)) => Json(json!({"switches": switches})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no active provider switches"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("active provider switches read", error),
+    }
+}
+
+pub async fn provider_switches_version(
+    State(app): State<AppState>,
+    Path(generation): Path<i64>,
+) -> Response {
+    if generation <= 0 {
+        return invalid_pricing_path("invalid generation");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.provider_switches_by_generation(generation).await {
+        Ok(Some(switches)) => Json(json!({"switches": switches})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown provider switches"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("provider switches version read", error),
+    }
+}
+
+pub async fn activate_provider_switches(
+    State(app): State<AppState>,
+    Json(req): Json<ProviderSwitchActivationReq>,
+) -> Response {
+    let ProviderSwitchActivationReq {
+        switches,
+        expectation,
+    } = req;
+    let identity = json!({
+        "switches": switches.clone(),
+        "expectation": expectation.clone(),
+    });
+    if let Err(error) = validate_provider_switches(&switches)
+        .and_then(|()| validate_active_expectation(&expectation))
+    {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.provider_switches_by_generation(switches.generation).await {
+        Ok(Some(prepared)) if prepared == switches => {}
+        Ok(Some(_)) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::VersionConflict),
+                identity,
+            )
+        }
+        Ok(None) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::MissingDependency {
+                    dependency: format!(
+                        "prepared provider switches generation {}",
+                        switches.generation
+                    ),
+                }),
+                identity,
+            )
+        }
+        Err(error) => {
+            return authority_unavailable("provider switches activation preflight", error)
+        }
+    }
+    let target = switches.target();
+    match b.activate_provider_switches(target, expectation).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("provider switches activation", error),
+    }
+}
+
+/// POST /admin/pricing/policy/prepare — store one immutable full account-policy version.
+pub async fn prepare_account_policy(
+    State(app): State<AppState>,
+    Json(spec): Json<AccountPolicySpec>,
+) -> Response {
+    let identity = json!({"policy": spec.clone()});
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.prepare_account_policy(spec).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("account pricing policy prepare", error),
+    }
+}
+
+pub async fn active_account_policy(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid account_id");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.active_account_policy(&account_id).await {
+        Ok(Some(policy)) => Json(json!({"active": policy})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no active account policy"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("active account pricing policy read", error),
+    }
+}
+
+/// GET /admin/pricing/policy/{account_id}/state — one coherent policy and dual-lineage snapshot.
+pub async fn account_policy_state(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid account_id");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.pricing_read_bundle(&account_id).await {
+        Ok(bundle) => Json(json!({"state": bundle})).into_response(),
+        Err(error) => match b.account(&account_id).await {
+            Ok(None) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "unknown account"})),
+            )
+                .into_response(),
+            Ok(Some(_)) | Err(_) => {
+                authority_unavailable("account pricing policy state read", error)
+            }
+        },
+    }
+}
+
+pub async fn account_policy_version(
+    State(app): State<AppState>,
+    Path((account_id, effective_version)): Path<(String, i64)>,
+) -> Response {
+    if !valid_pricing_id(&account_id) || effective_version <= 0 {
+        return invalid_pricing_path("invalid account_id or effective_version");
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b
+        .account_policy_by_version(&account_id, effective_version)
+        .await
+    {
+        Ok(Some(policy)) => Json(json!({"policy": policy})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown account policy"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("account pricing policy version read", error),
+    }
+}
+
+pub async fn activate_account_policy(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(req): Json<PolicyActivationReq>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid account_id");
+    }
+    let PolicyActivationReq {
+        policy,
+        binding,
+        expectation,
+    } = req;
+    let activation = AccountPolicyActivationSpec {
+        account_id: account_id.clone(),
+        effective_version: policy.effective_version,
+        content_digest: policy.content_digest.clone(),
+        binding: binding.clone(),
+    };
+    let identity = json!({
+        "policy": policy.clone(),
+        "activation": activation.clone(),
+        "expectation": expectation.clone(),
+    });
+    if policy.account_id != account_id {
+        return invalid_pricing_request(
+            "policy account_id does not match the activation URL",
+            identity,
+        );
+    }
+    if let Err(error) = validate_account_policy_shape(&policy)
+        .and_then(|()| validate_account_policy_binding(&binding))
+        .and_then(|()| validate_policy_active_expectation(&expectation))
+    {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b
+        .account_policy_by_version(&account_id, policy.effective_version)
+        .await
+    {
+        Ok(Some(prepared)) if prepared == policy => {}
+        Ok(Some(_)) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::VersionConflict),
+                identity,
+            )
+        }
+        Ok(None) => {
+            return pricing_mutation_response(
+                PricingMutation::Rejected(PricingRejection::MissingDependency {
+                    dependency: format!(
+                        "prepared account policy {account_id} effective version {}",
+                        policy.effective_version
+                    ),
+                }),
+                identity,
+            )
+        }
+        Err(error) => {
+            return authority_unavailable("account pricing policy activation preflight", error)
+        }
+    }
+    match b.activate_account_policy(activation, expectation).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("account pricing policy activation", error),
+    }
 }
 
 #[cfg(test)]

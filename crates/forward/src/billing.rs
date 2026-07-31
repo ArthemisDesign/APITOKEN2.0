@@ -17,8 +17,10 @@
 //! закрывает осиротевшую операцию после истечения lease. Ничего не застревает только в памяти.
 
 use registry::pricing::{
-    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PricingReadBundle,
-    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
+    AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
+    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
+    PricingCatalogSpec, PricingMutation, PricingReadBundle, PricingShadowAdmissionEvaluationInput,
+    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
     AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, GeminiCalibrationRow,
@@ -508,6 +510,34 @@ enum WriteCmd {
         timeout_ms: u64,
         reply: oneshot::Sender<anyhow::Result<PricingShadowEvaluationWrite>>,
     },
+    PreparePricingCatalog {
+        spec: PricingCatalogSpec,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    ActivatePricingCatalog {
+        product_id: String,
+        target: VersionTarget,
+        expectation: ActiveExpectation,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    PrepareProviderSwitches {
+        spec: ProviderSwitchSpec,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    ActivateProviderSwitches {
+        target: VersionTarget,
+        expectation: ActiveExpectation,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    PrepareAccountPolicy {
+        spec: AccountPolicySpec,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    ActivateAccountPolicy {
+        activation: AccountPolicyActivationSpec,
+        expectation: PolicyActiveExpectation,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
     CancelReserve {
         request_id: String,
         account_id: String,
@@ -652,6 +682,35 @@ enum ReadCmd {
         i64,
         oneshot::Sender<anyhow::Result<Vec<registry::SpendProviderAgg>>>,
     ),
+    PricingCatalogByGeneration {
+        product_id: String,
+        generation: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingCatalogSpec>>>,
+    },
+    ActivePricingCatalog {
+        product_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingCatalogSpec>>>,
+    },
+    ProviderSwitchesByGeneration {
+        generation: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<ProviderSwitchSpec>>>,
+    },
+    ActiveProviderSwitches {
+        reply: oneshot::Sender<anyhow::Result<Option<ProviderSwitchSpec>>>,
+    },
+    AccountPolicyByVersion {
+        account_id: String,
+        effective_version: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<AccountPolicySpec>>>,
+    },
+    ActiveAccountPolicy {
+        account_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<ActiveAccountPolicy>>>,
+    },
+    PricingReadBundle {
+        account_id: String,
+        reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
+    },
 }
 
 enum PricingShadowReadCmd {
@@ -1094,6 +1153,38 @@ impl AsyncBilling {
                             ),
                         );
                     }
+                    WriteCmd::PreparePricingCatalog { spec, reply } => {
+                        let _ = reply.send(registry::pricing::sqlite_prepare_pricing_catalog(
+                            &conn, &spec,
+                        ));
+                    }
+                    WriteCmd::ActivatePricingCatalog {
+                        product_id, target, expectation, reply,
+                    } => {
+                        let _ = reply.send(registry::pricing::sqlite_activate_pricing_catalog(
+                            &conn, &product_id, &target, &expectation,
+                        ));
+                    }
+                    WriteCmd::PrepareProviderSwitches { spec, reply } => {
+                        let _ = reply.send(registry::pricing::sqlite_prepare_provider_switches(
+                            &conn, &spec,
+                        ));
+                    }
+                    WriteCmd::ActivateProviderSwitches { target, expectation, reply } => {
+                        let _ = reply.send(registry::pricing::sqlite_activate_provider_switches(
+                            &conn, &target, &expectation,
+                        ));
+                    }
+                    WriteCmd::PrepareAccountPolicy { spec, reply } => {
+                        let _ = reply.send(registry::pricing::sqlite_prepare_account_policy(
+                            &conn, &spec,
+                        ));
+                    }
+                    WriteCmd::ActivateAccountPolicy { activation, expectation, reply } => {
+                        let _ = reply.send(registry::pricing::sqlite_activate_account_policy(
+                            &conn, &activation, &expectation,
+                        ));
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -1210,6 +1301,64 @@ impl AsyncBilling {
                             }
                             ReadCmd::SpendByProvider(since, r) => {
                                 let _ = r.send(registry::spend_by_provider(&conn, since));
+                            }
+                            ReadCmd::PricingCatalogByGeneration {
+                                product_id,
+                                generation,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    registry::pricing::sqlite_pricing_catalog_by_generation(
+                                        &conn,
+                                        &product_id,
+                                        generation,
+                                    ),
+                                );
+                            }
+                            ReadCmd::ActivePricingCatalog { product_id, reply } => {
+                                let _ =
+                                    reply.send(registry::pricing::sqlite_active_pricing_catalog(
+                                        &conn,
+                                        &product_id,
+                                    ));
+                            }
+                            ReadCmd::ProviderSwitchesByGeneration { generation, reply } => {
+                                let _ = reply.send(
+                                    registry::pricing::sqlite_provider_switches_by_generation(
+                                        &conn, generation,
+                                    ),
+                                );
+                            }
+                            ReadCmd::ActiveProviderSwitches { reply } => {
+                                let _ = reply.send(
+                                    registry::pricing::sqlite_active_provider_switches(&conn),
+                                );
+                            }
+                            ReadCmd::AccountPolicyByVersion {
+                                account_id,
+                                effective_version,
+                                reply,
+                            } => {
+                                let _ = reply.send(
+                                    registry::pricing::sqlite_account_policy_by_version(
+                                        &conn,
+                                        &account_id,
+                                        effective_version,
+                                    ),
+                                );
+                            }
+                            ReadCmd::ActiveAccountPolicy { account_id, reply } => {
+                                let _ =
+                                    reply.send(registry::pricing::sqlite_active_account_policy(
+                                        &conn,
+                                        &account_id,
+                                    ));
+                            }
+                            ReadCmd::PricingReadBundle { account_id, reply } => {
+                                let _ = reply.send(registry::pricing::sqlite_pricing_read_bundle(
+                                    &conn,
+                                    &account_id,
+                                ));
                             }
                         }
                     }
@@ -1500,6 +1649,72 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::PreparePricingCatalog { spec, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing catalog prepare",
+                                |pg| pg.prepare_pricing_catalog(&spec),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::ActivatePricingCatalog {
+                            product_id, target, expectation, reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing catalog activation",
+                                |pg| pg.activate_pricing_catalog(
+                                    &product_id,
+                                    &target,
+                                    &expectation,
+                                ),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PrepareProviderSwitches { spec, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "provider switches prepare",
+                                |pg| pg.prepare_provider_switches(&spec),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::ActivateProviderSwitches { target, expectation, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "provider switches activation",
+                                |pg| pg.activate_provider_switches(&target, &expectation),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PrepareAccountPolicy { spec, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "account pricing policy prepare",
+                                |pg| pg.prepare_account_policy(&spec),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::ActivateAccountPolicy { activation, expectation, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "account pricing policy activation",
+                                |pg| pg.activate_account_policy(&activation, &expectation),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
                                 RESERVE_HANDOFF_CANCELED, RESERVE_HANDOFF_REFUNDING,
@@ -1716,6 +1931,37 @@ impl AsyncBilling {
                             ReadCmd::SpendByProvider(since, r) => {
                                 answer!(r, pg.spend_by_provider(since))
                             }
+                            ReadCmd::PricingCatalogByGeneration {
+                                product_id,
+                                generation,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_catalog_by_generation(&product_id, generation)
+                            ),
+                            ReadCmd::ActivePricingCatalog { product_id, reply } => {
+                                answer!(reply, pg.active_pricing_catalog(&product_id))
+                            }
+                            ReadCmd::ProviderSwitchesByGeneration { generation, reply } => {
+                                answer!(reply, pg.provider_switches_by_generation(generation))
+                            }
+                            ReadCmd::ActiveProviderSwitches { reply } => {
+                                answer!(reply, pg.active_provider_switches())
+                            }
+                            ReadCmd::AccountPolicyByVersion {
+                                account_id,
+                                effective_version,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.account_policy_by_version(&account_id, effective_version)
+                            ),
+                            ReadCmd::ActiveAccountPolicy { account_id, reply } => {
+                                answer!(reply, pg.active_account_policy(&account_id))
+                            }
+                            ReadCmd::PricingReadBundle { account_id, reply } => {
+                                answer!(reply, pg.pricing_read_bundle(&account_id))
+                            }
                         }
                     }
                 })?;
@@ -1818,6 +2064,218 @@ impl AsyncBilling {
         result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn prepare_pricing_catalog(
+        &self,
+        spec: PricingCatalogSpec,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PreparePricingCatalog { spec, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn activate_pricing_catalog(
+        &self,
+        product_id: &str,
+        target: VersionTarget,
+        expectation: ActiveExpectation,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::ActivatePricingCatalog {
+                product_id: product_id.to_owned(),
+                target,
+                expectation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn prepare_provider_switches(
+        &self,
+        spec: ProviderSwitchSpec,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PrepareProviderSwitches { spec, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn activate_provider_switches(
+        &self,
+        target: VersionTarget,
+        expectation: ActiveExpectation,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::ActivateProviderSwitches {
+                target,
+                expectation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn prepare_account_policy(
+        &self,
+        spec: AccountPolicySpec,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PrepareAccountPolicy { spec, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn activate_account_policy(
+        &self,
+        activation: AccountPolicyActivationSpec,
+        expectation: PolicyActiveExpectation,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::ActivateAccountPolicy {
+                activation,
+                expectation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn pricing_catalog_by_generation(
+        &self,
+        product_id: &str,
+        generation: i64,
+    ) -> anyhow::Result<Option<PricingCatalogSpec>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingCatalogByGeneration {
+                product_id: product_id.to_owned(),
+                generation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn active_pricing_catalog(
+        &self,
+        product_id: &str,
+    ) -> anyhow::Result<Option<PricingCatalogSpec>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::ActivePricingCatalog {
+                product_id: product_id.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn provider_switches_by_generation(
+        &self,
+        generation: i64,
+    ) -> anyhow::Result<Option<ProviderSwitchSpec>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::ProviderSwitchesByGeneration { generation, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn active_provider_switches(&self) -> anyhow::Result<Option<ProviderSwitchSpec>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::ActiveProviderSwitches { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn account_policy_by_version(
+        &self,
+        account_id: &str,
+        effective_version: i64,
+    ) -> anyhow::Result<Option<AccountPolicySpec>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::AccountPolicyByVersion {
+                account_id: account_id.to_owned(),
+                effective_version,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn active_account_policy(
+        &self,
+        account_id: &str,
+    ) -> anyhow::Result<Option<ActiveAccountPolicy>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::ActiveAccountPolicy {
+                account_id: account_id.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_read_bundle(&self, account_id: &str) -> anyhow::Result<PricingReadBundle> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReadBundle {
+                account_id: account_id.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
     pub async fn key_auth(&self, key: &str) -> anyhow::Result<Option<KeyAuth>> {

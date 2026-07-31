@@ -62,6 +62,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   resolver обязан на каждом чтении проверить exact immutable policy dependencies и независимо
   применить текущие admission heads. Current heads не обязаны равняться policy pins: отдельные
   catalog → switches → policy activations не являются общей транзакцией.
+- **Stage 3C Control API persistence surface:** server may expose the existing typed
+  prepare/read/activate contract through its authenticated `/admin/pricing/*` routes, but registry
+  remains HTTP-free. Every write still runs on the billing single writer; reads use one backend
+  transaction. JSON serde on pricing DTOs is strict about unknown struct fields and uses stable
+  snake_case enums. Exact replay returns `Unchanged`; invalid, missing dependency, stale,
+  version-conflict, catalog/switch CAS, policy-binding CAS and immutable-lock remain distinct typed
+  outcomes. This surface does not seed/backfill data, issue keys or enable strict enforcement.
 - **Stage 3B0/3B1b snapshot read — dormant:** `pricing_read_bundle(account_id)` за одну read-only
   транзакцию возвращает live `accounts.mult_bp`, binding/active policy, exact immutable
   `policy_catalog/policy_switches` и текущие `admission_catalog/admission_switches`: SQLite через

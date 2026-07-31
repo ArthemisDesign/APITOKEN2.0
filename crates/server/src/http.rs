@@ -195,6 +195,97 @@ define_admin_routes!(
         "/admin/account/test-account/key-id/test-key/policy",
         admin::key_policy_by_id
     ),
+    (
+        post,
+        POST,
+        "/admin/pricing/catalog/prepare",
+        "/admin/pricing/catalog/prepare",
+        admin::prepare_pricing_catalog
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/catalog/{product_id}/active",
+        "/admin/pricing/catalog/main/active",
+        admin::active_pricing_catalog
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/catalog/{product_id}/version/{generation}",
+        "/admin/pricing/catalog/main/version/1",
+        admin::pricing_catalog_version
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/catalog/{product_id}/activate",
+        "/admin/pricing/catalog/main/activate",
+        admin::activate_pricing_catalog
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/switches/prepare",
+        "/admin/pricing/switches/prepare",
+        admin::prepare_provider_switches
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/switches/active",
+        "/admin/pricing/switches/active",
+        admin::active_provider_switches
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/switches/version/{generation}",
+        "/admin/pricing/switches/version/1",
+        admin::provider_switches_version
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/switches/activate",
+        "/admin/pricing/switches/activate",
+        admin::activate_provider_switches
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/policy/prepare",
+        "/admin/pricing/policy/prepare",
+        admin::prepare_account_policy
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/policy/{account_id}/active",
+        "/admin/pricing/policy/test-account/active",
+        admin::active_account_policy
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/policy/{account_id}/state",
+        "/admin/pricing/policy/test-account/state",
+        admin::account_policy_state
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/policy/{account_id}/version/{effective_version}",
+        "/admin/pricing/policy/test-account/version/1",
+        admin::account_policy_version
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/policy/{account_id}/activate",
+        "/admin/pricing/policy/test-account/activate",
+        admin::activate_account_policy
+    ),
 );
 
 async fn require_control_auth(
@@ -2554,7 +2645,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 14);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 27);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -2593,6 +2684,327 @@ mod tests {
                 }
             }
         }
+    }
+
+    async fn control_json_request(
+        service: &Router,
+        method: Method,
+        path: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("x-api-key", "control-key")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424))));
+        let response = service.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
+        let value = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn pricing_control_api_preserves_version_identity_cas_and_dual_lineage_state() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-pricing-control-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        let billing =
+            Arc::new(forward::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap());
+        billing
+            .create_account("acct_pricing_control", Some("pricing-control"), 5_000)
+            .await
+            .unwrap();
+
+        let mut app = admin_auth_test_app();
+        app.billing = Some(billing);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let catalog = json!({
+            "product_id": "main",
+            "generation": 1,
+            "schema_version": 1,
+            "capability_generation": 1,
+            "capability_digest": "capability-v1",
+            "content_digest": "catalog-v1",
+            "entries": [{
+                "provider_id": "anthropic",
+                "canonical_model_id": "claude-sonnet-4-6",
+                "enabled": true
+            }]
+        });
+        let (status, prepared) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/prepare",
+            catalog.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(prepared["result"], "stored");
+        assert_eq!(prepared["identity"]["catalog"], catalog);
+        let (_, replayed) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/prepare",
+            catalog.clone(),
+        )
+        .await;
+        assert_eq!(replayed["result"], "unchanged");
+        let mut catalog_with_unknown_field = catalog.clone();
+        catalog_with_unknown_field["implicit_activation"] = json!(true);
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/prepare",
+            catalog_with_unknown_field,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut conflicting_catalog = catalog.clone();
+        conflicting_catalog["capability_digest"] = json!("different-capability");
+        let (status, conflict) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/main/activate",
+            json!({
+                "catalog": conflicting_catalog,
+                "expectation": "absent"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(conflict["code"], "version_conflict");
+
+        let mut missing_catalog = catalog.clone();
+        missing_catalog["generation"] = json!(99);
+        missing_catalog["content_digest"] = json!("catalog-missing");
+        let (status, missing) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/main/activate",
+            json!({
+                "catalog": missing_catalog,
+                "expectation": "absent"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(missing["code"], "missing_dependency");
+
+        let activate_catalog = json!({
+            "catalog": catalog.clone(),
+            "expectation": "absent"
+        });
+        let (status, applied) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/main/activate",
+            activate_catalog.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(applied["result"], "applied");
+        assert_eq!(applied["identity"]["catalog"], catalog);
+        let (_, replayed) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/main/activate",
+            activate_catalog,
+        )
+        .await;
+        assert_eq!(replayed["result"], "unchanged");
+
+        let switches = json!({
+            "generation": 1,
+            "schema_version": 1,
+            "capability_generation": 1,
+            "capability_digest": "capability-v1",
+            "content_digest": "switches-v1",
+            "entries": [
+                {
+                    "provider_id": "anthropic",
+                    "scope": "master",
+                    "catalog_generation": null,
+                    "enabled": true
+                },
+                {
+                    "provider_id": "anthropic",
+                    "scope": {"segment": {"product_id": "main", "segment": "b2c"}},
+                    "catalog_generation": 1,
+                    "enabled": true
+                }
+            ]
+        });
+        let (status, prepared) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/switches/prepare",
+            switches.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(prepared["result"], "stored");
+        let (status, applied) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/switches/activate",
+            json!({
+                "switches": switches.clone(),
+                "expectation": "absent"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(applied["result"], "applied");
+        assert_eq!(applied["identity"]["switches"], switches);
+
+        let policy = json!({
+            "account_id": "acct_pricing_control",
+            "effective_version": 1,
+            "policy_id": "global-b2c-v1",
+            "policy_version": 1,
+            "source_policy_digest": "commerce-global-b2c-v1",
+            "owner_type": "global_b2c",
+            "owner_id": "global-b2c",
+            "account_class": "b2c",
+            "product_id": "main",
+            "schema_version": 1,
+            "catalog_generation": 1,
+            "switch_generation": 1,
+            "content_digest": "account-policy-v1",
+            "replacement_locked": false,
+            "rules": [{
+                "rule_id": "anthropic-track",
+                "rule_digest": "anthropic-track-v1",
+                "scope": {"provider": {"provider_id": "anthropic"}},
+                "pricing_mode": "track",
+                "rule_origin": "managed",
+                "discount_bps": null,
+                "payable_multiplier_bp": 5_000,
+                "track_eligible": true,
+                "retention_eligible": true,
+                "commission_eligible": true
+            }]
+        });
+        let (status, prepared) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/prepare",
+            policy.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(prepared["result"], "stored");
+        let binding = json!({
+            "policy_enforcement": "shadow",
+            "funding_enforcement": "legacy_single",
+            "reconciliation_state": "pending"
+        });
+        let mut redirected_policy = policy.clone();
+        redirected_policy["account_id"] = json!("another-account");
+        let (status, rejected) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/acct_pricing_control/activate",
+            json!({
+                "policy": redirected_policy,
+                "binding": binding.clone(),
+                "expectation": "unbound"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(rejected["code"], "invalid");
+
+        let (status, applied) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/acct_pricing_control/activate",
+            json!({
+                "policy": policy.clone(),
+                "binding": binding.clone(),
+                "expectation": "unbound"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(applied["result"], "applied");
+        assert_eq!(applied["identity"]["policy"], policy);
+        assert_eq!(applied["identity"]["activation"]["binding"], binding);
+
+        let (status, state) = control_json_request(
+            &service,
+            Method::GET,
+            "/admin/pricing/policy/acct_pricing_control/state",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state["state"]["account_id"], "acct_pricing_control");
+        assert_eq!(
+            state["state"]["policy"]["active"]["policy"]["content_digest"],
+            "account-policy-v1"
+        );
+        assert_eq!(
+            state["state"]["policy_catalog"]["content_digest"],
+            "catalog-v1"
+        );
+        assert_eq!(
+            state["state"]["admission_switches"]["content_digest"],
+            "switches-v1"
+        );
+
+        let catalog_v2 = json!({
+            "product_id": "main",
+            "generation": 2,
+            "schema_version": 1,
+            "capability_generation": 1,
+            "capability_digest": "capability-v1",
+            "content_digest": "catalog-v2",
+            "entries": [{
+                "provider_id": "anthropic",
+                "canonical_model_id": "claude-sonnet-4-6",
+                "enabled": true
+            }]
+        });
+        let _ = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/prepare",
+            catalog_v2.clone(),
+        )
+        .await;
+        let (status, conflict) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/catalog/main/activate",
+            json!({
+                "catalog": catalog_v2,
+                "expectation": "absent"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(conflict["code"], "cas_mismatch");
+        assert_eq!(
+            conflict["rejection"]["cas_mismatch"]["actual"]["version"],
+            1
+        );
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
     }
 
     fn capacity(email: &str, available: f64, routable: bool, calibrated: bool) -> pool::Cap {

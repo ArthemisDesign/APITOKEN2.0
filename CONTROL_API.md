@@ -142,9 +142,84 @@ It can increase or clear a limit and extend or clear expiry without changing key
 limit below `spent_nano + reserved_nano` is rejected atomically with `409` and code
 `limit_below_committed`, so an edit cannot invalidate an in-flight reservation.
 
+### Versioned multi-provider pricing (Stage 3C)
+
+Pricing control is an explicit `prepare → read → activate` protocol. Preparing an immutable
+version never changes traffic. Activation is a monotonic compare-and-set (CAS), and callers must
+send the exact expected active target. Catalog, switches, and account policy are separate heads;
+the supported order for a new release is catalog first, then switches, then policy.
+
+```
+POST /admin/pricing/catalog/prepare
+GET  /admin/pricing/catalog/{product_id}/version/{generation}
+GET  /admin/pricing/catalog/{product_id}/active
+POST /admin/pricing/catalog/{product_id}/activate
+
+POST /admin/pricing/switches/prepare
+GET  /admin/pricing/switches/version/{generation}
+GET  /admin/pricing/switches/active
+POST /admin/pricing/switches/activate
+
+POST /admin/pricing/policy/prepare
+GET  /admin/pricing/policy/{account_id}/version/{effective_version}
+GET  /admin/pricing/policy/{account_id}/active
+GET  /admin/pricing/policy/{account_id}/state
+POST /admin/pricing/policy/{account_id}/activate
+```
+
+Prepare bodies are the complete immutable `PricingCatalogSpec`, `ProviderSwitchSpec`, or
+`AccountPolicySpec`. They include schema/capability generations and digests, content digest, full
+entries/rules, and all policy lineage pins. Unknown JSON fields are rejected. A prepare ACK returns
+`result=stored|unchanged` and echoes the complete immutable identity; the same version with a
+different body is `409 version_conflict`.
+
+Catalog activation repeats the complete prepared immutable spec rather than only its compact
+version/digest target:
+
+```json
+{
+  "catalog": {
+    "product_id": "main",
+    "generation": 2,
+    "schema_version": 1,
+    "capability_generation": 4,
+    "capability_digest": "sha256:capability...",
+    "content_digest": "sha256:catalog...",
+    "entries": []
+  },
+  "expectation": {"exact": {"version": 1, "content_digest": "sha256:..."}}
+}
+```
+
+Switch activation likewise sends `switches` with the complete prepared `ProviderSwitchSpec` plus
+the CAS `expectation`. Use `"expectation":"absent"` only for the first catalog or switch head.
+Account-policy activation sends the complete prepared `policy`, the complete target `binding`, and
+`expectation="unbound"|{"inactive":...}|{"exact":...}`. Catalog `product_id` and policy
+`account_id` must match the URL. Before CAS, the engine reads the named immutable generation and
+requires exact spec equality; a missing prepared version is `missing_dependency`, while different
+content under the same version is `version_conflict`.
+
+Successful activation returns `result=applied|unchanged`. Exact retry after a lost ACK returns
+`unchanged` for the same committed target. Its identity echoes the complete catalog/switch spec, or
+the complete policy plus derived binding target, together with the expectation. Rejections are
+typed and retain evidence:
+
+- `400 invalid` — malformed schema, rules, identity, binding, or unsupported strict state;
+- `409 missing_dependency` — required prepared/active catalog or switches are absent;
+- `409 stale` — target is older than durable state;
+- `409 version_conflict` — same version has another digest/content;
+- `409 cas_mismatch` / `policy_cas_mismatch` — expected head/binding differs; response includes
+  the actual durable state;
+- `423 locked` — immutable legacy policy cannot be replaced.
+
+`GET .../state` reads the live scalar, policy binding, pinned policy catalog/switches, and current
+admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
+enable strict enforcement, or bypass the catalog → switches → policy order.
+
 ### Коды ошибок
-`400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ не найден ·
-`409` конфликт создания или лимит ниже уже списанного+зарезервированного · `503` биллинг выключен.
+`400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ/версия не найдены ·
+`409` CAS/версионный конфликт или лимит ниже уже списанного+зарезервированного · `423` immutable
+pricing policy locked · `503` биллинг выключен.
 На клиентском `/v1`: `402` баланс ≤ 0.
 
 ### Пример: полный цикл (bash)

@@ -28,6 +28,11 @@
   создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `CONTROL_API.md`.
   Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
   the commercial pricing worker.
+  Stage 3C adds authenticated `/admin/pricing/*` prepare/read/activate routes for immutable product
+  catalogs, provider switches and account policies. Requests/ACKs preserve complete version/digest,
+  capability lineage and binding identity; typed CAS errors stay distinguishable. Routes only
+  expose the registry contract through `AsyncBilling` actors and cannot backfill, issue keys,
+  enable strict enforcement or reorder catalog → switches → policy activation.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation

@@ -19,6 +19,10 @@
 (`create_account`/`issue_key`/`account_status`/`key_status_by_id`) через ТОТ ЖЕ single-writer (без гонок).
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
 through a reader; HTTP code never opens the authority directly.
+Stage 3C versioned pricing control follows the same ownership: catalog/switch/policy prepare and
+activate commands share the single writer, while immutable-version/head/bundle reads use the normal
+bounded reader pool. SQLite and PostgreSQL dispatch the same registry typed outcomes; no HTTP
+handler opens a second connection or assembles a policy bundle from separate reads.
 Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имеют OR-семантику без
 приоритета заголовка: достаточно любого валидного. Это критично для Claude Code,
 который может одновременно прислать stale `ANTHROPIC_API_KEY` и актуальный `ANTHROPIC_AUTH_TOKEN`.

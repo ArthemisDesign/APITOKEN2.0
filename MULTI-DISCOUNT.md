@@ -14,8 +14,11 @@ typed shadow work-item/evaluation builder в `forward`, без caller/config/tra
 к live metered reserve-путям Anthropic/OpenAI и доставлен default-off. Текущая application-итерация
 добавляет PostgreSQL-only bounded evaluation-time shadow: producer выполняет единственный
 неблокирующий enqueue только после atomic actual snapshot, а отдельные read actors и background
-worker не влияют на HTTP, reserve, settlement или readiness. Production activation, settlement
-tariff pinning и использование shadow outcome в admission в этот checkpoint не входят.
+worker не влияют на HTTP, reserve, settlement или readiness. Этот runtime доставлен default-off.
+Текущий application-checkpoint Stage 3C добавляет аутентифицированный versioned Control API поверх
+уже доставленного registry CAS, не выполняя backfill, strict activation или key provisioning.
+Production shadow activation, settlement tariff pinning и использование shadow outcome в admission
+в Stage 3C не входят.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -1863,7 +1866,7 @@ Exit gate Stage 3B1c: atomic actual snapshots проходят per-request св�
 durable evaluation rows выборочно сверены с actual snapshots; bridge и producer отключаются
 независимыми операционными шагами без rollback schema.
 
-### Этап 3C. Versioned Control API без strict enforcement
+### Этап 3C. Versioned Control API без strict enforcement — текущий application-checkpoint
 
 - Добавить аутентифицированные prepare/read/activate endpoints для catalog, switches и account
   policy поверх Stage 3A Authority API.
@@ -1873,6 +1876,26 @@ durable evaluation rows выборочно сверены с actual snapshots; b
   потерянного ACK возвращает тот же committed target.
 - Control API не выполняет backfill, не выдаёт ключи, не включает strict и не обходит порядок
   catalog → switches → policy.
+
+Реализованный checkpoint экспонирует три независимых семейства маршрутов под существующим
+`control_authed`-гейтом:
+
+- catalog: `prepare`, immutable `version`, `active`, monotonic CAS `activate`;
+- switches: `prepare`, immutable `version`, `active`, monotonic CAS `activate`;
+- account policy: `prepare`, immutable `version`, `active`, coherent `state` и binding-aware CAS
+  `activate`.
+
+HTTP DTO используют registry-owned exact types, reject unknown struct fields и стабильные
+snake_case enum values. Prepare и activation payload/ACK сохраняют полную immutable spec identity,
+включая schema/capability generations/digests, policy lineage и binding; compact target всегда
+выводится из exact prepared spec после preflight equality check. Exact lost-ACK retry получает
+`unchanged`. `invalid`, `missing_dependency`, `stale`, `version_conflict`, `cas_mismatch`,
+`policy_cas_mismatch` и immutable `locked` имеют отдельные коды и сохраняют actual durable evidence.
+Все writes проходят через существующий `AsyncBilling` single writer, reads — через bounded reader
+pool; HTTP не открывает authority и не собирает dual-lineage state несколькими запросами. SQLite
+HTTP integration test проходит полный catalog → switches → policy цикл, exact replays, coherent
+dual-lineage read и stale expectation conflict; registry PostgreSQL CAS matrix остаётся
+authoritative backend parity proof.
 
 ### Этап 4. Authority и durable synchronization в commerce
 

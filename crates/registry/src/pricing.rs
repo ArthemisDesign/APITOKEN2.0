@@ -49,43 +49,50 @@ pub use sqlite::{
 };
 
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PRICING_SCHEMA_VERSION: i64 = 1;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VersionTarget {
     pub version: i64,
     pub content_digest: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ActiveExpectation {
     Absent,
     Exact(VersionTarget),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActivePolicyTarget {
     pub target: VersionTarget,
     pub binding: AccountPolicyBindingSpec,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyActiveExpectation {
     Unbound,
     Inactive(AccountPolicyBindingSpec),
     Exact(ActivePolicyTarget),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyBindingState {
     Unbound,
     Inactive(AccountPolicyBindingSpec),
     Active(ActivePolicyTarget),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PricingMutation {
     Stored,
     Applied,
@@ -93,7 +100,8 @@ pub enum PricingMutation {
     Rejected(PricingRejection),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PricingRejection {
     Invalid { reason: String },
     MissingDependency { dependency: String },
@@ -104,7 +112,8 @@ pub enum PricingRejection {
     Locked,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PricingCatalogSpec {
     pub product_id: String,
     pub generation: i64,
@@ -115,14 +124,16 @@ pub struct PricingCatalogSpec {
     pub entries: Vec<PricingCatalogEntrySpec>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PricingCatalogEntrySpec {
     pub provider_id: String,
     pub canonical_model_id: String,
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderSwitchSpec {
     pub generation: i64,
     pub schema_version: i64,
@@ -132,7 +143,8 @@ pub struct ProviderSwitchSpec {
     pub entries: Vec<ProviderSwitchEntrySpec>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderSwitchEntrySpec {
     pub provider_id: String,
     pub scope: ProviderSwitchScope,
@@ -140,7 +152,8 @@ pub struct ProviderSwitchEntrySpec {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderSwitchScope {
     Master,
     Product {
@@ -152,13 +165,15 @@ pub enum ProviderSwitchScope {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicySegment {
     B2c,
     B2b,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountPolicySpec {
     pub account_id: String,
     pub effective_version: i64,
@@ -177,7 +192,8 @@ pub struct AccountPolicySpec {
     pub rules: Vec<AccountPolicyRuleSpec>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountPolicyRuleSpec {
     pub rule_id: String,
     pub rule_digest: String,
@@ -191,7 +207,8 @@ pub struct AccountPolicyRuleSpec {
     pub commission_eligible: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyRuleScope {
     Provider {
         provider_id: String,
@@ -202,14 +219,16 @@ pub enum PolicyRuleScope {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountPolicyBindingSpec {
     pub policy_enforcement: PolicyEnforcement,
     pub funding_enforcement: FundingEnforcement,
     pub reconciliation_state: ReconciliationState,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountPolicyActivationSpec {
     pub account_id: String,
     pub effective_version: i64,
@@ -217,7 +236,8 @@ pub struct AccountPolicyActivationSpec {
     pub binding: AccountPolicyBindingSpec,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActiveAccountPolicy {
     pub policy: AccountPolicySpec,
     pub binding: AccountPolicyBindingSpec,
@@ -227,7 +247,8 @@ pub struct ActiveAccountPolicy {
 ///
 /// This is deliberately a read-only Stage 3B building block. It does not resolve a rule or alter
 /// admission, billing, heads, bindings, or any other durable state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PricingPolicySnapshot {
     Unbound,
     Inactive {
@@ -246,7 +267,8 @@ pub enum PricingPolicySnapshot {
 /// policy choreography from making the older active policy internally inconsistent. An unbound
 /// account has no product context, so all dependency fields are `None`; an inactive binding has
 /// no policy dependencies and uses its bound product to read whichever admission heads exist.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PricingReadBundle {
     pub account_id: String,
     /// Live legacy scalar read in the same transaction as policy/catalog/switch state.
@@ -258,7 +280,8 @@ pub struct PricingReadBundle {
     pub admission_switches: Option<ProviderSwitchSpec>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyOwnerType {
     GlobalB2c,
     B2bClient,
@@ -266,7 +289,8 @@ pub enum PolicyOwnerType {
     Service,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountClass {
     B2c,
     B2b,
@@ -274,34 +298,39 @@ pub enum AccountClass {
     Service,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PolicyEnforcement {
     LegacyScalar,
     Shadow,
     Strict,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FundingEnforcement {
     LegacySingle,
     Shadow,
     Strict,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReconciliationState {
     Pending,
     Verified,
     Exception,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PricingMode {
     Track,
     Discount,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuleOrigin {
     Managed,
     Legacy,
