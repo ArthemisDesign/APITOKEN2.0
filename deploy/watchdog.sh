@@ -766,7 +766,6 @@ prepare_and_test_candidate_unlocked() {
   # child even when one fails so no candidate-owned process survives into cleanup or a later cycle.
   if [[ -n $typescript_pid ]]; then wait "$typescript_pid" || typescript_rc=$?; fi
   if [[ -n $rust_pid ]]; then wait "$rust_pid" || rust_rc=$?; fi
-  if [[ -n $codex_pid ]]; then wait "$codex_pid" || codex_rc=$?; fi
   wait "$static_pid" || static_rc=$?
   if (( TEST_DB_STARTED == 1 )); then
     test_db stop
