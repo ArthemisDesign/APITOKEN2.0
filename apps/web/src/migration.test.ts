@@ -8,7 +8,7 @@ const appRoot = join(root, "app");
 function dashboardSource(): string {
   return [
     readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8"),
-    readFileSync(join(appRoot, "dashboard", "dashboard-sections.tsx"), "utf8"),
+    ...sourceFiles(join(appRoot, "dashboard", "sections")).map((path) => readFileSync(path, "utf8")),
   ].join("\n");
 }
 
@@ -104,9 +104,11 @@ describe("completed Next.js migration", () => {
     const analytics = readFileSync(join(root, "components", "site-analytics.tsx"), "utf8");
     const packageJson = readFileSync(join(root, "..", "package.json"), "utf8");
     expect(rootLayout).toContain("<SiteAnalytics />");
-    expect(rootLayout).toContain("<SpeedInsights />");
-    expect(rootLayout).toContain('from "@vercel/speed-insights/next"');
-    expect(analytics).toContain('from "@vercel/analytics/next"');
+    expect(rootLayout).toContain("<SiteSpeedInsights />");
+    expect(rootLayout).not.toContain('from "@vercel/speed-insights/next"');
+    expect(analytics).toContain('import("@vercel/analytics/next")');
+    expect(analytics).toContain('import("@vercel/speed-insights/next")');
+    expect(analytics).toContain("ssr: false");
     expect(analytics).toContain("beforeSend");
     expect(analytics).toContain('"utm_source"');
     expect(analytics).toContain('"utm_campaign"');
@@ -192,7 +194,7 @@ describe("completed Next.js migration", () => {
     expect(dashboardCopy).not.toMatch(/monthlyTierProgress|spendMore|tierStarter/);
     expect(dashboard).toContain("FLAT_DISCOUNT_PERCENT");
     expect(dashboard).not.toContain("B2C_PRICING_MILESTONES");
-    expect(dashboard).toContain("const d = discountOf(account)");
+    expect(dashboard).toContain("const d = discount");
     expect(dashboard).not.toContain("entry.discountPercent ?? discountOf(account)");
     expect(styles).toContain(".app section.pricing-banner{border:1px solid var(--accent-line)}");
   });

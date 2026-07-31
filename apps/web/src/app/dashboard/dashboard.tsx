@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Activity, memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type LedgerEntry, type UsageView,
 } from "@/lib/api";
@@ -19,12 +19,12 @@ import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 import { DashboardLoading } from "./dashboard-loading";
 
-const ApiKeys = dynamic(() => import("./dashboard-sections").then((module) => module.ApiKeys));
-const Credits = dynamic(() => import("./dashboard-sections").then((module) => module.Credits));
-const Usage = dynamic(() => import("./dashboard-sections").then((module) => module.Usage));
-const SupportPanel = dynamic(() => import("./dashboard-sections").then((module) => module.SupportPanel));
-const Profile = dynamic(() => import("./dashboard-sections").then((module) => module.Profile));
-const PromoPanel = dynamic(() => import("./dashboard-sections").then((module) => module.PromoPanel));
+const ApiKeys = dynamic(() => import("./sections/api-keys").then((module) => module.ApiKeys));
+const Credits = dynamic(() => import("./sections/credits").then((module) => module.Credits));
+const Usage = dynamic(() => import("./sections/usage").then((module) => module.Usage));
+const SupportPanel = dynamic(() => import("./sections/support-panel").then((module) => module.SupportPanel));
+const Profile = dynamic(() => import("./sections/profile").then((module) => module.Profile));
+const PromoPanel = dynamic(() => import("./sections/promo-panel").then((module) => module.PromoPanel));
 
 type Section = DashboardSection;
 type OptionalDataSource = "keys" | "ledger" | "usage";
@@ -74,7 +74,11 @@ export function Dashboard() {
   const { language, setLanguage } = useI18n();
   const copy = dashboardCopy[language];
   const localCopy = localDashboardCopy[language];
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get("view")));
+  // Посещённые разделы не размонтируем (Activity hidden): поиск, фильтры и скролл переживают
+  // переключение вкладок. Ленивые dynamic()-импорты по-прежнему грузятся только при первом визите.
+  const [visitedSections, setVisitedSections] = useState<ReadonlySet<Section>>(() => new Set([section]));
   const [policyNow] = useState(() => Date.now());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
@@ -90,6 +94,7 @@ export function Dashboard() {
   const [sideOpen, setSideOpen] = useState(false);
   const analyticsLoaded = useRef(false);
   const initialSection = useRef(section);
+  const lastFocusRefreshAt = useRef(0);
   const lifecycleGeneration = useRef(0);
   const optionalRequestGeneration = useRef<Record<OptionalDataSource, number>>({ keys: 0, ledger: 0, usage: 0 });
 
@@ -166,7 +171,9 @@ export function Dashboard() {
 
   useEffect(() => {
     function syncSectionFromHistory() {
-      setSection(parseDashboardSection(new URLSearchParams(window.location.search).get("view")));
+      const next = parseDashboardSection(new URLSearchParams(window.location.search).get("view"));
+      setVisitedSections((current) => (current.has(next) ? current : new Set([...current, next])));
+      setSection(next);
     }
     window.addEventListener("popstate", syncSectionFromHistory);
     return () => window.removeEventListener("popstate", syncSectionFromHistory);
@@ -175,12 +182,16 @@ export function Dashboard() {
   // Тихо переподтягиваем аккаунт при возврате фокуса: партнёрская скидка-«пол» реферала обычно
   // применяется синхронно при регистрации, но если она доехала async-фидом уже после открытия
   // дашборда — так витрина (панель «Партнёрская ставка») обновится без ручной перезагрузки.
+  // focus и visibilitychange стреляют вместе на каждом переключении вкладки, поэтому успешные
+  // обновления троттлим: чаще, чем раз в 30 секунд, аккаунт не переспрашиваем.
   useEffect(() => {
     let cancelled = false;
     async function refreshAccount() {
       if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastFocusRefreshAt.current < 30_000) return;
       try {
         const fresh = await api.account();
+        lastFocusRefreshAt.current = Date.now();
         if (!cancelled) setAccount(fresh);
       } catch {
         // тихо: это лишь фоновое обновление, ошибки уже покрыты основной загрузкой
@@ -201,26 +212,36 @@ export function Dashboard() {
     }
   }, [language, searchParams]);
 
-  async function logout() {
+  const logout = useCallback(async () => {
     if (loggingOut) return;
     setLoggingOut(true); setLogoutError(null);
     try { await api.logout(); router.replace("/login"); }
     catch { setLogoutError(localCopy.logoutError); }
     finally { setLoggingOut(false); }
-  }
+  }, [loggingOut, router, localCopy]);
 
-  function open(next: Section) {
+  const open = useCallback((next: Section) => {
     setSideOpen(false);
+    setVisitedSections((current) => (current.has(next) ? current : new Set([...current, next])));
     setSection(next);
     trackProductEvent("Dashboard Section Viewed", { section: next });
     window.history.pushState(null, "", dashboardHref(next, language));
     window.scrollTo({ top: 0, behavior: "auto" });
+  }, [language]);
+
+  // Клики с модификаторами (Cmd/Ctrl/Shift) и среднюю кнопку отдаём браузеру: у ссылки настоящий
+  // href, поэтому раздел можно открыть в новой вкладке. Обычный клик остаётся shallow-навигацией.
+  function handleSectionNav(event: ReactMouseEvent<HTMLAnchorElement>, next: Section) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    open(next);
   }
+
+  const usableKeys = useMemo(() => keys.filter((key) => isApiKeyUsable(key, policyNow)), [keys, policyNow]);
 
   if (loading) return <DashboardLoading label={copy.loading} />;
   if (!user || !account) return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
 
-  const usableKeys = keys.filter((key) => isApiKeyUsable(key, policyNow));
   const sourceNotices: Array<{ source: OptionalDataSource; message: string; pending: boolean }> = [];
   if (section === "keys") {
     if (dataPending.keys) sourceNotices.push({ source: "keys", message: copy.keysDataLoading, pending: true });
@@ -241,11 +262,11 @@ export function Dashboard() {
         {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
           {item.group && <span className="side-group">{copy[item.group]}</span>}
           {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link> :
-            <button data-dashboard-section={item.section} className={section === item.section ? "on" : ""} aria-current={section === item.section ? "page" : undefined} onClick={() => open(item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></button>}
+            <Link data-dashboard-section={item.section} className={`side-link${section === item.section ? " on" : ""}`} aria-current={section === item.section ? "page" : undefined} href={dashboardHref(item.section!, language)} onClick={(event) => handleSectionNav(event, item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link>}
         </div>)}
       </nav>
       <div className="side-foot">
-        <div className="side-tools"><div className="lang"><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /></div>
+        <div className="side-tools"><div className="lang"><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /></div>
         <nav className="side-legal" aria-label={language === "ru" ? "Правовая информация" : "Legal information"}>
           <Link href="/privacy" target="_blank">{language === "ru" ? "Конфиденциальность" : "Privacy"}</Link>
           <Link href="/terms" target="_blank">{language === "ru" ? "Соглашение" : "Agreement"}</Link>
@@ -266,35 +287,49 @@ export function Dashboard() {
             <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
               <span className="atb-ic" aria-hidden="true" />
               <span className="atb-label">{copy.creditsLabel}</span>
-              <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano)}</span>
+              <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano, locale)}</span>
             </button>
           </div>
         </div>
       </header>
       <div className="app-body-in">
-        {error && <div className="banner banner-error">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
-        {logoutError && <div className="banner banner-error">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
+        {error && <div className="banner banner-error" role="alert">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
+        {logoutError && <div className="banner banner-error" role="alert">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
         {sourceNotices.map((notice) => <div className={`banner dashboard-data-notice${notice.pending ? "" : " banner-error"}`} role="status" key={notice.source}><span>{notice.message}</span>{!notice.pending && <button className="btn btn-ghost btn-sm" onClick={() => void retryOptional(notice.source)}>{copy.retry}</button>}</div>)}
-        {section === "overview" && <Overview
-          account={account}
-          user={user}
-          usableKeys={usableKeys}
-          totalKeys={keys.length}
-          keysState={dataPending.keys ? "loading" : dataErrors.keys ? "unavailable" : "ready"}
-          usage={usage}
-          usageState={dataPending.usage ? "loading" : dataErrors.usage ? "unavailable" : "ready"}
-          ledger={ledger}
-          ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
-          open={open}
-        />}
-        {section === "keys" && dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
-        {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
-        {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
-        {section === "usage" && !usage && dataPending.usage && <UsageSkeleton />}
-        {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
-        {section === "support" && <SupportPanel />}
-        {section === "profile" && <Profile user={user} onUpdated={setUser} />}
-        {section === "promos" && <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />}
+        {visitedSections.has("overview") && <Activity mode={section === "overview" ? "visible" : "hidden"}>
+          <Overview
+            account={account}
+            user={user}
+            usableKeys={usableKeys}
+            totalKeys={keys.length}
+            keysState={dataPending.keys ? "loading" : dataErrors.keys ? "unavailable" : "ready"}
+            usage={usage}
+            usageState={dataPending.usage ? "loading" : dataErrors.usage ? "unavailable" : "ready"}
+            ledger={ledger}
+            ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
+            open={open}
+          />
+        </Activity>}
+        {visitedSections.has("keys") && <Activity mode={section === "keys" ? "visible" : "hidden"}>
+          {dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
+          {!dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
+        </Activity>}
+        {visitedSections.has("credits") && <Activity mode={section === "credits" ? "visible" : "hidden"}>
+          <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />
+        </Activity>}
+        {visitedSections.has("usage") && <Activity mode={section === "usage" ? "visible" : "hidden"}>
+          {!usage && dataPending.usage && <UsageSkeleton />}
+          {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+        </Activity>}
+        {visitedSections.has("support") && <Activity mode={section === "support" ? "visible" : "hidden"}>
+          <SupportPanel />
+        </Activity>}
+        {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>
+          <Profile user={user} onUpdated={setUser} />
+        </Activity>}
+        {visitedSections.has("promos") && <Activity mode={section === "promos" ? "visible" : "hidden"}>
+          <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
+        </Activity>}
       </div>
     </main>
   </div>;
@@ -322,7 +357,7 @@ function UsageSkeleton() {
 
 type OverviewDataState = "loading" | "unavailable" | "ready";
 
-function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usageState, ledger, ledgerState, open }: {
+export const Overview = memo(function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usageState, ledger, ledgerState, open }: {
   account: AccountView;
   user: AuthUser;
   usableKeys: ApiKeyView[];
@@ -339,7 +374,10 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const multiplierBp = paymentBasisPoints(account);
   const discount = discountOf(account);
-  const officialBalanceNano = officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp);
+  const officialBalanceNano = useMemo(
+    () => officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp),
+    [account.balanceNano, multiplierBp],
+  );
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
   const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
   const accessTone = keysState === "loading" ? "neutral"
@@ -356,9 +394,12 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
           : totalKeys > 0 ? copy.keysNeedAttention : copy.noKeysOverview;
   const balanceNano = BigInt(account.balanceNano);
   const lowBalance = balanceNano > 0n && balanceNano <= 5n * NANO_PER_USD;
-  const recentActivity = ledgerState === "ready"
-    ? [...ledger].sort((left, right) => ledgerMs(right.timestamp) - ledgerMs(left.timestamp)).slice(0, 3)
-    : [];
+  const recentActivity = useMemo(
+    () => ledgerState === "ready"
+      ? [...ledger].sort((left, right) => ledgerMs(right.timestamp) - ledgerMs(left.timestamp)).slice(0, 3)
+      : [],
+    [ledger, ledgerState],
+  );
   const pricingTitle = account.pricing?.customerType === "b2b" ? copy.businessAgreement : copy.flatRate;
   const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
 
@@ -380,12 +421,12 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
       <article className="card overview-balance-card">
         <div className="overview-card-head">
           <span className="overview-card-label">{copy.platformBalance}</span>
-          <span className="overview-rate-chip">{discount}% {copy.discount} · {formatMultiplier(multiplierBp)}</span>
+          <span className="overview-rate-chip">{discount}% {copy.discount} · {formatMultiplier(multiplierBp, locale)}</span>
         </div>
         <div className="overview-balance-main">
           <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
           <div className="overview-balance-detail">
-            <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano)}</b> {copy.inClaudeApiUsage}</p>
+            <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano, locale)}</b> {copy.inClaudeApiUsage}</p>
             <p className="overview-balance-rate">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</p>
             <div className="overview-card-actions">
               <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
@@ -428,10 +469,10 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
     <div className="overview-metrics-grid">
       <article className="card overview-metric-card">
         <div className="overview-card-head"><span className="overview-card-label">{copy.usageLast30Days}</span><span className="overview-metric-mark" aria-hidden="true">↗</span></div>
-        <strong>{usageState === "ready" && usage ? formatNanoUsd(usage.totalOfficialNano) : "—"}</strong>
+        <strong>{usageState === "ready" && usage ? formatNanoUsd(usage.totalOfficialNano, locale) : "—"}</strong>
         <p>{usageState === "loading" ? copy.loadingUsageSummary
           : usageState === "unavailable" || !usage ? copy.usageSummaryUnavailable
-            : interpolate(copy.usageChargedAndRequests, { charged: formatNanoUsd(usage.totalChargedNano), requests: usage.requests.toLocaleString(locale) })}</p>
+            : interpolate(copy.usageChargedAndRequests, { charged: formatNanoUsd(usage.totalChargedNano, locale), requests: usage.requests.toLocaleString(locale) })}</p>
         <button className="link plain-button overview-card-link" onClick={() => open("usage")}>{copy.viewUsage} →</button>
       </article>
 
@@ -440,7 +481,7 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
         <strong>{pricingTitle}</strong>
         <div className="overview-pricing-facts">
           <span><small>{copy.discount}</small><b>{discount}%</b></span>
-          <span><small>{copy.valueMultiplier}</small><b>{formatMultiplier(multiplierBp)}</b></span>
+          <span><small>{copy.valueMultiplier}</small><b>{formatMultiplier(multiplierBp, locale)}</b></span>
         </div>
       </article>
 
@@ -471,12 +512,12 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
                 <span className={`overview-activity-icon ${entry.kind}`} aria-hidden="true">{isCharge ? "↗" : isTopup ? "+" : "±"}</span>
                 <div className="overview-activity-name"><strong>{activityLabel}</strong><span>{activityDetail}</span></div>
                 <time dateTime={new Date(ledgerMs(entry.timestamp)).toISOString()}>{formatOverviewActivityTime(entry.timestamp, language)}</time>
-                <b className={isCharge ? "charge" : isTopup ? "topup" : ""}>{amountPrefix}{formatNanoUsd(absoluteBigInt(amount))}</b>
+                <b className={isCharge ? "charge" : isTopup ? "topup" : ""}>{amountPrefix}{formatNanoUsd(absoluteBigInt(amount), locale)}</b>
               </div>;
             })}</div>}
     </section>
   </section>;
-}
+});
 
 function keyPolicy(key: ApiKeyView, now: number): {
   health: "active" | "disabled" | "expired" | "expires-soon" | "limit" | "near-limit";
@@ -538,7 +579,7 @@ function roundDivide(numerator: bigint, denominator: bigint): bigint {
   const rounded = (absolute + denominator / 2n) / denominator;
   return negative ? -rounded : rounded;
 }
-function formatNanoUsd(value: string | bigint, minimumFractionDigits = 0, maximumFractionDigits = 2): string {
+function formatNanoUsd(value: string | bigint, locale: string, minimumFractionDigits = 0, maximumFractionDigits = 2): string {
   const nano = typeof value === "bigint" ? value : BigInt(value);
   const negative = nano < 0n;
   const absolute = negative ? -nano : nano;
@@ -550,21 +591,21 @@ function formatNanoUsd(value: string | bigint, minimumFractionDigits = 0, maximu
   const whole = scaled / units;
   let fraction = digits > 0 ? (scaled % units).toString().padStart(digits, "0") : "";
   while (fraction.length > minimum && fraction.endsWith("0")) fraction = fraction.slice(0, -1);
-  return `${negative ? "-" : ""}$${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+  return `${negative ? "-" : ""}$${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
 }
-function formatMultiplier(multiplierBp: bigint): string {
-  return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2)}`;
+function formatMultiplier(multiplierBp: bigint, locale: string): string {
+  return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2, locale)}`;
 }
 function formatPaymentRate(multiplierBp: bigint): string {
   const cents = roundDivide(multiplierBp * 100n, BASIS_POINTS);
   return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
-function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits: number): string {
+function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits: number, locale: string): string {
   if (denominator <= 0n) return "1";
   const scale = 10n ** BigInt(fractionDigits);
   const scaled = roundDivide(numerator * scale, denominator);
   const whole = scaled / scale;
   const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+  return `${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
 }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }
