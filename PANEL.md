@@ -88,9 +88,17 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
 
 ## Возможности
 
-- Сводка всех контуров: commerce, engine, partners и CRM.
+- Сводка всех контуров: commerce, engine, partners и CRM. Партнёрская карточка показывает и
+  деньги контура: комиссии, сумму к выплате (requested + approved) и выплачено.
 - Аккаунты: все engine/service accounts, все partner accounts (с полной пагинацией источника),
   commerce total и переход к полному пользовательскому workflow.
+- Партнёры: read-only вид sales-контура — overview (партнёры/рефералы/оборот, комиссии, к выплате,
+  выплачено), состояние окна выплат payout-движка, авто-список «к выплате за период» с
+  eligible-причинами (ниже минимума, нет кошелька, неактивен, окно закрыто) и суммой eligible,
+  аналитика партнёров с серверной сортировкой (12 полей) и пагинацией, история выплат и
+  сворачиваемый список on-chain батчей. Источники — `/partner-admin/*`: `overview`,
+  `payouts/engine`, `payout-list`, `partner-analytics`, `payouts`, `payouts/batches`; каждый
+  деградирует отдельным warn-блоком. Суммы — nanoUSD-строки sales-api. Без автообновления.
 - Администраторы: создание identity с одним или несколькими domain grants, точный фильтр по домену,
   password rotation любого account (включая текущий), enable/disable и защита последнего active
   main-admin от lockout.

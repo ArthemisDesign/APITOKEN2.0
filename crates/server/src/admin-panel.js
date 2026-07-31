@@ -5,7 +5,7 @@ const errorCenter=document.getElementById('error-center');
 const NAV=[
   {group:'Обзор',items:[['dashboard','Сводка','▣']]},
   {group:'Инфраструктура',items:[['subs','Подписки','◍'],['system','Система','⌘'],['trends','Тренды','∿']]},
-  {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['openkeys','OpenKeys','◈'],['business','B2B','◇']]},
+  {group:'Клиенты',items:[['users','Пользователи','◉'],['accounts','Аккаунты','▤'],['partners','Партнёры','◆'],['openkeys','OpenKeys','◈'],['business','B2B','◇']]},
   {group:'Деньги',items:[['topups','Пополнения','＄'],['finance','Финансы','∑']]},
   {group:'Управление',items:[['admins','Админы','⚿'],['audit','Аудит','≡']]}
 ];
@@ -13,6 +13,7 @@ const validTabs=NAV.flatMap(group=>group.items.map(item=>item[0]));
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
 let tab=getTab(),timer=null,recoveryTimer=null,refreshController=null,usersCache=[],adminDomainFilter='',lastRefreshAt=0;
 let userPage={offset:0,limit:50,q:'',status:'',auth:''},partnerOffset=0,businessOffset=0;
+let partnersPage={offset:0,limit:50,sort:'unpaid',dir:'desc'};
 let openkeysPage={offset:0,limit:50,q:'',batch:'',status:'',usage:''};
 const failures=new Map();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -77,6 +78,7 @@ function showLoading(){shell(NAV.flatMap(group=>group.items).find(item=>item[0]=
 const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
   '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/fleet-history':'История флота','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
+  '/partner-admin/payout-list':'Выплаты за период','/partner-admin/payouts':'История выплат','/partner-admin/payouts/engine':'Окно выплат','/partner-admin/payouts/batches':'On-chain батчи',
   '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
   '/admin/finance/overview':'Финансовая сводка','/admin/finance/revenue':'Выручка по дням','/admin/finance/funnel':'Воронка чекаутов',
   '/admin/finance/top-customers':'Топ клиентов','/admin/refunds':'Возвраты','/admin/finance/cohorts':'Когорты','/admin/finance/churn-signals':'Сигналы оттока',
@@ -112,7 +114,7 @@ function scheduleRefresh(){clearTimeout(timer);timer=null;const delay=tab==='sys
   if(delay)timer=setTimeout(()=>{if(document.hidden){scheduleRefresh();return}refresh()},delay)}
 async function refresh(options={}){clearTimeout(timer);refreshController?.abort();refreshController=new AbortController();tab=getTab();try{
   if(tab==='dashboard')await dashboard();if(tab==='subs')await subscriptions();if(tab==='system')await system();if(tab==='trends')await trends();if(tab==='users')await users();
-  if(tab==='accounts')await accounts();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='finance')await finance();if(tab==='admins')await admins();if(tab==='audit')await audit();
+  if(tab==='accounts')await accounts();if(tab==='partners')await partners();if(tab==='openkeys')await openkeys();if(tab==='business')await business();if(tab==='topups')await topups();if(tab==='finance')await finance();if(tab==='admins')await admins();if(tab==='audit')await audit();
 }catch(error){if(error?.name!=='AbortError'&&!document.getElementById('shell'))showLoading()}finally{scheduleRefresh()}}
 addEventListener('hashchange',()=>{tab=getTab();showLoading();refresh()});
 addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>30000)refresh()});
@@ -142,7 +144,7 @@ async function dashboard(){const [data,engine,partners,pipes,settle]=await Promi
     '<div class="sect"><h2>Аккаунты по контурам</h2><span class="sect-sub">commerce · engine · partners · CRM</span></div><div class="cards">'+
     card('commerce accounts',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
     card('engine accounts',engine?engineAccounts.length:'—',engine?engineAccounts.filter(account=>account.status==='active').length+' active':'источник недоступен')+
-    card('partner accounts',partners?partners.partners:'—',partners?partners.activePartners+' active · '+partners.referredUsers+' referrals':'источник недоступен')+
+    card('partner accounts',partners?partners.partners:'—',partners?partners.activePartners+' active · '+partners.referredUsers+' referrals'+'<br>комиссии '+nanoMoney(partners.totalCommissionsNano)+' · к выплате '+nanoMoney(partners.pendingPayoutsNano)+' · выплачено '+nanoMoney(partners.paidPayoutsNano):'источник недоступен')+
     card('CRM & Parsing',crm?esc(crm.status):'не найден',crm?esc(crm.handle)+' · '+money(crm.balance_usd):'нужен engine account crm-parsing')+'</div>'+
     '<div class="sect"><h2>Клиенты и регистрации</h2></div><div class="cards">'+
     card('всего клиентов',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
@@ -460,9 +462,107 @@ async function accounts(){const partnerLimit=50,[overview,dashboardData,partners
     ' · engine '+engine.length+' · partners '+partnerTotal+' · CRM '+(crm?'connected':'missing')+'</span></div></div><div class="sect"><h2>Внутренние домены</h2></div><div class="domain-grid">'+domainCards+
     '</div><div class="sect"><h2>Engine и service accounts</h2><span class="sect-sub">'+engine.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">account</th><th class="left">домен</th><th>статус</th><th>баланс</th><th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>множитель</th></tr></thead><tbody>'+
     (engineRows||empty(6))+'</tbody></table></div></div><div class="sect"><h2>Partner accounts</h2><span class="sect-sub">'+partnerTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>депозиты</th><th>заработано</th><th>был(а)</th></tr></thead><tbody>'+
-    (partnerRows||empty(6))+'</tbody></table></div></div>'+pager(partnerOffset,partnerLimit,partnerTotal,'partners')+'<footer>Все '+commerceTotal+' commerce-аккаунтов доступны с действиями на странице <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
+    (partnerRows||empty(6))+'</tbody></table></div></div>'+pager(partnerOffset,partnerLimit,partnerTotal,'partners')+'<footer>Полная аналитика партнёров и выплаты — на странице <a class="link" href="#partners">«Партнёры»</a>. Все '+commerceTotal+' commerce-аккаунтов доступны с действиями на странице <a class="link" href="#users">«Пользователи»</a>; полный partner workflow остаётся на admin.partners.apitoken.sale.</footer>';
   shell('Аккаунты','engine, commerce, partner и CRM в одном реестре',body,pill(count(commerceTotal+engine.length+partnerTotal,'запись','записи','записей'),crm?'ok':'warn'));
   document.querySelectorAll('[data-page=partners]').forEach(button=>button.onclick=()=>{partnerOffset=Number(button.dataset.offset)||0;refresh({force:true})})}
+
+/* ── Партнёры: сводка sales, окно выплат, к выплате, аналитика ── */
+// Серверные сортировки partner-analytics — ровно PARTNER_ANALYTICS_SORTS из packages/sales-db/analytics.
+const PARTNER_SORTS=[['unpaid','к выплате'],['deposits_total','пополнения всего'],['deposits_30d','пополнения 30д'],['earned_total','заработок всего'],['earned_30d','заработок 30д'],['spend_total','расход всего'],['spend_30d','расход 30д'],['converted_users','конверсия'],['referred_users','рефералы'],['team_size','команда'],['last_seen_at','активность'],['created_at','регистрация']];
+const partnerPhaseLabel={accruing:'начисление',locked:'лок 7 дней',payable:'окно выплат',closed:'закрыт'};
+const payoutReasonLabel={below_minimum:'ниже минимума',no_wallet:'нет кошелька',inactive:'неактивен',zero:'нет суммы'};
+const payoutStatusKind={requested:'warn',approved:'info',paid:'ok',rejected:'bad'};
+const batchStatusKind={preparing:'warn',prepared:'info',sending:'warn',sent:'ok',failed:'bad',canceled:''};
+const shortWallet=value=>esc(String(value).slice(0,6)+'…'+String(value).slice(-4));
+async function partners(){const [overview,engine,due,analytics,payouts,batches]=await Promise.all([
+    api('/partner-admin/overview').catch(()=>null),
+    api('/partner-admin/payouts/engine').catch(()=>null),
+    api('/partner-admin/payout-list').catch(()=>null),
+    api('/partner-admin/partner-analytics?sort='+partnersPage.sort+'&dir='+partnersPage.dir+'&limit='+partnersPage.limit+'&offset='+partnersPage.offset).catch(()=>null),
+    api('/partner-admin/payouts').catch(()=>null),
+    api('/partner-admin/payouts/batches').catch(()=>null)
+  ]);
+  const analyticsTotal=analytics?.totals?.total||0;
+  if(analytics&&partnersPage.offset>=analyticsTotal&&analyticsTotal>0){partnersPage.offset=Math.max(0,Math.floor((analyticsTotal-1)/partnersPage.limit)*partnersPage.limit);return partners()}
+  // Overview: счётчики и деньги контура. Суммы — nanoUSD-строки sales-api; nanoMoney null → $0.00.
+  const overviewBlock=overview?'<div class="cards">'+
+    card('партнёры',overview.partners??'—','активны '+(overview.activePartners??'—'))+
+    card('рефералы',overview.referredUsers??'—','привлечённые клиенты')+
+    card('оборот рефералов',nanoMoney(overview.totalSpendNano),'расход привлечённых клиентов')+
+    card('комиссии всего',nanoMoney(overview.totalCommissionsNano),'начислено партнёрам')+
+    card('к выплате',nanoMoney(overview.pendingPayoutsNano),'requested + approved')+
+    card('выплачено',nanoMoney(overview.paidPayoutsNano),'статус paid')+'</div>':
+    '<div class="banner warn"><span class="dot warn"></span><div><b>Партнёрская сводка недоступна</b><span class="muted">/partner-admin/overview не отвечает — остальные блоки ниже работают независимо</span></div></div>';
+  // Окно выплат payout-движка: configured + window{open,opensAt,closesAt,enforced}. Адрес hot wallet
+  // этот endpoint не отдаёт — он виден только в батчах (сворачиваемый блок ниже).
+  let windowBlock='';
+  if(!engine)windowBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Состояние окна выплат недоступно</b><span class="muted">/partner-admin/payouts/engine не отвечает</span></div></div>';
+  else{const win=engine.window||{},kind=engine.configured&&win.open?'ok':'warn';
+    windowBlock='<div class="banner '+kind+'"><span class="dot'+(kind==='ok'?'':' '+kind)+'"></span><div><b>'+(!engine.configured?'Payout-движок не настроен':win.open?'Окно выплат открыто':'Окно выплат закрыто')+'</b>'+
+      '<span class="muted">'+(!engine.configured?'нет hot-wallet ключа или send RPC — on-chain отправки недоступны':
+        win.enforced===false?'гейт окна выключен — отправка разрешена в любое время':
+        win.open?'закроется '+date(win.closesAt,true):(win.opensAt?'откроется '+date(win.opensAt,true):'ближайшее окно не запланировано'))+'</span></div></div>'}
+  windowBlock='<div class="sect"><h2>Окно выплат</h2><span class="sect-sub">payout-движок sales-api</span></div>'+windowBlock;
+  // К выплате за период: авто-список sales-api. eligible=false и при reason!=='ok', и при закрытом окне.
+  let dueBlock='';
+  if(!due)dueBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Список «к выплате» недоступен</b><span class="muted">/partner-admin/payout-list не отвечает</span></div></div>';
+  else{const period=due.period||{},dueItems=due.items||[];
+    const eligibleSum=dueItems.filter(item=>item.eligible).reduce((sum,item)=>sum+BigInt(item.payableNano||'0'),0n).toString();
+    const dueRows=dueItems.map(item=>'<tr><td class="left"><b>'+esc(item.telegramUsername?'@'+item.telegramUsername:(item.displayName||'—'))+'</b><div class="sub mono">'+esc(item.partnerId)+'</div></td>'+
+      '<td><b>'+nanoMoney(item.payableNano)+'</b></td>'+
+      '<td class="left mono" title="'+esc(item.walletAddress||'не привязан')+'">'+(item.walletAddress?shortWallet(item.walletAddress):'—')+'</td>'+
+      '<td>'+(item.eligible?pill('eligible','ok'):pill(item.reason==='ok'?'ждёт окна':(payoutReasonLabel[item.reason]||item.reason||'нельзя')))+(item.reason==='below_minimum'?'<div class="sub">мин. '+nanoMoney(due.minPayoutNano)+'</div>':'')+'</td></tr>').join('');
+    dueBlock='<div class="sect"><h2>К выплате за период</h2><span class="sect-sub">'+esc(period.key||'—')+' · '+date(period.start)+' – '+date(period.end)+' · фаза '+esc(partnerPhaseLabel[period.phase]||period.phase||'—')+' · окно '+date(period.payoutWindowStart)+' – '+date(period.payoutWindowEnd)+' · eligible на '+nanoMoney(eligibleSum)+'</span></div>'+
+      '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>к выплате</th><th class="left">кошелёк BEP-20</th><th>eligible</th></tr></thead><tbody>'+(dueRows||empty(4))+'</tbody></table></div></div>'}
+  // Аналитика: серверная сортировка и пагинация по паттерну accounts().
+  let analyticsBlock='';
+  if(!analytics)analyticsBlock='<div class="banner warn"><span class="dot warn"></span><div><b>Аналитика партнёров недоступна</b><span class="muted">/partner-admin/partner-analytics не отвечает</span></div></div>';
+  else{const aItems=analytics.items||[],aTotals=analytics.totals||{};
+    const sortOptions=PARTNER_SORTS.map(item=>'<option value="'+item[0]+'"'+(partnersPage.sort===item[0]?' selected':'')+'>'+item[1]+'</option>').join('');
+    const aRows=aItems.map(partner=>'<tr><td class="left"><b>'+esc(partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName||'—'))+'</b><div class="sub mono">'+esc(partner.id)+' · '+esc(partner.referralCode)+'</div></td>'+
+      '<td>'+pill(partner.status,partner.status==='active'?'ok':partner.status==='suspended'?'bad':'warn')+'</td>'+
+      '<td>'+partner.referredUsers+'<div class="sub">конверсия '+partner.convertedUsers+'</div></td>'+
+      '<td>'+nanoMoney(partner.deposits30dNano)+'<div class="sub">всего '+nanoMoney(partner.depositsTotalNano)+'</div></td>'+
+      '<td>'+nanoMoney(partner.spend30dNano)+'</td>'+
+      '<td>'+nanoMoney(partner.earned30dNano)+'<div class="sub">всего '+nanoMoney(partner.earnedTotalNano)+'</div></td>'+
+      '<td><b>'+nanoMoney(partner.unpaidNano)+'</b></td>'+
+      '<td>'+ago(partner.lastSeenAt)+'</td></tr>').join('');
+    analyticsBlock='<div class="sect"><h2>Аналитика партнёров</h2><span class="sect-sub">'+(aTotals.total??'—')+' · активны '+(aTotals.active??'—')+' · к выплате '+nanoMoney(aTotals.unpaidNano)+'</span></div>'+
+      '<form id="partners-sort" class="toolbar"><label class="sr-only" for="pa-sort">Поле сортировки</label><select id="pa-sort">'+sortOptions+'</select>'+
+      '<label class="sr-only" for="pa-dir">Направление</label><select id="pa-dir"><option value="desc"'+(partnersPage.dir==='desc'?' selected':'')+'>по убыванию</option><option value="asc"'+(partnersPage.dir==='asc'?' selected':'')+'>по возрастанию</option></select><button class="btn" type="submit">Применить</button></form>'+
+      '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>статус</th><th>рефералы</th><th>пополнения 30д</th><th>расход 30д</th><th>заработок 30д</th><th>к выплате</th><th>активность</th></tr></thead><tbody>'+(aRows||empty(8))+'</tbody></table></div></div>'+
+      pager(partnersPage.offset,partnersPage.limit,aTotals.total||0,'panalytics')}
+  // История выплат: endpoint отдаёт только partnerId — имя подставляем из загруженной страницы аналитики.
+  let payoutsBlock='';
+  if(!payouts)payoutsBlock='<div class="banner warn"><span class="dot warn"></span><div><b>История выплат недоступна</b><span class="muted">/partner-admin/payouts не отвечает</span></div></div>';
+  else{const names={};(analytics?.items||[]).forEach(partner=>{names[partner.id]=partner.telegramUsername?'@'+partner.telegramUsername:(partner.email||partner.displayName)});
+    const payoutItems=payouts.items||[],shown=payoutItems.slice(0,50);
+    const payoutRows=shown.map(item=>'<tr><td class="left">'+(names[item.partnerId]?'<b>'+esc(names[item.partnerId])+'</b><div class="sub mono">'+esc(item.partnerId)+'</div>':'<b class="mono">'+esc(item.partnerId.slice(0,8))+'…</b>')+'</td>'+
+      '<td><b>'+nanoMoney(item.amountNano)+'</b></td>'+
+      '<td>'+pill(item.status,payoutStatusKind[item.status]||'')+'</td>'+
+      '<td>'+esc(item.method||'—')+'</td>'+
+      '<td>'+ago(item.requestedAt)+'<div class="sub">'+date(item.requestedAt,true)+'</div></td>'+
+      '<td>'+(item.decidedAt?ago(item.decidedAt):'—')+'</td>'+
+      '<td>'+(item.paidAt?ago(item.paidAt):'—')+'</td></tr>').join('');
+    payoutsBlock='<div class="sect"><h2>Выплаты</h2><span class="sect-sub">история · '+payoutItems.length+(payoutItems.length>shown.length?' · показаны последние '+shown.length:'')+'</span></div>'+
+      '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">партнёр</th><th>сумма</th><th>статус</th><th>метод</th><th>запрошена</th><th>решена</th><th>выплачена</th></tr></thead><tbody>'+(payoutRows||empty(7))+'</tbody></table></div></div>'}
+  // On-chain батчи (stretch): список отдаёт строки без txHash — hash живёт в report отдельного батча.
+  let batchesBlock='';
+  if(!batches)batchesBlock='<div class="banner warn"><span class="dot warn"></span><div><b>On-chain батчи недоступны</b><span class="muted">/partner-admin/payouts/batches не отвечает</span></div></div>';
+  else{const batchRows=(batches.items||[]).map(item=>'<tr><td>'+pill(item.status,batchStatusKind[item.status]||'')+'</td>'+
+      '<td><b>'+nanoMoney(item.totalNano)+'</b></td><td>'+(item.recipientCount??'—')+'</td><td>'+esc(item.gasPriceGwei??'—')+'</td>'+
+      '<td class="left mono" title="'+esc(item.hotWalletAddress||'')+'">'+(item.hotWalletAddress?shortWallet(item.hotWalletAddress):'—')+'</td>'+
+      '<td>'+date(item.createdAt,true)+'</td><td>'+(item.sentAt?ago(item.sentAt):'—')+'</td><td>'+(item.completedAt?ago(item.completedAt):'—')+'</td>'+
+      '<td class="left"><div class="json" title="'+esc(item.error||'')+'">'+esc(item.error||'—')+'</div></td></tr>').join('');
+    batchesBlock='<details><summary>On-chain батчи · '+(batches.items||[]).length+'</summary><div class="tcard"><div class="tscroll"><table><thead><tr><th>статус</th><th>сумма</th><th>получатели</th><th>gas, gwei</th><th class="left">hot wallet</th><th>создан</th><th>отправлен</th><th>завершён</th><th class="left">ошибка</th></tr></thead><tbody>'+(batchRows||empty(9))+'</tbody></table></div></div></details>'}
+  const degraded=!overview||!engine||!due||!analytics||!payouts||!batches;
+  const body=overviewBlock+windowBlock+dueBlock+analyticsBlock+payoutsBlock+batchesBlock+
+    '<footer>Ручное обновление по кнопке ↻ — автообновления у вкладки нет. Суммы — nanoUSD-строки sales-api. Подготовка и отправка батчей, решения по заявкам и полный partner workflow остаются на <a class="link" href="https://admin.partners.apitoken.sale/admin" target="_blank" rel="noreferrer">admin.partners.apitoken.sale ↗</a>.</footer>';
+  shell('Партнёры','сводка, окно выплат, к выплате и аналитика рефоводов',body,pill(analytics?count(analyticsTotal,'партнёр','партнёра','партнёров'):'degraded',degraded?'warn':'ok'));bindPartners()}
+function bindPartners(){const form=document.getElementById('partners-sort');
+  if(form){form.onsubmit=event=>{event.preventDefault();partnersPage={...partnersPage,offset:0,sort:document.getElementById('pa-sort').value,dir:document.getElementById('pa-dir').value};refresh({force:true})};
+    document.getElementById('pa-sort').onchange=()=>form.requestSubmit();document.getElementById('pa-dir').onchange=()=>form.requestSubmit()}
+  document.querySelectorAll('[data-page=panalytics]').forEach(button=>button.onclick=()=>{partnersPage.offset=Number(button.dataset.offset)||0;refresh({force:true})})}
 
 /* ── OpenKeys: партии, live-расход и управление ключами ──── */
 async function openkeys(){const params=new URLSearchParams({limit:String(openkeysPage.limit),offset:String(openkeysPage.offset)});
