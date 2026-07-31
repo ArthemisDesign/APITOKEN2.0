@@ -349,6 +349,20 @@ change quota size and refresh cadence, not that model set; Ultra therefore does 
 `gemini-2.5-pro` or `gemini-3.5-flash-lite`. The gateway still requires a live check for each
 profile type because documented product access and a working private API route are separate facts.
 
+| Current Antigravity model | Free / Google AI Plus | Google AI Pro | Google AI Ultra | Enterprise | Gateway decision |
+|---|---:|---:|---:|---:|---|
+| Gemini 3.6 Flash | yes | yes | yes | yes | published |
+| Gemini 3.5 Flash | yes | yes | yes | yes | published |
+| Gemini 3.1 Pro | yes | yes | yes | yes | published as `gemini-3.1-pro-preview` |
+| Gemini 2.5 Pro | not listed | not listed | not listed | not listed | rejected |
+| Gemini 3.5 Flash-Lite | not listed | not listed | not listed | not listed | rejected |
+
+The three older published text routes (`gemini-3.1-flash-lite`, `gemini-2.5-flash` and
+`gemini-2.5-flash-lite`) are not claims about the current Antigravity marketing table. They remain
+enabled because their exact private routes generated and streamed successfully on the live Google
+AI Pro profile. They do not require Ultra. Availability on another profile type must be established
+by that profile's own live calibration rather than inferred from the Developer API catalogue.
+
 Official evidence reviewed on 2026-07-31:
 
 - model catalogue and lifecycle: <https://ai.google.dev/gemini-api/docs/models>;
