@@ -277,6 +277,9 @@ For every request the runtime:
 - decrypts the selected project/proxy only in memory;
 - obtains an access token with a per-profile single-flight mutex and 120-second expiry skew;
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
+- adapts valid public generation requests to Antigravity's stricter private wire contract: blank or
+  omitted `contents[].role` values are inferred as alternating `user`/`model` turns, and the public
+  65,536-token model ceiling is clamped to the private endpoint's accepted boundary of 65,535;
 - reconstructs an allowlisted native response, adds a synthesized `responseId`, and discards Code
   Assist wrapper fields, credits, private trace ids, unknown top-level fields and headers;
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean

@@ -314,6 +314,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `requestId=agent-<uuid>` создаётся один раз до rotation; wrapper также фиксирует
    `userAgent=antigravity` и `requestType=agent`. Legacy profiles сохраняют `request.session_id` и
    `user_prompt_id=<session UUID>########<human-turn ordinal>`.
+   Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
+   wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.
+   Публичный model ceiling 65,536 сохраняется, но Antigravity wire `maxOutputTokens` ограничен 65,535.
    Response/SSE отдаёт только `.response` (+ responseId), никогда wrapper/credits/private headers.
    Retry разрешён только до первого переведённого native SSE event. Stream startup bounded по
    time/bytes/chunks, а после первого public event ограничено число подряд идущих private/accounting

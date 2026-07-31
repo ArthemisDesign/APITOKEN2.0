@@ -27,6 +27,10 @@ const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_START_MAX_BYTES: usize = 1024 * 1024;
 const STREAM_START_MAX_CHUNKS: usize = 1024;
+// The public Gemini catalogue advertises 65,536 output tokens, but the private Antigravity
+// generation endpoint rejects that exact boundary while accepting 65,535. Keep the public model
+// contract intact and adapt only the private wire request.
+const ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT: u64 = 65_535;
 
 /// Native Gemini accepts proto-JSON in either camelCase or snake_case. Code Assist and the public
 /// surface are canonicalized to camelCase so a snake_case client is not silently dropped. Only the
@@ -629,6 +633,55 @@ fn cap_generation_output(body: &mut Value, max_output_tokens: u64) -> Result<(),
     Ok(())
 }
 
+/// Public Gemini permits `Content.role` to be blank or omitted. Antigravity's private generation
+/// endpoint requires every turn to carry one, so infer only unset roles while preserving explicit
+/// `user`/`model` values (and any invalid value for Google's normal request validation).
+fn normalize_private_content_roles(request: &mut serde_json::Map<String, Value>) {
+    let Some(contents) = request.get_mut("contents").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut next_role = "user";
+    for content in contents {
+        let Some(content) = content.as_object_mut() else {
+            continue;
+        };
+        let role_is_unset = match content.get("role") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(role)) => role.is_empty(),
+            _ => false,
+        };
+        if role_is_unset {
+            content.insert("role".to_string(), json!(next_role));
+            next_role = if next_role == "user" { "model" } else { "user" };
+        } else {
+            match content.get("role").and_then(Value::as_str) {
+                Some("user") => next_role = "model",
+                Some("model") => next_role = "user",
+                _ => {}
+            }
+        }
+    }
+}
+
+fn adapt_antigravity_generation_request(request: &mut serde_json::Map<String, Value>) {
+    normalize_private_content_roles(request);
+    let Some(generation_config) = request
+        .get_mut("generationConfig")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let max_output_tokens = generation_config
+        .get("maxOutputTokens")
+        .and_then(Value::as_u64);
+    if max_output_tokens.is_some_and(|limit| limit > ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT) {
+        generation_config.insert(
+            "maxOutputTokens".to_string(),
+            json!(ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT),
+        );
+    }
+}
+
 fn validate_tools(body: &Value) -> Result<(), ApiError> {
     if body.get("cachedContent").is_some() {
         // A native cached-content resource is scoped to one Google project. It cannot safely
@@ -716,6 +769,9 @@ fn wrap_code_assist_request(
                 if let Some(value) = native.get(field) {
                     request.insert(field.to_string(), value.clone());
                 }
+            }
+            if oauth_kind == OAuthKind::Antigravity {
+                adapt_antigravity_generation_request(&mut request);
             }
             if let Some(session_id) = session_id {
                 let field = match oauth_kind {
@@ -1110,63 +1166,6 @@ async fn read_upstream_body(response: TransportResponse) -> Result<Bytes, ()> {
         body.extend_from_slice(&chunk);
     }
     Ok(Bytes::from(body))
-}
-
-/// TEMPORARY streaming-diagnostic (secret-safe). The gateway deliberately collapses the private
-/// Code Assist error envelope to a public status class, which hides why the Antigravity streaming
-/// method is rejected while the identical non-streaming body is accepted. Log ONLY the public
-/// google.rpc `code`/`status` and a project/profile-scrubbed, truncated `message` so the exact
-/// rejection reason is observable in the journal. Remove together with the streaming fix.
-fn debug_log_upstream_rejection(
-    op: &str,
-    http_status: StatusCode,
-    body: &[u8],
-    project: &str,
-    profile_id: &str,
-) {
-    let (code, status, message) = serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|value| {
-            let error = value.get("error")?;
-            Some((
-                error.get("code").and_then(Value::as_i64).unwrap_or(0),
-                error
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-            ))
-        })
-        .unwrap_or((0, String::new(), String::new()));
-    let mut scrubbed = message;
-    if !project.is_empty() {
-        scrubbed = scrubbed.replace(project, "<project>");
-    }
-    if !profile_id.is_empty() {
-        scrubbed = scrubbed.replace(profile_id, "<profile>");
-    }
-    let scrubbed: String = scrubbed.chars().take(240).collect();
-    // Google's generic "Request contains an invalid argument." carries the field-level cause in
-    // error.details[].fieldViolations; capture the whole scrubbed envelope (bounded) so the exact
-    // rejected argument is visible without a second deploy.
-    let mut raw = String::from_utf8_lossy(body).into_owned();
-    if !project.is_empty() {
-        raw = raw.replace(project, "<project>");
-    }
-    if !profile_id.is_empty() {
-        raw = raw.replace(profile_id, "<profile>");
-    }
-    let raw: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let raw: String = raw.chars().take(700).collect();
-    eprintln!(
-        "GEMINI-DIAG upstream rejection op={op} http={} code={code} status={status} msg={scrubbed} body={raw}",
-        http_status.as_u16()
-    );
 }
 
 async fn stream_response(
@@ -1892,13 +1891,6 @@ async fn api_inner(
                 return Ok(translated_response(status, &response_headers, native_body));
             }
             _ if status.is_client_error() => {
-                debug_log_upstream_rejection(
-                    suffix,
-                    status,
-                    &response_body,
-                    &project,
-                    profile.id(),
-                );
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
                 profile.mark_healthy_for(&model.id);
@@ -2220,6 +2212,24 @@ mod tests {
         token_uri: Option<&str>,
         oauth_kind: OAuthKind,
     ) -> GatewayFixture {
+        gateway_fixture_with_oauth_kind_and_output_limit(
+            upstream,
+            proxies,
+            max_transport_retries,
+            token_uri,
+            oauth_kind,
+            64,
+        )
+    }
+
+    fn gateway_fixture_with_oauth_kind_and_output_limit(
+        upstream: &str,
+        proxies: &[Option<&str>],
+        max_transport_retries: usize,
+        token_uri: Option<&str>,
+        oauth_kind: OAuthKind,
+        output_token_limit: u64,
+    ) -> GatewayFixture {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2289,7 +2299,7 @@ mod tests {
             id: "gemini-integration-model".to_string(),
             display_name: "Gemini Integration Model".to_string(),
             input_token_limit: 1_000_000,
-            output_token_limit: 64,
+            output_token_limit,
             prices: metering::GeminiPrices {
                 input: 1,
                 audio_input: 1,
@@ -2486,6 +2496,70 @@ mod tests {
         canonicalize_native_request(&mut value);
         assert_eq!(value["systemInstruction"]["parts"][0]["text"], "camel");
         assert!(value.get("system_instruction").is_none());
+    }
+
+    #[test]
+    fn private_content_roles_are_inferred_without_changing_explicit_values() {
+        let mut request = json!({
+            "contents": [
+                {"parts": [{"text": "first"}]},
+                {"role": "model", "parts": [{"text": "second"}]},
+                {"role": "", "parts": [{"text": "third"}]},
+                {"role": "user", "parts": [{"text": "fourth"}]},
+                {"role": null, "parts": [{"text": "fifth"}]},
+                {"role": "invalid", "parts": [{"text": "sixth"}]}
+            ]
+        });
+        normalize_private_content_roles(request.as_object_mut().unwrap());
+        let roles = request["contents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|content| content["role"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(roles, ["user", "model", "user", "user", "model", "invalid"]);
+    }
+
+    #[test]
+    fn antigravity_wire_clamps_only_the_rejected_output_boundary() {
+        let wrap = |oauth_kind, max_output_tokens| {
+            let native = json!({
+                "contents": [{"parts": [{"text": "hello"}]}],
+                "generationConfig": {"maxOutputTokens": max_output_tokens}
+            });
+            let bytes = wrap_code_assist_request(
+                Operation::StreamGenerate,
+                oauth_kind,
+                "gemini-2.5-flash",
+                "paid-project",
+                &native,
+                "prompt-id",
+                Some("session-id"),
+                Some("request-id"),
+            )
+            .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+
+        let boundary = wrap(OAuthKind::Antigravity, 65_536);
+        assert_eq!(
+            boundary["request"]["generationConfig"]["maxOutputTokens"],
+            ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT
+        );
+        assert_eq!(boundary["request"]["contents"][0]["role"], "user");
+
+        let lower = wrap(OAuthKind::Antigravity, 8_192);
+        assert_eq!(
+            lower["request"]["generationConfig"]["maxOutputTokens"],
+            8_192
+        );
+
+        let legacy = wrap(OAuthKind::LegacyGeminiCli, 65_536);
+        assert_eq!(
+            legacy["request"]["generationConfig"]["maxOutputTokens"],
+            65_536
+        );
+        assert!(legacy["request"]["contents"][0].get("role").is_none());
     }
 
     #[test]
@@ -2941,6 +3015,50 @@ mod tests {
             request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
                 && request.google_api_client.is_empty()
         }));
+    }
+
+    #[tokio::test]
+    async fn minimal_public_stream_request_is_adapted_to_antigravity_wire_contract() {
+        let first = Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"one\"}]}}]}}\n\n",
+        );
+        let usage = Bytes::from_static(
+            b"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4}}}\n\n",
+        );
+        let (reply, _drained) =
+            MockReply::stream(vec![MockChunk::Data(first), MockChunk::Data(usage)]);
+        let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![reply])])).await;
+        let fixture = gateway_fixture_with_oauth_kind_and_output_limit(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+            65_536,
+        );
+
+        // This is the original valid public request that the private stream endpoint rejected.
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"parts": [{"text": "Count from 1 to 5 as words, one per line."}]}]}),
+            true,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let downstream = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&downstream).unwrap().contains("data:"));
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].uri, "/v1internal:streamGenerateContent?alt=sse");
+        let private: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(private["request"]["contents"][0]["role"], "user");
+        assert_eq!(
+            private["request"]["generationConfig"]["maxOutputTokens"],
+            ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT
+        );
     }
 
     #[tokio::test]
