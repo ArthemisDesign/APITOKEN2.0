@@ -43,6 +43,10 @@ pub struct GeminiQuotaBucketStatus {
 pub struct GeminiModelCoolingStatus {
     pub model_id: String,
     pub cooling_until: i64,
+    pub failure_streak: u32,
+    pub last_success_at: i64,
+    pub last_failure_at: i64,
+    pub last_failure_class: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +62,9 @@ pub struct GeminiOperationalStatus {
 pub struct GeminiModelStatus {
     pub id: String,
     pub available: usize,
+    pub healthy: usize,
+    pub degraded: usize,
+    pub unknown: usize,
     pub soonest_ready: Option<i64>,
 }
 
@@ -87,7 +94,16 @@ pub(crate) struct GeminiProfile {
     authenticated: AtomicBool,
     last_probe_at: AtomicI64,
     quota: RwLock<GeminiQuotaSnapshot>,
-    model_cooling: Mutex<HashMap<String, i64>>,
+    model_health: Mutex<HashMap<String, GeminiModelHealthState>>,
+}
+
+#[derive(Clone, Default)]
+struct GeminiModelHealthState {
+    cooling_until: i64,
+    failure_streak: u32,
+    last_success_at: i64,
+    last_failure_at: i64,
+    last_failure_class: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -122,7 +138,7 @@ impl GeminiProfile {
             authenticated: AtomicBool::new(true),
             last_probe_at: AtomicI64::new(0),
             quota: RwLock::new(GeminiQuotaSnapshot::default()),
-            model_cooling: Mutex::new(HashMap::new()),
+            model_health: Mutex::new(HashMap::new()),
         })
     }
 
@@ -162,12 +178,11 @@ impl GeminiProfile {
             ));
         }
         if self.oauth_kind == OAuthKind::Antigravity {
-            // The Antigravity Cloud Code surface accepts streamGenerateContent only when the request
-            // also carries the x-goog-api-client + client-metadata identity that the reviewed
-            // working client sends; without them the streaming method is rejected with a generic
-            // INVALID_ARGUMENT (generateContent is more lenient). Values match the reviewed working
-            // Antigravity request. The Node helper sorts headers, so insertion order does not affect
-            // the wire fingerprint.
+            // Match the reviewed Antigravity client identity for both generation methods. Live A/B
+            // established that missing content roles and the private 65,536 output boundary were
+            // the decisive INVALID_ARGUMENT causes; these headers are retained for wire fidelity,
+            // not treated as a substitute for adapting the public body. The Node helper sorts
+            // headers, so insertion order does not affect the wire fingerprint.
             headers.push((
                 "x-goog-api-client",
                 SecretString::new("google-cloud-sdk vscode_cloudshelleditor/0.1".to_string()),
@@ -304,16 +319,20 @@ impl GeminiProfile {
         self.credential.lock().await.project_id.clone()
     }
 
-    pub(crate) fn mark_healthy_for(&self, model_id: &str) {
+    pub(crate) fn mark_model_success(&self, model_id: &str) {
         self.authenticated.store(true, Ordering::Release);
-        self.cooling_until.store(0, Ordering::Release);
-        self.model_cooling
+        let mut health = self
+            .model_health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(model_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = health.entry(model_id.to_string()).or_default();
+        state.cooling_until = 0;
+        state.failure_streak = 0;
+        state.last_success_at = pool::now();
+        state.last_failure_class = None;
     }
 
-    fn mark_authenticated(&self) {
+    pub(crate) fn mark_authenticated(&self) {
         // A quota-free liveness probe proves the bearer but must not erase a generation 429.
         // Otherwise the next five-minute health cycle would prematurely reopen a daily/model
         // quota window whose RetryInfo is still in the future.
@@ -325,24 +344,57 @@ impl GeminiProfile {
     }
 
     pub(crate) fn cool_model_until(&self, model_id: &str, until: i64) {
-        let mut cooling = self
-            .model_cooling
+        let mut health = self
+            .model_health
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cooling
-            .entry(model_id.to_string())
-            .and_modify(|current| *current = (*current).max(until))
-            .or_insert(until);
+        let state = health.entry(model_id.to_string()).or_default();
+        state.cooling_until = state.cooling_until.max(until);
     }
 
-    fn cooling_until_for(&self, model_id: &str, cfg: &GeminiConfig, now: i64) -> i64 {
+    pub(crate) fn mark_model_failure(
+        &self,
+        model_id: &str,
+        class: &'static str,
+        cfg: &GeminiConfig,
+    ) {
+        let now = pool::now();
+        let mut health = self
+            .model_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = health.entry(model_id.to_string()).or_default();
+        state.failure_streak = state.failure_streak.saturating_add(1);
+        let shift = state.failure_streak.saturating_sub(1).min(30);
+        let multiplier = 1_i64.checked_shl(shift).unwrap_or(i64::MAX);
+        let delay = cfg
+            .model_failure_cool_secs
+            .saturating_mul(multiplier)
+            .clamp(1, cfg.model_failure_max_cool_secs);
+        state.cooling_until = state.cooling_until.max(now.saturating_add(delay));
+        state.last_failure_at = now;
+        state.last_failure_class = Some(class);
+    }
+
+    fn cooling_until_for(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        generation: bool,
+    ) -> i64 {
         let global = self.cooling_until.load(Ordering::Acquire);
+        if !generation {
+            // countTokens is quota-free and is deliberately usable as a diagnostic even when
+            // generation for this model is degraded or its generation quota is exhausted.
+            return global;
+        }
         let model = self
-            .model_cooling
+            .model_health
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(model_id)
-            .copied()
+            .map(|state| state.cooling_until)
             .unwrap_or(0);
         global.max(model).max(
             self.quota_blocked_until(
@@ -353,6 +405,43 @@ impl GeminiProfile {
                     .clamp(60, 3_600) as i64,
             ),
         )
+    }
+
+    fn quota_remaining_fraction(&self, model_id: &str, now: i64, stale_secs: i64) -> Option<f64> {
+        let quota = self
+            .quota
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if quota.updated_at <= 0 || quota.updated_at.saturating_add(stale_secs) <= now {
+            return None;
+        }
+        quota
+            .buckets
+            .iter()
+            .filter(|bucket| bucket.model_id == model_id)
+            .filter_map(|bucket| bucket.remaining_fraction)
+            .min_by(f64::total_cmp)
+    }
+
+    fn quota_reserve_for(&self, model_id: &str, cfg: &GeminiConfig) -> f64 {
+        let mut input = Vec::with_capacity(self.id.len() + model_id.len() + 1);
+        input.extend_from_slice(self.id.as_bytes());
+        input.push(0);
+        input.extend_from_slice(model_id.as_bytes());
+        let digest = blake3::hash(&input);
+        let unit = u16::from_le_bytes([digest.as_bytes()[0], digest.as_bytes()[1]]) as f64
+            / u16::MAX as f64;
+        (cfg.quota_reserve_fraction + cfg.quota_reserve_jitter * (unit * 2.0 - 1.0))
+            .clamp(0.0, 0.95)
+    }
+
+    fn model_health_for(&self, model_id: &str) -> GeminiModelHealthState {
+        self.model_health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(model_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn quota_blocked_until(&self, model_id: &str, now: i64, stale_secs: i64) -> i64 {
@@ -415,33 +504,22 @@ impl GeminiProfile {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             (quota.updated_at, quota.buckets.clone())
         };
-        let mut model_cooling = self
-            .model_cooling
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let model_cooling = cfg
+            .models
             .iter()
-            .map(|(model_id, cooling_until)| GeminiModelCoolingStatus {
-                model_id: model_id.clone(),
-                cooling_until: *cooling_until,
-            })
-            .collect::<Vec<_>>();
-        for model in &cfg.models {
-            let cooling_until = self.cooling_until_for(&model.id, cfg, now);
-            if cooling_until > now {
-                if let Some(existing) = model_cooling
-                    .iter_mut()
-                    .find(|status| status.model_id == model.id)
-                {
-                    existing.cooling_until = existing.cooling_until.max(cooling_until);
-                } else {
-                    model_cooling.push(GeminiModelCoolingStatus {
-                        model_id: model.id.clone(),
-                        cooling_until,
-                    });
+            .map(|model| {
+                let wire_model_id = model.default_wire_model_id();
+                let health = self.model_health_for(wire_model_id);
+                GeminiModelCoolingStatus {
+                    model_id: model.id.clone(),
+                    cooling_until: self.cooling_until_for(wire_model_id, cfg, now, true),
+                    failure_streak: health.failure_streak,
+                    last_success_at: health.last_success_at,
+                    last_failure_at: health.last_failure_at,
+                    last_failure_class: health.last_failure_class.map(str::to_string),
                 }
-            }
-        }
-        model_cooling.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+            })
+            .collect();
         GeminiProfileStatus {
             id: self.id.clone(),
             authenticated: self.authenticated.load(Ordering::Acquire),
@@ -893,6 +971,16 @@ impl GeminiGateway {
         if cfg.models.is_empty() {
             bail!("Gemini model allowlist is empty");
         }
+        if cfg.max_inflight_per_profile == 0
+            || cfg.model_failure_cool_secs <= 0
+            || cfg.model_failure_max_cool_secs < cfg.model_failure_cool_secs
+            || !cfg.quota_reserve_fraction.is_finite()
+            || !(0.0..=1.0).contains(&cfg.quota_reserve_fraction)
+            || !cfg.quota_reserve_jitter.is_finite()
+            || !(0.0..=1.0).contains(&cfg.quota_reserve_jitter)
+        {
+            bail!("Gemini pool admission configuration is invalid");
+        }
         if cfg.upstream.starts_with("https://") {
             if cfg.antigravity_version != gemini_credential::ANTIGRAVITY_VERSION
                 || cfg.node_binary != gemini_credential::GEMINI_NODE_BINARY
@@ -970,41 +1058,78 @@ impl GeminiGateway {
         model_id: &str,
         excluded: &HashSet<String>,
         preferred_id: Option<&str>,
+        generation: bool,
     ) -> Option<GeminiLease> {
         if self.shutting_down.load(Ordering::Acquire) {
             return None;
         }
         let profiles = self.profiles_snapshot();
         let now = pool::now();
-        let ready = |profile: &&Arc<GeminiProfile>| {
-            !excluded.contains(profile.id())
-                && profile.cooling_until_for(model_id, &self.cfg, now) <= now
-                && profile.authenticated.load(Ordering::Acquire)
-        };
-        let preferred = preferred_id.and_then(|id| {
-            profiles
-                .iter()
-                .find(|profile| profile.id() == id && ready(profile))
+        let quota_stale_secs = self
+            .cfg
+            .health_probe_interval_secs
+            .saturating_mul(2)
+            .clamp(60, 3_600) as i64;
+        let mut candidates = profiles
+            .iter()
+            .enumerate()
+            .filter(|(_, profile)| {
+                !excluded.contains(profile.id())
+                    && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
+                    && profile.authenticated.load(Ordering::Acquire)
+                    && profile.inflight.load(Ordering::Acquire) < self.cfg.max_inflight_per_profile
+            })
+            .map(|(index, profile)| {
+                let remaining = generation
+                    .then(|| profile.quota_remaining_fraction(model_id, now, quota_stale_secs))
+                    .flatten();
+                let protected = remaining.is_none_or(|fraction| {
+                    fraction > profile.quota_reserve_for(model_id, &self.cfg)
+                });
+                (index, profile.clone(), remaining, protected)
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return None;
+        }
+        // Preserve a configurable reserve only while at least one profile has safe headroom. If
+        // every profile is below reserve, retain the single-profile service floor and use what is
+        // left instead of inventing an outage before Google reports an explicit zero.
+        if candidates.iter().any(|candidate| candidate.3) {
+            candidates.retain(|candidate| candidate.3);
+        }
+        let offset = self.cursor.fetch_add(1, Ordering::Relaxed) as usize;
+        candidates.sort_by(|left, right| {
+            let left_preferred = usize::from(preferred_id == Some(left.1.id()));
+            let right_preferred = usize::from(preferred_id == Some(right.1.id()));
+            right_preferred
+                .cmp(&left_preferred)
+                .then_with(|| right.2.unwrap_or(1.0).total_cmp(&left.2.unwrap_or(1.0)))
+                .then_with(|| {
+                    left.1
+                        .inflight
+                        .load(Ordering::Acquire)
+                        .cmp(&right.1.inflight.load(Ordering::Acquire))
+                })
+                .then_with(|| {
+                    let len = profiles.len();
+                    let left_order = (left.0 + len - offset % len) % len;
+                    let right_order = (right.0 + len - offset % len) % len;
+                    left_order.cmp(&right_order)
+                })
         });
-        let profile = if let Some(profile) = preferred {
-            profile.clone()
-        } else {
-            let offset = self.cursor.fetch_add(1, Ordering::Relaxed) as usize;
-            profiles
-                .iter()
-                .enumerate()
-                .filter(|(_, profile)| ready(profile))
-                .min_by_key(|(index, profile)| {
-                    (
-                        profile.inflight.load(Ordering::Acquire),
-                        (index + profiles.len() - offset % profiles.len()) % profiles.len(),
-                    )
-                })?
-                .1
-                .clone()
-        };
-        profile.inflight.fetch_add(1, Ordering::AcqRel);
-        Some(GeminiLease { profile })
+        for (_, profile, _, _) in candidates {
+            let acquired = profile
+                .inflight
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    (current < self.cfg.max_inflight_per_profile).then_some(current + 1)
+                })
+                .is_ok();
+            if acquired {
+                return Some(GeminiLease { profile });
+            }
+        }
+        None
     }
 
     pub(crate) fn profile_id_for_home(
@@ -1018,14 +1143,19 @@ impl GeminiGateway {
             .map(|profile| profile.id().to_string())
     }
 
-    pub(crate) fn soonest_ready(&self, model_id: &str, excluded: &HashSet<String>) -> Option<i64> {
+    pub(crate) fn soonest_ready(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        generation: bool,
+    ) -> Option<i64> {
         let now = pool::now();
         self.profiles_snapshot()
             .iter()
             .filter(|profile| {
                 !excluded.contains(profile.id()) && profile.authenticated.load(Ordering::Acquire)
             })
-            .map(|profile| profile.cooling_until_for(model_id, &self.cfg, now))
+            .map(|profile| profile.cooling_until_for(model_id, &self.cfg, now, generation))
             .filter(|until| *until > now)
             .min()
     }
@@ -1083,14 +1213,36 @@ impl GeminiGateway {
             .models
             .iter()
             .map(|model| {
+                let wire_model_id = model.default_wire_model_id();
                 let ready = snapshot
                     .iter()
                     .filter(|profile| profile.authenticated.load(Ordering::Acquire))
-                    .map(|profile| profile.cooling_until_for(&model.id, &self.cfg, now))
+                    .map(|profile| profile.cooling_until_for(wire_model_id, &self.cfg, now, true))
+                    .collect::<Vec<_>>();
+                let health = snapshot
+                    .iter()
+                    .filter(|profile| profile.authenticated.load(Ordering::Acquire))
+                    .map(|profile| profile.model_health_for(wire_model_id))
                     .collect::<Vec<_>>();
                 GeminiModelStatus {
                     id: model.id.clone(),
                     available: ready.iter().filter(|until| **until <= now).count(),
+                    healthy: health
+                        .iter()
+                        .filter(|state| {
+                            state.last_success_at > 0
+                                && state.last_success_at >= state.last_failure_at
+                                && state.failure_streak == 0
+                        })
+                        .count(),
+                    degraded: health
+                        .iter()
+                        .filter(|state| state.failure_streak > 0)
+                        .count(),
+                    unknown: health
+                        .iter()
+                        .filter(|state| state.last_success_at == 0 && state.last_failure_at == 0)
+                        .count(),
                     soonest_ready: ready.into_iter().filter(|until| *until > now).min(),
                 }
             })
@@ -1341,9 +1493,14 @@ mod tests {
             connect_timeout_secs: 1,
             read_timeout_secs: 1,
             max_transport_retries: 1,
+            max_inflight_per_profile: 6,
             auth_quarantine_secs: 900,
             transport_cool_secs: 5,
+            model_failure_cool_secs: 15,
+            model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
+            quota_reserve_fraction: 0.05,
+            quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
             antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
@@ -1513,7 +1670,7 @@ mod tests {
         let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
         gateway.profiles_snapshot()[0].cool_until(pool::now() + 60);
         let lease = gateway
-            .select("gemini-test", &HashSet::new(), None)
+            .select("gemini-test", &HashSet::new(), None, true)
             .unwrap();
         assert_eq!(lease.profile().id(), "profile_b");
         let status = format!("{:?}", gateway.operational_status().await);
@@ -1550,10 +1707,10 @@ mod tests {
             }],
         };
         assert!(gateway
-            .select("gemini-test", &HashSet::new(), None)
+            .select("gemini-test", &HashSet::new(), None, true)
             .is_none());
         assert!(gateway
-            .select("gemini-other", &HashSet::new(), None)
+            .select("gemini-other", &HashSet::new(), None, true)
             .is_none());
         // A fresh official catalogue without gemini-other is negative availability evidence. Once
         // stale, the generation endpoint is allowed to refresh that evidence instead of wedging.
@@ -1563,10 +1720,10 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .updated_at = pool::now() - 10_000;
         assert!(gateway
-            .select("gemini-other", &HashSet::new(), None)
+            .select("gemini-other", &HashSet::new(), None, true)
             .is_some());
         assert!(gateway
-            .select("gemini-test", &HashSet::new(), None)
+            .select("gemini-test", &HashSet::new(), None, true)
             .is_none());
         let _ = fs::remove_dir_all(dir);
     }
@@ -1609,12 +1766,112 @@ mod tests {
             ],
         };
         assert!(gateway
-            .select("gemini-test", &HashSet::new(), None)
+            .select("gemini-test", &HashSet::new(), None, true)
             .is_none());
         assert_eq!(
             profile.quota_blocked_until("gemini-test", pool::now(), 600),
             parse_rfc3339_seconds("2099-01-01T00:00:00Z").unwrap(),
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn model_backend_failure_is_exponential_and_does_not_disable_count_tokens_or_other_models(
+    ) {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let mut cfg = config(&roster, ring);
+        cfg.models.push(super::super::config::GeminiModel {
+            id: "gemini-other".to_string(),
+            display_name: "Gemini Other".to_string(),
+            ..cfg.models[0].clone()
+        });
+        let gateway = GeminiGateway::new(cfg).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        profile.mark_model_failure("gemini-test", "backend", gateway.config());
+        let first_health = profile.model_health_for("gemini-test");
+        profile.mark_model_failure("gemini-test", "backend", gateway.config());
+        let second_health = profile.model_health_for("gemini-test");
+        assert_eq!(second_health.failure_streak, 2);
+        assert!(second_health.cooling_until > first_health.cooling_until);
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_none());
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, false)
+            .is_some());
+        assert!(gateway
+            .select("gemini-other", &HashSet::new(), None, true)
+            .is_some());
+        let status = gateway.operational_status().await;
+        let failed = status.profiles[0]
+            .model_cooling
+            .iter()
+            .find(|model| model.model_id == "gemini-test")
+            .unwrap();
+        assert_eq!(failed.failure_streak, 2);
+        assert_eq!(failed.last_failure_class.as_deref(), Some("backend"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn per_profile_concurrency_cap_is_atomic_and_reopens_when_the_lease_drops() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let mut cfg = config(&roster, ring);
+        cfg.max_inflight_per_profile = 1;
+        let gateway = GeminiGateway::new(cfg).unwrap();
+        let lease = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_none());
+        drop(lease);
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_some());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn quota_headroom_protects_a_low_profile_but_preserves_the_single_profile_floor() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profiles = gateway.profiles_snapshot();
+        for (profile, remaining) in profiles.iter().zip([0.001, 0.9]) {
+            *profile
+                .quota
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSnapshot {
+                updated_at: pool::now(),
+                buckets: vec![GeminiQuotaBucketStatus {
+                    model_id: "gemini-test".to_string(),
+                    remaining_amount: None,
+                    remaining_fraction: Some(remaining),
+                    reset_time: None,
+                    token_type: Some("antigravity_model".to_string()),
+                }],
+            };
+        }
+        let protected = gateway
+            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+            .unwrap();
+        assert_eq!(protected.profile().id(), "profile_b");
+        drop(protected);
+        profiles[1].cool_until(pool::now() + 60);
+        let floor = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert_eq!(floor.profile().id(), "profile_a");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1627,7 +1884,10 @@ mod tests {
         let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
         gateway.profiles_snapshot()[0].mark_auth_failed(pool::now() + 600);
         assert!(!gateway.has_authenticated_profiles());
-        assert_eq!(gateway.soonest_ready("gemini-test", &HashSet::new()), None,);
+        assert_eq!(
+            gateway.soonest_ready("gemini-test", &HashSet::new(), true),
+            None,
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

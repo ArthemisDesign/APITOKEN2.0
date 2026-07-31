@@ -292,8 +292,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    включая percent encoding, запрещён.
 3. Production HTTPS принадлежит persistent per-profile Node helper: exact pinned
    `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
-   Новые profiles используют Antigravity 2.2.1 UA, `Go-http-client/2.0` refresh и не посылают
-   legacy `x-goog-api-client`; старые Gemini CLI credentials сохраняют прежний wire до миграции.
+   Новые profiles используют Antigravity 2.2.1 UA, `Go-http-client/2.0` refresh и reviewed bounded
+   Antigravity `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Старые Gemini CLI
+   credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
@@ -306,8 +307,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    transport-бюджета; health probe не стирает generation cooling. Antigravity
    `fetchAvailableModels` публикует sanitized model catalogue: explicit zero блокирует модель до
    reset, stale/missing bucket fail-open. Legacy profiles продолжают `retrieveUserQuota`.
-   Network/
-   408/409/425/5xx → короткий cooling и ограниченный transport retry; остальные 4xx не вращаются.
+   Network/token refresh/408/409/425 → короткий global-profile cooling. Generation 5xx/malformed
+   response → exponential model-specific cooling и bounded retry, чтобы одна модель не выключала
+   остальные модели профиля; остальные 4xx не вращаются.
    Если были quota failures — итог 429; только auth/transport failures — 503; уже cooling pool — 429.
 5. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
    Для Antigravity `request.sessionId` — UUID из keyed tenant-scoped affinity lineage, а top-level
@@ -317,13 +319,25 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.
    Публичный model ceiling 65,536 сохраняется, но Antigravity wire `maxOutputTokens` ограничен 65,535.
-   Response/SSE отдаёт только `.response` (+ responseId), никогда wrapper/credits/private headers.
+   Canonical Gemini 3 model id отдельно от private effort/quota id: 3.6 Flash выбирает
+   `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview — `gemini-3.1-pro-low`/`gemini-pro-agent`.
+   Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,
+   billing и клиентский каталог — canonical public id. Response/SSE переписывает private
+   `modelVersion` обратно в public id и отдаёт только `.response` (+ responseId), никогда
+   wrapper/credits/private headers.
+   Official CountTokensRequest `generateContentRequest` разворачивается в private request, body model
+   заменяется route model; ambiguous top-level contents + nested request отклоняется. Неподдерживаемые
+   `serviceTier`/`store` fail closed вместо silent drop.
    Retry разрешён только до первого переведённого native SSE event. Stream startup bounded по
    time/bytes/chunks, а после первого public event ограничено число подряд идущих private/accounting
    events. После возврата Response disconnect клиента отключает downstream delivery, но task
    продолжает drain до финального usageMetadata. Shutdown deadline обязан abort-ить upstream read,
    settle-ить последний snapshot и только потом отпустить background semaphore permit для
    последующего billing flush.
+   Per-profile inflight атомарно ограничен (default 6). Fresh per-model quota fraction участвует в
+   routing с deterministic soft reserve/jitter; если все eligible profiles ниже резерва, service
+   floor fail-open до explicit zero. `/gemini-subs` отделяет quota presence от generation health
+   через failure streak и last success/failure evidence.
 6. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future

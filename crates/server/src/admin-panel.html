@@ -406,10 +406,12 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     card('Gemini · в работе',geminiDown?'—':gemini.inflight,'inflight requests сейчас')+
     card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист');
   const geminiRows=geminiProfiles.flatMap(profile=>(geminiModels.length?geminiModels:[{id:'—',available:0}]).map(model=>{
-    const modelCooling=(profile.model_cooling||[]).find(item=>item.model_id===model.id)?.cooling_until||0;
+    const modelHealth=(profile.model_cooling||[]).find(item=>item.model_id===model.id)||{},modelCooling=modelHealth.cooling_until||0;
     const quotas=(profile.quotas||[]).filter(item=>item.model_id===model.id);
     const coolingUntil=Math.max(Number(profile.cooling_until||0),Number(modelCooling||0));
-    const status=!profile.authenticated?pill('ошибка auth','bad'):coolingUntil>geminiNow?pill('cooling '+duration(coolingUntil-geminiNow),'warn'):pill('active','ok');
+    const status=!profile.authenticated?pill('ошибка auth','bad'):coolingUntil>geminiNow?pill('cooling '+duration(coolingUntil-geminiNow),'warn'):
+      Number(modelHealth.failure_streak||0)>0?pill('degraded · '+modelHealth.failure_streak,'warn'):
+      Number(modelHealth.last_success_at||0)>0?pill('active','ok'):pill('не проверена','warn');
     const quotaCell=quotas.length?quotas.map(quota=>{const fraction=quota.remaining_fraction,amount=quota.remaining_amount;
       return'<div>'+(amount!==null&&amount!==undefined?'<b>'+esc(amount)+'</b>':'<b>официальный fraction</b>')+
         (fraction!==null&&fraction!==undefined?'<div>'+remainingBar(fraction)+'</div>':'')+'</div>'}).join(''):'—';

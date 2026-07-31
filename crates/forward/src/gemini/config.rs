@@ -41,6 +41,71 @@ pub struct GeminiModel {
     pub prices: GeminiPrices,
 }
 
+impl GeminiModel {
+    /// Resolve the public Developer API model to the exact private Antigravity quota/generation
+    /// bucket. The authenticated Code Assist catalogue encodes Gemini 3 reasoning effort in the
+    /// model id; sending the public family id itself returns `INVALID_ARGUMENT`/`UNAVAILABLE`.
+    ///
+    /// Keep this mapping deliberately closed. A quota row is only availability evidence, not proof
+    /// that an arbitrary private id has the public model's semantics or price.
+    pub fn wire_model_id(&self, thinking_level: Option<&str>) -> Result<&str, &'static str> {
+        let level = thinking_level
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .unwrap_or("thinking_level_unspecified");
+        match self.id.as_str() {
+            "gemini-3.6-flash" => {
+                if level.eq_ignore_ascii_case("minimal") || level.eq_ignore_ascii_case("low") {
+                    Ok("gemini-3.6-flash-low")
+                } else if level.eq_ignore_ascii_case("medium")
+                    || level.eq_ignore_ascii_case("thinking_level_unspecified")
+                {
+                    Ok("gemini-3.6-flash-medium")
+                } else if level.eq_ignore_ascii_case("high") {
+                    Ok("gemini-3.6-flash-high")
+                } else {
+                    Err("Gemini 3.6 Flash supports minimal, low, medium, or high thinking levels.")
+                }
+            }
+            "gemini-3.1-pro-preview" => {
+                if level.eq_ignore_ascii_case("low") {
+                    Ok("gemini-3.1-pro-low")
+                } else if level.eq_ignore_ascii_case("medium")
+                    || level.eq_ignore_ascii_case("high")
+                    || level.eq_ignore_ascii_case("thinking_level_unspecified")
+                {
+                    // The current Antigravity picker calls its high/default Pro bucket
+                    // `gemini-pro-agent`; `gemini-3.1-pro-high` is only a compatibility alias.
+                    Ok("gemini-pro-agent")
+                } else {
+                    Err("Gemini 3.1 Pro Preview supports low, medium, or high thinking levels.")
+                }
+            }
+            _ => Ok(&self.id),
+        }
+    }
+
+    pub fn default_wire_model_id(&self) -> &str {
+        self.wire_model_id(None)
+            .expect("every configured Gemini model must have a reviewed default wire route")
+    }
+}
+
+/// Product access is intentionally narrower than the global Developer API price catalogue. These
+/// are the only text-output models whose Antigravity wire identity has a reviewed mapping; live
+/// generation calibration remains an additional deployment gate before a model enters systemd's
+/// public allowlist.
+pub fn subscription_model_supported(id: &str) -> bool {
+    matches!(
+        id,
+        "gemini-3.6-flash"
+            | "gemini-3.1-pro-preview"
+            | "gemini-3.1-flash-lite"
+            | "gemini-2.5-flash"
+            | "gemini-2.5-flash-lite"
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct GeminiConfig {
     pub enabled: bool,
@@ -51,9 +116,19 @@ pub struct GeminiConfig {
     pub connect_timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub max_transport_retries: usize,
+    /// Hard per-profile admission bound. A paid interactive subscription is not an unbounded
+    /// server connection pool; limiting concurrent generations also prevents one hot affinity key
+    /// from monopolising the only healthy identity.
+    pub max_inflight_per_profile: usize,
     pub auth_quarantine_secs: i64,
     pub transport_cool_secs: i64,
+    pub model_failure_cool_secs: i64,
+    pub model_failure_max_cool_secs: i64,
     pub default_rate_limit_cool_secs: i64,
+    /// Soft reserve used only while another profile has healthier quota headroom. The service floor
+    /// is preserved: if every eligible profile is below its reserve, routing fails open to them.
+    pub quota_reserve_fraction: f64,
+    pub quota_reserve_jitter: f64,
     pub health_probe_interval_secs: u64,
     pub reserve_overhead_tokens: u64,
     /// Public Antigravity release used to shape the Cloud Code User-Agent. Legacy credentials keep

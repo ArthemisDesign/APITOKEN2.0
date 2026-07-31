@@ -59,8 +59,9 @@
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/gemini-subs`, `/admin/*`) — здесь;
   остальное → форвардинг. `/gemini-subs` существует только в fixed Gemini runtime, гейтится
-  `readonly_authed` и сериализует opaque ids/quota/cooling плюс отдельные gaxios и Undici transport
-  attestations и Antigravity version без Google identity, project/proxy/OAuth.
+  `readonly_authed` и сериализует opaque ids/quota/cooling, per-model generation health и
+  low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
+  Antigravity version без Google identity, project/proxy/OAuth.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂

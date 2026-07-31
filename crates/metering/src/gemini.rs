@@ -125,6 +125,25 @@ const GEMINI_31_FLASH_LITE: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: flat_prices(250, 500, 25, 50, 1_500, SEARCH_GEMINI_3),
 }];
+// Official standard paid-tier rates for `gemini-3.1-pro-preview`:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-pro-preview
+const GEMINI_31_PRO_PREVIEW: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
+    effective_from: 0,
+    prices: GeminiPrices {
+        input: 2_000,
+        audio_input: 2_000,
+        cached_input: 200,
+        cached_audio_input: 200,
+        output: 12_000,
+        long_context_threshold: 200_000,
+        long_input: 4_000,
+        long_audio_input: 4_000,
+        long_cached_input: 400,
+        long_cached_audio_input: 400,
+        long_output: 18_000,
+        search: SEARCH_GEMINI_3,
+    },
+}];
 const GEMINI_25_PRO: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     effective_from: 0,
     prices: GeminiPrices {
@@ -172,6 +191,13 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         schedule: GEMINI_31_FLASH_LITE,
+    },
+    CatalogEntry {
+        id: "gemini-3.1-pro-preview",
+        display_name: "Gemini 3.1 Pro Preview",
+        input_token_limit: 1_048_576,
+        output_token_limit: 65_536,
+        schedule: GEMINI_31_PRO_PREVIEW,
     },
     CatalogEntry {
         id: "gemini-2.5-pro",
@@ -520,6 +546,12 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
         assert_eq!(
             cost_nanodollars(&usage, &flash),
             200_001 * 1_500 + 10 * 7_500 + 9 * 14_000_000
+        );
+
+        let preview = gemini_prices_at("gemini-3.1-pro-preview", 0).unwrap();
+        assert_eq!(
+            cost_nanodollars(&usage, &preview),
+            200_001 * 4_000 + 10 * 18_000 + 9 * 14_000_000
         );
     }
 

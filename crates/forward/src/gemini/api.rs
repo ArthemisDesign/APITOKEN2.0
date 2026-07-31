@@ -41,6 +41,8 @@ const REQUEST_FIELD_ALIASES: &[(&str, &str)] = &[
     ("generation_config", "generationConfig"),
     ("tool_config", "toolConfig"),
     ("cached_content", "cachedContent"),
+    ("service_tier", "serviceTier"),
+    ("generate_content_request", "generateContentRequest"),
 ];
 
 /// snake_case aliases for the recognized tool keys. Normalizing them keeps `validate_tools` and the
@@ -56,6 +58,35 @@ const TOOL_KEY_ALIASES: &[(&str, &str)] = &[
     ("file_search", "fileSearch"),
 ];
 
+const GENERATION_CONFIG_FIELD_ALIASES: &[(&str, &str)] = &[
+    ("candidate_count", "candidateCount"),
+    ("stop_sequences", "stopSequences"),
+    ("max_output_tokens", "maxOutputTokens"),
+    ("top_p", "topP"),
+    ("top_k", "topK"),
+    ("response_mime_type", "responseMimeType"),
+    ("response_schema", "responseSchema"),
+    ("response_json_schema", "responseJsonSchema"),
+    ("presence_penalty", "presencePenalty"),
+    ("frequency_penalty", "frequencyPenalty"),
+    ("response_logprobs", "responseLogprobs"),
+    ("thinking_config", "thinkingConfig"),
+];
+
+const THINKING_CONFIG_FIELD_ALIASES: &[(&str, &str)] = &[
+    ("thinking_level", "thinkingLevel"),
+    ("thinking_budget", "thinkingBudget"),
+    ("include_thoughts", "includeThoughts"),
+];
+
+fn promote_aliases(object: &mut serde_json::Map<String, Value>, aliases: &[(&str, &str)]) {
+    for (snake, camel) in aliases {
+        if let Some(aliased) = object.remove(*snake) {
+            object.entry((*camel).to_string()).or_insert(aliased);
+        }
+    }
+}
+
 /// Canonicalize a native request object in place: snake_case aliases become camelCase for the known
 /// top-level fields and recognized tool keys. When both spellings are present the camelCase value
 /// wins and the snake_case duplicate is discarded, matching Google's proto-JSON precedence.
@@ -63,11 +94,7 @@ fn canonicalize_native_request(value: &mut Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
-    for (snake, camel) in REQUEST_FIELD_ALIASES {
-        if let Some(aliased) = object.remove(*snake) {
-            object.entry((*camel).to_string()).or_insert(aliased);
-        }
-    }
+    promote_aliases(object, REQUEST_FIELD_ALIASES);
     if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
         for tool in tools {
             let Some(tool) = tool.as_object_mut() else {
@@ -78,6 +105,21 @@ fn canonicalize_native_request(value: &mut Value) {
                     tool.entry((*camel).to_string()).or_insert(aliased);
                 }
             }
+        }
+    }
+    if let Some(nested) = object.get_mut("generateContentRequest") {
+        canonicalize_native_request(nested);
+    }
+    if let Some(generation_config) = object
+        .get_mut("generationConfig")
+        .and_then(Value::as_object_mut)
+    {
+        promote_aliases(generation_config, GENERATION_CONFIG_FIELD_ALIASES);
+        if let Some(thinking_config) = generation_config
+            .get_mut("thinkingConfig")
+            .and_then(Value::as_object_mut)
+        {
+            promote_aliases(thinking_config, THINKING_CONFIG_FIELD_ALIASES);
         }
     }
 }
@@ -682,7 +724,22 @@ fn adapt_antigravity_generation_request(request: &mut serde_json::Map<String, Va
     }
 }
 
-fn validate_tools(body: &Value) -> Result<(), ApiError> {
+fn validate_generation_request(body: &Value) -> Result<(), ApiError> {
+    if body.get("serviceTier").is_some() {
+        // Priority/flex tiers have distinct provider admission and billing semantics. The private
+        // subscription surface cannot prove or settle either, so silently degrading to standard
+        // would be a protocol and billing lie.
+        return Err(ApiError::invalid(
+            "Explicit serviceTier is not supported by this subscription gateway.",
+        ));
+    }
+    if body.get("store").is_some() {
+        // `store` overrides project-level logging. Dropping even `false` can change data retention,
+        // so reject the unsupported control instead of pretending it was applied.
+        return Err(ApiError::invalid(
+            "Explicit store logging controls are not supported by this subscription gateway.",
+        ));
+    }
     if body.get("cachedContent").is_some() {
         // A native cached-content resource is scoped to one Google project. It cannot safely
         // survive subscription rotation and may encode a caller-selected upstream identity.
@@ -726,6 +783,62 @@ fn validate_tools(body: &Value) -> Result<(), ApiError> {
         }
     }
     Ok(())
+}
+
+fn validate_native_request(operation: Operation, body: &Value) -> Result<(), ApiError> {
+    if operation != Operation::CountTokens {
+        return validate_generation_request(body);
+    }
+    let object = body
+        .as_object()
+        .ok_or_else(|| ApiError::invalid("The request body must be a JSON object."))?;
+    let nested = object.get("generateContentRequest");
+    if nested.is_some() && object.contains_key("contents") {
+        return Err(ApiError::invalid(
+            "contents and generateContentRequest are mutually exclusive.",
+        ));
+    }
+    match nested {
+        Some(request) if request.is_object() => validate_generation_request(request),
+        Some(_) => Err(ApiError::invalid(
+            "The generateContentRequest field must be a JSON object.",
+        )),
+        None => validate_generation_request(body),
+    }
+}
+
+fn wire_model_for_request(
+    operation: Operation,
+    model: &GeminiModel,
+    body: &Value,
+) -> Result<String, ApiError> {
+    let generation_request = if operation == Operation::CountTokens {
+        body.get("generateContentRequest").unwrap_or(body)
+    } else {
+        body
+    };
+    let thinking_config = generation_request.pointer("/generationConfig/thinkingConfig");
+    let thinking_level = match thinking_config {
+        None => None,
+        Some(Value::Object(config)) => match config.get("thinkingLevel") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(level)) => Some(level.as_str()),
+            Some(_) => {
+                return Err(ApiError::invalid(
+                    "The generationConfig.thinkingConfig.thinkingLevel field must be a string.",
+                ));
+            }
+        },
+        Some(_) => {
+            return Err(ApiError::invalid(
+                "The generationConfig.thinkingConfig field must be an object.",
+            ));
+        }
+    };
+    model
+        .wire_model_id(thinking_level)
+        .map(str::to_string)
+        .map_err(ApiError::invalid)
 }
 
 fn translated_response(status: StatusCode, _headers: &HeaderMap, body: Bytes) -> Response {
@@ -801,38 +914,34 @@ fn wrap_code_assist_request(
             let native = native
                 .as_object()
                 .ok_or_else(|| ApiError::invalid("The request body must be a JSON object."))?;
-            let contents = native.get("contents").cloned().unwrap_or_else(|| json!([]));
-            // Real countTokens only counts a system instruction / tool declarations when they are
-            // supplied inside `generateContentRequest`; a bare top-level `contents` undercounts.
-            // Mirror that: use the request form when the client sent anything beyond contents,
-            // otherwise keep the minimal contents form for maximum upstream compatibility.
+            let request_source = native
+                .get("generateContentRequest")
+                .and_then(Value::as_object)
+                .unwrap_or(native);
+            let contents = request_source
+                .get("contents")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            // Code Assist's private `request` is a GenerateContentRequest even though the public
+            // CountTokensRequest nests that message as `generateContentRequest`. Reconstruct the
+            // documented fields inline and replace its ignored model with the route-authoritative
+            // model so callers cannot select a private model/project through the body.
             let extra_fields = [
                 "systemInstruction",
                 "tools",
                 "toolConfig",
+                "safetySettings",
                 "generationConfig",
             ];
-            if extra_fields.iter().any(|field| native.contains_key(*field)) {
-                // Code Assist's countTokens `request` IS a GenerateContentRequest; it has no
-                // `generateContentRequest` sub-field (upstream rejects that with
-                // fieldViolations{field:"request"}). Inline model/contents/system/tools directly.
-                let mut request = serde_json::Map::new();
-                request.insert("model".to_string(), json!(format!("models/{model}")));
-                request.insert("contents".to_string(), contents);
-                for field in extra_fields {
-                    if let Some(value) = native.get(field) {
-                        request.insert(field.to_string(), value.clone());
-                    }
+            let mut request = serde_json::Map::new();
+            request.insert("model".to_string(), json!(format!("models/{model}")));
+            request.insert("contents".to_string(), contents);
+            for field in extra_fields {
+                if let Some(value) = request_source.get(field) {
+                    request.insert(field.to_string(), value.clone());
                 }
-                json!({ "request": Value::Object(request) })
-            } else {
-                json!({
-                    "request": {
-                        "model": format!("models/{model}"),
-                        "contents": contents,
-                    }
-                })
             }
+            json!({ "request": Value::Object(request) })
         }
         Operation::Models | Operation::Model => return Err(ApiError::not_found()),
     };
@@ -841,7 +950,11 @@ fn wrap_code_assist_request(
         .map_err(|_| ApiError::invalid("The request body is not valid JSON."))
 }
 
-fn unwrap_code_assist_response(operation: Operation, bytes: &[u8]) -> Result<Bytes, ()> {
+fn unwrap_code_assist_response(
+    operation: Operation,
+    bytes: &[u8],
+    public_model: &str,
+) -> Result<Bytes, ()> {
     let mut value: Value = serde_json::from_slice(bytes).map_err(|_| ())?;
     if operation == Operation::CountTokens {
         if !value.is_object() || !value.get("totalTokens").is_some_and(Value::is_number) {
@@ -884,6 +997,10 @@ fn unwrap_code_assist_response(operation: Operation, bytes: &[u8]) -> Result<Byt
     // Real generateContent responses always carry a responseId. Synthesize a native-shaped one
     // rather than exposing the correlatable Code Assist wrapper traceId.
     if let Some(object) = native.as_object_mut() {
+        if object.contains_key("modelVersion") {
+            // Tiered Antigravity ids are private routing details, not native Gemini model versions.
+            object.insert("modelVersion".to_string(), json!(public_model));
+        }
         object.insert("responseId".to_string(), json!(fresh_response_id()));
     }
     serde_json::to_vec(&native).map(Bytes::from).map_err(|_| ())
@@ -950,18 +1067,20 @@ struct SseTranslator {
     provider_error: Option<u16>,
     provider_retry_after: Option<i64>,
     response_id: String,
+    public_model: String,
     framing: StreamFraming,
     started: bool,
 }
 
 impl SseTranslator {
-    fn new(framing: StreamFraming) -> Self {
+    fn new(framing: StreamFraming, public_model: &str) -> Self {
         Self {
             pending: Vec::new(),
             usage: metering::GeminiUsage::default(),
             provider_error: None,
             provider_retry_after: None,
             response_id: fresh_response_id(),
+            public_model: public_model.to_string(),
             framing,
             started: false,
         }
@@ -1063,6 +1182,9 @@ impl SseTranslator {
         metering::gemini::merge_stream_response_value(&mut self.usage, &native);
         // Real Gemini SSE chunks carry a stable responseId for the whole response; mirror it.
         if let Some(object) = native.as_object_mut() {
+            if object.contains_key("modelVersion") {
+                object.insert("modelVersion".to_string(), json!(&self.public_model));
+            }
             object.insert("responseId".to_string(), json!(self.response_id));
         }
         Ok(Some(self.frame(&native)?))
@@ -1175,6 +1297,7 @@ async fn stream_response(
     lease: GeminiLease,
     admission: GeminiAdmission,
     model: GeminiModel,
+    wire_model_id: String,
     status: StatusCode,
     headers: HeaderMap,
     mut translator: SseTranslator,
@@ -1201,6 +1324,7 @@ async fn stream_response(
         let mut aborted = false;
         let mut private_bytes = 0usize;
         let mut private_chunks = 0usize;
+        let mut malformed = false;
 
         for chunk in initial {
             if deliver {
@@ -1236,6 +1360,7 @@ async fn stream_response(
                         Ok(translated) => translated,
                         Err(()) => {
                             clean_eof = false;
+                            malformed = true;
                             break;
                         }
                     };
@@ -1248,6 +1373,7 @@ async fn stream_response(
                         .is_err()
                         {
                             clean_eof = false;
+                            malformed = true;
                             break;
                         }
                     } else {
@@ -1271,6 +1397,7 @@ async fn stream_response(
                 Err(_) => {
                     clean_eof = false;
                     Metrics::inc(&metrics.upstream_5xx);
+                    Metrics::inc(&metrics.gemini_transport_failures);
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                     break;
                 }
@@ -1287,7 +1414,10 @@ async fn stream_response(
                         }
                     }
                 }
-                Err(()) => clean_eof = false,
+                Err(()) => {
+                    clean_eof = false;
+                    malformed = true;
+                }
             }
         }
         // A JSON-array stream must be closed with `]` (or emitted as `[]` when empty); SSE needs no
@@ -1308,25 +1438,40 @@ async fn stream_response(
                 Some(429) => {
                     Metrics::inc(&metrics.upstream_429);
                     profile.cool_model_until(
-                        &model.id,
+                        &wire_model_id,
                         pool::now()
                             + translator
                                 .provider_retry_after
                                 .unwrap_or(gateway.config().default_rate_limit_cool_secs),
                     );
                 }
-                Some(408 | 409 | 425 | 500..=599) => {
+                Some(408 | 409 | 425) => {
                     Metrics::inc(&metrics.upstream_5xx);
+                    Metrics::inc(&metrics.gemini_transport_failures);
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                 }
-                Some(_) if clean_eof => profile.mark_healthy_for(&model.id),
-                None if clean_eof => profile.mark_healthy_for(&model.id),
-                _ => profile.cool_until(pool::now() + gateway.config().transport_cool_secs),
+                Some(500..=599) => {
+                    Metrics::inc(&metrics.upstream_5xx);
+                    Metrics::inc(&metrics.gemini_backend_failures);
+                    profile.mark_model_failure(&wire_model_id, "backend", gateway.config());
+                }
+                Some(_) if clean_eof => profile.mark_model_success(&wire_model_id),
+                None if clean_eof => profile.mark_model_success(&wire_model_id),
+                _ if malformed => {
+                    Metrics::inc(&metrics.upstream_5xx);
+                    Metrics::inc(&metrics.gemini_malformed_responses);
+                    profile.mark_model_failure(&wire_model_id, "malformed", gateway.config());
+                }
+                _ => {}
             }
         }
         let usage = (!translator.usage.is_zero()).then_some(&translator.usage);
         if usage.is_none() && admission.requires_usage() {
             Metrics::inc(&metrics.gemini_usage_missing);
+            if !aborted && !malformed && translator.provider_error.is_none() {
+                Metrics::inc(&metrics.gemini_malformed_responses);
+                profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+            }
         }
         admission.settle(&model, usage);
     });
@@ -1514,7 +1659,8 @@ async fn api_inner(
     // like the real API: normalize to camelCase up front so validation, reservation, the upstream
     // wrapper and settlement all see a single canonical shape instead of silently dropping fields.
     canonicalize_native_request(&mut value);
-    validate_tools(&value)?;
+    validate_native_request(route.operation, &value)?;
+    let wire_model_id = wire_model_for_request(route.operation, &model, &value)?;
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
             .infer_gemini(scope, &parts.headers, model_id, &value)
@@ -1569,23 +1715,29 @@ async fn api_inner(
         Operation::Models | Operation::Model => unreachable!(),
     };
     let mut excluded = HashSet::new();
-    let mut transport_failures = 0usize;
+    let mut retry_failures = 0usize;
     let mut saw_quota = false;
     let mut saw_auth = false;
+    let mut saw_backend = false;
     loop {
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway.select(&model.id, &excluded, preferred_id.as_deref()) else {
+        let Some(lease) = gateway.select(
+            &wire_model_id,
+            &excluded,
+            preferred_id.as_deref(),
+            generation,
+        ) else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = gateway
-                .soonest_ready(&model.id, &HashSet::new())
+                .soonest_ready(&wire_model_id, &HashSet::new(), generation)
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
             return if !gateway.has_authenticated_profiles() {
                 Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
             } else if saw_quota {
                 Err(ApiError::rate_limited(retry))
-            } else if saw_auth || transport_failures > 0 {
+            } else if saw_auth || saw_backend || retry_failures > 0 {
                 Err(ApiError::unavailable("gemini_profiles_unavailable"))
             } else {
                 Err(ApiError::rate_limited(retry))
@@ -1593,7 +1745,7 @@ async fn api_inner(
         };
         let profile = lease.profile().clone();
         let oauth_kind = profile.oauth_kind();
-        let upstream_user_agent = gateway.config().user_agent(oauth_kind, &model.id);
+        let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
         let mut url = format!(
             "{}/v1internal:{suffix}",
             gateway.config().upstream_for(oauth_kind)
@@ -1606,7 +1758,7 @@ async fn api_inner(
         let upstream_body = wrap_code_assist_request(
             route.operation,
             oauth_kind,
-            &model.id,
+            &wire_model_id,
             &project,
             &value,
             &user_prompt_id,
@@ -1633,10 +1785,11 @@ async fn api_inner(
             }
             Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                transport_failures += 1;
-                if transport_failures > gateway.config().max_transport_retries {
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
                 continue;
@@ -1671,10 +1824,11 @@ async fn api_inner(
                 }
                 Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
+                    Metrics::inc(&app.metrics.gemini_transport_failures);
                     excluded.insert(profile.id().to_string());
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                    transport_failures += 1;
-                    if transport_failures > gateway.config().max_transport_retries {
+                    retry_failures += 1;
+                    if retry_failures > gateway.config().max_transport_retries {
                         return Err(ApiError::unavailable("gemini_token_refresh_unavailable"));
                     }
                     continue;
@@ -1685,7 +1839,7 @@ async fn api_inner(
 
         if status.is_success() && route.operation == Operation::StreamGenerate {
             let mut stream = response.bytes_stream();
-            let mut translator = SseTranslator::new(framing);
+            let mut translator = SseTranslator::new(framing, &model.id);
             // Do not return 200 until at least one public native event exists, because retries are
             // forbidden after delivery. Bound this private prelude independently from per-event
             // framing: an upstream that emits endless credit/accounting events (or empty chunks)
@@ -1722,10 +1876,12 @@ async fn api_inner(
                 Ok(Ok(initial)) => initial,
                 Ok(Err(())) | Err(_) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
+                    Metrics::inc(&app.metrics.gemini_stream_start_failures);
                     excluded.insert(profile.id().to_string());
-                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                    transport_failures += 1;
-                    if transport_failures > gateway.config().max_transport_retries {
+                    profile.mark_model_failure(&wire_model_id, "stream_start", gateway.config());
+                    saw_backend = true;
+                    retry_failures += 1;
+                    if retry_failures > gateway.config().max_transport_retries {
                         return Err(ApiError::unavailable("gemini_stream_start_failed"));
                     }
                     continue;
@@ -1746,7 +1902,7 @@ async fn api_inner(
                         saw_quota = true;
                         excluded.insert(profile.id().to_string());
                         profile.cool_model_until(
-                            &model.id,
+                            &wire_model_id,
                             pool::now()
                                 + translator
                                     .provider_retry_after
@@ -1754,12 +1910,25 @@ async fn api_inner(
                         );
                         continue;
                     }
-                    408 | 409 | 425 | 500..=599 => {
+                    408 | 409 | 425 => {
                         Metrics::inc(&app.metrics.upstream_5xx);
+                        Metrics::inc(&app.metrics.gemini_transport_failures);
                         excluded.insert(profile.id().to_string());
                         profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                        transport_failures += 1;
-                        if transport_failures > gateway.config().max_transport_retries {
+                        retry_failures += 1;
+                        if retry_failures > gateway.config().max_transport_retries {
+                            return Err(ApiError::unavailable("gemini_stream_start_failed"));
+                        }
+                        continue;
+                    }
+                    500..=599 => {
+                        Metrics::inc(&app.metrics.upstream_5xx);
+                        Metrics::inc(&app.metrics.gemini_backend_failures);
+                        excluded.insert(profile.id().to_string());
+                        profile.mark_model_failure(&wire_model_id, "backend", gateway.config());
+                        saw_backend = true;
+                        retry_failures += 1;
+                        if retry_failures > gateway.config().max_transport_retries {
                             return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
                         continue;
@@ -1772,15 +1941,17 @@ async fn api_inner(
                 // local so a later translator refactor cannot accidentally relax the no-byte retry
                 // boundary without being classified as a transport failure.
                 Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_stream_start_failures);
                 excluded.insert(profile.id().to_string());
-                profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                transport_failures += 1;
-                if transport_failures > gateway.config().max_transport_retries {
+                profile.mark_model_failure(&wire_model_id, "stream_start", gateway.config());
+                saw_backend = true;
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
                     return Err(ApiError::unavailable("gemini_stream_start_failed"));
                 }
                 continue;
             }
-            profile.mark_healthy_for(&model.id);
+            profile.mark_model_success(&wire_model_id);
             record_affinity_success(
                 &app.affinity,
                 affinity_input.as_ref(),
@@ -1795,6 +1966,7 @@ async fn api_inner(
                 lease,
                 admission,
                 model,
+                wire_model_id,
                 status,
                 response_headers,
                 translator,
@@ -1808,10 +1980,11 @@ async fn api_inner(
             Ok(bytes) => bytes,
             Err(_) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                transport_failures += 1;
-                if transport_failures > gateway.config().max_transport_retries {
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
                     return Err(ApiError::unavailable("gemini_response_read_failed"));
                 }
                 continue;
@@ -1834,35 +2007,62 @@ async fn api_inner(
                     &response_body,
                     gateway.config().default_rate_limit_cool_secs,
                 );
-                profile.cool_model_until(&model.id, pool::now() + delay);
+                profile.cool_model_until(&wire_model_id, pool::now() + delay);
                 continue;
             }
-            408 | 409 | 425 | 500..=599 => {
+            408 | 409 | 425 => {
                 Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                transport_failures += 1;
-                if transport_failures > gateway.config().max_transport_retries {
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
+                    return Err(ApiError::unavailable("gemini_backend_unavailable"));
+                }
+                continue;
+            }
+            500..=599 => {
+                Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_backend_failures);
+                excluded.insert(profile.id().to_string());
+                if generation {
+                    profile.mark_model_failure(&wire_model_id, "backend", gateway.config());
+                }
+                saw_backend = true;
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
                     return Err(ApiError::unavailable("gemini_backend_unavailable"));
                 }
                 continue;
             }
             _ if status.is_success() => {
-                let native_body = match unwrap_code_assist_response(route.operation, &response_body)
-                {
-                    Ok(body) => body,
-                    Err(()) => {
-                        Metrics::inc(&app.metrics.upstream_5xx);
-                        excluded.insert(profile.id().to_string());
-                        profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                        transport_failures += 1;
-                        if transport_failures > gateway.config().max_transport_retries {
-                            return Err(ApiError::unavailable("gemini_malformed_response"));
+                let native_body =
+                    match unwrap_code_assist_response(route.operation, &response_body, &model.id) {
+                        Ok(body) => body,
+                        Err(()) => {
+                            Metrics::inc(&app.metrics.upstream_5xx);
+                            Metrics::inc(&app.metrics.gemini_malformed_responses);
+                            excluded.insert(profile.id().to_string());
+                            if generation {
+                                profile.mark_model_failure(
+                                    &wire_model_id,
+                                    "malformed",
+                                    gateway.config(),
+                                );
+                            }
+                            saw_backend = true;
+                            retry_failures += 1;
+                            if retry_failures > gateway.config().max_transport_retries {
+                                return Err(ApiError::unavailable("gemini_malformed_response"));
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                };
-                profile.mark_healthy_for(&model.id);
+                    };
+                if generation {
+                    profile.mark_model_success(&wire_model_id);
+                } else {
+                    profile.mark_authenticated();
+                }
                 record_affinity_success(
                     &app.affinity,
                     affinity_input.as_ref(),
@@ -1883,7 +2083,8 @@ async fn api_inner(
                     && usage.is_none()
                 {
                     Metrics::inc(&app.metrics.gemini_usage_missing);
-                    profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    Metrics::inc(&app.metrics.gemini_malformed_responses);
+                    profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
                     return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
                 }
                 admission.mark_delivering().await?;
@@ -1893,15 +2094,19 @@ async fn api_inner(
             _ if status.is_client_error() => {
                 // The private Code Assist error envelope can contain account, project, plan or
                 // internal endpoint details. Preserve only the public status class.
-                profile.mark_healthy_for(&model.id);
+                profile.mark_authenticated();
                 return Err(ApiError::provider_rejected(status));
             }
             _ => {
                 Metrics::inc(&app.metrics.upstream_5xx);
+                Metrics::inc(&app.metrics.gemini_backend_failures);
                 excluded.insert(profile.id().to_string());
-                profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
-                transport_failures += 1;
-                if transport_failures > gateway.config().max_transport_retries {
+                if generation {
+                    profile.mark_model_failure(&wire_model_id, "protocol", gateway.config());
+                }
+                saw_backend = true;
+                retry_failures += 1;
+                if retry_failures > gateway.config().max_transport_retries {
                     return Err(ApiError::unavailable("gemini_backend_protocol_error"));
                 }
                 continue;
@@ -2230,6 +2435,26 @@ mod tests {
         oauth_kind: OAuthKind,
         output_token_limit: u64,
     ) -> GatewayFixture {
+        gateway_fixture_with_models(
+            upstream,
+            proxies,
+            max_transport_retries,
+            token_uri,
+            oauth_kind,
+            output_token_limit,
+            &["gemini-integration-model"],
+        )
+    }
+
+    fn gateway_fixture_with_models(
+        upstream: &str,
+        proxies: &[Option<&str>],
+        max_transport_retries: usize,
+        token_uri: Option<&str>,
+        oauth_kind: OAuthKind,
+        output_token_limit: u64,
+        model_ids: &[&str],
+    ) -> GatewayFixture {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2295,38 +2520,46 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&profiles_file, fs::Permissions::from_mode(0o600)).unwrap();
-        let model = GeminiModel {
-            id: "gemini-integration-model".to_string(),
-            display_name: "Gemini Integration Model".to_string(),
-            input_token_limit: 1_000_000,
-            output_token_limit,
-            prices: metering::GeminiPrices {
-                input: 1,
-                audio_input: 1,
-                cached_input: 1,
-                cached_audio_input: 1,
-                output: 1,
-                long_context_threshold: u64::MAX,
-                long_input: 1,
-                long_audio_input: 1,
-                long_cached_input: 1,
-                long_cached_audio_input: 1,
-                long_output: 1,
-                search: metering::GeminiSearchBilling::PerGroundedPrompt { nano: 1 },
-            },
-        };
+        let models = model_ids
+            .iter()
+            .map(|model_id| GeminiModel {
+                id: (*model_id).to_string(),
+                display_name: format!("Gemini Integration Model {model_id}"),
+                input_token_limit: 1_000_000,
+                output_token_limit,
+                prices: metering::GeminiPrices {
+                    input: 1,
+                    audio_input: 1,
+                    cached_input: 1,
+                    cached_audio_input: 1,
+                    output: 1,
+                    long_context_threshold: u64::MAX,
+                    long_input: 1,
+                    long_audio_input: 1,
+                    long_cached_input: 1,
+                    long_cached_audio_input: 1,
+                    long_output: 1,
+                    search: metering::GeminiSearchBilling::PerGroundedPrompt { nano: 1 },
+                },
+            })
+            .collect();
         let gateway = GeminiGateway::new(super::super::config::GeminiConfig {
             enabled: true,
             upstream: upstream.to_string(),
             profiles_file: profiles_file.to_string_lossy().into_owned(),
             credential_keys: ring,
-            models: vec![model],
+            models,
             connect_timeout_secs: 1,
             read_timeout_secs: 5,
             max_transport_retries,
+            max_inflight_per_profile: 6,
             auth_quarantine_secs: 900,
             transport_cool_secs: 30,
+            model_failure_cool_secs: 15,
+            model_failure_max_cool_secs: 900,
             default_rate_limit_cool_secs: 60,
+            quota_reserve_fraction: 0.05,
+            quota_reserve_jitter: 0.01,
             health_probe_interval_secs: 60,
             reserve_overhead_tokens: 10,
             antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
@@ -2466,13 +2699,31 @@ mod tests {
         .unwrap()
     }
 
+    fn catalog_model(id: &str) -> GeminiModel {
+        let spec = metering::gemini_catalog_at(0)
+            .into_iter()
+            .find(|spec| spec.id == id)
+            .expect("catalog model");
+        GeminiModel {
+            id: spec.id.to_string(),
+            display_name: spec.display_name.to_string(),
+            input_token_limit: spec.input_token_limit,
+            output_token_limit: spec.output_token_limit,
+            prices: spec.prices,
+        }
+    }
+
     #[test]
     fn canonicalize_promotes_snake_case_and_normalizes_tools() {
         let mut value = json!({
             "contents": [],
             "system_instruction": {"parts": [{"text": "be terse"}]},
             "safety_settings": [],
-            "generation_config": {"maxOutputTokens": 10},
+            "generation_config": {
+                "max_output_tokens": 10,
+                "top_p": 0.8,
+                "thinking_config": {"thinking_level": "high", "include_thoughts": true}
+            },
             "tools": [{"google_search": {}}]
         });
         canonicalize_native_request(&mut value);
@@ -2480,11 +2731,21 @@ mod tests {
         assert!(value.get("system_instruction").is_none());
         assert!(value.get("safetySettings").is_some());
         assert!(value.get("generationConfig").is_some());
+        assert_eq!(value["generationConfig"]["maxOutputTokens"], 10);
+        assert_eq!(value["generationConfig"]["topP"], 0.8);
+        assert_eq!(
+            value["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
+        assert_eq!(
+            value["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
         let tool = &value["tools"][0];
         assert!(tool.get("googleSearch").is_some());
         assert!(tool.get("google_search").is_none());
         // The normalized tool must pass validation just like its camelCase form.
-        assert!(validate_tools(&value).is_ok());
+        assert!(validate_generation_request(&value).is_ok());
     }
 
     #[test]
@@ -2496,6 +2757,86 @@ mod tests {
         canonicalize_native_request(&mut value);
         assert_eq!(value["systemInstruction"]["parts"][0]["text"], "camel");
         assert!(value.get("system_instruction").is_none());
+    }
+
+    #[test]
+    fn public_thinking_levels_select_reviewed_private_wire_buckets() {
+        let flash = catalog_model("gemini-3.6-flash");
+        for (level, expected) in [
+            (None, "gemini-3.6-flash-medium"),
+            (Some("minimal"), "gemini-3.6-flash-low"),
+            (Some("low"), "gemini-3.6-flash-low"),
+            (Some("medium"), "gemini-3.6-flash-medium"),
+            (Some("high"), "gemini-3.6-flash-high"),
+            (Some("HIGH"), "gemini-3.6-flash-high"),
+        ] {
+            assert_eq!(flash.wire_model_id(level), Ok(expected));
+        }
+        assert!(flash.wire_model_id(Some("future")).is_err());
+
+        let pro = catalog_model("gemini-3.1-pro-preview");
+        for (level, expected) in [
+            (None, "gemini-pro-agent"),
+            (Some("low"), "gemini-3.1-pro-low"),
+            (Some("medium"), "gemini-pro-agent"),
+            (Some("high"), "gemini-pro-agent"),
+        ] {
+            assert_eq!(pro.wire_model_id(level), Ok(expected));
+        }
+        assert!(pro.wire_model_id(Some("minimal")).is_err());
+
+        let direct = catalog_model("gemini-2.5-flash");
+        assert_eq!(direct.wire_model_id(Some("future")), Ok("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn nested_count_tokens_request_controls_the_wire_tier() {
+        let model = catalog_model("gemini-3.6-flash");
+        let body = json!({
+            "generateContentRequest": {
+                "model": "models/caller-controlled",
+                "contents": [],
+                "generationConfig": {"thinkingConfig": {"thinkingLevel": "low"}}
+            }
+        });
+        assert_eq!(
+            wire_model_for_request(Operation::CountTokens, &model, &body).unwrap(),
+            "gemini-3.6-flash-low"
+        );
+    }
+
+    #[test]
+    fn private_model_versions_are_rewritten_to_the_public_model() {
+        let response = serde_json::to_vec(&json!({
+            "response": {
+                "candidates": [],
+                "modelVersion": "gemini-3.6-flash-high"
+            },
+            "traceId": "private-trace"
+        }))
+        .unwrap();
+        let native =
+            unwrap_code_assist_response(Operation::Generate, &response, "gemini-3.6-flash")
+                .unwrap();
+        let native: Value = serde_json::from_slice(&native).unwrap();
+        assert_eq!(native["modelVersion"], "gemini-3.6-flash");
+        assert!(native.get("traceId").is_none());
+
+        let mut stream = SseTranslator::new(StreamFraming::Sse, "gemini-3.6-flash");
+        let chunks = stream
+            .push(
+                b"data: {\"response\":{\"candidates\":[],\"modelVersion\":\"gemini-3.6-flash-high\"}}\n\n",
+            )
+            .unwrap();
+        let value: Value = serde_json::from_slice(
+            chunks[0]
+                .strip_prefix(b"data: ")
+                .unwrap()
+                .strip_suffix(b"\n\n")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["modelVersion"], "gemini-3.6-flash");
     }
 
     #[test]
@@ -2633,7 +2974,8 @@ mod tests {
 
     #[test]
     fn json_array_framing_wraps_elements_and_closes() {
-        let mut translator = SseTranslator::new(StreamFraming::JsonArray);
+        let mut translator =
+            SseTranslator::new(StreamFraming::JsonArray, "gemini-integration-model");
         let first = translator.frame(&json!({"a": 1})).unwrap();
         let second = translator.frame(&json!({"b": 2})).unwrap();
         let close = translator.finish_stream().unwrap();
@@ -2641,10 +2983,10 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&whole).unwrap();
         assert_eq!(parsed, json!([{"a": 1}, {"b": 2}]));
         // An empty JSON-array stream still closes as a valid empty array.
-        let mut empty = SseTranslator::new(StreamFraming::JsonArray);
+        let mut empty = SseTranslator::new(StreamFraming::JsonArray, "gemini-integration-model");
         assert_eq!(empty.finish_stream().unwrap().as_ref(), b"[]");
         // SSE framing has no terminator and keeps the data: envelope.
-        let mut sse = SseTranslator::new(StreamFraming::Sse);
+        let mut sse = SseTranslator::new(StreamFraming::Sse, "gemini-integration-model");
         let frame = sse.frame(&json!({"a": 1})).unwrap();
         assert!(frame.starts_with(b"data: "));
         assert!(sse.finish_stream().is_none());
@@ -2706,6 +3048,94 @@ mod tests {
         assert!(array[0]["responseId"]
             .as_str()
             .is_some_and(|id| !id.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn tiered_public_model_uses_one_wire_id_for_generate_stream_and_count_tokens() {
+        let non_stream = MockReply::json(
+            StatusCode::OK,
+            json!({
+                "response": {
+                    "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
+                    "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1},
+                    "modelVersion": "gemini-3.6-flash-high"
+                }
+            }),
+        );
+        let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3.6-flash-high\"}}\n\n",
+        ))]);
+        let count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![non_stream, stream, count],
+        )]))
+        .await;
+        let fixture = gateway_fixture_with_models(
+            &server.upstream,
+            &[None],
+            0,
+            None,
+            OAuthKind::Antigravity,
+            65_536,
+            &["gemini-3.6-flash"],
+        );
+        let app = app_state(fixture.gateway.clone(), None);
+        let generation = json!({
+            "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+        });
+
+        let response = invoke_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3.6-flash:generateContent",
+            generation.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = response_json(response).await;
+        assert_eq!(response["modelVersion"], "gemini-3.6-flash");
+
+        let response = invoke_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+            generation,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stream_body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        let stream_text = std::str::from_utf8(&stream_body).unwrap();
+        assert!(stream_text.contains("\"modelVersion\":\"gemini-3.6-flash\""));
+        assert!(!stream_text.contains("gemini-3.6-flash-high"));
+
+        let response = invoke_uri(
+            app,
+            "/v1beta/models/gemini-3.6-flash:countTokens",
+            json!({
+                "generateContentRequest": {
+                    "model": "models/caller-model",
+                    "contents": [{"role": "user", "parts": [{"text": "reply ok"}]}],
+                    "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["totalTokens"], 2);
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 3);
+        for request in &seen {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let wire = body
+                .get("model")
+                .and_then(Value::as_str)
+                .or_else(|| body.pointer("/request/model").and_then(Value::as_str))
+                .unwrap();
+            assert!(wire.ends_with("gemini-3.6-flash-high"));
+        }
     }
 
     #[tokio::test]
@@ -3342,6 +3772,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn count_tokens_honors_the_official_nested_generate_content_request() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(StatusCode::OK, json!({"totalTokens": 23}))],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-integration-model:countTokens")
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .body(Body::from(
+                json!({
+                    "generate_content_request": {
+                        "model": "models/caller-controlled-model",
+                        "contents": [{"role":"user","parts":[{"text":"hello"}]}],
+                        "system_instruction": {"parts":[{"text":"be concise"}]},
+                        "tools": [{"function_declarations": [{"name":"lookup"}]}]
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = api_inner(
+            app_state(fixture.gateway.clone(), None),
+            "198.51.100.10:12345".parse().unwrap(),
+            request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!({"totalTokens": 23}));
+        let private: Value = serde_json::from_slice(&server.state.seen()[0].body).unwrap();
+        assert_eq!(
+            private["request"]["model"],
+            "models/gemini-integration-model"
+        );
+        assert_eq!(
+            private["request"]["systemInstruction"]["parts"][0]["text"],
+            "be concise"
+        );
+        assert!(private["request"]["tools"][0]
+            .get("functionDeclarations")
+            .is_some());
+        assert!(private["request"].get("generateContentRequest").is_none());
+    }
+
+    #[test]
+    fn count_tokens_rejects_ambiguous_input_and_unsupported_semantic_controls() {
+        assert!(validate_native_request(
+            Operation::CountTokens,
+            &json!({
+                "contents": [],
+                "generateContentRequest": {"contents": []}
+            })
+        )
+        .is_err());
+        assert!(validate_native_request(
+            Operation::CountTokens,
+            &json!({"generateContentRequest": []})
+        )
+        .is_err());
+        for body in [
+            json!({"contents": [], "serviceTier": "priority"}),
+            json!({"contents": [], "store": false}),
+            json!({"generateContentRequest": {"contents": [], "store": true}}),
+        ] {
+            assert!(validate_native_request(Operation::CountTokens, &body).is_err());
+        }
+        assert!(validate_native_request(
+            Operation::Generate,
+            &json!({"contents": [], "serviceTier": "standard"})
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
     async fn malformed_private_success_is_never_exposed_and_rotates() {
         let server = start_mock(MockState::with_replies([
             (
@@ -3574,10 +4082,16 @@ mod tests {
         let backend_server = start_mock(MockState::with_replies([
             (
                 PROFILE_A_KEY,
-                vec![MockReply::json(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    json!({"error": {"status": "UNAVAILABLE"}}),
-                )],
+                vec![
+                    MockReply::json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error": {"status": "UNAVAILABLE"}}),
+                    ),
+                    MockReply::json(
+                        StatusCode::OK,
+                        json!({"candidates": [], "usageMetadata": {}}),
+                    ),
+                ],
             ),
             (
                 PROFILE_B_KEY,
@@ -3588,15 +4102,54 @@ mod tests {
             ),
         ]))
         .await;
-        let backend_fixture = gateway_fixture(&backend_server.upstream, &[None, None], 1);
-        let response = invoke(
-            app_state(backend_fixture.gateway.clone(), None),
+        let backend_fixture = gateway_fixture_with_models(
+            &backend_server.upstream,
+            &[None, None],
+            1,
+            None,
+            OAuthKind::LegacyGeminiCli,
+            64,
+            &["gemini-integration-model", "gemini-other-model"],
+        );
+        let app = app_state(backend_fixture.gateway.clone(), None);
+        let response = invoke(app.clone(), json!({"contents": []}), false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(backend_server.state.seen().len(), 2);
+        assert_eq!(Metrics::get(&app.metrics.gemini_backend_failures), 1);
+        assert_eq!(Metrics::get(&app.metrics.gemini_transport_failures), 0);
+
+        // The backend fault belongs only to gemini-integration-model on profile A. Its other model
+        // remains immediately routable and the round-robin cursor selects that same profile again.
+        let response = invoke_uri(
+            app.clone(),
+            "/v1beta/models/gemini-other-model:generateContent",
             json!({"contents": []}),
-            false,
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(backend_server.state.seen().len(), 2);
+        let seen = backend_server.state.seen();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2].credential, PROFILE_A_KEY);
+        let status = backend_fixture.gateway.operational_status().await;
+        let profile_a = status
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "profile_a")
+            .unwrap();
+        let failed = profile_a
+            .model_cooling
+            .iter()
+            .find(|health| health.model_id == "gemini-integration-model")
+            .unwrap();
+        let healthy = profile_a
+            .model_cooling
+            .iter()
+            .find(|health| health.model_id == "gemini-other-model")
+            .unwrap();
+        assert_eq!(failed.failure_streak, 1);
+        assert_eq!(failed.last_failure_class.as_deref(), Some("backend"));
+        assert_eq!(healthy.failure_streak, 0);
+        assert!(healthy.last_success_at > 0);
     }
 
     #[tokio::test]
@@ -3941,7 +4494,7 @@ mod tests {
             json!({"tools": [{"futurePaidTool": {}}]}),
             json!({"cachedContent": "cachedContents/customer-selected-resource"}),
         ] {
-            assert!(validate_tools(&body).is_err());
+            assert!(validate_generation_request(&body).is_err());
         }
         for body in [
             json!({"tools": [{"googleSearch": {}}]}),
@@ -3949,7 +4502,7 @@ mod tests {
             json!({"tools": [{"codeExecution": {}}]}),
             json!({"tools": [{"functionDeclarations": []}]}),
         ] {
-            validate_tools(&body).unwrap();
+            validate_generation_request(&body).unwrap();
         }
     }
 
@@ -3962,7 +4515,7 @@ mod tests {
 
     #[test]
     fn incremental_sse_tracker_keeps_last_usage_across_chunk_boundaries() {
-        let mut tracker = SseTranslator::new(StreamFraming::Sse);
+        let mut tracker = SseTranslator::new(StreamFraming::Sse, "gemini-integration-model");
         tracker
             .push(b"data: {\"response\":{\"usageMetadata\":{\"promptToken")
             .unwrap();

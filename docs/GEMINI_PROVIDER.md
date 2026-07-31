@@ -196,7 +196,10 @@ Gemini runtime (`config.env` or `server.env`):
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE=6
+CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
+CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
 
 `CLAUDE_API_GEMINI_UPSTREAM` defaults to and is production-pinned at
@@ -235,10 +238,11 @@ OPTIONS *                                                 (CORS preflight, unaut
 
 Query credentials are forbidden. The customer's `x-goog-api-key`, `x-api-key` or Bearer token
 authorizes this gateway and is never sent to Google. Client Authorization, User-Agent,
-`client-metadata`, Google project/client headers and forwarding/IP headers are stripped. Runtime
-new profiles use the pinned Antigravity 2.2.1 wire identity and do not emit the legacy
-`x-goog-api-client` header. Antigravity refresh uses `Go-http-client/2.0`; generation and control
-calls use `antigravity/hub/2.2.1 darwin/arm64`. Production HTTPS generation, quota retrieval, health
+Google project headers and forwarding/IP headers are stripped. Runtime new profiles use the pinned
+Antigravity 2.2.1 wire identity, including the reviewed bounded `Client-Metadata` and
+`x-goog-api-client` values; caller-supplied variants never pass through. Antigravity refresh uses
+`Go-http-client/2.0`; generation and control calls use `antigravity/hub/2.2.1 darwin/arm64`.
+Production HTTPS generation, quota retrieval, health
 probes and access-token refresh run through a persistent,
 per-profile Node helper and native Node/OpenSSL `https`; there is no approximate Rust/BoringSSL TLS
 emulation. The authenticated proxy is supplied in the first private IPC frame, never argv or env.
@@ -277,6 +281,10 @@ For every request the runtime:
 - decrypts the selected project/proxy only in memory;
 - obtains an access token with a per-profile single-flight mutex and 120-second expiry skew;
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
+- resolves a canonical Gemini 3 model plus `thinkingConfig.thinkingLevel` to the reviewed private
+  Antigravity effort/quota bucket before admission. Quota and model cooling follow that private
+  bucket, while affinity, customer billing, the public catalogue and returned `modelVersion` stay
+  on the canonical Developer API model id;
 - adapts valid public generation requests to Antigravity's stricter private wire contract: blank or
   omitted `contents[].role` values are inferred as alternating `user`/`model` turns, and the public
   65,536-token model ceiling is clamped to the private endpoint's accepted boundary of 65,535;
@@ -288,17 +296,60 @@ For every request the runtime:
 - periodically calls Antigravity `v1internal:fetchAvailableModels`, keeps a sanitized per-model
   `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
   Google's reset time;
+- limits each paid profile to a bounded number of concurrent requests and routes new work toward
+  profiles with more per-model quota headroom. A small deterministic per-profile reserve prevents
+  synchronized draining, but remains soft: if all eligible profiles are below reserve, the final
+  working subscription continues serving until Google reports an explicit zero;
+- records generation-specific failure streaks, last success/failure timestamps and an exponential
+  per-model cooldown. HTTP 5xx/malformed generation failures therefore degrade only that model;
+  proxy/network/token-refresh failures still cool the complete profile. `countTokens` remains a
+  quota-free diagnostic and cannot falsely rehabilitate generation health;
 - reserves customer balance before upstream delivery and settles from native `usageMetadata`.
   A metered non-stream success without authoritative non-zero usage is withheld and refunded; once
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
   an operational counter instead of inventing a usage event or granting a free request.
 
-The model allowlist is local and price-catalog pinned. The default list contains the four models
-confirmed against the production Google AI Pro profile on 2026-07-30: `gemini-3.1-flash-lite`,
-`gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`. A configured id still needs a live
-smoke test against every tier; Google can change private model availability independently. The
-production systemd argv pins this calibrated four-model set after shared env files, so a stale
+The model allowlist is local and price-catalog pinned. The default list contains the three text
+models whose non-stream and native stream paths were reconfirmed against the production Google AI
+Pro profile on 2026-07-31: `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
+`gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: its quota bucket reports
+`remainingFraction=1.0`, but both generation paths persistently return `UNAVAILABLE`. Private
+tier ids are never public model names: reviewed 3.6/3.1 mappings stay outside the production unit
+until their current-profile live matrix passes, while 3.5/image/agent/foreign-provider ids have no
+honest public text-model mapping at all.
+A configured id still needs a live smoke test against every tier because Google can change private
+model availability independently. The production systemd argv pins this calibrated three-model
+set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
+
+### Text-model evidence matrix
+
+The two namespaces are not interchangeable. Public names and prices come from the official Gemini
+Developer API; private ids come from authenticated Antigravity `fetchAvailableModels` plus a live
+text-generation check. A quota row by itself is never admission evidence.
+
+| Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
+|---|---|---|---|
+| `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | all three buckets present on 2026-07-31; current-profile generate/SSE calibration still required | mapped in code, not yet in the production unit allowlist |
+| `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | both buckets present; current-profile generate/SSE calibration still required | mapped and price-pinned, not yet in the production unit allowlist |
+| `gemini-3.1-flash-lite` | same id | generate 200, SSE 200 | published |
+| `gemini-2.5-flash` | same id | generate 200, SSE 200 | published |
+| `gemini-2.5-flash-lite` | same id | generate 200, SSE 200 | published |
+| `gemini-2.5-pro` | same id | quota says 1.0, but generate and SSE return persistent `UNAVAILABLE` | rejected even if requested through env |
+| `gemini-3.5-flash` | no honest current mapping | old 3.5 private ids now resolve to 3.6 tiers in current Antigravity implementations | rejected: serving 3.6 under a 3.5 name/price would be false billing and model identity |
+| `gemini-3.5-flash-lite` | absent | no current Antigravity bucket | rejected |
+| `gemini-3.6-flash-tiered` | unknown private semantics | quota-only row without a display contract | never published |
+
+Official evidence reviewed on 2026-07-31:
+
+- model catalogue and lifecycle: <https://ai.google.dev/gemini-api/docs/models>;
+- Gemini 3.6 Flash shape (1,048,576 input / 65,536 output, text output):
+  <https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash>;
+- Gemini 3.1 Pro Preview shape: <https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview>;
+- paid standard prices: <https://ai.google.dev/gemini-api/docs/pricing>;
+- thinking-level defaults and supported values: <https://ai.google.dev/gemini-api/docs/thinking#thinking-levels>;
+- REST schema/discovery revision `20260729`:
+  <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta>.
 
 ## Failure and stream safety
 
@@ -307,7 +358,8 @@ production systemd argv pins this calibrated four-model set after shared env fil
 | first `401` | compare rejected bearer, single-flight refresh | retry once on the same profile |
 | repeated `401` or `403` | auth quarantine | rotate to another profile |
 | `429` | cool only that model/profile from `Retry-After`, `google.rpc.RetryInfo` or quota reset | rotate without transport budget |
-| network, `408`, `409`, `425`, `5xx`, malformed wrapper | short cooldown | bounded rotation |
+| network/token refresh, `408`, `409`, `425` | short profile cooldown | bounded rotation |
+| generation `5xx` or malformed wrapper/stream | exponential model cooldown | bounded rotation without disabling other models |
 | other deterministic `4xx` | keep profile healthy | return a synthetic native-shaped error |
 
 Private error bodies are never returned verbatim. They may contain account, project, tier or private
@@ -341,7 +393,8 @@ curl --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
 ```
 
 `/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
-sanitized quota/cooling timestamps, affinity counters, missing-usage count and pinned HTTPS/Undici
+sanitized quota/cooling timestamps, generation failure streak/timestamps/classes, low-cardinality
+transport/backend/malformed/stream-start counters, affinity counters, missing-usage count and pinned HTTPS/Undici
 transport versions/hashes. Subject, email, project, proxy and OAuth material are never serialized. Caddy maps
 the same endpoint into the unified `admin.apitoken.sale` subscription page through stable origin
 `127.0.0.1:8794`.

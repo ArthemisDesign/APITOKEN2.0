@@ -704,6 +704,21 @@ async fn metrics(
     );
     let _ = writeln!(
         body,
+        "# TYPE claude_api_gemini_transport_failures_total counter\n\
+         claude_api_gemini_transport_failures_total {}\n\
+         # TYPE claude_api_gemini_backend_failures_total counter\n\
+         claude_api_gemini_backend_failures_total {}\n\
+         # TYPE claude_api_gemini_malformed_responses_total counter\n\
+         claude_api_gemini_malformed_responses_total {}\n\
+         # TYPE claude_api_gemini_stream_start_failures_total counter\n\
+         claude_api_gemini_stream_start_failures_total {}",
+        g(&m.gemini_transport_failures),
+        g(&m.gemini_backend_failures),
+        g(&m.gemini_malformed_responses),
+        g(&m.gemini_stream_start_failures),
+    );
+    let _ = writeln!(
+        body,
         "# TYPE claude_api_codex_enabled gauge\nclaude_api_codex_enabled {}",
         u8::from(app.codex.is_some())
     );
@@ -872,12 +887,17 @@ async fn metrics(
              # TYPE claude_api_gemini_profiles_available gauge\nclaude_api_gemini_profiles_available {}\n\
              # TYPE claude_api_gemini_profiles_authenticated gauge\nclaude_api_gemini_profiles_authenticated {}\n\
              # TYPE claude_api_gemini_model_profiles_available gauge\n\
+             # TYPE claude_api_gemini_model_profiles_healthy gauge\n\
+             # TYPE claude_api_gemini_model_profiles_degraded gauge\n\
              # TYPE claude_api_gemini_profile_authenticated gauge\n\
              # TYPE claude_api_gemini_profile_cooling_until_seconds gauge\n\
              # TYPE claude_api_gemini_profile_inflight_requests gauge\n\
              # TYPE claude_api_gemini_profile_last_probe_seconds gauge\n\
              # TYPE claude_api_gemini_profile_quota_updated_seconds gauge\n\
-             # TYPE claude_api_gemini_profile_model_cooling_until_seconds gauge",
+             # TYPE claude_api_gemini_profile_model_cooling_until_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_model_failure_streak gauge\n\
+             # TYPE claude_api_gemini_profile_model_last_success_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_model_last_failure_seconds gauge",
             status.profiles.len(),
             status.available,
             status.authenticated,
@@ -892,8 +912,10 @@ async fn metrics(
         for model in &status.models {
             let _ = writeln!(
                 body,
-                "claude_api_gemini_model_profiles_available{{model=\"{}\"}} {}",
-                model.id, model.available,
+                "claude_api_gemini_model_profiles_available{{model=\"{}\"}} {}\n\
+                 claude_api_gemini_model_profiles_healthy{{model=\"{}\"}} {}\n\
+                 claude_api_gemini_model_profiles_degraded{{model=\"{}\"}} {}",
+                model.id, model.available, model.id, model.healthy, model.id, model.degraded,
             );
         }
         for profile in &status.profiles {
@@ -914,8 +936,18 @@ async fn metrics(
             for cooling in &profile.model_cooling {
                 let _ = writeln!(
                     body,
-                    "claude_api_gemini_profile_model_cooling_until_seconds{{profile=\"{id}\",model=\"{}\"}} {}",
-                    cooling.model_id, cooling.cooling_until,
+                    "claude_api_gemini_profile_model_cooling_until_seconds{{profile=\"{id}\",model=\"{}\"}} {}\n\
+                     claude_api_gemini_profile_model_failure_streak{{profile=\"{id}\",model=\"{}\"}} {}\n\
+                     claude_api_gemini_profile_model_last_success_seconds{{profile=\"{id}\",model=\"{}\"}} {}\n\
+                     claude_api_gemini_profile_model_last_failure_seconds{{profile=\"{id}\",model=\"{}\"}} {}",
+                    cooling.model_id,
+                    cooling.cooling_until,
+                    cooling.model_id,
+                    cooling.failure_streak,
+                    cooling.model_id,
+                    cooling.last_success_at,
+                    cooling.model_id,
+                    cooling.last_failure_at,
                 );
             }
         }
@@ -1598,6 +1630,10 @@ async fn gemini_subs(
                 "model_cooling": profile.model_cooling.iter().map(|cooling| json!({
                     "model_id": cooling.model_id,
                     "cooling_until": cooling.cooling_until,
+                    "failure_streak": cooling.failure_streak,
+                    "last_success_at": cooling.last_success_at,
+                    "last_failure_at": cooling.last_failure_at,
+                    "last_failure_class": cooling.last_failure_class,
                 })).collect::<Vec<_>>(),
                 "quotas": profile.quotas.iter().map(|quota| json!({
                     "model_id": quota.model_id,
@@ -1616,6 +1652,9 @@ async fn gemini_subs(
             json!({
                 "id": model.id,
                 "available": model.available,
+                "healthy": model.healthy,
+                "degraded": model.degraded,
+                "unknown": model.unknown,
                 "soonest_ready": model.soonest_ready,
             })
         })
@@ -1658,6 +1697,12 @@ async fn gemini_subs(
             "rebinds": affinity.rebinds,
         },
         "usage_metadata_missing": Metrics::get(&app.metrics.gemini_usage_missing),
+        "failures": {
+            "transport": Metrics::get(&app.metrics.gemini_transport_failures),
+            "backend": Metrics::get(&app.metrics.gemini_backend_failures),
+            "malformed": Metrics::get(&app.metrics.gemini_malformed_responses),
+            "stream_start": Metrics::get(&app.metrics.gemini_stream_start_failures),
+        },
     }))
     .into_response()
 }

@@ -306,10 +306,12 @@ fn gemini_config() -> Option<GeminiConfig> {
     }
     let requested = ev_or(
         "CLAUDE_API_GEMINI_MODELS",
-        // Live Code Assist calibration on Google AI Pro rejects 3.6/3.5 even though both exist in
-        // the Developer API price catalog. Keep only models confirmed on the subscription surface;
-        // quota-bucket calibration below further narrows availability per profile at runtime.
-        "gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
+        // Public Gemini 3 ids require reviewed canonical→private tier routing. Keep the process
+        // default narrower than the compiled mapping: a model enters the production unit only
+        // after generate + native stream pass on the current subscription profile. In particular,
+        // 2.5 Pro advertises quota but generation returns persistent UNAVAILABLE; quota evidence
+        // alone never enables a model.
+        "gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)
@@ -324,6 +326,11 @@ fn gemini_config() -> Option<GeminiConfig> {
                 "CLAUDE_API_GEMINI_MODELS contains unsupported model {requested:?}; use a model from the pinned Gemini price catalog"
             );
         };
+        if !forward::gemini::subscription_model_supported(spec.id) {
+            panic!(
+                "CLAUDE_API_GEMINI_MODELS contains {requested:?}, which has no reviewed text-generation route on the Antigravity subscription surface"
+            );
+        }
         if models.iter().any(|model: &GeminiModel| model.id == spec.id) {
             continue;
         }
@@ -368,6 +375,12 @@ fn gemini_config() -> Option<GeminiConfig> {
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
         max_transport_retries: bounded_usize("CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES", 1, 0, 5),
+        max_inflight_per_profile: bounded_usize(
+            "CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE",
+            6,
+            1,
+            64,
+        ),
         auth_quarantine_secs: bounded_i64(
             "CLAUDE_API_GEMINI_AUTH_QUARANTINE_SECS",
             900,
@@ -375,12 +388,26 @@ fn gemini_config() -> Option<GeminiConfig> {
             86_400,
         ),
         transport_cool_secs: bounded_i64("CLAUDE_API_GEMINI_TRANSPORT_COOL_SECS", 5, 1, 300),
+        model_failure_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_MODEL_FAILURE_COOL_SECS",
+            15,
+            1,
+            600,
+        ),
+        model_failure_max_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_MODEL_FAILURE_MAX_COOL_SECS",
+            900,
+            15,
+            86_400,
+        ),
         default_rate_limit_cool_secs: bounded_i64(
             "CLAUDE_API_GEMINI_RATE_LIMIT_COOL_SECS",
             60,
             1,
             86_400,
         ),
+        quota_reserve_fraction: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE", 0.05),
+        quota_reserve_jitter: ev_frac("CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER", 0.01),
         health_probe_interval_secs: bounded_u64(
             "CLAUDE_API_GEMINI_HEALTH_INTERVAL_SECS",
             300,

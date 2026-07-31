@@ -15,6 +15,12 @@ pub struct Metrics {
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,
+    /// Gemini-only low-cardinality failure classes. They intentionally carry no profile, request,
+    /// proxy, project or upstream-error labels.
+    pub gemini_transport_failures: AtomicU64,
+    pub gemini_backend_failures: AtomicU64,
+    pub gemini_malformed_responses: AtomicU64,
+    pub gemini_stream_start_failures: AtomicU64,
 }
 
 impl Metrics {

@@ -1266,7 +1266,7 @@ grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
-grep -Fq 'CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite' \
+grep -Fq 'CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION=2.2.1' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node' "$ROOT/systemd/claude-api-gemini.service"
