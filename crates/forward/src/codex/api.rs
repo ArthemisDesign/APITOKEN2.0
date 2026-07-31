@@ -3531,6 +3531,7 @@ mod tests {
             startup_timeout_ms: 1_000,
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
+            turn_silence_timeout_ms: 1_000,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,

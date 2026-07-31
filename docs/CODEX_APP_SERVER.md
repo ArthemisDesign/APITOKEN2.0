@@ -249,7 +249,15 @@ missed deadlines stops admitting new turns while in-flight turns finish, and onl
 time-corroborated streak replaces the generation. A missed deadline is therefore never ignored, but
 it also never kills the sibling turns multiplexed over the same child. Snapshot age is first class:
 stale quota evidence neither rejects a home nor wins a tie, while evidence that has never arrived
-ranks equal to fresh so the first home to report cannot become a permanent magnet. The admin subscriptions page refreshes `/codex-subs` every 10 seconds
+ranks equal to fresh so the first home to report cannot become a permanent magnet.
+
+A turn is bounded twice, because two different questions are being asked.
+`CLAUDE_API_CODEX_TURN_TIMEOUT_MS` (default 600s) bounds total duration and must stay generous: a
+reasoning model legitimately thinks for minutes. `CLAUDE_API_CODEX_TURN_SILENCE_TIMEOUT_MS`
+(default 180s) bounds how long the gateway waits for *any* event from the app-server, which answers
+whether the home is still there at all. A home that has stopped speaking mid-turn is not thinking,
+and without the second bound every client on it waited out the full total deadline. A silence value
+at or above the total simply never fires and the total governs. The admin subscriptions page refreshes `/codex-subs` every 10 seconds
 while visible; the default backend interval is aligned to that cadence.
 
 Each API request uses an ephemeral app-server thread. Public continuity is reconstructed from the

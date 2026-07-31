@@ -399,6 +399,11 @@ impl CodexHome {
             TurnInterruptGuard::new(process.clone(), thread_id.to_string(), turn_id.clone());
 
         let timeout = std::time::Duration::from_millis(self.config().turn_timeout_ms.max(1));
+        // A silence bound at or above the total deadline simply never fires: the total governs and
+        // the turn fails as `turn completion`. That is a coherent configuration, not an error, so
+        // it is left alone rather than clamped — clamping would silently relabel the failure.
+        let silence_timeout =
+            std::time::Duration::from_millis(self.config().turn_silence_timeout_ms.max(1));
         let event_loop = async {
             let mut output = Vec::<Value>::new();
             let mut usage = CodexUsage::default();
@@ -407,7 +412,14 @@ impl CodexHome {
             let mut terminal_tool_call = false;
             let mut interrupt_sent = false;
             loop {
-                let event = events.recv().await?;
+                // Bound silence, not just total duration. A home that stopped answering mid-turn
+                // otherwise holds the client for the entire turn deadline before failing, and every
+                // one of those ten-minute waits is spent on a subscription that will never reply.
+                // The total deadline stays generous so genuine long reasoning is never cut short.
+                let event = match tokio::time::timeout(silence_timeout, events.recv()).await {
+                    Ok(event) => event?,
+                    Err(_) => return Err(ProcessError::Timeout("turn silence")),
+                };
                 match event {
                     AppServerEvent::Notification { method, params } => {
                         if params
@@ -1119,6 +1131,13 @@ done
                 "concurrent_threads" => 10_000,
                 _ => 2_000,
             },
+            // Fixtures exercise the TOTAL deadline, so silence is set far above it and never
+            // fires: these cases keep testing exactly what they always tested. The dedicated
+            // silence test below sets it below the total instead.
+            turn_silence_timeout_ms: match mode {
+                "turn_silence_timeout" => 150,
+                _ => 600_000,
+            },
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -1172,6 +1191,7 @@ done
             startup_timeout_ms: 10_000,
             request_timeout_ms: 2_000,
             turn_timeout_ms: 2_000,
+            turn_silence_timeout_ms: 2_000,
             health_probe_interval_secs: 300,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
@@ -2252,6 +2272,37 @@ done
         );
         assert!(gateway.operational_status().await.process_live);
         wait_for_method(&workspace.log, "turn/interrupt").await;
+    }
+
+    #[tokio::test]
+    async fn upstream_silence_fails_the_turn_long_before_the_total_deadline() {
+        // The child accepts the turn and then says nothing at all. Waiting out the full turn
+        // deadline would hold the client for as long as a reasoning model is allowed to think —
+        // ten minutes in production — even though the home stopped answering in the first second.
+        // Silence is bounded separately so the failure surfaces promptly, while the total deadline
+        // stays generous enough never to cut short a turn that is genuinely still working.
+        let (gateway, workspace) = fake_gateway_with_request_timeout("turn_silence_timeout", 2_000);
+        let home = gateway.homes().await.into_iter().next().unwrap();
+        let process = home.process().await.unwrap();
+
+        let started = std::time::Instant::now();
+        let error = gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .unwrap_err();
+        let elapsed = started.elapsed();
+
+        assert!(matches!(error, ProcessError::Timeout("turn silence")));
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_500),
+            "silence must not wait out the total deadline (took {elapsed:?})"
+        );
+        // Same invariant as any other deadline: one stuck turn never recycles the shared child,
+        // because that would fail every sibling turn multiplexed over it.
+        assert!(process.is_live());
+        wait_for_method(&workspace.log, "turn/interrupt").await;
+        // And the deadline is now recorded, so a home that keeps doing this leaves rotation.
+        assert!(home.health().deadline_streak >= 1);
     }
 
     #[tokio::test]

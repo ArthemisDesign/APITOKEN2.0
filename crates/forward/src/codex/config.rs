@@ -107,6 +107,14 @@ pub struct CodexConfig {
     pub startup_timeout_ms: u64,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
+    /// How long the gateway waits for *any* event from the app-server inside a running turn.
+    ///
+    /// Separate from `turn_timeout_ms`, because the two answer different questions. The total
+    /// deadline must stay generous: a reasoning model legitimately thinks for minutes, and cutting
+    /// that short would fail real work. Silence answers "is this home still there at all", and a
+    /// home that has stopped speaking mid-turn is not thinking, it is gone. Without this split a
+    /// wedged home held every client for the full total deadline before failing.
+    pub turn_silence_timeout_ms: u64,
     /// How often the background loop re-checks each home's authentication and window snapshot.
     pub health_probe_interval_secs: u64,
     /// Conservative preflight allowance for provider-hidden/runtime tokens that are not present in
