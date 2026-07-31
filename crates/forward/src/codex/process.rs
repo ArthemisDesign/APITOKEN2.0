@@ -433,8 +433,17 @@ impl CodexProcess {
         self.initialize().await?;
         self.require_subscription().await?;
         if let Err(error) = self.refresh_rate_limits().await {
+            // The class alone says the provider answered and refused, which is not enough to act
+            // on: "the method is not supported for this account", "the parameters are wrong" and
+            // "this subscription has no window yet" are three different fixes behind one label.
+            // The numeric code discriminates them. Only the code is logged — the accompanying
+            // message is upstream free text and stays out of our logs.
+            let code = match &error {
+                ProcessError::Rpc { code, .. } => *code,
+                _ => 0,
+            };
             eprintln!(
-                "Codex home {} rate-limit snapshot unavailable [{}]",
+                "Codex home {} rate-limit snapshot unavailable [{}] rpc_code={code}",
                 discovery::home_id(&self.home),
                 error.diagnostic_class()
             );
