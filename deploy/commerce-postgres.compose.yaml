@@ -3,6 +3,18 @@
 # имя проекта из каталога («controller») и не нашёл бы работающий контейнер.
 name: deploy
 
+# `max_connections` is 200, not the image default of 100, and is set with `ALTER SYSTEM` so it lives
+# in the data volume (`postgresql.auto.conf`) rather than in this file. Putting it in `command:`
+# would work too, but it changes the container spec, so the next `compose up -d` would recreate the
+# database every product on this host depends on — an unplanned restart is a worse failure than the
+# indirection. Raise it here only together with that recreation being intended.
+#
+# The number is a budget, not a preference. Each engine slot opens one writer plus
+# `CLAUDE_API_BILLING_READERS` readers, and blue-green runs two generations at once, so demand is
+# `(slots + 1) * (readers + 1)` before commerce, CRM, sales and openkeys are counted. At the image
+# default a four-slot engine on a sixteen-core host could not complete a cutover: the new generation
+# failed to connect and the deploy was quarantined with what reads like a database outage.
+
 services:
   commerce-postgres:
     image: postgres:18-alpine
