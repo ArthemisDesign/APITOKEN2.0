@@ -232,6 +232,30 @@ impl Authority {
             Self::Postgres(pg) => pg.account_remove(id),
         }
     }
+    pub fn funding_reconciliation_plan(
+        &mut self,
+    ) -> Result<crate::funding::FundingReconciliationPlan> {
+        match self {
+            Self::Sqlite(c) => crate::funding::sqlite_funding_reconciliation_plan(c),
+            Self::Postgres(pg) => pg.funding_reconciliation_plan(),
+        }
+    }
+    pub fn apply_funding_reconciliation(
+        &mut self,
+        approved_plan_digest: &str,
+        allow_exceptions: bool,
+    ) -> Result<crate::funding::FundingReconciliationApplyReport> {
+        match self {
+            Self::Sqlite(c) => crate::funding::sqlite_apply_funding_reconciliation(
+                c,
+                approved_plan_digest,
+                allow_exceptions,
+            ),
+            Self::Postgres(pg) => {
+                pg.apply_funding_reconciliation(approved_plan_digest, allow_exceptions)
+            }
+        }
+    }
     pub fn account_topup(
         &mut self,
         id: &str,

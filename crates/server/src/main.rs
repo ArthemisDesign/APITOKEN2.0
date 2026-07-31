@@ -181,6 +181,17 @@ enum DbOp {
     MigrateEngine,
     /// Verify the already-installed PostgreSQL schema without issuing DDL.
     VerifyPostgres,
+    /// Print a deterministic Stage 6 funding-bucket migration plan as JSON. Read-only.
+    PlanFundingReconciliation,
+    /// Apply one previously reviewed exact plan. Requires a drained maintenance window.
+    ApplyFundingReconciliation {
+        /// Exact `plan_digest` printed by `plan-funding-reconciliation`.
+        #[arg(long)]
+        plan_digest: String,
+        /// Permit conservative restricted buckets and leave affected bindings in exception state.
+        #[arg(long)]
+        allow_exceptions: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -528,6 +539,19 @@ fn db_cmd(op: DbOp) -> Result<()> {
                 "✓ engine PostgreSQL schema={} balance_nano={} spent_nano={} reserved_nano={}",
                 version, totals.balance_nano, totals.spent_nano, totals.reserved_nano,
             );
+        }
+        DbOp::PlanFundingReconciliation => {
+            pg.verify_schema()?;
+            let plan = pg.funding_reconciliation_plan()?;
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        }
+        DbOp::ApplyFundingReconciliation {
+            plan_digest,
+            allow_exceptions,
+        } => {
+            pg.verify_schema()?;
+            let report = pg.apply_funding_reconciliation(&plan_digest, allow_exceptions)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
     }
     Ok(())

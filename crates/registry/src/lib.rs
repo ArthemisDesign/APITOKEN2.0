@@ -8,6 +8,7 @@
 //! Ниже по стеку зависеть не от кого.
 
 pub mod authority;
+pub mod funding;
 pub mod pg;
 pub mod pricing;
 

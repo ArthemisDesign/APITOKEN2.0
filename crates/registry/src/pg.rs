@@ -1463,6 +1463,28 @@ impl PgStore {
         )? as usize)
     }
 
+    /// Build the deterministic, read-only Stage 6 funding migration plan from one serializable
+    /// PostgreSQL snapshot. This does not change aggregate balances or live billing behavior.
+    pub fn funding_reconciliation_plan(
+        &mut self,
+    ) -> Result<crate::funding::FundingReconciliationPlan> {
+        crate::funding::postgres_funding_reconciliation_plan(&mut self.client)
+    }
+
+    /// Apply only the exact content-addressed Stage 6 plan observed in the same serializable
+    /// transaction. Exception authority is explicit and never promotes an exception to verified.
+    pub fn apply_funding_reconciliation(
+        &mut self,
+        approved_plan_digest: &str,
+        allow_exceptions: bool,
+    ) -> Result<crate::funding::FundingReconciliationApplyReport> {
+        crate::funding::postgres_apply_funding_reconciliation(
+            &mut self.client,
+            approved_plan_digest,
+            allow_exceptions,
+        )
+    }
+
     pub fn account_topup(
         &mut self,
         id: &str,
@@ -6342,6 +6364,158 @@ mod tests {
         assert!(lag.ledger_max_id > 0);
         assert_eq!(lag.unacked, 1, "topup-строка выше watermark'а");
         assert!(lag.oldest_unacked_ts > 0);
+
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Real PostgreSQL parity for the Stage 6 content-addressed planner/apply contract. Skipped
+    /// unless the dedicated destructive test database is supplied.
+    #[test]
+    fn postgres_funding_reconciliation_contract() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL funding reconciliation contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute("TRUNCATE accounts RESTART IDENTITY CASCADE")
+            .unwrap();
+
+        pg.account_create("funding-pg", None, 10_000).unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO account_policy_bindings( \
+                   account_id,product_id,account_class,active_effective_version,policy_enforcement, \
+                   funding_enforcement,reconciliation_state,updated_ts \
+                 ) VALUES('funding-pg','main','b2c',NULL,'shadow','legacy_single','pending',1)",
+                &[],
+            )
+            .unwrap();
+        pg.account_topup(
+            "funding-pg",
+            crate::funding::WELCOME_TRACK_BONUS_NANO,
+            Some("signup-bonus:pg-user"),
+        )
+        .unwrap();
+        pg.account_topup("funding-pg", 10_000_000_000, Some("cryptomus:pg-paid"))
+            .unwrap();
+        let balance: i64 = pg
+            .client
+            .query_one(
+                "UPDATE accounts SET balance_nano=balance_nano-5000000000, \
+                 spent_nano=spent_nano+5000000000 WHERE id='funding-pg' RETURNING balance_nano",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        pg.client
+            .execute(
+                "INSERT INTO ledger(account_id,kind,amount_nano,balance_after_nano,ts) \
+                 VALUES('funding-pg','charge',5000000000,$1,1)",
+                &[&balance],
+            )
+            .unwrap();
+
+        let plan = pg.funding_reconciliation_plan().unwrap();
+        assert_eq!((plan.ready_accounts, plan.exception_accounts), (1, 0));
+        let applied = pg
+            .apply_funding_reconciliation(&plan.plan_digest, false)
+            .unwrap();
+        assert_eq!(applied.inserted_buckets, 2);
+        let totals = pg
+            .client
+            .query_one(
+                "SELECT SUM(balance_nano)::bigint, \
+                        SUM(balance_nano) FILTER (WHERE source_type='paid')::bigint \
+                 FROM funding_buckets WHERE account_id='funding-pg'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(totals.get::<_, i64>(0), 9_000_000_000);
+        assert_eq!(totals.get::<_, i64>(1), 9_000_000_000);
+        let replay = pg.funding_reconciliation_plan().unwrap();
+        assert_eq!(replay.replay_accounts, 1);
+
+        pg.account_create("funding-promo", None, 10_000).unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO account_policy_bindings( \
+                   account_id,product_id,account_class,active_effective_version,policy_enforcement, \
+                   funding_enforcement,reconciliation_state,updated_ts \
+                 ) VALUES('funding-promo','main','b2c',NULL,'shadow','legacy_single','pending',1)",
+                &[],
+            )
+            .unwrap();
+        pg.account_topup("funding-promo", 2_000_000_000, Some("promo:pg-legacy"))
+            .unwrap();
+        let exception = pg.funding_reconciliation_plan().unwrap();
+        assert_eq!(exception.exception_accounts, 1);
+        assert!(pg
+            .apply_funding_reconciliation(&exception.plan_digest, false)
+            .is_err());
+        let exception_applied = pg
+            .apply_funding_reconciliation(&exception.plan_digest, true)
+            .unwrap();
+        assert_eq!(exception_applied.exception_accounts, 1);
+        let restricted_balance: i64 = pg
+            .client
+            .query_one(
+                "SELECT balance_nano FROM funding_buckets WHERE account_id='funding-promo' \
+                 AND source_type='legacy_restricted'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(restricted_balance, 2_000_000_000);
+
+        pg.account_create("funding-drift", None, 10_000).unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO account_policy_bindings( \
+                   account_id,product_id,account_class,active_effective_version,policy_enforcement, \
+                   funding_enforcement,reconciliation_state,updated_ts \
+                 ) VALUES('funding-drift','main','b2c',NULL,'shadow','legacy_single','pending',1)",
+                &[],
+            )
+            .unwrap();
+        pg.account_topup("funding-drift", 10, Some("platega:before-plan"))
+            .unwrap();
+        let approved = pg.funding_reconciliation_plan().unwrap();
+        pg.account_topup("funding-drift", 1, Some("platega:after-plan"))
+            .unwrap();
+        assert!(pg
+            .apply_funding_reconciliation(&approved.plan_digest, true)
+            .is_err());
+        let bucket_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM funding_buckets WHERE account_id='funding-drift'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(bucket_count, 0);
 
         pg.client
             .query_one(
