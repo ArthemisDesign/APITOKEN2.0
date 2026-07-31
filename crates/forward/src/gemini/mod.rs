@@ -2,15 +2,21 @@
 
 mod api;
 mod billing;
+mod calibration;
 mod config;
 mod pool;
 mod transport;
 
 pub use api::api as gemini_api;
+pub use calibration::WindowCalibration;
+pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use config::{
     subscription_model_supported, GeminiConfig, GeminiModel, GeminiPrices, GeminiProfileSpec,
     GeminiProfilesFile, GEMINI_NODE_EXPECTED_JA3, GEMINI_NODE_EXPECTED_JA4,
     GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
-pub use pool::{GeminiGateway, GeminiModelStatus, GeminiOperationalStatus, GeminiProfileStatus};
+pub use pool::{
+    GeminiGateway, GeminiModelStatus, GeminiOperationalStatus, GeminiProfileStatus,
+    GeminiWindowCapacityReport,
+};

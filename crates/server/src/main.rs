@@ -1079,8 +1079,13 @@ async fn serve() -> Result<()> {
         None
     };
     let gemini = if let Some(config) = s.gemini.clone() {
-        let gateway =
-            Arc::new(forward::GeminiGateway::new(config).context("initialize Gemini provider")?);
+        let calibration_store = billing
+            .clone()
+            .context("Gemini provider requires the durable billing authority for calibration")?;
+        let gateway = Arc::new(
+            forward::GeminiGateway::new_with_calibration(config, Some(calibration_store))
+                .context("initialize Gemini provider")?,
+        );
         gateway
             .preflight()
             .await

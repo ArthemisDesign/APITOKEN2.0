@@ -385,7 +385,17 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    бесплатно. Metered non-stream без authoritative usage не доставляется и refund-ится; stream после
    первого байта без final usage списывает conservative hold без fake usage event. Public synthetic
    errors только native Google-shaped и без profile/project/key/upstream.
-7. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
+7. Gemini capacity не выводится из цены подписки или дневного request-count. Antigravity
+   `retrieveUserQuotaSummary` принимается только для exact `gemini-5h`/`gemini-weekly`; `3p-*`
+   исключены. Каждый успешный generation (billed или admin) durable-кредитует обслуживший opaque
+   profile exact official-price nanoUSD из `metering::gemini`. Окна независимы и используют
+   fixed-point fraction `10^-8` + cumulative integer WLS без prior/EMA/float money. Cold snapshot и
+   первое движение после cold/reset ставят безопасный anchor. Cold capacity/remaining остаются
+   `null` и dollar Prometheus series не публикуются до следующего complete positive-spend interval;
+   reset сохраняет уже измеренную cumulative estimate и заново вооружает censor. Raw observations,
+   CAS state и spend живут в engine authority для replay после estimator upgrade; persistence
+   failure не останавливает serving, но явно виден в status.
+8. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement и shutdown deadline barrier.
 

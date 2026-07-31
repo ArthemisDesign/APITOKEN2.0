@@ -244,10 +244,13 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>primary (факт. окно)</th><th>secondary (факт. окно)</th><th>остаток / вместимость API $</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
   // Gemini: официальный per-model quota catalogue и exact transport attestation.
   const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
+  const geminiTotals=Array.isArray(gemini?.window_totals)?gemini.window_totals:[],geminiFive=geminiTotals.find(item=>Number(item.window_minutes)===300),geminiWeek=geminiTotals.find(item=>Number(item.window_minutes)===10080);
+  const geminiSpend=geminiProfiles.reduce((sum,profile)=>sum+(Number(profile.spend_usd_total)||0),0);
+  const geminiBudgetCard=(label,item)=>card(label,geminiDown||geminiOff?'—':item&&item.remaining_usd!=null?money(item.remaining_usd):'ждём Δused',item&&item.cap_usd!=null?'из '+money(item.cap_usd)+' измеренной ёмкости · '+Number(item.measured_profiles||0)+' профилей':'первый снимок и движение цензурируются, прайора нет');
   const geminiCards=geminiOff?card('Gemini подписки','выкл.','Gemini runtime без профилей'):
     card('Gemini профили',geminiDown?'—':geminiProfiles.length,geminiDown?'источник недоступен':gemini.authenticated+' authenticated')+
-    card('Gemini · доступно',geminiDown||geminiOff?'—':gemini.available,'профилей готовы хотя бы к одной модели')+
-    card('Gemini · модели',geminiDown||geminiOff?'—':geminiModels.length,geminiModels.map(model=>model.id+': '+model.available).join(' · '))+
+    geminiBudgetCard('Gemini · остаток 5ч',geminiFive)+geminiBudgetCard('Gemini · остаток 7д',geminiWeek)+
+    card('Gemini · потрачено',geminiDown?'—':money(geminiSpend),'official-price, накопительно')+
     card('Gemini · в работе',geminiDown?'—':gemini.inflight,'inflight requests сейчас')+
     card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист');
   const geminiRows=geminiProfiles.flatMap(profile=>(geminiModels.length?geminiModels:[{id:'—',available:0}]).map(model=>{
@@ -255,8 +258,11 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     const quotas=(profile.quotas||[]).filter(item=>item.model_id===model.id);
     const coolingUntil=Math.max(Number(profile.cooling_until||0),Number(modelCooling||0));
     const status=!profile.authenticated?pill('ошибка auth','bad'):coolingUntil>geminiNow?pill('cooling '+duration(coolingUntil-geminiNow),'warn'):
-      Number(modelHealth.failure_streak||0)>0?pill('degraded · '+modelHealth.failure_streak,'warn'):
+      Number(modelHealth.failure_streak||0)>0?pill('degraded · '+modelHealth.failure_streak,'warn'):profile.calibration_persistence_ok===false?pill('active · calibration storage','warn'):
       Number(modelHealth.last_success_at||0)>0?pill('active','ok'):pill('не проверена','warn');
+    const capacityCell=kind=>{const window=(profile.windows||[]).find(item=>item.window_kind===kind);if(!window)return'нет summary';
+      const evidence=window.source==='unknown'?'ждём полный интервал':'samples '+Number(window.samples||0)+' · confidence '+Math.round(Number(window.confidence||0)*100)+'%';
+      return'<div>'+remainingBar(window.remaining_fraction)+'</div><b>'+(window.remaining_usd==null?'—':money(window.remaining_usd))+'</b><div class="sub">из '+(window.cap_usd==null?'—':money(window.cap_usd))+' · '+evidence+' · сброс '+duration(Number(window.resets_at||0)-geminiNow)+'</div>'};
     const quotaCell=quotas.length?quotas.map(quota=>{const fraction=quota.remaining_fraction,amount=quota.remaining_amount;
       return'<div>'+(amount!==null&&amount!==undefined?'<b>'+esc(amount)+'</b>':'<b>официальный fraction</b>')+
         (fraction!==null&&fraction!==undefined?'<div>'+remainingBar(fraction)+'</div>':'')+'</div>'}).join(''):'—';
@@ -266,12 +272,12 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     const readyHint=model.available+'/'+geminiProfiles.length+' профилей'+(model.soonest_ready?'<div class="sub">следующий '+duration(model.soonest_ready-geminiNow)+'</div>':'');
     const probe=profile.last_probe_at?duration(geminiNow-profile.last_probe_at)+' назад':'—';
     const quotaAge=profile.quota_updated_at?duration(geminiNow-profile.quota_updated_at)+' назад':'—';
-    return '<tr><td class="left"><b class="mono">'+esc(profile.id)+'</b></td><td>'+status+'</td><td class="left"><b>'+esc(model.id)+'</b></td><td>'+readyHint+'</td><td>'+quotaCell+
+    return '<tr><td class="left"><b class="mono">'+esc(profile.id)+'</b><div class="sub">spent '+money(profile.spend_usd_total)+'</div></td><td>'+status+'</td><td class="left"><b>'+esc(model.id)+'</b></td><td>'+readyHint+'</td><td>'+capacityCell('5h')+'</td><td>'+capacityCell('weekly')+'</td><td>'+quotaCell+
       '</td><td>'+reset+'</td><td>'+quotaTypes+
       '</td><td>'+probe+'<div class="sub">quota '+quotaAge+'</div></td></tr>'})).join('');
   const geminiTable=geminiDown?'<div class="empty" style="padding:26px">Gemini runtime недоступен — /gemini-subs не отвечает</div>':
     geminiOff?'<div class="empty" style="padding:26px">Gemini-контур выключен на этом runtime</div>':
-    '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>квота</th><th>сброс</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(8))+'</tbody></table></div>';
+    '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>5ч · остаток / API $</th><th>7д · остаток / API $</th><th>model quota</th><th>model reset</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(10))+'</tbody></table></div>';
   const transport=gemini?.transport||{};
   const geminiDetails=geminiDown||geminiOff?'':'<details><summary>Gemini transport fingerprint и cache/affinity</summary><div class="tcard"><div class="tscroll"><table><tbody>'+
     '<tr><th class="left">Antigravity</th><td class="left mono">'+esc(transport.antigravity_version||'—')+'</td><th class="left">Node</th><td class="left mono">'+esc(transport.node_version||'—')+' · '+esc(transport.http_version||'—')+'</td></tr>'+
@@ -291,7 +297,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Antigravity OAuth · Cloud Code transport, quota catalogue и legacy-миграция</span></div>'+
     '<div class="cards">'+geminiCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+geminiTable+'</div>'+geminiDetails+
-    '<footer>Обновление каждые 10с, пока вкладка видима · GPT: null/«ждём Δused» означает, что есть только первый реальный якорь — прайор не подставляется · «пик» и прайор относятся только к отдельному Claude-контуру. Email и Google identity намеренно не выводятся.</footer>';
+    '<footer>Обновление каждые 10с, пока вкладка видима · GPT/Gemini: null/«ждём Δused» означает, что есть только якорь или цензурированное первое движение — прайор не подставляется · «пик» и прайор относятся только к отдельному Claude-контуру. Email и Google identity намеренно не выводятся.</footer>';
   const fleetTotal=list.length+(gptOff?0:homes.length)+(geminiOff?0:geminiProfiles.length),fleetWarn=dead||gptDown||geminiDown||geminiEmpty||geminiUnavailable||geminiAuthBad||geminiMissing;
   shell('Подписки','Claude, GPT и Gemini: здоровье, окна, quota и transport',body,pill(count(fleetTotal,'подписка','подписки','подписок'),fleetWarn?'warn':'ok'))}
 

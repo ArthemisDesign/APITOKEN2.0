@@ -1,13 +1,15 @@
 //! Encrypted multi-account Gemini OAuth pool with single-flight refresh and bounded health probes.
 
+use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
 use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
 use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
+use crate::billing::AsyncBilling;
 use anyhow::{bail, Context};
 use futures_util::StreamExt;
 use gemini_credential::{decode_envelope, GeminiCredential, OAuthKind, SecretString};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -28,6 +30,29 @@ pub struct GeminiProfileStatus {
     pub quota_updated_at: i64,
     pub quotas: Vec<GeminiQuotaBucketStatus>,
     pub model_cooling: Vec<GeminiModelCoolingStatus>,
+    /// Cumulative official-price spend served by this opaque profile through the gateway.
+    pub spend_usd_total: f64,
+    pub calibration_persistence_ok: bool,
+    pub capacities: Vec<GeminiWindowCapacityReport>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GeminiWindowCapacityReport {
+    pub bucket_id: &'static str,
+    pub window_kind: &'static str,
+    pub window_minutes: i64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    pub data_age_seconds: i64,
+    pub remaining_fraction_units: i64,
+    pub used_fraction_units: i64,
+    pub cap_usd: Option<f64>,
+    pub remaining_usd: Option<f64>,
+    pub low_usd: Option<f64>,
+    pub high_usd: Option<f64>,
+    pub source: &'static str,
+    pub confidence: f64,
+    pub samples: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -94,7 +119,13 @@ pub(crate) struct GeminiProfile {
     authenticated: AtomicBool,
     last_probe_at: AtomicI64,
     quota: RwLock<GeminiQuotaSnapshot>,
+    quota_summary: RwLock<GeminiQuotaSummarySnapshot>,
     model_health: Mutex<HashMap<String, GeminiModelHealthState>>,
+    spend_nano_total: AtomicI64,
+    pending_spend_nano: AtomicI64,
+    calibration_persistence_ok: AtomicBool,
+    billing: Option<Arc<AsyncBilling>>,
+    calibrations: Mutex<BTreeMap<String, WindowCalibration>>,
 }
 
 #[derive(Clone, Default)]
@@ -112,8 +143,25 @@ struct GeminiQuotaSnapshot {
     buckets: Vec<GeminiQuotaBucketStatus>,
 }
 
+#[derive(Clone)]
+struct GeminiSummaryBucket {
+    contract: calibration::BucketContract,
+    remaining_fraction_units: i64,
+    resets_at: i64,
+}
+
+#[derive(Default)]
+struct GeminiQuotaSummarySnapshot {
+    updated_at: i64,
+    buckets: Vec<GeminiSummaryBucket>,
+}
+
 impl GeminiProfile {
-    fn new(mut loaded: LoadedProfile, cfg: &GeminiConfig) -> anyhow::Result<Self> {
+    fn new(
+        mut loaded: LoadedProfile,
+        cfg: &GeminiConfig,
+        billing: Option<Arc<AsyncBilling>>,
+    ) -> anyhow::Result<Self> {
         gemini_credential::validate_profile_id(&loaded.source.id)?;
         let oauth_kind = loaded.credential.oauth_kind()?;
         if loaded.credential.proxy.trim().is_empty() && cfg.upstream.starts_with("https://") {
@@ -138,7 +186,13 @@ impl GeminiProfile {
             authenticated: AtomicBool::new(true),
             last_probe_at: AtomicI64::new(0),
             quota: RwLock::new(GeminiQuotaSnapshot::default()),
+            quota_summary: RwLock::new(GeminiQuotaSummarySnapshot::default()),
             model_health: Mutex::new(HashMap::new()),
+            spend_nano_total: AtomicI64::new(0),
+            pending_spend_nano: AtomicI64::new(0),
+            calibration_persistence_ok: AtomicBool::new(billing.is_some()),
+            billing,
+            calibrations: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -493,6 +547,189 @@ impl GeminiProfile {
         self.cool_until(until);
     }
 
+    /// Credit exact official-price spend for every successfully served generation. Customer
+    /// billing is irrelevant here: an admin request consumes the same subscription windows.
+    pub(crate) async fn record_spend(&self, real_nano: i128) {
+        if real_nano == 0 {
+            return;
+        }
+        let Ok(nano) = i64::try_from(real_nano) else {
+            // A truncated or saturated value would permanently poison every later capacity
+            // estimate. Preserve the previous evidence and surface the persistence-health fault.
+            self.calibration_persistence_ok
+                .store(false, Ordering::Relaxed);
+            eprintln!("Gemini calibration spend rejected [out_of_range]");
+            return;
+        };
+        if nano < 0 {
+            self.calibration_persistence_ok
+                .store(false, Ordering::Relaxed);
+            eprintln!("Gemini calibration spend rejected [negative]");
+            return;
+        }
+        let Some(billing) = &self.billing else {
+            self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
+            self.calibration_persistence_ok
+                .store(false, Ordering::Relaxed);
+            return;
+        };
+        self.pending_spend_nano.fetch_add(nano, Ordering::AcqRel);
+        let pending = self.pending_spend_nano.swap(0, Ordering::AcqRel);
+        match billing
+            .credit_gemini_spend(self.id(), pending, pool::now())
+            .await
+        {
+            Ok(total) => {
+                self.spend_nano_total.fetch_max(total, Ordering::Relaxed);
+                self.calibration_persistence_ok.store(
+                    self.pending_spend_nano.load(Ordering::Acquire) == 0,
+                    Ordering::Relaxed,
+                );
+            }
+            Err(error) => {
+                self.pending_spend_nano.fetch_add(pending, Ordering::AcqRel);
+                self.calibration_persistence_ok
+                    .store(false, Ordering::Relaxed);
+                eprintln!(
+                    "Gemini calibration spend persistence failed [{}]",
+                    error.root_cause()
+                );
+            }
+        }
+    }
+
+    async fn note_quota_summary(&self, buckets: &[GeminiSummaryBucket], observed_at: i64) {
+        let mut all_persisted = self.billing.is_some();
+        for bucket in buckets {
+            let used_fraction_units =
+                FRACTION_SCALE.saturating_sub(bucket.remaining_fraction_units);
+            let persisted = match &self.billing {
+                Some(billing) => {
+                    billing
+                        .observe_gemini_window(
+                            self.id(),
+                            bucket.contract.id,
+                            bucket.contract.kind,
+                            bucket.contract.duration_mins,
+                            bucket.resets_at,
+                            used_fraction_units,
+                            observed_at,
+                        )
+                        .await
+                }
+                None => Err(anyhow::anyhow!("in-memory calibration")),
+            };
+            match persisted {
+                Ok((spend_nano, row)) => {
+                    self.spend_nano_total
+                        .fetch_max(spend_nano, Ordering::Relaxed);
+                    match WindowCalibration::from_row(row) {
+                        Ok(calibration) => {
+                            self.calibrations
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(bucket.contract.id.to_string(), calibration);
+                        }
+                        Err(error) => {
+                            all_persisted = false;
+                            eprintln!(
+                                "Gemini window calibration restore failed [{}]",
+                                error.root_cause()
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    all_persisted = false;
+                    let spend_nano = self.spend_nano_total.load(Ordering::Relaxed);
+                    let observation = registry::GeminiWindowObservation {
+                        profile_id: self.id().to_string(),
+                        bucket_id: bucket.contract.id.to_string(),
+                        window_kind: bucket.contract.kind.to_string(),
+                        window_duration_mins: bucket.contract.duration_mins,
+                        resets_at: bucket.resets_at,
+                        observed_at,
+                        used_fraction_units,
+                        gateway_spend_nano: spend_nano,
+                    };
+                    let mut calibrations = self
+                        .calibrations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let existing = calibrations
+                        .remove(bucket.contract.id)
+                        .map(WindowCalibration::into_row);
+                    match calibration::apply_observation_with_history(existing, &[], &observation)
+                        .and_then(WindowCalibration::from_row)
+                    {
+                        Ok(calibration) => {
+                            calibrations.insert(bucket.contract.id.to_string(), calibration);
+                        }
+                        Err(local_error) => {
+                            eprintln!(
+                                "Gemini window calibration failed [{}]",
+                                local_error.root_cause()
+                            );
+                        }
+                    }
+                    if self.billing.is_some() {
+                        eprintln!(
+                            "Gemini window calibration persistence failed [{}]",
+                            error.root_cause()
+                        );
+                    }
+                }
+            }
+        }
+        self.calibration_persistence_ok.store(
+            all_persisted && self.pending_spend_nano.load(Ordering::Acquire) == 0,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn capacity_reports(&self, now: i64) -> Vec<GeminiWindowCapacityReport> {
+        let summary = self
+            .quota_summary
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let calibrations = self
+            .calibrations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        summary
+            .buckets
+            .iter()
+            .map(|bucket| {
+                let calibration = calibrations.get(bucket.contract.id);
+                let estimate = calibration.and_then(WindowCalibration::estimate);
+                let observed_at = estimate
+                    .map(|estimate| estimate.measured_at)
+                    .unwrap_or(summary.updated_at);
+                let nano_to_usd = |nano: i64| nano as f64 / 1e9;
+                let used = FRACTION_SCALE.saturating_sub(bucket.remaining_fraction_units);
+                GeminiWindowCapacityReport {
+                    bucket_id: bucket.contract.id,
+                    window_kind: bucket.contract.kind,
+                    window_minutes: bucket.contract.duration_mins,
+                    resets_at: bucket.resets_at,
+                    observed_at,
+                    data_age_seconds: now.saturating_sub(observed_at).max(0),
+                    remaining_fraction_units: bucket.remaining_fraction_units,
+                    used_fraction_units: used,
+                    cap_usd: estimate.map(|value| nano_to_usd(value.capacity_nano)),
+                    remaining_usd: calibration
+                        .and_then(|value| value.remaining_nano(used))
+                        .map(nano_to_usd),
+                    low_usd: estimate.and_then(|value| value.low_nano).map(nano_to_usd),
+                    high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
+                    source: estimate.map_or("unknown", |value| value.source.as_str()),
+                    confidence: estimate.map_or(0.0, |value| value.confidence_bp as f64 / 10_000.0),
+                    samples: calibration.map_or(0, |value| value.row().samples),
+                }
+            })
+            .collect()
+    }
+
     fn status(&self, cfg: &GeminiConfig, now: i64) -> GeminiProfileStatus {
         // Clone the small sanitized snapshot before computing derived cooling. Holding this read
         // guard while `cooling_until_for` takes a second read can deadlock on writer-preferring
@@ -529,6 +766,9 @@ impl GeminiProfile {
             quota_updated_at,
             quotas,
             model_cooling,
+            spend_usd_total: self.spend_nano_total.load(Ordering::Relaxed) as f64 / 1e9,
+            calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
+            capacities: self.capacity_reports(now),
         }
     }
 
@@ -593,6 +833,20 @@ impl GeminiProfile {
     }
 
     async fn refresh_quota(&self, cfg: &GeminiConfig, token: &str) {
+        if self.oauth_kind == OAuthKind::Antigravity {
+            // These endpoints are independent evidence streams. In particular, a summary failure
+            // must never discard the last-good per-model catalogue, and a catalogue hiccup must
+            // not stop 5h/weekly calibration from advancing.
+            tokio::join!(
+                self.refresh_model_quota(cfg, token),
+                self.refresh_quota_summary(cfg, token)
+            );
+        } else {
+            self.refresh_model_quota(cfg, token).await;
+        }
+    }
+
+    async fn refresh_model_quota(&self, cfg: &GeminiConfig, token: &str) {
         let operation = match self.oauth_kind {
             OAuthKind::Antigravity => "fetchAvailableModels",
             OAuthKind::LegacyGeminiCli => "retrieveUserQuota",
@@ -658,6 +912,93 @@ impl GeminiProfile {
             buckets,
         };
     }
+
+    async fn refresh_quota_summary(&self, cfg: &GeminiConfig, token: &str) {
+        let url = format!(
+            "{}/v1internal:retrieveUserQuotaSummary",
+            cfg.upstream_for(self.oauth_kind)
+        );
+        let body = json!({"project": self.project_id().await});
+        let response = self
+            .request(
+                &url,
+                token,
+                &cfg.background_user_agent(self.oauth_kind),
+                None,
+                "application/json",
+                bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+            )
+            .await;
+        let Ok(response) = response else {
+            return;
+        };
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|length| length > 256 * 1024)
+        {
+            return;
+        }
+        let Ok(bytes) = response.bytes_limited(256 * 1024).await else {
+            return;
+        };
+        let Ok(document) = serde_json::from_slice::<QuotaSummaryEnvelope>(&bytes) else {
+            return;
+        };
+        let groups = document
+            .quota_summary
+            .map_or(document.groups, |summary| summary.groups);
+        let mut buckets = Vec::new();
+        let mut seen = HashSet::new();
+        for bucket in groups.into_iter().flat_map(|group| group.buckets) {
+            let Some(bucket_id) = bucket.bucket_id else {
+                continue;
+            };
+            let Some(contract) = calibration::bucket_contract(&bucket_id) else {
+                // `3p-5h`/`3p-weekly` belong to Claude/GPT and must never contaminate Gemini.
+                continue;
+            };
+            if !seen.insert(contract.id) {
+                // Ambiguous duplicated authority evidence is safer to omit than to pick by order.
+                buckets
+                    .retain(|existing: &GeminiSummaryBucket| existing.contract.id != contract.id);
+                continue;
+            }
+            let Some(remaining_fraction_units) = bucket
+                .remaining_fraction
+                .as_ref()
+                .and_then(ExactFraction::units)
+            else {
+                continue;
+            };
+            let Some(resets_at) = bucket
+                .reset_time
+                .as_deref()
+                .and_then(parse_rfc3339_seconds)
+                .filter(|reset| *reset > 0)
+            else {
+                continue;
+            };
+            buckets.push(GeminiSummaryBucket {
+                contract,
+                remaining_fraction_units,
+                resets_at,
+            });
+        }
+        if buckets.is_empty() {
+            return;
+        }
+        buckets.sort_by_key(|bucket| bucket.contract.duration_mins);
+        let observed_at = pool::now();
+        self.note_quota_summary(&buckets, observed_at).await;
+        *self
+            .quota_summary
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSummarySnapshot {
+            updated_at: observed_at,
+            buckets,
+        };
+    }
 }
 
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -702,6 +1043,97 @@ struct AvailableModel {
 struct AvailableModelQuota {
     remaining_fraction: Option<f64>,
     reset_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaSummaryEnvelope {
+    #[serde(default)]
+    groups: Vec<QuotaSummaryGroup>,
+    quota_summary: Option<QuotaSummary>,
+}
+
+#[derive(Deserialize)]
+struct QuotaSummary {
+    #[serde(default)]
+    groups: Vec<QuotaSummaryGroup>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaSummaryGroup {
+    #[serde(default)]
+    buckets: Vec<QuotaSummaryBucket>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaSummaryBucket {
+    #[serde(alias = "bucket_id")]
+    bucket_id: Option<String>,
+    #[serde(alias = "reset_time")]
+    reset_time: Option<String>,
+    #[serde(alias = "remaining_fraction")]
+    remaining_fraction: Option<ExactFraction>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ExactFraction {
+    Number(serde_json::Number),
+    String(String),
+}
+
+impl ExactFraction {
+    fn units(&self) -> Option<i64> {
+        let value = match self {
+            Self::Number(value) => value.to_string(),
+            Self::String(value) => value.trim().to_string(),
+        };
+        parse_fraction_units(&value)
+    }
+}
+
+/// Parse a JSON decimal into 10^-8 units without passing through binary floating point.
+fn parse_fraction_units(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('-') {
+        return None;
+    }
+    let (mantissa, exponent) = match value.find(['e', 'E']) {
+        Some(index) => (
+            value.get(..index)?,
+            value.get(index + 1..)?.parse::<i32>().ok()?,
+        ),
+        None => (value, 0),
+    };
+    let (whole, fraction) = match mantissa.split_once('.') {
+        Some(parts) => parts,
+        None => (mantissa, ""),
+    };
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let coefficient = digits.parse::<i128>().ok()?;
+    let power = 8i32
+        .checked_add(exponent)?
+        .checked_sub(fraction.len() as i32)?;
+    let scaled = if power >= 0 {
+        coefficient.checked_mul(10i128.checked_pow(power as u32)?)?
+    } else {
+        let divisor = 10i128.checked_pow(power.unsigned_abs())?;
+        if coefficient % divisor != 0 {
+            return None;
+        }
+        coefficient / divisor
+    };
+    i64::try_from(scaled)
+        .ok()
+        .filter(|units| (0..=FRACTION_SCALE).contains(units))
 }
 
 impl AvailableModel {
@@ -955,6 +1387,7 @@ impl Drop for GeminiLease {
 
 pub struct GeminiGateway {
     cfg: Arc<GeminiConfig>,
+    calibration_store: Option<Arc<AsyncBilling>>,
     profiles: RwLock<Vec<Arc<GeminiProfile>>>,
     cursor: AtomicU64,
     shutting_down: AtomicBool,
@@ -965,6 +1398,13 @@ pub struct GeminiGateway {
 
 impl GeminiGateway {
     pub fn new(cfg: GeminiConfig) -> anyhow::Result<Self> {
+        Self::new_with_calibration(cfg, None)
+    }
+
+    pub fn new_with_calibration(
+        cfg: GeminiConfig,
+        calibration_store: Option<Arc<AsyncBilling>>,
+    ) -> anyhow::Result<Self> {
         if !cfg.enabled {
             bail!("Gemini provider is disabled");
         }
@@ -997,10 +1437,13 @@ impl GeminiGateway {
         let cfg = Arc::new(cfg);
         let profiles = loaded
             .into_iter()
-            .map(|profile| GeminiProfile::new(profile, &cfg).map(Arc::new))
+            .map(|profile| {
+                GeminiProfile::new(profile, &cfg, calibration_store.clone()).map(Arc::new)
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
             cfg,
+            calibration_store,
             profiles: RwLock::new(profiles),
             cursor: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
@@ -1032,7 +1475,11 @@ impl GeminiGateway {
             {
                 next.push(profile.clone());
             } else {
-                let profile = Arc::new(GeminiProfile::new(loaded_profile, &self.cfg)?);
+                let profile = Arc::new(GeminiProfile::new(
+                    loaded_profile,
+                    &self.cfg,
+                    self.calibration_store.clone(),
+                )?);
                 profile.authenticated.store(false, Ordering::Release);
                 profile.cool_until(pool::now() + 1);
                 next.push(profile);
@@ -1622,7 +2069,7 @@ mod tests {
         let mut cfg = config(&roster, ring);
         cfg.upstream = "https://cloudcode-pa.googleapis.com".into();
         let loaded = load_profiles(&cfg).unwrap().pop().unwrap();
-        let error = GeminiProfile::new(loaded, &cfg).err().unwrap();
+        let error = GeminiProfile::new(loaded, &cfg, None).err().unwrap();
         assert!(error.to_string().contains("requires a dedicated proxy"));
         let _ = fs::remove_dir_all(dir);
     }
@@ -1905,6 +2352,58 @@ mod tests {
             "2026-01-01T00:00:00+24:00",
         ] {
             assert_eq!(parse_rfc3339_seconds(invalid), None, "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn quota_fraction_parser_is_exact_and_rejects_sub_unit_or_out_of_range_values() {
+        assert_eq!(parse_fraction_units("0.9999803"), Some(99_998_030));
+        assert_eq!(parse_fraction_units("9.99132e-1"), Some(99_913_200));
+        assert_eq!(parse_fraction_units("1"), Some(FRACTION_SCALE));
+        assert_eq!(parse_fraction_units("0.000000001"), None);
+        assert_eq!(parse_fraction_units("1.00000001"), None);
+        assert_eq!(parse_fraction_units("-0.1"), None);
+    }
+
+    #[test]
+    fn quota_summary_shape_accepts_the_official_and_nested_envelopes() {
+        for document in [
+            json!({
+                "groups": [{
+                    "displayName": "Gemini Models",
+                    "buckets": [{
+                        "bucketId": "gemini-5h",
+                        "remainingFraction": 0.75,
+                        "resetTime": "2099-01-01T00:00:00Z"
+                    }]
+                }]
+            }),
+            json!({
+                "quotaSummary": {"groups": [{"buckets": [{
+                    "bucket_id": "gemini-weekly",
+                    "remaining_fraction": "0.5",
+                    "reset_time": "2099-01-01T00:00:00Z"
+                }]}]}
+            }),
+        ] {
+            let parsed: QuotaSummaryEnvelope = serde_json::from_value(document).unwrap();
+            let groups = parsed
+                .quota_summary
+                .map_or(parsed.groups, |summary| summary.groups);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].buckets[0]
+                    .remaining_fraction
+                    .as_ref()
+                    .and_then(ExactFraction::units),
+                Some(
+                    if groups[0].buckets[0].bucket_id.as_deref() == Some("gemini-5h") {
+                        75_000_000
+                    } else {
+                        50_000_000
+                    }
+                )
+            );
         }
     }
 

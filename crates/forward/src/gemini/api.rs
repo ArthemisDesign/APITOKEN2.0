@@ -1473,7 +1473,8 @@ async fn stream_response(
                 profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
             }
         }
-        admission.settle(&model, usage);
+        let real_nano = admission.settle(&model, usage);
+        profile.record_spend(real_nano).await;
     });
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
@@ -2088,7 +2089,8 @@ async fn api_inner(
                     return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
                 }
                 admission.mark_delivering().await?;
-                admission.settle(&model, usage.as_ref());
+                let real_nano = admission.settle(&model, usage.as_ref());
+                profile.record_spend(real_nano).await;
                 return Ok(translated_response(status, &response_headers, native_body));
             }
             _ if status.is_client_error() => {
@@ -2455,6 +2457,29 @@ mod tests {
         output_token_limit: u64,
         model_ids: &[&str],
     ) -> GatewayFixture {
+        gateway_fixture_with_models_and_calibration(
+            upstream,
+            proxies,
+            max_transport_retries,
+            token_uri,
+            oauth_kind,
+            output_token_limit,
+            model_ids,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gateway_fixture_with_models_and_calibration(
+        upstream: &str,
+        proxies: &[Option<&str>],
+        max_transport_retries: usize,
+        token_uri: Option<&str>,
+        oauth_kind: OAuthKind,
+        output_token_limit: u64,
+        model_ids: &[&str],
+        calibration_store: Option<Arc<AsyncBilling>>,
+    ) -> GatewayFixture {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2543,30 +2568,33 @@ mod tests {
                 },
             })
             .collect();
-        let gateway = GeminiGateway::new(super::super::config::GeminiConfig {
-            enabled: true,
-            upstream: upstream.to_string(),
-            profiles_file: profiles_file.to_string_lossy().into_owned(),
-            credential_keys: ring,
-            models,
-            connect_timeout_secs: 1,
-            read_timeout_secs: 5,
-            max_transport_retries,
-            max_inflight_per_profile: 6,
-            auth_quarantine_secs: 900,
-            transport_cool_secs: 30,
-            model_failure_cool_secs: 15,
-            model_failure_max_cool_secs: 900,
-            default_rate_limit_cool_secs: 60,
-            quota_reserve_fraction: 0.05,
-            quota_reserve_jitter: 0.01,
-            health_probe_interval_secs: 60,
-            reserve_overhead_tokens: 10,
-            antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
-            node_binary: "/usr/bin/node".to_string(),
-            node_version: "v24.18.0".to_string(),
-            node_sha256: "0".repeat(64),
-        })
+        let gateway = GeminiGateway::new_with_calibration(
+            super::super::config::GeminiConfig {
+                enabled: true,
+                upstream: upstream.to_string(),
+                profiles_file: profiles_file.to_string_lossy().into_owned(),
+                credential_keys: ring,
+                models,
+                connect_timeout_secs: 1,
+                read_timeout_secs: 5,
+                max_transport_retries,
+                max_inflight_per_profile: 6,
+                auth_quarantine_secs: 900,
+                transport_cool_secs: 30,
+                model_failure_cool_secs: 15,
+                model_failure_max_cool_secs: 900,
+                default_rate_limit_cool_secs: 60,
+                quota_reserve_fraction: 0.05,
+                quota_reserve_jitter: 0.01,
+                health_probe_interval_secs: 60,
+                reserve_overhead_tokens: 10,
+                antigravity_version: gemini_credential::ANTIGRAVITY_VERSION.to_string(),
+                node_binary: "/usr/bin/node".to_string(),
+                node_version: "v24.18.0".to_string(),
+                node_sha256: "0".repeat(64),
+            },
+            calibration_store,
+        )
         .unwrap();
         GatewayFixture {
             gateway: Arc::new(gateway),
@@ -3239,6 +3267,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_generation_credits_profile_spend_without_customer_usage_event() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "ok"}]}
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 3,
+                        "candidatesTokenCount": 1
+                    }
+                }),
+            )],
+        )]))
+        .await;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gemini-admin-capacity-{}-{unique}-{}.sqlite",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = Arc::new(AsyncBilling::start(path_string.clone(), 1).unwrap());
+        let fixture = gateway_fixture_with_models_and_calibration(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::LegacyGeminiCli,
+            64,
+            &["gemini-integration-model"],
+            Some(billing.clone()),
+        );
+
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        billing.flush().await.unwrap();
+
+        let connection = registry::open(&path_string).unwrap();
+        assert_eq!(
+            registry::gemini_profile_spend(&connection, "profile_a").unwrap(),
+            4
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM usage_events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        drop(fixture);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn quota_rotates_to_the_next_project_and_client_credential_never_reaches_google() {
         let server = start_mock(MockState::with_replies([
             (
@@ -3561,6 +3656,42 @@ mod tests {
 
     #[tokio::test]
     async fn antigravity_health_fetches_model_quotas_and_cools_explicit_zero() {
+        let quota_document = json!({
+            "models": {
+                "gemini-integration-model": {
+                    "displayName": "Gemini Integration Model",
+                    "quotaInfo": {
+                        "remainingFraction": 0.0,
+                        "resetTime": "2099-01-01T00:00:00Z"
+                    }
+                }
+            },
+            "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [
+                    {
+                        "bucketId": "gemini-5h",
+                        "remainingFraction": 0.75,
+                        "resetTime": "2099-01-01T00:00:00Z"
+                    },
+                    {
+                        "bucketId": "gemini-weekly",
+                        "remainingFraction": 0.60,
+                        "resetTime": "2099-01-07T00:00:00Z"
+                    },
+                    {
+                        "bucketId": "3p-5h",
+                        "remainingFraction": 0.10,
+                        "resetTime": "2099-01-01T00:00:00Z"
+                    },
+                    {
+                        "bucketId": "3p-weekly",
+                        "remainingFraction": 0.20,
+                        "resetTime": "2099-01-07T00:00:00Z"
+                    }
+                ]
+            }]
+        });
         let server = start_mock(MockState::with_replies([(
             PROFILE_A_KEY,
             vec![
@@ -3571,17 +3702,12 @@ mod tests {
                 },
                 MockReply::Json {
                     status: StatusCode::OK,
-                    body: json!({
-                        "models": {
-                            "gemini-integration-model": {
-                                "displayName": "Gemini Integration Model",
-                                "quotaInfo": {
-                                    "remainingFraction": 0.0,
-                                    "resetTime": "2099-01-01T00:00:00Z"
-                                }
-                            }
-                        }
-                    }),
+                    body: quota_document.clone(),
+                    retry_after: None,
+                },
+                MockReply::Json {
+                    status: StatusCode::OK,
+                    body: quota_document,
                     retry_after: None,
                 },
             ],
@@ -3597,13 +3723,26 @@ mod tests {
         fixture.gateway.probe_health().await;
 
         let seen = server.state.seen();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3);
         assert_eq!(seen[0].uri, "/v1internal:loadCodeAssist");
-        assert_eq!(seen[1].uri, "/v1internal:fetchAvailableModels");
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.uri == "/v1internal:fetchAvailableModels")
+                .count(),
+            1
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.uri == "/v1internal:retrieveUserQuotaSummary")
+                .count(),
+            1
+        );
         let load_body: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert_eq!(load_body, json!({"metadata": {"ideType": "ANTIGRAVITY"}}));
-        let quota_body: Value = serde_json::from_slice(&seen[1].body).unwrap();
-        assert_eq!(quota_body, json!({"project": "paid-project-01"}));
+        for request in &seen[1..] {
+            let quota_body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(quota_body, json!({"project": "paid-project-01"}));
+        }
         assert!(seen.iter().all(|request| {
             request.user_agent == "antigravity/hub/2.2.1 darwin/arm64"
                 && request.google_api_client == "google-cloud-sdk vscode_cloudshelleditor/0.1"
@@ -3619,6 +3758,13 @@ mod tests {
         assert_eq!(quota.remaining_fraction, Some(0.0));
         assert_eq!(quota.reset_time.as_deref(), Some("2099-01-01T00:00:00Z"));
         assert_eq!(quota.token_type.as_deref(), Some("antigravity_model"));
+        assert_eq!(status.profiles[0].capacities.len(), 2);
+        assert_eq!(status.profiles[0].capacities[0].bucket_id, "gemini-5h");
+        assert_eq!(status.profiles[0].capacities[1].bucket_id, "gemini-weekly");
+        assert!(status.profiles[0]
+            .capacities
+            .iter()
+            .all(|capacity| capacity.cap_usd.is_none()));
     }
 
     #[tokio::test]

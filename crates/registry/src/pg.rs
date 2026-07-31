@@ -4,10 +4,10 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, KeyAuth,
-    KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub,
-    SubAdmin, SubHealth, SubRow, UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput,
-    UsageKeyAgg, UsageModelAgg, UsageReport,
+    mask_proxy, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation,
+    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
+    PoolStateRow, SpendAccountAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
+    UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -1997,6 +1997,40 @@ impl PgStore {
             .unwrap_or(0))
     }
 
+    // -- Durable Gemini capacity evidence ----------------------------------------------------
+
+    pub fn credit_gemini_profile_spend(
+        &mut self,
+        profile_id: &str,
+        delta_nano: i64,
+        updated_ts: i64,
+    ) -> Result<i64> {
+        if profile_id.is_empty() || delta_nano < 0 || updated_ts <= 0 {
+            bail!("invalid Gemini profile spend credit");
+        }
+        Ok(self
+            .client
+            .query_one(
+                "INSERT INTO gemini_profile_spend(profile_id,spent_nano,updated_ts) \
+                 VALUES($1,$2,$3) ON CONFLICT(profile_id) DO UPDATE SET \
+                   spent_nano=gemini_profile_spend.spent_nano+EXCLUDED.spent_nano, \
+                   updated_ts=EXCLUDED.updated_ts RETURNING spent_nano",
+                &[&profile_id, &delta_nano, &updated_ts],
+            )?
+            .get(0))
+    }
+
+    pub fn gemini_profile_spend(&mut self, profile_id: &str) -> Result<i64> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT spent_nano FROM gemini_profile_spend WHERE profile_id=$1",
+                &[&profile_id],
+            )?
+            .map(|row| row.get(0))
+            .unwrap_or(0))
+    }
+
     pub fn save_codex_home_health(
         &mut self,
         home_id: &str,
@@ -2175,6 +2209,182 @@ impl PgStore {
                 &observation.resets_at,
                 &observation.observed_at,
                 &observation.used_percent,
+                &observation.gateway_spend_nano,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(version))
+    }
+
+    pub fn load_gemini_calibration(
+        &mut self,
+        profile_id: &str,
+        bucket_id: &str,
+    ) -> Result<Option<GeminiCalibrationRow>> {
+        let row = self.client.query_opt(
+            "SELECT profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
+               anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
+               observed_at,sum_used_sq::text,sum_used_spend_nano::text,\
+               observed_fraction_units,samples,current_capacity_nano,current_low_nano,\
+               current_high_nano,current_confidence_bp,last_measured_at,estimator_version,\
+               version,updated_ts FROM gemini_window_calibrations \
+             WHERE profile_id=$1 AND bucket_id=$2",
+            &[&profile_id, &bucket_id],
+        )?;
+        let row = row.map(|row| GeminiCalibrationRow {
+            profile_id: row.get(0),
+            bucket_id: row.get(1),
+            window_kind: row.get(2),
+            window_duration_mins: row.get(3),
+            resets_at: row.get(4),
+            anchor_used_fraction_units: row.get(5),
+            anchor_spend_nano: row.get(6),
+            anchor_ready: row.get(7),
+            used_fraction_units: row.get(8),
+            observed_at: row.get(9),
+            sum_used_sq: row.get(10),
+            sum_used_spend_nano: row.get(11),
+            observed_fraction_units: row.get(12),
+            samples: row.get(13),
+            current_capacity_nano: row.get(14),
+            current_low_nano: row.get(15),
+            current_high_nano: row.get(16),
+            current_confidence_bp: row.get(17),
+            last_measured_at: row.get(18),
+            estimator_version: row.get(19),
+            version: row.get(20),
+            updated_ts: row.get(21),
+        });
+        if let Some(row) = &row {
+            crate::validate_gemini_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn load_gemini_window_observations(
+        &mut self,
+        profile_id: &str,
+        bucket_id: &str,
+    ) -> Result<Vec<GeminiWindowObservation>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
+                   observed_at,used_fraction_units,gateway_spend_nano \
+                 FROM gemini_window_observations WHERE profile_id=$1 AND bucket_id=$2 \
+                 ORDER BY observed_at,id",
+                &[&profile_id, &bucket_id],
+            )?
+            .into_iter()
+            .map(|row| GeminiWindowObservation {
+                profile_id: row.get(0),
+                bucket_id: row.get(1),
+                window_kind: row.get(2),
+                window_duration_mins: row.get(3),
+                resets_at: row.get(4),
+                observed_at: row.get(5),
+                used_fraction_units: row.get(6),
+                gateway_spend_nano: row.get(7),
+            })
+            .collect())
+    }
+
+    /// Save Gemini calibration evidence with optimistic concurrency. A conflict rolls the raw
+    /// observation back together with the stale derived row.
+    pub fn save_gemini_calibration(
+        &mut self,
+        state: &GeminiCalibrationRow,
+        observation: &GeminiWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_gemini_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        let version = if state.version == 0 {
+            tx.query_opt(
+                "INSERT INTO gemini_window_calibrations( \
+                   profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
+                   anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
+                   observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
+                   current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+                   last_measured_at,estimator_version,updated_ts,version \
+                 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CAST($11 AS numeric),\
+                          CAST($12 AS numeric),$13,$14,$15,$16,$17,$18,$19,$20,$21,1) \
+                 ON CONFLICT(profile_id,bucket_id) DO NOTHING RETURNING version",
+                &[
+                    &state.profile_id,
+                    &state.bucket_id,
+                    &state.window_kind,
+                    &state.window_duration_mins,
+                    &state.resets_at,
+                    &state.anchor_used_fraction_units,
+                    &state.anchor_spend_nano,
+                    &state.anchor_ready,
+                    &state.used_fraction_units,
+                    &state.observed_at,
+                    &state.sum_used_sq,
+                    &state.sum_used_spend_nano,
+                    &state.observed_fraction_units,
+                    &state.samples,
+                    &state.current_capacity_nano,
+                    &state.current_low_nano,
+                    &state.current_high_nano,
+                    &state.current_confidence_bp,
+                    &state.last_measured_at,
+                    &state.estimator_version,
+                    &state.updated_ts,
+                ],
+            )?
+        } else {
+            tx.query_opt(
+                "UPDATE gemini_window_calibrations SET window_kind=$3,window_duration_mins=$4,\
+                   resets_at=$5,anchor_used_fraction_units=$6,anchor_spend_nano=$7,\
+                   anchor_ready=$8,used_fraction_units=$9,observed_at=$10,\
+                   sum_used_sq=CAST($11 AS numeric),sum_used_spend_nano=CAST($12 AS numeric),\
+                   observed_fraction_units=$13,samples=$14,current_capacity_nano=$15,\
+                   current_low_nano=$16,current_high_nano=$17,current_confidence_bp=$18,\
+                   last_measured_at=$19,estimator_version=$20,updated_ts=$21,version=version+1 \
+                 WHERE profile_id=$1 AND bucket_id=$2 AND version=$22 RETURNING version",
+                &[
+                    &state.profile_id,
+                    &state.bucket_id,
+                    &state.window_kind,
+                    &state.window_duration_mins,
+                    &state.resets_at,
+                    &state.anchor_used_fraction_units,
+                    &state.anchor_spend_nano,
+                    &state.anchor_ready,
+                    &state.used_fraction_units,
+                    &state.observed_at,
+                    &state.sum_used_sq,
+                    &state.sum_used_spend_nano,
+                    &state.observed_fraction_units,
+                    &state.samples,
+                    &state.current_capacity_nano,
+                    &state.current_low_nano,
+                    &state.current_high_nano,
+                    &state.current_confidence_bp,
+                    &state.last_measured_at,
+                    &state.estimator_version,
+                    &state.updated_ts,
+                    &state.version,
+                ],
+            )?
+        };
+        let Some(version) = version.map(|row| row.get::<_, i64>(0)) else {
+            return Ok(None);
+        };
+        tx.execute(
+            "INSERT INTO gemini_window_observations( \
+               profile_id,bucket_id,window_kind,window_duration_mins,resets_at,observed_at,\
+               used_fraction_units,gateway_spend_nano \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING",
+            &[
+                &observation.profile_id,
+                &observation.bucket_id,
+                &observation.window_kind,
+                &observation.window_duration_mins,
+                &observation.resets_at,
+                &observation.observed_at,
+                &observation.used_fraction_units,
                 &observation.gateway_spend_nano,
             ],
         )?;
@@ -4300,6 +4510,7 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions, \
              provider_switch_head,provider_switch_entries,provider_switch_versions, \
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
+             gemini_window_observations,gemini_window_calibrations,gemini_profile_spend, \
              codex_window_observations,codex_window_calibrations,codex_home_spend, \
              codex_home_health, \
              settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
@@ -4376,6 +4587,82 @@ mod tests {
                 "DELETE FROM codex_window_observations WHERE home_id='stage2-codex-home'; \
                  DELETE FROM codex_window_calibrations WHERE home_id='stage2-codex-home'; \
                  DELETE FROM codex_home_spend WHERE home_id='stage2-codex-home';",
+            )
+            .unwrap();
+
+        assert_eq!(
+            pg.credit_gemini_profile_spend("stage2-gemini-profile", 19_404_000, 102)
+                .unwrap(),
+            19_404_000
+        );
+        assert_eq!(
+            pg.credit_gemini_profile_spend("stage2-gemini-profile", 1, 103)
+                .unwrap(),
+            19_404_001
+        );
+        let gemini_state = GeminiCalibrationRow {
+            profile_id: "stage2-gemini-profile".into(),
+            bucket_id: "gemini-5h".into(),
+            window_kind: "5h".into(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            anchor_used_fraction_units: 1_970,
+            anchor_spend_nano: 0,
+            anchor_ready: false,
+            used_fraction_units: 1_970,
+            observed_at: 103,
+            sum_used_sq: i128::MAX.to_string(),
+            sum_used_spend_nano: "0".into(),
+            observed_fraction_units: 0,
+            samples: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: 103,
+        };
+        let gemini_observation = GeminiWindowObservation {
+            profile_id: gemini_state.profile_id.clone(),
+            bucket_id: gemini_state.bucket_id.clone(),
+            window_kind: gemini_state.window_kind.clone(),
+            window_duration_mins: gemini_state.window_duration_mins,
+            resets_at: gemini_state.resets_at,
+            observed_at: gemini_state.observed_at,
+            used_fraction_units: gemini_state.used_fraction_units,
+            gateway_spend_nano: 19_404_001,
+        };
+        assert_eq!(
+            pg.save_gemini_calibration(&gemini_state, &gemini_observation)
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            pg.save_gemini_calibration(&gemini_state, &gemini_observation)
+                .unwrap(),
+            None
+        );
+        let restored_gemini = pg
+            .load_gemini_calibration("stage2-gemini-profile", "gemini-5h")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored_gemini.version, 1);
+        assert_eq!(restored_gemini.sum_used_sq, i128::MAX.to_string());
+        assert_eq!(
+            pg.load_gemini_window_observations("stage2-gemini-profile", "gemini-5h")
+                .unwrap(),
+            vec![gemini_observation]
+        );
+        pg.client
+            .batch_execute(
+                "DELETE FROM gemini_window_observations \
+                   WHERE profile_id='stage2-gemini-profile'; \
+                 DELETE FROM gemini_window_calibrations \
+                   WHERE profile_id='stage2-gemini-profile'; \
+                 DELETE FROM gemini_profile_spend \
+                   WHERE profile_id='stage2-gemini-profile';",
             )
             .unwrap();
 

@@ -1129,6 +1129,18 @@ async fn metrics(
              # TYPE claude_api_gemini_profile_inflight_requests gauge\n\
              # TYPE claude_api_gemini_profile_last_probe_seconds gauge\n\
              # TYPE claude_api_gemini_profile_quota_updated_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_spend_usd_total gauge\n\
+             # TYPE claude_api_gemini_profile_calibration_persistence_ok gauge\n\
+             # TYPE claude_api_gemini_profile_window_remaining_ratio gauge\n\
+             # TYPE claude_api_gemini_profile_window_resets_at_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_window_data_age_seconds gauge\n\
+             # TYPE claude_api_gemini_profile_window_estimate_available gauge\n\
+             # TYPE claude_api_gemini_profile_window_capacity_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_remaining_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_capacity_low_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_confidence_ratio gauge\n\
+             # TYPE claude_api_gemini_profile_window_samples gauge\n\
              # TYPE claude_api_gemini_profile_model_cooling_until_seconds gauge\n\
              # TYPE claude_api_gemini_profile_model_failure_streak gauge\n\
              # TYPE claude_api_gemini_profile_model_last_success_seconds gauge\n\
@@ -1161,13 +1173,18 @@ async fn metrics(
                  claude_api_gemini_profile_cooling_until_seconds{{profile=\"{id}\"}} {}\n\
                  claude_api_gemini_profile_inflight_requests{{profile=\"{id}\"}} {}\n\
                  claude_api_gemini_profile_last_probe_seconds{{profile=\"{id}\"}} {}\n\
-                 claude_api_gemini_profile_quota_updated_seconds{{profile=\"{id}\"}} {}",
+                 claude_api_gemini_profile_quota_updated_seconds{{profile=\"{id}\"}} {}\n\
+                 claude_api_gemini_profile_spend_usd_total{{profile=\"{id}\"}} {:.6}\n\
+                 claude_api_gemini_profile_calibration_persistence_ok{{profile=\"{id}\"}} {}",
                 u8::from(profile.authenticated),
                 profile.cooling_until,
                 profile.inflight,
                 profile.last_probe_at,
                 profile.quota_updated_at,
+                profile.spend_usd_total,
+                u8::from(profile.calibration_persistence_ok),
             );
+            write_gemini_profile_capacity_metrics(&mut body, profile);
             for cooling in &profile.model_cooling {
                 let _ = writeln!(
                     body,
@@ -1183,6 +1200,27 @@ async fn metrics(
                     cooling.last_success_at,
                     cooling.model_id,
                     cooling.last_failure_at,
+                );
+            }
+        }
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_gemini_window_capacity_usd gauge\n\
+             # TYPE claude_api_gemini_window_remaining_usd gauge\n\
+             # TYPE claude_api_gemini_window_measured_profiles gauge\n\
+             # TYPE claude_api_gemini_window_observed_profiles gauge"
+        );
+        for (duration, (cap, remaining, measured, observed)) in gemini_window_totals(&status) {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_window_measured_profiles{{window_minutes=\"{duration}\"}} {measured}\n\
+                 claude_api_gemini_window_observed_profiles{{window_minutes=\"{duration}\"}} {observed}"
+            );
+            if measured > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_window_capacity_usd{{window_minutes=\"{duration}\"}} {cap:.6}\n\
+                     claude_api_gemini_window_remaining_usd{{window_minutes=\"{duration}\"}} {remaining:.6}"
                 );
             }
         }
@@ -1253,6 +1291,58 @@ fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::C
     }
 }
 
+fn write_gemini_profile_capacity_metrics(
+    body: &mut String,
+    profile: &forward::GeminiProfileStatus,
+) {
+    use std::fmt::Write as _;
+
+    for capacity in &profile.capacities {
+        let id = &profile.id;
+        let window = capacity.window_kind;
+        let duration = capacity.window_minutes;
+        let remaining_ratio = capacity.remaining_fraction_units as f64 / 100_000_000.0;
+        let _ = writeln!(
+            body,
+            "claude_api_gemini_profile_window_remaining_ratio{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {remaining_ratio:.8}\n\
+             claude_api_gemini_profile_window_resets_at_seconds{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}\n\
+             claude_api_gemini_profile_window_data_age_seconds{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}\n\
+             claude_api_gemini_profile_window_estimate_available{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {}\n\
+             claude_api_gemini_profile_window_confidence_ratio{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {:.4}\n\
+             claude_api_gemini_profile_window_samples{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}",
+            capacity.resets_at,
+            capacity.data_age_seconds,
+            capacity.source,
+            u8::from(capacity.cap_usd.is_some()),
+            capacity.confidence,
+            capacity.samples,
+        );
+        // Unknown capacity has no dollar time series. Publishing a numeric zero before the first
+        // complete interval would be indistinguishable from a genuinely measured zero-dollar cap.
+        if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_window_capacity_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {cap:.6}\n\
+                 claude_api_gemini_profile_window_remaining_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {remaining:.6}",
+                capacity.source,
+                capacity.source,
+            );
+        }
+        if let Some(low) = capacity.low_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_window_capacity_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
+            );
+        }
+        if let Some(high) = capacity.high_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_window_capacity_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
+            );
+        }
+    }
+}
+
 /// Sum each real duration once per home. Slot names are presentation metadata, and duplicate slots
 /// must never make one subscription look like two copies of the same dollar capacity.
 fn codex_window_totals(
@@ -1269,6 +1359,24 @@ fn codex_window_totals(
                 continue;
             }
             let total = totals.entry(duration).or_default();
+            total.3 += 1;
+            if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
+                total.0 += cap;
+                total.1 += remaining;
+                total.2 += 1;
+            }
+        }
+    }
+    totals
+}
+
+fn gemini_window_totals(
+    status: &forward::GeminiOperationalStatus,
+) -> BTreeMap<i64, (f64, f64, usize, usize)> {
+    let mut totals: BTreeMap<i64, (f64, f64, usize, usize)> = BTreeMap::new();
+    for profile in &status.profiles {
+        for capacity in &profile.capacities {
+            let total = totals.entry(capacity.window_minutes).or_default();
             total.3 += 1;
             if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
                 total.0 += cap;
@@ -1874,35 +1982,7 @@ async fn gemini_subs(
     let now = pool::now();
     let status = gemini.operational_status().await;
     let affinity = app.affinity.stats();
-    let profiles = status
-        .profiles
-        .iter()
-        .map(|profile| {
-            json!({
-                "id": profile.id,
-                "authenticated": profile.authenticated,
-                "cooling_until": profile.cooling_until,
-                "inflight": profile.inflight,
-                "last_probe_at": profile.last_probe_at,
-                "quota_updated_at": profile.quota_updated_at,
-                "model_cooling": profile.model_cooling.iter().map(|cooling| json!({
-                    "model_id": cooling.model_id,
-                    "cooling_until": cooling.cooling_until,
-                    "failure_streak": cooling.failure_streak,
-                    "last_success_at": cooling.last_success_at,
-                    "last_failure_at": cooling.last_failure_at,
-                    "last_failure_class": cooling.last_failure_class,
-                })).collect::<Vec<_>>(),
-                "quotas": profile.quotas.iter().map(|quota| json!({
-                    "model_id": quota.model_id,
-                    "remaining_amount": quota.remaining_amount,
-                    "remaining_fraction": quota.remaining_fraction,
-                    "reset_time": quota.reset_time,
-                    "token_type": quota.token_type,
-                })).collect::<Vec<_>>(),
-            })
-        })
-        .collect::<Vec<_>>();
+    let profiles = gemini_profile_values(&status);
     let models = status
         .models
         .iter()
@@ -1917,6 +1997,7 @@ async fn gemini_subs(
             })
         })
         .collect::<Vec<_>>();
+    let window_totals = gemini_window_total_values(&status);
     Json(json!({
         "now": now,
         "enabled": true,
@@ -1925,6 +2006,7 @@ async fn gemini_subs(
         "available": status.available,
         "inflight": status.profiles.iter().map(|profile| profile.inflight).sum::<usize>(),
         "soonest_ready": status.soonest_ready,
+        "window_totals": window_totals,
         "models": models,
         "profiles": profiles,
         "transport": {
@@ -1963,6 +2045,77 @@ async fn gemini_subs(
         },
     }))
     .into_response()
+}
+
+fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value> {
+    let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
+    let round_opt = |x: Option<f64>| x.map(round);
+    status
+        .profiles
+        .iter()
+        .map(|profile| {
+            json!({
+                "id": profile.id,
+                "authenticated": profile.authenticated,
+                "cooling_until": profile.cooling_until,
+                "inflight": profile.inflight,
+                "last_probe_at": profile.last_probe_at,
+                "quota_updated_at": profile.quota_updated_at,
+                "spend_usd_total": round(profile.spend_usd_total),
+                "calibration_persistence_ok": profile.calibration_persistence_ok,
+                "windows": profile.capacities.iter().map(|window| json!({
+                    "bucket_id": window.bucket_id,
+                    "window_kind": window.window_kind,
+                    "window_minutes": window.window_minutes,
+                    "resets_at": window.resets_at,
+                    "observed_at": window.observed_at,
+                    "data_age_seconds": window.data_age_seconds,
+                    "remaining_fraction_units": window.remaining_fraction_units,
+                    "used_fraction_units": window.used_fraction_units,
+                    "remaining_fraction": window.remaining_fraction_units as f64 / 100_000_000.0,
+                    "used_fraction": window.used_fraction_units as f64 / 100_000_000.0,
+                    "cap_usd": round_opt(window.cap_usd),
+                    "remaining_usd": round_opt(window.remaining_usd),
+                    "low_usd": round_opt(window.low_usd),
+                    "high_usd": round_opt(window.high_usd),
+                    "source": window.source,
+                    "confidence": window.confidence,
+                    "samples": window.samples,
+                })).collect::<Vec<_>>(),
+                "model_cooling": profile.model_cooling.iter().map(|cooling| json!({
+                    "model_id": cooling.model_id,
+                    "cooling_until": cooling.cooling_until,
+                    "failure_streak": cooling.failure_streak,
+                    "last_success_at": cooling.last_success_at,
+                    "last_failure_at": cooling.last_failure_at,
+                    "last_failure_class": cooling.last_failure_class,
+                })).collect::<Vec<_>>(),
+                "quotas": profile.quotas.iter().map(|quota| json!({
+                    "model_id": quota.model_id,
+                    "remaining_amount": quota.remaining_amount,
+                    "remaining_fraction": quota.remaining_fraction,
+                    "reset_time": quota.reset_time,
+                    "token_type": quota.token_type,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+fn gemini_window_total_values(status: &forward::GeminiOperationalStatus) -> Vec<Value> {
+    let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
+    gemini_window_totals(status)
+        .into_iter()
+        .map(|(duration, (cap, remaining, measured, observed))| {
+            json!({
+                "window_minutes": duration,
+                "cap_usd": (measured > 0).then(|| round(cap)),
+                "remaining_usd": (measured > 0).then(|| round(remaining)),
+                "measured_profiles": measured,
+                "observed_profiles": observed,
+            })
+        })
+        .collect()
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -2188,6 +2341,50 @@ mod tests {
         }
     }
 
+    fn unknown_gemini_status() -> forward::GeminiOperationalStatus {
+        let window = |bucket_id, window_kind, window_minutes, remaining_fraction_units| {
+            forward::GeminiWindowCapacityReport {
+                bucket_id,
+                window_kind,
+                window_minutes,
+                resets_at: 2_000_000_000,
+                observed_at: 100,
+                data_age_seconds: 5,
+                remaining_fraction_units,
+                used_fraction_units: 100_000_000 - remaining_fraction_units,
+                cap_usd: None,
+                remaining_usd: None,
+                low_usd: None,
+                high_usd: None,
+                source: "unknown",
+                confidence: 0.0,
+                samples: 0,
+            }
+        };
+        forward::GeminiOperationalStatus {
+            profiles: vec![forward::GeminiProfileStatus {
+                id: "profile-opaque".to_string(),
+                authenticated: true,
+                cooling_until: 0,
+                inflight: 0,
+                last_probe_at: 100,
+                quota_updated_at: 100,
+                quotas: Vec::new(),
+                model_cooling: Vec::new(),
+                spend_usd_total: 0.019404,
+                calibration_persistence_ok: true,
+                capacities: vec![
+                    window("gemini-5h", "5h", 300, 75_000_000),
+                    window("gemini-weekly", "weekly", 10_080, 60_000_000),
+                ],
+            }],
+            models: Vec::new(),
+            available: 1,
+            authenticated: 1,
+            soonest_ready: None,
+        }
+    }
+
     #[test]
     fn codex_subscription_contract_publishes_the_admission_verdict() {
         let mut status = unknown_codex_status();
@@ -2263,6 +2460,53 @@ mod tests {
         ));
         assert!(!body.contains("claude_api_codex_home_window_capacity_usd{"));
         assert!(!body.contains("claude_api_codex_home_window_remaining_usd{"));
+    }
+
+    #[test]
+    fn gemini_subscription_contract_keeps_five_hour_and_weekly_unknown_independently() {
+        let mut status = unknown_gemini_status();
+        let profiles = gemini_profile_values(&status);
+        assert_eq!(profiles[0]["windows"][0]["bucket_id"], "gemini-5h");
+        assert_eq!(profiles[0]["windows"][1]["bucket_id"], "gemini-weekly");
+        assert!(profiles[0]["windows"][0]["cap_usd"].is_null());
+        assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
+
+        let totals = gemini_window_total_values(&status);
+        assert_eq!(totals[0]["window_minutes"], 300);
+        assert_eq!(totals[0]["observed_profiles"], 1);
+        assert_eq!(totals[0]["measured_profiles"], 0);
+        assert!(totals[0]["cap_usd"].is_null());
+        assert_eq!(totals[1]["window_minutes"], 10_080);
+        assert_eq!(totals[1]["measured_profiles"], 0);
+
+        let five_hour = &mut status.profiles[0].capacities[0];
+        five_hour.cap_usd = Some(22.873983261);
+        five_hour.remaining_usd = Some(17.15548744575);
+        five_hour.source = "measured_cumulative";
+        five_hour.confidence = 0.9999;
+        five_hour.samples = 1;
+        let profiles = gemini_profile_values(&status);
+        assert_eq!(profiles[0]["windows"][0]["cap_usd"], 22.873983);
+        assert_eq!(profiles[0]["windows"][0]["remaining_usd"], 17.155487);
+        assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
+        let totals = gemini_window_total_values(&status);
+        assert_eq!(totals[0]["measured_profiles"], 1);
+        assert_eq!(totals[1]["measured_profiles"], 0);
+    }
+
+    #[test]
+    fn prometheus_omits_unmeasured_gemini_dollar_series() {
+        let profile = &unknown_gemini_status().profiles[0];
+        let mut body = String::new();
+        write_gemini_profile_capacity_metrics(&mut body, profile);
+        assert!(body.contains(
+            "claude_api_gemini_profile_window_estimate_available{profile=\"profile-opaque\",window=\"5h\",window_minutes=\"300\",source=\"unknown\"} 0"
+        ));
+        assert!(body.contains(
+            "claude_api_gemini_profile_window_estimate_available{profile=\"profile-opaque\",window=\"weekly\",window_minutes=\"10080\",source=\"unknown\"} 0"
+        ));
+        assert!(!body.contains("claude_api_gemini_profile_window_capacity_usd{"));
+        assert!(!body.contains("claude_api_gemini_profile_window_remaining_usd{"));
     }
 
     fn admin_auth_test_app() -> AppState {

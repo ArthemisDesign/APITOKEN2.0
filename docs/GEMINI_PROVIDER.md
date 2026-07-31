@@ -296,6 +296,17 @@ For every request the runtime:
 - periodically calls Antigravity `v1internal:fetchAvailableModels`, keeps a sanitized per-model
   `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
   Google's reset time;
+- independently calls `v1internal:retrieveUserQuotaSummary` and accepts only the exact
+  `gemini-5h` and `gemini-weekly` buckets. Every successful generation, including admin traffic,
+  credits the serving opaque profile with its exact audited Developer API price in integer
+  nanoUSD. Each bucket is calibrated independently from real positive fraction movement with
+  cumulative integer weighted least squares
+  `capacity = 100000000 * Σ(Δused * Δspend) / Σ(Δused²)`. There is no subscription-price prior,
+  EMA, float money arithmetic or use of the foreign-provider `3p-*` buckets. The first snapshot is
+  an anchor and the first movement after cold start/reset is censored. A cold profile stays `null`
+  with no dollar Prometheus sample until the next complete interval; a later reset preserves the
+  already measured cumulative estimate while rearming the safe anchor. Cumulative spend, CAS state
+  and raw replay evidence live in the engine authority and survive blue-green deploys;
 - limits each paid profile to a bounded number of concurrent requests and routes new work toward
   profiles with more per-model quota headroom. A small deterministic per-profile reserve prevents
   synchronized draining, but remains soft: if all eligible profiles are below reserve, the final
@@ -420,11 +431,13 @@ curl --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
 ```
 
 `/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
-sanitized quota/cooling timestamps, generation failure streak/timestamps/classes, low-cardinality
-transport/backend/malformed/stream-start counters, affinity counters, missing-usage count and pinned HTTPS/Undici
-transport versions/hashes. Subject, email, project, proxy and OAuth material are never serialized. Caddy maps
-the same endpoint into the unified `admin.apitoken.sale` subscription page through stable origin
-`127.0.0.1:8794`.
+sanitized quota/cooling timestamps, independent 5h/weekly fractions and measured official-price
+capacity/remaining/confidence, calibration persistence health, generation failure
+streak/timestamps/classes, low-cardinality transport/backend/malformed/stream-start counters,
+affinity counters, missing-usage count and pinned HTTPS/Undici transport versions/hashes. Unknown
+capacity stays JSON `null`; measured fleet totals include only profiles with evidence. Subject,
+email, project, tier, proxy and OAuth material are never serialized. Caddy maps the same endpoint
+into the unified `admin.apitoken.sale` subscription page through stable origin `127.0.0.1:8794`.
 
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster

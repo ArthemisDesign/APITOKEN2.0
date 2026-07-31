@@ -140,11 +140,25 @@ impl GeminiAdmission {
         }
     }
 
-    pub(crate) fn settle(mut self, model: &GeminiModel, usage: Option<&metering::GeminiUsage>) {
-        let Some(mut reservation) = self.reservation.take() else {
-            return;
-        };
+    /// Settle customer money when present and always return the exact official-price provider cost
+    /// for subscription-capacity calibration. Admin admissions have no reservation but still
+    /// produce the same provider spend.
+    pub(crate) fn settle(
+        mut self,
+        model: &GeminiModel,
+        usage: Option<&metering::GeminiUsage>,
+    ) -> i128 {
         let now = pool::now();
+        let real_nano = usage
+            .filter(|usage| !usage.is_zero())
+            .map(|usage| {
+                let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
+                metering::gemini::cost_nanodollars(usage, &prices)
+            })
+            .unwrap_or(0);
+        let Some(mut reservation) = self.reservation.take() else {
+            return real_nano;
+        };
         let (charge, event) =
             settled_charge_or_hold(model, usage, reservation.hold, reservation.mult_bp, now);
         reservation.billing.settle_detached(
@@ -164,6 +178,7 @@ impl GeminiAdmission {
                 model.id
             );
         }
+        real_nano
     }
 }
 

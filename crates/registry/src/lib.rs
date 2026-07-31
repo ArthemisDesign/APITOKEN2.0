@@ -3874,6 +3874,128 @@ pub struct CodexWindowObservation {
     pub gateway_spend_nano: i64,
 }
 
+/// Primitive durable state for one explicit Antigravity Gemini quota-summary bucket.
+///
+/// Estimation semantics live in `forward`. Registry keeps only exact integer evidence and CAS
+/// versions. The two WLS accumulators are canonical non-negative decimal strings because their
+/// valid range is i128, wider than SQLite/PostgreSQL bigint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiCalibrationRow {
+    pub profile_id: String,
+    pub bucket_id: String,
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub anchor_used_fraction_units: i64,
+    pub anchor_spend_nano: i64,
+    pub anchor_ready: bool,
+    pub used_fraction_units: i64,
+    pub observed_at: i64,
+    pub sum_used_sq: String,
+    pub sum_used_spend_nano: String,
+    pub observed_fraction_units: i64,
+    pub samples: i64,
+    pub current_capacity_nano: Option<i64>,
+    pub current_low_nano: Option<i64>,
+    pub current_high_nano: Option<i64>,
+    pub current_confidence_bp: i64,
+    pub last_measured_at: Option<i64>,
+    pub estimator_version: i64,
+    pub version: i64,
+    pub updated_ts: i64,
+}
+
+/// One raw, deduplicated pairing of an official Gemini quota fraction and cumulative spend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiWindowObservation {
+    pub profile_id: String,
+    pub bucket_id: String,
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    pub used_fraction_units: i64,
+    pub gateway_spend_nano: i64,
+}
+
+fn validate_gemini_accumulator(value: &str) -> Result<()> {
+    let parsed = value
+        .parse::<i128>()
+        .context("parse Gemini calibration accumulator")?;
+    if parsed < 0 || parsed.to_string() != value {
+        bail!("Gemini calibration accumulator is not canonical");
+    }
+    Ok(())
+}
+
+fn valid_gemini_window_identity(bucket_id: &str, window_kind: &str, duration_mins: i64) -> bool {
+    matches!(
+        (bucket_id, window_kind, duration_mins),
+        ("gemini-5h", "5h", 300) | ("gemini-weekly", "weekly", 10_080)
+    )
+}
+
+fn validate_gemini_calibration_row(row: &GeminiCalibrationRow) -> Result<()> {
+    if row.profile_id.is_empty()
+        || !valid_gemini_window_identity(&row.bucket_id, &row.window_kind, row.window_duration_mins)
+        || row.resets_at <= 0
+        || !(0..=100_000_000).contains(&row.anchor_used_fraction_units)
+        || row.anchor_spend_nano < 0
+        || !(0..=100_000_000).contains(&row.used_fraction_units)
+        || row.observed_at <= 0
+        || row.observed_fraction_units < 0
+        || row.samples < 0
+        || row.current_capacity_nano.is_some_and(|value| value < 0)
+        || row.current_low_nano.is_some_and(|value| value < 0)
+        || row.current_high_nano.is_some_and(|value| value < 0)
+        || row.current_low_nano.is_some() && row.current_capacity_nano.is_none()
+        || row.current_high_nano.is_some() && row.current_capacity_nano.is_none()
+        || !(0..=10_000).contains(&row.current_confidence_bp)
+        || row.last_measured_at.is_some_and(|value| value <= 0)
+        || row.estimator_version <= 0
+        || row.version < 0
+        || row.updated_ts <= 0
+    {
+        bail!("invalid Gemini calibration row");
+    }
+    validate_gemini_accumulator(&row.sum_used_sq)?;
+    validate_gemini_accumulator(&row.sum_used_spend_nano)?;
+    Ok(())
+}
+
+fn validate_gemini_window_observation(observation: &GeminiWindowObservation) -> Result<()> {
+    if observation.profile_id.is_empty()
+        || !valid_gemini_window_identity(
+            &observation.bucket_id,
+            &observation.window_kind,
+            observation.window_duration_mins,
+        )
+        || observation.resets_at <= 0
+        || observation.observed_at <= 0
+        || !(0..=100_000_000).contains(&observation.used_fraction_units)
+        || observation.gateway_spend_nano < 0
+    {
+        bail!("invalid Gemini calibration observation");
+    }
+    Ok(())
+}
+
+fn validate_gemini_calibration_pair(
+    state: &GeminiCalibrationRow,
+    observation: &GeminiWindowObservation,
+) -> Result<()> {
+    validate_gemini_calibration_row(state)?;
+    validate_gemini_window_observation(observation)?;
+    if state.profile_id != observation.profile_id
+        || state.bucket_id != observation.bucket_id
+        || state.window_kind != observation.window_kind
+        || state.window_duration_mins != observation.window_duration_mins
+    {
+        bail!("Gemini calibration state/observation mismatch");
+    }
+    Ok(())
+}
+
 /// Atomically credit exact official-price spend and return the durable cumulative total.
 pub fn credit_codex_home_spend(
     conn: &Connection,
@@ -3894,6 +4016,28 @@ pub fn credit_codex_home_spend(
         |row| row.get(0),
     )
     .context("credit SQLite Codex home spend")
+}
+
+/// Atomically credit exact official-price Gemini spend and return the cumulative profile total.
+pub fn credit_gemini_profile_spend(
+    conn: &Connection,
+    profile_id: &str,
+    delta_nano: i64,
+    updated_ts: i64,
+) -> Result<i64> {
+    if profile_id.is_empty() || delta_nano < 0 || updated_ts <= 0 {
+        bail!("invalid Gemini profile spend credit");
+    }
+    conn.query_row(
+        "INSERT INTO gemini_profile_spend(profile_id,spent_nano,updated_ts) VALUES(?1,?2,?3) \
+         ON CONFLICT(profile_id) DO UPDATE SET \
+           spent_nano=gemini_profile_spend.spent_nano+excluded.spent_nano, \
+           updated_ts=excluded.updated_ts \
+         RETURNING spent_nano",
+        rusqlite::params![profile_id, delta_nano, updated_ts],
+        |row| row.get(0),
+    )
+    .context("credit SQLite Gemini profile spend")
 }
 
 /// Durable account-level health for one Codex home.
@@ -3976,6 +4120,17 @@ pub fn codex_home_spend(conn: &Connection, home_id: &str) -> Result<i64> {
         .query_row(
             "SELECT spent_nano FROM codex_home_spend WHERE home_id=?1",
             rusqlite::params![home_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+pub fn gemini_profile_spend(conn: &Connection, profile_id: &str) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT spent_nano FROM gemini_profile_spend WHERE profile_id=?1",
+            rusqlite::params![profile_id],
             |row| row.get(0),
         )
         .optional()?
@@ -4140,6 +4295,174 @@ pub fn save_codex_calibration(
             observation.resets_at,
             observation.observed_at,
             observation.used_percent,
+            observation.gateway_spend_nano,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(Some(state.version.saturating_add(1)))
+}
+
+fn sqlite_gemini_calibration_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<GeminiCalibrationRow> {
+    Ok(GeminiCalibrationRow {
+        profile_id: row.get(0)?,
+        bucket_id: row.get(1)?,
+        window_kind: row.get(2)?,
+        window_duration_mins: row.get(3)?,
+        resets_at: row.get(4)?,
+        anchor_used_fraction_units: row.get(5)?,
+        anchor_spend_nano: row.get(6)?,
+        anchor_ready: row.get(7)?,
+        used_fraction_units: row.get(8)?,
+        observed_at: row.get(9)?,
+        sum_used_sq: row.get(10)?,
+        sum_used_spend_nano: row.get(11)?,
+        observed_fraction_units: row.get(12)?,
+        samples: row.get(13)?,
+        current_capacity_nano: row.get(14)?,
+        current_low_nano: row.get(15)?,
+        current_high_nano: row.get(16)?,
+        current_confidence_bp: row.get(17)?,
+        last_measured_at: row.get(18)?,
+        estimator_version: row.get(19)?,
+        version: row.get(20)?,
+        updated_ts: row.get(21)?,
+    })
+}
+
+const GEMINI_CALIBRATION_COLUMNS: &str = "profile_id,bucket_id,window_kind,window_duration_mins,\
+    resets_at,anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
+    observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
+    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+    last_measured_at,estimator_version,version,updated_ts";
+
+pub fn load_gemini_calibration(
+    conn: &Connection,
+    profile_id: &str,
+    bucket_id: &str,
+) -> Result<Option<GeminiCalibrationRow>> {
+    let row = conn
+        .query_row(
+            &format!(
+                "SELECT {GEMINI_CALIBRATION_COLUMNS} FROM gemini_window_calibrations \
+                 WHERE profile_id=?1 AND bucket_id=?2"
+            ),
+            rusqlite::params![profile_id, bucket_id],
+            sqlite_gemini_calibration_row,
+        )
+        .optional()
+        .context("load SQLite Gemini calibration")?;
+    if let Some(row) = &row {
+        validate_gemini_calibration_row(row)?;
+    }
+    Ok(row)
+}
+
+pub fn load_gemini_window_observations(
+    conn: &Connection,
+    profile_id: &str,
+    bucket_id: &str,
+) -> Result<Vec<GeminiWindowObservation>> {
+    let mut statement = conn.prepare(
+        "SELECT profile_id,bucket_id,window_kind,window_duration_mins,resets_at,observed_at,\
+           used_fraction_units,gateway_spend_nano FROM gemini_window_observations \
+         WHERE profile_id=?1 AND bucket_id=?2 ORDER BY observed_at,id",
+    )?;
+    let observations = statement
+        .query_map(rusqlite::params![profile_id, bucket_id], |row| {
+            Ok(GeminiWindowObservation {
+                profile_id: row.get(0)?,
+                bucket_id: row.get(1)?,
+                window_kind: row.get(2)?,
+                window_duration_mins: row.get(3)?,
+                resets_at: row.get(4)?,
+                observed_at: row.get(5)?,
+                used_fraction_units: row.get(6)?,
+                gateway_spend_nano: row.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("load SQLite Gemini window observations")?;
+    Ok(observations)
+}
+
+/// Persist one Gemini estimator result and raw observation atomically under optimistic CAS.
+pub fn save_gemini_calibration(
+    conn: &Connection,
+    state: &GeminiCalibrationRow,
+    observation: &GeminiWindowObservation,
+) -> Result<Option<i64>> {
+    validate_gemini_calibration_pair(state, observation)?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .context("begin SQLite Gemini calibration CAS")?;
+    let values = rusqlite::params![
+        state.profile_id,
+        state.bucket_id,
+        state.window_kind,
+        state.window_duration_mins,
+        state.resets_at,
+        state.anchor_used_fraction_units,
+        state.anchor_spend_nano,
+        state.anchor_ready,
+        state.used_fraction_units,
+        state.observed_at,
+        state.sum_used_sq,
+        state.sum_used_spend_nano,
+        state.observed_fraction_units,
+        state.samples,
+        state.current_capacity_nano,
+        state.current_low_nano,
+        state.current_high_nano,
+        state.current_confidence_bp,
+        state.last_measured_at,
+        state.estimator_version,
+        state.updated_ts,
+        state.version,
+    ];
+    let changed = if state.version == 0 {
+        tx.execute(
+            "INSERT INTO gemini_window_calibrations( \
+               profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
+               anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
+               observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
+               current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+               last_measured_at,estimator_version,updated_ts,version \
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,\
+                      ?18,?19,?20,?21,?22+1) \
+             ON CONFLICT(profile_id,bucket_id) DO NOTHING",
+            values,
+        )?
+    } else {
+        tx.execute(
+            "UPDATE gemini_window_calibrations SET \
+               window_kind=?3,window_duration_mins=?4,resets_at=?5,\
+               anchor_used_fraction_units=?6,anchor_spend_nano=?7,anchor_ready=?8,\
+               used_fraction_units=?9,observed_at=?10,sum_used_sq=?11,\
+               sum_used_spend_nano=?12,observed_fraction_units=?13,samples=?14,\
+               current_capacity_nano=?15,current_low_nano=?16,current_high_nano=?17,\
+               current_confidence_bp=?18,last_measured_at=?19,estimator_version=?20,\
+               updated_ts=?21,version=version+1 \
+             WHERE profile_id=?1 AND bucket_id=?2 AND version=?22",
+            values,
+        )?
+    };
+    if changed == 0 {
+        return Ok(None);
+    }
+    tx.execute(
+        "INSERT INTO gemini_window_observations( \
+           profile_id,bucket_id,window_kind,window_duration_mins,resets_at,observed_at,\
+           used_fraction_units,gateway_spend_nano \
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT DO NOTHING",
+        rusqlite::params![
+            observation.profile_id,
+            observation.bucket_id,
+            observation.window_kind,
+            observation.window_duration_mins,
+            observation.resets_at,
+            observation.observed_at,
+            observation.used_fraction_units,
             observation.gateway_spend_nano,
         ],
     )?;
@@ -5365,6 +5688,96 @@ mod tests {
                 rusqlite::params!["profile-b", "gemini-5h", "5h", 300, 100_000_001],
             )
             .is_err());
+    }
+
+    #[test]
+    fn gemini_spend_and_calibration_are_exact_durable_and_cas_versioned() {
+        let c = db();
+        assert_eq!(gemini_profile_spend(&c, "profile-a").unwrap(), 0);
+        assert_eq!(
+            credit_gemini_profile_spend(&c, "profile-a", 19_404_000, 100).unwrap(),
+            19_404_000
+        );
+        assert_eq!(
+            credit_gemini_profile_spend(&c, "profile-a", 1, 101).unwrap(),
+            19_404_001
+        );
+
+        let mut state = GeminiCalibrationRow {
+            profile_id: "profile-a".to_string(),
+            bucket_id: "gemini-5h".to_string(),
+            window_kind: "5h".to_string(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            anchor_used_fraction_units: 1_970,
+            anchor_spend_nano: 0,
+            anchor_ready: false,
+            used_fraction_units: 1_970,
+            observed_at: 100,
+            sum_used_sq: "170141183460469231731687303715884105727".to_string(),
+            sum_used_spend_nano: "0".to_string(),
+            observed_fraction_units: 0,
+            samples: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: 100,
+        };
+        let observation = GeminiWindowObservation {
+            profile_id: state.profile_id.clone(),
+            bucket_id: state.bucket_id.clone(),
+            window_kind: state.window_kind.clone(),
+            window_duration_mins: state.window_duration_mins,
+            resets_at: state.resets_at,
+            observed_at: state.observed_at,
+            used_fraction_units: state.used_fraction_units,
+            gateway_spend_nano: 19_404_001,
+        };
+        assert_eq!(
+            save_gemini_calibration(&c, &state, &observation).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            save_gemini_calibration(&c, &state, &observation).unwrap(),
+            None
+        );
+        state = load_gemini_calibration(&c, "profile-a", "gemini-5h")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.version, 1);
+        assert_eq!(state.sum_used_sq, i128::MAX.to_string());
+        assert_eq!(
+            load_gemini_window_observations(&c, "profile-a", "gemini-5h").unwrap(),
+            vec![observation]
+        );
+
+        let mismatched = GeminiWindowObservation {
+            profile_id: "profile-b".to_string(),
+            observed_at: 101,
+            ..load_gemini_window_observations(&c, "profile-a", "gemini-5h")
+                .unwrap()
+                .pop()
+                .unwrap()
+        };
+        assert!(save_gemini_calibration(&c, &state, &mismatched).is_err());
+
+        state.sum_used_sq = "01".to_string();
+        assert!(save_gemini_calibration(
+            &c,
+            &state,
+            &GeminiWindowObservation {
+                observed_at: 101,
+                ..load_gemini_window_observations(&c, "profile-a", "gemini-5h")
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+            }
+        )
+        .is_err());
     }
 
     #[test]

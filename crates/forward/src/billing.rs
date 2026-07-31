@@ -21,8 +21,8 @@ use registry::pricing::{
     PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
 };
 use registry::{
-    AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, KeyAuth,
-    KeyPolicyUpdate, KeyRow,
+    AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, GeminiCalibrationRow,
+    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
 };
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -449,6 +449,22 @@ fn run_pg_snapshot_reserve_with_retry(
 }
 
 enum WriteCmd {
+    GeminiCreditSpend {
+        profile_id: String,
+        delta_nano: i64,
+        updated_ts: i64,
+        reply: oneshot::Sender<anyhow::Result<i64>>,
+    },
+    GeminiObserveWindow {
+        profile_id: String,
+        bucket_id: String,
+        window_kind: String,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_fraction_units: i64,
+        observed_at: i64,
+        reply: oneshot::Sender<anyhow::Result<(i64, GeminiCalibrationRow)>>,
+    },
     CodexCreditSpend {
         home_id: String,
         delta_nano: i64,
@@ -663,6 +679,60 @@ impl AsyncBilling {
         self.detached.begin()
     }
 
+    /// Persist exact official-price spend for every successful Gemini generation, including
+    /// unmetered admin traffic, and return the durable cumulative total for the serving profile.
+    pub async fn credit_gemini_spend(
+        &self,
+        profile_id: &str,
+        delta_nano: i64,
+        updated_ts: i64,
+    ) -> anyhow::Result<i64> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::GeminiCreditSpend {
+                profile_id: profile_id.into(),
+                delta_nano,
+                updated_ts,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Pair one exact provider quota-summary snapshot with durable cumulative profile spend.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_gemini_window(
+        &self,
+        profile_id: &str,
+        bucket_id: &str,
+        window_kind: &str,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_fraction_units: i64,
+        observed_at: i64,
+    ) -> anyhow::Result<(i64, GeminiCalibrationRow)> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::GeminiObserveWindow {
+                profile_id: profile_id.into(),
+                bucket_id: bucket_id.into(),
+                window_kind: window_kind.into(),
+                window_duration_mins,
+                resets_at,
+                used_fraction_units,
+                observed_at,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -875,6 +945,59 @@ impl AsyncBilling {
                 };
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                    WriteCmd::GeminiCreditSpend { profile_id, delta_nano, updated_ts, reply } => {
+                        let _ = reply.send(registry::credit_gemini_profile_spend(
+                            &conn, &profile_id, delta_nano, updated_ts,
+                        ));
+                    }
+                    WriteCmd::GeminiObserveWindow {
+                        profile_id, bucket_id, window_kind, window_duration_mins, resets_at,
+                        used_fraction_units, observed_at, reply,
+                    } => {
+                        let result = (|| {
+                            let spend_nano = registry::gemini_profile_spend(&conn, &profile_id)?;
+                            let observation = GeminiWindowObservation {
+                                profile_id: profile_id.clone(),
+                                bucket_id: bucket_id.clone(),
+                                window_kind: window_kind.clone(),
+                                window_duration_mins,
+                                resets_at,
+                                observed_at,
+                                used_fraction_units,
+                                gateway_spend_nano: spend_nano,
+                            };
+                            loop {
+                                let existing = registry::load_gemini_calibration(
+                                    &conn, &profile_id, &bucket_id,
+                                )?;
+                                if let Some(existing) = existing.as_ref().filter(|row| {
+                                    row.estimator_version == crate::gemini::ESTIMATOR_VERSION
+                                        && observed_at <= row.observed_at
+                                }) {
+                                    return Ok((spend_nano, existing.clone()));
+                                }
+                                let history = if existing.as_ref().is_some_and(|row| {
+                                    row.estimator_version != crate::gemini::ESTIMATOR_VERSION
+                                }) {
+                                    registry::load_gemini_window_observations(
+                                        &conn, &profile_id, &bucket_id,
+                                    )?
+                                } else {
+                                    Vec::new()
+                                };
+                                let mut state = crate::gemini::apply_observation_with_history(
+                                    existing, &history, &observation,
+                                )?;
+                                if let Some(version) = registry::save_gemini_calibration(
+                                    &conn, &state, &observation,
+                                )? {
+                                    state.version = version;
+                                    return Ok((spend_nano, state));
+                                }
+                            }
+                        })();
+                        let _ = reply.send(result);
+                    }
                     WriteCmd::CodexCreditSpend { home_id, delta_nano, updated_ts, reply } => {
                         let _ = reply.send(registry::credit_codex_home_spend(
                             &conn, &home_id, delta_nano, updated_ts,
@@ -1121,6 +1244,77 @@ impl AsyncBilling {
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                        WriteCmd::GeminiCreditSpend {
+                            profile_id, delta_nano, updated_ts, reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Gemini spend credit",
+                                |pg| pg.credit_gemini_profile_spend(
+                                    &profile_id, delta_nano, updated_ts,
+                                ),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::GeminiObserveWindow {
+                            profile_id, bucket_id, window_kind, window_duration_mins, resets_at,
+                            used_fraction_units, observed_at, reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Gemini window observation",
+                                |pg| {
+                                    let spend_nano = pg.gemini_profile_spend(&profile_id)?;
+                                    let observation = GeminiWindowObservation {
+                                        profile_id: profile_id.clone(),
+                                        bucket_id: bucket_id.clone(),
+                                        window_kind: window_kind.clone(),
+                                        window_duration_mins,
+                                        resets_at,
+                                        observed_at,
+                                        used_fraction_units,
+                                        gateway_spend_nano: spend_nano,
+                                    };
+                                    loop {
+                                        let existing = pg.load_gemini_calibration(
+                                            &profile_id, &bucket_id,
+                                        )?;
+                                        if let Some(existing) = existing.as_ref().filter(|row| {
+                                            row.estimator_version
+                                                == crate::gemini::ESTIMATOR_VERSION
+                                                && observed_at <= row.observed_at
+                                        }) {
+                                            return Ok((spend_nano, existing.clone()));
+                                        }
+                                        let history = if existing.as_ref().is_some_and(|row| {
+                                            row.estimator_version
+                                                != crate::gemini::ESTIMATOR_VERSION
+                                        }) {
+                                            pg.load_gemini_window_observations(
+                                                &profile_id, &bucket_id,
+                                            )?
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        let mut state =
+                                            crate::gemini::apply_observation_with_history(
+                                                existing, &history, &observation,
+                                            )?;
+                                        if let Some(version) =
+                                            pg.save_gemini_calibration(&state, &observation)?
+                                        {
+                                            state.version = version;
+                                            return Ok((spend_nano, state));
+                                        }
+                                    }
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::CodexCreditSpend {
                             home_id, delta_nano, updated_ts, reply,
                         } => {
@@ -2405,6 +2599,109 @@ mod tests {
         assert!(restored.version > measured.version);
         restarted.flush().await.unwrap();
         drop(restarted);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn gemini_calibration_credits_admin_spend_and_keeps_windows_independent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-calibration-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let first = AsyncBilling::start(path_string.clone(), 1).unwrap();
+
+        // Spend credit is independent from a customer reservation/usage_event and therefore also
+        // covers successful admin traffic.
+        first
+            .credit_gemini_spend("profile-a", 10_000, 100)
+            .await
+            .unwrap();
+        let (_, anchor) = first
+            .observe_gemini_window(
+                "profile-a",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                1_000,
+                100,
+            )
+            .await
+            .unwrap();
+        assert!(anchor.current_capacity_nano.is_none());
+
+        first
+            .credit_gemini_spend("profile-a", 20_000, 101)
+            .await
+            .unwrap();
+        let (_, censored) = first
+            .observe_gemini_window(
+                "profile-a",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                2_000,
+                101,
+            )
+            .await
+            .unwrap();
+        assert!(censored.anchor_ready);
+        assert!(censored.current_capacity_nano.is_none());
+
+        first
+            .credit_gemini_spend("profile-a", 20_000, 102)
+            .await
+            .unwrap();
+        let (_, measured) = first
+            .observe_gemini_window(
+                "profile-a",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                3_000,
+                102,
+            )
+            .await
+            .unwrap();
+        assert_eq!(measured.current_capacity_nano, Some(2_000_000_000));
+
+        let (_, weekly) = first
+            .observe_gemini_window(
+                "profile-a",
+                "gemini-weekly",
+                "weekly",
+                10_080,
+                2_000_500_000,
+                500,
+                102,
+            )
+            .await
+            .unwrap();
+        assert!(weekly.current_capacity_nano.is_none());
+        drop(first);
+
+        let second = AsyncBilling::start(path_string, 1).unwrap();
+        let (_, restored) = second
+            .observe_gemini_window(
+                "profile-a",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                3_000,
+                103,
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.current_capacity_nano, Some(2_000_000_000));
+        assert_eq!(restored.samples, 1);
         let _ = std::fs::remove_file(path);
     }
 
