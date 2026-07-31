@@ -12,6 +12,7 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                           ▼
                        Caddy (admin.apitoken.sale)
                           ├─ /                         → engine GET /admin-panel
+                          ├─ /admin-panel.js          → engine GET /admin-panel.js
                            ├─ /overview /capacity
                            │  /metrics /subs           → engine balancer :8790 (+ control key)
                            ├─ /codex-subs              → OpenAI origin :8792 (+ control key)
@@ -24,8 +25,10 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
                                                          (+ sales admin key)
 ```
 
-- HTML живёт только в `crates/server/src/admin-panel.html` и вкомпилирован в engine как
-  `GET /admin-panel`. Статических копий и второго panel HTML нет.
+- HTML и JavaScript живут только в `crates/server/src/admin-panel.html` и
+  `crates/server/src/admin-panel.js`; оба вкомпилированы в engine как `GET /admin-panel` и
+  `GET /admin-panel.js`. Статических копий и второго panel HTML нет. JavaScript загружается как
+  same-origin asset, чтобы CSP не зависела от ручного SHA-256 после каждого изменения панели.
 - Caddy `forward_auth` — единый human gate. Commerce PostgreSQL хранит только password hashes,
   статус и grants для четырёх управляемых доменов. Control, commerce-admin и sales-admin ключи
   инжектятся только server-side и никогда не попадают в HTML, browser storage, ответы или логи.
@@ -68,7 +71,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   10 секунд; в фоновой вкладке polling приостанавливается. Пользователи и partner accounts
   загружаются страницами, а live engine balances для commerce page читаются одним batch-запросом.
 - Caddy сжимает ответы `zstd`/`gzip` и задаёт CSP, Permissions Policy и запрет индексации.
-  Inline-script hash проверяется тестом и должен обновляться вместе с HTML.
+  CSP разрешает скрипты только с того же origin (`script-src 'self'`); inline JavaScript в HTML
+  панели запрещён и проверяется тестом.
 
 ## Возможности
 

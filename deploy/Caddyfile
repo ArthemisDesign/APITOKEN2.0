@@ -256,15 +256,18 @@ monitoring.apitoken.sale {
 admin.apitoken.sale {
 	import managed_admin_auth
 	encode zstd gzip
-	# Keep the current and immediately previous admin-panel script hashes during a blue-green
-	# transition. Infrastructure can be installed before the engine cutover, and a failed engine
-	# activation restores the previous binary; allowing both tested scripts prevents that safe
-	# rollback from turning the panel into a CSP-blocked white screen. Styles remain inline because
-	# live utilization bars use bounded width values. Do not add unsafe-inline for scripts.
+	# The panel JavaScript is served as a same-origin resource. This keeps the script policy strict
+	# without a hash that has to be manually synchronized with every embedded panel change. Styles
+	# remain inline because live utilization bars use bounded width values. Do not add unsafe-inline
+	# for scripts.
 	header {
-		Content-Security-Policy "default-src 'none'; script-src 'sha256-HwAgSxb4cCosiPzh71cAd+ezhb4wOTfgM+J/IlOGywI=' 'sha256-jQbEkmpjB3p+EhGuCF8W1ULdFD7n/MmUztF1w2tOAGg='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
+	}
+	@admin_panel_asset path /admin-panel.js
+	handle @admin_panel_asset {
+		import engine_backend
 	}
 	@admin_data path /overview /capacity /metrics /subs /spend-stats
 	handle @admin_data {

@@ -1566,7 +1566,7 @@ require_retired_vhost() {
 }
 
 final_verify_admin_panel() {
-  local panel matched=0 streak=0 expected_version candidate_panel
+  local panel panel_js matched=0 streak=0 expected_version candidate_panel
   # Ожидаемую версию берём из самого кандидата, а не из константы здесь: версия панели
   # уже живёт в HTML и в тесте крейта, и третья её копия в watchdog означала, что любой
   # бамп версии валит выкат, который на деле корректен (так и случилось на b6b048c).
@@ -1599,6 +1599,10 @@ final_verify_admin_panel() {
     sleep 3
   done
   [[ $matched == 1 ]] || wd_die "deployed engine does not contain the current admin panel"
+  panel_js=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:8790/admin-panel.js 2>/dev/null || true)
+  [[ -n $panel_js ]] && grep -Fq 'showLoading();' <<<"$panel_js" \
+    || wd_die "deployed engine does not serve the admin panel JavaScript asset"
 }
 
 final_verify_admin_routing() {

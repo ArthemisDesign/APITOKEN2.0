@@ -1429,12 +1429,15 @@ grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile
 grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
 grep -Fq 'Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"' \
   "$ROOT/deploy/Caddyfile"
-admin_script_hash=$(node -e 'const fs=require("fs"),crypto=require("crypto");const html=fs.readFileSync(process.argv[1],"utf8");const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];process.stdout.write(crypto.createHash("sha256").update(script).digest("base64"))' \
-  "$ROOT/crates/server/src/admin-panel.html")
-grep -Fq "script-src 'sha256-$admin_script_hash'" "$ROOT/deploy/Caddyfile"
-admin_csp=$(grep -F "script-src 'sha256-$admin_script_hash'" "$ROOT/deploy/Caddyfile")
-(( $(grep -o "sha256-[^']*" <<<"$admin_csp" | wc -l) == 2 )) \
-  || wd_die 'admin CSP must allow the current and immediately previous tested panel scripts'
+grep -Fq "script-src 'self'" "$ROOT/deploy/Caddyfile"
+! grep -Fq "script-src 'sha256-" "$ROOT/deploy/Caddyfile" \
+  || wd_die 'admin CSP must not depend on a hand-maintained inline script hash'
+grep -Fq '<script src="/admin-panel.js" defer></script>' \
+  "$ROOT/crates/server/src/admin-panel.html"
+! grep -Fq '<script>' "$ROOT/crates/server/src/admin-panel.html" \
+  || wd_die 'admin panel HTML must not contain executable inline scripts'
+grep -Fq '@admin_panel_asset path /admin-panel.js' "$ROOT/deploy/Caddyfile"
+grep -Fq 'route("/admin-panel.js", get(admin_panel_js))' "$ROOT/crates/server/src/http.rs"
 ! grep -Fq 'header_up x-admin-actor' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'header_up x-admin-account-id' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'reverse_proxy 127.0.0.1:3000 127.0.0.1:3001' "$ROOT/deploy/Caddyfile") == 1 ]]
@@ -1548,6 +1551,10 @@ grep -Fq 'streak >= 3' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel check must require consecutive current answers, not a single one"
 grep -Fq 'for _ in $(seq 1 20); do' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the admin-panel convergence window must outlast blue-green cutover and health checks"
+grep -Fq 'http://127.0.0.1:8790/admin-panel.js' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the admin-panel check must verify the external JavaScript asset"
+grep -Fq "showLoading();" "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the admin-panel asset check must verify non-empty JavaScript content"
 for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
   final_verify_codex_surface final_verify_gemini_surface; do
   grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \

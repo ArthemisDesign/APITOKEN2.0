@@ -28,6 +28,8 @@ use std::sync::Arc;
 
 /// Unified self-contained administration UI. Data is routed by the admin Caddy vhost.
 const ADMIN_PANEL_HTML: &str = include_str!("admin-panel.html");
+/// Admin UI logic is a same-origin asset so the Caddy CSP does not need a hand-maintained hash.
+const ADMIN_PANEL_JS: &str = include_str!("admin-panel.js");
 /// One-release migration marker used only by the `Combined` bridge. Fixed provider routers never
 /// inspect it, and Caddy strips/overwrites client input while the bridge is present.
 const API_PLANE_HEADER: &str = "x-apitoken-api-plane";
@@ -227,6 +229,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
+            .route("/admin-panel.js", get(admin_panel_js))
             .merge(admin)
             // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
             // services are installed. Fixed provider modes below never inspect this header.
@@ -253,6 +256,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/codex-subs", get(codex_subs))
             .route("/admin-panel", get(admin_panel))
+            .route("/admin-panel.js", get(admin_panel_js))
             .merge(admin)
             .fallback(forward),
         forward::ProviderMode::OpenAi => common
@@ -1112,6 +1116,23 @@ async fn admin_panel() -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
         ADMIN_PANEL_HTML,
+    )
+        .into_response()
+}
+
+/// Same-origin JavaScript for the unified admin panel. Keep it uncached: the HTML and asset are
+/// embedded in the same engine release, and a browser must not retain an old panel bundle after a
+/// blue-green cutover.
+async fn admin_panel_js() -> Response {
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        ADMIN_PANEL_JS,
     )
         .into_response()
 }
@@ -2500,14 +2521,15 @@ mod tests {
             !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()),
             "admin panel version must be numeric, got {version:?}"
         );
+        let panel_source = format!("{ADMIN_PANEL_HTML}{ADMIN_PANEL_JS}");
         // The spend breakdown must separate the Claude fleet from the Codex pool: both settle into
         // the same money tables, so an unattributed total hides which upstream earned it.
-        assert!(ADMIN_PANEL_HTML.contains("period.providers"));
-        assert!(ADMIN_PANEL_HTML.contains("OpenAI (Codex)"));
-        assert!(ADMIN_PANEL_HTML.contains("остаток / вместимость API $"));
-        assert!(ADMIN_PANEL_HTML.contains("остаток из "));
-        assert!(ADMIN_PANEL_HTML.contains("накоплено интервалов"));
-        assert!(ADMIN_PANEL_HTML.contains("w.cap_usd"));
+        assert!(panel_source.contains("period.providers"));
+        assert!(panel_source.contains("OpenAI (Codex)"));
+        assert!(panel_source.contains("остаток / вместимость API $"));
+        assert!(panel_source.contains("остаток из "));
+        assert!(panel_source.contains("накоплено интервалов"));
+        assert!(panel_source.contains("w.cap_usd"));
         for route in [
             "/admin/dashboard",
             "/admin/users",
@@ -2526,7 +2548,7 @@ mod tests {
             "/gemini-subs",
         ] {
             assert!(
-                ADMIN_PANEL_HTML.contains(route),
+                panel_source.contains(route),
                 "missing admin workflow route {route}"
             );
         }
@@ -2540,23 +2562,27 @@ mod tests {
             "crm-parsing",
         ] {
             assert!(
-                ADMIN_PANEL_HTML.contains(legacy_capability),
+                panel_source.contains(legacy_capability),
                 "missing migrated legacy capability {legacy_capability}"
             );
         }
-        assert!(!ADMIN_PANEL_HTML.contains("COMMERCIAL_ADMIN_KEY"));
-        assert!(!ADMIN_PANEL_HTML.contains("CONTROL_KEY"));
-        assert!(!ADMIN_PANEL_HTML.contains("SALES_ADMIN_KEY"));
-        assert!(ADMIN_PANEL_HTML.contains("expected_ja3"));
-        assert!(ADMIN_PANEL_HTML.contains("expected_ja4"));
-        assert!(ADMIN_PANEL_HTML.contains("userinfo_expected_ja3"));
-        assert!(ADMIN_PANEL_HTML.contains("userinfo_expected_ja4"));
-        assert!(ADMIN_PANEL_HTML.contains("usage_metadata_missing"));
-        assert!(ADMIN_PANEL_HTML.contains("sessionStorage.setItem(pendingKey"));
-        assert!(ADMIN_PANEL_HTML.contains("idempotency_key:idempotencyKey"));
-        assert!(ADMIN_PANEL_HTML.contains("Пароль (минимум 8)"));
-        assert!(ADMIN_PANEL_HTML.contains("minlength=\"8\""));
-        assert!(ADMIN_PANEL_HTML.contains("(values.first||'').length<8"));
+        assert!(!panel_source.contains("COMMERCIAL_ADMIN_KEY"));
+        assert!(!panel_source.contains("CONTROL_KEY"));
+        assert!(!panel_source.contains("SALES_ADMIN_KEY"));
+        assert!(panel_source.contains("expected_ja3"));
+        assert!(panel_source.contains("expected_ja4"));
+        assert!(panel_source.contains("userinfo_expected_ja3"));
+        assert!(panel_source.contains("userinfo_expected_ja4"));
+        assert!(panel_source.contains("usage_metadata_missing"));
+        assert!(panel_source.contains("sessionStorage.setItem(pendingKey"));
+        assert!(panel_source.contains("idempotency_key:idempotencyKey"));
+        assert!(panel_source.contains("Пароль (минимум 8)"));
+        assert!(panel_source.contains("minlength=\"8\""));
+        assert!(panel_source.contains("(values.first||'').length<8"));
+        assert!(ADMIN_PANEL_HTML.contains("<script src=\"/admin-panel.js\" defer></script>"));
+        assert!(!ADMIN_PANEL_HTML.contains("<script>"));
+        assert!(!ADMIN_PANEL_JS.is_empty());
+        assert!(ADMIN_PANEL_JS.contains("showLoading();"));
         for resilience_capability in [
             "class=\"error-center\"",
             "scheduleRecoveryProbe",
@@ -2568,10 +2594,10 @@ mod tests {
             "data-page=users",
         ] {
             assert!(
-                ADMIN_PANEL_HTML.contains(resilience_capability),
+                panel_source.contains(resilience_capability),
                 "missing admin resilience capability {resilience_capability}"
             );
         }
-        assert!(!ADMIN_PANEL_HTML.contains("setInterval(refresh"));
+        assert!(!panel_source.contains("setInterval(refresh"));
     }
 }
