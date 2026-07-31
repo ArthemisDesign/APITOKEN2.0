@@ -1807,9 +1807,6 @@ deploy_engine() {
   status "promoting and blue-green deploying the tested engine"
   github_status pending deploy/engine "Engine blue-green deployment in progress"
   github_deployment_start engine production-engine https://api.apitoken.sale/health
-  if (( codex_changed == 1 )); then
-    deploy_args+=(--promote-codex)
-  fi
   "$CONTROLLER_ROOT/deploy.sh" "${deploy_args[@]}" "$sha"
   "$CONTROLLER_ROOT/engine-bluegreen.sh" || controller_rc=$?
   if (( controller_rc != 0 )); then
