@@ -32,6 +32,9 @@ const MAX_JSONRPC_LINE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ORPHAN_EVENTS_PER_THREAD: usize = 64;
 const APP_SERVER_RUNTIME_DIR: &str = "/run/apitoken/codex-app-servers";
 const APP_SERVER_READY_MARKER: &str = "openai-codex-client-v1";
+/// Sentinel of the cross-generation busy marker. A separate word from the ready marker so a file
+/// of one kind can never be read as the other after a partial upgrade.
+const APP_SERVER_BUSY_MARKER: &str = "openai-codex-client-busy-v1";
 const PROCESS_GROUP_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PROCESS_GROUP_REAP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
@@ -1188,7 +1191,36 @@ fn shared_client_ready_marker(
     ))
 }
 
+/// Where this gateway process advertises that it has work in flight on `home`'s shared daemon.
+///
+/// Keyed by gateway pid alone, with neither the proxy pid nor the client lease: busy-ness is a
+/// property of the gateway process rather than of one transport generation, and a reader in another
+/// generation has to be able to name the file without knowing either.
+fn shared_client_busy_marker(home: &str, gateway_pid: u32) -> PathBuf {
+    Path::new(APP_SERVER_RUNTIME_DIR).join(format!(
+        "{}.client.{gateway_pid}.busy",
+        shared_daemon_id(home)
+    ))
+}
+
 fn publish_ready_marker(marker: &Path) -> Result<(), ProcessError> {
+    publish_marker(marker, APP_SERVER_READY_MARKER, "ready.tmp", true)
+}
+
+/// Publish or refresh this gateway's busy marker for a home.
+///
+/// Unlike the ready marker this never reuses an existing valid file: the modification time is the
+/// evidence of freshness a reader in another generation checks, so republishing has to move it.
+fn publish_busy_marker(marker: &Path) -> Result<(), ProcessError> {
+    publish_marker(marker, APP_SERVER_BUSY_MARKER, "busy.tmp", false)
+}
+
+fn publish_marker(
+    marker: &Path,
+    sentinel: &str,
+    temporary_extension: &str,
+    reuse_valid: bool,
+) -> Result<(), ProcessError> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -1205,12 +1237,12 @@ fn publish_ready_marker(marker: &Path) -> Result<(), ProcessError> {
             "shared ready-marker directory was unsafe".to_string(),
         ));
     }
-    if ready_marker_is_valid(marker)? {
+    if reuse_valid && marker_is_valid(marker, sentinel)? {
         return Ok(());
     }
-    remove_ready_marker(marker)?;
-    let temporary = marker.with_extension("ready.tmp");
-    remove_ready_marker(&temporary)?;
+    remove_marker(marker)?;
+    let temporary = marker.with_extension(temporary_extension);
+    remove_marker(&temporary)?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1218,7 +1250,7 @@ fn publish_ready_marker(marker: &Path) -> Result<(), ProcessError> {
     let mut file = options.open(&temporary).map_err(|error| {
         ProcessError::Spawn(format!("could not create shared ready marker: {error}"))
     })?;
-    if let Err(error) = writeln!(file, "{APP_SERVER_READY_MARKER}")
+    if let Err(error) = writeln!(file, "{sentinel}")
         .and_then(|()| file.sync_all())
         .and_then(|()| std::fs::rename(&temporary, marker))
     {
@@ -1230,7 +1262,7 @@ fn publish_ready_marker(marker: &Path) -> Result<(), ProcessError> {
     Ok(())
 }
 
-fn ready_marker_is_valid(marker: &Path) -> Result<bool, ProcessError> {
+fn marker_is_valid(marker: &Path, sentinel: &str) -> Result<bool, ProcessError> {
     let metadata = match std::fs::symlink_metadata(marker) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -1257,7 +1289,7 @@ fn ready_marker_is_valid(marker: &Path) -> Result<bool, ProcessError> {
     let contents = std::fs::read_to_string(marker).map_err(|error| {
         ProcessError::Spawn(format!("could not read shared ready marker: {error}"))
     })?;
-    if contents != format!("{APP_SERVER_READY_MARKER}\n") {
+    if contents != format!("{sentinel}\n") {
         return Err(ProcessError::Spawn(
             "shared ready-marker contents were invalid".to_string(),
         ));
@@ -1266,6 +1298,10 @@ fn ready_marker_is_valid(marker: &Path) -> Result<bool, ProcessError> {
 }
 
 fn remove_ready_marker(marker: &Path) -> Result<(), ProcessError> {
+    remove_marker(marker)
+}
+
+fn remove_marker(marker: &Path) -> Result<(), ProcessError> {
     let metadata = match std::fs::symlink_metadata(marker) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1283,6 +1319,139 @@ fn remove_ready_marker(marker: &Path) -> Result<(), ProcessError> {
     std::fs::remove_file(marker).map_err(|error| {
         ProcessError::Spawn(format!("could not remove shared ready marker: {error}"))
     })
+}
+
+/// Whether a gateway generation *other than this one* currently has work in flight on the shared
+/// daemon that owns `home`.
+///
+/// At a blue/green cutover the candidate generation has nothing of its own in flight while the old
+/// generation is still serving turns over the same serialized daemon. The candidate's control probe
+/// queues behind those turns and misses its deadline, and a missed deadline reads as a dead
+/// transport. The in-process `inflight` counter cannot see this — it counts only our own turns, so
+/// the candidate measures zero and concludes the home has gone silent. This marker is the only
+/// signal that crosses generations.
+///
+/// A marker counts only while it is provably current: the gateway that wrote it must still exist,
+/// the file must be ours and safe, and it must have been refreshed recently. Everything else is
+/// reaped on sight, because a leaked marker that silently suppressed recycling forever would be a
+/// worse failure than the one this prevents.
+fn shared_daemon_busy(
+    dir: &Path,
+    home: &str,
+    self_gateway_pid: u32,
+    now: std::time::SystemTime,
+    max_age: std::time::Duration,
+) -> bool {
+    let prefix = format!("{}.client.", shared_daemon_id(home));
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut busy = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(owner) = rest.strip_suffix(".busy") else {
+            continue;
+        };
+        let Ok(owner) = owner.parse::<u32>() else {
+            continue;
+        };
+        // Our own load is already known exactly from the in-process counter. The marker exists to
+        // report the generations we cannot otherwise see, so counting ourselves here would only
+        // blur which of the two signals actually fired.
+        if owner == self_gateway_pid {
+            continue;
+        }
+        if busy_marker_is_current(&entry.path(), owner, now, max_age) {
+            busy = true;
+        } else {
+            let _ = remove_marker(&entry.path());
+        }
+    }
+    busy
+}
+
+fn busy_marker_is_current(
+    marker: &Path,
+    owner: u32,
+    now: std::time::SystemTime,
+    max_age: std::time::Duration,
+) -> bool {
+    if !gateway_process_is_alive(owner) {
+        return false;
+    }
+    let Ok(metadata) = std::fs::symlink_metadata(marker) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    // A timestamp in the future can only come from clock skew, and the owner is known to be alive;
+    // reading it as stale would recycle a home that is very probably serving.
+    if let Ok(age) = now.duration_since(modified) {
+        if age > max_age {
+            return false;
+        }
+    }
+    marker_is_valid(marker, APP_SERVER_BUSY_MARKER).unwrap_or(false)
+}
+
+/// Whether a bare pid still names a live process. Signal 0 runs the existence and permission checks
+/// without delivering anything; `EPERM` means the process is there but owned by another uid.
+fn gateway_process_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Announce that this gateway has work in flight on `home`'s shared daemon. Idempotent, and each
+/// call moves the marker's timestamp forward so a reader can tell a working generation from one
+/// that leaked a file and went away.
+pub(crate) fn publish_shared_busy_marker(home: &str) -> Result<(), ProcessError> {
+    publish_busy_marker(&shared_client_busy_marker(home, std::process::id()))
+}
+
+/// Withdraw this gateway's claim on `home`. Best-effort: a marker we fail to remove is reaped by
+/// the next reader once it goes stale.
+pub(crate) fn clear_shared_busy_marker(home: &str) {
+    let _ = remove_marker(&shared_client_busy_marker(home, std::process::id()));
+}
+
+/// Whether another gateway generation is serving turns on `home` right now.
+pub(crate) fn shared_daemon_busy_elsewhere(home: &str, max_age: std::time::Duration) -> bool {
+    shared_daemon_busy(
+        Path::new(APP_SERVER_RUNTIME_DIR),
+        home,
+        std::process::id(),
+        std::time::SystemTime::now(),
+        max_age,
+    )
 }
 
 pub(crate) fn app_server_config_overrides() -> [&'static str; 10] {
@@ -1638,10 +1807,193 @@ mod tests {
         let marker = root.join("client.ready");
 
         publish_ready_marker(&marker).expect("publish marker");
-        assert!(ready_marker_is_valid(&marker).expect("validate marker"));
+        assert!(marker_is_valid(&marker, APP_SERVER_READY_MARKER).expect("validate marker"));
         publish_ready_marker(&marker).expect("idempotent publish");
         remove_ready_marker(&marker).expect("remove marker");
-        assert!(!ready_marker_is_valid(&marker).expect("marker absent"));
+        assert!(!marker_is_valid(&marker, APP_SERVER_READY_MARKER).expect("marker absent"));
+    }
+
+    /// A live process id other than this one. `init` is always present, and the aliveness check
+    /// counts `EPERM` — "exists, owned by somebody else" — as alive, so this works unprivileged.
+    const LIVE_FOREIGN_PID: u32 = 1;
+
+    fn busy_test_root(label: &str) -> (PathBuf, LiveTempTree) {
+        let suffix = new_client_lease().expect("unique marker-test suffix");
+        let root = std::env::temp_dir().join(format!("codex-{label}-{suffix}"));
+        std::fs::create_dir(&root).expect("create marker-test root");
+        let cleanup = LiveTempTree(root.clone());
+        (root, cleanup)
+    }
+
+    fn busy_marker_in(root: &Path, home: &str, owner: u32) -> PathBuf {
+        root.join(format!("{}.client.{owner}.busy", shared_daemon_id(home)))
+    }
+
+    fn a_moment() -> std::time::Duration {
+        std::time::Duration::from_secs(60)
+    }
+
+    #[test]
+    fn a_busy_marker_is_named_for_the_gateway_that_owns_it() {
+        assert_eq!(
+            shared_client_busy_marker("/srv/codex/homes/alpha", 4321),
+            Path::new(&format!(
+                "/run/apitoken/codex-app-servers/{}.client.4321.busy",
+                shared_daemon_id("/srv/codex/homes/alpha")
+            ))
+        );
+    }
+
+    #[test]
+    fn a_live_foreign_gateway_marks_the_daemon_busy() {
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-live");
+        let marker = busy_marker_in(&root, home, LIVE_FOREIGN_PID);
+        publish_busy_marker(&marker).expect("publish busy marker");
+
+        assert!(shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            std::time::SystemTime::now(),
+            a_moment()
+        ));
+        assert!(marker.exists(), "a current claim must survive being read");
+    }
+
+    #[test]
+    fn a_busy_marker_from_a_departed_gateway_is_not_evidence_and_is_reaped() {
+        // A pid that has certainly been released: spawn a process and reap it before asking.
+        let mut child = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("spawn a short-lived child");
+        let departed = child.id();
+        child.wait().expect("reap the child");
+
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-dead");
+        let marker = busy_marker_in(&root, home, departed);
+        publish_busy_marker(&marker).expect("publish busy marker");
+
+        assert!(!shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            std::time::SystemTime::now(),
+            a_moment()
+        ));
+        assert!(
+            !marker.exists(),
+            "a claim whose owner is gone must be reaped, not left to suppress recycling"
+        );
+    }
+
+    #[test]
+    fn a_busy_marker_that_stopped_being_refreshed_is_not_evidence_and_is_reaped() {
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-stale");
+        let marker = busy_marker_in(&root, home, LIVE_FOREIGN_PID);
+        publish_busy_marker(&marker).expect("publish busy marker");
+
+        // Ask from far enough in the future that the claim has aged out of its refresh window.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3_600);
+        assert!(!shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            later,
+            a_moment()
+        ));
+        assert!(
+            !marker.exists(),
+            "a claim nobody refreshes must not defer a recycle forever"
+        );
+    }
+
+    #[test]
+    fn a_busy_marker_with_foreign_contents_fails_closed_and_is_reaped() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-foreign");
+        let marker = busy_marker_in(&root, home, LIVE_FOREIGN_PID);
+        std::fs::write(&marker, "unexpected\n").expect("write foreign marker");
+        #[cfg(unix)]
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict foreign marker");
+
+        assert!(!shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            std::time::SystemTime::now(),
+            a_moment()
+        ));
+        assert!(!marker.exists(), "a file we did not write is not a claim");
+    }
+
+    #[test]
+    fn a_busy_marker_belonging_to_another_daemon_is_ignored() {
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-other");
+        let marker = busy_marker_in(&root, "/srv/codex/homes/beta", LIVE_FOREIGN_PID);
+        publish_busy_marker(&marker).expect("publish busy marker");
+
+        assert!(!shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            std::time::SystemTime::now(),
+            a_moment()
+        ));
+        assert!(
+            marker.exists(),
+            "another daemon's claim is none of this home's business"
+        );
+    }
+
+    #[test]
+    fn our_own_busy_marker_says_nothing_about_other_generations() {
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-self");
+        let marker = busy_marker_in(&root, home, std::process::id());
+        publish_busy_marker(&marker).expect("publish busy marker");
+
+        // Our own load is already known exactly from the in-process counter; reporting it here
+        // would make the two signals indistinguishable in the journal.
+        assert!(!shared_daemon_busy(
+            &root,
+            home,
+            std::process::id(),
+            std::time::SystemTime::now(),
+            a_moment()
+        ));
+        assert!(marker.exists(), "our own claim must not be reaped by us");
+    }
+
+    #[test]
+    fn refreshing_a_busy_marker_moves_its_timestamp_forward() {
+        let home = "/srv/codex/homes/alpha";
+        let (root, _cleanup) = busy_test_root("busy-refresh");
+        let marker = busy_marker_in(&root, home, LIVE_FOREIGN_PID);
+        publish_busy_marker(&marker).expect("publish busy marker");
+        let first = std::fs::metadata(&marker)
+            .and_then(|metadata| metadata.modified())
+            .expect("first timestamp");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        publish_busy_marker(&marker).expect("refresh busy marker");
+        let second = std::fs::metadata(&marker)
+            .and_then(|metadata| metadata.modified())
+            .expect("second timestamp");
+
+        // Freshness is the whole guard against a leaked claim, so a refresh that reused the
+        // existing file — as the ready marker deliberately does — would silently disable it.
+        assert!(
+            second > first,
+            "a refresh must move the timestamp that proves the claim is live"
+        );
     }
 
     #[tokio::test]

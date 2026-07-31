@@ -473,15 +473,70 @@ impl CodexHome {
         if self.retired.load(Ordering::Acquire) {
             return None;
         }
-        self.inflight.fetch_add(1, Ordering::AcqRel);
+        let busy_home = self.shared_busy_home();
+        if self.inflight.fetch_add(1, Ordering::AcqRel) == 0 {
+            // First turn on an idle home: tell the other gateway generations that this daemon is
+            // now working. They cannot see our counter, and without this a generation with nothing
+            // of its own in flight reads its queued control probe as a dead transport.
+            if let Some(home) = busy_home.as_deref() {
+                if let Err(error) = process::publish_shared_busy_marker(home) {
+                    eprintln!(
+                        "Codex home {} could not publish its busy marker [{}]",
+                        self.id(),
+                        error.diagnostic_class()
+                    );
+                }
+            }
+        }
         if self.retired.load(Ordering::Acquire) {
-            release_turn(&self.inflight, &self.turns_idle);
+            release_turn(&self.inflight, &self.turns_idle, busy_home.as_deref());
             return None;
         }
         Some(TurnSlot {
             inflight: self.inflight.clone(),
             idle: self.turns_idle.clone(),
+            busy_home,
         })
+    }
+
+    /// The home whose cross-generation busy marker this gateway owns, or `None` when the transport
+    /// is an owned child and there is no daemon shared with anybody to report to.
+    fn shared_busy_home(&self) -> Option<String> {
+        (self.cfg.transport == CodexTransport::SharedDaemonProxy).then(|| self.spec.path.clone())
+    }
+
+    /// Whether a gateway generation other than this one is serving turns on this home's daemon.
+    fn shared_daemon_busy_elsewhere(&self) -> bool {
+        let Some(home) = self.shared_busy_home() else {
+            return false;
+        };
+        process::shared_daemon_busy_elsewhere(&home, self.busy_marker_max_age())
+    }
+
+    /// Keep this gateway's claim current while it is serving. A marker's age is the evidence that
+    /// separates a live claim from one a departed generation leaked, so a turn that legitimately
+    /// runs for minutes has to keep pushing the timestamp forward.
+    fn refresh_shared_busy_marker(&self) {
+        if self.inflight() == 0 {
+            return;
+        }
+        let Some(home) = self.shared_busy_home() else {
+            return;
+        };
+        if let Err(error) = process::publish_shared_busy_marker(&home) {
+            eprintln!(
+                "Codex home {} could not refresh its busy marker [{}]",
+                self.id(),
+                error.diagnostic_class()
+            );
+        }
+    }
+
+    /// How long a busy marker is trusted without a refresh. Several sweep intervals: one missed
+    /// refresh must not strip a working generation of its claim, while a generation that stopped
+    /// refreshing altogether has to lose it soon enough that its home stays recyclable.
+    fn busy_marker_max_age(&self) -> std::time::Duration {
+        std::time::Duration::from_secs((self.probe_interval_secs().max(1) as u64).saturating_mul(4))
     }
 
     fn identity_is_current(&self) -> bool {
@@ -925,6 +980,53 @@ mod provider_lock_tests {
 
     static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
 
+    /// The cutover regression, stated directly.
+    ///
+    /// A candidate generation has nothing in flight of its own while the old generation keeps
+    /// serving turns over the shared serialized daemon. Its probe queues behind them and times out.
+    /// Before the daemon-wide check existed this was indistinguishable from a dead transport, so
+    /// the candidate started a deadline streak against a home that was demonstrably working — and
+    /// nothing in the suite said so, which is how it reached production.
+    #[test]
+    fn a_candidate_generation_does_not_convict_a_daemon_another_generation_is_driving() {
+        let deferral = probe_deferral(true, 0, || true);
+        assert!(
+            matches!(deferral, Some(ProbeDeferral::OtherGeneration)),
+            "a probe queued behind another generation's turns is not evidence of a dead transport"
+        );
+    }
+
+    /// The other half of the contract: without a busy daemon the deadline must still count, or the
+    /// fix would be a muffler that keeps a genuinely wedged home routable forever.
+    #[test]
+    fn a_silent_daemon_still_counts_its_deadlines() {
+        assert!(
+            probe_deferral(true, 0, || false).is_none(),
+            "an idle home that stops answering must still escalate"
+        );
+    }
+
+    #[test]
+    fn our_own_turns_explain_a_deadline_without_reading_the_runtime_directory() {
+        let mut consulted = false;
+        let deferral = probe_deferral(true, 2, || {
+            consulted = true;
+            true
+        });
+        assert!(matches!(deferral, Some(ProbeDeferral::OwnTurns(2))));
+        assert!(
+            !consulted,
+            "the daemon-wide scan costs a directory read and answers a question already settled"
+        );
+    }
+
+    #[test]
+    fn only_a_deadline_is_ambiguous_enough_to_defer() {
+        // EOF, protocol and RPC failures are verdicts about the transport however busy the home is.
+        assert!(probe_deferral(false, 0, || true).is_none());
+        assert!(probe_deferral(false, 3, || true).is_none());
+    }
+
     #[test]
     fn admission_rejects_full_windows_and_explicit_provider_limit() {
         let observed_hundred = CodexRateLimits {
@@ -1049,18 +1151,71 @@ fn durable_health_row(durable: health::DurableAccountHealth) -> registry::CodexH
 pub(crate) struct TurnSlot {
     inflight: Arc<AtomicUsize>,
     idle: Arc<Notify>,
+    /// Home whose cross-generation busy marker this slot helps hold, set only for the shared-daemon
+    /// transport. The last slot to be released withdraws it.
+    busy_home: Option<String>,
 }
 
-fn release_turn(inflight: &AtomicUsize, idle: &Notify) {
+fn release_turn(inflight: &AtomicUsize, idle: &Notify, busy_home: Option<&str>) {
     if inflight.fetch_sub(1, Ordering::AcqRel) == 1 {
+        // The home went idle: withdraw the claim so a genuinely silent daemon stops being excused.
+        if let Some(home) = busy_home {
+            process::clear_shared_busy_marker(home);
+        }
         idle.notify_waiters();
     }
 }
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
-        release_turn(&self.inflight, &self.idle);
+        release_turn(&self.inflight, &self.idle, self.busy_home.as_deref());
     }
+}
+
+/// Why a failed probe is being read as evidence about our own queue rather than about the home.
+enum ProbeDeferral {
+    /// This gateway is itself driving turns on the home.
+    OwnTurns(usize),
+    /// Another gateway generation is driving the daemon we share with it.
+    OtherGeneration,
+}
+
+/// Decide whether a probe failure says anything about the transport.
+///
+/// A busy home is not a silent one. The app-server serializes work per home, so while a turn is
+/// generating — legitimately minutes for a reasoning model — a control call queues behind it and
+/// cannot answer inside the probe deadline. Reading that as a dead transport is backwards: the home
+/// is proving its liveness by serving, and the timeout is measuring our own traffic.
+///
+/// In production this took out exactly the homes that were working. The freshest, highest-capacity
+/// home took the load, missed three probes behind its own turns, and was recycled for it, which
+/// moved the load to the next home and repeated.
+///
+/// The same queue exists one generation over, and that case is why this is a function rather than a
+/// condition inlined in the sweep. `inflight` counts only the turns *this process* sent, so at a
+/// blue/green cutover the candidate generation sees zero while the old generation still drives the
+/// very same serialized daemon; its probe queues behind those turns and looks identical to a dead
+/// transport. Deploys survived it only because a candidate starts with no traffic on it.
+///
+/// The daemon-wide check is deliberately last and lazy: it reads the runtime directory, and there
+/// is nothing to learn from it once our own counter has already explained the timeout.
+fn probe_deferral(
+    deadline: bool,
+    inflight: usize,
+    daemon_busy_elsewhere: impl FnOnce() -> bool,
+) -> Option<ProbeDeferral> {
+    // Only a deadline is ambiguous. EOF, protocol and RPC failures are verdicts about the transport
+    // no matter how busy the home is, and must keep counting.
+    if !deadline {
+        return None;
+    }
+    if inflight > 0 {
+        return Some(ProbeDeferral::OwnTurns(inflight));
+    }
+    if daemon_busy_elsewhere() {
+        return Some(ProbeDeferral::OtherGeneration);
+    }
+    None
 }
 
 /// Outcome of choosing a home for one request.
@@ -1714,6 +1869,10 @@ impl CodexGateway {
                         return;
                     }
                 };
+                // Renew this gateway's claim before probing. A turn that runs for minutes would
+                // otherwise let the marker age past the point where another generation still trusts
+                // it, and the cutover protection below would quietly stop applying.
+                home.refresh_shared_busy_marker();
                 match process.probe().await {
                     Ok(()) => home.mark_healthy(),
                     Err(error) => {
@@ -1724,26 +1883,21 @@ impl CodexGateway {
                         // routable indefinitely: the one failure mode with no consequence became
                         // the one that took the pool down.
                         let deadline = matches!(error, ProcessError::Timeout(_));
-                        // A busy home is not a silent one.
-                        //
-                        // The app-server serializes work per home, so while a turn is generating —
-                        // and a turn may legitimately run for minutes — a control call queues behind
-                        // it and cannot answer inside the probe deadline. Treating that as evidence
-                        // of a dead transport is backwards: the home is proving its liveness by
-                        // serving, and the only thing the timeout measures is our own traffic.
-                        //
-                        // In production this took out exactly the homes that were working. The
-                        // freshest, highest-capacity home took the load, missed three probes behind
-                        // its own turns, and was recycled for it, which moved the load to the next
-                        // home and repeated. A probe deadline therefore only counts against a home
-                        // that has nothing in flight.
-                        let busy = home.inflight() > 0;
-                        if deadline && busy {
-                            eprintln!(
-                                "Codex home {} probe deferred while serving {} turn(s)",
-                                home.id(),
-                                home.inflight()
-                            );
+                        if let Some(deferral) =
+                            probe_deferral(deadline, home.inflight(), || {
+                                home.shared_daemon_busy_elsewhere()
+                            })
+                        {
+                            match deferral {
+                                ProbeDeferral::OwnTurns(turns) => eprintln!(
+                                    "Codex home {} probe deferred while serving {turns} turn(s)",
+                                    home.id()
+                                ),
+                                ProbeDeferral::OtherGeneration => eprintln!(
+                                    "Codex home {} probe deferred while another gateway generation is serving its daemon",
+                                    home.id()
+                                ),
+                            }
                             return;
                         }
                         home.note_process_error(&error);
