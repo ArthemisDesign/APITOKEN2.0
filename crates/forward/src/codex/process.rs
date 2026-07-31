@@ -4,6 +4,7 @@
 //! slots use the official websocket control protocol through `codex app-server proxy`, leaving the
 //! separately supervised Unix-socket daemon as the only owner of each authenticated home.
 
+use super::discovery;
 use super::{CodexConfig, CodexHomeSpec, CodexTransport};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -433,7 +434,8 @@ impl CodexProcess {
         self.require_subscription().await?;
         if let Err(error) = self.refresh_rate_limits().await {
             eprintln!(
-                "Codex rate-limit snapshot unavailable [{}]",
+                "Codex home {} rate-limit snapshot unavailable [{}]",
+                discovery::home_id(&self.home),
                 error.diagnostic_class()
             );
         }
@@ -668,8 +670,16 @@ impl CodexProcess {
         if let Err(error) = self.refresh_rate_limits().await {
             // The snapshot is observational. A profile that answered `account/read` is usable even
             // when this endpoint is briefly unavailable.
+            //
+            // Naming the home is what makes this line actionable. Without it the pool could not
+            // distinguish "one endpoint blipped once" from "this subscription's quota has not been
+            // refreshed in hours", which is a real state: `account/read` keeps answering, so the
+            // home stays healthy and routable while its quota reading is frozen at whatever it last
+            // said. Production has a home in exactly that state right now and the log could not say
+            // which one — it had to be inferred from a gauge that had stopped moving.
             eprintln!(
-                "Codex rate-limit snapshot unavailable [{}]",
+                "Codex home {} rate-limit snapshot unavailable [{}]",
+                discovery::home_id(&self.home),
                 error.diagnostic_class()
             );
         }
