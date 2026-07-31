@@ -63,7 +63,7 @@ export function PricingOverview() {
           <div className="tier-mobile-row"><T k="discount_col">Your price / 1M in · out</T><span>{priceFrom(model.inputPerM)} · {priceFrom(model.outputPerM)}</span></div>
         </div>)}
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Every request is metered at the provider's official list price, then billed at half of it. The same flat discount covers every Claude and GPT model, including cache rates.</T>
+      <T k="tier_footnote" as="p" className="tier-footnote">Every request is metered at the provider&apos;s official list price, then billed at half of it. The same flat discount covers every Claude and GPT model, including cache rates.</T>
       <Link className="tier-docs-link" href="/docs#pricing"><T k="tier_docs">Read the full pricing guide</T> →</Link>
     </div>
   </div>;

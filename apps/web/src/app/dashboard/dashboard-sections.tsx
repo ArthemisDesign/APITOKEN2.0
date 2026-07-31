@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type CheckoutView, type LedgerEntry, type TotpSetup, type UsageView } from "@/lib/api";
 import { normalizeUsd } from "@/lib/money";
 import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
@@ -715,7 +715,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
         <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title" role="table">
           <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">{copy.date}</th><th scope="col" role="columnheader" className="tnum">{copy.histPaid}</th><th scope="col" role="columnheader">{copy.histDiscount}</th><th scope="col" role="columnheader" className="tnum">{copy.histApiValue}</th><th scope="col" role="columnheader">{copy.reference}</th></tr></thead>
           <tbody role="rowgroup">{topups.length === 0 ? <tr role="row"><td role="cell" colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
-            const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf(account);
+            const d = (entry as { discountPercent?: number }).discountPercent ?? discountOf();
             const paidNano = BigInt(entry.amountNano);
             const officialValueNano = officialNanoFromCharged(paidNano, bpFromDiscount(d));
             return <tr role="row" key={entry.id}>
@@ -742,8 +742,8 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
 
   // The current rate is only used for current pricing and remaining-balance projections.
   // Historical usage amounts below come directly from the engine's settled usage rows.
-  const multiplierBp = paymentBasisPoints(account);
-  const discount = discountOf(account);
+  const multiplierBp = paymentBasisPoints();
+  const discount = discountOf();
 
   // Stable model colours are shared by the distribution bar and model table.
   const modelColor = new Map<string, string>();
@@ -1219,10 +1219,10 @@ function interpolate(template: string, values: Record<string, string | number>):
 // --- Плоская скидка → сколько реального API получает клиент ---
 // Одна ставка для всех аккаунтов: клиент платит 50% официальной цены (5000 bp, ×2 ценности).
 // Поля pricing из commerce (тиры/партнёрские полы) в v2 UI не участвуют.
-function paymentBasisPoints(_account: AccountView): bigint {
+function paymentBasisPoints(): bigint {
   return bpFromDiscount(FLAT_DISCOUNT_PERCENT);
 }
-function discountOf(_account: AccountView): number {
+function discountOf(): number {
   return FLAT_DISCOUNT_PERCENT;
 }
 function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {

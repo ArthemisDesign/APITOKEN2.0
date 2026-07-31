@@ -509,7 +509,7 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "How do I start the trial?", a: "Create a new account with Google or GitHub. The $10 of official-price usage is added automatically; email and password accounts are not eligible." },
-      { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; your progressive discount applies immediately." },
+      { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; the flat 50% discount applies immediately." },
     ],
     related: ["free-claude-api-key", "claude-api-without-waitlist", "claude-api-quick-setup", "claude-haiku-api"],
   },

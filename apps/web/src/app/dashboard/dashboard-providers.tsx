@@ -5,10 +5,12 @@
 // панель с пошаговой инструкцией (в стиле OpenRouter): ключ → первый запрос на нескольких
 // языках → стриминг → справочник эндпоинтов. Все команды и заголовки совпадают с /docs и
 // lib/claude-connection.ts — единственный источник правды по подключению.
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ANTHROPIC_BASE_URL, OPENAI_BASE_URL, claudeModels, formatUsd, openaiModels, priceFrom, type CatalogModel } from "@/lib/models";
 import { CLAUDE_DEFAULT_MODEL, OPENAI_DEFAULT_MODEL } from "@/lib/claude-connection";
 import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
+import { DOCS_URL } from "@/lib/site-links";
 import { useI18n } from "@/components/i18n-provider";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { CopyButton, PageHeading } from "./dashboard-sections";
@@ -36,6 +38,10 @@ type ProviderCard = {
   endpoint: string;
   models: number;
   lineup: string;
+  auth: string;
+  interfaces: string;
+  tools: string;
+  defaultModel: string;
   descKey: keyof DashboardCopy;
   apiKindKey: keyof DashboardCopy;
 };
@@ -48,16 +54,24 @@ const PROVIDERS: ProviderCard[] = [
     endpoint: ANTHROPIC_BASE_URL,
     models: claudeModels.length,
     lineup: "Claude Opus · Sonnet · Haiku",
+    auth: "x-api-key",
+    interfaces: "Messages · Streaming · Tools",
+    tools: "Claude Code · Cursor · Cline · Anthropic SDK",
+    defaultModel: CLAUDE_DEFAULT_MODEL,
     descKey: "providerAnthropicDesc",
     apiKindKey: "providerAnthropicApi",
   },
   {
     key: "openai",
     name: "OpenAI",
-    mark: "G",
+    mark: "O",
     endpoint: OPENAI_BASE_URL,
     models: openaiModels.length,
     lineup: "GPT-5.6 Sol · Terra · Luna, GPT-5.5, GPT-5.4",
+    auth: "Authorization: Bearer",
+    interfaces: "Responses · Chat Completions · Streaming",
+    tools: "Codex CLI · OpenAI SDK · opencode · compatible clients",
+    defaultModel: OPENAI_DEFAULT_MODEL,
     descKey: "providerOpenaiDesc",
     apiKindKey: "providerOpenaiApi",
   },
@@ -241,55 +255,110 @@ function CodeBlock({ code, lang, copyLabel, copiedLabel }: { code: string; lang:
 const REQUEST_TABS = ["cURL", "Python", "TypeScript"] as const;
 type RequestTab = typeof REQUEST_TABS[number];
 
+function ProviderMark({ provider, large = false }: { provider: ProviderCard; large?: boolean }) {
+  return <span className={`provider-mark ${provider.key}${large ? " provider-mark-large" : ""}`} aria-hidden="true">
+    <span>{provider.mark}</span>
+  </span>;
+}
+
 function QuickStartDrawer({ provider, onClose, onCreateKey }: { provider: ProviderCard; onClose(): void; onCreateKey(): void }) {
   const { language } = useI18n();
   const copy = dashboardCopy[language];
   const [tab, setTab] = useState<RequestTab>("cURL");
+  const drawerRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
   const snippets = provider.key === "anthropic" ? ANTHROPIC_SNIPPETS : OPENAI_SNIPPETS;
   const requestCode = tab === "cURL" ? snippets.curl : tab === "Python" ? snippets.python : snippets.typescript;
   const requestLang: SnippetLang = tab === "cURL" ? "bash" : tab === "Python" ? "python" : "typescript";
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !drawerRef.current) return;
+      const focusable = [...drawerRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hasAttribute("hidden"));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const focusFrame = window.requestAnimationFrame(() => closeRef.current?.focus());
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
-    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
   }, [onClose]);
 
-  return <div className="qs-overlay" onClick={onClose}>
-    <aside className="qs-drawer" role="dialog" aria-modal="true" aria-label={`${provider.name} — ${copy.qsTitle}`} onClick={(event) => event.stopPropagation()}>
+  return <div className="qs-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <aside ref={drawerRef} className="qs-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <header className="qs-head">
-        <div>
-          <h2>{copy.qsTitle}</h2>
-          <p>{provider.key === "anthropic" ? copy.qsAnthropicSubtitle : copy.qsOpenaiSubtitle}</p>
+        <div className="qs-head-main">
+          <ProviderMark provider={provider} />
+          <div>
+            <div className="qs-kicker"><span>{provider.name}</span><span>{copy.qsEstimate}</span></div>
+            <h2 id={titleId}>{copy.qsTitle}</h2>
+            <p>{provider.key === "anthropic" ? copy.qsAnthropicSubtitle : copy.qsOpenaiSubtitle}</p>
+          </div>
         </div>
-        <button className="qs-close" onClick={onClose} aria-label={copy.closeMenu}>×</button>
+        <button ref={closeRef} className="qs-close" onClick={onClose} aria-label={copy.closeMenu}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
       </header>
       <div className="qs-body">
+        <div className="qs-context">
+          <span className="qs-context-icon" aria-hidden="true">↳</span>
+          <div><b>{copy.qsSameKeyTitle}</b><p>{copy.qsSameKeyText}</p></div>
+        </div>
         <section className="qs-step">
-          <div className="qs-step-head"><span className="qs-step-num">1</span><h3>{copy.qsStep1Title}</h3></div>
-          <p>{copy.qsStep1Text}</p>
-          <button className="btn btn-primary btn-sm qs-key-btn" onClick={onCreateKey}>+ {copy.getKey}</button>
-          <CodeBlock code={snippets.env} lang="bash" copyLabel={copy.copy} copiedLabel={copy.copied} />
-        </section>
-
-        <section className="qs-step">
-          <div className="qs-step-head"><span className="qs-step-num">2</span><h3>{copy.qsStep2Title}</h3></div>
-          <p>{provider.key === "anthropic" ? copy.qsStep2AnthropicText : copy.qsStep2OpenaiText}</p>
-          <div className="chart-toggle qs-tabs" role="tablist">
-            {REQUEST_TABS.map((name) => <button key={name} type="button" role="tab" aria-selected={tab === name} className={tab === name ? "on" : ""} onClick={() => setTab(name)}>{name}</button>)}
+          <div className="qs-step-rail"><span className="qs-step-num">1</span></div>
+          <div className="qs-step-content">
+            <div className="qs-step-head"><span>{copy.qsStepLabel} 01</span><h3>{copy.qsStep1Title}</h3></div>
+            <p>{copy.qsStep1Text}</p>
+            <div className="qs-step-actions"><button className="btn btn-primary btn-sm qs-key-btn" onClick={onCreateKey}>+ {copy.getKey}</button><span>{copy.qsKeySecurity}</span></div>
+            <CodeBlock code={snippets.env} lang="bash" copyLabel={copy.copy} copiedLabel={copy.copied} />
           </div>
-          <CodeBlock code={requestCode} lang={requestLang} copyLabel={copy.copy} copiedLabel={copy.copied} />
         </section>
 
         <section className="qs-step">
-          <div className="qs-step-head"><span className="qs-step-num">3</span><h3>{copy.qsStep3Title}</h3></div>
-          <p>{copy.qsStep3Text}</p>
-          <CodeBlock code={snippets.stream} lang="bash" copyLabel={copy.copy} copiedLabel={copy.copied} />
+          <div className="qs-step-rail"><span className="qs-step-num">2</span></div>
+          <div className="qs-step-content">
+            <div className="qs-step-head"><span>{copy.qsStepLabel} 02</span><h3>{copy.qsStep2Title}</h3></div>
+            <p>{provider.key === "anthropic" ? copy.qsStep2AnthropicText : copy.qsStep2OpenaiText}</p>
+            <div className="chart-toggle qs-tabs" role="tablist" aria-label={copy.qsLanguageTabs}>
+              {REQUEST_TABS.map((name) => <button key={name} type="button" role="tab" aria-selected={tab === name} className={tab === name ? "on" : ""} onClick={() => setTab(name)}>{name}</button>)}
+            </div>
+            <CodeBlock code={requestCode} lang={requestLang} copyLabel={copy.copy} copiedLabel={copy.copied} />
+          </div>
+        </section>
+
+        <section className="qs-step">
+          <div className="qs-step-rail"><span className="qs-step-num">3</span></div>
+          <div className="qs-step-content">
+            <div className="qs-step-head"><span>{copy.qsStepLabel} 03</span><h3>{copy.qsStep3Title}</h3></div>
+            <p>{copy.qsStep3Text}</p>
+            <CodeBlock code={snippets.stream} lang="bash" copyLabel={copy.copy} copiedLabel={copy.copied} />
+          </div>
         </section>
 
         <section className="qs-endpoints">
-          <h3>{copy.qsEndpointsTitle}</h3>
+          <div className="qs-endpoints-head"><span>{copy.qsReference}</span><h3>{copy.qsEndpointsTitle}</h3></div>
           {endpointRefs(provider.key, copy).map((ref) => <div key={ref.url} className="qs-endpoint">
             <p className="qs-endpoint-note">{copy[ref.noteKey]}</p>
             <div className="qs-endpoint-url"><b>{ref.method}</b><code>{ref.url}</code><CopyButton value={ref.url} className="qs-code-copy-inline" label={copy.copy} copiedLabel={copy.copied} /></div>
@@ -298,6 +367,10 @@ function QuickStartDrawer({ provider, onClose, onCreateKey }: { provider: Provid
             </dl>
           </div>)}
         </section>
+        <footer className="qs-footer">
+          <div><b>{copy.qsFullDocs}</b><span>{copy.qsFullDocsHint}</span></div>
+          <Link className="btn btn-ghost btn-sm" href={`${DOCS_URL}#quickstart`} onClick={onClose}>{copy.docsShort}</Link>
+        </footer>
       </div>
     </aside>
   </div>;
@@ -311,8 +384,12 @@ function cacheRates(model: CatalogModel): { read: number; write: number } {
     : { read: model.cachedInputPerM, write: model.cacheWritePerM };
 }
 
+function PriceValue({ official }: { official: number }) {
+  return <span className="provider-price-value"><b>{priceFrom(official)}</b><s>{formatUsd(official)}</s></span>;
+}
+
 function PriceCell({ official }: { official: number }) {
-  return <td className="tnum"><b>{priceFrom(official)}</b> <s>{formatUsd(official)}</s></td>;
+  return <td className="tnum"><PriceValue official={official} /></td>;
 }
 
 function ProviderDetail({ provider, onBack, onQuickstart }: { provider: ProviderCard; onBack(): void; onQuickstart(): void }) {
@@ -323,29 +400,37 @@ function ProviderDetail({ provider, onBack, onQuickstart }: { provider: Provider
     () => new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", { month: "short", day: "numeric", year: "numeric" }),
     [language],
   );
-  return <>
-    <button className="link plain-button provider-back" onClick={onBack}>← {copy.providersTitle}</button>
-    <div className="provider-detail-head">
-      <span className={`model-provider-mark provider-mark-lg ${provider.key}`} aria-hidden="true">{provider.mark}</span>
-      <div className="provider-detail-title">
-        <h2>{provider.name}</h2>
-        <div className="provider-endpoint">
-          <code className="model-id">{provider.endpoint}</code>
-          <CopyButton value={provider.endpoint} className="model-copy" label={copy.providerCopyEndpoint} copiedLabel={copy.copied} />
+  return <div className="provider-detail" data-provider-detail={provider.key}>
+    <button className="provider-back" onClick={onBack}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+      <span>{copy.providersTitle}</span>
+    </button>
+    <div className={`provider-detail-hero ${provider.key}`}>
+      <div className="provider-detail-main">
+        <ProviderMark provider={provider} large />
+        <div className="provider-detail-copy">
+          <div className="provider-detail-kicker"><span className="provider-status"><i />{copy.providerAvailable}</span><span>{copy[provider.apiKindKey]}</span></div>
+          <h2>{provider.name}</h2>
+          <p>{copy[provider.descKey]}</p>
         </div>
+        <button className="btn btn-primary qs-open-btn" onClick={onQuickstart}>{copy.qsTitle}<span aria-hidden="true">→</span></button>
       </div>
-      <button className="btn btn-primary btn-sm qs-open-btn" onClick={onQuickstart}>{copy.qsTitle}</button>
+      <div className="provider-detail-endpoint">
+        <div><span>{copy.providerBaseUrl}</span><code>{provider.endpoint}</code></div>
+        <CopyButton value={provider.endpoint} className="model-copy" label={copy.providerCopyEndpoint} copiedLabel={copy.copied} />
+      </div>
     </div>
-    <p className="model-desc provider-detail-desc">{copy[provider.descKey]}</p>
-    <div className="provider-chips">
-      <div className="provider-chip"><span>{copy.providerChipApi}</span><b>{copy[provider.apiKindKey]}</b></div>
-      <div className="provider-chip"><span>{copy.providerChipModels}</span><b>{provider.models}</b></div>
-      <div className="provider-chip"><span>{copy.providerChipDiscount}</span><b>−{FLAT_DISCOUNT_PERCENT}%</b></div>
-      <div className="provider-chip"><span>{copy.providerChipLineup}</span><b>{provider.lineup}</b></div>
+    <div className="provider-facts">
+      <div><span>{copy.providerChipApi}</span><b>{copy[provider.apiKindKey]}</b><small>{provider.interfaces}</small></div>
+      <div><span>{copy.providerAuth}</span><b><code>{provider.auth}</code></b><small>{copy.providerSameKey}</small></div>
+      <div><span>{copy.providerChipModels}</span><b>{provider.models} {copy.providerModels}</b><small>{provider.lineup}</small></div>
+      <div className="provider-fact-price"><span>{copy.providerChipDiscount}</span><b>−{FLAT_DISCOUNT_PERCENT}%</b><small>{copy.providerEveryRate}</small></div>
     </div>
-    <h3 className="provider-models-title">{copy.providerModelsTitle}</h3>
-    <p className="p-sub">{copy.providerModelsHint}</p>
-    <div className="table-scroll"><table className="mtable provider-models-table">
+    <div className="provider-models-head">
+      <div><span>{copy.providerCatalogEyebrow}</span><h3>{copy.providerModelsTitle}</h3><p>{copy.providerModelsHint}</p></div>
+      <div className="provider-price-legend"><span><i className="current" />{copy.providerYourPrice}</span><span><i className="official" />{copy.providerOfficialPrice}</span></div>
+    </div>
+    <div className="table-scroll provider-table-shell"><table className="mtable provider-models-table">
       <thead><tr>
         <th>{copy.thModel}</th><th>{copy.thReleased}</th><th>{copy.thContext}</th><th>{copy.thMaxOutput}</th>
         <th className="tnum">{copy.thInput}</th><th className="tnum">{copy.thOutput}</th>
@@ -369,8 +454,30 @@ function ProviderDetail({ provider, onBack, onQuickstart }: { provider: Provider
         </tr>;
       })}</tbody>
     </table></div>
-    <p className="providers-note">{copy.providerPricesNote}</p>
-  </>;
+    <div className="provider-model-cards">{models.map((model) => {
+      const cache = cacheRates(model);
+      const released = RELEASED[model.id];
+      return <article key={model.id} className="provider-model-card">
+        <div className="provider-model-card-head">
+          <div><b>{model.name}</b><span>{model.tier}</span></div>
+          <CopyButton value={model.id} className="model-copy" label={copy.copy} copiedLabel={copy.copied} />
+        </div>
+        <code className="provider-model-card-id">{model.id}</code>
+        <dl className="provider-model-specs">
+          <div><dt>{copy.thReleased}</dt><dd>{released ? dateFormat.format(new Date(`${released}T00:00:00Z`)) : "—"}</dd></div>
+          <div><dt>{copy.thContext}</dt><dd>{model.context.replace(" tokens", "")}</dd></div>
+          <div><dt>{copy.thMaxOutput}</dt><dd>{model.maxOutput.replace(" tokens", "")}</dd></div>
+        </dl>
+        <div className="provider-model-prices">
+          <div><span>{copy.thInput}</span><PriceValue official={model.inputPerM} /></div>
+          <div><span>{copy.thOutput}</span><PriceValue official={model.outputPerM} /></div>
+          <div><span>{copy.thCacheRead}</span><PriceValue official={cache.read} /></div>
+          <div><span>{copy.thCacheWrite}</span><PriceValue official={cache.write} /></div>
+        </div>
+      </article>;
+    })}</div>
+    <p className="providers-note provider-prices-note"><span aria-hidden="true">i</span>{copy.providerPricesNote}</p>
+  </div>;
 }
 
 export function ProvidersCatalog({ onCreateKey }: { onCreateKey?: () => void }) {
@@ -381,39 +488,45 @@ export function ProvidersCatalog({ onCreateKey }: { onCreateKey?: () => void }) 
   const active = PROVIDERS.find((provider) => provider.key === quickstart) ?? null;
   const detail = PROVIDERS.find((provider) => provider.key === selected) ?? null;
 
-  return <section className="panel">
+  return <section className="panel providers-panel">
     {!detail && <>
-      <PageHeading eyebrow={copy.providersEyebrow} title={copy.providersTitle} subtitle={copy.providersSubtitle} />
-      <div className="models-list">
-        {PROVIDERS.map((provider) => <article
-          key={provider.key}
-          className="card model-card provider-card-clickable"
-          role="button"
-          tabIndex={0}
-          onClick={() => setSelected(provider.key)}
-          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(provider.key); } }}
-        >
-          <div className="model-card-head">
-            <span className={`model-provider-mark ${provider.key}`} aria-hidden="true">{provider.mark}</span>
-            <h2 className="model-name">{provider.name}</h2>
-            <button className="btn btn-primary btn-sm qs-open-btn" onClick={(event) => { event.stopPropagation(); setQuickstart(provider.key); }}>{copy.qsTitle}</button>
-            <span className="model-tier">{copy[provider.apiKindKey]}</span>
+      <div className="providers-heading-row">
+        <PageHeading eyebrow={copy.providersEyebrow} title={copy.providersTitle} subtitle={copy.providersSubtitle} />
+        <div className="providers-flat-badge"><span>−{FLAT_DISCOUNT_PERCENT}%</span><small>{copy.providerFlatBadge}</small></div>
+      </div>
+      <div className="providers-flow" aria-label={copy.providerFlowTitle}>
+        <div className="providers-flow-intro"><span>{copy.providerFlowEyebrow}</span><b>{copy.providerFlowTitle}</b></div>
+        <ol>
+          <li><span>1</span><div><b>{copy.providerFlowKeyTitle}</b><small>{copy.providerFlowKeyText}</small></div></li>
+          <li><span>2</span><div><b>{copy.providerFlowSurfaceTitle}</b><small>{copy.providerFlowSurfaceText}</small></div></li>
+          <li><span>3</span><div><b>{copy.providerFlowBalanceTitle}</b><small>{copy.providerFlowBalanceText}</small></div></li>
+        </ol>
+      </div>
+      <div className="providers-grid">
+        {PROVIDERS.map((provider) => <article key={provider.key} data-provider={provider.key} className={`provider-card ${provider.key}`}>
+          <div className="provider-card-top">
+            <ProviderMark provider={provider} large />
+            <div><span className="provider-status"><i />{copy.providerAvailable}</span><h2>{provider.name}</h2></div>
+            <span className="provider-protocol">{copy[provider.apiKindKey]}</span>
           </div>
-          <p className="model-desc">{copy[provider.descKey]}</p>
-          <div className="provider-endpoint" onClick={(event) => event.stopPropagation()}>
-            <span className="provider-endpoint-label">{copy.providerEndpoint}</span>
-            <code className="model-id">{provider.endpoint}</code>
+          <p className="provider-card-desc">{copy[provider.descKey]}</p>
+          <div className="provider-card-capabilities"><span>{provider.interfaces}</span><span>{provider.tools}</span></div>
+          <div className="provider-endpoint-dock">
+            <div><span>{copy.providerBaseUrl}</span><code>{provider.endpoint}</code></div>
             <CopyButton value={provider.endpoint} className="model-copy" label={copy.providerCopyEndpoint} copiedLabel={copy.copied} />
           </div>
-          <div className="model-meta">
-            <span>{copy.modelsBy} <strong>{provider.key}</strong></span>
-            <span>{provider.models} {copy.providerModels}</span>
-            <span>{provider.lineup}</span>
-            <span className="model-price">−{FLAT_DISCOUNT_PERCENT}% {copy.providerOffOfficial}</span>
+          <dl className="provider-card-facts">
+            <div><dt>{copy.providerAuth}</dt><dd><code>{provider.auth}</code></dd></div>
+            <div><dt>{copy.providerDefaultModel}</dt><dd><code>{provider.defaultModel}</code></dd></div>
+            <div><dt>{copy.providerChipModels}</dt><dd>{provider.models} · {provider.lineup}</dd></div>
+          </dl>
+          <div className="provider-card-actions">
+            <button data-provider-action="quickstart" className="btn btn-primary" onClick={() => setQuickstart(provider.key)}>{copy.qsTitle}<span aria-hidden="true">→</span></button>
+            <button data-provider-action="details" className="btn btn-ghost" onClick={() => setSelected(provider.key)}>{copy.providerExploreModels}</button>
           </div>
         </article>)}
       </div>
-      <p className="providers-note">{copy.providersNote}</p>
+      <div className="providers-shared-note"><span aria-hidden="true">∞</span><div><b>{copy.providerSharedTitle}</b><p>{copy.providersNote}</p></div></div>
     </>}
     {detail && <ProviderDetail provider={detail} onBack={() => setSelected(null)} onQuickstart={() => setQuickstart(detail.key)} />}
     {active && <QuickStartDrawer

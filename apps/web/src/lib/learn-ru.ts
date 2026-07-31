@@ -48,7 +48,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     h1: "Самый дешёвый способ использовать Claude API",
     description: "Снизьте расходы на Claude API на 50%. apiToken.sale продаёт тот же самый Anthropic Messages API со скидкой по предоплате — те же модели, те же эндпоинты, ниже цена за токен.",
     keywords: ["claude api дешево", "скидка на claude api", "дешевый claude api", "цена claude api", "claude api дешевле anthropic", "экономия на anthropic api"],
-    dek: "Claude API тарифицируется по токенам, а на длинных сессиях кодинга они складываются очень быстро. apiToken.sale даёт вам тот же API дешевле на 50%, объединяя предоплаченный баланс и применяя прогрессивную скидку.",
+    dek: "Claude API тарифицируется по токенам, а на длинных сессиях кодинга они складываются очень быстро. apiToken.sale даёт вам тот же API дешевле на 50% через единый предоплаченный баланс и плоскую скидку без дополнительных условий.",
     sections: [
       { h2: "Почему это дешевле", blocks: [
         { type: "p", text: "Вы отправляете тот же запрос на тот же Anthropic Messages API и получаете тот же ответ. Под капотом отличается только биллинг: каждый вызов считается по официальным тарифам, затем ваша скидка вычитается до списания с баланса." },
@@ -275,7 +275,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "Как начать пробный доступ?", a: "Создайте новый аккаунт через Google или GitHub — $10 использования добавятся автоматически. Аккаунты по email и паролю не участвуют." },
-      { q: "Что будет, когда бесплатное использование закончится?", a: "Пополните баланс на любое целое число долларов, чтобы продолжить; ваша прогрессивная скидка применится сразу." },
+      { q: "Что будет, когда бесплатное использование закончится?", a: "Пополните баланс на любое целое число долларов, чтобы продолжить; плоская скидка 50% применится сразу." },
     ],
   },
   "claude-code-without-subscription": {
@@ -388,7 +388,7 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "Ключ Claude API для Cursor",
     h1: "Используйте ключ Claude API в Cursor",
-    description: "Подключите Cursor к Claude с ключом apiToken.sale: задайте base URL Anthropic на api.apitoken.sale, вставьте ключ, выберите модель и кодьте со скидкой до 70%.",
+    description: "Подключите Cursor к Claude с ключом apiToken.sale: задайте base URL Anthropic на api.apitoken.sale, вставьте ключ, выберите модель и кодьте со скидкой 50%.",
     keywords: ["ключ claude api для cursor", "cursor claude api", "cursor anthropic ключ", "использовать claude в cursor", "cursor без cursor pro"],
     dek: "Cursor позволяет подключить собственный ключ Anthropic, а значит, вы можете запускать Claude в Cursor на предоплаченном балансе со скидкой вместо встроенного тарифа.",
     sections: [
@@ -533,7 +533,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "apiToken.sale — это настоящий Claude API?", a: "Да — он отдаёт тот же Anthropic Messages API и модели. Отличаются только цена и онбординг." },
-      { q: "Почему это дешевле, чем Anthropic напрямую?", a: "Баланс предоплаченный и объединённый, а к официальному расходу применяется прогрессивная скидка до 70%." },
+      { q: "Почему это дешевле, чем Anthropic напрямую?", a: "Баланс предоплаченный и объединённый, а к официальному расходу каждого аккаунта применяется плоская скидка 50%." },
     ],
   },
   "apitoken-vs-openrouter": {
@@ -664,7 +664,7 @@ export const learnRu: Record<string, LocalizedContent> = {
   "how-billing-works": {
     title: "Как работает биллинг на apiToken.sale",
     h1: "Как работает биллинг",
-    description: "Разберитесь в биллинге apiToken.sale: предоплаченный баланс, потокенный расчёт по официальным ставкам, ваша прогрессивная скидка и потокенная статистика в панели.",
+    description: "Разберитесь в биллинге apiToken.sale: предоплаченный баланс, потокенный расчёт по официальным ставкам, плоская скидка 50% и потокенная статистика в панели.",
     keywords: ["биллинг claude api", "как работает биллинг apitoken", "предоплаченный claude api", "учет использования claude api", "баланс claude api"],
     dek: "Биллинг предоплаченный и прозрачный. Вы пополняете баланс, и каждый запрос списывает официальный расход минус вашу скидку с полной разбивкой, которую можно проверить.",
     sections: [
@@ -791,7 +791,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
       { h2: "Кому что подходит", blocks: [
         { type: "list", items: [
-          "apiToken.sale — нативный эндпоинт Anthropic с прогрессивной скидкой, общим лимитом расходов ключа и необязательной датой истечения.",
+          "apiToken.sale — нативный эндпоинт Anthropic с плоской скидкой 50%, общим лимитом расходов ключа и необязательной датой истечения.",
           "Универсальный реселлер — может подойти, если вы уже используете его других провайдеров.",
           "Оба убирают барьер аккаунта Anthropic; разница — в цене и в том, насколько нативен доступ к Claude.",
         ] },
@@ -877,7 +877,7 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-max-plan-vs-api": {
     title: "Тариф Claude Max против Claude API",
     h1: "Подписка Claude Max против API",
-    description: "Когда использовать подписку Claude, а когда Claude API. apiToken.sale даёт доступ ко всем моделям по факту использования, без ежемесячной платы и со скидкой до 70%.",
+    description: "Когда использовать подписку Claude, а когда Claude API. apiToken.sale даёт доступ ко всем моделям по факту использования, без ежемесячной платы и со скидкой 50%.",
     keywords: ["тариф claude max", "подписка claude против api", "claude max против api", "claude api оплата по факту", "claude без подписки"],
     dek: "Фиксированная подписка Claude и оплата API по факту использования подходят под разные сценарии. Для программного и неравномерного использования API на предоплаченном балансе обычно выгоднее.",
     sections: [
@@ -1113,7 +1113,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     h1: "OpenAI-совместимый API: Responses и Chat Completions",
     description: "Запускайте модели GPT-5.6 на apiToken.sale через OpenAI-совместимый API — Responses и Chat Completions со SSE-стримингом, один ключ sk-pool и баланс, общий с Claude, со скидкой 50%.",
     keywords: ["openai совместимый api", "gpt-5.6 api", "responses api", "chat completions свой base url", "openai sdk base_url", "gpt api ключ", "цена gpt-5.6"],
-    dek: "Ваш ключ sk-pool работает не только с Claude. Тот же ключ и предоплаченный баланс открывают линейку GPT-5 через OpenAI-совместимый эндпоинт — стандартные вызовы Responses и Chat Completions, официальные SDK OpenAI, SSE-стриминг и та же скидка 60–70%.",
+    dek: "Ваш ключ sk-pool работает не только с Claude. Тот же ключ и предоплаченный баланс открывают линейку GPT-5 через OpenAI-совместимый эндпоинт — стандартные вызовы Responses и Chat Completions, официальные SDK OpenAI, SSE-стриминг и та же плоская скидка 50%.",
     sections: [
       { h2: "Три шага до первого вызова GPT", blocks: [
         { type: "steps", items: [
@@ -1348,7 +1348,7 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-aider": {
     title: "Claude API в Aider",
     h1: "Используйте Claude API в Aider",
-    description: "Запустите Aider на Claude через apiToken.sale: экспортируйте ANTHROPIC_API_BASE и ключ, выберите модель Claude и пишите код в терминале со скидкой 60–70%.",
+    description: "Запустите Aider на Claude через apiToken.sale: экспортируйте ANTHROPIC_API_BASE и ключ, выберите модель Claude и пишите код в терминале с плоской скидкой 50%.",
     keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api ключ"],
     dek: "Aider — терминальный парный программист, который быстро сжигает токены в длинных сессиях. Направьте его на дисконтный шлюз двумя переменными окружения и сохраните привычный процесс.",
     sections: [

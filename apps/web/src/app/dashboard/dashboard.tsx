@@ -341,8 +341,8 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const multiplierBp = paymentBasisPoints(account);
-  const discount = discountOf(account);
+  const multiplierBp = paymentBasisPoints();
+  const discount = discountOf();
   const officialBalanceNano = officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp);
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
   const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
@@ -527,10 +527,10 @@ function interpolate(template: string, values: Record<string, string | number>):
 // Одна ставка для всех аккаунтов: клиент платит 50% официальной цены (5000 bp, ×2 ценности).
 // Тиры/партнёрские полы удалены из v2 UI; поля pricing из commerce здесь не участвуют.
 const FLAT_PAYMENT_BP = BigInt((100 - FLAT_DISCOUNT_PERCENT) * 100);
-function paymentBasisPoints(_account: AccountView): bigint {
+function paymentBasisPoints(): bigint {
   return FLAT_PAYMENT_BP;
 }
-function discountOf(_account: AccountView): number {
+function discountOf(): number {
   return FLAT_DISCOUNT_PERCENT;
 }
 function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {
@@ -572,14 +572,4 @@ function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits
   const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
   return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
 }
-function boundedRatio(numerator: bigint, denominator: bigint): number {
-  if (denominator <= 0n || numerator <= 0n) return 0;
-  const scale = 1_000_000n;
-  const bounded = bigintMax(0n, numerator > denominator ? denominator : numerator);
-  return Number(bounded * scale / denominator) / Number(scale);
-}
-function boundedPercent(numerator: bigint, denominator: bigint): number {
-  return boundedRatio(numerator, denominator) * 100;
-}
-function bigintMax(left: bigint, right: bigint): bigint { return left > right ? left : right; }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }
