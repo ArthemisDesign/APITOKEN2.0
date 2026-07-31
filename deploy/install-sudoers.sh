@@ -200,8 +200,6 @@ require_permitted 'caddy validation' /usr/bin/caddy validate --adapter caddyfile
 require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
 require_permitted 'OpenAI slot-template probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service
-require_permitted 'Codex reconciler timer probe' \
-  /usr/bin/test -f /etc/systemd/system/claude-api-codex-app-servers.timer
 require_permitted 'Gemini unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
