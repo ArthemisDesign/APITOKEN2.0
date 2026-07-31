@@ -130,14 +130,14 @@ async function dashboard(){const [data,engine,partners]=await Promise.all([
     card('CRM & Parsing',crm?esc(crm.status):'не найден',crm?esc(crm.handle)+' · '+money(crm.balance_usd):'нужен engine account crm-parsing')+'</div>'+
     '<div class="sect"><h2>Клиенты и регистрации</h2></div><div class="cards">'+
     card('всего клиентов',u.total??'—',(u.active??'—')+' активны · '+(u.disabled??'—')+' отключены')+
-    card('OAuth-регистрации',u.registered_oauth??'—','сейчас OAuth-only '+(u.oauth_only??'—')+' · hybrid '+(u.hybrid??'—'))+
+    card('OAuth-регистрации',u.registered_oauth??'—','сейчас OAuth-only '+(u.oauth_only??'—')+' · hybrid '+(u.hybrid??'—')+' · Google '+(u.google??'—')+' · GitHub '+(u.github??'—'))+
     card('обычная регистрация',u.registered_password??'—','сейчас password-only '+(u.password_only??'—'))+
     card('новые за 30 дней',u.registered_30d??'—','24ч '+(u.registered_24h??'—')+' · active 7д '+(u.active_7d??'—'))+'</div>'+
     '<div class="sect"><h2>Деньги и пополнения</h2></div><div class="cards">'+
     card('успешные пополнения',t.paid_count??'—',(t.paid_users??'—')+' платящих клиентов')+
     card('пополнено всего',data?money(t.paid_usd):'—','30д '+(data?money(t.paid_30d_usd):'—')+' · '+(t.paid_30d_count??'—')+' шт.')+
-    card('ручные начисления',t.manual_count??'—',(data?money(t.manual_usd):'—')+' · 30д '+(t.manual_30d_count??'—'))+
-    card('ожидают оплаты',t.pending_checkouts??'—','ошибок 30д '+(t.failed_30d??'—')+' · возвратов '+(t.refunded_count??'—'))+'</div>'+
+    card('ручные начисления',t.manual_count??'—',(data?money(t.manual_usd):'—')+' · 30д '+(t.manual_30d_count??'—')+(data&&t.manual_30d_usd!=null?' / '+money(t.manual_30d_usd):''))+
+    card('ожидают оплаты',t.pending_checkouts??'—','ошибок 30д '+(t.failed_30d??'—')+' · возвратов '+(t.refunded_count??'—')+(data&&t.refunded_usd!=null?' на '+money(t.refunded_usd):''))+'</div>'+
     '<div class="sect"><h2>Платформа</h2></div><div class="cards">'+card('API-ключи',p.active_api_keys??'—','активны из '+(p.total_api_keys??'—'))+
     card('B2C / B2B',(p.b2c_users??'—')+' / '+(p.b2b_users??'—'),'клиенты по типу тарифа')+
     card('engine active',p.engine_active??'—','pending '+(p.engine_pending??'—')+' · disabled '+(p.engine_disabled??'—'))+
@@ -183,7 +183,8 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
   // Claude: lifecycle (/subs) + live ёмкость (/capacity) по маскированному email.
   const claudeRows=list.map(item=>{const live=liveByEmail[item.email]||{};
     const isDead=item.auth_state==='dead',isSuspect=item.auth_state==='suspect';
-    const status=isDead?pill(deadLabel(item.dead_reason),'bad'):isSuspect?pill('под наблюдением (auth)','warn'):live.cooling?pill('cooling','warn'):pill(item.status,item.status==='active'?'ok':'warn');
+    const status=(isDead?pill(deadLabel(item.dead_reason),'bad'):isSuspect?pill('под наблюдением (auth)','warn'):live.cooling?pill('cooling','warn'):pill(item.status,item.status==='active'?'ok':'warn'))+
+      (item.has_token===false?' '+pill('нет токена','bad'):'')+(isDead&&Number(item.dead_since_ts)>0?'<div class="sub">мертва '+ago(item.dead_since_ts*1000)+'</div>':'');
     const days=Number(item.sub_days_left||0),dayKind=days<=0?'bad':days<7?'warn':'ok';
     const win=(util,resetIn,rem,avail)=>'<div>'+capacityBar(util)+'</div><div class="sub">сброс '+duration(resetIn)+'</div>';
     return '<tr><td class="left"><b>'+esc(item.email)+'</b>'+(live.calibrated===false?' <span class="pill">калибровка</span>':'')+'</td><td>'+status+
@@ -191,12 +192,12 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
       '</td><td><b>'+money(live.rem5h_usd)+'</b><div class="sub">7д '+money(live.rem7d_usd)+'</div></td>'+
       '<td><span class="dot '+dayKind+'"></span> '+(days>0?days+' дн.':'—')+'<div class="sub">добавлена '+esc(String(item.added||'').slice(0,10)||'—')+'</div></td>'+
       '<td><b>'+(Number(item.peak_cap5h_usd)>0?money(item.peak_cap5h_usd):'—')+'</b><div class="sub">7д '+(Number(item.peak_cap7d_usd)>0?money(item.peak_cap7d_usd):'—')+'</div></td>'+
-      '<td class="left mono" title="'+esc(item.proxy_host||'')+'">'+esc(String(item.proxy_host||'—').replace(/:[0-9]+$/,''))+'<div class="sub">до '+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</div></td></tr>'}).join('');
-  const avail7d=capacity?.available_usd?.next_7d??0;
+      '<td class="left mono" title="'+esc(item.proxy_host||'')+'">'+esc(String(item.proxy_host||'—').replace(/:[0-9]+$/,''))+(item.proxy_ok===false?' '+pill('мёртв','bad'):'')+'<div class="sub">до '+esc(String(item.proxy_expire||'').slice(0,10)||'—')+'</div></td></tr>'}).join('');
+  const avail7d=capacity?.available_usd?.next_7d??0,avail1h=capacity?.available_usd?.next_1h,avail5h=capacity?.available_usd?.next_5h,avail1d=capacity?.available_usd?.next_1d;
   const routableCaps=(capacity?.per_sub||[]).filter(item=>item.routable);
   const avgUtil7d=routableCaps.length?Math.round(routableCaps.reduce((sum,item)=>sum+(Number(item.util7d)||0),0)/routableCaps.length*100)+'%':'—';
   const claudeCards=card('Claude подписки',list.length,(list.length-dead-suspect)+' здоровы · '+cooling+' cooling')+
-    card('Claude · доступно 7д',money(avail7d),'real-API эквивалент по флоту')+
+    card('Claude · доступно 7д',money(avail7d),'1ч '+(avail1h!=null?money(avail1h):'—')+' · 5ч '+(avail5h!=null?money(avail5h):'—')+' · 1д '+(avail1d!=null?money(avail1d):'—'))+
     card('утилизация 7д средняя',avgUtil7d,'по routable подпискам')+
     card('dead / suspect',dead+' / '+suspect,dead?'нужна замена токена':suspect?'корроборация probe идёт':'флот чист');
   // GPT: per-home operational status из OpenAI-runtime.
@@ -211,7 +212,8 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     card('GPT подписки',gptDown?'—':homes.length,gptDown?'источник недоступен':(codex.available+' доступно · '+homes.filter(h=>h.process_live).length+' live'))+
     card('GPT · остаток окон',gptDown||gptOff?'—':measuredTotals.length?money(gptRemain):'ждём Δused',gptDown||gptOff?'':measuredTotals.length?'из '+money(gptCap)+' измеренной ёмкости'+(gptUnknown?' · '+gptUnknown+' без оценки':''):'первый снимок — только якорь, без прайора')+
     card('GPT · в работе',gptDown?'—':gptInflight,'inflight turns сейчас')+
-    card('GPT · потрачено',gptDown?'—':money(gptSpend),'official-price, накопительно');
+    card('GPT · потрачено',gptDown?'—':money(gptSpend),'official-price, накопительно')+
+    (gptDown||!codex.soonest_ready?'':card('GPT · ближайший home',duration(codex.soonest_ready-Date.now()/1000),'освободится '+date(codex.soonest_ready*1000,true)));
   // Read the gateway's own admission verdict instead of re-deriving one. A panel that computes its
   // own rule will eventually disagree with routing, and the disagreement always shows up as a home
   // displayed «active» while the gateway refuses to send it traffic.
@@ -231,7 +233,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
   const gptRows=homes.map(h=>{const windows=h.windows||[];
     const bySlot=slot=>windows.find(w=>w.slot===slot);
     const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.source==='unknown'?' · ждём завершённый %-интервал':' · накоплено интервалов '+Number(w.samples||0)+' · evidence '+Math.round(Number(w.confidence||0)*100)+'%')+'</div>':'—';
-    const budgetCell=w=>w?'<b>'+(w.remaining_usd==null?'—':money(w.remaining_usd))+'</b><div class="sub">остаток из '+(w.cap_usd==null?'—':money(w.cap_usd))+' · '+windowLabel(w.window_minutes)+'</div>':'—';
+    const budgetCell=w=>w?'<b>'+(w.remaining_usd==null?'—':money(w.remaining_usd))+'</b><div class="sub">остаток из '+(w.cap_usd==null?'—':w.low_usd!=null&&w.high_usd!=null?'<span title="доверительный интервал '+money(w.low_usd)+' – '+money(w.high_usd)+'">'+money(w.cap_usd)+'</span>':money(w.cap_usd))+' · '+windowLabel(w.window_minutes)+'</div>':'—';
     const rl=h.rate_limits||{};
     const resetCell=w=>w&&w.resets_at?duration(w.resets_at-Date.now()/1000):'—';
     return '<tr><td class="left"><b class="mono">'+esc(h.id)+'</b></td><td>'+homeStatus(h)+'</td><td>'+h.inflight+'</td>'+
@@ -243,7 +245,8 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     gptOff?'<div class="empty" style="padding:26px">Codex-контур выключен на этом runtime</div>':
     '<div class="tscroll"><table><thead><tr><th class="left">home</th><th>статус</th><th>в работе</th><th>primary (факт. окно)</th><th>secondary (факт. окно)</th><th>остаток / вместимость API $</th><th>потрачено</th></tr></thead><tbody>'+(gptRows||empty(7))+'</tbody></table></div>';
   // Gemini: официальный per-model quota catalogue и exact transport attestation.
-  const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
+  const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{},geminiFailures=gemini?.failures||{};
+  const geminiFailTotal=Number(geminiFailures.transport||0)+Number(geminiFailures.backend||0)+Number(geminiFailures.malformed||0)+Number(geminiFailures.stream_start||0);
   const geminiTotals=Array.isArray(gemini?.window_totals)?gemini.window_totals:[],geminiFive=geminiTotals.find(item=>Number(item.window_minutes)===300),geminiWeek=geminiTotals.find(item=>Number(item.window_minutes)===10080);
   const geminiSpend=geminiProfiles.reduce((sum,profile)=>sum+(Number(profile.spend_usd_total)||0),0);
   const geminiBudgetCard=(label,item)=>{const measured=item&&item.cap_usd!=null,range=measured&&item.low_usd!=null?(money(item.low_usd)+'–'+(item.high_usd==null?'∞':money(item.high_usd))):'—';
@@ -253,7 +256,8 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     geminiBudgetCard('Gemini · workload 5ч',geminiFive)+geminiBudgetCard('Gemini · workload 7д',geminiWeek)+
     card('Gemini · потрачено',geminiDown?'—':money(geminiSpend),'official-price, накопительно')+
     card('Gemini · в работе',geminiDown?'—':gemini.inflight,'inflight requests сейчас')+
-    card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист');
+    card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист')+
+    card('Gemini · сбои контура',geminiDown?'—':geminiFailTotal>0?'<span style="color:var(--warn)">'+geminiFailTotal+'</span>':geminiFailTotal,'transport '+Number(geminiFailures.transport||0)+' · backend '+Number(geminiFailures.backend||0)+' · malformed '+Number(geminiFailures.malformed||0)+' · stream_start '+Number(geminiFailures.stream_start||0));
   const geminiRows=geminiProfiles.flatMap(profile=>(geminiModels.length?geminiModels:[{id:'—',available:0}]).map(model=>{
     const modelHealth=(profile.model_cooling||[]).find(item=>item.model_id===model.id)||{},modelCooling=modelHealth.cooling_until||0;
     const quotas=(profile.quotas||[]).filter(item=>item.model_id===model.id);
@@ -495,8 +499,8 @@ function renderUsers(dashboard,page){const totalBalance=usersCache.reduce((sum,u
       '" data-status="'+esc(user.status)+'" data-auth="'+esc(methods.join(' '))+'"><td class="left"><span class="dot '+statusKind+'"></span> <b>'+esc(user.email)+
       '</b><div class="sub">'+esc(user.display_name||'')+' · '+auth+(user.email_verified?pill('email ✓','ok'):pill('email ✗','warn'))+'</div></td>'+
       '<td class="left">'+esc(tier)+'<div class="sub">'+(user.multiplier_bp==null?'—':(100-user.multiplier_bp/100)+'% скидка')+'</div></td>'+
-      '<td><b>'+(user.balance_usd==null?'—':money(user.balance_usd))+'</b></td><td>'+(user.spent_usd==null?'—':money(user.spent_usd))+
-      '<div class="sub">30д '+money(user.spent_30d_usd)+'</div></td><td>'+(pay.paid_count?money(pay.paid_total_usd)+'<div class="sub">'+pay.paid_count+' шт.</div>':'—')+
+      '<td><b>'+(user.balance_usd==null?'—':money(user.balance_usd))+'</b>'+(Number(user.reserved_usd)>0?'<div class="sub">резерв '+money(user.reserved_usd)+'</div>':'')+'</td><td>'+(user.spent_usd==null?'—':money(user.spent_usd))+
+      '<div class="sub">30д '+money(user.spent_30d_usd)+'</div>'+(user.cumulative_topup_usd!=null?'<div class="sub">пополнено всего '+money(user.cumulative_topup_usd)+'</div>':'')+'</td><td>'+(pay.paid_count?money(pay.paid_total_usd)+'<div class="sub">'+pay.paid_count+' шт.'+(pay.last_paid_at?' · '+ago(pay.last_paid_at):'')+'</div>':'—')+(Number(pay.pending_checkouts)>0?'<div class="sub">'+count(Number(pay.pending_checkouts),'checkout ожидает оплату','checkout ожидают оплату','checkout ожидают оплату')+'</div>':'')+
       '</td><td>'+Number(keys.active||0)+'/'+Number(keys.total||0)+'</td><td>'+ago(user.last_seen_at)+'</td><td>'+date(user.created_at)+      '</td><td><div class="actions wrap">'+actions+'</div></td></tr>'}).join('');
   const stats=dashboard.users||{};
   const body='<div class="cards">'+card('клиенты',page.total,(stats.registered_oauth??'—')+' OAuth-рег. · '+(stats.registered_password??'—')+' обычных')+
@@ -624,15 +628,16 @@ function systemVerdict(overview){const gap=overview.recommend.gap,h5=overview.he
   return{kind:'ok',title:'Запаса ёмкости хватает',detail:'headroom 5h '+ratio(h5)+' / 7d '+ratio(h7)+' · подписок '+total+', цель ×'+target+' выдержана'}}
 async function system(){const result=await Promise.all([api('/overview').catch(()=>null),api('/capacity').catch(()=>null),okDirectory()]),overview=result[0],capacity=result[1],okDir=result[2];
   if(!overview){shell('Система','ёмкость, спрос и рекомендации по флоту','<div class="banner warn"><span class="dot warn"></span><div><b>Свежая системная сводка недоступна</b><span class="muted">Остальные разделы работают. Панель автоматически проверяет восстановление источника.</span></div></div>',pill('degraded','warn'));return}
-  const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult;
+  const supply=overview.supply,health=supply.health,demand=overview.demand,recommend=overview.recommend,verdict=systemVerdict(overview),mult=overview.ref_mult,capUsd=supply.cap_usd||{},consumedUsd=supply.consumed_usd||{};
   const horizonCards=[['7d','7 дней','7d'],['1d','1 день',null],['5h','5 часов (burst)','5h']].map(item=>{const available=supply.avail_usd[item[0]]||0,head=item[2]?overview.headroom[item[2]]:null;
     return card('доступно · '+item[1],money(available),'клиентам ×'+mult+' = '+money(available*mult)+(item[2]?' · запас '+ratio(head):''))}).join('');
   const accountRows=(overview.accounts||[]).map(account=>'<tr><td class="left mono muted">'+esc(account.account)+'</td><td class="left"><b>'+esc(account.handle||'—')+'</b>'+okBadge(account.handle)+okInfo(okDir,account.account)+'</td><td>'+
     pill(account.status,account.status==='active'?'ok':'bad')+'</td><td><b>'+money(account.balance_usd)+'</b></td><td><b>'+money(account.spent_usd)+'</b></td><td>×'+esc(account.mult)+'</td></tr>').join('');
   const body='<div class="banner '+verdict.kind+'"><span class="dot'+(verdict.kind==='ok'?'':' '+verdict.kind)+'"></span><div><b>'+esc(verdict.title)+'</b><span class="muted">'+esc(verdict.detail)+'</span></div></div>'+
-    '<div class="sect"><h2>Предложение — real-API USD</h2></div><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d'])+
-    '</div><div class="sect"><h2>Флот и спрос</h2></div><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling')+
+    '<div class="sect"><h2>Предложение — real-API USD</h2></div><div class="cards">'+horizonCards+card('балансы клиентов',money(demand.balance_usd),'резерв '+money(demand.reserved_usd)+' · coverage 7d ×'+overview.coverage['7d']+' · активных '+(demand.active_accounts??'—'))+
+    '</div><div class="sect"><h2>Флот и спрос</h2></div><div class="cards">'+card('подписки',overview.subs,health.healthy+' живых · '+health.cooling+' cooling · '+Number(health.suspect||0)+' suspect · '+Number(health.dead||0)+' dead')+
     card('утилизация средняя',Math.round(supply.util['7d']*100)+'%','7d · '+Math.round(supply.util['5h']*100)+'% за 5h')+
+    card('ёмкость окон 7д',money(capUsd['7d']),'потреблено '+money(consumedUsd['7d'])+' · 5h '+money(capUsd['5h'])+' / '+money(consumedUsd['5h']))+
     card('всего потрачено',money(demand.spent_usd),'потенциальный спрос '+money(demand.potential_realapi_usd)+' real-API',true)+
     card('рекомендация',recommend.gap>0?'+'+recommend.gap:'ok','нужно '+recommend.subs_needed+' подписок · есть '+overview.subs)+'</div>'+
     '<div class="sect"><h2>Подписки</h2><span class="sect-sub">живой статус флота</span></div>'+
