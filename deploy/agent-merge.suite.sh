@@ -493,8 +493,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the Codex home migration suite'
-grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'the production gate does not run the Codex app-server ownership suite'
+! grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate still runs the removed Codex app-server ownership suite'
 # Требуем сам запуск с набором пакетов, а не дословную цитату аргументов: точное
 # написание уже однажды сломалось от правки переносимости (пустой массив под set -u
 # в bash 3.2), хотя гарантия — «гейт гоняет параллельные TypeScript-тесты» — не менялась.
