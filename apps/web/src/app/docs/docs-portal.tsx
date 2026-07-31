@@ -9,10 +9,32 @@ import { api } from "@/lib/api";
 import { localeHref } from "@/lib/locale-routes";
 import { IntegrationBuilder } from "./integration-builder";
 import { ApiReference } from "./api-reference";
+import { HighlightedCode } from "./highlighted-code";
+import { Prose } from "./prose";
 
-const AGENT_GUIDE_URL = "https://apitoken.sale/md/connect";
+const CLAUDE_CACHE_JSON = `{
+  "model": "claude-opus-4-8",
+  "max_tokens": 1024,
+  "system": [
+    {
+      "type": "text",
+      "text": "Long stable instructions…",
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+  "messages": [{ "role": "user", "content": "Short varying question" }]
+}`;
+const GPT_CACHE_JSON = `{
+  "usage": {
+    "prompt_tokens": 5120,
+    "prompt_tokens_details": { "cached_tokens": 4096 },
+    "completion_tokens": 128
+  }
+}`;
+
+const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -32,7 +54,7 @@ const copy = {
     agentEyebrow: "For Your Agent",
     agentTitle: "Connect models in one instruction",
     agentLead: "Copy → paste into your agent → provide the API key when asked.",
-    agentPrompt: `Connect this project or tool to apiToken.sale. First open ${AGENT_GUIDE_URL} and follow the current instructions. Detect my operating system, shell, runtime, and client or SDK; choose a compatible API protocol and an available model; ask for the sk-pool-… key only if it is not already stored in a secure environment variable; make the smallest required changes; and run a real verification request. Never print the key, put it in source control, or change unrelated files. If anything fails, diagnose it with the guide and explain the result in plain language.`,
+    agentPrompt: `Read ${AGENT_GUIDE_URL} and follow the instructions to connect this project to apiToken.sale. Detect my operating system, shell, runtime, and client or SDK; choose the right API surface and an available model; ask for the sk-pool key only if it is not already stored in a secure environment variable; make the smallest required changes; and run the real verification request from the guide. Never print, log, or commit the key, and do not change unrelated files. If anything fails, diagnose it with the guide's error table and explain the result in plain language.`,
     copyAgent: "Copy instruction",
     agentCopied: "Instruction copied",
     openAgentGuide: "Guide",
@@ -48,6 +70,13 @@ const copy = {
     quickstartText: "Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.",
     apiTitle: "Use the API in your code",
     apiText: "One sk-pool key, two compatible surfaces. Pick a provider and a programming language — the exact request for your app, bot, or script appears below.",
+    caching: "Prompt caching",
+    cachingTitle: "Prompt caching",
+    cachingText: "Cache the large stable prefix once — every later read of it bills at 10% of the input price.",
+    cacheClaude: "Claude — explicit cache_control",
+    cacheClaudeText: "Breakpoints pass through to Anthropic unchanged. Cache writes bill at 1.25× input (5-minute TTL) or 2× (1-hour TTL — send the `anthropic-beta: extended-cache-ttl-2025-04-11` header yourself). Repeat calls of the same prefix are pinned to the warm upstream, so keep the prefix byte-identical.",
+    cacheGpt: "GPT — automatic",
+    cacheGptText: "No opt-in: repeated prefixes are cached server-side. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses) bills at 10% of input automatically.",
     errorTitle: "Common response codes",
     errorText: "Error bodies on the Anthropic surface use Anthropic's JSON envelope; the OpenAI-compatible surface returns the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.",
     status: "Status",
@@ -91,7 +120,7 @@ const copy = {
     agentEyebrow: "Для вашего AI‑агента",
     agentTitle: "Подключите модели одной инструкцией",
     agentLead: "Скопируйте → вставьте агенту → передайте API‑ключ по запросу.",
-    agentPrompt: `Подключи этот проект или инструмент к apiToken.sale. Сначала открой ${AGENT_GUIDE_URL} и следуй актуальной инструкции. Определи мою операционную систему, оболочку, среду и клиент или SDK; выбери совместимый API‑протокол и доступную модель; запроси ключ sk-pool-…, только если его нет в безопасной переменной окружения; внеси минимальные изменения и выполни реальный проверочный запрос. Не показывай ключ в логах, не коммить его и не меняй посторонние файлы. Если что‑то не сработает, диагностируй причину по guide и объясни результат простыми словами.`,
+    agentPrompt: `Прочитай ${AGENT_GUIDE_URL} и следуй инструкции, чтобы подключить этот проект к apiToken.sale. Определи мою операционную систему, оболочку, рантайм и клиент или SDK; выбери правильную API‑поверхность и доступную модель; запроси ключ sk-pool-…, только если его нет в безопасной переменной окружения; внеси минимальные изменения и выполни реальную проверочную заявку из гайда. Не показывай ключ в логах, не коммить его и не меняй посторонние файлы. Если что‑то не сработает, разбери причину по таблице ошибок гайда и объясни результат простыми словами.`,
     copyAgent: "Скопировать",
     agentCopied: "Инструкция скопирована",
     openAgentGuide: "Инструкция",
@@ -107,6 +136,13 @@ const copy = {
     quickstartText: "Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.",
     apiTitle: "Используйте API в своём коде",
     apiText: "Один ключ sk-pool, две совместимые поверхности. Выберите провайдера и язык программирования — готовый запрос для приложения, бота или скрипта появится ниже.",
+    caching: "Кеширование промптов",
+    cachingTitle: "Кеширование промптов",
+    cachingText: "Закешируйте большой стабильный префикс один раз — каждое следующее чтение стоит 10% от цены входных токенов.",
+    cacheClaude: "Claude — явный cache_control",
+    cacheClaudeText: "Точки кеширования пробрасываются в Anthropic без изменений. Запись в кеш стоит 1,25× от цены ввода (TTL 5 минут) или 2× (TTL 1 час — заголовок `anthropic-beta: extended-cache-ttl-2025-04-11` передайте самостоятельно). Повторные вызовы с тем же префиксом закрепляются за прогретым апстримом, поэтому держите префикс неизменным байт в байт.",
+    cacheGpt: "GPT — автоматически",
+    cacheGptText: "Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) или `input_tokens_details.cached_tokens` (Responses) автоматически тарифицируются как 10% от цены ввода.",
     errorTitle: "Основные коды ответа",
     errorText: "Тело ошибки на Anthropic-поверхности использует JSON-формат Anthropic; OpenAI-совместимая поверхность возвращает конверт OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.",
     status: "Статус",
@@ -147,6 +183,7 @@ export function DocsPortal() {
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
     { id: "errors", label: t.errors },
+    { id: "caching", label: t.caching },
     { id: "next", label: t.nextSteps },
   ];
 
@@ -199,7 +236,7 @@ export function DocsPortal() {
               </div>
               <div className="docs-agent-actions">
                 <CopyControl className="docs-agent-copy" withIcon value={t.agentPrompt} label={t.copyAgent} copiedLabel={t.agentCopied} />
-                <Link className="btn btn-ghost docs-guide-link" href="/md/connect" target="_blank"><GuideIcon />{t.openAgentGuide}</Link>
+                <a className="btn btn-ghost docs-guide-link" href={AGENT_GUIDE_URL} target="_blank" rel="noreferrer"><GuideIcon />{t.openAgentGuide}</a>
               </div>
             </div>
             <div className="docs-agent-bottom">
@@ -238,8 +275,16 @@ export function DocsPortal() {
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
         </section>
 
+        <section className="docs-section" id="caching">
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
+          <div className="docs-two-col">
+            <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} copyLabel={t.copy} copiedLabel={t.copied} />
+            <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} copyLabel={t.copy} copiedLabel={t.copied} />
+          </div>
+        </section>
+
         <section className="docs-section docs-next" id="next">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
           <div className="learn-related">
             <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
             <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>
@@ -271,6 +316,13 @@ function CopyControl({ value, label, copiedLabel, className = "", withIcon = fal
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
+}
+
+function CacheCard({ title, text, code, copyLabel, copiedLabel }: { title: string; text: string; code: string; copyLabel: string; copiedLabel: string }) {
+  return <article className="docs-code-card cache-card ym-hide-content">
+    <header><div><h3>{title}</h3><p><Prose text={text} /></p></div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header>
+    <pre><code><HighlightedCode code={code} /></code></pre>
+  </article>;
 }
 
 // Copies the whole page as markdown (served by /md/docs) — the reference

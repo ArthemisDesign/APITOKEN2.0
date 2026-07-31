@@ -247,7 +247,7 @@ describe("completed Next.js migration", () => {
     expect(docs).toContain('agentEyebrow: "For Your Agent"');
     expect(docs).toContain('copyAgent: "Скопировать"');
     expect(docs).not.toContain("{t.agentPrompt}</p>");
-    expect(docs).toContain("https://apitoken.sale/md/connect");
+    expect(docs).toContain("https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md");
     expect(docs).not.toContain("Connection details");
     expect(docs).not.toContain("Параметры подключения");
     expect(agentGuideRoute).toContain("buildAgentSetupMarkdown");
