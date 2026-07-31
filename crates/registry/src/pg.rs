@@ -26,9 +26,10 @@ const MIGRATION_0009: &str = include_str!("../migrations_pg/0009_pricing_shadow_
 const MIGRATION_0010: &str = include_str!("../migrations_pg/0010_codex_window_calibration.sql");
 const MIGRATION_0011: &str =
     include_str!("../migrations_pg/0011_codex_calibration_anchor_ready.sql");
+const MIGRATION_0012: &str = include_str!("../migrations_pg/0012_codex_home_health.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -43,6 +44,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (9, MIGRATION_0009),
     (10, MIGRATION_0010),
     (11, MIGRATION_0011),
+    (12, MIGRATION_0012),
 ];
 
 #[cfg(test)]
@@ -1979,6 +1981,52 @@ impl PgStore {
             )?
             .map(|row| row.get(0))
             .unwrap_or(0))
+    }
+
+    pub fn save_codex_home_health(
+        &mut self,
+        home_id: &str,
+        row: &crate::CodexHomeHealthRow,
+        updated_ts: i64,
+    ) -> Result<()> {
+        self.client.execute(
+            "INSERT INTO codex_home_health(\
+               home_id,account_state,auth_fail_streak,first_auth_fail_ts,cooling_until,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT(home_id) DO UPDATE SET \
+               account_state=EXCLUDED.account_state, \
+               auth_fail_streak=EXCLUDED.auth_fail_streak, \
+               first_auth_fail_ts=EXCLUDED.first_auth_fail_ts, \
+               cooling_until=EXCLUDED.cooling_until, \
+               updated_ts=EXCLUDED.updated_ts",
+            &[
+                &home_id,
+                &row.account_state,
+                &row.auth_fail_streak,
+                &row.first_auth_fail_ts,
+                &row.cooling_until,
+                &updated_ts,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A home with no stored verdict starts healthy: absence of evidence is not evidence of fault.
+    pub fn load_codex_home_health(&mut self, home_id: &str) -> Result<crate::CodexHomeHealthRow> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT account_state,auth_fail_streak,first_auth_fail_ts,cooling_until \
+                 FROM codex_home_health WHERE home_id=$1",
+                &[&home_id],
+            )?
+            .map(|row| crate::CodexHomeHealthRow {
+                account_state: row.get(0),
+                auth_fail_streak: row.get(1),
+                first_auth_fail_ts: row.get(2),
+                cooling_until: row.get(3),
+            })
+            .unwrap_or_default())
     }
 
     pub fn load_codex_calibration(
@@ -4121,6 +4169,7 @@ mod tests {
              provider_switch_head,provider_switch_entries,provider_switch_versions, \
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
              codex_window_observations,codex_window_calibrations,codex_home_spend, \
+             codex_home_health, \
              settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )

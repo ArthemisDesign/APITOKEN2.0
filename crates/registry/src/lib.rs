@@ -1087,6 +1087,14 @@ pub fn open(path: &str) -> Result<Connection> {
            home_id TEXT PRIMARY KEY, \
            spent_nano INTEGER NOT NULL DEFAULT 0 CHECK(spent_nano >= 0), \
            updated_ts INTEGER NOT NULL); \
+         CREATE TABLE IF NOT EXISTS codex_home_health( \
+           home_id TEXT PRIMARY KEY, \
+           account_state TEXT NOT NULL DEFAULT 'healthy' \
+             CHECK(account_state IN ('healthy','suspect','dead')), \
+           auth_fail_streak INTEGER NOT NULL DEFAULT 0 CHECK(auth_fail_streak >= 0), \
+           first_auth_fail_ts INTEGER NOT NULL DEFAULT 0 CHECK(first_auth_fail_ts >= 0), \
+           cooling_until INTEGER NOT NULL DEFAULT 0 CHECK(cooling_until >= 0), \
+           updated_ts INTEGER NOT NULL); \
          CREATE TABLE IF NOT EXISTS codex_window_calibrations( \
            home_id TEXT NOT NULL, \
            window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
@@ -3825,6 +3833,81 @@ pub fn credit_codex_home_spend(
     .context("credit SQLite Codex home spend")
 }
 
+/// Durable account-level health for one Codex home.
+///
+/// Only the account axis is stored. Transport health belongs to one app-server generation and must
+/// not survive it: a restarted gateway holds a brand new bridge and deserves a fresh verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexHomeHealthRow {
+    pub account_state: String,
+    pub auth_fail_streak: i64,
+    pub first_auth_fail_ts: i64,
+    pub cooling_until: i64,
+}
+
+impl Default for CodexHomeHealthRow {
+    fn default() -> Self {
+        Self {
+            account_state: "healthy".to_string(),
+            auth_fail_streak: 0,
+            first_auth_fail_ts: 0,
+            cooling_until: 0,
+        }
+    }
+}
+
+pub fn save_codex_home_health(
+    conn: &Connection,
+    home_id: &str,
+    row: &CodexHomeHealthRow,
+    updated_ts: i64,
+) -> Result<()> {
+    if home_id.is_empty() || updated_ts <= 0 {
+        bail!("invalid Codex home health write");
+    }
+    conn.execute(
+        "INSERT INTO codex_home_health( \
+           home_id,account_state,auth_fail_streak,first_auth_fail_ts,cooling_until,updated_ts) \
+         VALUES(?1,?2,?3,?4,?5,?6) \
+         ON CONFLICT(home_id) DO UPDATE SET \
+           account_state=excluded.account_state, \
+           auth_fail_streak=excluded.auth_fail_streak, \
+           first_auth_fail_ts=excluded.first_auth_fail_ts, \
+           cooling_until=excluded.cooling_until, \
+           updated_ts=excluded.updated_ts",
+        rusqlite::params![
+            home_id,
+            row.account_state,
+            row.auth_fail_streak,
+            row.first_auth_fail_ts,
+            row.cooling_until,
+            updated_ts
+        ],
+    )
+    .context("save SQLite Codex home health")?;
+    Ok(())
+}
+
+/// A home with no stored verdict starts healthy: absence of evidence is not evidence of a fault.
+pub fn load_codex_home_health(conn: &Connection, home_id: &str) -> Result<CodexHomeHealthRow> {
+    Ok(conn
+        .query_row(
+            "SELECT account_state,auth_fail_streak,first_auth_fail_ts,cooling_until \
+             FROM codex_home_health WHERE home_id=?1",
+            rusqlite::params![home_id],
+            |row| {
+                Ok(CodexHomeHealthRow {
+                    account_state: row.get(0)?,
+                    auth_fail_streak: row.get(1)?,
+                    first_auth_fail_ts: row.get(2)?,
+                    cooling_until: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
 pub fn codex_home_spend(conn: &Connection, home_id: &str) -> Result<i64> {
     Ok(conn
         .query_row(
@@ -5164,6 +5247,36 @@ mod tests {
         assert!(columns.contains(&"window_duration_mins".to_owned()));
         assert!(columns.contains(&"resets_at".to_owned()));
         assert!(columns.contains(&"anchor_ready".to_owned()));
+    }
+
+    #[test]
+    fn codex_home_health_defaults_to_healthy_and_round_trips() {
+        let c = db();
+        // Absence of evidence is not evidence of a fault: an unknown home starts routable.
+        assert_eq!(
+            load_codex_home_health(&c, "home-new").unwrap(),
+            CodexHomeHealthRow::default()
+        );
+
+        let dead = CodexHomeHealthRow {
+            account_state: "dead".to_string(),
+            auth_fail_streak: 2,
+            first_auth_fail_ts: 1_000,
+            cooling_until: 1_900,
+        };
+        save_codex_home_health(&c, "home-a", &dead, 2_000).unwrap();
+        // The verdict a restart used to discard now survives it, which is the whole point: a
+        // corroborated dead subscription must not be re-admitted by every blue-green handoff.
+        assert_eq!(load_codex_home_health(&c, "home-a").unwrap(), dead);
+
+        let repaired = CodexHomeHealthRow::default();
+        save_codex_home_health(&c, "home-a", &repaired, 2_100).unwrap();
+        assert_eq!(load_codex_home_health(&c, "home-a").unwrap(), repaired);
+        // Homes are independent: one dead subscription never taints its neighbours.
+        assert_eq!(
+            load_codex_home_health(&c, "home-b").unwrap(),
+            CodexHomeHealthRow::default()
+        );
     }
 
     #[test]
