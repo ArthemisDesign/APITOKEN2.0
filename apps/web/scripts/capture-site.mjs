@@ -496,7 +496,12 @@ async function capturePage(client, [name, route, width, height, theme, language 
   await client.send("Runtime.evaluate", {
     expression: `localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
   });
-  const captureUrl = new URL(route, baseUrl);
+  // The site language is URL-owned. Navigate straight to the localized route instead of
+  // clicking a language control before React has necessarily hydrated its event handler.
+  const localizedRoute = language === "ru" && !route.startsWith("/ru")
+    ? route === "/" ? "/ru" : `/ru${route}`
+    : route;
+  const captureUrl = new URL(localizedRoute, baseUrl);
   // Force a real navigation even when consecutive captures use the same route.
   // Without this cache-buster Chrome can reuse the mounted English page after
   // localStorage is changed, producing a mislabeled language screenshot.
@@ -1412,7 +1417,7 @@ async function verifyDocsTheme(client) {
   await loaded;
   await waitForCondition(
     client,
-    `document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme' && !document.documentElement.hasAttribute('data-theme')`,
+    `document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme' && document.documentElement.dataset.theme !== 'dark'`,
     "the light docs theme",
   );
 

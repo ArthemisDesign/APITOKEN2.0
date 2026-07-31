@@ -114,6 +114,7 @@ export function buildLlms(locale: Locale): string {
     "",
     "Every public section is available as clean Markdown — the private dashboard, auth and account pages are excluded. Core references:",
     "",
+    `- Agent setup runbook (detect OS/tool, configure securely, verify and diagnose): ${SITE_ORIGIN}/md/connect`,
     `- API reference (base URLs, model IDs, streaming, tools, errors): ${SITE_ORIGIN}/md/docs`,
     `- Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models`,
     `- Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors`,

@@ -5,12 +5,13 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
+import { api } from "@/lib/api";
 import { localeHref } from "@/lib/locale-routes";
 import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 
-const BASE_URL = "https://api.apitoken.sale";
-const MESSAGES_URL = `${BASE_URL}/v1/messages`;
 const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
+const AGENT_GUIDE_URL = "https://apitoken.sale/md/connect";
+const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
 const CURL = `curl https://api.apitoken.sale/v1/messages \
   -H "x-api-key: $APITOKEN_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
@@ -96,18 +97,15 @@ const CODEX_RUN = `# Keep the key in your shell, not in the TOML file
 export APITOKEN_API_KEY="sk-pool-•••"
 codex --profile apitoken`;
 
-function cleanApiKey(value: string) {
-  const key = value.trim();
-  return /^sk-pool-[A-Za-z0-9._-]{4,}$/.test(key) ? key : "";
-}
-
 const copy = {
   en: {
     documentation: "Documentation",
     back: "Back to site",
     dashboard: "Dashboard",
     onThisPage: "On this page",
-    overview: "Overview",
+    overview: "Connect models",
+    agentSetup: "AI agent setup",
+    support: "Setup support",
     quickstart: "Quick start",
     authentication: "Authentication",
     tools: "Developer tools",
@@ -115,25 +113,53 @@ const copy = {
     sdks: "Official SDKs",
     errors: "Errors",
     pricing: "Pricing & tiers",
-    eyebrow: "CLAUDE + GPT · CONNECTION GUIDE",
-    title: "Connect Claude or GPT in three steps",
-    lead: "apiToken.sale provides prepaid, discounted access to the real Anthropic Claude API and an OpenAI-compatible GPT API. Create an sk-pool key, point any compatible client at the right endpoint, and send a standard request — one balance and one discount cover both.",
-    openKeys: "Open API keys",
-    gettingStarted: "Getting started path",
-    stepKey: "Create an sk-pool key",
-    stepBase: "Set the base URL",
-    stepRequest: "POST /v1/messages",
+    title: "Connect any model",
+    lead: "One API key gives your tools access to every model available in your account. Let an AI agent select the right protocol, configure the client, and verify the connection.",
+    openKeys: "Get an API key",
+    agentTitle: "Give this setup to your AI agent",
+    agentLead: "Copy one instruction into Codex, Claude Code, Cursor, or any agent that can configure your project. It will inspect the environment and complete the setup itself.",
+    agentInstructionLabel: "Ready-to-use instruction",
+    agentPrompt: `Connect this project or tool to apiToken.sale. First open ${AGENT_GUIDE_URL} and follow the current instructions. Detect my operating system, shell, runtime, and client or SDK; choose a compatible API protocol and an available model; ask for the sk-pool-… key only if it is not already stored in a secure environment variable; make the smallest required changes; and run a real verification request. Never print the key, put it in source control, or change unrelated files. If anything fails, diagnose it with the guide and explain the result in plain language.`,
+    copyAgent: "Copy agent instruction",
+    agentCopied: "Instruction copied",
+    openAgentGuide: "Open technical guide",
+    agentGuideNote: "Live guide · endpoints and model catalog stay current",
+    agentSteps: [
+      { title: "Understands your setup", text: "Detects Windows, macOS, or Linux, plus the shell, runtime, and existing client." },
+      { title: "Chooses the right API", text: "Selects a compatible protocol and a currently available model instead of guessing." },
+      { title: "Connects safely", text: "Keeps the key outside source code and changes only the settings the integration needs." },
+      { title: "Proves it works", text: "Runs a minimal real request, checks the response, and explains any failure." },
+    ],
+    supportTitle: "Stuck? We’ll finish the setup with you.",
+    supportLead: "Our AI support knows the supported clients, OS-specific setup, endpoints, headers, and current model catalog. It can guide you step by step, inspect an error, or hand the case to a person.",
+    supportItems: [
+      "Any compatible IDE, agent, CLI, or SDK",
+      "Windows, macOS, Linux, shells, and environment variables",
+      "Authentication, endpoint, model, balance, and rate-limit errors",
+      "Streaming, tools, images, proxies, and client-specific settings",
+    ],
+    openSupport: "Open Telegram support",
+    supportOnline: "AI replies 24/7 · a person joins when needed",
+    diagnosticTitle: "Send the right context once",
+    diagnosticText: "Copy this brief, fill in what you know, and paste it into the support chat. Never include your full API key.",
+    diagnosticBrief: `Please help me connect apiToken.sale.
+
+Operating system and version:
+Client / IDE / CLI / SDK and version:
+Runtime and shell:
+What I am trying to connect:
+API surface or endpoint used:
+Model ID:
+HTTP status and exact error text:
+Approximate time and timezone:
+Request ID, if present:
+What I already tried:
+API key: REDACTED (last 4 characters only):`,
+    copyDiagnostic: "Copy diagnostic brief",
+    diagnosticCopied: "Diagnostic brief copied",
+    supportSecurity: "Support will never ask for your password, card details, or full API key.",
     baseUrl: "Base URL",
-    messagesEndpoint: "Messages endpoint",
     authHeader: "Authentication header",
-    apiKeyLabel: "Your API key",
-    apiKeyHelp: "Paste your sk-pool-… key to personalize examples that display a key. It stays only in this browser tab's memory: this page never uploads or saves it. Clear the field or reload the tab to remove it.",
-    apiKeyApply: "Apply to examples",
-    apiKeyClear: "Remove",
-    apiKeyActive: "Examples use the key ending",
-    oneEndpoint: "Connection details",
-    oneEndpointText: "Only the host and API key change. Message payloads, responses, SSE streams, and error bodies match the Anthropic Messages API byte for byte.",
-    keyNotice: "A full API key is shown only once when issued. Save it in an environment variable or secret manager. If it is lost or exposed, revoke it and create a replacement; the original value cannot be recovered.",
     quickstartText: "Export the connection settings, then run the minimal cURL request. A successful response confirms the key, balance, endpoint, and model are ready.",
     requestTitle: "Send your first request",
     requestText: "This sends one user message to claude-opus-4-8. To stream a response, add \"stream\": true; the endpoint returns standard Anthropic SSE events.",
@@ -210,7 +236,9 @@ const copy = {
     back: "На главный сайт",
     dashboard: "Кабинет",
     onThisPage: "На этой странице",
-    overview: "Обзор",
+    overview: "Подключение моделей",
+    agentSetup: "Настройка через AI‑агента",
+    support: "Помощь с подключением",
     quickstart: "Быстрый старт",
     authentication: "Аутентификация",
     tools: "Инструменты разработчика",
@@ -218,25 +246,53 @@ const copy = {
     sdks: "Официальные SDK",
     errors: "Ошибки",
     pricing: "Цены и тарифы",
-    eyebrow: "CLAUDE + GPT · РУКОВОДСТВО ПО ПОДКЛЮЧЕНИЮ",
-    title: "Подключите Claude или GPT за три шага",
-    lead: "apiToken.sale предоставляет предоплаченный доступ к настоящему Anthropic Claude API и OpenAI-совместимому GPT API со скидкой. Создайте ключ sk-pool-…, укажите для совместимого клиента нужный адрес и отправьте стандартный запрос — баланс и скидка общие для обоих API.",
-    openKeys: "Открыть API-ключи",
-    gettingStarted: "Порядок подключения",
-    stepKey: "Создайте ключ sk-pool",
-    stepBase: "Укажите базовый URL",
-    stepRequest: "POST /v1/messages",
+    title: "Подключение моделей",
+    lead: "Один API‑ключ открывает вашим инструментам все доступные модели. Поручите AI‑агенту выбрать нужный протокол, настроить клиент и проверить подключение.",
+    openKeys: "Получить API‑ключ",
+    agentTitle: "Передайте подключение своему AI‑агенту",
+    agentLead: "Скопируйте одну инструкцию в Codex, Claude Code, Cursor или любой агент, который умеет настраивать проект. Остальное он сделает сам.",
+    agentInstructionLabel: "Готовая инструкция",
+    agentPrompt: `Подключи этот проект или инструмент к apiToken.sale. Сначала открой ${AGENT_GUIDE_URL} и следуй актуальной инструкции. Определи мою операционную систему, оболочку, среду и клиент или SDK; выбери совместимый API‑протокол и доступную модель; запроси ключ sk-pool-…, только если его нет в безопасной переменной окружения; внеси минимальные изменения и выполни реальный проверочный запрос. Не показывай ключ в логах, не коммить его и не меняй посторонние файлы. Если что‑то не сработает, диагностируй причину по guide и объясни результат простыми словами.`,
+    copyAgent: "Скопировать инструкцию",
+    agentCopied: "Инструкция скопирована",
+    openAgentGuide: "Открыть технический guide",
+    agentGuideNote: "Живая инструкция · endpoints и каталог моделей всегда актуальны",
+    agentSteps: [
+      { title: "Понимает вашу среду", text: "Определяет Windows, macOS или Linux, оболочку, runtime и текущий клиент." },
+      { title: "Выбирает нужный API", text: "Находит совместимый протокол и актуальную модель, а не угадывает их." },
+      { title: "Подключает безопасно", text: "Хранит ключ вне исходного кода и меняет только нужные настройки." },
+      { title: "Доказывает, что всё работает", text: "Выполняет минимальный реальный запрос, проверяет ответ и объясняет ошибку." },
+    ],
+    supportTitle: "Не получилось? Доведём подключение до конца.",
+    supportLead: "Наша AI‑поддержка знает совместимые клиенты, настройку для разных ОС, endpoints, headers и актуальные модели. Она проведёт по шагам, разберёт ошибку или подключит человека.",
+    supportItems: [
+      "Любая совместимая IDE, AI‑агент, CLI или SDK",
+      "Windows, macOS, Linux, оболочки и переменные окружения",
+      "Ошибки ключа, endpoint, модели, баланса и лимитов",
+      "Streaming, tools, изображения, proxy и настройки клиента",
+    ],
+    openSupport: "Открыть поддержку в Telegram",
+    supportOnline: "AI отвечает 24/7 · человек подключается при необходимости",
+    diagnosticTitle: "Сразу передайте нужный контекст",
+    diagnosticText: "Скопируйте шаблон, заполните то, что знаете, и отправьте в чат. Никогда не присылайте полный API‑ключ.",
+    diagnosticBrief: `Помогите подключить apiToken.sale.
+
+Операционная система и версия:
+Клиент / IDE / CLI / SDK и версия:
+Runtime и оболочка:
+Что именно подключаю:
+Используемый API или endpoint:
+ID модели:
+HTTP‑статус и точный текст ошибки:
+Примерное время и часовой пояс:
+Request ID, если есть:
+Что уже пробовал:
+API‑ключ: СКРЫТ (только последние 4 символа):`,
+    copyDiagnostic: "Скопировать данные для диагностики",
+    diagnosticCopied: "Шаблон скопирован",
+    supportSecurity: "Поддержка не попросит пароль, данные карты или полный API‑ключ.",
     baseUrl: "Базовый URL",
-    messagesEndpoint: "Адрес Messages API",
     authHeader: "Заголовок аутентификации",
-    apiKeyLabel: "Ваш API-ключ",
-    apiKeyHelp: "Вставьте ключ sk-pool-…, чтобы подставить его в примеры, где ключ указан явно. Он остаётся только в памяти этой вкладки браузера: страница не загружает и не сохраняет его. Чтобы удалить ключ, очистите поле или перезагрузите вкладку.",
-    apiKeyApply: "Подставить в примеры",
-    apiKeyClear: "Удалить",
-    apiKeyActive: "В примерах используется ключ с окончанием",
-    oneEndpoint: "Параметры подключения",
-    oneEndpointText: "Меняются только адрес сервера и API-ключ. Тела запросов и ответов, SSE-потоки и ошибки совпадают с Anthropic Messages API байт в байт.",
-    keyNotice: "Полный API-ключ показывается только один раз при выпуске. Сохраните его в переменной окружения или менеджере секретов. Если ключ потерян или раскрыт, отзовите его и создайте новый: восстановить исходное значение нельзя.",
     quickstartText: "Сначала задайте параметры подключения, затем выполните минимальный cURL-запрос. Успешный ответ подтверждает, что ключ, баланс, адрес и модель готовы к работе.",
     requestTitle: "Отправьте первый запрос",
     requestText: "Запрос отправляет одно сообщение модели claude-opus-4-8. Для потокового ответа добавьте \"stream\": true; сервер вернёт стандартные SSE-события Anthropic.",
@@ -313,28 +369,17 @@ const copy = {
 export function DocsPortal() {
   const { language, setLanguage } = useI18n();
   const t = copy[language];
-  const [activeKey, setActiveKey] = useState("");
-  const [keyInput, setKeyInput] = useState("");
+  const [supportUrl, setSupportUrl] = useState(SUPPORT_TELEGRAM_URL);
 
-  useEffect(() => () => {
-    setActiveKey("");
-    setKeyInput("");
+  useEffect(() => {
+    let alive = true;
+    api.me()
+      .then(({ user }) => {
+        if (alive && user?.id) setSupportUrl(`${SUPPORT_TELEGRAM_URL}?start=${encodeURIComponent(user.id)}`);
+      })
+      .catch(() => {/* Public docs keep the non-personalized support URL. */});
+    return () => { alive = false; };
   }, []);
-
-  function applyKey() {
-    const key = cleanApiKey(keyInput);
-    setActiveKey(key);
-    setKeyInput(key);
-  }
-
-  function clearKey() {
-    setActiveKey("");
-    setKeyInput("");
-  }
-
-  const withKey = (code: string) => activeKey
-    ? code.replaceAll("sk-pool-•••", activeKey).replaceAll("$APITOKEN_API_KEY", activeKey)
-    : code;
 
   return <div className="docs-site">
     <header className="docs-header">
@@ -348,34 +393,63 @@ export function DocsPortal() {
       </div>
     </header>
     <div className="docs-layout">
-      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#openai">{t.openai}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
+      <aside className="docs-sidebar"><span>{t.onThisPage}</span><nav><a href="#overview">{t.overview}</a><a href="#agent-setup">{t.agentSetup}</a><a href="#setup-support">{t.support}</a><a href="#quickstart">{t.quickstart}</a><a href="#authentication">{t.authentication}</a><a href="#tools">{t.tools}</a><a href="#openai">{t.openai}</a><a href="#sdks">{t.sdks}</a><a href="#errors">{t.errors}</a><a href="#pricing">{t.pricing}</a></nav></aside>
       <main className="docs-main" id="main-content" tabIndex={-1}>
-        <section className="docs-hero" id="overview"><span className="eyebrow">{t.eyebrow}</span><h1>{t.title}</h1><p>{t.lead}</p><div className="hero-cta"><Link className="btn btn-primary" href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}</Link><Link className="btn btn-ghost" href={localeHref("/docs/learn", language)}>API guides</Link></div></section>
+        <section className="docs-hero" id="overview"><h1>{t.title}</h1><p>{t.lead}</p></section>
 
-        <section className="docs-section">
-          <div className="docs-section-heading"><span>01</span><div><h2>{t.oneEndpoint}</h2><p>{t.oneEndpointText}</p></div></div>
-          <div className="docs-auth-flow" aria-label={t.gettingStarted} style={{ marginBottom: 14 }}>
-            <div><b>1</b><code>{t.stepKey}</code></div><span>→</span><div><b>2</b><code>{t.stepBase}</code></div><span>→</span><div><b>3</b><code>{t.stepRequest}</code></div>
-          </div>
-          <div className="docs-notice" style={{ marginTop: 0, marginBottom: 14, display: "grid", gap: 12 }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div><label htmlFor="docs-api-key" style={{ display: "block", color: "var(--txt)", fontWeight: 700 }}>{t.apiKeyLabel}</label><span id="docs-api-key-help" style={{ display: "block", marginTop: 3, color: "var(--txt-3)" }}>{t.apiKeyHelp}</span></div>
-              {activeKey && <span role="status" aria-live="polite" style={{ color: "var(--accent)", fontSize: 11 }}>{t.apiKeyActive} <b>••••{activeKey.slice(-4)}</b></span>}
+        <section className="docs-section docs-connect-section" id="agent-setup">
+          <article className="docs-agent-card">
+            <div className="docs-agent-top">
+              <div className="docs-agent-heading">
+                <span className="docs-agent-number">01</span>
+                <div><h2>{t.agentTitle}</h2><p>{t.agentLead}</p></div>
+              </div>
+              <div className="docs-agent-actions">
+                <CopyControl className="docs-agent-copy" withIcon value={t.agentPrompt} label={t.copyAgent} copiedLabel={t.agentCopied} />
+                <Link className="btn btn-ghost docs-guide-link" href="/md/connect" target="_blank"><GuideIcon />{t.openAgentGuide}</Link>
+              </div>
             </div>
-            <form onSubmit={(event) => { event.preventDefault(); applyKey(); }} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <input id="docs-api-key" className="ym-disable-keys" type="password" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder="sk-pool-•••" aria-describedby="docs-api-key-help" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ flex: "1 1 280px", minWidth: 0, padding: "10px 12px", border: "1px solid var(--line-strong)", borderRadius: 6, background: "var(--bg-card)", color: "var(--txt)", fontFamily: "var(--font-mono)", fontSize: 12 }} />
-              <button className="btn btn-primary btn-sm" type="submit">{t.apiKeyApply}</button>
-              <button className="btn btn-ghost btn-sm" type="button" onClick={clearKey}>{t.apiKeyClear}</button>
-            </form>
-          </div>
-          <div className="docs-essential-grid"><Endpoint label={t.baseUrl} value={BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.messagesEndpoint} value={MESSAGES_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("x-api-key: sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /></div>
-          <div className="docs-notice">{t.keyNotice}</div>
+            <div className="docs-agent-command ym-hide-content">
+              <span className="docs-agent-command-icon" aria-hidden="true"><AgentIcon /></span>
+              <div><strong>{t.agentInstructionLabel}</strong><p>{t.agentPrompt}</p></div>
+            </div>
+            <div className="docs-agent-guide-note"><span aria-hidden="true" />{t.agentGuideNote}</div>
+            <div className="docs-agent-plan">
+              {t.agentSteps.map((step, index) => <article key={step.title}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step.title}</strong><p>{step.text}</p></article>)}
+            </div>
+            <div className="docs-agent-keyline">
+              <span><ShieldIcon />{language === "ru" ? "Ключ остаётся в вашей среде" : "The key stays in your environment"}</span>
+              <Link href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}<ArrowIcon /></Link>
+            </div>
+          </article>
+        </section>
+
+        <section className="docs-section docs-support-section" id="setup-support">
+          <article className="docs-connect-support">
+            <div className="docs-support-main">
+              <span className="docs-support-icon" aria-hidden="true"><TelegramIcon /></span>
+              <h2>{t.supportTitle}</h2>
+              <p>{t.supportLead}</p>
+              <ul>{t.supportItems.map((item) => <li key={item}><CheckIcon />{item}</li>)}</ul>
+              <div className="docs-support-actions">
+                <a className="btn btn-primary" href={supportUrl} target="_blank" rel="noreferrer"><TelegramIcon />{t.openSupport}</a>
+                <span><i aria-hidden="true" />{t.supportOnline}</span>
+              </div>
+            </div>
+            <aside className="docs-diagnostic">
+              <span className="docs-diagnostic-icon" aria-hidden="true"><LifebuoyIcon /></span>
+              <h3>{t.diagnosticTitle}</h3>
+              <p>{t.diagnosticText}</p>
+              <CopyControl className="docs-diagnostic-copy" withIcon value={t.diagnosticBrief} label={t.copyDiagnostic} copiedLabel={t.diagnosticCopied} />
+              <div className="docs-support-security"><ShieldIcon />{t.supportSecurity}</div>
+            </aside>
+          </article>
         </section>
 
         <section className="docs-section" id="quickstart">
           <div className="docs-section-heading"><span>02</span><div><h2>{t.quickstart}</h2><p>{t.quickstartText}</p></div></div>
-          <CodeBlock title={t.envTitle} description={t.envText} code={withKey(ENVIRONMENT)} copyLabel={t.copy} copiedLabel={t.copied} />
-          <CodeBlock title={t.requestTitle} description={t.requestText} code={withKey(CURL)} copyLabel={t.copy} copiedLabel={t.copied} />
+          <CodeBlock title={t.envTitle} description={t.envText} code={ENVIRONMENT} copyLabel={t.copy} copiedLabel={t.copied} />
+          <CodeBlock title={t.requestTitle} description={t.requestText} code={CURL} copyLabel={t.copy} copiedLabel={t.copied} />
         </section>
 
         <section className="docs-section" id="authentication">
@@ -386,15 +460,15 @@ export function DocsPortal() {
 
         <section className="docs-section" id="tools">
           <div className="docs-section-heading"><span>04</span><div><h2>{t.tools}</h2><p>{t.toolsText}</p></div></div>
-          <div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={withKey(CLAUDE_CODE)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={withKey(CURSOR)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-two-col"><CodeBlock title={t.claudeCode} description={t.claudeCodeText} code={CLAUDE_CODE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.editors} description={t.editorsText} code={CURSOR} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
         <section className="docs-section" id="openai">
           <div className="docs-section-heading"><span>05</span><div><h2>{t.openai}</h2><p>{t.openaiText}</p></div></div>
-          <div className="docs-essential-grid" style={{ marginBottom: 14 }}><Endpoint label={t.baseUrl} value={OPENAI_BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value={withKey("Authorization: Bearer sk-pool-•••")} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label="Models" value={`${OPENAI_BASE_URL}/models`} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-essential-grid" style={{ marginBottom: 14 }}><Endpoint label={t.baseUrl} value={OPENAI_BASE_URL} copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label={t.authHeader} value="Authorization: Bearer sk-pool-•••" copyLabel={t.copy} copiedLabel={t.copied} /><Endpoint label="Models" value={`${OPENAI_BASE_URL}/models`} copyLabel={t.copy} copiedLabel={t.copied} /></div>
           <div className="docs-notice" style={{ marginBottom: 14 }}>{t.openaiNotice}</div>
-          <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={withKey(OPENAI_CURL)} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={withKey(OPENAI_PYTHON)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
-          <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={withKey(CODEX_RUN)} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-two-col" style={{ marginBottom: 18 }}><CodeBlock title={t.openaiRequest} description={t.openaiRequestText} code={OPENAI_CURL} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.openaiPython} description={t.openaiPythonText} code={OPENAI_PYTHON} copyLabel={t.copy} copiedLabel={t.copied} /></div>
+          <div className="docs-two-col"><CodeBlock title={t.codex} description={t.codexText} code={CODEX_PROFILE} copyLabel={t.copy} copiedLabel={t.copied} /><CodeBlock title={t.codexRun} description={t.codexRunText} code={CODEX_RUN} copyLabel={t.copy} copiedLabel={t.copied} /></div>
         </section>
 
         <section className="docs-section" id="sdks">
@@ -437,7 +511,7 @@ function CodeBlock({ title, description, code, copyLabel, copiedLabel }: { title
   return <article className="docs-code-card ym-hide-content"><header><div><h3>{title}</h3>{description && <p>{description}</p>}</div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header><pre><code>{code}</code></pre></article>;
 }
 
-function CopyControl({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {
+function CopyControl({ value, label, copiedLabel, className = "", withIcon = false }: { value: string; label: string; copiedLabel: string; className?: string; withIcon?: boolean }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -446,9 +520,43 @@ function CopyControl({ value, label, copiedLabel }: { value: string; label: stri
     window.setTimeout(() => setCopied(false), 1_200);
   }
 
-  return <button className="btn btn-ghost btn-sm docs-copy" type="button" onClick={handleCopy}>{copied ? copiedLabel : label}</button>;
+  return <button className={`btn btn-ghost btn-sm docs-copy ${className}`.trim()} type="button" onClick={handleCopy}>{withIcon && <CopyIcon copied={copied} />}<span>{copied ? copiedLabel : label}</span></button>;
 }
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
+}
+
+function AgentIcon() {
+  return <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 9.9 8.9 4 11l5.9 2.1L12 19l2.1-5.9L20 11l-5.9-2.1L12 3Z" /><path d="m5 3 .6 1.7L7.3 5.3l-1.7.6L5 7.6l-.6-1.7-1.7-.6 1.7-.6L5 3Z" /></svg>;
+}
+
+function CopyIcon({ copied }: { copied: boolean }) {
+  return copied
+    ? <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+    : <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></svg>;
+}
+
+function GuideIcon() {
+  return <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5v-17Z" /><path d="M5 4.5v17M9 6h7M9 10h7" /></svg>;
+}
+
+function ArrowIcon() {
+  return <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
+}
+
+function CheckIcon() {
+  return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>;
+}
+
+function ShieldIcon() {
+  return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 7.6 7 9 4-1.4 7-4.5 7-9V6l-7-3Z" /><path d="m9.3 12 1.8 1.8 3.9-4" /></svg>;
+}
+
+function TelegramIcon() {
+  return <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z" /></svg>;
+}
+
+function LifebuoyIcon() {
+  return <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="m5.6 5.6 4.3 4.3m4.2 4.2 4.3 4.3m0-12.8-4.3 4.3m-4.2 4.2-4.3 4.3" /></svg>;
 }

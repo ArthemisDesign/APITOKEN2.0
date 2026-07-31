@@ -137,7 +137,8 @@ describe("completed Next.js migration", () => {
     expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", location.origin + pathname');
     expect(authShell).toContain("auth-card ym-hide-content");
     expect(dashboard).toContain("app ym-hide-content");
-    expect(docs).toContain("ym-disable-keys");
+    expect(docs).toContain("docs-agent-command ym-hide-content");
+    expect(docs).not.toContain('id="docs-api-key"');
     expect(docs).toContain("docs-code-card ym-hide-content");
   });
 
@@ -238,9 +239,16 @@ describe("completed Next.js migration", () => {
 
   it("serves documentation as a standalone copyable portal", () => {
     const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
+    const agentGuideRoute = readFileSync(join(appRoot, "md", "connect", "route.ts"), "utf8");
     const dynamicRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     expect(docs).toContain("docs-layout");
     expect(docs).toContain("navigator.clipboard.writeText");
+    expect(docs).toContain("Copy agent instruction");
+    expect(docs).toContain("Скопировать инструкцию");
+    expect(docs).toContain("https://apitoken.sale/md/connect");
+    expect(docs).not.toContain("Connection details");
+    expect(docs).not.toContain("Параметры подключения");
+    expect(agentGuideRoute).toContain("buildAgentSetupMarkdown");
     expect(docs).toContain("ANTHROPIC_BASE_URL");
     expect(docs).toContain("Python SDK");
     expect(dynamicRoute).not.toContain("DocsPage");
