@@ -6,7 +6,7 @@ export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 
 export type IntegrationProvider = "anthropic" | "openai";
 export type IntegrationTool = "claude-code" | "codex" | "opencode" | "pi" | "hermes";
-export type IntegrationOs = "macos" | "linux" | "powershell" | "cmd";
+export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
 
 export type IntegrationModel = {

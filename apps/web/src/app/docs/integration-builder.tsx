@@ -28,8 +28,7 @@ const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }
 ];
 
 const operatingSystems: Array<{ id: IntegrationOs; name: string; detail: string }> = [
-  { id: "macos", name: "macOS", detail: "zsh" },
-  { id: "linux", name: "Linux", detail: "bash" },
+  { id: "unix", name: "macOS / Linux", detail: "zsh · bash" },
   { id: "powershell", name: "Windows", detail: "PowerShell" },
   { id: "cmd", name: "Windows", detail: "CMD" },
 ];
@@ -46,7 +45,7 @@ function tr(language: IntegrationLanguage, en: string, ru: string): string {
 export function IntegrationBuilder({ language }: { language: IntegrationLanguage }) {
   const [provider, setProviderState] = useState<IntegrationProvider>("anthropic");
   const [tool, setTool] = useState<IntegrationTool>("claude-code");
-  const [os, setOs] = useState<IntegrationOs>("macos");
+  const [os, setOs] = useState<IntegrationOs>("unix");
   const [modelId, setModelId] = useState(INTEGRATION_MODELS.anthropic[0].id);
   const [copiedStep, setCopiedStep] = useState<number | null>(null);
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
@@ -108,6 +107,20 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
           </label>
         </section>
 
+        <section className="ib-group" aria-label={tr(language, "Operating system", "Операционная система")}>
+          <h6>{tr(language, "Operating system", "Операционная система")}</h6>
+          <div className="ib-rows">
+            {operatingSystems.map((candidate) => {
+              const active = os === candidate.id;
+              return <button type="button" key={candidate.id} className={active ? "ib-row active" : "ib-row"} aria-pressed={active} onClick={() => setOs(candidate.id)}>
+                <span className={`ib-icon o-${candidate.id === "powershell" || candidate.id === "cmd" ? "windows" : candidate.id}`} aria-hidden="true" />
+                <span className="ib-row-text"><strong>{candidate.name}</strong><small>{candidate.detail}</small></span>
+                {active && <CheckIcon />}
+              </button>;
+            })}
+          </div>
+        </section>
+
         <section className="ib-group" aria-label={tr(language, "Coding agent", "Coding agent")}>
           <h6>{tr(language, "Coding agent", "Coding agent")}</h6>
           <div className="ib-rows">
@@ -120,20 +133,6 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
                 {active
                   ? <CheckIcon />
                   : !compatible && <em className="ib-row-tag">{tr(language, provider === "anthropic" ? "GPT only" : "Claude only", provider === "anthropic" ? "Только GPT" : "Только Claude")}</em>}
-              </button>;
-            })}
-          </div>
-        </section>
-
-        <section className="ib-group" aria-label={tr(language, "Operating system", "Операционная система")}>
-          <h6>{tr(language, "Operating system", "Операционная система")}</h6>
-          <div className="ib-rows">
-            {operatingSystems.map((candidate) => {
-              const active = os === candidate.id;
-              return <button type="button" key={candidate.id} className={active ? "ib-row active" : "ib-row"} aria-pressed={active} onClick={() => setOs(candidate.id)}>
-                <span className={`ib-icon o-${candidate.id === "powershell" || candidate.id === "cmd" ? "windows" : candidate.id}`} aria-hidden="true" />
-                <span className="ib-row-text"><strong>{candidate.name}</strong><small>{candidate.detail}</small></span>
-                {active && <CheckIcon />}
               </button>;
             })}
           </div>

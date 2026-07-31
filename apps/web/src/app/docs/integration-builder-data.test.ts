@@ -13,7 +13,7 @@ import {
   type IntegrationTool,
 } from "./integration-builder-data";
 
-const operatingSystems: IntegrationOs[] = ["macos", "linux", "powershell", "cmd"];
+const operatingSystems: IntegrationOs[] = ["unix", "powershell", "cmd"];
 const languages: IntegrationLanguage[] = ["en", "ru"];
 const providers: IntegrationProvider[] = ["anthropic", "openai"];
 const tools = Object.keys(TOOL_COMPATIBILITY) as IntegrationTool[];
@@ -52,7 +52,7 @@ describe("integration builder guide", () => {
     expect(() => buildIntegrationGuide({
       provider: "anthropic",
       tool: "codex",
-      os: "macos",
+      os: "unix",
       modelId: INTEGRATION_MODELS.anthropic[0].id,
       language: "en",
     })).toThrow("Codex does not support anthropic");
@@ -60,21 +60,21 @@ describe("integration builder guide", () => {
     expect(() => buildIntegrationGuide({
       provider: "openai",
       tool: "codex",
-      os: "macos",
+      os: "unix",
       modelId: "not-a-real-model",
       language: "en",
     })).toThrow("Unknown openai model");
   });
 
   it("emits parseable OpenCode and Pi configs without embedding a secret", () => {
-    const openCode = buildIntegrationGuide({ provider: "openai", tool: "opencode", os: "linux", modelId: "gpt-5.6-sol", language: "en" });
+    const openCode = buildIntegrationGuide({ provider: "openai", tool: "opencode", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     const openCodeConfig = JSON.parse(openCode.steps[0].code) as { provider: { apitoken: { options: { baseURL: string; apiKey: string }; models: Record<string, unknown> } } };
     expect(openCodeConfig.provider.apitoken.options.baseURL).toBe(OPENAI_BASE_URL);
     expect(openCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
     expect(openCodeConfig.provider.apitoken.models["gpt-5.6-sol"]).toBeTruthy();
     expect(openCode.steps[1].code).toContain("export APITOKEN_API_KEY=\"sk-pool-•••\"");
 
-    const pi = buildIntegrationGuide({ provider: "openai", tool: "pi", os: "linux", modelId: "gpt-5.6-sol", language: "en" });
+    const pi = buildIntegrationGuide({ provider: "openai", tool: "pi", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     const piConfig = JSON.parse(pi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string; apiKey: string; models: Array<{ id: string }> } } };
     expect(piConfig.providers.apitoken.baseUrl).toBe(OPENAI_BASE_URL);
     expect(piConfig.providers.apitoken.api).toBe("openai-completions");
@@ -92,7 +92,7 @@ describe("integration builder guide", () => {
     expect(codexWindows.steps[0].code).toContain('wire_api = "responses"');
     expect(codexWindows.steps[1].code).toContain("set \"APITOKEN_API_KEY=sk-pool-•••\"");
 
-    const hermes = buildIntegrationGuide({ provider: "openai", tool: "hermes", os: "macos", modelId: "gpt-5.6-sol", language: "en" });
+    const hermes = buildIntegrationGuide({ provider: "openai", tool: "hermes", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     expect(hermes.steps[1].code).toContain("API mode: Chat Completions");
     expect(hermes.steps[1].code).not.toContain("Responses API");
     expect(hermes.securityNote).toContain("~/.hermes");
