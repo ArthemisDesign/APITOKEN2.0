@@ -283,9 +283,13 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/confidence, а
    не отбрасыванием evidence. Reset сохраняет только реально измеренный previous-window estimate и
    очищает current sufficient statistics. Cumulative spend, CAS-versioned state и raw observations
-   живут в engine authority и переживают restart/blue-green. `usedPercent=100` без явного provider
-   reached-флага не блокирует home; admission прекращается только по фактическому provider reached,
-   429, auth/subscription failure или cooling.
+   живут в engine authority и переживают restart/blue-green. `usedPercent=100` выводит home из
+   ротации немедленно, вместе с явным provider reached-флагом: подписка, о заполнении окна которой
+   отчитался провайдер, перестаёт отвечать, и каждый turn на ней сжигает клиентский запрос.
+   Selection fail-closed — исключённый home отдаёт `429 + Retry-After` до reset окна. Admission
+   также прекращается по 429, auth/subscription failure и cooling. Статус в `/codex-subs`
+   (`limit_reached`) считает тот же предикат, поэтому панель не может показать `active` для home,
+   на который движок не маршрутизирует.
 9. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
    или upstream-текст. Гейтит `codex::api::tests::public_errors_never_leak_internal_architecture`
    (близнец `local_err_never_leaks_*`).

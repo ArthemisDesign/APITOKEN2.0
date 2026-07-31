@@ -980,6 +980,8 @@ while IFS= read -r line; do
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":"rate_limit_reached","spendControlReached":false}}}\n' "$id"
       elif [ "$mode" = "near_limit" ]; then
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":97,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
+      elif [ "$mode" = "full_window" ]; then
+        printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
       else
         printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":4102444800},"rateLimitReachedType":null,"spendControlReached":false}}}\n' "$id"
       fi
@@ -2030,6 +2032,47 @@ done
                 retry_after: Some(seconds)
             } if seconds > 0
         ));
+        let status = gateway.operational_status().await;
+        assert_eq!(status.available, 0);
+        assert!(status.soonest_ready.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_full_window_leaves_rotation_without_an_explicit_reached_flag() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["full_window", "text"]);
+        // Preflight publishes the 100% snapshot; the provider reports no reached verdict at all.
+        gateway.preflight().await.unwrap();
+        gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .unwrap();
+        assert!(
+            !served_turn(&logs[0]),
+            "an exhausted subscription must not be tried"
+        );
+        assert!(served_turn(&logs[1]), "the healthy home served the request");
+        let status = gateway.operational_status().await;
+        assert!(status.homes[0].limit_reached, "panel must not read active");
+        assert!(!status.homes[1].limit_reached);
+        assert_eq!(status.available, 1);
+    }
+
+    #[tokio::test]
+    async fn every_home_at_a_full_window_returns_a_retryable_wait() {
+        let (gateway, _workspace, logs) = fake_pool_gateway(&["full_window", "full_window"]);
+        gateway.preflight().await.unwrap();
+        let error = gateway
+            .run_turn(turn_request(test_model()), None, None)
+            .await
+            .unwrap_err();
+        // Fail closed with the window reset, never a turn burned on a subscription that is spent.
+        assert!(matches!(
+            error,
+            ProcessError::UsageLimitExceeded {
+                retry_after: Some(seconds)
+            } if seconds > 0
+        ));
+        assert!(logs.iter().all(|log| !served_turn(log)));
         let status = gateway.operational_status().await;
         assert_eq!(status.available, 0);
         assert!(status.soonest_ready.is_some());

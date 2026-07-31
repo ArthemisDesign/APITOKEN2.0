@@ -222,6 +222,10 @@ pub struct CodexHomeStatus {
     pub cooling_until: i64,
     pub inflight: usize,
     pub rate_limits: Option<CodexRateLimits>,
+    /// True when the provider snapshot puts this home outside rotation: an explicit reached verdict
+    /// or a reported window at full utilisation. Computed by the same predicate selection uses, so
+    /// operator surfaces can never show `active` for a home the gateway refuses to route to.
+    pub limit_reached: bool,
     /// Cumulative official-price spend this home has served through the gateway.
     pub spend_usd_total: f64,
     /// False after a persistence failure (or in an explicitly in-memory test gateway).
@@ -258,8 +262,8 @@ pub struct CodexOperationalStatus {
     /// Snapshot of the most constrained home, for the provider-level rate-limit metrics.
     pub rate_limits: Option<CodexRateLimits>,
     pub homes: Vec<CodexHomeStatus>,
-    /// Homes that could accept a request right now (live-or-startable, not cooling and without an
-    /// explicit provider reached verdict).
+    /// Homes that could accept a request right now (live-or-startable, not cooling and without a
+    /// provider limit — an explicit reached verdict or a window at full utilisation).
     pub available: usize,
     /// Unix time when the first unavailable home is expected back, if any is cooling.
     pub soonest_ready: Option<i64>,
@@ -715,10 +719,22 @@ impl CodexHome {
         }
     }
 
-    /// Only an explicit provider reached flag blocks selection. Integer `usedPercent=100` is an
-    /// observation, not a gateway policy wall.
+    /// Only an explicit provider reached verdict, or a reported window at full utilisation, blocks
+    /// selection.
+    ///
+    /// `usedPercent` is quantised to whole percent, so `100` can arrive slightly before the true
+    /// wall. That remainder is not worth selling: a subscription the provider reports as full stops
+    /// answering, and every turn routed to it burns a customer request on a home that cannot serve
+    /// it. Selection is fail-closed — an excluded home turns into a real `429 + Retry-After` on the
+    /// window reset — so the cost of leaving early is bounded by one window's rounding remainder.
     fn within_provider_limit(limits: Option<&CodexRateLimits>) -> bool {
-        !limits.is_some_and(|limits| limits.reached)
+        let Some(limits) = limits else {
+            return true;
+        };
+        if limits.reached {
+            return false;
+        }
+        limits.max_used_percent().is_none_or(|used| used < 100)
     }
 
     async fn status(&self) -> CodexHomeStatus {
@@ -739,6 +755,7 @@ impl CodexHome {
             auth_ok: self.auth_ok.load(Ordering::Relaxed),
             cooling_until: self.cooling_until(),
             inflight: self.inflight(),
+            limit_reached: !Self::within_provider_limit(rate_limits.as_ref()),
             rate_limits,
             spend_usd_total: self.spend_usd_total(),
             calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
@@ -767,7 +784,7 @@ mod provider_lock_tests {
     static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
 
     #[test]
-    fn admission_uses_only_explicit_provider_limit() {
+    fn admission_rejects_full_windows_and_explicit_provider_limit() {
         let observed_hundred = CodexRateLimits {
             primary: Some(CodexRateLimitWindow {
                 used_percent: 100,
@@ -778,11 +795,52 @@ mod provider_lock_tests {
             reached: false,
             observed_at: 100,
         };
-        assert!(CodexHome::within_provider_limit(Some(&observed_hundred)));
+        // A window the provider reports as full leaves rotation immediately, without waiting for
+        // the explicit reached verdict that may never arrive.
+        assert!(!CodexHome::within_provider_limit(Some(&observed_hundred)));
         assert!(!CodexHome::within_provider_limit(Some(&CodexRateLimits {
             reached: true,
+            ..observed_hundred.clone()
+        })));
+        // Anything below the wall stays routable, and a missing snapshot stays fail-open.
+        assert!(CodexHome::within_provider_limit(Some(&CodexRateLimits {
+            primary: Some(CodexRateLimitWindow {
+                used_percent: 99,
+                window_duration_mins: Some(300),
+                resets_at: Some(4_102_444_800),
+            }),
+            ..observed_hundred.clone()
+        })));
+        assert!(CodexHome::within_provider_limit(Some(&CodexRateLimits {
+            primary: None,
             ..observed_hundred
         })));
+        assert!(CodexHome::within_provider_limit(None));
+    }
+
+    #[test]
+    fn secondary_window_at_the_wall_also_blocks_admission() {
+        let limits = CodexRateLimits {
+            primary: Some(CodexRateLimitWindow {
+                used_percent: 32,
+                window_duration_mins: Some(300),
+                resets_at: Some(4_102_444_800),
+            }),
+            secondary: Some(CodexRateLimitWindow {
+                used_percent: 100,
+                window_duration_mins: Some(10_080),
+                resets_at: Some(4_102_444_800),
+            }),
+            reached: false,
+            observed_at: 100,
+        };
+        assert!(!CodexHome::within_provider_limit(Some(&limits)));
+        // The client-facing wait is the reset of the window that is actually full.
+        assert_eq!(
+            limits.soonest_reset_at_or_above(100),
+            Some(4_102_444_800),
+            "retry-after follows the exhausted window"
+        );
     }
 
     fn workspace(label: &str) -> std::path::PathBuf {

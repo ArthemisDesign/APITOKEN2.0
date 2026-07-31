@@ -277,10 +277,23 @@ point two homes at one store.
 
 ## CodexHomeNearRateLimit
 
-This is an early capacity-planning warning, not an admission threshold. The gateway continues using
-the home even at reported `usedPercent=100` until OpenAI explicitly reports a reached condition or
-returns an actual usage-limit response. Confirm other homes can absorb load after the real provider
-wall; add an authenticated home if measured remaining API-dollar capacity is insufficient.
+This is an early capacity-planning warning, not the admission threshold. The gateway keeps the home
+in rotation below the wall and drops it as soon as a reported window reaches `usedPercent=100` — or
+OpenAI reports an explicit reached condition or returns a usage-limit response. A home outside
+rotation publishes `claude_api_codex_home_limit_reached=1` and shows «лимит достигнут» in the panel;
+customers get `429 + Retry-After` for the window reset instead of a turn on a spent subscription.
+Confirm other homes can absorb load; add an authenticated home if measured remaining API-dollar
+capacity is insufficient.
+
+## CodexHomeRateLimited
+
+The home reports a subscription window at 100%, so the gateway took it out of rotation until that
+window resets; the panel shows «лимит достигнут» and `/codex-subs` reports `limit_reached`. This is
+expected, not a fault: a spent subscription cannot serve turns. Check that the remaining homes cover
+the load (`claude_api_codex_homes_available`, the panel's remaining API-dollar column) and add an
+authenticated home if they cannot. Do not restart the process or reauthenticate — the background
+health probe refreshes the snapshot and the home returns by itself after the reset. If the alert
+stays on past the reported reset, verify that `account/rateLimits/read` still answers for that home.
 
 ## CodexCalibrationPersistenceFailed
 

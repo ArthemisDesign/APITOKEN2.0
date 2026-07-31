@@ -239,7 +239,8 @@ for codex_metric in \
   'claude_api_codex_homes_available' \
   'claude_api_codex_home_authenticated' \
   'claude_api_codex_home_calibration_persistence_ok' \
-  'claude_api_codex_home_rate_limit_used_percent'; do
+  'claude_api_codex_home_rate_limit_used_percent' \
+  'claude_api_codex_home_limit_reached'; do
   grep -Fq "$codex_metric" "$ROOT/crates/server/src/http.rs" \
     || { printf 'engine does not export %s\n' "$codex_metric" >&2; exit 1; }
   grep -Fq "$codex_metric" "$ROOT/observability/prometheus/rules/application.yml" \

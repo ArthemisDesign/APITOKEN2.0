@@ -216,7 +216,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     if(!h.process_live)return pill('процесс остановлен','bad');
     if(!h.auth_ok)return pill('ошибка auth','bad');
     if(h.cooling_until>nowSec)return pill('cooling '+duration(h.cooling_until-nowSec),'warn');
-    if(h.rate_limits?.reached)return pill('лимит достигнут','warn');
+    if(h.limit_reached||h.rate_limits?.reached)return pill('лимит достигнут','warn');
     if(h.calibration_persistence_ok===false)return pill('active · calibration storage','warn');
     return pill('active','ok')};
   const gptRows=homes.map(h=>{const windows=h.windows||[];

@@ -876,6 +876,7 @@ async fn metrics(
              # TYPE claude_api_codex_home_cooling_until_seconds gauge\n\
              # TYPE claude_api_codex_home_inflight_turns gauge\n\
              # TYPE claude_api_codex_home_rate_limit_used_percent gauge\n\
+             # TYPE claude_api_codex_home_limit_reached gauge\n\
              # TYPE claude_api_codex_home_spend_usd_total gauge\n\
              # TYPE claude_api_codex_home_calibration_persistence_ok gauge\n\
              # TYPE claude_api_codex_home_window_capacity_usd gauge\n\
@@ -895,12 +896,14 @@ async fn metrics(
                  claude_api_codex_home_authenticated{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_cooling_until_seconds{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_limit_reached{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_spend_usd_total{{home=\"{index}\"}} {:.4}\n\
                  claude_api_codex_home_calibration_persistence_ok{{home=\"{index}\"}} {}",
                 u8::from(home.process_live),
                 u8::from(home.auth_ok),
                 home.cooling_until,
                 home.inflight,
+                u8::from(home.limit_reached),
                 home.spend_usd_total,
                 u8::from(home.calibration_persistence_ok),
             );
@@ -1625,6 +1628,7 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                 "auth_ok": h.auth_ok,
                 "cooling_until": h.cooling_until,
                 "inflight": h.inflight,
+                "limit_reached": h.limit_reached,
                 "spend_usd_total": round(h.spend_usd_total),
                 "calibration_persistence_ok": h.calibration_persistence_ok,
                 "rate_limits": h.rate_limits.as_ref().map(|rl| json!({
@@ -1983,6 +1987,7 @@ mod tests {
                 cooling_until: 0,
                 inflight: 0,
                 rate_limits: None,
+                limit_reached: false,
                 spend_usd_total: 12.5,
                 calibration_persistence_ok: true,
                 capacities: vec![forward::codex::CodexWindowCapacityReport {
@@ -2004,6 +2009,25 @@ mod tests {
             available: 1,
             soonest_ready: None,
         }
+    }
+
+    #[test]
+    fn codex_subscription_contract_publishes_the_admission_verdict() {
+        let mut status = unknown_codex_status();
+        let value = codex_subs_value(&status, 105);
+        assert_eq!(value["homes"][0]["limit_reached"], false);
+
+        // A home the gateway refuses to route to must never read as active on an operator surface.
+        status.homes[0].limit_reached = true;
+        status.homes[0].capacities[0].used_percent = 100;
+        status.available = 0;
+        let value = codex_subs_value(&status, 105);
+        assert_eq!(value["homes"][0]["limit_reached"], true);
+        assert_eq!(value["available"], 0);
+        assert_eq!(
+            value["homes"][0]["windows"][0]["used_percent"], 100,
+            "the exhausted window stays visible next to the verdict"
+        );
     }
 
     #[test]

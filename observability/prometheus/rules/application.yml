@@ -142,8 +142,19 @@ groups:
           component: codex-provider
         annotations:
           summary: 'Codex home {{ $labels.home }} is close to its subscription window limit'
-          description: 'This is a capacity-planning warning only. Traffic continues until the provider explicitly reports that its real limit was reached.'
+          description: 'This is a capacity-planning warning only. Traffic continues until a reported window reaches 100 percent or the provider reports its real limit.'
           runbook: 'MONITORING.md#codexhomenearratelimit'
+
+      - alert: CodexHomeRateLimited
+        expr: claude_api_codex_home_limit_reached{provider="openai"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} left rotation on a full subscription window'
+          description: 'The subscription window is reported full, so the gateway routes around this home until the window resets. Confirm the remaining homes absorb the load.'
+          runbook: 'MONITORING.md#codexhomeratelimited'
 
       - alert: CodexCalibrationPersistenceFailed
         expr: claude_api_codex_home_calibration_persistence_ok{provider="openai"} == 0

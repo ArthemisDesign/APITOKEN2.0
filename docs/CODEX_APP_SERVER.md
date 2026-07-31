@@ -433,10 +433,16 @@ Admission makes a conservative input estimate and reserves provider-hidden overh
 refunds the difference using exact upstream usage.
 
 App-server rate-limit notifications are cached and exported as process/rate-limit metrics, per home
-and in aggregate. `usedPercent`, including the integer value 100, is observational and never a
-gateway-created admission wall. A home leaves rotation only after the provider explicitly reports
-`rateLimitReachedType`/`spendControlReached`, returns an actual usage-limit/429, rejects auth or
-subscription, or is cooling for a real transport/account failure. Missing duration/reset data is
+and in aggregate. A home leaves rotation as soon as a reported window reaches `usedPercent=100`, or
+when the provider explicitly reports `rateLimitReachedType`/`spendControlReached`, returns an actual
+usage-limit/429, rejects auth or subscription, or is cooling for a real transport/account failure.
+The integer percentage is quantised, so `100` can precede the true wall by that rounding remainder;
+a subscription the provider reports as full stops answering, so selling that remainder costs more
+customer turns than it buys. Selection is fail-closed, and both `/codex-subs`
+(`limit_reached`) and `claude_api_codex_home_limit_reached` publish the same verdict admission uses,
+so an operator surface cannot show a home as active while the gateway refuses to route to it. Below
+that wall, measured capacity stays reporting evidence and never a gateway-created admission
+threshold. Missing duration/reset data is
 reported as unknown and never guessed as a weekly window. When every home is genuinely unavailable,
 the client receives one OpenAI-shaped `429` with the soonest known recovery, never an individual
 account's error. Settled traffic is attributed with an explicit `provider`
