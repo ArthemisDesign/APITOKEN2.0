@@ -1686,6 +1686,18 @@ impl CodexGateway {
                 let process = match home.process().await {
                     Ok(process) => process,
                     Err(error) => {
+                        // A home that cannot re-establish its transport is the state the sweep
+                        // exists to surface, and it was the one state the sweep said nothing about.
+                        // In production a recycled home sat unroutable for over half an hour while
+                        // every ten-second sweep failed here in silence, and the only evidence was
+                        // a gauge that had stopped moving. A failed probe is loud; a failed
+                        // *reconnect* has to be too, or the recovery path is invisible precisely
+                        // when it is not working.
+                        eprintln!(
+                            "Codex home {} could not re-establish its transport [{}]",
+                            home.id(),
+                            error.diagnostic_class()
+                        );
                         home.note_process_error(&error);
                         return;
                     }
