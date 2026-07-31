@@ -4061,9 +4061,9 @@ mod tests {
             .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 10);
+        assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         pg.migrate().unwrap();
-        assert_eq!(pg.schema_version().unwrap(), 10);
+        assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         let runtime_pin_constraints: i64 = pg
             .client
             .query_one(
