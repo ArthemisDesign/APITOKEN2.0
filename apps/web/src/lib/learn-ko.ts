@@ -21,7 +21,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "안전한 결제 서비스 제공자를 통해 은행 카드 또는 암호화폐로 결제하세요.",
           "모든 요청은 공식 Anthropic API 소비로 환산된 뒤 현재 적용되는 할인이 적용됩니다.",
-          "B2C 모든 계정이 공식 소비 대비 일률 50% 할인을 받습니다.",
+          "B2C 계정은 공식 소비 대비 60% 저렴하게 시작해, 충전이 누적될수록 최대 70% 할인까지 올라갑니다.",
         ] },
       ] },
       { h2: "키로 할 수 있는 일", blocks: [
@@ -44,17 +44,17 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
   },
   "cheapest-claude-api": {
-    title: "가장 저렴한 Claude API — 50% 할인",
+    title: "가장 저렴한 Claude API — 최대 70% 할인",
     h1: "Claude API를 가장 저렴하게 사용하는 방법",
-    description: "Claude API 비용을 50% 절감하세요. apitoken.sale은 완전히 동일한 Anthropic Messages API를 선불 할인가로 판매합니다. 같은 모델, 같은 엔드포인트, 더 낮은 토큰당 단가.",
+    description: "Claude API 비용을 최대 70%까지 절감하세요. apitoken.sale은 완전히 동일한 Anthropic Messages API를 선불 할인가로 판매합니다. 같은 모델, 같은 엔드포인트, 더 낮은 토큰당 단가.",
     keywords: ["claude api 저렴", "claude api 할인", "저렴한 claude api", "claude api 가격", "anthropic api 절약", "claude api 싸게"],
-    dek: "Claude API는 토큰 단위로 과금되며, 긴 코딩 세션에서는 그 토큰이 빠르게 쌓입니다. apitoken.sale은 선불 잔액을 풀링하고 일률 50% 할인을 적용해 동일한 API를 50% 저렴하게 제공합니다.",
+    dek: "Claude API는 토큰 단위로 과금되며, 긴 코딩 세션에서는 그 토큰이 빠르게 쌓입니다. apitoken.sale은 선불 잔액을 풀링하고 누진 할인을 적용해 동일한 API를 최대 70% 저렴하게 제공합니다.",
     sections: [
       { h2: "왜 더 저렴한가", blocks: [
         { type: "p", text: "동일한 Anthropic Messages API에 동일한 요청을 보내고 동일한 응답을 받습니다. 내부에서 달라지는 것은 과금뿐입니다. 각 호출은 공식 요율로 측정된 뒤, 잔액에 반영되기 전에 할인이 차감됩니다." },
         { type: "list", items: [
-          "모든 계정은 공식 소비 대비 50% 할인을 받습니다.",
-          "할인은 항상 50%로 동일합니다.",
+          "B2C 계정은 공식 소비 대비 60% 할인으로 시작합니다.",
+          "누적 충전이 늘어날수록 할인은 최대 70%까지 커집니다.",
           "B2B 물량 가격은 별도로 협의합니다.",
         ] },
       ] },
@@ -70,15 +70,15 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "마진도 없고 별도의 저가 모델도 없습니다. 완전히 동일한 Claude API에 대한 할인 접근을 얻는 것입니다." },
         { type: "list", items: [
           "각 요청은 공식 Anthropic 토큰 요율로 측정됩니다.",
-          "일률 50% 할인이 차감됩니다.",
+          "누진 할인(60%에서 최대 70%)이 차감됩니다.",
           "차감 후 금액이 선불 잔액에서 빠져나갑니다.",
         ] },
-        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−50%)"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
-          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
-          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−70%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
         ] },
         { type: "link", text: "모델별 전체 가격(캐시 요율 포함)", href: "/models" },
         { type: "link", text: "무료 계산기로 월 비용을 추정해 보세요", href: "/tools/claude-api-cost-calculator" },
@@ -86,9 +86,9 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "정말로 같은 Claude API인가요?", a: "네. 동일한 Anthropic Messages API, 동일한 모델 ID, 동일한 요청·응답 형식입니다. 호출당 가격만 더 낮습니다." },
-      { q: "얼마나 절약할 수 있나요?", a: "모든 계정이 공식 API 소비 대비 일률 50% 할인을 받습니다." },
+      { q: "얼마나 절약할 수 있나요?", a: "B2C 가격은 공식 API 소비 대비 60% 할인으로 시작해, 누적 충전이 많아질수록 최대 70%까지 할인됩니다." },
       { q: "숨은 요금이나 구독이 있나요?", a: "없습니다. 잔액은 선불이며 만료되지 않고 실제 API 사용에만 소비됩니다. 월 요금은 없습니다." },
-      { q: "Anthropic에서 직접 사는 것보다 저렴한 Claude API가 있나요?", a: "네. apiToken.sale은 동일한 Anthropic API를 공식 소비 대비 일률 50% 할인으로, 구독 없이 판매합니다." },
+      { q: "Anthropic에서 직접 사는 것보다 저렴한 Claude API가 있나요?", a: "네. apiToken.sale은 동일한 Anthropic API를 공식 소비 대비 최대 70% 누진 할인으로, 구독 없이 판매합니다." },
     ],
   },
   "claude-api-for-russia": {
@@ -306,7 +306,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-opus-api": {
     title: "Claude Opus API 이용",
     h1: "API로 사용하는 Claude Opus 4.8",
-    description: "하나의 apitoken.sale 키로 Claude Opus 4.8 및 4.7을 공식 요율 대비 50% 할인가로 이용하세요. 복잡한 추론, 리팩터, 긴 에이전트 세션에 최적입니다.",
+    description: "하나의 apitoken.sale 키로 Claude Opus 4.8 및 4.7을 공식 요율 대비 최대 70% 할인가로 이용하세요. 복잡한 추론, 리팩터, 긴 에이전트 세션에 최적입니다.",
     keywords: ["claude opus api", "claude opus 4.8 api", "opus api 키", "claude opus 가격", "claude opus 할인"],
     dek: "Opus는 Claude의 가장 강력한 등급으로, 어려운 추론·아키텍처·긴 에이전트 실행에 손을 뻗을 모델입니다. apitoken.sale은 다른 모든 모델과 동일한 키·잔액으로 Opus 4.8과 4.7을 제공합니다.",
     sections: [
@@ -319,9 +319,9 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "잔액으로 쓰는 Opus", blocks: [
         { type: "p", text: "Opus 4.8(모델 ID claude-opus-4-8)과 Opus 4.7은 공식 토큰 요율에서 할인을 뺀 금액으로 과금되므로, 정가의 일부만으로 최상위 등급을 사용할 수 있습니다." },
-        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−50%)"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−70%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
         ] },
         { type: "link", text: "Claude Opus 4.8 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-opus-4-8" },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
@@ -335,7 +335,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-sonnet-api": {
     title: "Claude Sonnet API 이용",
     h1: "API로 사용하는 Claude Sonnet",
-    description: "apitoken.sale로 Claude Sonnet 5와 Sonnet 4.6을 사용하세요. 일상 코딩과 에이전트의 기본 모델을 공식 API 가격 대비 50% 할인가로 이용할 수 있습니다.",
+    description: "apitoken.sale로 Claude Sonnet 5와 Sonnet 4.6을 사용하세요. 일상 코딩과 에이전트의 기본 모델을 공식 API 가격 대비 최대 70% 할인가로 이용할 수 있습니다.",
     keywords: ["claude sonnet api", "claude sonnet 5 api", "sonnet api 키", "claude sonnet 가격", "코딩에 좋은 claude 모델"],
     dek: "Sonnet은 일꾼 모델입니다. 대화형 코딩에 충분히 빠르고, 실제 에이전트 워크플로에 충분히 똑똑합니다. apitoken.sale은 하나의 할인 잔액으로 Sonnet 5와 Sonnet 4.6을 제공합니다.",
     sections: [
@@ -344,9 +344,9 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "Sonnet 가격 참고", blocks: [
         { type: "p", text: "Claude Sonnet 5(claude-sonnet-5)는 도입 공식 요율로 제공되며, 엔진은 항상 현재 유효 요율을 적용한 뒤 할인을 반영합니다. Sonnet 4.6도 동일한 키로 계속 사용할 수 있습니다." },
-        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−50%)"], rows: [
-          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−70%)"], rows: [
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
         ] },
         { type: "link", text: "Claude Sonnet 5 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-sonnet-5" },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
@@ -374,8 +374,8 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "하나의 키로 모델 섞어 쓰기", blocks: [
         { type: "p", text: "모든 모델이 하나의 키와 잔액을 공유하므로, 값싼 작업은 Haiku(claude-haiku-4-5)로 보내고 어려운 요청만 Sonnet이나 Opus로 승격하면 됩니다." },
-        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−50%)"], rows: [
-          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−70%)"], rows: [
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
         ] },
         { type: "link", text: "Claude Haiku 4.5 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-haiku-4-5" },
       ] },
@@ -388,7 +388,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "Cursor용 Claude API 키",
     h1: "Cursor에서 Claude API 키 사용하기",
-    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 50% 할인가로 코딩하세요.",
+    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 최대 70% 할인가로 코딩하세요.",
     keywords: ["cursor claude api 키", "cursor claude api", "cursor anthropic 키", "cursor에서 claude 사용", "cursor pro 없이"],
     dek: "Cursor는 자체 Anthropic 키를 가져올 수 있게 해 주므로, 번들 플랜 대신 할인된 선불 잔액으로 Cursor에서 Claude를 실행할 수 있습니다.",
     sections: [
@@ -452,7 +452,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "cursor-without-anthropic-account": {
     title: "Anthropic 계정 없이 Cursor에서 Claude 사용하기",
     h1: "Anthropic 계정 없이 Cursor에서 Claude 실행하기",
-    description: "Anthropic 계정이 없나요? 대신 apitoken.sale 키로 Cursor에서 Claude를 사용하세요. 즉시 접근, 카드 또는 암호화폐 결제, 공식 API 요율 대비 50% 할인.",
+    description: "Anthropic 계정이 없나요? 대신 apitoken.sale 키로 Cursor에서 Claude를 사용하세요. 즉시 접근, 카드 또는 암호화폐 결제, 공식 API 요율 대비 최대 70% 할인.",
     keywords: ["anthropic 계정 없이 cursor", "anthropic 없이 cursor claude", "cursor claude api 키", "anthropic 계정 없이 claude 사용"],
     dek: "Anthropic 계정을 만들 수 없거나 만들고 싶지 않다면, apitoken.sale이 Cursor가 Anthropic 제공자로 받아들이는 자체 키를 발급합니다.",
     sections: [
@@ -508,7 +508,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "apitoken-vs-anthropic-direct": {
     title: "apiToken.sale 대 Anthropic 직접 구매",
     h1: "apiToken.sale 대 Anthropic에서 직접 구매",
-    description: "apiToken.sale과 Anthropic 직접 구매 비교: 동일한 Messages API와 모델이지만 50% 할인, 계정 요구 없음, 카드 또는 암호화폐 결제.",
+    description: "apiToken.sale과 Anthropic 직접 구매 비교: 동일한 Messages API와 모델이지만 최대 70% 할인, 계정 요구 없음, 카드 또는 암호화폐 결제.",
     keywords: ["claude api anthropic 직접 비교", "apitoken vs anthropic", "anthropic api 대안", "anthropic api보다 저렴", "claude api 리셀러"],
     dek: "apiToken.sale은 다른 API가 아닙니다. 선불 잔액에서 할인가로 재판매되는 동일한 Anthropic Messages API입니다. 실제로 무엇이 바뀌고 무엇이 그대로인지 살펴보겠습니다.",
     sections: [
@@ -521,7 +521,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "바뀌는 것", blocks: [
         { type: "list", items: [
-          "가격: B2C의 경우 공식 소비 대비 50% 할인.",
+          "가격: B2C의 경우 공식 소비 대비 최대 70% 할인.",
           "온보딩: Anthropic 계정, 대기열, 청구 국가 요구 없음.",
           "결제: 은행 카드 또는 암호화폐.",
         ] },
@@ -533,7 +533,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "apiToken.sale이 진짜 Claude API인가요?", a: "네 — 동일한 Anthropic Messages API와 모델을 제공합니다. 가격과 온보딩만 다릅니다." },
-      { q: "왜 Anthropic 직접 구매보다 저렴한가요?", a: "잔액이 선불로 풀링되고, 공식 소비에 일률 50% 할인이 적용되기 때문입니다." },
+      { q: "왜 Anthropic 직접 구매보다 저렴한가요?", a: "잔액이 선불로 풀링되고, 공식 소비에 최대 70%의 누진 할인이 적용되기 때문입니다." },
     ],
   },
   "apitoken-vs-openrouter": {
@@ -548,7 +548,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "마크업이 아닌 선불 할인", blocks: [
         { type: "list", items: [
-          "공식 Claude 소비 대비 일률 50% 할인 — 모든 계정 동일.",
+          "공식 Claude 소비 대비 최대 70% 누진 B2C 할인.",
           "Opus, Sonnet, Haiku를 위한 하나의 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
@@ -582,7 +582,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "note", text: "하나의 키가 둘 다 포괄하므로 공급자를 저글링하지 않고 작업마다 알맞은 등급으로 라우팅할 수 있습니다." },
         { type: "table", headers: ["", "Claude Opus 4.8", "Claude Sonnet 5"], rows: [
           ["공식 가격(입력 / 출력 / 1M)", "$5 / $25", "$3 / $15"],
-          ["여기서는 −50%", "$2.50 / $12.50", "$1.50 / $7.50"],
+          ["여기서는 −60%부터", "$2 / $10", "$1.20 / $6"],
           ["컨텍스트 윈도", "1M 토큰", "1M 토큰"],
           ["최적 용도", "어려운 추론, 긴 에이전트 실행", "일상 코딩과 에이전트"],
         ] },
@@ -598,7 +598,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-pricing-explained": {
     title: "Claude API 가격 이해하기",
     h1: "Claude API 가격은 어떻게 작동하는가",
-    description: "Claude API 가격 이해하기: 토큰당 입력·출력 요율, 프롬프트 캐싱, 그리고 apiToken.sale이 50% 할인을 누진 적용하는 방식.",
+    description: "Claude API 가격 이해하기: 토큰당 입력·출력 요율, 프롬프트 캐싱, 그리고 apiToken.sale이 최대 70% 할인을 누진 적용하는 방식.",
     keywords: ["claude api 가격", "claude api 비용", "claude api 가격 구조", "claude 토큰 가격", "anthropic api 가격 설명"],
     dek: "Claude는 입력과 출력에 각각 토큰 단위로 과금되며, 캐시된 콘텐츠에는 할인이 있습니다. apiToken.sale은 이 원리를 그대로 유지하고 그 위에 할인을 얹습니다.",
     sections: [
@@ -613,25 +613,25 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "apiToken.sale 할인", blocks: [
-        { type: "p", text: "각 호출은 공식 Anthropic 소비로 환산된 뒤 일률 50% 할인이 차감됩니다. 모든 계정에 동일한 요율이 적용됩니다. 모든 요청은 토큰 단위 상세와 함께 대시보드에서 확인할 수 있습니다." },
+        { type: "p", text: "각 호출은 공식 Anthropic 소비로 환산된 뒤 할인이 차감됩니다. B2C는 60% 할인으로 시작해 누적 충전이 늘수록 70% 할인까지 진행됩니다. 모든 요청은 토큰 단위 상세와 함께 대시보드에서 확인할 수 있습니다." },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "모델별 Claude API 토큰 가격", blocks: [
         { type: "p", text: "큰 모델일수록 토큰당 비용이 높습니다. Opus는 프리미엄 등급, Sonnet은 균형 잡힌 기본값, Haiku는 가장 저렴합니다. 할인은 모든 모델에 적용되므로 순위는 그대로지만 모든 가격이 낮아집니다." },
-        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−50%)"], rows: [
-          ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
-          ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
-          ["Claude Sonnet 5", "$3 / $15", "$1.50 / $7.50"],
-          ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
-          ["Claude Haiku 4.5", "$1 / $5", "$0.50 / $2.50"],
+        { type: "table", headers: ["모델", "공식 입력 / 출력($ / 1M)", "여기서는 (−60%)부터", "최대 (−70%)"], rows: [
+          ["Claude Opus 4.8", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+          ["Claude Opus 4.7", "$5 / $25", "$2 / $10", "$1.50 / $7.50"],
+          ["Claude Sonnet 5", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+          ["Claude Sonnet 4.6", "$3 / $15", "$1.20 / $6", "$0.90 / $4.50"],
+          ["Claude Haiku 4.5", "$1 / $5", "$0.40 / $2", "$0.30 / $1.50"],
         ] },
         { type: "link", text: "캐시 요율과 컨텍스트 윈도가 있는 모델 페이지", href: "/models" },
       ] },
     ],
     faq: [
       { q: "Claude API는 어떻게 과금되나요?", a: "토큰 단위로 입력과 출력으로 나뉘며, 캐시 읽기에는 별도의 더 저렴한 요율이 적용됩니다. 큰 모델일수록 토큰당 비용이 높습니다." },
-      { q: "할인은 어떻게 적용되나요?", a: "먼저 공식 소비가 계산되고, 잔액에 반영되기 전에 B2C 할인(일률 50%)이 차감됩니다." },
-      { q: "Claude API 토큰은 어떻게 가격이 매겨지나요?", a: "토큰 단위로 입력과 출력이 나뉘며 캐시 읽기는 더 저렴합니다. apiToken.sale은 공식 토큰 요율 위에 50% 할인을 적용합니다." },
+      { q: "할인은 어떻게 적용되나요?", a: "먼저 공식 소비가 계산되고, 잔액에 반영되기 전에 B2C 할인(60%에서 최대 70%)이 차감됩니다." },
+      { q: "Claude API 토큰은 어떻게 가격이 매겨지나요?", a: "토큰 단위로 입력과 출력이 나뉘며 캐시 읽기는 더 저렴합니다. apiToken.sale은 공식 토큰 요율 위에 60~70% 할인을 적용합니다." },
     ],
   },
   "save-tokens-on-claude-api": {
@@ -674,7 +674,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "요청 단위 측정", blocks: [
         { type: "list", items: [
           "각 호출은 토큰 단위로 공식 Anthropic 소비로 환산됩니다.",
-          "현재 적용되는 할인(일률 50%)이 차감됩니다.",
+          "현재 적용되는 할인(B2C의 경우 60%에서 최대 70%)이 차감됩니다.",
           "순금액이 선불 잔액에서 차감됩니다.",
         ] },
       ] },
@@ -774,7 +774,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "apitoken-vs-proxyapi": {
     title: "Claude를 위한 apitoken.sale 대 ProxyAPI",
     h1: "apitoken.sale 대 ProxyAPI",
-    description: "Claude API 리셀러 비교: apitoken.sale은 일률 50% 할인, 카드 또는 암호화폐 결제, 모든 모델용 하나의 키를 갖춘 네이티브 Anthropic 엔드포인트를 제공합니다.",
+    description: "Claude API 리셀러 비교: apitoken.sale은 누진 60~70% 할인, 카드 또는 암호화폐 결제, 모든 모델용 하나의 키를 갖춘 네이티브 Anthropic 엔드포인트를 제공합니다.",
     keywords: ["proxyapi 대안", "apitoken 대 proxyapi", "claude api 리셀러", "proxyapi claude", "proxyapi 없이 claude api"],
     dek: "둘 다 Anthropic 계정 없이 Claude에 접근할 수 있게 해 줍니다. 차이는 결제 방식, 절감 폭, 그리고 엔드포인트가 진정으로 Anthropic 네이티브인지에 있습니다.",
     sections: [
@@ -783,7 +783,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "마크업이 아닌 할인", blocks: [
         { type: "list", items: [
-          "공식 Claude 소비 대비 일률 50% 할인 — 모든 계정 동일.",
+          "공식 Claude 소비 대비 최대 70% 누진 B2C 할인.",
           "Opus, Sonnet, Haiku를 위한 하나의 선불 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
@@ -798,7 +798,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "apitoken.sale이 일반 리셀러보다 저렴한가요?", a: "정가에 마크업을 더하는 대신, 공식 Claude 소비에 일률 50% 할인을 적용합니다." },
+      { q: "apitoken.sale이 일반 리셀러보다 저렴한가요?", a: "정가에 마크업을 더하는 대신, 공식 Claude 소비에 최대 70% 누진 할인을 적용합니다." },
       { q: "제 Anthropic 도구가 그대로 작동하나요?", a: "네. 네이티브 Anthropic Messages API이므로 Claude Code, Cursor, SDK는 base URL만 바꾸면 됩니다." },
     ],
   },
@@ -811,7 +811,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "서로 다른 역할", blocks: [
         { type: "p", text: "Portkey는 여러분이 가져온 API 키 위에 라우팅, 캐싱, 관찰성을 더합니다. Claude 접근권이나 할인을 팔지는 않으며, 그 뒤에는 여전히 충전된 Anthropic 계정이 필요합니다." },
-        { type: "p", text: "apiToken.sale은 키와 잔액의 원천입니다. https://api.apitoken.sale의 네이티브 Anthropic 엔드포인트를 50% 할인으로, Anthropic 계정 없이 제공합니다." },
+        { type: "p", text: "apiToken.sale은 키와 잔액의 원천입니다. https://api.apitoken.sale의 네이티브 Anthropic 엔드포인트를 최대 70% 할인으로, Anthropic 계정 없이 제공합니다." },
       ] },
       { h2: "함께 쓸 수도 있음", blocks: [
         { type: "p", text: "Portkey의 관찰성이 마음에 든다면, apiToken.sale 키를 Anthropic 공급자로 지정해 그 밑에서 할인을 받을 수 있습니다." },
@@ -834,7 +834,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "LiteLLM: 프록시를 직접 실행·유지해야 하고, 각 제공자에 대한 충전도 직접 합니다.",
           "apitoken.sale: 완전 호스팅형 네이티브 Anthropic 엔드포인트로, 관리할 인프라가 없습니다.",
-          "apitoken.sale은 순수 프록시가 할 수 없는 50% Claude 소비 할인을 더합니다.",
+          "apitoken.sale은 순수 프록시가 할 수 없는 60~70% Claude 소비 할인을 더합니다.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -877,7 +877,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-max-plan-vs-api": {
     title: "Claude Max 요금제 대 Claude API",
     h1: "Claude Max 구독 대 API",
-    description: "Claude 구독을 쓸 때와 Claude API를 쓸 때. apiToken.sale은 월 요금 없이 모든 모델에 대한 종량제 API 접근을 50% 할인가로 제공합니다.",
+    description: "Claude 구독을 쓸 때와 Claude API를 쓸 때. apiToken.sale은 월 요금 없이 모든 모델에 대한 종량제 API 접근을 최대 70% 할인가로 제공합니다.",
     keywords: ["claude max 요금제", "claude 구독 대 api", "claude max vs api", "claude api 종량제", "구독 없이 claude"],
     dek: "정액 Claude 구독과 종량제 API 과금은 서로 다른 사용에 맞습니다. 프로그래밍적이고 폭발적인 사용에는 보통 선불 잔액의 API가 더 나은 선택입니다.",
     sections: [
@@ -888,7 +888,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "실제로 사용한 토큰만큼만 지불 — 월 최저 요금 없음.",
           "하나의 키로 Claude Code, Cursor, 에이전트, 프로덕션 호출을 구동.",
-          "apiToken.sale은 공식 토큰 요율에서 50% 할인.",
+          "apiToken.sale은 공식 토큰 요율에서 최대 70%를 더 할인.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -921,14 +921,14 @@ export const learnKo: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "왜 apiToken.sale을 선택하는가",
     h1: "왜 apiToken.sale을 선택하는가",
-    description: "개발자들이 Claude와 GPT에 apiToken.sale을 고르는 이유: 공식 Anthropic 및 OpenAI 호환 API를 50% 저렴하게, 프로바이더 계정 없이 즉시 접근, 카드 또는 암호화폐 결제.",
+    description: "개발자들이 Claude와 GPT에 apiToken.sale을 고르는 이유: 공식 Anthropic 및 OpenAI 호환 API를 최대 70% 저렴하게, 프로바이더 계정 없이 즉시 접근, 카드 또는 암호화폐 결제.",
     keywords: ["왜 apitoken.sale", "최고의 claude api 제공자", "claude api 할인 제공자", "openai 호환 api", "anthropic 계정 없이 claude api"],
     dek: "apiToken.sale은 한 가지를 위해 만들어졌습니다. 동일한 Claude와 GPT API를 더 싸고 더 쉽게 시작하는 것. 하나의 키, 하나의 잔액, 두 개의 공식 API 서피스 — 그것이 실제로 무엇을 뜻하는지 살펴봅니다.",
     sections: [
       { h2: "요약", blocks: [
         { type: "list", items: [
           "정확히 동일한 Anthropic Messages API와 모든 현행 Claude 모델, 그리고 GPT-5 라인업을 갖춘 OpenAI 호환 API(Responses 및 Chat Completions).",
-          "만료되지 않는 선불 잔액에 공식 소비 대비 50% 할인 — 하나의 할인 트랙이 두 프로바이더를 모두 커버합니다.",
+          "만료되지 않는 선불 잔액에 공식 소비 대비 최대 70% 할인 — 하나의 할인 트랙이 두 프로바이더를 모두 커버합니다.",
           "즉시, 셀프 서비스 접근 — Anthropic이나 OpenAI 계정, 대기열, 청구 국가 없음.",
           "은행 카드 또는 암호화폐로 결제.",
           "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
@@ -936,19 +936,19 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "하나의 잔액으로 쓰는 할인된 API 토큰", blocks: [
-        { type: "p", text: "Claude와 GPT API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 50% 할인을 받고, 두 프로바이더의 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
+        { type: "p", text: "Claude와 GPT API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 최대 70% 할인을 받고, 두 프로바이더의 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude와 GPT API를 50% 저렴하게, 프로바이더 계정 없이 즉시 접근으로, 카드나 암호화폐로 결제할 수 있는 것입니다." },
+      { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude와 GPT API를 최대 70% 저렴하게, 프로바이더 계정 없이 즉시 접근으로, 카드나 암호화폐로 결제할 수 있는 것입니다." },
       { q: "API에 대해 바뀐 것이 있나요?", a: "아니요 — 프로토콜, 모델, 응답은 표준 Anthropic 및 OpenAI 호환 버전입니다. 가격과 온보딩만 다릅니다." },
-      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API와 OpenAI 호환 API에 대한 할인된 선불 접근을 판매하는 독립 멀티 프로바이더 API 게이트웨이입니다. 같은 모델을 50% 저렴하게, 프로바이더 계정 없이 이용할 수 있습니다." },
+      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API와 OpenAI 호환 API에 대한 할인된 선불 접근을 판매하는 독립 멀티 프로바이더 API 게이트웨이입니다. 같은 모델을 최대 70% 저렴하게, 프로바이더 계정 없이 이용할 수 있습니다." },
     ],
   },
   "claude-api-gateway": {
     title: "Claude API 게이트웨이란 무엇인가?",
     h1: "Claude API 게이트웨이란",
-    description: "Claude API 게이트웨이는 도구와 Anthropic 사이에 위치해 접근, 과금, 제어를 더합니다. apitoken.sale은 50% 할인을 제공하는 네이티브 게이트웨이입니다.",
+    description: "Claude API 게이트웨이는 도구와 Anthropic 사이에 위치해 접근, 과금, 제어를 더합니다. apitoken.sale은 60~70% 할인을 제공하는 네이티브 게이트웨이입니다.",
     keywords: ["claude api 게이트웨이", "api 게이트웨이란", "anthropic 게이트웨이", "claude 프록시", "claude api 접근 계층"],
     dek: "게이트웨이는 코드와 모델 제공자 사이의 얇은 계층입니다. 좋은 Claude 게이트웨이는 도구에는 보이지 않으면서 접근, 가격, 제어를 개선합니다.",
     sections: [
@@ -1085,7 +1085,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-code-api-key": {
     title: "API 키로 Claude Code 설정하기",
     h1: "apitoken.sale 키로 Claude Code 사용하기",
-    description: "두 개의 환경 변수로 Claude Code를 apitoken.sale 키에 설정하고, 50% 할인된 선불 잔액으로 모든 Claude 모델을 실행하세요.",
+    description: "두 개의 환경 변수로 Claude Code를 apitoken.sale 키에 설정하고, 최대 70% 할인된 선불 잔액으로 모든 Claude 모델을 실행하세요.",
     keywords: ["claude code api 키", "claude code 설정", "claude code anthropic base url", "claude code 커스텀 키", "claude code 저렴하게"],
     dek: "Claude Code는 두 개의 환경 변수를 읽습니다. 이를 apitoken.sale로 지정하면 모든 기능을 유지하면서 할인된 선불 잔액으로 과금됩니다.",
     sections: [
@@ -1111,9 +1111,9 @@ export const learnKo: Record<string, LocalizedContent> = {
   "openai-api-quickstart": {
     title: "OpenAI 호환 API 빠른 시작 — 하나의 키로 GPT-5.6",
     h1: "OpenAI 호환 API 빠른 시작: Responses와 Chat Completions",
-    description: "apiToken.sale의 OpenAI 호환 API로 GPT-5.6 모델을 실행하세요 — SSE 스트리밍을 지원하는 Responses와 Chat Completions, Claude와 공유하는 하나의 sk-pool 키와 잔액, 50% 할인.",
+    description: "apiToken.sale의 OpenAI 호환 API로 GPT-5.6 모델을 실행하세요 — SSE 스트리밍을 지원하는 Responses와 Chat Completions, Claude와 공유하는 하나의 sk-pool 키와 잔액, 60~70% 할인.",
     keywords: ["openai 호환 api", "gpt-5.6 api", "responses api", "chat completions 커스텀 base url", "openai sdk base_url", "gpt api 키", "gpt-5.6 가격"],
-    dek: "sk-pool 키는 Claude 전용이 아닙니다. 같은 키와 선불 잔액으로 OpenAI 호환 엔드포인트를 통해 GPT-5 라인업을 사용할 수 있습니다 — 표준 Responses 및 Chat Completions 호출, 공식 OpenAI SDK, SSE 스트리밍, 동일한 50% 할인.",
+    dek: "sk-pool 키는 Claude 전용이 아닙니다. 같은 키와 선불 잔액으로 OpenAI 호환 엔드포인트를 통해 GPT-5 라인업을 사용할 수 있습니다 — 표준 Responses 및 Chat Completions 호출, 공식 OpenAI SDK, SSE 스트리밍, 동일한 60~70% 할인.",
     sections: [
       { h2: "첫 GPT 호출까지 세 단계", blocks: [
         { type: "steps", items: [
@@ -1143,7 +1143,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "추론 강도는 요청마다 조절할 수 있습니다 — 모든 모델에서 none부터 xhigh까지, GPT-5.6 라인업은 max까지 지원합니다.",
           "모든 모델이 텍스트와 이미지 입력을 받고 Responses와 Chat Completions 모두에서 SSE로 스트리밍합니다.",
           "272K 입력 토큰을 초과하는 요청은 OpenAI 장문 컨텍스트 요금으로 청구됩니다: 전체 요청에 입력 2배, 출력 1.5배.",
-          "B2C 할인은 Claude 사용량과 정확히 동일하게 적용됩니다 — 하나의 잔액, 하나의 요율, 공식 사용량 대비 50% 할인.",
+          "B2C 할인은 Claude 사용량과 정확히 동일하게 적용됩니다 — 하나의 잔액, 하나의 티어, 공식 사용량 대비 60~70% 할인.",
         ] },
         { type: "link", text: "모델별 전체 사양과 할인 가격", href: "/models" },
       ] },
@@ -1156,15 +1156,15 @@ export const learnKo: Record<string, LocalizedContent> = {
       { q: "정말 같은 키로 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 하나의 선불 잔액이 두 서피스를 모두 커버합니다: Claude 모델용 api.apitoken.sale의 Anthropic Messages API와 GPT 모델용 openai.api.apitoken.sale/v1의 OpenAI 호환 API. 할인도 공유됩니다." },
       { q: "OpenAI 호환 엔드포인트는 어떤 인증 헤더를 쓰나요?", a: "Authorization: Bearer sk-pool-… 입니다. x-api-key 헤더는 Anthropic 서피스 전용입니다 — OpenAI 엔드포인트에내면 401이 반환됩니다." },
       { q: "Responses와 Chat Completions 중 무엇을 쓰나요?", a: "둘 다 SSE 스트리밍으로 제공됩니다. 새 코드와 공식 SDK에는 Responses를, 클래식 형태를 기대하는 클라이언트와 프레임워크에는 Chat Completions를 사용하세요." },
-      { q: "GPT 사용량은 어떻게 과금되나요?", a: "캐시 입력과 장문 컨텍스트 가격을 포함한 공식 OpenAI 요금으로 토큰당 과금된 후, 현재 50% B2C 할인이 차감되어 선불 잔액에서 청구됩니다 — Claude 사용량과 정확히 같습니다." },
+      { q: "GPT 사용량은 어떻게 과금되나요?", a: "캐시 입력과 장문 컨텍스트 가격을 포함한 공식 OpenAI 요금으로 토큰당 과금된 후, 현재 60~70% B2C 할인이 차감되어 선불 잔액에서 청구됩니다 — Claude 사용량과 정확히 같습니다." },
     ],
   },
   "codex-cli-setup": {
     title: "apiToken.sale로 Codex CLI 설정하기 — GPT-5.6 프로필",
     h1: "apiToken.sale에서 Codex CLI 실행하기",
-    description: "apiToken.sale OpenAI 호환 엔드포인트를 가리키는 이름 있는 model_providers 프로필로 Codex CLI를 설정하세요 — ChatGPT 계정 없이 선불 잔액으로 50% 할인된 GPT-5.6 모델.",
+    description: "apiToken.sale OpenAI 호환 엔드포인트를 가리키는 이름 있는 model_providers 프로필로 Codex CLI를 설정하세요 — ChatGPT 계정 없이 선불 잔액으로 최대 70% 할인된 GPT-5.6 모델.",
     keywords: ["codex cli 설정", "codex config.toml", "codex 커스텀 모델 프로바이더", "codex api 키", "codex cli gpt-5.6", "codex responses api", "codex cli chatgpt 없이"],
-    dek: "커스텀 모델 프로바이더를 지정하면 Codex CLI는 완전히 API 키 인증으로 실행됩니다. 하나의 TOML 프로필이 apiToken.sale을 가리키고, 선불 잔액이 모든 세션을 커버합니다 — ChatGPT 로그인 없이 공식 사용량 대비 50% 저렴합니다.",
+    dek: "커스텀 모델 프로바이더를 지정하면 Codex CLI는 완전히 API 키 인증으로 실행됩니다. 하나의 TOML 프로필이 apiToken.sale을 가리키고, 선불 잔액이 모든 세션을 커버합니다 — ChatGPT 로그인 없이 공식 사용량 대비 최대 70% 저렴합니다.",
     sections: [
       { h2: "프로필 만들기", blocks: [
         { type: "p", text: "다음을 ~/.codex/apitoken.config.toml로 저장하세요. 이름 있는 프로필은 기본 Codex 설정과 기존 ChatGPT 로그인을 건드리지 않습니다 — 실행할 때 명시적으로 선택합니다." },
@@ -1194,7 +1194,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     faq: [
       { q: "ChatGPT 계정이나 구독이 필요한가요?", a: "아니요. 커스텀 model_providers 프로필과 환경에 있는 프로바이더 API 키만 있으면 Codex는 완전히 API 키 인증으로 실행됩니다 — auth.json의 ChatGPT 로그인은 무관합니다." },
       { q: "기본 Codex 설정이 바뀌나요?", a: "아니요. 프로필은 자체 파일에 있으며 --profile apitoken을 전달할 때만 활성화됩니다. 기본 설정과 로그인은 그대로 유지됩니다." },
-      { q: "할인이 Claude와 동일한가요?", a: "네. GPT-5.6 사용량은 공식 OpenAI 토큰 요금으로 측정되고 현재 일률 50% 할인이 같은 선불 잔액에 적용됩니다." },
+      { q: "할인이 Claude와 동일한가요?", a: "네. GPT-5.6 사용량은 공식 OpenAI 토큰 요금으로 측정되고 현재 B2C 할인(60~70%)이 같은 선불 잔액에 적용됩니다." },
       { q: "wire_api는 Responses와 Chat Completions 중 무엇으로 하나요?", a: "wire_api = \"responses\"를 사용하세요 — 게이트웨이는 둘 다 제공하며 Codex는 Responses 스트림을 중심으로 만들어졌습니다. Chat Completions 형태는 필요한 클라이언트를 위한 것입니다." },
     ],
   },
@@ -1289,7 +1289,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-langchain": {
     title: "LangChain에서 Claude API 사용하기",
     h1: "LangChain에서 Claude API 사용하기",
-    description: "apitoken.sale로 LangChain을 Claude에 연결하세요. ChatAnthropic을 api.apitoken.sale로 지정하면 모델 ID는 그대로, 토큰당 비용은 50% 저렴해집니다.",
+    description: "apitoken.sale로 LangChain을 Claude에 연결하세요. ChatAnthropic을 api.apitoken.sale로 지정하면 모델 ID는 그대로, 토큰당 비용은 60~70% 저렴해집니다.",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 키"],
     dek: "LangChain의 Anthropic 통합은 커스텀 API URL을 지원하므로, 두 줄만 바꾸면 체인과 에이전트가 apitoken.sale을 통해 Claude로 동작합니다. 같은 모델, 더 낮은 토큰 단가입니다.",
     sections: [
@@ -1319,7 +1319,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-litellm": {
     title: "LiteLLM에서 Claude API 사용하기",
     h1: "LiteLLM에서 Claude API 사용하기",
-    description: "apitoken.sale로 LiteLLM을 Claude에 라우팅하세요. litellm_params 또는 프록시 설정에서 api_base를 api.apitoken.sale로 지정하면 토큰당 50% 저렴합니다.",
+    description: "apitoken.sale로 LiteLLM을 Claude에 라우팅하세요. litellm_params 또는 프록시 설정에서 api_base를 api.apitoken.sale로 지정하면 토큰당 60~70% 저렴합니다.",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 프록시 claude"],
     dek: "LiteLLM은 Anthropic을 네이티브로 지원하고 모델별 엔드포인트 재정의를 허용하므로, 설정 한 줄로 모든 Claude 트래픽이 할인 게이트웨이를 지나갑니다.",
     sections: [
@@ -1348,7 +1348,7 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-aider": {
     title: "Aider에서 Claude API 사용하기",
     h1: "Aider에서 Claude API 사용하기",
-    description: "apitoken.sale로 Claude에서 Aider를 실행하세요. ANTHROPIC_API_BASE와 키를 내보내고 Claude 모델을 골라 50% 할인가로 터미널 페어 프로그래밍을 하세요.",
+    description: "apitoken.sale로 Claude에서 Aider를 실행하세요. ANTHROPIC_API_BASE와 키를 내보내고 Claude 모델을 골라 60~70% 할인가로 터미널 페어 프로그래밍을 하세요.",
     keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api 키"],
     dek: "Aider는 긴 세션에서 토큰을 빠르게 소모하는 터미널 페어 프로그래머입니다. 환경 변수 두 개로 할인 게이트웨이를 가리키게 하고 워크플로는 그대로 유지하세요.",
     sections: [
@@ -1369,13 +1369,13 @@ export const learnKo: Record<string, LocalizedContent> = {
     faq: [
       { q: "Aider가 커스텀 Claude 엔드포인트를 지원하나요?", a: "네. Aider는 Anthropic 모델에 LiteLLM을 사용하고, LiteLLM은 ANTHROPIC_API_BASE 환경 변수를 인식합니다. https://api.apitoken.sale로 설정하고 평소처럼 Aider를 시작하세요." },
       { q: "Aider에서 어떤 Claude 모델이 가장 좋나요?", a: "대부분의 코딩에는 claude-sonnet-5가 최선의 기본값이고, 가장 어려운 다중 파일 작업은 claude-opus-4-8로 전환하세요. 둘 다 같은 키에서 동작합니다." },
-      { q: "긴 Aider 세션은 얼마나 저렴해지나요?", a: "모든 요청이 공식 토큰 요율에서 50% 할인을 뺀 금액으로 과금되므로, 직접 연결로 $10짜리 세션이 여기서는 $3~4입니다." },
+      { q: "긴 Aider 세션은 얼마나 저렴해지나요?", a: "모든 요청이 공식 토큰 요율에서 60~70% 할인을 뺀 금액으로 과금되므로, 직접 연결로 $10짜리 세션이 여기서는 $3~4입니다." },
     ],
   },
   "claude-api-roo-code": {
     title: "Roo Code에서 Claude API 사용하기",
     h1: "Roo Code에서 Claude API 사용하기",
-    description: "apitoken.sale로 VS Code의 Roo Code를 Claude에 연결하세요. Anthropic 제공자를 선택하고 커스텀 base URL을 켠 뒤 키를 붙여넣고 50% 할인가로 코딩하세요.",
+    description: "apitoken.sale로 VS Code의 Roo Code를 Claude에 연결하세요. Anthropic 제공자를 선택하고 커스텀 base URL을 켠 뒤 키를 붙여넣고 60~70% 할인가로 코딩하세요.",
     keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code 커스텀 base url", "roo code api 키"],
     dek: "Roo Code는 네이티브 Anthropic 제공자와 커스텀 base URL 옵션을 갖춘 에이전트형 VS Code 확장입니다. 할인 게이트웨이 설정은 2분이면 끝납니다.",
     sections: [
@@ -1388,7 +1388,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "Roo Code가 토큰을 태우는 이유 — 그리고 덜 내는 법", blocks: [
-        { type: "p", text: "에이전트형 확장은 파일을 읽고, 계획하고, 수정하고, 재검토하는 루프를 돌기 때문에 작업 하나가 많은 모델 호출을 실행할 수 있습니다. 토큰당 할인이 가장 중요한 워크로드가 바로 이것입니다. 같은 세션이 50% 저렴하고, 대시보드에서 토큰 단위로 확인됩니다." },
+        { type: "p", text: "에이전트형 확장은 파일을 읽고, 계획하고, 수정하고, 재검토하는 루프를 돌기 때문에 작업 하나가 많은 모델 호출을 실행할 수 있습니다. 토큰당 할인이 가장 중요한 워크로드가 바로 이것입니다. 같은 세션이 60~70% 저렴하고, 대시보드에서 토큰 단위로 확인됩니다." },
         { type: "list", items: [
           "일상 작업은 claude-sonnet-5로, 어려운 작업은 claude-opus-4-8로 보내세요.",
           "프롬프트 캐싱은 더 저렴한 공식 캐시 요율로 과금되고 할인이 더해집니다.",

@@ -7,7 +7,7 @@ const legacyPages = [
 ];
 
 const dashboardSections = [
-  "overview", "keys", "models", "providers", "credits", "promos", "usage", "profile", "security",
+  "overview", "keys", "credits", "promos", "usage", "profile", "security",
 ];
 
 // Короткие ссылки для шеринга: /go/<slug> → главная с UTM. 302 (не permanent), чтобы можно было
@@ -16,19 +16,10 @@ const shortLinks: Record<string, string> = {
   vibe: "/?utm_source=telegram&utm_medium=community&utm_campaign=vibe_code_community",
 };
 
-// web/v2: превью-деплои Vercel (VERCEL_ENV=preview) собираются в режиме «уже внутри дашборда» —
-// api-слой отдаёт фикстуры вместо бэкенда (src/lib/preview-fixtures.ts): бэкенд пускает только
-// прод-origin, живой логин с превью невозможен. Локально включается вручную:
-// NEXT_PUBLIC_PREVIEW_FIXTURES=1 npm run dev. В прод-сборке флаг пуст всегда.
-const previewFixtures = process.env.VERCEL_ENV === "preview" || process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1";
-
 const nextConfig: NextConfig = {
   poweredByHeader: false,
-  env: { NEXT_PUBLIC_PREVIEW_FIXTURES: previewFixtures ? "1" : "" },
   async redirects() {
     return [
-      // На превью корень сразу ведёт в дашборд — ветка существует ради его разработки.
-      ...(previewFixtures ? [{ source: "/", destination: "/dashboard", permanent: false }] : []),
       ...legacyPages.map((page) => ({ source: `/${page}.html`, destination: `/${page}`, permanent: true })),
       ...dashboardSections.map((section) => ({ source: `/dashboard/${section}`, destination: "/dashboard", permanent: false })),
       ...Object.entries(shortLinks).map(([slug, destination]) => ({ source: `/go/${slug}`, destination, permanent: false })),

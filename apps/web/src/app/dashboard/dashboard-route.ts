@@ -1,7 +1,6 @@
 export const dashboardSections = [
   "overview",
   "keys",
-  "providers",
   "credits",
   "promos",
   "usage",
@@ -15,8 +14,6 @@ export type DashboardLanguage = "en" | "ru";
 export function parseDashboardSection(value: string | null): DashboardSection {
   // Keep old bookmarked URLs useful after Security was consolidated into Profile.
   if (value === "security") return "profile";
-  // Ранний v2-раздел «Models» переименован в «Providers» — старые ссылки продолжают работать.
-  if (value === "models") return "providers";
   return dashboardSections.includes(value as DashboardSection) ? value as DashboardSection : "overview";
 }
 

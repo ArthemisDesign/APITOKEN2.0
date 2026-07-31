@@ -153,11 +153,6 @@ const dashboardCaptures = [
   ["dashboard-usage-light", "/dashboard?view=usage", 1440, 1000, "light"],
   ["dashboard-usage-dark", "/dashboard?view=usage", 1440, 1000, "dark"],
   ["dashboard-usage-russian-light", "/dashboard?view=usage", 1440, 1000, "light", "ru"],
-  ["dashboard-providers-light", "/dashboard?view=providers", 1440, 1000, "light"],
-  ["dashboard-providers-dark", "/dashboard?view=providers", 1440, 1000, "dark"],
-  ["dashboard-providers-russian-light", "/dashboard?view=providers", 1440, 1000, "light", "ru"],
-  ["dashboard-provider-detail-light", "/dashboard?view=providers", 1440, 1000, "light", "en", "provider-detail-anthropic"],
-  ["dashboard-provider-quickstart-dark", "/dashboard?view=providers", 1440, 1000, "dark", "en", "provider-quickstart-anthropic"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
   ["dashboard-promos-light", "/dashboard?view=promos", 1440, 1000, "light"],
@@ -180,10 +175,6 @@ const dashboardCaptures = [
   ["dashboard-usage-mobile-light", "/dashboard?view=usage", 390, 844, "light"],
   ["dashboard-usage-mobile-dark", "/dashboard?view=usage", 390, 844, "dark"],
   ["dashboard-usage-mobile-russian-dark", "/dashboard?view=usage", 390, 844, "dark", "ru"],
-  ["dashboard-providers-mobile-light", "/dashboard?view=providers", 390, 844, "light"],
-  ["dashboard-providers-mobile-russian-dark", "/dashboard?view=providers", 390, 844, "dark", "ru"],
-  ["dashboard-provider-detail-mobile-dark", "/dashboard?view=providers", 390, 844, "dark", "en", "provider-detail-anthropic"],
-  ["dashboard-provider-quickstart-mobile-light", "/dashboard?view=providers", 390, 844, "light", "en", "provider-quickstart-anthropic"],
   ["dashboard-support-mobile-light", "/dashboard?view=support", 390, 844, "light"],
   ["dashboard-support-mobile-dark", "/dashboard?view=support", 390, 844, "dark"],
   ["dashboard-promos-mobile-light", "/dashboard?view=promos", 390, 844, "light"],
@@ -241,12 +232,18 @@ const dashboardFixtureScript = `(() => {
       customerType: "b2c",
       pricingMode: "progressive",
       monthStart: "2026-07-01T00:00:00.000Z",
-      tier: "flat",
-      discountPercent: 50,
-      multiplierBp: 5000,
+      tier: "starter",
+      discountPercent: 60,
+      multiplierBp: 4000,
       spentNano: "0",
       retentionSpendNano: "0",
-      nextTier: null,
+      nextTier: {
+        tier: "builder",
+        discountPercent: 62.5,
+        spendThresholdNano: "100000000000",
+        remainingNano: "100000000000",
+        visibleOfficialUsageUsd: "600.43",
+      },
     },
   };
   const keys = [{
@@ -322,7 +319,7 @@ const dashboardFixtureScript = `(() => {
     [8, "1050000000", "claude-opus-4-8"], [8, "300000000", "claude-sonnet-5"],
   ];
   const entries = chg.map((c, i) => ({ id: "c" + i, kind: "charge", amountNano: c[1], amountUsd: "$" + (Number(c[1]) / 1e9).toFixed(6), keyMasked: "sk-pool-a5b5••••••••eeb", reference: "req_0" + i, model: c[2], balanceAfterNano: null, timestamp: String(nowS - c[0] * DAY - i * 137) }));
-  entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 50, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
+  entries.push({ id: "t0", kind: "topup", amountNano: "12000000000", amountUsd: "$12.000000", discountPercent: 60, keyMasked: null, reference: "cryptomus_9f2c1a", balanceAfterNano: null, timestamp: String(nowS - 3 * DAY) });
   const todayUtc = Math.floor(nowS / DAY) * DAY;
   const usage = {
     window: "30d", sinceTs: nowS - 30 * DAY, untilTs: nowS, requests: 71, totalOfficialNano: "26679893050", totalChargedNano: "10671957220",
@@ -593,16 +590,6 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, '.key-row [data-key-action="edit"]');
     await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${name} edit-key dialog`);
   }
-  if (state === "provider-detail-anthropic") {
-    await clickSelector(client, '[data-provider="anthropic"] [data-provider-action="details"], .provider-card-clickable:first-of-type');
-    await waitForCondition(client, `Boolean(document.querySelector('.provider-detail'))`, `${name} provider detail`);
-    await client.send("Runtime.evaluate", { expression: `scrollTo({ top: 0, behavior: 'instant' })` });
-    await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))` });
-  }
-  if (state === "provider-quickstart-anthropic") {
-    await clickSelector(client, '[data-provider="anthropic"] [data-provider-action="quickstart"], .provider-card-clickable:first-of-type .qs-open-btn');
-    await waitForCondition(client, `Boolean(document.querySelector('.qs-drawer[role="dialog"]'))`, `${name} provider quick start`);
-  }
   const visualStateResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const h1 = document.querySelector('h1');
@@ -680,7 +667,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const measuredSize = cssContentSize ?? contentSize;
   const pageHeight = Math.ceil(measuredSize.height);
   const pageWidth = Math.ceil(measuredSize.width);
-  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "provider-quickstart-anthropic";
+  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open";
   const screenshot = await client.send("Page.captureScreenshot", modalState ? {
     format: "png",
     fromSurface: true,
@@ -1409,89 +1396,6 @@ async function verifyApiKeysLayout(client) {
   process.stdout.write("Verified API key table/cards, mutable policy workflow, search, filters, dialogs, translations, themes, and responsive layout\n");
 }
 
-async function verifyProvidersExperience(client) {
-  await setViewport(client, 1440, 1000);
-  await client.send("Runtime.evaluate", {
-    expression: `localStorage.setItem('theme', 'light'); localStorage.setItem('lang', 'en');`,
-  });
-  const url = new URL("/dashboard?view=providers", baseUrl);
-  url.searchParams.set("__auditProviders", String(Date.now()));
-  const loaded = client.once("Page.loadEventFired");
-  await client.send("Page.navigate", { url: url.href });
-  await loaded;
-  await waitForCondition(client, `document.querySelectorAll('.provider-card').length === 2`, "provider cards");
-  await client.send("Runtime.evaluate", { awaitPromise: true, expression: `document.fonts.ready.then(() => new Promise((resolve) => setTimeout(resolve, 250)))` });
-
-  const listResult = await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const cards = [...document.querySelectorAll('.provider-card')];
-      const rects = cards.map((card) => card.getBoundingClientRect());
-      return JSON.stringify({
-        cardCount: cards.length,
-        flowSteps: document.querySelectorAll('.providers-flow li').length,
-        quickStarts: document.querySelectorAll('[data-provider-action="quickstart"]').length,
-        details: document.querySelectorAll('[data-provider-action="details"]').length,
-        nestedInteractiveCards: document.querySelectorAll('.provider-card[role="button"], .provider-card [role="button"]').length,
-        equalHeights: rects.length === 2 && Math.abs(rects[0].height - rects[1].height) < 2,
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      });
-    })()`,
-    returnByValue: true,
-  });
-  const list = JSON.parse(listResult.result.value);
-  if (list.cardCount !== 2 || list.flowSteps !== 3 || list.quickStarts !== 2 || list.details !== 2 || list.nestedInteractiveCards !== 0 || !list.equalHeights || list.overflow > 1) {
-    throw new Error(`Provider catalog structure is inconsistent: ${JSON.stringify(list)}`);
-  }
-
-  await clickSelector(client, '[data-provider="anthropic"] [data-provider-action="quickstart"]');
-  await waitForCondition(client, `document.activeElement?.matches('.qs-close') && document.querySelectorAll('.qs-step').length === 3`, "provider quick-start focus and steps");
-  const drawerResult = await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const steps = [...document.querySelectorAll('.qs-step')];
-      return JSON.stringify({
-        stepCount: steps.length,
-        inheritedSectionPadding: steps.map((step) => Number.parseFloat(getComputedStyle(step).paddingTop)),
-        bodyLocked: document.body.style.overflow === 'hidden',
-        dialogLabelled: Boolean(document.querySelector('.qs-drawer[aria-labelledby]')?.getAttribute('aria-labelledby')),
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      });
-    })()`,
-    returnByValue: true,
-  });
-  const drawer = JSON.parse(drawerResult.result.value);
-  if (drawer.stepCount !== 3 || drawer.inheritedSectionPadding.some((padding) => padding !== 0) || !drawer.bodyLocked || !drawer.dialogLabelled || drawer.overflow > 1) {
-    throw new Error(`Provider quick start is not compact or accessible: ${JSON.stringify(drawer)}`);
-  }
-  await clickSelector(client, '.qs-tabs button:nth-child(3)');
-  await waitForCondition(client, `document.querySelector('.qs-tabs button:nth-child(3)')?.getAttribute('aria-selected') === 'true' && [...document.querySelectorAll('.qs-step')][1]?.querySelector('code')?.textContent?.includes('import Anthropic')`, "provider TypeScript quick-start tab");
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-  await waitForCondition(client, `!document.querySelector('.qs-drawer') && document.body.style.overflow === ''`, "provider quick-start dismissal");
-
-  await clickSelector(client, '[data-provider="anthropic"] [data-provider-action="details"]');
-  await waitForCondition(client, `document.querySelectorAll('.provider-models-table tbody tr').length === 5`, "provider detail model table");
-  await setViewport(client, 390, 844);
-  await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))` });
-  const mobileResult = await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const endpoint = document.querySelector('.provider-detail-endpoint code');
-      return JSON.stringify({
-        cards: document.querySelectorAll('.provider-model-card').length,
-        cardsVisible: getComputedStyle(document.querySelector('.provider-model-cards')).display !== 'none',
-        tableHidden: getComputedStyle(document.querySelector('.provider-table-shell')).display === 'none',
-        endpointWraps: endpoint && getComputedStyle(endpoint).whiteSpace !== 'nowrap',
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      });
-    })()`,
-    returnByValue: true,
-  });
-  const mobile = JSON.parse(mobileResult.result.value);
-  if (mobile.cards !== 5 || !mobile.cardsVisible || !mobile.tableHidden || !mobile.endpointWraps || mobile.overflow > 1) {
-    throw new Error(`Provider mobile detail is incomplete: ${JSON.stringify(mobile)}`);
-  }
-  process.stdout.write("Verified provider routing story, actions, quick-start accessibility, code tabs, pricing detail, and responsive model cards\n");
-}
-
 async function verifyDocsTheme(client) {
   await setViewport(client, 1440, 1000);
   await client.send("Emulation.setEmulatedMedia", {
@@ -1931,7 +1835,6 @@ try {
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
   if (shouldVerifyUsage) await verifyUsageByKeyTable(client);
-  if (captures.some(([name]) => name.startsWith("dashboard-provider"))) await verifyProvidersExperience(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);
   if (captures.some(([name]) => name.startsWith("header-mobile"))) await verifyMobileNavigation(client);
   if (captures.some(([name]) => name.startsWith("learn-index-"))) await verifyLearnHubFiltering(client);

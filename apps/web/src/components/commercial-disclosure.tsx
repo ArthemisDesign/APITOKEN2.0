@@ -15,7 +15,7 @@ const copy: Record<Language, {
       { label: "Metering", title: "Official spend × paid share", text: "Each request is priced from the upstream model's official API rates. Your active B2C or B2B discount is then applied to calculate the platform balance charge." },
       { label: "Payment", title: "Final amount before checkout", text: "The checkout shows the payment provider, amount, currency, and status. Funds are credited after provider confirmation; unused paid balance is governed by the refund terms." },
     ],
-    exampleLabel: "Example", example: "$100 official API usage × 50% paid after the flat 50% discount = $50 platform balance charge.",
+    exampleLabel: "Starter example", example: "$100 official API usage × 40% paid after a 60% discount = $40 platform balance charge.",
     policy: "Payments, promotional credit, and refunds are described in the User Agreement.",
   },
   ru: {
@@ -25,7 +25,7 @@ const copy: Record<Language, {
       { label: "Расчёт", title: "Официальная стоимость × доля оплаты", text: "Каждый запрос рассчитывается по официальным ценам API выбранной модели. Затем применяется активная скидка B2C или B2B и определяется списание с баланса платформы." },
       { label: "Оплата", title: "Итоговая сумма до платежа", text: "На странице оплаты отображаются провайдер, сумма, валюта и статус. Средства зачисляются после подтверждения провайдера; возврат неиспользованного оплаченного баланса регулируется соглашением." },
     ],
-    exampleLabel: "Пример", example: "$100 официального использования API × 50% к оплате после плоской скидки 50% = $50 списания с баланса платформы.",
+    exampleLabel: "Пример Starter", example: "$100 официального использования API × 40% к оплате после скидки 60% = $40 списания с баланса платформы.",
     policy: "Платежи, приветственный бонус и возвраты описаны в Пользовательском соглашении.",
   },
 };

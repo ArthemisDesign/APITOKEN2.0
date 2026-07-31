@@ -1,15 +1,7 @@
 import Link from "next/link";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
-import { claudeModels, formatUsd, openaiModels, priceFrom } from "@/lib/models";
+import { B2C_PRICING_MILESTONES, formatWholeUsd } from "@/lib/pricing-tiers";
 import { T } from "./translated";
 import { TopUpAmountInput } from "./topup-amount-input";
-
-// Плоская модель: одна скидка −50% для всех аккаунтов. Вместо лестницы тиров показываем
-// ставку и примеры цен по моделям (official зачёркнуто → ваша цена, из lib/models.ts).
-const exampleModels = [
-  ...claudeModels.filter((model) => ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"].includes(model.id)),
-  ...openaiModels.filter((model) => ["gpt-5.6-sol", "gpt-5.6-luna"].includes(model.id)),
-];
 
 export function PricingOverview() {
   return <div className="pricing-overview">
@@ -40,30 +32,27 @@ export function PricingOverview() {
     </div>
     <div className="tier-section">
       <div className="tier-heading">
-        <div className="tier-heading-copy"><T k="b2c_tag" as="span" className="tag">Flat pricing</T><T k="b2c_h" as="h3">One flat −50% for every account</T></div>
+        <div className="tier-heading-copy"><T k="b2c_tag" as="span" className="tag">B2C · Progressive pricing</T><T k="b2c_h" as="h3">Your discount grows with monthly usage</T></div>
         <div className="tier-rule">
-          <div className="tier-rule-item"><T k="tier_rule_keep_label" as="span">Every model</T><T k="tier_rule_keep" as="strong">−{FLAT_DISCOUNT_PERCENT}% off official prices</T></div>
-          <div className="tier-rule-item"><T k="tier_rule_miss_label" as="span">No conditions</T><T k="tier_rule_miss" as="strong">Nothing to unlock or maintain</T></div>
+          <div className="tier-rule-item"><T k="tier_rule_keep_label" as="span">Carry forward</T><T k="tier_rule_keep" as="strong">Keep your achieved tier next month</T></div>
+          <div className="tier-rule-item"><T k="tier_rule_miss_label" as="span">If you miss the target</T><T k="tier_rule_miss" as="strong">Move down only one tier</T></div>
         </div>
       </div>
       <div className="tier-table-wrap">
         <table className="tier-table">
-          <thead><tr><T k="tier_col" as="th">Model</T><T k="official_col" as="th">Official / 1M in · out</T><T k="discount_col" as="th">Your price / 1M in · out</T></tr></thead>
-          <tbody>{exampleModels.map((model) => <tr key={model.id}>
-            <td><strong>{model.name}</strong></td>
-            <td><s>{formatUsd(model.inputPerM)}</s> · <s>{formatUsd(model.outputPerM)}</s></td>
-            <td><strong>{priceFrom(model.inputPerM)}</strong> · <strong>{priceFrom(model.outputPerM)}</strong></td>
-          </tr>)}</tbody>
+          <thead><tr><T k="tier_col" as="th">Tier</T><T k="discount_col" as="th">Discount</T><T k="local_spend_col" as="th">Top up to reach</T><T k="hold_col" as="th">Keep / 30 days</T><T k="official_usage_col" as="th">Approx. Claude API</T></tr></thead>
+          <tbody>{B2C_PRICING_MILESTONES.map((tier) => <tr key={tier.code}><T k={tier.messageKey} as="td">{tier.label}</T><td><strong>{tier.discountPercent}%</strong> <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></td><td>{Number(tier.platformSpendUsd) === 0 ? "—" : formatWholeUsd(tier.platformSpendUsd)}</td><td>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</td><td>{Number(tier.visibleOfficialUsageUsd) === 0 ? "—" : formatWholeUsd(tier.visibleOfficialUsageUsd)}</td></tr>)}</tbody>
         </table>
       </div>
       <div className="tier-cards">
-        {exampleModels.map((model) => <div className="tier-mobile" key={model.id}>
-          <div className="tier-mobile-head"><strong>{model.name}</strong><b>−{FLAT_DISCOUNT_PERCENT}%</b></div>
-          <div className="tier-mobile-row"><T k="official_col">Official / 1M in · out</T><span><s>{formatUsd(model.inputPerM)}</s> · <s>{formatUsd(model.outputPerM)}</s></span></div>
-          <div className="tier-mobile-row"><T k="discount_col">Your price / 1M in · out</T><span>{priceFrom(model.inputPerM)} · {priceFrom(model.outputPerM)}</span></div>
+        {B2C_PRICING_MILESTONES.map((tier) => <div className="tier-mobile" key={tier.code}>
+          <div className="tier-mobile-head"><T k={tier.messageKey} as="strong">{tier.label}</T><b>{tier.discountPercent}% <em className="tier-mult">×{(100 / (100 - tier.discountPercent)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</em></b></div>
+          <div className="tier-mobile-row"><T k="local_spend_col">Top up to reach</T><span>{Number(tier.platformSpendUsd) === 0 ? "—" : formatWholeUsd(tier.platformSpendUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="hold_col">Keep / 30 days</T><span>{Number(tier.holdUsd) === 0 ? "—" : formatWholeUsd(tier.holdUsd)}</span></div>
+          <div className="tier-mobile-row"><T k="official_usage_col">Approx. Claude API</T><span>{Number(tier.visibleOfficialUsageUsd) === 0 ? "—" : formatWholeUsd(tier.visibleOfficialUsageUsd)}</span></div>
         </div>)}
       </div>
-      <T k="tier_footnote" as="p" className="tier-footnote">Every request is metered at the provider&apos;s official list price, then billed at half of it. The same flat discount covers every Claude and GPT model, including cache rates.</T>
+      <T k="tier_footnote" as="p" className="tier-footnote">Displayed official API usage equals monthly platform spend ÷ the share paid after discount. Values are rounded only for display; billing remains exact.</T>
       <Link className="tier-docs-link" href="/docs#pricing"><T k="tier_docs">Read the full pricing guide</T> →</Link>
     </div>
   </div>;

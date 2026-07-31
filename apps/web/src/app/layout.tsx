@@ -12,10 +12,6 @@ import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 import { fontVariables } from "./fonts";
 
-// Каждый деплой вне production (превью-ветки, v2.apitoken.sale) обязан быть noindex:
-// staging-копия сайта в выдаче каннибализирует SEO основного домена.
-const isProductionDeployment = (process.env.VERCEL_ENV ?? "production") === "production";
-
 const webmasterVerification = {
   ...(process.env.GOOGLE_SITE_VERIFICATION ? { google: process.env.GOOGLE_SITE_VERIFICATION } : {}),
   ...(process.env.YANDEX_SITE_VERIFICATION ? { yandex: process.env.YANDEX_SITE_VERIFICATION } : {}),
@@ -36,19 +32,17 @@ export const metadata: Metadata = {
   formatDetection: { email: false, address: false, telephone: false },
   icons: SITE_ICONS,
   appleWebApp: { capable: true, title: SITE_NAME, statusBarStyle: "black-translucent" },
-  robots: isProductionDeployment
-    ? {
-        index: true,
-        follow: true,
-        googleBot: {
-          index: true,
-          follow: true,
-          "max-image-preview": "large",
-          "max-snippet": -1,
-          "max-video-preview": -1,
-        },
-      }
-    : { index: false, follow: false },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
+  },
   verification: webmasterVerification,
   openGraph: {
     type: "website",

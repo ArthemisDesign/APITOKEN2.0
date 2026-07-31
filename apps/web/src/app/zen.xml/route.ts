@@ -99,7 +99,7 @@ export function buildZenFeed(): string {
   <channel>
     <title>apiToken.sale — гайды по Claude API</title>
     <link>${esc(absoluteUrl("/ru/docs/learn"))}</link>
-    <description>Практические гайды по Claude API: покупка ключа, цены со скидкой 50%, интеграции с Cursor, VS Code и Claude Code.</description>
+    <description>Практические гайды по Claude API: покупка ключа, цены со скидкой до 70%, интеграции с Cursor, VS Code и Claude Code.</description>
     <language>ru</language>
     <atom:link href="${esc(absoluteUrl("/zen.xml"))}" rel="self" type="application/rss+xml"/>
 ${items}

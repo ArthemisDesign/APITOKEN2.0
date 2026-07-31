@@ -16,11 +16,9 @@ import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { modelLabel } from "@/lib/model-label";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { DashboardLoading } from "./dashboard-loading";
 
 const ApiKeys = dynamic(() => import("./dashboard-sections").then((module) => module.ApiKeys));
-const ProvidersCatalog = dynamic(() => import("./dashboard-providers").then((module) => module.ProvidersCatalog));
 const Credits = dynamic(() => import("./dashboard-sections").then((module) => module.Credits));
 const Usage = dynamic(() => import("./dashboard-sections").then((module) => module.Usage));
 const SupportPanel = dynamic(() => import("./dashboard-sections").then((module) => module.SupportPanel));
@@ -40,7 +38,6 @@ const localDashboardCopy = {
 const NAV_ICONS = {
   grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
   key: <><circle cx="8" cy="15" r="4.5" /><path d="m11 12 9-9" /><path d="m16 7 3 3" /></>,
-  stack: <><path d="m12 3 9 5-9 5-9-5 9-5z" /><path d="m3 13 9 5 9-5" /><path d="m3 17.5 9 5 9-5" /></>,
   external: <><path d="M14 4h6v6" /><path d="M20 4 11 13" /><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /></>,
   wallet: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /><path d="M7 15h4" /></>,
   percent: <><path d="M19 5 5 19" /><circle cx="7" cy="7" r="2.5" /><circle cx="17" cy="17" r="2.5" /></>,
@@ -57,7 +54,6 @@ function NavIcon({ id }: { id: NavIconId }) {
 const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: NavIconId; href?: string; group?: keyof DashboardCopy }> = [
   { group: "navStart", section: "overview", label: "navOverview", icon: "grid" },
   { group: "navDevelopers", section: "keys", label: "navKeys", icon: "key" },
-  { section: "providers", label: "navProviders", icon: "stack" },
   { href: DOCS_URL, label: "navDocs", icon: "external" },
   { group: "navBilling", section: "credits", label: "navTopUp", icon: "wallet" },
   { group: "navGrowth", section: "promos", label: "navPromos", icon: "percent" },
@@ -292,7 +288,6 @@ export function Dashboard() {
         />}
         {section === "keys" && dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
         {section === "keys" && !dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
-        {section === "providers" && <ProvidersCatalog onCreateKey={() => open("keys")} />}
         {section === "credits" && <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
         {section === "usage" && !usage && dataPending.usage && <UsageSkeleton />}
         {section === "usage" && usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
@@ -341,8 +336,8 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const multiplierBp = paymentBasisPoints();
-  const discount = discountOf();
+  const multiplierBp = paymentBasisPoints(account);
+  const discount = discountOf(account);
   const officialBalanceNano = officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp);
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
   const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
@@ -364,9 +359,11 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
     ? [...ledger].sort((left, right) => ledgerMs(right.timestamp) - ledgerMs(left.timestamp)).slice(0, 3)
     : [];
   const pricing = account.pricing;
-  // Плоская модель: одна ставка для всех, без тиров/партнёрских полов.
-  const pricingTitle = copy.flatRate;
-  void pricing;
+  const progressivePricing = pricing?.customerType === "b2c" && !isPartnerRate(account) ? pricing : null;
+  const isProgressive = progressivePricing !== null;
+  const pricingTitle = !pricing ? copy.standardPricing
+    : pricing.customerType === "b2b" ? copy.businessAgreement
+      : isPartnerRate(account) ? copy.partnerRate : tierName(copy, pricing.tier);
   const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
 
   let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
@@ -451,11 +448,21 @@ function Overview({ account, user, usableKeys, totalKeys, keysState, usage, usag
         </div>
       </article>
 
-      <article className="card overview-metric-card overview-models-card">
-        <div className="overview-card-head"><span className="overview-card-label">{copy.navProviders}</span><span className="overview-metric-mark" aria-hidden="true">◈</span></div>
-        <strong>Anthropic + OpenAI</strong>
-        <p>{copy.providersOverviewText}</p>
-        <button className="link plain-button overview-card-link" onClick={() => open("providers")}>{copy.browseProviders} →</button>
+      <article className="card overview-metric-card overview-milestone-card">
+        {progressivePricing?.nextTier ? <>
+          <div className="overview-card-head"><span className="overview-card-label">{copy.nextMilestone}</span><span className="overview-metric-mark" aria-hidden="true">→</span></div>
+          <strong>{tierName(copy, progressivePricing.nextTier.tier)} · {progressivePricing.nextTier.discountPercent}%</strong>
+          <p>{interpolate(copy.remainingToUnlock, { amount: formatNanoUsd(progressivePricing.nextTier.remainingNano) })}</p>
+          <div className="overview-progress" role="progressbar" aria-label={copy.tierProgressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano)))}>
+            <span style={{ width: `${boundedPercent(BigInt(progressivePricing.spentNano), BigInt(progressivePricing.nextTier.spendThresholdNano))}%` }} />
+          </div>
+          <small>{interpolate(copy.topupsTowardTier, { current: formatNanoUsd(progressivePricing.spentNano), target: formatNanoUsd(progressivePricing.nextTier.spendThresholdNano) })}</small>
+        </> : <>
+          <div className="overview-card-head"><span className="overview-card-label">{isProgressive ? copy.milestonesComplete : copy.pricingTerms}</span><span className="overview-metric-mark" aria-hidden="true">✓</span></div>
+          <strong>{isProgressive ? copy.highestTierReached : copy.fixedRate}</strong>
+          <p>{isProgressive ? copy.highestTierSummary : copy.fixedRateSummary}</p>
+        </>}
+        <Link className="link overview-card-link" href={`${DOCS_URL}#pricing`}>{copy.howTiersWork} →</Link>
       </article>
     </div>
 
@@ -519,19 +526,48 @@ function formatOverviewActivityTime(timestamp: string, language: "en" | "ru"): s
   });
 }
 
+function tierName(copy: DashboardCopy, tier: string): string {
+  const names: Record<string, string> = {
+    starter: copy.tierStarter, builder: copy.tierBuilder, pro: copy.tierPro, studio: copy.tierStudio, scale: copy.tierScale,
+  };
+  return names[tier] ?? tier;
+}
+
 function interpolate(template: string, values: Record<string, string | number>): string {
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
-// --- Плоская скидка → сколько реального API получает клиент ---
-// Одна ставка для всех аккаунтов: клиент платит 50% официальной цены (5000 bp, ×2 ценности).
-// Тиры/партнёрские полы удалены из v2 UI; поля pricing из commerce здесь не участвуют.
-const FLAT_PAYMENT_BP = BigInt((100 - FLAT_DISCOUNT_PERCENT) * 100);
-function paymentBasisPoints(): bigint {
-  return FLAT_PAYMENT_BP;
+// --- Партнёрская (фиксированная) скидка по реф-ссылке сейлза ---
+// Реферал остаётся b2c, но commerce ставит ему «пол» скидки (referral_floor_bps): фиксированная
+// ставка поверх/вместо прогрессивных тиров. Если floor > 0 — дашборд показывает её как партнёрскую,
+// а реальная доля оплаты берётся из effectiveMultiplierBp (пол переопределяет тир).
+function partnerFloorBps(account: AccountView): number {
+  const p = account.pricing;
+  return p && p.customerType === "b2c" ? (p.referralFloorBps ?? 0) : 0;
 }
-function discountOf(): number {
-  return FLAT_DISCOUNT_PERCENT;
+function isPartnerRate(account: AccountView): boolean {
+  return partnerFloorBps(account) > 0;
+}
+
+// --- Скидка → сколько реального Claude API получает клиент ---
+// multiplierBp = доля оплаты в базисных пунктах (4000 = платит 40% = скидка 60% = ×2.5 ценности).
+function paymentBasisPoints(account: AccountView): bigint {
+  const p = account.pricing;
+  // Партнёрский пол перекрывает тир: реальная ставка = effectiveMultiplierBp (напр. 500 = платит 5%).
+  if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0 && p.effectiveMultiplierBp && p.effectiveMultiplierBp > 0) {
+    return BigInt(p.effectiveMultiplierBp);
+  }
+  const bp = p?.multiplierBp ?? account.markupBasisPoints;
+  return BigInt(bp && bp > 0 ? bp : 4_000);
+}
+function discountOf(account: AccountView): number {
+  const p = account.pricing;
+  if (p && p.customerType === "b2c" && (p.referralFloorBps ?? 0) > 0) {
+    return p.effectiveDiscountPercent ?? p.discountPercent;
+  }
+  if (p) return p.discountPercent;
+  const discountBp = bigintMax(0n, BASIS_POINTS - paymentBasisPoints(account));
+  return Number(roundDivide(discountBp, 100n));
 }
 function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {
   return multiplierBp > 0n ? roundDivide(chargedNano * BASIS_POINTS, multiplierBp) : chargedNano;
@@ -572,4 +608,14 @@ function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits
   const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
   return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
 }
+function boundedRatio(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n || numerator <= 0n) return 0;
+  const scale = 1_000_000n;
+  const bounded = bigintMax(0n, numerator > denominator ? denominator : numerator);
+  return Number(bounded * scale / denominator) / Number(scale);
+}
+function boundedPercent(numerator: bigint, denominator: bigint): number {
+  return boundedRatio(numerator, denominator) * 100;
+}
+function bigintMax(left: bigint, right: bigint): bigint { return left > right ? left : right; }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }
