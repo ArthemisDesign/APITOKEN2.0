@@ -114,34 +114,24 @@ const copy = {
     errors: "Errors",
     pricing: "Pricing & tiers",
     title: "Connect any model",
-    lead: "One API key gives your tools access to every model available in your account. Let an AI agent select the right protocol, configure the client, and verify the connection.",
+    lead: "One API key for every available model. Your AI agent configures and verifies the connection.",
     openKeys: "Get an API key",
-    agentTitle: "Give this setup to your AI agent",
-    agentLead: "Copy one instruction into Codex, Claude Code, Cursor, or any agent that can configure your project. It will inspect the environment and complete the setup itself.",
-    agentInstructionLabel: "Ready-to-use instruction",
+    agentEyebrow: "For Your Agent",
+    agentTitle: "Connect models in one instruction",
+    agentLead: "Copy → paste into your agent → provide the API key when asked.",
     agentPrompt: `Connect this project or tool to apiToken.sale. First open ${AGENT_GUIDE_URL} and follow the current instructions. Detect my operating system, shell, runtime, and client or SDK; choose a compatible API protocol and an available model; ask for the sk-pool-… key only if it is not already stored in a secure environment variable; make the smallest required changes; and run a real verification request. Never print the key, put it in source control, or change unrelated files. If anything fails, diagnose it with the guide and explain the result in plain language.`,
-    copyAgent: "Copy agent instruction",
+    copyAgent: "Copy instruction",
     agentCopied: "Instruction copied",
-    openAgentGuide: "Open technical guide",
-    agentGuideNote: "Live guide · endpoints and model catalog stay current",
+    openAgentGuide: "Guide",
     agentSteps: [
-      { title: "Understands your setup", text: "Detects Windows, macOS, or Linux, plus the shell, runtime, and existing client." },
-      { title: "Chooses the right API", text: "Selects a compatible protocol and a currently available model instead of guessing." },
-      { title: "Connects safely", text: "Keeps the key outside source code and changes only the settings the integration needs." },
-      { title: "Proves it works", text: "Runs a minimal real request, checks the response, and explains any failure." },
+      "Detects your setup",
+      "Selects the right model",
+      "Verifies the request",
     ],
-    supportTitle: "Stuck? We’ll finish the setup with you.",
-    supportLead: "Our AI support knows the supported clients, OS-specific setup, endpoints, headers, and current model catalog. It can guide you step by step, inspect an error, or hand the case to a person.",
-    supportItems: [
-      "Any compatible IDE, agent, CLI, or SDK",
-      "Windows, macOS, Linux, shells, and environment variables",
-      "Authentication, endpoint, model, balance, and rate-limit errors",
-      "Streaming, tools, images, proxies, and client-specific settings",
-    ],
-    openSupport: "Open Telegram support",
-    supportOnline: "AI replies 24/7 · a person joins when needed",
-    diagnosticTitle: "Send the right context once",
-    diagnosticText: "Copy this brief, fill in what you know, and paste it into the support chat. Never include your full API key.",
+    supportTitle: "Connection help",
+    supportLead: "IDE, SDK, endpoint, models, and request errors.",
+    openSupport: "Telegram",
+    supportOnline: "AI 24/7 · human when needed",
     diagnosticBrief: `Please help me connect apiToken.sale.
 
 Operating system and version:
@@ -155,9 +145,8 @@ Approximate time and timezone:
 Request ID, if present:
 What I already tried:
 API key: REDACTED (last 4 characters only):`,
-    copyDiagnostic: "Copy diagnostic brief",
-    diagnosticCopied: "Diagnostic brief copied",
-    supportSecurity: "Support will never ask for your password, card details, or full API key.",
+    copyDiagnostic: "Diagnostics",
+    diagnosticCopied: "Error template copied",
     baseUrl: "Base URL",
     authHeader: "Authentication header",
     quickstartText: "Export the connection settings, then run the minimal cURL request. A successful response confirms the key, balance, endpoint, and model are ready.",
@@ -247,34 +236,24 @@ API key: REDACTED (last 4 characters only):`,
     errors: "Ошибки",
     pricing: "Цены и тарифы",
     title: "Подключение моделей",
-    lead: "Один API‑ключ открывает вашим инструментам все доступные модели. Поручите AI‑агенту выбрать нужный протокол, настроить клиент и проверить подключение.",
+    lead: "Один API‑ключ — все доступные модели. AI‑агент сам настроит и проверит подключение.",
     openKeys: "Получить API‑ключ",
-    agentTitle: "Передайте подключение своему AI‑агенту",
-    agentLead: "Скопируйте одну инструкцию в Codex, Claude Code, Cursor или любой агент, который умеет настраивать проект. Остальное он сделает сам.",
-    agentInstructionLabel: "Готовая инструкция",
+    agentEyebrow: "Для вашего AI‑агента",
+    agentTitle: "Подключите модели одной инструкцией",
+    agentLead: "Скопируйте → вставьте агенту → передайте API‑ключ по запросу.",
     agentPrompt: `Подключи этот проект или инструмент к apiToken.sale. Сначала открой ${AGENT_GUIDE_URL} и следуй актуальной инструкции. Определи мою операционную систему, оболочку, среду и клиент или SDK; выбери совместимый API‑протокол и доступную модель; запроси ключ sk-pool-…, только если его нет в безопасной переменной окружения; внеси минимальные изменения и выполни реальный проверочный запрос. Не показывай ключ в логах, не коммить его и не меняй посторонние файлы. Если что‑то не сработает, диагностируй причину по guide и объясни результат простыми словами.`,
-    copyAgent: "Скопировать инструкцию",
+    copyAgent: "Скопировать",
     agentCopied: "Инструкция скопирована",
-    openAgentGuide: "Открыть технический guide",
-    agentGuideNote: "Живая инструкция · endpoints и каталог моделей всегда актуальны",
+    openAgentGuide: "Инструкция",
     agentSteps: [
-      { title: "Понимает вашу среду", text: "Определяет Windows, macOS или Linux, оболочку, runtime и текущий клиент." },
-      { title: "Выбирает нужный API", text: "Находит совместимый протокол и актуальную модель, а не угадывает их." },
-      { title: "Подключает безопасно", text: "Хранит ключ вне исходного кода и меняет только нужные настройки." },
-      { title: "Доказывает, что всё работает", text: "Выполняет минимальный реальный запрос, проверяет ответ и объясняет ошибку." },
+      "Определит вашу среду",
+      "Выберет нужную модель",
+      "Проверит подключение",
     ],
-    supportTitle: "Не получилось? Доведём подключение до конца.",
-    supportLead: "Наша AI‑поддержка знает совместимые клиенты, настройку для разных ОС, endpoints, headers и актуальные модели. Она проведёт по шагам, разберёт ошибку или подключит человека.",
-    supportItems: [
-      "Любая совместимая IDE, AI‑агент, CLI или SDK",
-      "Windows, macOS, Linux, оболочки и переменные окружения",
-      "Ошибки ключа, endpoint, модели, баланса и лимитов",
-      "Streaming, tools, изображения, proxy и настройки клиента",
-    ],
-    openSupport: "Открыть поддержку в Telegram",
-    supportOnline: "AI отвечает 24/7 · человек подключается при необходимости",
-    diagnosticTitle: "Сразу передайте нужный контекст",
-    diagnosticText: "Скопируйте шаблон, заполните то, что знаете, и отправьте в чат. Никогда не присылайте полный API‑ключ.",
+    supportTitle: "Помощь с подключением",
+    supportLead: "IDE, SDK, endpoint, модели и ошибки запросов.",
+    openSupport: "Telegram",
+    supportOnline: "AI 24/7 · человек при необходимости",
     diagnosticBrief: `Помогите подключить apiToken.sale.
 
 Операционная система и версия:
@@ -288,9 +267,8 @@ HTTP‑статус и точный текст ошибки:
 Request ID, если есть:
 Что уже пробовал:
 API‑ключ: СКРЫТ (только последние 4 символа):`,
-    copyDiagnostic: "Скопировать данные для диагностики",
-    diagnosticCopied: "Шаблон скопирован",
-    supportSecurity: "Поддержка не попросит пароль, данные карты или полный API‑ключ.",
+    copyDiagnostic: "Диагностика",
+    diagnosticCopied: "Шаблон ошибки скопирован",
     baseUrl: "Базовый URL",
     authHeader: "Заголовок аутентификации",
     quickstartText: "Сначала задайте параметры подключения, затем выполните минимальный cURL-запрос. Успешный ответ подтверждает, что ключ, баланс, адрес и модель готовы к работе.",
@@ -398,27 +376,20 @@ export function DocsPortal() {
         <section className="docs-hero" id="overview"><h1>{t.title}</h1><p>{t.lead}</p></section>
 
         <section className="docs-section docs-connect-section" id="agent-setup">
-          <article className="docs-agent-card">
+          <article className="docs-agent-card ym-hide-content">
             <div className="docs-agent-top">
               <div className="docs-agent-heading">
-                <span className="docs-agent-number">01</span>
-                <div><h2>{t.agentTitle}</h2><p>{t.agentLead}</p></div>
+                <span className="docs-agent-eyebrow">{t.agentEyebrow}</span>
+                <h2>{t.agentTitle}</h2>
+                <p>{t.agentLead}</p>
               </div>
               <div className="docs-agent-actions">
                 <CopyControl className="docs-agent-copy" withIcon value={t.agentPrompt} label={t.copyAgent} copiedLabel={t.agentCopied} />
                 <Link className="btn btn-ghost docs-guide-link" href="/md/connect" target="_blank"><GuideIcon />{t.openAgentGuide}</Link>
               </div>
             </div>
-            <div className="docs-agent-command ym-hide-content">
-              <span className="docs-agent-command-icon" aria-hidden="true"><AgentIcon /></span>
-              <div><strong>{t.agentInstructionLabel}</strong><p>{t.agentPrompt}</p></div>
-            </div>
-            <div className="docs-agent-guide-note"><span aria-hidden="true" />{t.agentGuideNote}</div>
-            <div className="docs-agent-plan">
-              {t.agentSteps.map((step, index) => <article key={step.title}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step.title}</strong><p>{step.text}</p></article>)}
-            </div>
-            <div className="docs-agent-keyline">
-              <span><ShieldIcon />{language === "ru" ? "Ключ остаётся в вашей среде" : "The key stays in your environment"}</span>
+            <div className="docs-agent-bottom">
+              <ul className="docs-agent-points">{t.agentSteps.map((step) => <li key={step}><CheckIcon />{step}</li>)}</ul>
               <Link href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}<ArrowIcon /></Link>
             </div>
           </article>
@@ -426,23 +397,16 @@ export function DocsPortal() {
 
         <section className="docs-section docs-support-section" id="setup-support">
           <article className="docs-connect-support">
-            <div className="docs-support-main">
-              <span className="docs-support-icon" aria-hidden="true"><TelegramIcon /></span>
+            <span className="docs-support-icon" aria-hidden="true"><TelegramIcon /></span>
+            <div className="docs-support-copy">
               <h2>{t.supportTitle}</h2>
               <p>{t.supportLead}</p>
-              <ul>{t.supportItems.map((item) => <li key={item}><CheckIcon />{item}</li>)}</ul>
-              <div className="docs-support-actions">
-                <a className="btn btn-primary" href={supportUrl} target="_blank" rel="noreferrer"><TelegramIcon />{t.openSupport}</a>
-                <span><i aria-hidden="true" />{t.supportOnline}</span>
-              </div>
             </div>
-            <aside className="docs-diagnostic">
-              <span className="docs-diagnostic-icon" aria-hidden="true"><LifebuoyIcon /></span>
-              <h3>{t.diagnosticTitle}</h3>
-              <p>{t.diagnosticText}</p>
+            <div className="docs-support-actions">
+              <a className="btn btn-primary" href={supportUrl} target="_blank" rel="noreferrer"><TelegramIcon />{t.openSupport}</a>
               <CopyControl className="docs-diagnostic-copy" withIcon value={t.diagnosticBrief} label={t.copyDiagnostic} copiedLabel={t.diagnosticCopied} />
-              <div className="docs-support-security"><ShieldIcon />{t.supportSecurity}</div>
-            </aside>
+              <span><i aria-hidden="true" />{t.supportOnline}</span>
+            </div>
           </article>
         </section>
 
@@ -527,10 +491,6 @@ function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: st
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
 }
 
-function AgentIcon() {
-  return <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 9.9 8.9 4 11l5.9 2.1L12 19l2.1-5.9L20 11l-5.9-2.1L12 3Z" /><path d="m5 3 .6 1.7L7.3 5.3l-1.7.6L5 7.6l-.6-1.7-1.7-.6 1.7-.6L5 3Z" /></svg>;
-}
-
 function CopyIcon({ copied }: { copied: boolean }) {
   return copied
     ? <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
@@ -549,14 +509,6 @@ function CheckIcon() {
   return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>;
 }
 
-function ShieldIcon() {
-  return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 7.6 7 9 4-1.4 7-4.5 7-9V6l-7-3Z" /><path d="m9.3 12 1.8 1.8 3.9-4" /></svg>;
-}
-
 function TelegramIcon() {
   return <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z" /></svg>;
-}
-
-function LifebuoyIcon() {
-  return <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="m5.6 5.6 4.3 4.3m4.2 4.2 4.3 4.3m0-12.8-4.3 4.3m-4.2 4.2-4.3 4.3" /></svg>;
 }

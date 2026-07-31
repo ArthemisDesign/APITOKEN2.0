@@ -843,8 +843,8 @@ body, .nav, .stat, .step, .feat, .price, .tier, .dcard, .keyrow, .usage,
 .docs-code-card header p, .docs-code-card pre, .docs-auth-flow, .docs-auth-flow>div,
 .docs-auth-flow b, .docs-auth-flow>span, .docs-auth-flow code, .docs-errors, .docs-errors code,
 .docs-checklist, .docs-checklist h3, .docs-checklist li, .docs-h3, .docs-para,
-.docs-footer, .docs-agent-card, .docs-agent-command, .docs-agent-plan article,
-.docs-connect-support, .docs-support-main, .docs-diagnostic, .docs-agent-actions .btn{
+.docs-footer, .docs-agent-card, .docs-agent-bottom, .docs-agent-points li,
+.docs-connect-support, .docs-support-copy, .docs-agent-actions .btn, .docs-support-actions .btn{
   transition:background-color .35s ease, border-color .35s ease, color .35s ease, box-shadow .35s ease;
 }
 /* Dashboard surfaces cross-fade on theme switch too — without this the big app-main / sidebar / header
