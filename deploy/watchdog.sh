@@ -167,10 +167,40 @@ test_db() {
   sudo -n "$TEST_DB_HELPER" "$1" "$TEST_DB_SLOT"
 }
 
+repair_source_repo_permissions() {
+  local objects="$SOURCE_REPO/.git/objects" unsafe unreadable
+  [[ -d $objects && ! -L $objects ]] || wd_die "source Git object store is missing: $objects"
+
+  unsafe=$(find "$objects" -type l -print -quit)
+  [[ -z $unsafe ]] || wd_die "source Git object store contains an unexpected symlink: $unsafe"
+
+  # The source checkout is shared by the deploy fetcher and the isolated CI reader. Git creates
+  # loose objects and pack files according to the caller's umask; normalize only this object store
+  # so a private validator transcript can never make history unreadable by apitoken-ci.
+  find "$objects" -type d -exec chmod go+rx {} +
+  find "$objects" -type f -exec chmod go+r {} +
+
+  unreadable=$(find "$objects" \
+    \( -type d ! -perm -0055 -o -type f ! -perm -0044 \) -print -quit)
+  [[ -z $unreadable ]] || wd_die "source Git object store remains unreadable: $unreadable"
+}
+
+source_repo_readability_check() {
+  local invalid
+  repair_source_repo_permissions
+  if ! invalid=$(run_as_ci git -c safe.directory="$SOURCE_REPO" -C "$SOURCE_REPO" \
+      cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' \
+      | awk '$2 == "missing" || NF != 2 { if (bad == "") bad = $0 } END { if (bad != "") print bad }'); then
+    wd_die "source Git object store cannot be read by $CI_USER"
+  fi
+  [[ -z $invalid ]] || wd_die "source Git object store contains an unreadable object: $invalid"
+}
+
 fetch_source_once() (
   exec 8<>"$SOURCE_FETCH_LOCK"
   flock 8
   git -C "$SOURCE_REPO" fetch --no-tags "$REMOTE" "$@"
+  source_repo_readability_check
 )
 
 fetch_source() {

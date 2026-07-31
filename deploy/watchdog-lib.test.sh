@@ -30,6 +30,64 @@ empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-va
 [[ $empty_diagnostic == 'phase=shadow-validation; validator exited with code 7' ]] \
   || wd_die "candidate diagnostic fallback is unstable: $empty_diagnostic"
 
+# A restrictive fetch umask must not strand the shared source history from the isolated reader.
+# Extract the production functions so this exercises the same normalization and CI read check that
+# the watchdog uses, while the test itself runs as the isolated account in the trusted host gate.
+permission_repair_body=$(sed -n '/^repair_source_repo_permissions()/,/^}/p' \
+  "$ROOT/deploy/watchdog.sh")
+permission_check_body=$(sed -n '/^source_repo_readability_check()/,/^}/p' \
+  "$ROOT/deploy/watchdog.sh")
+[[ -n $permission_repair_body && -n $permission_check_body ]] \
+  || wd_die 'source repository permission helpers are missing'
+eval "$permission_repair_body"
+eval "$permission_check_body"
+run_as_ci() {
+  # The test account owns the temporary checkout, so emulate the production reader boundary before
+  # repair: an isolated user must reject any object-store path lacking group/other access.
+  if [[ ${1:-} == git && -n ${SOURCE_REPO:-} ]]; then
+    local blocked
+    blocked=$(find "$SOURCE_REPO/.git/objects" \
+      \( -type d ! -perm -0055 -o -type f ! -perm -0044 \) -print -quit)
+    [[ -z $blocked ]] || return 1
+  fi
+  "$@"
+}
+CI_USER=apitoken-ci
+permission_remote="$TEMP/source-permission-remote.git"
+permission_seed="$TEMP/source-permission-seed"
+permission_checkout="$TEMP/source-permission-checkout"
+git -c init.defaultBranch=master init --bare --quiet "$permission_remote"
+git -c init.defaultBranch=master init --quiet "$permission_seed"
+git -C "$permission_seed" config user.name permission-test
+git -C "$permission_seed" config user.email permission-test@example.invalid
+git -C "$permission_seed" commit --quiet --allow-empty -m initial
+git -C "$permission_seed" push --quiet "$permission_remote" HEAD:refs/heads/master
+git clone --quiet --no-local "$permission_remote" "$permission_checkout"
+git -C "$permission_seed" commit --quiet --allow-empty -m fetched
+git -C "$permission_seed" push --quiet "$permission_remote" HEAD:refs/heads/master
+(umask 077; git -C "$permission_checkout" fetch --quiet "$permission_remote" master)
+permission_sha=$(git -C "$permission_checkout" rev-parse FETCH_HEAD)
+
+# Make the old failure deterministic even when a Git build chooses a packed representation for the
+# fetch. This is still a real fetch under umask 077; the explicit mode fence models its observed
+# loose-object result and keeps the regression portable across Git storage strategies.
+find "$permission_checkout/.git/objects" -type d -exec chmod go-rx {} +
+find "$permission_checkout/.git/objects" -type f -exec chmod go-r {} +
+permission_unreadable=$(find "$permission_checkout/.git/objects" \
+  \( -type d ! -perm -0055 -o -type f ! -perm -0044 \) -print -quit)
+[[ -n $permission_unreadable ]] || wd_die 'restrictive fetch test did not create an unreadable object store'
+SOURCE_REPO="$permission_checkout"
+if run_as_ci git -c safe.directory="$permission_checkout" -C "$permission_checkout" \
+    cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' >/dev/null 2>&1; then
+  wd_die 'isolated reader accepted an unreadable object store before repair'
+fi
+source_repo_readability_check
+git -c safe.directory="$permission_checkout" -C "$permission_checkout" \
+  cat-file -e "$permission_sha^{commit}"
+permission_unreadable=$(find "$permission_checkout/.git/objects" \
+  \( -type d ! -perm -0055 -o -type f ! -perm -0044 \) -print -quit)
+[[ -z $permission_unreadable ]] || wd_die 'source object repair left unreadable Git paths'
+
 # Controller-only handoff uses exec, so the new process must retain the same open-file-description
 # lock rather than reacquiring by pathname. Exercise that Linux contract when flock/procfs exist.
 if command -v flock >/dev/null 2>&1 && [[ -d /proc/$$/fd ]]; then
@@ -2322,6 +2380,14 @@ grep -Fq 'previous_umask=$(umask)' <<<"$shadow_body" \
   || wd_die 'trusted candidate validation does not preserve the controller umask'
 grep -Fq 'umask "$previous_umask"' <<<"$shadow_body" \
   || wd_die 'trusted candidate validation leaks its transcript-only umask into Git fetches'
+fetch_body=$(sed -n '/^fetch_source_once()/,/^}/p' "$ROOT/deploy/watchdog.sh")
+grep -Fq 'source_repo_readability_check' <<<"$fetch_body" \
+  || wd_die 'source fetch does not repair and validate shared Git object readability'
+grep -Fq "cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)'" \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'source repository check does not resolve every Git object as CI'
+grep -Fq '== "missing"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'source repository check does not reject missing or unreadable Git objects'
 grep -Fq 'validation-plan-unreadable-target-v1' "$ROOT/deploy/validation-plan.sh" \
   || wd_die 'an unreadable freshly fetched candidate cannot request a fail-closed repair gate'
 if grep -Fq 'validation-plan baseline is unavailable' "$ROOT/deploy/validation-plan.sh"; then
