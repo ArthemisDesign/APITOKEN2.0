@@ -21,8 +21,8 @@ pub use api::{
     input_tokens as openai_input_tokens, model as openai_model, models as openai_models,
     response_input_items as openai_response_input_items, responses as openai_responses,
 };
-pub(crate) use calibration::apply_observation;
 pub use calibration::WindowCalibration;
+pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexHomeSpec, CodexModel, CodexPrices, CodexTransport};
 pub use history::{HistoryError, StoredHistory};
@@ -245,7 +245,7 @@ pub struct CodexWindowCapacityReport {
     pub remaining_usd: Option<f64>,
     pub low_usd: Option<f64>,
     pub high_usd: Option<f64>,
-    /// `measured_current_window`, `measured_previous_window`, or `unknown`.
+    /// `measured_cumulative` or `unknown`.
     pub source: &'static str,
     pub confidence: f64,
     pub samples: i64,
@@ -690,8 +690,8 @@ impl CodexHome {
             .and_then(|duration| calibrations.get(&duration));
         let estimate = calibration.and_then(WindowCalibration::estimate);
         let nano_to_usd = |nano: i64| nano as f64 / 1e9;
-        // A carried estimate belongs to the previous measured window. Keep its real evidence age
-        // instead of making it look fresh merely because the provider emitted a new snapshot.
+        // Keep the timestamp of the latest accepted complete interval instead of making cumulative
+        // evidence look fresh merely because the provider emitted another snapshot.
         let observed_at = estimate
             .map(|value| value.measured_at)
             .unwrap_or(snapshot_observed_at);

@@ -809,12 +809,31 @@ impl AsyncBilling {
                                 )?;
                                 if let Some(existing) = existing
                                     .as_ref()
-                                    .filter(|row| observed_at <= row.observed_at)
+                                    .filter(|row| {
+                                        row.estimator_version
+                                            == crate::codex::ESTIMATOR_VERSION
+                                            && observed_at <= row.observed_at
+                                    })
                                 {
                                     return Ok((spend_nano, existing.clone()));
                                 }
-                                let mut state =
-                                    crate::codex::apply_observation(existing, &observation);
+                                let history = if existing.as_ref().is_some_and(|row| {
+                                    row.estimator_version
+                                        != crate::codex::ESTIMATOR_VERSION
+                                }) {
+                                    registry::load_codex_window_observations(
+                                        &conn,
+                                        &home_id,
+                                        window_duration_mins,
+                                    )?
+                                } else {
+                                    Vec::new()
+                                };
+                                let mut state = crate::codex::apply_observation_with_history(
+                                    existing,
+                                    &history,
+                                    &observation,
+                                );
                                 if let Some(version) = registry::save_codex_calibration(
                                     &conn, &state, &observation,
                                 )? {
@@ -1033,12 +1052,31 @@ impl AsyncBilling {
                                         )?;
                                         if let Some(existing) = existing
                                             .as_ref()
-                                            .filter(|row| observed_at <= row.observed_at)
+                                            .filter(|row| {
+                                                row.estimator_version
+                                                    == crate::codex::ESTIMATOR_VERSION
+                                                    && observed_at <= row.observed_at
+                                            })
                                         {
                                             return Ok((spend_nano, existing.clone()));
                                         }
+                                        let history = if existing.as_ref().is_some_and(|row| {
+                                            row.estimator_version
+                                                != crate::codex::ESTIMATOR_VERSION
+                                        }) {
+                                            pg.load_codex_window_observations(
+                                                &home_id,
+                                                window_duration_mins,
+                                            )?
+                                        } else {
+                                            Vec::new()
+                                        };
                                         let mut state =
-                                            crate::codex::apply_observation(existing, &observation);
+                                            crate::codex::apply_observation_with_history(
+                                                existing,
+                                                &history,
+                                                &observation,
+                                            );
                                         if let Some(version) =
                                             pg.save_codex_calibration(&state, &observation)?
                                         {
@@ -2050,21 +2088,47 @@ mod tests {
             .observe_codex_window("home-a", 300, 2_000_000_000, 12, 101)
             .await
             .unwrap();
+        assert!(measured.current_capacity_nano.is_none());
+        assert!(measured.anchor_ready);
+        first
+            .credit_codex_spend("home-a", 40_000_000_000, 102)
+            .await
+            .unwrap();
+        let (_, measured) = first
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 102)
+            .await
+            .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
         let (_, duplicate) = first
-            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 101)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 102)
             .await
             .unwrap();
         assert_eq!(duplicate.version, measured.version);
         first.flush().await.unwrap();
         drop(first);
 
+        // Simulate the exact production upgrade case: raw observations are intact while the
+        // derived v2 row contains a transient one-interval estimate. The restarted actor must
+        // replay raw evidence before returning capacity.
+        let connection = registry::open(&path_string).unwrap();
+        connection
+            .execute(
+                "UPDATE codex_window_calibrations SET estimator_version=2, \
+                   current_capacity_nano=187994100000,sum_used_sq=1,\
+                   sum_used_spend_nano=1879941000,samples=1,observed_points=1,anchor_ready=0 \
+                 WHERE home_id='home-a' AND window_duration_mins=300",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
         let restarted = AsyncBilling::start(path_string, 1).unwrap();
         let (spend, restored) = restarted
-            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 102)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 103)
             .await
             .unwrap();
-        assert_eq!(spend, 140_000_000_000);
+        assert_eq!(spend, 180_000_000_000);
+        assert_eq!(restored.estimator_version, crate::codex::ESTIMATOR_VERSION);
         assert_eq!(restored.current_capacity_nano, Some(2_000_000_000_000));
         assert!(restored.version > measured.version);
         restarted.flush().await.unwrap();

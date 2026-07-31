@@ -1993,7 +1993,8 @@ impl PgStore {
                    anchor_spend_nano,used_percent,observed_at,sum_used_sq,sum_used_spend_nano,\
                    observed_points,samples,current_capacity_nano,current_low_nano,current_high_nano,\
                    current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
-                   last_confidence_bp,last_measured_at,estimator_version,version,updated_ts \
+                   last_confidence_bp,last_measured_at,estimator_version,version,updated_ts,\
+                   anchor_ready \
                  FROM codex_window_calibrations WHERE home_id=$1 AND window_duration_mins=$2",
                 &[&home_id, &window_duration_mins],
             )?
@@ -2021,7 +2022,34 @@ impl PgStore {
                 estimator_version: row.get(20),
                 version: row.get(21),
                 updated_ts: row.get(22),
+                anchor_ready: row.get(23),
             }))
+    }
+
+    /// Load immutable raw evidence for a one-time estimator-version rebuild.
+    pub fn load_codex_window_observations(
+        &mut self,
+        home_id: &str,
+        window_duration_mins: i64,
+    ) -> Result<Vec<CodexWindowObservation>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,\
+                   gateway_spend_nano FROM codex_window_observations \
+                 WHERE home_id=$1 AND window_duration_mins=$2 ORDER BY observed_at,id",
+                &[&home_id, &window_duration_mins],
+            )?
+            .into_iter()
+            .map(|row| CodexWindowObservation {
+                home_id: row.get(0),
+                window_duration_mins: row.get(1),
+                resets_at: row.get(2),
+                observed_at: row.get(3),
+                used_percent: row.get(4),
+                gateway_spend_nano: row.get(5),
+            })
+            .collect())
     }
 
     /// Save calibration evidence with optimistic concurrency. A conflict returns `None` and rolls
@@ -2039,9 +2067,9 @@ impl PgStore {
                    used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
                    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                    last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
-                   estimator_version,updated_ts,version \
+                   estimator_version,updated_ts,version,anchor_ready \
                  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
-                          $19,$20,$21,$22,1) \
+                          $19,$20,$21,$22,1,$23) \
                  ON CONFLICT(home_id,window_duration_mins) DO NOTHING RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -2050,7 +2078,7 @@ impl PgStore {
                   &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
                   &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
-                  &state.updated_ts],
+                  &state.updated_ts,&state.anchor_ready],
             )?
         } else {
             tx.query_opt(
@@ -2060,7 +2088,7 @@ impl PgStore {
                    samples=$11,current_capacity_nano=$12,current_low_nano=$13,current_high_nano=$14,\
                    current_confidence_bp=$15,last_capacity_nano=$16,last_low_nano=$17,\
                    last_high_nano=$18,last_confidence_bp=$19,last_measured_at=$20,\
-                   estimator_version=$21,updated_ts=$22,version=version+1 \
+                   estimator_version=$21,updated_ts=$22,version=version+1,anchor_ready=$24 \
                  WHERE home_id=$1 AND window_duration_mins=$2 AND version=$23 RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -2069,7 +2097,7 @@ impl PgStore {
                   &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
                   &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
-                  &state.updated_ts,&state.version],
+                  &state.updated_ts,&state.version,&state.anchor_ready],
             )?
         };
         let Some(version) = version.map(|row| row.get::<_, i64>(0)) else {
@@ -4129,6 +4157,7 @@ mod tests {
             last_high_nano: None,
             last_confidence_bp: 0,
             last_measured_at: None,
+            anchor_ready: false,
             estimator_version: 1,
             version: 0,
             updated_ts: 101,
@@ -4155,6 +4184,11 @@ mod tests {
                 .unwrap()
                 .version,
             1
+        );
+        assert_eq!(
+            pg.load_codex_window_observations("stage2-codex-home", 300)
+                .unwrap(),
+            vec![observation.clone()]
         );
         pg.client
             .batch_execute(

@@ -3785,6 +3785,8 @@ pub struct CodexCalibrationRow {
     pub last_high_nano: Option<i64>,
     pub last_confidence_bp: i64,
     pub last_measured_at: Option<i64>,
+    /// True after the first potentially partial transition of the concrete reset was censored.
+    pub anchor_ready: bool,
     pub estimator_version: i64,
     pub version: i64,
     pub updated_ts: i64,
@@ -3859,6 +3861,7 @@ fn sqlite_codex_calibration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cod
         estimator_version: row.get(20)?,
         version: row.get(21)?,
         updated_ts: row.get(22)?,
+        anchor_ready: row.get(23)?,
     })
 }
 
@@ -3866,7 +3869,7 @@ const CODEX_CALIBRATION_COLUMNS: &str = "home_id,window_duration_mins,resets_at,
     anchor_used_percent,anchor_spend_nano,used_percent,observed_at,sum_used_sq,\
     sum_used_spend_nano,observed_points,samples,current_capacity_nano,current_low_nano,\
     current_high_nano,current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
-    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
+    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts,anchor_ready";
 
 pub fn load_codex_calibration(
     conn: &Connection,
@@ -3883,6 +3886,36 @@ pub fn load_codex_calibration(
     )
     .optional()
     .context("load SQLite Codex calibration")
+}
+
+/// Load the immutable evidence log for a one-time estimator rebuild.
+///
+/// The synthetic id is the tie-breaker because provider observations can share a wall-clock
+/// second. Runtime updates remain incremental once the stored estimator version is current.
+pub fn load_codex_window_observations(
+    conn: &Connection,
+    home_id: &str,
+    window_duration_mins: i64,
+) -> Result<Vec<CodexWindowObservation>> {
+    let mut statement = conn.prepare(
+        "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
+         FROM codex_window_observations WHERE home_id=?1 AND window_duration_mins=?2 \
+         ORDER BY observed_at,id",
+    )?;
+    let observations = statement
+        .query_map(rusqlite::params![home_id, window_duration_mins], |row| {
+            Ok(CodexWindowObservation {
+                home_id: row.get(0)?,
+                window_duration_mins: row.get(1)?,
+                resets_at: row.get(2)?,
+                observed_at: row.get(3)?,
+                used_percent: row.get(4)?,
+                gateway_spend_nano: row.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("load SQLite Codex window observations")?;
+    Ok(observations)
 }
 
 /// Persist one estimator result and its raw observation in the same transaction.
@@ -3920,6 +3953,7 @@ pub fn save_codex_calibration(
         state.estimator_version,
         state.updated_ts,
         state.version,
+        state.anchor_ready,
     ];
     let changed = if state.version == 0 {
         tx.execute(
@@ -3928,9 +3962,9 @@ pub fn save_codex_calibration(
                used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
                current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
-               estimator_version,updated_ts,version \
+               estimator_version,updated_ts,version,anchor_ready \
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
-                      ?19,?20,?21,?22,?23+1) \
+                      ?19,?20,?21,?22,?23+1,?24) \
              ON CONFLICT(home_id,window_duration_mins) DO NOTHING",
             values,
         )?
@@ -3942,7 +3976,7 @@ pub fn save_codex_calibration(
                samples=?11,current_capacity_nano=?12,current_low_nano=?13,current_high_nano=?14,\
                current_confidence_bp=?15,last_capacity_nano=?16,last_low_nano=?17,\
                last_high_nano=?18,last_confidence_bp=?19,last_measured_at=?20,\
-               estimator_version=?21,updated_ts=?22,version=version+1 \
+               estimator_version=?21,updated_ts=?22,version=version+1,anchor_ready=?24 \
              WHERE home_id=?1 AND window_duration_mins=?2 AND version=?23",
             values,
         )?
@@ -5166,6 +5200,7 @@ mod tests {
             last_high_nano: None,
             last_confidence_bp: 0,
             last_measured_at: None,
+            anchor_ready: false,
             estimator_version: 1,
             version: 0,
             updated_ts: 101,
@@ -5190,6 +5225,7 @@ mod tests {
 
         state = load_codex_calibration(&c, "home-a", 300).unwrap().unwrap();
         assert_eq!(state.version, 1);
+        assert!(!state.anchor_ready);
         state.used_percent = 11;
         state.observed_at = 102;
         state.updated_ts = 102;
@@ -5208,6 +5244,14 @@ mod tests {
             )
             .unwrap(),
             2
+        );
+        let observations = load_codex_window_observations(&c, "home-a", 300).unwrap();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|row| row.observed_at)
+                .collect::<Vec<_>>(),
+            vec![101, 102]
         );
     }
 

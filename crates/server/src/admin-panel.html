@@ -386,7 +386,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     return pill('active','ok')};
   const gptRows=homes.map(h=>{const windows=h.windows||[];
     const bySlot=slot=>windows.find(w=>w.slot===slot);
-    const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.source==='unknown'?' · ждём Δused':w.source==='measured_previous_window'?' · оценка прошлого окна':' · факт, confidence '+Math.round(Number(w.confidence||0)*100)+'%')+'</div>':'—';
+    const winCell=w=>w?'<div>'+percentBar(w.used_percent)+'</div><div class="sub">'+windowLabel(w.window_minutes)+(w.source==='unknown'?' · ждём полный интервал':' · накоплено интервалов '+Number(w.samples||0)+' · confidence '+Math.round(Number(w.confidence||0)*100)+'%')+'</div>':'—';
     const budgetCell=w=>w?'<b>'+(w.remaining_usd==null?'—':money(w.remaining_usd))+'</b><div class="sub">остаток из '+(w.cap_usd==null?'—':money(w.cap_usd))+' · '+windowLabel(w.window_minutes)+'</div>':'—';
     const rl=h.rate_limits||{};
     const resetCell=w=>w&&w.resets_at?duration(w.resets_at-Date.now()/1000):'—';

@@ -2010,6 +2010,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_subscription_contract_publishes_cumulative_capacity_and_remaining() {
+        let mut status = unknown_codex_status();
+        let capacity = &mut status.homes[0].capacities[0];
+        capacity.cap_usd = Some(2_450.04188);
+        capacity.remaining_usd = Some(1_911.0326664);
+        capacity.source = "measured_cumulative";
+        capacity.confidence = 0.8333;
+        capacity.samples = 10;
+
+        let value = codex_subs_value(&status, 105);
+        let window = &value["homes"][0]["windows"][0];
+        assert_eq!(window["cap_usd"], 2_450.04);
+        assert_eq!(window["remaining_usd"], 1_911.03);
+        assert_eq!(window["source"], "measured_cumulative");
+        assert_eq!(window["samples"], 10);
+        assert_eq!(value["window_totals"][0]["measured_homes"], 1);
+    }
+
+    #[test]
     fn prometheus_omits_unmeasured_codex_dollar_series() {
         let home = &unknown_codex_status().homes[0];
         let mut body = String::new();
@@ -2487,6 +2506,7 @@ mod tests {
         assert!(ADMIN_PANEL_HTML.contains("OpenAI (Codex)"));
         assert!(ADMIN_PANEL_HTML.contains("остаток / вместимость API $"));
         assert!(ADMIN_PANEL_HTML.contains("остаток из "));
+        assert!(ADMIN_PANEL_HTML.contains("накоплено интервалов"));
         assert!(ADMIN_PANEL_HTML.contains("w.cap_usd"));
         for route in [
             "/admin/dashboard",
