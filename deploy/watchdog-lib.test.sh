@@ -1208,6 +1208,10 @@ grep -Fq 'redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c0
   "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq -- '--appendonly' "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq 'everysec' "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq 'set apitoken:healthcheck' "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq "grep -qx 'aof_enabled:1'" "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq "grep -qx 'aof_last_bgrewrite_status:ok'" "$ROOT/deploy/affinity-redis.compose.yaml"
+grep -Fq "grep -qx 'rdb_last_bgsave_status:ok'" "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
   "$ROOT/systemd/claude-api-anthropic@.service"
 ! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api-anthropic@.service"
@@ -1320,6 +1324,9 @@ done
 grep -Fq 'systemd-tmpfiles --create "$TARGET"' "$ROOT/deploy/install-tmpfiles.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'apitoken-affinity-redis.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis' \
+  "$ROOT/deploy/install-watchdog.sh"
+grep -Fq "[[ ! -L /var/lib/apitoken/affinity-redis ]]" "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'if (( REDIS_RESTART_REQUIRED )); then' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'Redis activation is not fenced by an exact definition change'
 [[ $(grep -Fc 'systemctl restart apitoken-affinity-redis.service' \

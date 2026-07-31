@@ -23,7 +23,17 @@ services:
     volumes:
       - /var/lib/apitoken/affinity-redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli ping | grep -qx PONG"]
+      test:
+        - CMD-SHELL
+        - >-
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          set apitoken:healthcheck "$${HOSTNAME}" EX 10 | grep -qx OK &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'aof_enabled:1' &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'aof_last_bgrewrite_status:ok' &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'rdb_last_bgsave_status:ok'
       interval: 3s
       timeout: 2s
       retries: 20
