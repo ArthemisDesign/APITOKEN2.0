@@ -212,11 +212,20 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     card('GPT · остаток окон',gptDown||gptOff?'—':measuredTotals.length?money(gptRemain):'ждём Δused',gptDown||gptOff?'':measuredTotals.length?'из '+money(gptCap)+' измеренной ёмкости'+(gptUnknown?' · '+gptUnknown+' без оценки':''):'первый снимок — только якорь, без прайора')+
     card('GPT · в работе',gptDown?'—':gptInflight,'inflight turns сейчас')+
     card('GPT · потрачено',gptDown?'—':money(gptSpend),'official-price, накопительно');
+  // Read the gateway's own admission verdict instead of re-deriving one. A panel that computes its
+  // own rule will eventually disagree with routing, and the disagreement always shows up as a home
+  // displayed «active» while the gateway refuses to send it traffic.
   const homeStatus=h=>{const nowSec=Date.now()/1000|0;
     if(!h.process_live)return pill('процесс остановлен','bad');
-    if(!h.auth_ok)return pill('ошибка auth','bad');
-    if(h.cooling_until>nowSec)return pill('cooling '+duration(h.cooling_until-nowSec),'warn');
-    if(h.limit_reached||h.rate_limits?.reached)return pill('лимит достигнут','warn');
+    if(h.admitted===false||h.reject_reason){
+      if(h.reject_reason==='account_dead')return pill('подписка мертва','bad');
+      if(h.reject_reason==='transport_wedged')return pill('не отвечает · транспорт','bad');
+      if(h.reject_reason==='transport_degraded')return pill('не отвечает · деградация','bad');
+      if(h.reject_reason==='cooling')return pill('cooling '+duration(Math.max(0,h.cooling_until-nowSec)),'warn');
+      if(h.reject_reason==='provider_limit')return pill('лимит достигнут','warn');
+      return pill('вне ротации','warn')}
+    if(h.account_state==='suspect')return pill('active · auth под вопросом','warn');
+    if(h.snapshot_age_secs!=null&&h.snapshot_age_secs>600)return pill('active · данные устарели','warn');
     if(h.calibration_persistence_ok===false)return pill('active · calibration storage','warn');
     return pill('active','ok')};
   const gptRows=homes.map(h=>{const windows=h.windows||[];

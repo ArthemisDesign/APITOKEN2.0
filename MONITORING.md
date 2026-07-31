@@ -247,7 +247,10 @@ the cause is investigated.
 
 ## CodexNoAvailableHomes
 
-Every home is cooling or explicitly provider-limited, so clients are being told to retry. Read
+No home would be selected right now, so clients are being told to retry. The counter is computed by
+the same predicate selection uses, so it covers every reason a home is unroutable — a dead account, an
+unresponsive transport, cooling, or a full window. It previously re-derived a weaker rule and could
+report capacity the gateway was refusing to route to. Read
 `claude_api_codex_home_cooling_until_seconds` and `claude_api_codex_home_rate_limit_used_percent` to
 tell a subscription-limit outage (windows genuinely exhausted — wait for the reset or add a home)
 from an authentication outage (`claude_api_codex_home_authenticated == 0` — re-run the device flow).
@@ -293,7 +296,52 @@ expected, not a fault: a spent subscription cannot serve turns. Check that the r
 the load (`claude_api_codex_homes_available`, the panel's remaining API-dollar column) and add an
 authenticated home if they cannot. Do not restart the process or reauthenticate — the background
 health probe refreshes the snapshot and the home returns by itself after the reset. If the alert
-stays on past the reported reset, verify that `account/rateLimits/read` still answers for that home.
+stays on past the reported reset, verify that `account/rateLimits/read` still answers for that home:
+recovery depends on that probe succeeding, so a home whose probe is timing out cannot return on its
+own. `CodexHomeSnapshotStale` distinguishes the two cases.
+
+## CodexHomeUnresponsive
+
+The home's app-server generation is missing RPC deadlines. The gateway has closed admission for new
+turns while leaving in-flight turns to finish, because recycling a shared child would kill every
+sibling turn multiplexed over it.
+
+This is the failure this alert exists for: a deadline is not an authentication error and not a quota
+error, so a home in this state can otherwise look perfectly healthy — its process is alive, its
+account is authenticated, and its last quota snapshot still reports whatever it reported before it
+went quiet. Read `claude_api_codex_home_transport_degraded` and `..._transport_wedged` to tell
+"missing deadlines" from "corroborated unusable", and `claude_api_codex_home_snapshot_age_seconds` to
+confirm the refresh path stopped with it.
+
+A wedged transport is recycled automatically, and the home returns as soon as one probe or turn
+succeeds. If the alert persists past a few sweeps, the daemon itself is not recovering: check
+`claude-api-codex-app-server@<socket>.service` for that home and the bridge process the gateway holds
+against it. A daemon that was restarted underneath a running gateway is the known case — the bridge
+survives, so the process looks alive while nothing it sends is ever answered. Restarting the gateway
+slot re-establishes every bridge.
+
+## CodexHomeSnapshotStale
+
+Quota evidence for this home has stopped being refreshed. Every quota gauge keeps publishing its last
+observed value, so the numbers can look entirely healthy while the path that produces them is broken;
+this alert is the only signal that separates "the quota is 32%" from "the quota was 32% an hour ago".
+
+Selection already accounts for it — stale evidence never rejects a home and never wins a tie against
+current evidence — so this is a diagnosis alert rather than an outage. It usually fires alongside
+`CodexHomeUnresponsive`, since the probe that refreshes the snapshot is the same probe that is timing
+out. If it fires alone, `account/rateLimits/read` is failing for that home while `account/read` still
+answers; the home keeps serving on unknown quota until the endpoint recovers.
+
+## CodexAccountDead
+
+Authentication failed on repeated clean probes spread over at least five minutes, so this is a
+revoked, banned or expired subscription and not a transient provider blip. The home is out of
+rotation and pool capacity is permanently reduced until an operator acts.
+
+Confirm the remaining homes cover the load, then re-authenticate or replace the subscription exactly
+as in **CodexHomeUnauthenticated**. Never bypass the quarantine: repeatedly hammering a rejected
+ChatGPT profile is itself a ban signal. The verdict clears automatically the moment one probe
+succeeds, so a repaired login needs no manual reset.
 
 ## CodexCalibrationPersistenceFailed
 

@@ -142,7 +142,7 @@ groups:
           component: codex-provider
         annotations:
           summary: 'Codex home {{ $labels.home }} is close to its subscription window limit'
-          description: 'This is a capacity-planning warning only. Traffic continues until a reported window reaches 100 percent or the provider reports its real limit.'
+          description: 'This is a capacity-planning warning only. Traffic continues until a reported window reaches 100 percent or the provider reports its real limit, provided the home stays responsive.'
           runbook: 'MONITORING.md#codexhomenearratelimit'
 
       - alert: CodexHomeRateLimited
@@ -155,6 +155,39 @@ groups:
           summary: 'Codex home {{ $labels.home }} left rotation on a full subscription window'
           description: 'The subscription window is reported full, so the gateway routes around this home until the window resets. Confirm the remaining homes absorb the load.'
           runbook: 'MONITORING.md#codexhomeratelimited'
+
+      - alert: CodexHomeUnresponsive
+        expr: claude_api_codex_home_transport_wedged{provider="openai"} == 1 or claude_api_codex_home_transport_degraded{provider="openai"} == 1
+        for: 3m
+        labels:
+          severity: critical
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} has stopped answering'
+          description: 'Its app-server generation is missing RPC deadlines, so the gateway no longer admits new turns to it. In-flight turns are left to finish. A wedged transport is recycled automatically; if this persists, the daemon for this home is not recovering and needs an operator.'
+          runbook: 'MONITORING.md#codexhomeunresponsive'
+
+      - alert: CodexHomeSnapshotStale
+        expr: claude_api_codex_home_snapshot_age_seconds{provider="openai"} > 600
+        for: 5m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} quota evidence has stopped refreshing'
+          description: 'The rate-limit snapshot is no longer being updated, so every quota gauge for this home reports a frozen value. The numbers can look perfectly healthy while the refresh path is broken — this alert is the only signal that distinguishes the two.'
+          runbook: 'MONITORING.md#codexhomesnapshotstale'
+
+      - alert: CodexAccountDead
+        expr: claude_api_codex_home_account_dead{provider="openai"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: codex-provider
+        annotations:
+          summary: 'Codex home {{ $labels.home }} subscription is corroborated dead'
+          description: 'Authentication failed on repeated clean probes spread over time, so this is a revoked, banned or expired subscription rather than a transient blip. Pool capacity is permanently reduced until an operator re-authenticates or replaces it.'
+          runbook: 'MONITORING.md#codexaccountdead'
 
       - alert: CodexCalibrationPersistenceFailed
         expr: claude_api_codex_home_calibration_persistence_ok{provider="openai"} == 0

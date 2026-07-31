@@ -237,7 +237,19 @@ A background health loop re-reads `account/read` and the rate-limit snapshot for
 completed auth store joins the operational pool without an engine restart. A device login expires
 with no traffic on it, so without that sweep a dead home would stay silently unusable until a
 customer request selected it. The same loop lets a re-authenticated home rejoin the rotation
-without an engine restart. The admin subscriptions page refreshes `/codex-subs` every 10 seconds
+without an engine restart. Homes are probed concurrently, so one unresponsive home costs the sweep
+its own deadline rather than the whole cadence, and a failed customer turn wakes the sweep
+immediately instead of waiting for the next tick.
+
+Health is a pure policy (`codex/health.rs`) over two independent axes, because they have different
+blast radii. The account axis (`healthy`/`suspect`/`dead`) belongs to the subscription and reaches
+its terminal verdict only on a series corroborated in both count and elapsed time. The transport
+axis (`responsive`/`degraded`/`wedged`) belongs to one app-server generation: a short streak of
+missed deadlines stops admitting new turns while in-flight turns finish, and only a
+time-corroborated streak replaces the generation. A missed deadline is therefore never ignored, but
+it also never kills the sibling turns multiplexed over the same child. Snapshot age is first class:
+stale quota evidence neither rejects a home nor wins a tie, while evidence that has never arrived
+ranks equal to fresh so the first home to report cannot become a permanent magnet. The admin subscriptions page refreshes `/codex-subs` every 10 seconds
 while visible; the default backend interval is aligned to that cadence.
 
 Each API request uses an ephemeral app-server thread. Public continuity is reconstructed from the
