@@ -171,7 +171,7 @@ impl CodexGateway {
                         request.service_tier.is_some(),
                     ))
                     .await;
-                    home.mark_healthy();
+                    home.mark_turn_healthy();
                     // Pin this conversation's cache lineage to the home that served it, so the next
                     // request in the conversation reuses its warm prompt cache.
                     if let Some(routing) = routing.as_mut() {
@@ -182,6 +182,11 @@ impl CodexGateway {
                 Err(error) => error,
             };
             home.note_turn_error(&error);
+            // The request that just failed is the freshest evidence the pool will ever get about
+            // this home. Hand it to the control plane immediately instead of letting the background
+            // sweep rediscover the problem a full cadence later — the Claude path does the same
+            // with `request_probe` + `probe_poke`.
+            self.poke_probe_if_requested().await;
             // A client fault is deterministic: another home would reject it identically.
             if matches!(
                 error,

@@ -185,7 +185,13 @@ pub async fn codex_health_loop(gateway: Arc<forward::CodexGateway>) {
     // Seed the last-good model snapshot without making startup or customer discovery wait on it.
     gateway.refresh_model_catalog().await;
     loop {
-        tokio::time::sleep(interval).await;
+        // Race the steady cadence against a forced-probe request from the data path. A healthy pool
+        // keeps its normal interval; a home that just failed a customer turn is re-checked at once,
+        // instead of staying routable until the next scheduled sweep.
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = gateway.probe_requested() => {}
+        }
         gateway.probe_health().await;
     }
 }

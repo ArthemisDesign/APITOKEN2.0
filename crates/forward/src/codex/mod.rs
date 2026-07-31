@@ -11,6 +11,7 @@ mod calibration;
 mod chat;
 mod config;
 mod discovery;
+mod health;
 mod history;
 mod openai_snapshot;
 mod process;
@@ -115,13 +116,6 @@ impl TurnRouting {
     }
 }
 
-/// A home whose device login no longer authenticates is quarantined rather than retried in a hot
-/// loop: repeatedly hammering a rejected profile is both useless and a ban signal. It matches the
-/// Claude `AUTH_QUARANTINE` for the same reason. The background health probe can clear it early.
-const AUTH_QUARANTINE_SECS: i64 = 900;
-/// A transport fault is the child's problem, not the account's. Cool briefly so a crash-looping
-/// child stops absorbing requests, but do not take its subscription capacity out of the pool.
-const TRANSPORT_COOL_SECS: i64 = 10;
 /// Fallback wait advertised to a client when every home is limited but no window published a reset.
 const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
@@ -219,6 +213,20 @@ pub struct CodexHomeStatus {
     pub id: String,
     pub process_live: bool,
     pub auth_ok: bool,
+    /// `healthy` | `suspect` | `dead` — liveness of the subscription, independent of the transport.
+    pub account_state: &'static str,
+    /// `responsive` | `degraded` | `wedged` — responsiveness of the current app-server generation.
+    /// A home can be `wedged` while its child process is perfectly alive: production hit exactly
+    /// that when a daemon was replaced underneath a still-running proxy bridge.
+    pub transport_state: &'static str,
+    /// The single verdict operator surfaces must trust: whether selection would route here now.
+    pub admitted: bool,
+    /// Why the gateway is refusing to route here, when it is. Named by the same policy that made
+    /// the decision, so an operator never has to reverse-engineer the verdict from raw gauges.
+    pub reject_reason: Option<&'static str>,
+    /// Age of the rate-limit snapshot. A growing age is the signal that the refresh path is broken,
+    /// which is invisible in the snapshot's own values.
+    pub snapshot_age_secs: Option<i64>,
     pub cooling_until: i64,
     pub inflight: usize,
     pub rate_limits: Option<CodexRateLimits>,
@@ -286,9 +294,10 @@ pub(crate) struct CodexHome {
     /// same authenticated process. This counter is only a load signal for selection and metrics.
     inflight: Arc<AtomicUsize>,
     turns_idle: Arc<Notify>,
-    cooling_until: AtomicI64,
-    /// Last known verdict of `account/read`. Startup and the health probe both write it.
-    auth_ok: AtomicBool,
+    /// Health and admission policy for this home, on two independent axes (account and transport).
+    /// A plain `std::sync::Mutex`: every critical section is a few field writes and is never held
+    /// across an await, so an async lock would only add cost.
+    health: std::sync::Mutex<health::HomeHealth>,
     /// Last durable cumulative official-price spend returned by the authority (or local total in
     /// an explicitly in-memory test gateway).
     spend_nano_total: AtomicI64,
@@ -318,8 +327,7 @@ impl CodexHome {
             retired: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(AtomicUsize::new(0)),
             turns_idle: Arc::new(Notify::new()),
-            cooling_until: AtomicI64::new(0),
-            auth_ok: AtomicBool::new(true),
+            health: std::sync::Mutex::new(health::HomeHealth::new()),
             spend_nano_total: AtomicI64::new(0),
             pending_spend_nano: AtomicI64::new(0),
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
@@ -349,32 +357,40 @@ impl CodexHome {
         self.inflight.load(Ordering::Relaxed)
     }
 
+    /// Copy of the current health state. Cheap, and it keeps the lock out of the caller's hands.
+    fn health(&self) -> health::HomeHealth {
+        *self.health.lock().expect("codex home health lock")
+    }
+
+    /// Fold one observation into this home's health.
+    fn note(&self, signal: health::HealthSignal) {
+        self.health
+            .lock()
+            .expect("codex home health lock")
+            .apply(signal, pool::now());
+    }
+
     fn cooling_until(&self) -> i64 {
-        self.cooling_until.load(Ordering::Relaxed)
+        self.health().cooling_until
     }
 
     fn is_cooling(&self, now: i64) -> bool {
-        self.cooling_until() > now
+        self.health().is_cooling(now)
     }
 
-    /// Extend cooling to at least `until`. Cooling is never shortened by a later, weaker signal.
-    fn cool_until(&self, until: i64) {
-        self.cooling_until.fetch_max(until, Ordering::Relaxed);
-    }
-
-    fn cool_for(&self, secs: i64) {
-        self.cool_until(pool::now().saturating_add(secs.max(1)));
-    }
-
-    /// A completed turn proves the home is healthy: clear cooling and restore the auth verdict.
+    /// A completed probe proves both axes at once: the account answered and the transport carried
+    /// the answer. Nothing else is allowed to clear health, so a home cannot be declared well by
+    /// anything weaker than actually serving.
     fn mark_healthy(&self) {
-        self.cooling_until.store(0, Ordering::Relaxed);
-        self.auth_ok.store(true, Ordering::Relaxed);
+        self.note(health::HealthSignal::ProbeOk);
     }
 
-    fn mark_auth_failed(&self) {
-        self.auth_ok.store(false, Ordering::Relaxed);
-        self.cool_for(AUTH_QUARANTINE_SECS);
+    /// A completed customer turn proves exactly the same two facts, earned from real traffic
+    /// instead of an extra probe. This is the Codex counterpart of the Claude path harvesting live
+    /// limits from every upstream response: healthy homes are kept verified by the work they do,
+    /// so the background sweep only has to carry homes that are idle or already suspicious.
+    fn mark_turn_healthy(&self) {
+        self.note(health::HealthSignal::TurnOk);
     }
 
     /// Take an in-flight turn slot on this home. This is a load counter, not an admission cap.
@@ -737,9 +753,36 @@ impl CodexHome {
         limits.max_used_percent().is_none_or(|used| used < 100)
     }
 
+    /// Normalise a protocol snapshot into the plain view the health policy consumes, so `health.rs`
+    /// stays free of transport types and remains testable without the app-server protocol.
+    fn limit_view(limits: Option<&CodexRateLimits>) -> Option<health::LimitView> {
+        limits.map(|limits| health::LimitView {
+            reached: limits.reached,
+            max_used_percent: limits.max_used_percent(),
+            observed_at: limits.observed_at,
+            soonest_reset_at: limits.soonest_reset_at_or_above(100),
+        })
+    }
+
+    /// Sweep cadence, used to express snapshot staleness in probe intervals rather than a constant.
+    fn probe_interval_secs(&self) -> i64 {
+        self.cfg.health_probe_interval_secs.max(1) as i64
+    }
+
+    /// This home's admission verdict right now.
+    fn admission(&self, limits: Option<&CodexRateLimits>, now: i64) -> health::Admission {
+        self.health().admission(
+            Self::limit_view(limits).as_ref(),
+            now,
+            self.probe_interval_secs(),
+        )
+    }
+
     async fn status(&self) -> CodexHomeStatus {
         let process_live = self.live_process().await.is_some();
         let rate_limits = self.observed_rate_limits().await;
+        let health = self.health();
+        let now = pool::now();
         let mut capacities = Vec::new();
         if let Some(limits) = &rate_limits {
             if let Some(window) = &limits.primary {
@@ -749,13 +792,30 @@ impl CodexHome {
                 capacities.push(self.capacity_report("secondary", window, limits.observed_at));
             }
         }
+        let admission = health.admission(
+            Self::limit_view(rate_limits.as_ref()).as_ref(),
+            now,
+            self.probe_interval_secs(),
+        );
         CodexHomeStatus {
             id: self.spec.id.clone(),
             process_live,
-            auth_ok: self.auth_ok.load(Ordering::Relaxed),
-            cooling_until: self.cooling_until(),
+            auth_ok: health.account != health::AccountState::Dead,
+            account_state: health.account.as_str(),
+            transport_state: health.transport.as_str(),
+            // Reported by the same predicate selection uses, so an operator surface can never show
+            // a home as routable while the gateway refuses to route to it.
+            admitted: admission.is_admitted(),
+            reject_reason: match admission {
+                health::Admission::Reject { reason, .. } => Some(reason.as_str()),
+                health::Admission::Admit { .. } => None,
+            },
+            cooling_until: health.cooling_until,
             inflight: self.inflight(),
             limit_reached: !Self::within_provider_limit(rate_limits.as_ref()),
+            snapshot_age_secs: rate_limits
+                .as_ref()
+                .map(|limits| now.saturating_sub(limits.observed_at)),
             rate_limits,
             spend_usd_total: self.spend_usd_total(),
             calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
@@ -931,6 +991,13 @@ pub struct CodexGateway {
     /// concurrent bursts with identical snapshots all collapse onto the lowest discovery order.
     selection_cursor: AtomicU64,
     abort_notify: Notify,
+    /// Raised when a home's health asks to be re-checked ahead of the sweep cadence.
+    ///
+    /// This is the Codex counterpart of the Claude pool's `request_probe` + `probe_poke` pair: a bad
+    /// outcome on the data path immediately queues a control-plane check instead of waiting a full
+    /// interval for the background loop to notice. Without it, the only thing that could discover a
+    /// silent home was the sweep that the silent home was already stalling.
+    probe_poke: Notify,
     background_tasks: Arc<Semaphore>,
     rediscover_lock: Mutex<()>,
     /// Rediscovered on every health tick, so an account the authbot finishes buying joins the pool
@@ -1004,6 +1071,7 @@ impl CodexGateway {
             abort_turns: AtomicBool::new(false),
             selection_cursor: AtomicU64::new(0),
             abort_notify: Notify::new(),
+            probe_poke: Notify::new(),
             background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
             rediscover_lock: Mutex::new(()),
             homes: RwLock::new(homes),
@@ -1116,6 +1184,37 @@ impl CodexGateway {
 
     pub fn config(&self) -> &CodexConfig {
         &self.cfg
+    }
+
+    /// Wake the background sweep early when any home asked to be re-checked.
+    ///
+    /// Called on the data path after a turn failure: the request that just hit the problem is the
+    /// freshest evidence the pool will get, and waiting a full cadence to act on it is exactly how
+    /// a wedged home kept receiving customer traffic.
+    pub(crate) async fn poke_probe_if_requested(&self) {
+        for home in self.homes().await {
+            if home.health().wants_probe() {
+                self.probe_poke.notify_one();
+                return;
+            }
+        }
+    }
+
+    /// Await a forced-probe request. The composition layer races this against the sweep interval,
+    /// so a healthy pool keeps its steady cadence while a suspicious one is re-checked immediately.
+    pub async fn probe_requested(&self) {
+        self.probe_poke.notified().await;
+    }
+
+    /// Clear pending forced-probe requests as the sweep picks them up, so one bad turn cannot make
+    /// the loop spin: the request is consumed whether or not the probe ultimately succeeds.
+    async fn take_probe_requests(&self) {
+        for home in self.homes().await {
+            home.health
+                .lock()
+                .expect("codex home health lock")
+                .take_probe_request();
+        }
     }
 
     pub(crate) async fn cached_model_catalog(&self) -> Option<HashSet<String>> {
@@ -1277,19 +1376,21 @@ impl CodexGateway {
             if exclude.iter().any(|id| id == home.id()) {
                 continue;
             }
-            if home.is_cooling(now) {
-                soonest = Some(
-                    soonest.map_or(home.cooling_until(), |v: i64| v.min(home.cooling_until())),
-                );
-                continue;
-            }
+            // One admission verdict for every reason a home can be unroutable: a dead account, a
+            // wedged or degraded transport, cooling, or a fresh full window. Previously each of
+            // these was decided at a different place with a different rule, and a home that had
+            // simply stopped answering matched none of them.
             let limits = home.rate_limits().await;
-            if !CodexHome::within_provider_limit(limits.as_ref()) {
-                let ready_at = home.ready_at().await;
-                soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
-                continue;
+            match home.admission(limits.as_ref(), now) {
+                health::Admission::Admit { snapshot_stale } => {
+                    candidates.push((snapshot_stale, home.inflight(), home.clone()));
+                }
+                health::Admission::Reject { ready_at, .. } => {
+                    if let Some(ready_at) = ready_at {
+                        soonest = Some(soonest.map_or(ready_at, |v: i64| v.min(ready_at)));
+                    }
+                }
             }
-            candidates.push((home.inflight(), home.clone()));
         }
         if candidates.is_empty() {
             return HomeSelection::Unavailable { ready_at: soonest };
@@ -1304,41 +1405,48 @@ impl CodexGateway {
             self.selection_cursor.load(Ordering::Relaxed)
         } as usize
             % width;
-        candidates.sort_by(|(inflight_a, home_a), (inflight_b, home_b)| {
-            let rotated_a = (home_a.order() + width - cursor) % width;
-            let rotated_b = (home_b.order() + width - cursor) % width;
-            inflight_a
-                .cmp(inflight_b)
-                .then_with(|| rotated_a.cmp(&rotated_b))
-        });
+        candidates.sort_by(
+            |(stale_a, inflight_a, home_a), (stale_b, inflight_b, home_b)| {
+                let rotated_a = (home_a.order() + width - cursor) % width;
+                let rotated_b = (home_b.order() + width - cursor) % width;
+                // A home whose quota evidence has gone stale is still routable — the snapshot is
+                // observational and must never become a hard dependency — but it must never win a tie
+                // against a home whose evidence is current. A frozen reading looks arbitrarily
+                // optimistic, and ranking on it is how one unresponsive home absorbed the whole pool.
+                stale_a
+                    .cmp(stale_b)
+                    .then_with(|| inflight_a.cmp(inflight_b))
+                    .then_with(|| rotated_a.cmp(&rotated_b))
+            },
+        );
         // A resolved conversation is a hard first choice. For a new shared root, seed a cold home
         // until two copies exist, then prefer the least-loaded warm home.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, home)) = candidates.iter().find(|(_, home)| home.id() == id) {
+            if let Some((_, _, home)) = candidates.iter().find(|(_, _, home)| home.id() == id) {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
             let warm_count = candidates
                 .iter()
-                .filter(|(_, home)| warm.iter().any(|id| id == home.id()))
+                .filter(|(_, _, home)| warm.iter().any(|id| id == home.id()))
                 .count();
             let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
                 candidates
                     .iter()
-                    .position(|(_, home)| !warm.iter().any(|id| id == home.id()))
+                    .position(|(_, _, home)| !warm.iter().any(|id| id == home.id()))
             } else {
                 candidates
                     .iter()
-                    .position(|(_, home)| warm.iter().any(|id| id == home.id()))
+                    .position(|(_, _, home)| warm.iter().any(|id| id == home.id()))
             }
             .unwrap_or(0);
-            ordered.push(candidates[primary].1.clone());
+            ordered.push(candidates[primary].2.clone());
         }
         // If the primary choice is currently sampling, another warm copy is the next best spill;
         // remaining candidates stay in global capacity order.
         if place_cache_root {
-            for (_, home) in &candidates {
+            for (_, _, home) in &candidates {
                 if warm.iter().any(|id| id == home.id())
                     && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
                 {
@@ -1346,7 +1454,7 @@ impl CodexGateway {
                 }
             }
         }
-        for (_, home) in candidates {
+        for (_, _, home) in candidates {
             if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
                 ordered.push(home);
             }
@@ -1455,27 +1563,61 @@ impl CodexGateway {
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        for home in &self.homes().await {
-            let process = match home.process().await {
-                Ok(process) => process,
-                Err(error) => {
-                    home.note_process_error(&error);
-                    continue;
+        self.take_probe_requests().await;
+        // Probe every home concurrently.
+        //
+        // A sequential sweep costs the sum of its slowest homes: in production two unresponsive
+        // homes each burned a full RPC deadline, stretching a ten-second cadence past forty seconds
+        // and starving the *healthy* home's snapshot of refreshes. One sick subscription must not
+        // degrade the observability of the rest of the pool, so the sweep now costs its slowest
+        // home rather than their sum.
+        let probes = self
+            .homes()
+            .await
+            .into_iter()
+            .map(|home| async move {
+                let process = match home.process().await {
+                    Ok(process) => process,
+                    Err(error) => {
+                        home.note_process_error(&error);
+                        return;
+                    }
+                };
+                match process.probe().await {
+                    Ok(()) => home.mark_healthy(),
+                    Err(error) => {
+                        // A deadline is recorded like any other failure. It still changes no verdict
+                        // on its own — `health.rs` requires a streak to close admission and a
+                        // time-corroborated streak to recycle — but it is no longer discarded.
+                        // Silently dropping it is what let a home that had stopped answering stay
+                        // routable indefinitely: the one failure mode with no consequence became
+                        // the one that took the pool down.
+                        let deadline = matches!(error, ProcessError::Timeout(_));
+                        home.note_process_error(&error);
+                        if deadline {
+                            // Attribute the stall to a home. The previous log named only the RPC
+                            // stage, so an operator could see that *something* was stuck but not
+                            // which subscription, and had to infer it from snapshot-age metrics.
+                            eprintln!(
+                                "Codex home {} probe timed out [{}] (streak {})",
+                                home.id(),
+                                error.diagnostic_class(),
+                                home.health().deadline_streak
+                            );
+                        }
+                        // Replace the generation only once the policy says it is provably unusable.
+                        // Recycling on a single deadline would kill every sibling turn multiplexed
+                        // over the same child; recycling never is how a bridge to a replaced daemon
+                        // survived for hours while still reporting itself live.
+                        if home.health().needs_recycle() {
+                            eprintln!("Codex home {} transport wedged; recycling", home.id());
+                            home.invalidate(&process).await;
+                        }
+                    }
                 }
-            };
-            match process.probe().await {
-                Ok(()) => home.mark_healthy(),
-                Err(ProcessError::Timeout(stage)) => {
-                    // Observational timeout: keep both the authenticated child and its admission
-                    // state intact. A later successful request/probe clears the uncertainty.
-                    eprintln!("Codex health probe timed out during {stage}");
-                }
-                Err(error) => {
-                    home.note_process_error(&error);
-                    home.invalidate(&process).await;
-                }
-            }
-        }
+            })
+            .collect::<Vec<_>>();
+        futures_util::future::join_all(probes).await;
         // Model discovery is intentionally best-effort and outside customer request handling. A
         // stale last-good snapshot (or the configured catalog before the first success) is safer
         // than turning an app-server catalog hiccup into a public 503 on every SDK startup.
@@ -1492,11 +1634,11 @@ impl CodexGateway {
         let mut soonest: Option<i64> = None;
         for home in &pool_homes {
             let status = home.status().await;
-            let usable = status.process_live
-                && status.auth_ok
-                && !home.is_cooling(now)
-                && CodexHome::within_provider_limit(status.rate_limits.as_ref());
-            if usable {
+            // `available` now means exactly "selection would route here", because it is computed by
+            // the same predicate selection uses. It previously re-derived its own weaker rule, so a
+            // home that had stopped answering still counted as available — which is why the
+            // `CodexNoAvailableHomes` alert stayed silent while the pool served nothing.
+            if status.process_live && status.admitted {
                 available += 1;
             } else {
                 let ready_at = home.ready_at().await;
@@ -1523,42 +1665,55 @@ impl CodexGateway {
 }
 
 impl CodexHome {
-    /// Apply the cooling policy for a failure observed outside a turn (startup, probe, discovery).
+    /// Translate a transport-level failure into the health signal it actually proves.
+    ///
+    /// The mapping is the whole point: previously each error class carried its own ad-hoc cooling
+    /// constant, and a deadline carried none at all. Now every class names the evidence it provides
+    /// and the policy in `health.rs` decides what that evidence is worth.
     fn note_process_error(&self, error: &ProcessError) {
-        match error {
-            ProcessError::AuthenticationRequired | ProcessError::SubscriptionRequired => {
-                self.mark_auth_failed()
+        let signal = match error {
+            // A subscription the provider says is absent needs an operator, not corroboration.
+            ProcessError::SubscriptionRequired => {
+                health::HealthSignal::AuthRejected { permanent: true }
+            }
+            ProcessError::AuthenticationRequired => {
+                health::HealthSignal::AuthRejected { permanent: false }
             }
             ProcessError::UsageLimitExceeded { retry_after } => {
-                self.cool_for(retry_after.unwrap_or(DEFAULT_LIMIT_RETRY_SECS) as i64)
+                health::HealthSignal::UsageLimited {
+                    retry_after_secs: Some(retry_after.unwrap_or(DEFAULT_LIMIT_RETRY_SECS) as i64),
+                }
             }
+            // A missed deadline is now evidence rather than nothing. On its own it still changes
+            // no verdict; a streak of them closes admission, and a corroborated streak recycles.
+            ProcessError::Timeout(_) => health::HealthSignal::Deadline,
             // A configuration or attestation fault is not transient and must not be retried in a
-            // hot loop; the deployment gate is the place that fixes it.
+            // hot loop; the deployment gate is the place that fixes it. Treated as a permanent
+            // account-level verdict so the home stays out until an operator acts.
             ProcessError::HomeInUse
             | ProcessError::HomeLockUnavailable
             | ProcessError::InvalidConfig(_)
             | ProcessError::DigestMismatch { .. }
             | ProcessError::VersionMismatch { .. }
-            | ProcessError::Disabled => self.cool_for(AUTH_QUARANTINE_SECS),
-            _ => self.cool_for(TRANSPORT_COOL_SECS),
-        }
+            | ProcessError::Disabled => health::HealthSignal::AuthRejected { permanent: true },
+            // EOF, protocol violation, or a generation that is provably gone.
+            _ => health::HealthSignal::TransportClosed,
+        };
+        self.note(signal);
     }
 
     /// Blame classification for a failed turn, mirroring the Claude rotation policy.
     ///
     /// A usage limit or a dead login belongs to this home's subscription, so it leaves the rotation
     /// until its window resets or an operator re-authenticates. A client fault belongs to the
-    /// request and must not cool a healthy account — otherwise one malformed request could quietly
+    /// request and must not stain a healthy account — otherwise one malformed request could quietly
     /// drain the pool.
     pub(crate) fn note_turn_error(&self, error: &ProcessError) {
         match error {
+            // Deterministic client faults: another home would reject them identically.
             ProcessError::BadRequest
             | ProcessError::ContextWindowExceeded
-            | ProcessError::Rpc { .. }
-            // RPC deadlines are isolated to the request and do not prove either an account or
-            // transport fault. Cooling the home here would turn one slow client request into a
-            // provider-wide admission outage even though its shared process remains live.
-            | ProcessError::Timeout(_) => {}
+            | ProcessError::Rpc { .. } => {}
             other => self.note_process_error(other),
         }
     }

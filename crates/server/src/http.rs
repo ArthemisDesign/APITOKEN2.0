@@ -886,7 +886,13 @@ async fn metrics(
              # TYPE claude_api_codex_home_window_confidence_ratio gauge\n\
              # TYPE claude_api_codex_home_window_data_age_seconds gauge\n\
              # TYPE claude_api_codex_home_window_estimate_available gauge\n\
-             # TYPE claude_api_codex_home_window_samples gauge"
+             # TYPE claude_api_codex_home_window_samples gauge\n\
+             # TYPE claude_api_codex_home_admitted gauge\n\
+             # TYPE claude_api_codex_home_account_dead gauge\n\
+             # TYPE claude_api_codex_home_account_suspect gauge\n\
+             # TYPE claude_api_codex_home_transport_degraded gauge\n\
+             # TYPE claude_api_codex_home_transport_wedged gauge\n\
+             # TYPE claude_api_codex_home_snapshot_age_seconds gauge"
         );
         for home in &status.homes {
             let index = &home.id;
@@ -898,7 +904,12 @@ async fn metrics(
                  claude_api_codex_home_inflight_turns{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_limit_reached{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_spend_usd_total{{home=\"{index}\"}} {:.4}\n\
-                 claude_api_codex_home_calibration_persistence_ok{{home=\"{index}\"}} {}",
+                 claude_api_codex_home_calibration_persistence_ok{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_admitted{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_account_dead{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_account_suspect{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_transport_degraded{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_transport_wedged{{home=\"{index}\"}} {}",
                 u8::from(home.process_live),
                 u8::from(home.auth_ok),
                 home.cooling_until,
@@ -906,7 +917,21 @@ async fn metrics(
                 u8::from(home.limit_reached),
                 home.spend_usd_total,
                 u8::from(home.calibration_persistence_ok),
+                u8::from(home.admitted),
+                u8::from(home.account_state == "dead"),
+                u8::from(home.account_state == "suspect"),
+                u8::from(home.transport_state == "degraded"),
+                u8::from(home.transport_state == "wedged"),
             );
+            // Snapshot age is the only signal that distinguishes "quota evidence says X" from
+            // "quota evidence stopped arriving". A frozen snapshot keeps reporting its last value,
+            // so without this gauge a broken refresh path is indistinguishable from a healthy one.
+            if let Some(age) = home.snapshot_age_secs {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_home_snapshot_age_seconds{{home=\"{index}\"}} {age}"
+                );
+            }
             if let Some(used) = home
                 .rate_limits
                 .as_ref()
@@ -1984,6 +2009,11 @@ mod tests {
                 id: "home-1".to_string(),
                 process_live: true,
                 auth_ok: true,
+                account_state: "healthy",
+                transport_state: "responsive",
+                admitted: true,
+                reject_reason: None,
+                snapshot_age_secs: Some(5),
                 cooling_until: 0,
                 inflight: 0,
                 rate_limits: None,
