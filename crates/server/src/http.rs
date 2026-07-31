@@ -894,7 +894,8 @@ async fn metrics(
              # TYPE claude_api_codex_home_account_suspect gauge\n\
              # TYPE claude_api_codex_home_transport_degraded gauge\n\
              # TYPE claude_api_codex_home_transport_wedged gauge\n\
-             # TYPE claude_api_codex_home_snapshot_age_seconds gauge"
+             # TYPE claude_api_codex_home_snapshot_age_seconds gauge\n\
+             # TYPE claude_api_codex_home_ready_published gauge"
         );
         for home in &status.homes {
             let index = &home.id;
@@ -911,7 +912,8 @@ async fn metrics(
                  claude_api_codex_home_account_dead{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_account_suspect{{home=\"{index}\"}} {}\n\
                  claude_api_codex_home_transport_degraded{{home=\"{index}\"}} {}\n\
-                 claude_api_codex_home_transport_wedged{{home=\"{index}\"}} {}",
+                 claude_api_codex_home_transport_wedged{{home=\"{index}\"}} {}\n\
+                 claude_api_codex_home_ready_published{{home=\"{index}\"}} {}",
                 u8::from(home.process_live),
                 u8::from(home.auth_ok),
                 home.cooling_until,
@@ -924,6 +926,7 @@ async fn metrics(
                 u8::from(home.account_state == "suspect"),
                 u8::from(home.transport_state == "degraded"),
                 u8::from(home.transport_state == "wedged"),
+                u8::from(home.ready_published),
             );
             // Snapshot age is the only signal that distinguishes "quota evidence says X" from
             // "quota evidence stopped arriving". A frozen snapshot keeps reporting its last value,
@@ -2019,6 +2022,7 @@ mod tests {
                 account_state: "healthy",
                 transport_state: "responsive",
                 admitted: true,
+                ready_published: true,
                 reject_reason: None,
                 snapshot_age_secs: Some(5),
                 cooling_until: 0,

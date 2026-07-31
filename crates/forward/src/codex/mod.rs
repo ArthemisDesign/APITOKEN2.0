@@ -232,6 +232,10 @@ pub struct CodexHomeStatus {
     /// Stable, non-identifying id. Never a path and never an account identity.
     pub id: String,
     pub process_live: bool,
+    /// This generation has published its readiness marker for the home. The deploy gate needs every
+    /// home ready on the candidate before it will cut over, so this is the signal that predicts a
+    /// blocked deploy — and the only one that was missing when a deploy was in fact blocked.
+    pub ready_published: bool,
     pub auth_ok: bool,
     /// `healthy` | `suspect` | `dead` — liveness of the subscription, independent of the transport.
     pub account_state: &'static str,
@@ -850,7 +854,13 @@ impl CodexHome {
     }
 
     async fn status(&self) -> CodexHomeStatus {
-        let process_live = self.live_process().await.is_some();
+        let live = self.live_process().await;
+        let process_live = live.is_some();
+        // Whether this generation has published its readiness for the home. The deploy gate admits
+        // a cutover only when the candidate matches the old generation home for home, so a single
+        // home that never publishes blocks every deploy — which is exactly what happened, and
+        // finding it meant counting marker files over SSH because nothing exposed it.
+        let ready_published = live.map(|process| process.is_ready()).unwrap_or(false);
         let rate_limits = self.observed_rate_limits().await;
         let health = self.health();
         let now = pool::now();
@@ -871,6 +881,7 @@ impl CodexHome {
         CodexHomeStatus {
             id: self.spec.id.clone(),
             process_live,
+            ready_published,
             auth_ok: health.account != health::AccountState::Dead,
             account_state: health.account.as_str(),
             transport_state: health.transport.as_str(),
