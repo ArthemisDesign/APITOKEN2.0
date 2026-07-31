@@ -28,8 +28,7 @@ const MIGRATION_0011: &str =
     include_str!("../migrations_pg/0011_codex_calibration_anchor_ready.sql");
 const MIGRATION_0012: &str = include_str!("../migrations_pg/0012_codex_home_health.sql");
 const MIGRATION_0013: &str = include_str!("../migrations_pg/0013_gemini_window_calibration.sql");
-const MIGRATION_0014: &str =
-    include_str!("../migrations_pg/0014_gemini_workload_calibration.sql");
+const MIGRATION_0014: &str = include_str!("../migrations_pg/0014_gemini_workload_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
 pub const CURRENT_SCHEMA_VERSION: i64 = 14;
@@ -2228,7 +2227,7 @@ impl PgStore {
             "SELECT profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
                anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
                observed_at,sum_used_sq::text,sum_used_spend_nano::text,\
-               observed_fraction_units,samples,current_capacity_nano,current_low_nano,\
+               observed_fraction_units,observed_spend_nano,samples,current_capacity_nano,current_low_nano,\
                current_high_nano,current_confidence_bp,last_measured_at,estimator_version,\
                version,updated_ts FROM gemini_window_calibrations \
              WHERE profile_id=$1 AND bucket_id=$2",
@@ -2248,15 +2247,16 @@ impl PgStore {
             sum_used_sq: row.get(10),
             sum_used_spend_nano: row.get(11),
             observed_fraction_units: row.get(12),
-            samples: row.get(13),
-            current_capacity_nano: row.get(14),
-            current_low_nano: row.get(15),
-            current_high_nano: row.get(16),
-            current_confidence_bp: row.get(17),
-            last_measured_at: row.get(18),
-            estimator_version: row.get(19),
-            version: row.get(20),
-            updated_ts: row.get(21),
+            observed_spend_nano: row.get(13),
+            samples: row.get(14),
+            current_capacity_nano: row.get(15),
+            current_low_nano: row.get(16),
+            current_high_nano: row.get(17),
+            current_confidence_bp: row.get(18),
+            last_measured_at: row.get(19),
+            estimator_version: row.get(20),
+            version: row.get(21),
+            updated_ts: row.get(22),
         });
         if let Some(row) = &row {
             crate::validate_gemini_calibration_row(row)?;
@@ -2306,11 +2306,11 @@ impl PgStore {
                 "INSERT INTO gemini_window_calibrations( \
                    profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
                    anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
-                   observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
-                   current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
-                   last_measured_at,estimator_version,updated_ts,version \
+                   observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,\
+                   observed_spend_nano,samples,current_capacity_nano,current_low_nano,current_high_nano,\
+                   current_confidence_bp,last_measured_at,estimator_version,updated_ts,version \
                  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CAST(CAST($11 AS text) AS numeric),\
-                          CAST(CAST($12 AS text) AS numeric),$13,$14,$15,$16,$17,$18,$19,$20,$21,1) \
+                          CAST(CAST($12 AS text) AS numeric),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,1) \
                  ON CONFLICT(profile_id,bucket_id) DO NOTHING RETURNING version",
                 &[
                     &state.profile_id,
@@ -2326,6 +2326,7 @@ impl PgStore {
                     &state.sum_used_sq,
                     &state.sum_used_spend_nano,
                     &state.observed_fraction_units,
+                    &state.observed_spend_nano,
                     &state.samples,
                     &state.current_capacity_nano,
                     &state.current_low_nano,
@@ -2343,10 +2344,11 @@ impl PgStore {
                    anchor_ready=$8,used_fraction_units=$9,observed_at=$10,\
                    sum_used_sq=CAST(CAST($11 AS text) AS numeric),\
                    sum_used_spend_nano=CAST(CAST($12 AS text) AS numeric),\
-                   observed_fraction_units=$13,samples=$14,current_capacity_nano=$15,\
-                   current_low_nano=$16,current_high_nano=$17,current_confidence_bp=$18,\
-                   last_measured_at=$19,estimator_version=$20,updated_ts=$21,version=version+1 \
-                 WHERE profile_id=$1 AND bucket_id=$2 AND version=$22 RETURNING version",
+                   observed_fraction_units=$13,observed_spend_nano=$14,samples=$15,\
+                   current_capacity_nano=$16,current_low_nano=$17,current_high_nano=$18,\
+                   current_confidence_bp=$19,last_measured_at=$20,estimator_version=$21,\
+                   updated_ts=$22,version=version+1 \
+                 WHERE profile_id=$1 AND bucket_id=$2 AND version=$23 RETURNING version",
                 &[
                     &state.profile_id,
                     &state.bucket_id,
@@ -2361,6 +2363,7 @@ impl PgStore {
                     &state.sum_used_sq,
                     &state.sum_used_spend_nano,
                     &state.observed_fraction_units,
+                    &state.observed_spend_nano,
                     &state.samples,
                     &state.current_capacity_nano,
                     &state.current_low_nano,
@@ -4618,6 +4621,7 @@ mod tests {
             sum_used_sq: i128::MAX.to_string(),
             sum_used_spend_nano: "0".into(),
             observed_fraction_units: 0,
+            observed_spend_nano: 12_345,
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -4654,6 +4658,7 @@ mod tests {
             .unwrap();
         assert_eq!(restored_gemini.version, 1);
         assert_eq!(restored_gemini.sum_used_sq, i128::MAX.to_string());
+        assert_eq!(restored_gemini.observed_spend_nano, 12_345);
         assert_eq!(
             pg.load_gemini_window_observations("stage2-gemini-profile", "gemini-5h")
                 .unwrap(),

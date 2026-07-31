@@ -50,6 +50,10 @@ pub struct GeminiWindowCapacityReport {
     pub remaining_usd: Option<f64>,
     pub low_usd: Option<f64>,
     pub high_usd: Option<f64>,
+    pub remaining_low_usd: Option<f64>,
+    pub remaining_high_usd: Option<f64>,
+    pub observed_spend_nano: i64,
+    pub observed_fraction_units: i64,
     pub source: &'static str,
     pub confidence: f64,
     pub samples: i64,
@@ -722,6 +726,16 @@ impl GeminiProfile {
                         .map(nano_to_usd),
                     low_usd: estimate.and_then(|value| value.low_nano).map(nano_to_usd),
                     high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
+                    remaining_low_usd: calibration
+                        .and_then(|value| value.remaining_low_nano(used))
+                        .map(nano_to_usd),
+                    remaining_high_usd: calibration
+                        .and_then(|value| value.remaining_high_nano(used))
+                        .map(nano_to_usd),
+                    observed_spend_nano: calibration
+                        .map_or(0, |value| value.row().observed_spend_nano),
+                    observed_fraction_units: calibration
+                        .map_or(0, |value| value.row().observed_fraction_units),
                     source: estimate.map_or("unknown", |value| value.source.as_str()),
                     confidence: estimate.map_or(0.0, |value| value.confidence_bp as f64 / 10_000.0),
                     samples: calibration.map_or(0, |value| value.row().samples),

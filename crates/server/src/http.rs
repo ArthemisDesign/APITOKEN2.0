@@ -1230,6 +1230,10 @@ async fn metrics(
              # TYPE claude_api_gemini_profile_window_remaining_usd gauge\n\
              # TYPE claude_api_gemini_profile_window_capacity_low_usd gauge\n\
              # TYPE claude_api_gemini_profile_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_remaining_low_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_remaining_high_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_observed_spend_usd gauge\n\
+             # TYPE claude_api_gemini_profile_window_observed_fraction_units gauge\n\
              # TYPE claude_api_gemini_profile_window_confidence_ratio gauge\n\
              # TYPE claude_api_gemini_profile_window_samples gauge\n\
              # TYPE claude_api_gemini_profile_model_cooling_until_seconds gauge\n\
@@ -1298,20 +1302,45 @@ async fn metrics(
             body,
             "# TYPE claude_api_gemini_window_capacity_usd gauge\n\
              # TYPE claude_api_gemini_window_remaining_usd gauge\n\
+             # TYPE claude_api_gemini_window_capacity_low_usd gauge\n\
+             # TYPE claude_api_gemini_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_gemini_window_remaining_low_usd gauge\n\
+             # TYPE claude_api_gemini_window_remaining_high_usd gauge\n\
              # TYPE claude_api_gemini_window_measured_profiles gauge\n\
              # TYPE claude_api_gemini_window_observed_profiles gauge"
         );
-        for (duration, (cap, remaining, measured, observed)) in gemini_window_totals(&status) {
+        for (duration, total) in gemini_window_totals(&status) {
             let _ = writeln!(
                 body,
-                "claude_api_gemini_window_measured_profiles{{window_minutes=\"{duration}\"}} {measured}\n\
-                 claude_api_gemini_window_observed_profiles{{window_minutes=\"{duration}\"}} {observed}"
+                "claude_api_gemini_window_measured_profiles{{window_minutes=\"{duration}\"}} {}\n\
+                 claude_api_gemini_window_observed_profiles{{window_minutes=\"{duration}\"}} {}",
+                total.measured_profiles, total.observed_profiles,
             );
-            if measured > 0 {
+            if total.measured_profiles > 0 {
                 let _ = writeln!(
                     body,
-                    "claude_api_gemini_window_capacity_usd{{window_minutes=\"{duration}\"}} {cap:.6}\n\
-                     claude_api_gemini_window_remaining_usd{{window_minutes=\"{duration}\"}} {remaining:.6}"
+                    "claude_api_gemini_window_capacity_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
+                     claude_api_gemini_window_remaining_usd{{window_minutes=\"{duration}\"}} {:.6}",
+                    total.cap_usd,
+                    total.remaining_usd,
+                );
+            }
+            if total.low_profiles == total.measured_profiles && total.measured_profiles > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_window_capacity_low_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
+                     claude_api_gemini_window_remaining_low_usd{{window_minutes=\"{duration}\"}} {:.6}",
+                    total.low_usd,
+                    total.remaining_low_usd,
+                );
+            }
+            if total.high_profiles == total.measured_profiles && total.measured_profiles > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_window_capacity_high_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
+                     claude_api_gemini_window_remaining_high_usd{{window_minutes=\"{duration}\"}} {:.6}",
+                    total.high_usd,
+                    total.remaining_high_usd,
                 );
             }
         }
@@ -1400,13 +1429,17 @@ fn write_gemini_profile_capacity_metrics(
              claude_api_gemini_profile_window_data_age_seconds{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}\n\
              claude_api_gemini_profile_window_estimate_available{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {}\n\
              claude_api_gemini_profile_window_confidence_ratio{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {:.4}\n\
-             claude_api_gemini_profile_window_samples{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}",
+             claude_api_gemini_profile_window_samples{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}\n\
+             claude_api_gemini_profile_window_observed_spend_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {:.9}\n\
+             claude_api_gemini_profile_window_observed_fraction_units{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}",
             capacity.resets_at,
             capacity.data_age_seconds,
             capacity.source,
             u8::from(capacity.cap_usd.is_some()),
             capacity.confidence,
             capacity.samples,
+            capacity.observed_spend_nano as f64 / 1e9,
+            capacity.observed_fraction_units,
         );
         // Unknown capacity has no dollar time series. Publishing a numeric zero before the first
         // complete interval would be indistinguishable from a genuinely measured zero-dollar cap.
@@ -1429,6 +1462,18 @@ fn write_gemini_profile_capacity_metrics(
             let _ = writeln!(
                 body,
                 "claude_api_gemini_profile_window_capacity_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
+            );
+        }
+        if let Some(low) = capacity.remaining_low_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_window_remaining_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
+            );
+        }
+        if let Some(high) = capacity.remaining_high_usd {
+            let _ = writeln!(
+                body,
+                "claude_api_gemini_profile_window_remaining_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
             );
         }
     }
@@ -1461,18 +1506,46 @@ fn codex_window_totals(
     totals
 }
 
+#[derive(Default)]
+struct GeminiWindowTotal {
+    cap_usd: f64,
+    remaining_usd: f64,
+    low_usd: f64,
+    high_usd: f64,
+    remaining_low_usd: f64,
+    remaining_high_usd: f64,
+    measured_profiles: usize,
+    observed_profiles: usize,
+    low_profiles: usize,
+    high_profiles: usize,
+}
+
 fn gemini_window_totals(
     status: &forward::GeminiOperationalStatus,
-) -> BTreeMap<i64, (f64, f64, usize, usize)> {
-    let mut totals: BTreeMap<i64, (f64, f64, usize, usize)> = BTreeMap::new();
+) -> BTreeMap<i64, GeminiWindowTotal> {
+    let mut totals: BTreeMap<i64, GeminiWindowTotal> = BTreeMap::new();
     for profile in &status.profiles {
         for capacity in &profile.capacities {
             let total = totals.entry(capacity.window_minutes).or_default();
-            total.3 += 1;
+            total.observed_profiles += 1;
             if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
-                total.0 += cap;
-                total.1 += remaining;
-                total.2 += 1;
+                total.cap_usd += cap;
+                total.remaining_usd += remaining;
+                total.measured_profiles += 1;
+                if let (Some(low), Some(remaining_low)) =
+                    (capacity.low_usd, capacity.remaining_low_usd)
+                {
+                    total.low_usd += low;
+                    total.remaining_low_usd += remaining_low;
+                    total.low_profiles += 1;
+                }
+                if let (Some(high), Some(remaining_high)) =
+                    (capacity.high_usd, capacity.remaining_high_usd)
+                {
+                    total.high_usd += high;
+                    total.remaining_high_usd += remaining_high;
+                    total.high_profiles += 1;
+                }
             }
         }
     }
@@ -2097,6 +2170,11 @@ async fn gemini_subs(
         "available": status.available,
         "inflight": status.profiles.iter().map(|profile| profile.inflight).sum::<usize>(),
         "soonest_ready": status.soonest_ready,
+        "capacity_semantics": {
+            "kind": "realized_workload_api_equivalent",
+            "fixed_subscription_nominal": false,
+            "source": "workload_blend",
+        },
         "window_totals": window_totals,
         "models": models,
         "profiles": profiles,
@@ -2169,6 +2247,12 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
                     "remaining_usd": round_opt(window.remaining_usd),
                     "low_usd": round_opt(window.low_usd),
                     "high_usd": round_opt(window.high_usd),
+                    "remaining_low_usd": round_opt(window.remaining_low_usd),
+                    "remaining_high_usd": round_opt(window.remaining_high_usd),
+                    "observed_spend_nano": window.observed_spend_nano.to_string(),
+                    "observed_spend_usd": round(window.observed_spend_nano as f64 / 1e9),
+                    "observed_fraction_units": window.observed_fraction_units,
+                    "workload_dependent": true,
                     "source": window.source,
                     "confidence": window.confidence,
                     "samples": window.samples,
@@ -2197,13 +2281,24 @@ fn gemini_window_total_values(status: &forward::GeminiOperationalStatus) -> Vec<
     let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
     gemini_window_totals(status)
         .into_iter()
-        .map(|(duration, (cap, remaining, measured, observed))| {
+        .map(|(duration, total)| {
+            let measured = total.measured_profiles;
             json!({
                 "window_minutes": duration,
-                "cap_usd": (measured > 0).then(|| round(cap)),
-                "remaining_usd": (measured > 0).then(|| round(remaining)),
+                "cap_usd": (measured > 0).then(|| round(total.cap_usd)),
+                "remaining_usd": (measured > 0).then(|| round(total.remaining_usd)),
+                "low_usd": (measured > 0 && total.low_profiles == measured)
+                    .then(|| round(total.low_usd)),
+                "high_usd": (measured > 0 && total.high_profiles == measured)
+                    .then(|| round(total.high_usd)),
+                "remaining_low_usd": (measured > 0 && total.low_profiles == measured)
+                    .then(|| round(total.remaining_low_usd)),
+                "remaining_high_usd": (measured > 0 && total.high_profiles == measured)
+                    .then(|| round(total.remaining_high_usd)),
                 "measured_profiles": measured,
-                "observed_profiles": observed,
+                "observed_profiles": total.observed_profiles,
+                "source": if measured > 0 { "workload_blend" } else { "unknown" },
+                "workload_dependent": true,
             })
         })
         .collect()
@@ -2447,6 +2542,10 @@ mod tests {
                 remaining_usd: None,
                 low_usd: None,
                 high_usd: None,
+                remaining_low_usd: None,
+                remaining_high_usd: None,
+                observed_spend_nano: 0,
+                observed_fraction_units: 0,
                 source: "unknown",
                 confidence: 0.0,
                 samples: 0,
@@ -2571,17 +2670,31 @@ mod tests {
         assert_eq!(totals[1]["measured_profiles"], 0);
 
         let five_hour = &mut status.profiles[0].capacities[0];
-        five_hour.cap_usd = Some(22.873983261);
-        five_hour.remaining_usd = Some(17.15548744575);
-        five_hour.source = "measured_cumulative";
-        five_hour.confidence = 0.9999;
-        five_hour.samples = 1;
+        five_hour.cap_usd = Some(36.515628714);
+        five_hour.remaining_usd = Some(27.386721535);
+        five_hour.low_usd = Some(20.000244158);
+        five_hour.high_usd = Some(81.204166575);
+        five_hour.remaining_low_usd = Some(15.000183118);
+        five_hour.remaining_high_usd = Some(60.903124931);
+        five_hour.observed_spend_nano = 61_448_500;
+        five_hour.observed_fraction_units = 168_280;
+        five_hour.source = "workload_blend";
+        five_hour.confidence = 0.123;
+        five_hour.samples = 2;
         let profiles = gemini_profile_values(&status);
-        assert_eq!(profiles[0]["windows"][0]["cap_usd"], 22.873983);
-        assert_eq!(profiles[0]["windows"][0]["remaining_usd"], 17.155487);
+        assert_eq!(profiles[0]["windows"][0]["cap_usd"], 36.515629);
+        assert_eq!(profiles[0]["windows"][0]["remaining_usd"], 27.386722);
+        assert_eq!(profiles[0]["windows"][0]["low_usd"], 20.000244);
+        assert_eq!(profiles[0]["windows"][0]["high_usd"], 81.204167);
+        assert_eq!(profiles[0]["windows"][0]["observed_spend_nano"], "61448500");
+        assert_eq!(profiles[0]["windows"][0]["source"], "workload_blend");
+        assert_eq!(profiles[0]["windows"][0]["workload_dependent"], true);
         assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
         let totals = gemini_window_total_values(&status);
         assert_eq!(totals[0]["measured_profiles"], 1);
+        assert_eq!(totals[0]["low_usd"], 20.000244);
+        assert_eq!(totals[0]["high_usd"], 81.204167);
+        assert_eq!(totals[0]["source"], "workload_blend");
         assert_eq!(totals[1]["measured_profiles"], 0);
     }
 

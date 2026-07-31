@@ -52,6 +52,10 @@ side effect. `serve` may only perform the read-only schema verification before c
 - Provider attribution — стабильная registry-константа: Anthropic/Codex сохраняют существующие
   значения, native Gemini usage пишет `PROVIDER_GOOGLE = "google"`. Нельзя подменять provider доменом,
   profile/project ID или клиентским значением; Google project IDs в registry не хранятся.
+- Gemini quota calibration persistence хранит immutable raw observations, exact cumulative profile
+  spend и CAS-derived state для двух fixed buckets. `observed_spend_nano` добавлен expand-only
+  migration 0014 и хранит точный `ΣΔspend` workload estimator v2; смысл blend/envelope/confidence
+  остаётся в `forward`, registry только валидирует и атомарно сохраняет примитивы.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

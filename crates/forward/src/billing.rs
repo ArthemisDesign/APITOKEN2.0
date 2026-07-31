@@ -3129,6 +3129,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000));
+        assert_eq!(measured.observed_spend_nano, 20_000);
 
         let (_, weekly) = first
             .observe_gemini_window(
@@ -3159,6 +3160,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(restored.current_capacity_nano, Some(2_000_000_000));
+        assert_eq!(restored.observed_spend_nano, 20_000);
         assert_eq!(restored.samples, 1);
         let _ = std::fs::remove_file(path);
     }

@@ -1169,6 +1169,8 @@ pub fn open(path: &str) -> Result<Connection> {
            sum_used_spend_nano TEXT NOT NULL DEFAULT '0', \
            observed_fraction_units INTEGER NOT NULL DEFAULT 0 \
              CHECK(observed_fraction_units >= 0), \
+           observed_spend_nano INTEGER NOT NULL DEFAULT 0 \
+             CHECK(observed_spend_nano >= 0), \
            samples INTEGER NOT NULL DEFAULT 0 CHECK(samples >= 0), \
            current_capacity_nano INTEGER \
              CHECK(current_capacity_nano IS NULL OR current_capacity_nano >= 0), \
@@ -1206,6 +1208,12 @@ pub fn open(path: &str) -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS gemini_window_observations_window \
            ON gemini_window_observations(profile_id,bucket_id,resets_at,observed_at);",
     )?;
+    // Expand-only compatibility for SQLite authorities opened before estimator v2. Production
+    // PostgreSQL receives the same column through engine migration 0014.
+    let _ = c.execute(
+        "ALTER TABLE gemini_window_calibrations ADD COLUMN observed_spend_nano INTEGER NOT NULL DEFAULT 0 CHECK(observed_spend_nano >= 0)",
+        [],
+    );
     // Разбивка расхода по токенам/моделям для клиентских дашбордов (per-request). НЕ money-БД:
     // авторитет денег — accounts.balance_nano + ledger. Эта таблица — аналитика (что реально
     // потрачено по корзинам токенов и моделям), пишется рядом с charge, обрезается по ретенции.
@@ -3877,8 +3885,8 @@ pub struct CodexWindowObservation {
 /// Primitive durable state for one explicit Antigravity Gemini quota-summary bucket.
 ///
 /// Estimation semantics live in `forward`. Registry keeps only exact integer evidence and CAS
-/// versions. The two WLS accumulators are canonical non-negative decimal strings because their
-/// valid range is i128, wider than SQLite/PostgreSQL bigint.
+/// versions. The legacy WLS accumulators remain canonical non-negative decimal strings for
+/// backwards-compatible replay; `observed_spend_nano` is the exact v2 cumulative spend leg.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeminiCalibrationRow {
     pub profile_id: String,
@@ -3894,6 +3902,7 @@ pub struct GeminiCalibrationRow {
     pub sum_used_sq: String,
     pub sum_used_spend_nano: String,
     pub observed_fraction_units: i64,
+    pub observed_spend_nano: i64,
     pub samples: i64,
     pub current_capacity_nano: Option<i64>,
     pub current_low_nano: Option<i64>,
@@ -3944,6 +3953,7 @@ fn validate_gemini_calibration_row(row: &GeminiCalibrationRow) -> Result<()> {
         || !(0..=100_000_000).contains(&row.used_fraction_units)
         || row.observed_at <= 0
         || row.observed_fraction_units < 0
+        || row.observed_spend_nano < 0
         || row.samples < 0
         || row.current_capacity_nano.is_some_and(|value| value < 0)
         || row.current_low_nano.is_some_and(|value| value < 0)
@@ -4319,23 +4329,24 @@ fn sqlite_gemini_calibration_row(
         sum_used_sq: row.get(10)?,
         sum_used_spend_nano: row.get(11)?,
         observed_fraction_units: row.get(12)?,
-        samples: row.get(13)?,
-        current_capacity_nano: row.get(14)?,
-        current_low_nano: row.get(15)?,
-        current_high_nano: row.get(16)?,
-        current_confidence_bp: row.get(17)?,
-        last_measured_at: row.get(18)?,
-        estimator_version: row.get(19)?,
-        version: row.get(20)?,
-        updated_ts: row.get(21)?,
+        observed_spend_nano: row.get(13)?,
+        samples: row.get(14)?,
+        current_capacity_nano: row.get(15)?,
+        current_low_nano: row.get(16)?,
+        current_high_nano: row.get(17)?,
+        current_confidence_bp: row.get(18)?,
+        last_measured_at: row.get(19)?,
+        estimator_version: row.get(20)?,
+        version: row.get(21)?,
+        updated_ts: row.get(22)?,
     })
 }
 
 const GEMINI_CALIBRATION_COLUMNS: &str = "profile_id,bucket_id,window_kind,window_duration_mins,\
     resets_at,anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
-    observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
-    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
-    last_measured_at,estimator_version,version,updated_ts";
+    observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,observed_spend_nano,\
+    samples,current_capacity_nano,current_low_nano,current_high_nano,\
+    current_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
 
 pub fn load_gemini_calibration(
     conn: &Connection,
@@ -4410,6 +4421,7 @@ pub fn save_gemini_calibration(
         state.sum_used_sq,
         state.sum_used_spend_nano,
         state.observed_fraction_units,
+        state.observed_spend_nano,
         state.samples,
         state.current_capacity_nano,
         state.current_low_nano,
@@ -4425,11 +4437,11 @@ pub fn save_gemini_calibration(
             "INSERT INTO gemini_window_calibrations( \
                profile_id,bucket_id,window_kind,window_duration_mins,resets_at,\
                anchor_used_fraction_units,anchor_spend_nano,anchor_ready,used_fraction_units,\
-               observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,samples,\
-               current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
-               last_measured_at,estimator_version,updated_ts,version \
+               observed_at,sum_used_sq,sum_used_spend_nano,observed_fraction_units,\
+               observed_spend_nano,samples,current_capacity_nano,current_low_nano,current_high_nano,\
+               current_confidence_bp,last_measured_at,estimator_version,updated_ts,version \
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,\
-                      ?18,?19,?20,?21,?22+1) \
+                      ?18,?19,?20,?21,?22,?23+1) \
              ON CONFLICT(profile_id,bucket_id) DO NOTHING",
             values,
         )?
@@ -4439,11 +4451,11 @@ pub fn save_gemini_calibration(
                window_kind=?3,window_duration_mins=?4,resets_at=?5,\
                anchor_used_fraction_units=?6,anchor_spend_nano=?7,anchor_ready=?8,\
                used_fraction_units=?9,observed_at=?10,sum_used_sq=?11,\
-               sum_used_spend_nano=?12,observed_fraction_units=?13,samples=?14,\
-               current_capacity_nano=?15,current_low_nano=?16,current_high_nano=?17,\
-               current_confidence_bp=?18,last_measured_at=?19,estimator_version=?20,\
-               updated_ts=?21,version=version+1 \
-             WHERE profile_id=?1 AND bucket_id=?2 AND version=?22",
+               sum_used_spend_nano=?12,observed_fraction_units=?13,\
+               observed_spend_nano=?14,samples=?15,current_capacity_nano=?16,\
+               current_low_nano=?17,current_high_nano=?18,current_confidence_bp=?19,\
+               last_measured_at=?20,estimator_version=?21,updated_ts=?22,version=version+1 \
+             WHERE profile_id=?1 AND bucket_id=?2 AND version=?23",
             values,
         )?
     };
@@ -5661,6 +5673,7 @@ mod tests {
         assert!(columns.contains(&"window_kind".to_owned()));
         assert!(columns.contains(&"anchor_used_fraction_units".to_owned()));
         assert!(columns.contains(&"sum_used_sq".to_owned()));
+        assert!(columns.contains(&"observed_spend_nano".to_owned()));
 
         let insert = "INSERT INTO gemini_window_calibrations( \
             profile_id,bucket_id,window_kind,window_duration_mins,resets_at, \
@@ -5717,6 +5730,7 @@ mod tests {
             sum_used_sq: "170141183460469231731687303715884105727".to_string(),
             sum_used_spend_nano: "0".to_string(),
             observed_fraction_units: 0,
+            observed_spend_nano: 12_345,
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -5750,6 +5764,7 @@ mod tests {
             .unwrap();
         assert_eq!(state.version, 1);
         assert_eq!(state.sum_used_sq, i128::MAX.to_string());
+        assert_eq!(state.observed_spend_nano, 12_345);
         assert_eq!(
             load_gemini_window_observations(&c, "profile-a", "gemini-5h").unwrap(),
             vec![observation]

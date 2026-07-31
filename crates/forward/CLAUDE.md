@@ -393,12 +393,16 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `retrieveUserQuotaSummary` принимается только для exact `gemini-5h`/`gemini-weekly`; `3p-*`
    исключены. Каждый успешный generation (billed или admin) durable-кредитует обслуживший opaque
    profile exact official-price nanoUSD из `metering::gemini`. Окна независимы и используют
-   fixed-point fraction `10^-8` + cumulative integer WLS без prior/EMA/float money. Cold snapshot и
-   первое движение после cold/reset ставят безопасный anchor. Cold capacity/remaining остаются
-   `null` и dollar Prometheus series не публикуются до следующего complete positive-spend interval;
-   reset сохраняет уже измеренную cumulative estimate и заново вооружает censor. Raw observations,
-   CAS state и spend живут в engine authority для replay после estimator upgrade; persistence
-   failure не останавливает serving, но явно виден в status.
+   fixed-point fraction `10^-8`. Так как Google документирует workload-dependent quota consumption,
+   point estimate — realized blend `SCALE*ΣΔspend/ΣΔused`, а НЕ фиксированный номинал подписки.
+   Low/high — накопленный per-interval workload envelope с консервативной поправкой ±1 fraction
+   unit; confidence перемножает sample maturity, `low/high` stability и fraction resolution.
+   Prior/EMA/float money нет. Cold snapshot и первое движение после cold/reset ставят безопасный
+   anchor. Cold capacity/remaining остаются `null` и dollar Prometheus series не публикуются до
+   следующего complete positive-spend interval; reset сохраняет уже измеренные blend/envelope и
+   заново вооружает censor. Raw observations, exact cumulative spend, CAS state и profile spend
+   живут в engine authority для replay после estimator upgrade; persistence failure не
+   останавливает serving, но явно виден в status.
 8. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement и shutdown deadline barrier.

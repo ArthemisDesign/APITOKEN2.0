@@ -246,10 +246,11 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
   const geminiModels=gemini?.models||[],geminiNow=Number(gemini?.now||Date.now()/1000),geminiAffinity=gemini?.affinity||{};
   const geminiTotals=Array.isArray(gemini?.window_totals)?gemini.window_totals:[],geminiFive=geminiTotals.find(item=>Number(item.window_minutes)===300),geminiWeek=geminiTotals.find(item=>Number(item.window_minutes)===10080);
   const geminiSpend=geminiProfiles.reduce((sum,profile)=>sum+(Number(profile.spend_usd_total)||0),0);
-  const geminiBudgetCard=(label,item)=>card(label,geminiDown||geminiOff?'—':item&&item.remaining_usd!=null?money(item.remaining_usd):'ждём Δused',item&&item.cap_usd!=null?'из '+money(item.cap_usd)+' измеренной ёмкости · '+Number(item.measured_profiles||0)+' профилей':'первый снимок и движение цензурируются, прайора нет');
+  const geminiBudgetCard=(label,item)=>{const measured=item&&item.cap_usd!=null,range=measured&&item.low_usd!=null?(money(item.low_usd)+'–'+(item.high_usd==null?'∞':money(item.high_usd))):'—';
+    return card(label,geminiDown||geminiOff?'—':measured?money(item.remaining_usd):'ждём Δused',measured?'realized blend из '+money(item.cap_usd)+' · workload envelope '+range+' · '+Number(item.measured_profiles||0)+' профилей':'первый снимок и движение цензурируются, прайора нет')};
   const geminiCards=geminiOff?card('Gemini подписки','выкл.','Gemini runtime без профилей'):
     card('Gemini профили',geminiDown?'—':geminiProfiles.length,geminiDown?'источник недоступен':gemini.authenticated+' authenticated')+
-    geminiBudgetCard('Gemini · остаток 5ч',geminiFive)+geminiBudgetCard('Gemini · остаток 7д',geminiWeek)+
+    geminiBudgetCard('Gemini · workload 5ч',geminiFive)+geminiBudgetCard('Gemini · workload 7д',geminiWeek)+
     card('Gemini · потрачено',geminiDown?'—':money(geminiSpend),'official-price, накопительно')+
     card('Gemini · в работе',geminiDown?'—':gemini.inflight,'inflight requests сейчас')+
     card('Gemini · missing usage',geminiDown?'—':geminiMissing,geminiMissing?'списан conservative hold':'authoritative settlement чист');
@@ -261,8 +262,10 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
       Number(modelHealth.failure_streak||0)>0?pill('degraded · '+modelHealth.failure_streak,'warn'):profile.calibration_persistence_ok===false?pill('active · calibration storage','warn'):
       Number(modelHealth.last_success_at||0)>0?pill('active','ok'):pill('не проверена','warn');
     const capacityCell=kind=>{const window=(profile.windows||[]).find(item=>item.window_kind===kind);if(!window)return'нет summary';
-      const evidence=window.source==='unknown'?'ждём полный интервал':'samples '+Number(window.samples||0)+' · confidence '+Math.round(Number(window.confidence||0)*100)+'%';
-      return'<div>'+remainingBar(window.remaining_fraction)+'</div><b>'+(window.remaining_usd==null?'—':money(window.remaining_usd))+'</b><div class="sub">из '+(window.cap_usd==null?'—':money(window.cap_usd))+' · '+evidence+' · сброс '+duration(Number(window.resets_at||0)-geminiNow)+'</div>'};
+      const known=window.source==='workload_blend',range=known&&window.low_usd!=null?money(window.low_usd)+'–'+(window.high_usd==null?'∞':money(window.high_usd)):'—';
+      const quotaDelta=(Number(window.observed_fraction_units||0)/1000000).toFixed(5)+'%';
+      const evidence=!known?'ждём полный интервал':'workload envelope '+range+' · evidence '+money(window.observed_spend_usd)+' / Δquota '+quotaDelta+' · '+Number(window.samples||0)+' интервала · confidence '+Math.round(Number(window.confidence||0)*100)+'%';
+      return'<div>'+remainingBar(window.remaining_fraction)+'</div><b>'+(window.remaining_usd==null?'—':money(window.remaining_usd))+'</b><div class="sub">realized blend из '+(window.cap_usd==null?'—':money(window.cap_usd))+' · '+evidence+' · сброс '+duration(Number(window.resets_at||0)-geminiNow)+'</div>'};
     const quotaCell=quotas.length?quotas.map(quota=>{const fraction=quota.remaining_fraction,amount=quota.remaining_amount;
       return'<div>'+(amount!==null&&amount!==undefined?'<b>'+esc(amount)+'</b>':'<b>официальный fraction</b>')+
         (fraction!==null&&fraction!==undefined?'<div>'+remainingBar(fraction)+'</div>':'')+'</div>'}).join(''):'—';
@@ -277,7 +280,7 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
       '</td><td>'+probe+'<div class="sub">quota '+quotaAge+'</div></td></tr>'})).join('');
   const geminiTable=geminiDown?'<div class="empty" style="padding:26px">Gemini runtime недоступен — /gemini-subs не отвечает</div>':
     geminiOff?'<div class="empty" style="padding:26px">Gemini-контур выключен на этом runtime</div>':
-    '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>5ч · остаток / API $</th><th>7д · остаток / API $</th><th>model quota</th><th>model reset</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(10))+'</tbody></table></div>';
+    '<div class="tscroll"><table><thead><tr><th class="left">профиль</th><th>статус</th><th class="left">модель</th><th>доступность</th><th>5ч · workload API-$</th><th>7д · workload API-$</th><th>model quota</th><th>model reset</th><th>тип</th><th>probe / quota</th></tr></thead><tbody>'+(geminiRows||empty(10))+'</tbody></table></div>';
   const transport=gemini?.transport||{};
   const geminiDetails=geminiDown||geminiOff?'':'<details><summary>Gemini transport fingerprint и cache/affinity</summary><div class="tcard"><div class="tscroll"><table><tbody>'+
     '<tr><th class="left">Antigravity</th><td class="left mono">'+esc(transport.antigravity_version||'—')+'</td><th class="left">Node</th><td class="left mono">'+esc(transport.node_version||'—')+' · '+esc(transport.http_version||'—')+'</td></tr>'+
@@ -294,10 +297,10 @@ async function subscriptions(){const result=await Promise.all([api('/subs').catc
     '<div class="sect"><h2>GPT</h2><span class="sect-sub">OpenAI Codex · app-server homes</span></div>'+
     '<div class="cards">'+gptCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+gptTable+'</div>'+
-    '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Antigravity OAuth · Cloud Code transport, quota catalogue и legacy-миграция</span></div>'+
+    '<div class="sect"><h2>Gemini</h2><span class="sect-sub">Antigravity OAuth · API-$ — realized workload equivalent, не номинал подписки</span></div>'+
     '<div class="cards">'+geminiCards+'</div>'+
     '<div class="tcard" style="margin-top:12px">'+geminiTable+'</div>'+geminiDetails+
-    '<footer>Обновление каждые 10с, пока вкладка видима · GPT/Gemini: null/«ждём Δused» означает, что есть только якорь или цензурированное первое движение — прайор не подставляется · «пик» и прайор относятся только к отдельному Claude-контуру. Email и Google identity намеренно не выводятся.</footer>';
+    '<footer>Обновление каждые 10с, пока вкладка видима · GPT/Gemini: null/«ждём Δused» означает, что есть только якорь или цензурированное первое движение — прайор не подставляется · Gemini workload blend показывает официальный API-$ эквивалент фактически наблюдённой смеси задач; Google прямо указывает, что расход лимита зависит от объёма работы, поэтому фиксированного USD-номинала подписки нет · «пик» и прайор относятся только к отдельному Claude-контуру. Email и Google identity намеренно не выводятся.</footer>';
   const fleetTotal=list.length+(gptOff?0:homes.length)+(geminiOff?0:geminiProfiles.length),fleetWarn=dead||gptDown||geminiDown||geminiEmpty||geminiUnavailable||geminiAuthBad||geminiMissing;
   shell('Подписки','Claude, GPT и Gemini: здоровье, окна, quota и transport',body,pill(count(fleetTotal,'подписка','подписки','подписок'),fleetWarn?'warn':'ok'))}
 

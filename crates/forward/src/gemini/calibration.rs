@@ -4,16 +4,20 @@
 //! pairs those snapshots with cumulative exact official-API-price spend for the same opaque
 //! profile. A cold snapshot is only an anchor, and the first movement is censored because that
 //! anchor may have arrived part-way through one quantisation cell. Every later positive movement
-//! with positive settled spend contributes to cumulative weighted least squares through origin:
+//! with positive settled spend contributes to a realized workload blend:
 //!
-//! `capacity_nano = SCALE * Σ(Δused_units * Δspend_nano) / Σ(Δused_units²)`.
+//! `capacity_nano = SCALE * ΣΔspend_nano / ΣΔused_units`.
 //!
+//! Google explicitly documents that subscription rate-limit consumption depends on the amount of
+//! work performed and can differ from prompt to prompt. Therefore this is not a fixed subscription
+//! value. Low/high retain the observed per-interval workload envelope (including fraction
+//! quantisation), while confidence combines evidence maturity, workload stability and resolution.
 //! There is no configured prior, subscription-price assumption, EMA or float arithmetic.
 
 use registry::{GeminiCalibrationRow, GeminiWindowObservation};
 
 pub const FRACTION_SCALE: i64 = 100_000_000;
-pub const ESTIMATOR_VERSION: i64 = 1;
+pub const ESTIMATOR_VERSION: i64 = 2;
 pub const BUCKET_5H: &str = "gemini-5h";
 pub const BUCKET_WEEKLY: &str = "gemini-weekly";
 
@@ -45,13 +49,13 @@ pub(crate) fn bucket_contract(bucket_id: &str) -> Option<BucketContract> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
-    MeasuredCumulative,
+    WorkloadBlend,
 }
 
 impl CapacitySource {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::MeasuredCumulative => "measured_cumulative",
+            Self::WorkloadBlend => "workload_blend",
         }
     }
 }
@@ -89,6 +93,7 @@ impl WindowCalibration {
                 sum_used_sq: "0".to_string(),
                 sum_used_spend_nano: "0".to_string(),
                 observed_fraction_units: 0,
+                observed_spend_nano: 0,
                 samples: 0,
                 current_capacity_nano: None,
                 current_low_nano: None,
@@ -124,17 +129,29 @@ impl WindowCalibration {
                 high_nano: self.row.current_high_nano,
                 confidence_bp: self.row.current_confidence_bp,
                 measured_at: self.row.last_measured_at.unwrap_or(self.row.observed_at),
-                source: CapacitySource::MeasuredCumulative,
+                source: CapacitySource::WorkloadBlend,
             })
     }
 
     pub fn remaining_nano(&self, used_fraction_units: i64) -> Option<i64> {
         self.estimate().and_then(|estimate| {
-            let unused = i128::from(FRACTION_SCALE - used_fraction_units.clamp(0, FRACTION_SCALE));
-            let remaining = i128::from(estimate.capacity_nano)
-                .checked_mul(unused)
-                .and_then(|value| value.checked_div(i128::from(FRACTION_SCALE)))?;
-            i64::try_from(remaining).ok()
+            remaining_for_capacity(estimate.capacity_nano, used_fraction_units)
+        })
+    }
+
+    pub fn remaining_low_nano(&self, used_fraction_units: i64) -> Option<i64> {
+        self.estimate().and_then(|estimate| {
+            estimate
+                .low_nano
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
+        })
+    }
+
+    pub fn remaining_high_nano(&self, used_fraction_units: i64) -> Option<i64> {
+        self.estimate().and_then(|estimate| {
+            estimate
+                .high_nano
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
         })
     }
 
@@ -180,21 +197,17 @@ impl WindowCalibration {
             return Ok(());
         }
 
-        let x = i128::from(delta_used);
-        let y = i128::from(delta_spend);
-        let sum_used_sq = parse_accumulator(&self.row.sum_used_sq)?
-            .checked_add(x.checked_mul(x).context("Gemini WLS x² overflow")?)
-            .context("Gemini WLS sum x² overflow")?;
-        let sum_used_spend = parse_accumulator(&self.row.sum_used_spend_nano)?
-            .checked_add(x.checked_mul(y).context("Gemini WLS x*y overflow")?)
-            .context("Gemini WLS sum x*y overflow")?;
-        self.row.sum_used_sq = sum_used_sq.to_string();
-        self.row.sum_used_spend_nano = sum_used_spend.to_string();
+        self.update_workload_envelope(delta_used, delta_spend)?;
         self.row.observed_fraction_units = self
             .row
             .observed_fraction_units
             .checked_add(delta_used)
             .context("Gemini observed fraction overflow")?;
+        self.row.observed_spend_nano = self
+            .row
+            .observed_spend_nano
+            .checked_add(delta_spend)
+            .context("Gemini observed spend overflow")?;
         self.row.samples = self
             .row
             .samples
@@ -204,6 +217,44 @@ impl WindowCalibration {
         self.row.anchor_spend_nano = observation.gateway_spend_nano;
         self.row.last_measured_at = Some(observation.observed_at);
         self.recompute()
+    }
+
+    fn update_workload_envelope(
+        &mut self,
+        delta_used: i64,
+        delta_spend: i64,
+    ) -> anyhow::Result<()> {
+        let numerator = i128::from(FRACTION_SCALE)
+            .checked_mul(i128::from(delta_spend))
+            .context("Gemini workload envelope numerator overflow")?;
+        let low = checked_i64(
+            numerator
+                .checked_div(i128::from(delta_used) + 1)
+                .context("Gemini workload low bound overflow")?,
+        )?;
+        self.row.current_low_nano = Some(
+            self.row
+                .current_low_nano
+                .map_or(low, |existing| existing.min(low)),
+        );
+
+        let sample_high = if delta_used > 1 {
+            Some(checked_i64(ceil_nonnegative(
+                numerator,
+                i128::from(delta_used) - 1,
+            )?)?)
+        } else {
+            None
+        };
+        self.row.current_high_nano = if self.row.samples == 0 {
+            sample_high
+        } else {
+            match (self.row.current_high_nano, sample_high) {
+                (Some(existing), Some(sample)) => Some(existing.max(sample)),
+                _ => None,
+            }
+        };
+        Ok(())
     }
 
     fn begin_window(&mut self, observation: &GeminiWindowObservation) {
@@ -217,40 +268,33 @@ impl WindowCalibration {
     }
 
     fn recompute(&mut self) -> anyhow::Result<()> {
-        let denominator = parse_accumulator(&self.row.sum_used_sq)?;
+        let denominator = i128::from(self.row.observed_fraction_units);
         if denominator <= 0 {
             return Ok(());
         }
         let numerator = i128::from(FRACTION_SCALE)
-            .checked_mul(parse_accumulator(&self.row.sum_used_spend_nano)?)
+            .checked_mul(i128::from(self.row.observed_spend_nano))
             .context("Gemini capacity numerator overflow")?;
         let capacity = checked_i64(round_nonnegative(numerator, denominator)?)?;
         self.row.current_capacity_nano = Some(capacity);
 
-        // Every delta boundary carries at most one fixed-point unit of provider quantisation.
-        // Bounds therefore tighten from raw observed movement, not elapsed time or a tariff prior.
+        // Confidence is deliberately conservative. More evidence increases maturity, but diverse
+        // workloads keep stability low; fine fraction movement only removes quantisation doubt.
         let movement = i128::from(self.row.observed_fraction_units);
         let samples = i128::from(self.row.samples);
-        let capacity_i128 = i128::from(capacity);
-        let low = capacity_i128
-            .checked_mul(movement)
-            .and_then(|value| value.checked_div((movement + samples).max(1)))
-            .context("Gemini capacity low bound overflow")?;
-        self.row.current_low_nano = Some(checked_i64(low)?);
-        self.row.current_high_nano = if movement > samples {
-            let high = capacity_i128
-                .checked_mul(movement)
-                .and_then(|value| value.checked_div(movement - samples))
-                .context("Gemini capacity high bound overflow")?;
-            Some(checked_i64(high)?)
-        } else {
-            None
+        let maturity_bp = ratio_bp(samples, samples + 2)?;
+        let stability_bp = match (self.row.current_low_nano, self.row.current_high_nano) {
+            (Some(low), Some(high)) if high > 0 => ratio_bp(i128::from(low), i128::from(high))?,
+            _ => 0,
         };
-        let confidence = 10_000i128
-            .checked_mul(movement)
-            .and_then(|value| value.checked_div((movement + 2 * samples).max(1)))
+        let quantisation_bp = ratio_bp(movement, movement + 2 * samples)?;
+        let confidence_bp = maturity_bp
+            .checked_mul(stability_bp)
+            .and_then(|value| value.checked_div(10_000))
+            .and_then(|value| value.checked_mul(quantisation_bp))
+            .and_then(|value| value.checked_div(10_000))
             .context("Gemini confidence overflow")?;
-        self.row.current_confidence_bp = checked_i64(confidence)?.clamp(0, 10_000);
+        self.row.current_confidence_bp = checked_i64(confidence_bp)?.clamp(0, 10_000);
         Ok(())
     }
 }
@@ -337,14 +381,50 @@ fn validate_row(row: &GeminiCalibrationRow) -> anyhow::Result<()> {
         || !(0..=FRACTION_SCALE).contains(&row.used_fraction_units)
         || row.anchor_spend_nano < 0
         || row.observed_fraction_units < 0
+        || row.observed_spend_nano < 0
         || row.samples < 0
-        || row.estimator_version <= 0
+        || row.current_capacity_nano.is_some_and(|value| value < 0)
+        || row.current_low_nano.is_some_and(|value| value < 0)
+        || row.current_high_nano.is_some_and(|value| value < 0)
+        || row
+            .current_low_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(low, capacity)| low > capacity)
+        || row
+            .current_high_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(high, capacity)| high < capacity)
+        || row
+            .current_low_nano
+            .zip(row.current_high_nano)
+            .is_some_and(|(low, high)| low > high)
+        || !(0..=10_000).contains(&row.current_confidence_bp)
+        || row.last_measured_at.is_some_and(|value| value <= 0)
+        || row.estimator_version != ESTIMATOR_VERSION
         || row.version < 0
+        || row.samples == 0
+            && (row.observed_fraction_units != 0
+                || row.observed_spend_nano != 0
+                || row.current_capacity_nano.is_some()
+                || row.current_low_nano.is_some()
+                || row.current_high_nano.is_some()
+                || row.current_confidence_bp != 0
+                || row.last_measured_at.is_some())
+        || row.samples > 0
+            && (row.observed_fraction_units <= 0
+                || row.observed_spend_nano <= 0
+                || row.current_capacity_nano.is_none()
+                || row.current_low_nano.is_none()
+                || row.last_measured_at.is_none()
+                || row.current_high_nano.is_none() && row.current_confidence_bp != 0)
     {
         anyhow::bail!("invalid Gemini calibration row");
     }
-    parse_accumulator(&row.sum_used_sq)?;
-    parse_accumulator(&row.sum_used_spend_nano)?;
+    if parse_accumulator(&row.sum_used_sq)? != 0
+        || parse_accumulator(&row.sum_used_spend_nano)? != 0
+    {
+        anyhow::bail!("Gemini workload estimator contains legacy WLS state");
+    }
     Ok(())
 }
 
@@ -366,6 +446,35 @@ fn round_nonnegative(numerator: i128, denominator: i128) -> anyhow::Result<i128>
         .checked_add(denominator / 2)
         .and_then(|value| value.checked_div(denominator))
         .context("Gemini capacity rounding overflow")
+}
+
+fn ceil_nonnegative(numerator: i128, denominator: i128) -> anyhow::Result<i128> {
+    if numerator <= 0 || denominator <= 0 {
+        return Ok(0);
+    }
+    numerator
+        .checked_add(denominator - 1)
+        .and_then(|value| value.checked_div(denominator))
+        .context("Gemini capacity ceiling overflow")
+}
+
+fn ratio_bp(numerator: i128, denominator: i128) -> anyhow::Result<i128> {
+    if numerator <= 0 || denominator <= 0 {
+        return Ok(0);
+    }
+    10_000i128
+        .checked_mul(numerator)
+        .and_then(|value| value.checked_div(denominator))
+        .map(|value| value.clamp(0, 10_000))
+        .context("Gemini confidence ratio overflow")
+}
+
+fn remaining_for_capacity(capacity_nano: i64, used_fraction_units: i64) -> Option<i64> {
+    let unused = i128::from(FRACTION_SCALE - used_fraction_units.clamp(0, FRACTION_SCALE));
+    let remaining = i128::from(capacity_nano)
+        .checked_mul(unused)
+        .and_then(|value| value.checked_div(i128::from(FRACTION_SCALE)))?;
+    i64::try_from(remaining).ok()
 }
 
 fn checked_i64(value: i128) -> anyhow::Result<i64> {
@@ -429,8 +538,10 @@ mod tests {
         // 100,000,000 * (1,000 * 20,000) / 1,000² = 2,000,000,000 nanoUSD.
         assert_eq!(row.current_capacity_nano, Some(2_000_000_000));
         assert_eq!(row.samples, 1);
-        assert_eq!(row.sum_used_sq, "1000000");
-        assert_eq!(row.sum_used_spend_nano, "20000000");
+        assert_eq!(row.observed_fraction_units, 1_000);
+        assert_eq!(row.observed_spend_nano, 20_000);
+        assert_eq!(row.sum_used_sq, "0");
+        assert_eq!(row.sum_used_spend_nano, "0");
     }
 
     #[test]
@@ -448,7 +559,30 @@ mod tests {
             .estimate()
             .unwrap();
         assert_eq!(estimate.capacity_nano, 22_873_983_261);
-        assert!(estimate.confidence_bp >= 9_999);
+        assert_eq!(estimate.source, CapacitySource::WorkloadBlend);
+        assert!((3_300..=3_333).contains(&estimate.confidence_bp));
+    }
+
+    #[test]
+    fn mixed_workloads_publish_realized_blend_and_observed_envelope() {
+        let row = next(None, observation(FIVE_HOUR, 0, 0, 100));
+        let row = next(Some(row), observation(FIVE_HOUR, 1, 1, 101));
+        let row = next(Some(row), observation(FIVE_HOUR, 122_871, 24_574_501, 102));
+        let row = next(Some(row), observation(FIVE_HOUR, 168_281, 61_448_501, 103));
+        let estimate = WindowCalibration::from_row(row.clone())
+            .unwrap()
+            .estimate()
+            .unwrap();
+
+        // Flash and Pro/thinking consume quota at very different official-API-$ rates. The point
+        // is their cumulative realized mix; bounds preserve both observed workload regimes.
+        assert_eq!(estimate.capacity_nano, 36_515_628_714);
+        assert_eq!(estimate.low_nano, Some(20_000_244_158));
+        assert_eq!(estimate.high_nano, Some(81_204_166_575));
+        assert_eq!(estimate.confidence_bp, 1_230);
+        assert_eq!(row.observed_spend_nano, 61_448_500);
+        assert_eq!(row.observed_fraction_units, 168_280);
+        assert_eq!(row.samples, 2);
     }
 
     #[test]
@@ -478,9 +612,36 @@ mod tests {
         row.sum_used_sq = "01".to_string();
         assert!(WindowCalibration::from_row(row).is_err());
 
-        let mut row = next(None, observation(FIVE_HOUR, 1, 1, 100));
-        row.anchor_ready = true;
-        row.sum_used_sq = i128::MAX.to_string();
-        assert!(apply_observation(Some(row), &observation(FIVE_HOUR, 2, 2, 101)).is_err());
+        let row = next(None, observation(FIVE_HOUR, 1, 1, 100));
+        let row = next(Some(row), observation(FIVE_HOUR, 2, 2, 101));
+        let mut row = next(Some(row), observation(FIVE_HOUR, 3, 3, 102));
+        row.observed_spend_nano = i64::MAX;
+        assert!(apply_observation(Some(row), &observation(FIVE_HOUR, 4, 4, 103)).is_err());
+    }
+
+    #[test]
+    fn estimator_upgrade_rebuilds_workload_state_from_raw_history() {
+        let history = vec![
+            observation(FIVE_HOUR, 0, 0, 100),
+            observation(FIVE_HOUR, 1, 1, 101),
+            observation(FIVE_HOUR, 122_871, 24_574_501, 102),
+            observation(FIVE_HOUR, 168_281, 61_448_501, 103),
+        ];
+        let mut poisoned = replay_observations(&history, 7).unwrap().unwrap();
+        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
+        poisoned.observed_spend_nano = 0;
+        poisoned.current_capacity_nano = Some(27_355_256_000);
+        poisoned.current_low_nano = Some(27_354_000_000);
+        poisoned.current_high_nano = Some(27_356_000_000);
+        poisoned.current_confidence_bp = 9_999;
+
+        let current = observation(FIVE_HOUR, 168_281, 61_448_501, 104);
+        let rebuilt = apply_observation_with_history(Some(poisoned), &history, &current).unwrap();
+        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
+        assert_eq!(rebuilt.version, 7);
+        assert_eq!(rebuilt.current_capacity_nano, Some(36_515_628_714));
+        assert_eq!(rebuilt.current_low_nano, Some(20_000_244_158));
+        assert_eq!(rebuilt.current_high_nano, Some(81_204_166_575));
+        assert_eq!(rebuilt.current_confidence_bp, 1_230);
     }
 }

@@ -299,14 +299,20 @@ For every request the runtime:
 - independently calls `v1internal:retrieveUserQuotaSummary` and accepts only the exact
   `gemini-5h` and `gemini-weekly` buckets. Every successful generation, including admin traffic,
   credits the serving opaque profile with its exact audited Developer API price in integer
-  nanoUSD. Each bucket is calibrated independently from real positive fraction movement with
-  cumulative integer weighted least squares
-  `capacity = 100000000 * Σ(Δused * Δspend) / Σ(Δused²)`. There is no subscription-price prior,
-  EMA, float money arithmetic or use of the foreign-provider `3p-*` buckets. The first snapshot is
-  an anchor and the first movement after cold start/reset is censored. A cold profile stays `null`
-  with no dollar Prometheus sample until the next complete interval; a later reset preserves the
-  already measured cumulative estimate while rearming the safe anchor. Cumulative spend, CAS state
-  and raw replay evidence live in the engine authority and survive blue-green deploys;
+  nanoUSD. Each bucket is calibrated independently from real positive fraction movement as the
+  cumulative realized workload blend
+  `capacity = 100000000 * ΣΔspend / ΣΔused`. This is not a subscription nominal: Google documents
+  that rate-limit consumption is correlated with the amount of work performed and can differ from
+  prompt to prompt. Low/high preserve the observed per-interval workload envelope with a
+  conservative ±1 fraction unit around each observed movement. Confidence is the product of sample
+  maturity, observed workload stability and fraction resolution; it cannot become near-100% merely
+  because a fraction delta has many decimal places. There is no subscription-price prior, EMA,
+  float money arithmetic
+  or use of the foreign-provider `3p-*` buckets. The first snapshot is an anchor and the first
+  movement after cold start/reset is censored. A cold profile stays `null` with no dollar Prometheus
+  sample until the next complete interval; a later reset preserves the already measured blend and
+  envelope while rearming the safe anchor. Cumulative spend, CAS state and raw replay evidence live
+  in the engine authority and survive blue-green deploys and estimator rebuilds;
 - limits each paid profile to a bounded number of concurrent requests and routes new work toward
   profiles with more per-model quota headroom. A small deterministic per-profile reserve prevents
   synchronized draining, but remains soft: if all eligible profiles are below reserve, the final
@@ -319,6 +325,33 @@ For every request the runtime:
   A metered non-stream success without authoritative non-zero usage is withheld and refunded; once
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
   an operational counter instead of inventing a usage event or granting a free request.
+
+### What the Gemini API-dollar estimate means
+
+Antigravity's official plan documentation says that “the rate limits are correlated with the
+amount of work done by the agent, which can differ from prompt to prompt.” Consequently, no honest
+conversion can label Google AI Pro or Ultra as a fixed number of Developer API dollars. The gateway
+reports three different quantities instead:
+
+- `cap_usd`: the cumulative official-API-dollar equivalent of the workload mix actually observed;
+- `low_usd` / `high_usd`: the smallest and largest per-interval workload equivalents observed so
+  far, expanded conservatively for the `10^-8` fraction quantisation;
+- `confidence`: `n/(n+2) × low/high × used/(used+2n)`, so more samples help, workload disagreement
+  hurts, and precise fraction movement cannot hide an unstable workload mix.
+
+The controlled Google AI Pro calibration on 2026-07-31 deliberately mixed one
+`gemini-3.5-flash` interval (`$0.0245745` official spend) with one
+`gemini-3.1-pro-preview` low-thinking interval (`$0.036874`):
+
+| Window | Realized blend | Observed workload envelope | Confidence |
+|---|---:|---:|---:|
+| 5h | `$36.515628714` | `$20.000244158 … $81.204166575` | `12.30%` |
+| 7d | `$219.177129405` | `$120.010255408 … $487.815848658` | `12.29%` |
+
+Those figures are evidence that workload matters, not subscription promises. A future traffic mix
+will move the blend, new workload regimes can widen the envelope, and Google can change quota
+policy. Raw observations are retained so estimator upgrades replay the same evidence rather than
+starting over. Official source: <https://antigravity.google/docs/plans>.
 
 The model allowlist is local and price-catalog pinned. The default list contains the six text
 models whose non-stream, native stream and token-count paths were reconfirmed against the
@@ -431,13 +464,16 @@ curl --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
 ```
 
 `/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
-sanitized quota/cooling timestamps, independent 5h/weekly fractions and measured official-price
-capacity/remaining/confidence, calibration persistence health, generation failure
+sanitized quota/cooling timestamps, independent 5h/weekly fractions and workload-dependent
+official-API-dollar blend/remaining/envelope/confidence plus the exact spend/fraction evidence,
+calibration persistence health, generation failure
 streak/timestamps/classes, low-cardinality transport/backend/malformed/stream-start counters,
 affinity counters, missing-usage count and pinned HTTPS/Undici transport versions/hashes. Unknown
-capacity stays JSON `null`; measured fleet totals include only profiles with evidence. Subject,
-email, project, tier, proxy and OAuth material are never serialized. Caddy maps the same endpoint
-into the unified `admin.apitoken.sale` subscription page through stable origin `127.0.0.1:8794`.
+capacity stays JSON `null`; measured fleet totals include only profiles with evidence. The response
+marks this explicitly as `realized_workload_api_equivalent` with
+`fixed_subscription_nominal=false`. Subject, email, project, tier, proxy and OAuth material are
+never serialized. Caddy maps the same endpoint into the unified `admin.apitoken.sale` subscription
+page through stable origin `127.0.0.1:8794`.
 
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster
