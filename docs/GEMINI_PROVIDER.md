@@ -274,10 +274,11 @@ CORS headers so a browser SDK can call the gateway. Balance exhaustion remains t
 For every request the runtime:
 
 - resolves opaque tenant-bound prompt affinity and prefers the same subscription;
-- derives a UUID-shaped upstream `request.sessionId` from the keyed affinity lineage: it stays
-  stable across a growing conversation, changes for another explicit session or tenant, and never
-  exposes a raw tenant/session value; one `agent-<uuid>` request id is created before rotation and
-  reused for every retry of that customer request;
+- for text generation, derives a UUID-shaped upstream `request.sessionId` from the keyed affinity
+  lineage: it stays stable across a growing conversation, changes for another explicit session or
+  tenant, and never exposes a raw tenant/session value; one `agent-<uuid>` request id is created
+  before rotation and reused for every retry of that customer request. The image route keeps public
+  affinity but uses its stateless first-party identity described below;
 - decrypts the selected project/proxy only in memory;
 - obtains an access token with a per-profile single-flight mutex and 120-second expiry skew;
 - wraps the native body for `v1internal:{generateContent,streamGenerateContent,countTokens}`;
@@ -379,14 +380,17 @@ image tool, and the authenticated Google AI Pro catalogue exposes an independent
 `generateContent`/`streamGenerateContent`/`countTokens` envelope and returns generated media as
 `candidates[].content.parts[].inlineData`; images are never written to server disk.
 
-For Antigravity the wrapper uses the exact image identity `requestType=image_gen` rather than the
-text-agent identity. `candidateCount` is fixed at one. Missing image controls become explicit
-`aspectRatio=1:1` and `imageSize=1K`; the accepted sizes are `0.5K`, `1K`, `2K`, and `4K`, and the
-accepted ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`, `5:4`,
-`8:1`, `9:16`, `16:9`, and `21:9`. Up to 14 inline reference images are accepted, using only the
-documented PNG, JPEG, WEBP, HEIC and HEIF MIME types with valid base64. Project-scoped `fileData`,
-system instructions, tools, structured output, multiple candidates, response-modalities overrides
-and private-route thinking controls fail closed rather than being silently dropped.
+For Antigravity the wrapper uses the complete image identity rather than mixing it with an agent
+turn: `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, no private `sessionId`,
+`candidateCount=1`, and `responseModalities=[TEXT,IMAGE]`. The public affinity binding is still
+used to select a warm subscription, but it is never sent as an unsupported image session. Missing
+image controls become explicit `aspectRatio=1:1` and `imageSize=1K`; the accepted sizes are `0.5K`,
+`1K`, `2K`, and `4K`, and the accepted ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`,
+`4:1`, `4:3`, `4:5`, `5:4`, `8:1`, `9:16`, `16:9`, and `21:9`. Up to 14 inline reference images
+are accepted, using only the documented PNG, JPEG, WEBP, HEIC and HEIF MIME types with valid base64.
+Project-scoped `fileData`, system instructions, tools, structured output, multiple candidates,
+non-equivalent response-modalities overrides and private-route thinking controls fail closed rather
+than being silently dropped.
 
 Official paid-standard equivalence is pinned as integer nanoUSD: `$0.50/M` input tokens,
 `$3/M` text plus thinking output tokens, and `$60/M` generated-image tokens. Authoritative

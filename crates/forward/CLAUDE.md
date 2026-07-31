@@ -359,9 +359,12 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    остальные модели профиля; остальные 4xx не вращаются.
    Если были quota failures — итог 429; только auth/transport failures — 503; уже cooling pool — 429.
 5. Code Assist request wrapper строится сервером; caller не может inject project/session identity.
-   Для Antigravity `request.sessionId` — UUID из keyed tenant-scoped affinity lineage, а top-level
-   `requestId=agent-<uuid>` создаётся один раз до rotation; wrapper также фиксирует
-   `userAgent=antigravity` и `requestType=agent`. Legacy profiles сохраняют `request.session_id` и
+   Для Antigravity text generation `request.sessionId` — UUID из keyed tenant-scoped affinity
+   lineage, а top-level `requestId=agent-<uuid>` создаётся один раз до rotation; wrapper также
+   фиксирует `userAgent=antigravity` и `requestType=agent`. Image generation сохраняет только
+   public affinity, но private wire обязан быть stateless: без `request.sessionId`, с
+   `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, `candidateCount=1` и
+   `responseModalities=[TEXT,IMAGE]`. Legacy profiles сохраняют `request.session_id` и
    `user_prompt_id=<session UUID>########<human-turn ordinal>`.
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.

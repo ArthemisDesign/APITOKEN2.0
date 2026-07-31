@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Preserve the existing text-request envelope. Gemini's documented inline-media request ceiling is
 // lower, so image generation is bounded independently after the route model is resolved. Generated
@@ -190,6 +190,21 @@ fn base64url(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Antigravity image generation uses a distinct first-party request lineage. It is not an agent
+/// UUID with a different requestType: the timestamp and fixed terminal segment are part of the
+/// captured image_gen wire identity. Build it once per public request so profile rotation cannot
+/// duplicate a logical generation.
+fn fresh_antigravity_request_id(image_generation: bool) -> String {
+    if !image_generation {
+        return format!("agent-{}", crate::fresh_request_id());
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("image_gen/{millis}/{}/12", crate::fresh_request_id())
 }
 
 /// Both reviewed Cloud Code wrappers keep one UUID-shaped session id for a conversation. Derive it
@@ -772,6 +787,7 @@ fn adapt_antigravity_generation_request(
     };
     if image_generation {
         generation_config.insert("candidateCount".to_string(), json!(1));
+        generation_config.insert("responseModalities".to_string(), json!(["TEXT", "IMAGE"]));
         let image_config = generation_config
             .entry("imageConfig")
             .or_insert_with(|| json!({}));
@@ -899,9 +915,26 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
                 "Gemini 3.1 Flash Image supports candidateCount=1 only.",
             ));
         }
+        if let Some(modalities) = config.get("responseModalities") {
+            let modalities = modalities.as_array().ok_or_else(|| {
+                ApiError::invalid("generationConfig.responseModalities must be an array.")
+            })?;
+            let text = modalities
+                .iter()
+                .filter(|value| value.as_str() == Some("TEXT"))
+                .count();
+            let image = modalities
+                .iter()
+                .filter(|value| value.as_str() == Some("IMAGE"))
+                .count();
+            if modalities.len() != 2 || text != 1 || image != 1 {
+                return Err(ApiError::invalid(
+                    "The subscription image route requires responseModalities TEXT and IMAGE.",
+                ));
+            }
+        }
         for unsupported in [
             "thinkingConfig",
-            "responseModalities",
             "responseMimeType",
             "responseSchema",
             "responseJsonSchema",
@@ -1185,11 +1218,15 @@ fn wrap_code_assist_request(
             if oauth_kind == OAuthKind::Antigravity {
                 adapt_antigravity_generation_request(&mut request, image_generation);
             }
-            if let Some(session_id) = session_id {
-                let field = match oauth_kind {
-                    OAuthKind::Antigravity => "sessionId",
-                    OAuthKind::LegacyGeminiCli => "session_id",
-                };
+            if let Some((field, session_id)) = session_id.and_then(|session_id| {
+                match (oauth_kind, image_generation) {
+                    // Antigravity's image_gen identity is stateless and rejects the ordinary agent
+                    // session field. Its continuity lives only in the public affinity layer.
+                    (OAuthKind::Antigravity, true) => None,
+                    (OAuthKind::Antigravity, false) => Some(("sessionId", session_id)),
+                    (OAuthKind::LegacyGeminiCli, _) => Some(("session_id", session_id)),
+                }
+            }) {
                 request.insert(field.to_string(), json!(session_id));
             }
             match oauth_kind {
@@ -1982,7 +2019,7 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     );
-    let upstream_session_id = generation.then(|| {
+    let upstream_session_id = (generation && !model.is_image_generation()).then(|| {
         affinity_input
             .as_ref()
             .map_or_else(crate::fresh_request_id, |input| {
@@ -1999,7 +2036,8 @@ async fn api_inner(
         .unwrap_or_default();
     // Antigravity expects a fresh request id, but rotation must not turn one customer request into
     // multiple logical agent turns. Generate it once before selecting the first subscription.
-    let upstream_request_id = generation.then(|| format!("agent-{}", crate::fresh_request_id()));
+    let upstream_request_id =
+        generation.then(|| fresh_antigravity_request_id(model.is_image_generation()));
     let admission = if matches!(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
@@ -3283,6 +3321,7 @@ mod tests {
             }],
             "generation_config": {
                 "candidate_count": 1,
+                "response_modalities": ["IMAGE", "TEXT"],
                 "image_config": {"aspectRatio": "16:9", "imageSize": "4K"}
             }
         });
@@ -3301,13 +3340,19 @@ mod tests {
             &native,
             "prompt-id",
             Some("session-id"),
-            Some("request-id"),
+            Some("image_gen/1/request-uuid/12"),
         )
         .unwrap();
         let wrapped: Value = serde_json::from_slice(&wrapped).unwrap();
         assert_eq!(wrapped["requestType"], "image_gen");
+        assert_eq!(wrapped["requestId"], "image_gen/1/request-uuid/12");
         assert_eq!(wrapped["model"], "gemini-3.1-flash-image");
         assert_eq!(wrapped["request"]["contents"][0]["role"], "user");
+        assert!(wrapped["request"].get("sessionId").is_none());
+        assert_eq!(
+            wrapped["request"]["generationConfig"]["responseModalities"],
+            json!(["TEXT", "IMAGE"])
+        );
         assert_eq!(
             wrapped["request"]["generationConfig"]["imageConfig"]["imageSize"],
             "4K"
@@ -3336,9 +3381,15 @@ mod tests {
             wrapped["request"]["generationConfig"]["imageConfig"],
             json!({"aspectRatio": "1:1", "imageSize": "1K"})
         );
+        assert_eq!(
+            wrapped["request"]["generationConfig"]["responseModalities"],
+            json!(["TEXT", "IMAGE"])
+        );
 
         for invalid in [
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"candidateCount": 2}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"responseModalities": ["IMAGE"]}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"responseModalities": "IMAGE"}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 0}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 32_769}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": "100"}}),
@@ -3363,6 +3414,21 @@ mod tests {
         assert!(
             validate_native_request(Operation::Generate, &too_many_references, &model).is_err()
         );
+    }
+
+    #[test]
+    fn antigravity_image_request_id_uses_the_first_party_lineage() {
+        let image = fresh_antigravity_request_id(true);
+        let parts = image.split('/').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], "image_gen");
+        assert!(parts[1].parse::<u128>().is_ok());
+        assert!(!parts[2].is_empty());
+        assert_eq!(parts[3], "12");
+
+        let agent = fresh_antigravity_request_id(false);
+        assert!(agent.starts_with("agent-"));
+        assert!(!agent.contains('/'));
     }
 
     #[test]
