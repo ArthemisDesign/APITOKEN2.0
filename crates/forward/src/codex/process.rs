@@ -689,8 +689,18 @@ impl CodexProcess {
             // home stays healthy and routable while its quota reading is frozen at whatever it last
             // said. Production has a home in exactly that state right now and the log could not say
             // which one — it had to be inferred from a gauge that had stopped moving.
+            //
+            // The class alone still does not say what to fix. Startup already reports the numeric
+            // code, and this path — the one that actually repeats, every sweep, on several homes at
+            // once — did not, so the recurring failure could not be told apart from an unsupported
+            // method or a subscription with no window yet. Only the code is logged; the upstream
+            // message is free text and stays out of our logs.
+            let code = match &error {
+                ProcessError::Rpc { code, .. } => *code,
+                _ => 0,
+            };
             eprintln!(
-                "Codex home {} rate-limit snapshot unavailable [{}]",
+                "Codex home {} rate-limit snapshot unavailable [{}] rpc_code={code}",
                 discovery::home_id(&self.home),
                 error.diagnostic_class()
             );
