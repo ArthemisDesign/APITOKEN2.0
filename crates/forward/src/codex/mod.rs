@@ -362,12 +362,63 @@ impl CodexHome {
         *self.health.lock().expect("codex home health lock")
     }
 
-    /// Fold one observation into this home's health.
+    /// Fold one observation into this home's health, persisting the account axis when it moves.
+    ///
+    /// Persistence is fire-and-forget on purpose: health must keep working when the authority is
+    /// briefly unavailable. Losing a write costs one restart's worth of memory, while blocking a
+    /// turn on it would make a database hiccup an availability incident.
     fn note(&self, signal: health::HealthSignal) {
-        self.health
-            .lock()
-            .expect("codex home health lock")
-            .apply(signal, pool::now());
+        let (before, after) = {
+            let mut guard = self.health.lock().expect("codex home health lock");
+            let before = guard.durable();
+            guard.apply(signal, pool::now());
+            (before, guard.durable())
+        };
+        if before == after {
+            return;
+        }
+        let (Some(billing), id) = (self.billing.clone(), self.spec.id.clone()) else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Err(error) = billing
+                .save_codex_health(&id, durable_health_row(after), pool::now())
+                .await
+            {
+                eprintln!("Codex home {id} health persistence failed [{error:#}]");
+            }
+        });
+    }
+
+    /// Recover this home's durable account verdict from the authority.
+    ///
+    /// Called as a home joins the pool. Without it every restart — and blue-green makes those
+    /// routine — re-admitted a subscription that had already been corroborated dead or found
+    /// quota-exhausted, so the pool rediscovered the same failure using customer traffic.
+    async fn hydrate_health(&self) {
+        let Some(billing) = self.billing.as_ref() else {
+            return;
+        };
+        match billing.load_codex_health(self.id()).await {
+            Ok(row) => {
+                let durable = health::DurableAccountHealth {
+                    account: health::AccountState::from_str(&row.account_state),
+                    auth_fail_streak: row.auth_fail_streak,
+                    first_auth_fail_ts: row.first_auth_fail_ts,
+                    cooling_until: row.cooling_until,
+                };
+                self.health
+                    .lock()
+                    .expect("codex home health lock")
+                    .restore(durable);
+            }
+            // Fail open: an unreadable verdict must not keep a working subscription out of the
+            // pool. The next probe re-establishes the truth either way.
+            Err(error) => eprintln!(
+                "Codex home {} health could not be recovered [{error:#}]",
+                self.id()
+            ),
+        }
     }
 
     fn cooling_until(&self) -> i64 {
@@ -951,6 +1002,17 @@ mod provider_lock_tests {
     }
 }
 
+/// Translate the policy's durable slice into the authority row. Kept here so `health.rs` never
+/// depends on a storage type and stays testable as pure policy.
+fn durable_health_row(durable: health::DurableAccountHealth) -> registry::CodexHomeHealthRow {
+    registry::CodexHomeHealthRow {
+        account_state: durable.account.as_str().to_string(),
+        auth_fail_streak: durable.auth_fail_streak,
+        first_auth_fail_ts: durable.first_auth_fail_ts,
+        cooling_until: durable.cooling_until,
+    }
+}
+
 /// RAII load-counter guard for one in-flight turn. Dropping it — on success, error, cancellation
 /// or client disconnect — updates the home's selection signal and metrics.
 pub(crate) struct TurnSlot {
@@ -1169,12 +1231,17 @@ impl CodexGateway {
             }
             for (order, spec) in joining {
                 eprintln!("Codex home {} joined the pool", spec.id);
-                next.push(Arc::new(CodexHome::new(
+                let home = Arc::new(CodexHome::new(
                     self.cfg.clone(),
                     spec,
                     order,
                     self.calibration_store.clone(),
-                )));
+                ));
+                // Recover the durable account verdict before this home can be selected, so a
+                // subscription already known to be dead or spent is not re-admitted by a restart
+                // and rediscovered with customer traffic.
+                home.hydrate_health().await;
+                next.push(home);
             }
             next.sort_by_key(|home| home.order());
             *self.homes.write().await = next;
@@ -1519,6 +1586,12 @@ impl CodexGateway {
         let mut healthy = 0usize;
         let mut last_class = "closed";
         let pool_homes = self.homes().await;
+        // The initial pool is constructed synchronously, and rediscovery deliberately keeps
+        // existing instances, so startup is the only place these homes can recover their durable
+        // verdict. Without it a restart would silently re-admit an already-condemned subscription.
+        for home in &pool_homes {
+            home.hydrate_health().await;
+        }
         for home in &pool_homes {
             match home.process().await {
                 Ok(_) => {

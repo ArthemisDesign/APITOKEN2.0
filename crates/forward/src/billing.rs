@@ -451,6 +451,16 @@ enum WriteCmd {
         updated_ts: i64,
         reply: oneshot::Sender<anyhow::Result<i64>>,
     },
+    CodexLoadHealth {
+        home_id: String,
+        reply: oneshot::Sender<anyhow::Result<registry::CodexHomeHealthRow>>,
+    },
+    CodexSaveHealth {
+        home_id: String,
+        row: registry::CodexHomeHealthRow,
+        updated_ts: i64,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
     CodexObserveWindow {
         home_id: String,
         window_duration_mins: i64,
@@ -656,6 +666,50 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    /// Read the durable account-level verdict for one home.
+    ///
+    /// Only the account axis is durable: transport health belongs to one app-server generation and
+    /// a restarted gateway holds a new bridge, so it deserves a fresh verdict rather than an
+    /// inherited one.
+    pub async fn load_codex_health(
+        &self,
+        home_id: &str,
+    ) -> anyhow::Result<registry::CodexHomeHealthRow> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::CodexLoadHealth {
+                home_id: home_id.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Persist the account-level verdict so it survives restart and blue-green handoff.
+    pub async fn save_codex_health(
+        &self,
+        home_id: &str,
+        row: registry::CodexHomeHealthRow,
+        updated_ts: i64,
+    ) -> anyhow::Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::CodexSaveHealth {
+                home_id: home_id.into(),
+                row,
+                updated_ts,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Pair a provider snapshot with durable cumulative spend and CAS-persist the pure estimator.
     /// Duration/reset are required so an unknown window is never guessed as a weekly window.
     pub async fn observe_codex_window(
@@ -788,6 +842,14 @@ impl AsyncBilling {
                     WriteCmd::CodexCreditSpend { home_id, delta_nano, updated_ts, reply } => {
                         let _ = reply.send(registry::credit_codex_home_spend(
                             &conn, &home_id, delta_nano, updated_ts,
+                        ));
+                    }
+                    WriteCmd::CodexLoadHealth { home_id, reply } => {
+                        let _ = reply.send(registry::load_codex_home_health(&conn, &home_id));
+                    }
+                    WriteCmd::CodexSaveHealth { home_id, row, updated_ts, reply } => {
+                        let _ = reply.send(registry::save_codex_home_health(
+                            &conn, &home_id, &row, updated_ts,
                         ));
                     }
                     WriteCmd::CodexObserveWindow {
@@ -1024,6 +1086,26 @@ impl AsyncBilling {
                                 |pg| pg.credit_codex_home_spend(
                                     &home_id, delta_nano, updated_ts,
                                 ),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::CodexLoadHealth { home_id, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Codex health read",
+                                |pg| pg.load_codex_home_health(&home_id),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::CodexSaveHealth { home_id, row, updated_ts, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "Codex health write",
+                                |pg| pg.save_codex_home_health(&home_id, &row, updated_ts),
                             );
                             let _ = reply.send(result);
                         }
@@ -2053,6 +2135,43 @@ mod tests {
             .expect("backpressured detached command never entered the FIFO")
             .unwrap();
         assert!(matches!(receiver.recv().await, Some(WriteCmd::Flush(_))));
+    }
+
+    #[tokio::test]
+    async fn codex_health_survives_billing_actor_restart() {
+        let unique = std::process::id();
+        let path = std::env::temp_dir().join(format!("claude-api-codex-health-{unique}.sqlite"));
+        let _ = std::fs::remove_file(&path);
+        let db = path.to_str().unwrap().to_string();
+
+        {
+            let billing = AsyncBilling::start(db.clone(), 1).unwrap();
+            // Unknown home reads back healthy: absence of evidence is not evidence of a fault.
+            let fresh = billing.load_codex_health("home-a").await.unwrap();
+            assert_eq!(fresh.account_state, "healthy");
+
+            billing
+                .save_codex_health(
+                    "home-a",
+                    registry::CodexHomeHealthRow {
+                        account_state: "dead".to_string(),
+                        auth_fail_streak: 2,
+                        first_auth_fail_ts: 1_000,
+                        cooling_until: 1_900,
+                    },
+                    2_000,
+                )
+                .await
+                .unwrap();
+        }
+
+        // A new actor over the same authority is what a blue-green handoff looks like to the pool.
+        let billing = AsyncBilling::start(db, 1).unwrap();
+        let restored = billing.load_codex_health("home-a").await.unwrap();
+        assert_eq!(restored.account_state, "dead");
+        assert_eq!(restored.auth_fail_streak, 2);
+        assert_eq!(restored.cooling_until, 1_900);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

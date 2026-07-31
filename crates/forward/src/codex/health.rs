@@ -70,6 +70,16 @@ pub(crate) enum AccountState {
 }
 
 impl AccountState {
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value {
+            "dead" => AccountState::Dead,
+            "suspect" => AccountState::Suspect,
+            // An unrecognised verdict is treated as healthy on purpose: a schema the running binary
+            // does not understand must not silently quarantine a working subscription.
+            _ => AccountState::Healthy,
+        }
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             AccountState::Healthy => "healthy",
@@ -188,6 +198,18 @@ impl Admission {
     }
 }
 
+/// The part of a home's health that outlives the process.
+///
+/// Only the account axis. Transport health belongs to one app-server generation, so carrying it
+/// across a restart would assert something about a bridge that no longer exists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DurableAccountHealth {
+    pub(crate) account: AccountState,
+    pub(crate) auth_fail_streak: i64,
+    pub(crate) first_auth_fail_ts: i64,
+    pub(crate) cooling_until: i64,
+}
+
 /// Health of one home. Cheap to copy, so callers can snapshot it under a short lock.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct HomeHealth {
@@ -287,6 +309,25 @@ impl HomeHealth {
     /// long provider ban would be silently downgraded to a ten-second pause.
     fn cool_until(&mut self, until: i64) {
         self.cooling_until = self.cooling_until.max(until);
+    }
+
+    /// The durable slice, for persistence and for change detection.
+    pub(crate) fn durable(&self) -> DurableAccountHealth {
+        DurableAccountHealth {
+            account: self.account,
+            auth_fail_streak: self.auth_fail_streak,
+            first_auth_fail_ts: self.first_auth_fail_ts,
+            cooling_until: self.cooling_until,
+        }
+    }
+
+    /// Restore a verdict recovered from the authority. The transport axis is deliberately left at
+    /// its default: this process holds a new app-server bridge and must earn its own verdict.
+    pub(crate) fn restore(&mut self, durable: DurableAccountHealth) {
+        self.account = durable.account;
+        self.auth_fail_streak = durable.auth_fail_streak;
+        self.first_auth_fail_ts = durable.first_auth_fail_ts;
+        self.cooling_until = self.cooling_until.max(durable.cooling_until);
     }
 
     pub(crate) fn is_cooling(&self, now: i64) -> bool {
@@ -667,6 +708,34 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_restored_verdict_keeps_the_account_but_not_the_transport() {
+        let mut source = HomeHealth::new();
+        source.apply(HealthSignal::AuthRejected { permanent: true }, 100);
+        source.apply(HealthSignal::TransportClosed, 100);
+        assert_eq!(source.transport, TransportState::Wedged);
+
+        // A restart gives the home a brand new app-server bridge, so the transport verdict must not
+        // be inherited — but the dead subscription must be, or every blue-green handoff would
+        // re-admit it and rediscover the same failure with customer traffic.
+        let mut restored = HomeHealth::new();
+        restored.restore(source.durable());
+        assert_eq!(restored.account, AccountState::Dead);
+        assert_eq!(restored.transport, TransportState::Responsive);
+        assert!(restored.is_cooling(105));
+    }
+
+    #[test]
+    fn an_unknown_persisted_verdict_is_treated_as_healthy() {
+        // A row written by a newer binary must never quarantine a working subscription.
+        assert_eq!(
+            AccountState::from_str("something-new"),
+            AccountState::Healthy
+        );
+        assert_eq!(AccountState::from_str("dead"), AccountState::Dead);
+        assert_eq!(AccountState::from_str("suspect"), AccountState::Suspect);
     }
 
     #[test]
