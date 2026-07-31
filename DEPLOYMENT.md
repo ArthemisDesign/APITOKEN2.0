@@ -29,10 +29,12 @@ only after its migration and overall statuses are green may dependent applicatio
 | `deploy/backend` | Exact-release API/worker rollout, or no backend change |
 | `deploy/sales` | Exact tested Sales release rollout, or no sales change |
 | `deploy/openkeys` | Exact tested OpenKeys release rollout, or no OpenKeys change |
+| `deploy/admin` | Exact tested admin panel release rollout, or no admin change |
 | `deploy/watchdog` | End-to-end result |
 
 Affected stages also appear as GitHub deployment records in the `production-database`,
-`production-engine`, `production-backend`, `production-sales`, and `production-openkeys`
+`production-engine`, `production-backend`, `production-sales`, `production-openkeys`, and
+`production-admin`
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 

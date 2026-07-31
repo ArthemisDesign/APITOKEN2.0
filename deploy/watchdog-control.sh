@@ -25,9 +25,9 @@ case "${1:-}" in
     else
       printf 'watchdog has no status yet\n'
     fi
-    # Independent infrastructure, sales, and OpenKeys baselines must remain visible so an operator
-    # can distinguish a pending controller handoff from an application rollout.
-    for entry in processed infrastructure engine backend sales openkeys rejected pending-migration; do
+    # Independent infrastructure, sales, OpenKeys, and admin baselines must remain visible so an
+    # operator can distinguish a pending controller handoff from an application rollout.
+    for entry in processed infrastructure engine backend sales openkeys admin rejected pending-migration; do
       if [[ -r $STATE_ROOT/$entry.sha ]]; then
         printf '%s=%s\n' "$entry" "$(<"$STATE_ROOT/$entry.sha")"
       fi

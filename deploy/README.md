@@ -26,12 +26,13 @@ merge client onto the latest committed `master`, tested only across that feature
 under the same SHA-keyed marker used by normal delivery. Workers have separate disposable
 PostgreSQL and Cargo slots and run below production CPU/I/O priority. A per-SHA lock lets a later
 unchanged `master` deployment wait for and reuse an in-flight candidate instead of rebuilding it.
-For TypeScript, each affected runtime context (commerce, sales, OpenKeys, or Vercel web) produces a
+For TypeScript, each affected runtime context (commerce, sales, OpenKeys, Vercel web, or admin)
+produces a
 complete artifact set, while unrelated contexts are omitted. Shared workspace libraries build once
 before the selected context builds overlap; per-context marker digests let each release promoter
 verify only the artifacts it consumes. Typecheck/tests still use the changed package closure
 (workspace consumers plus their prerequisites). Shared inputs, selector changes, deletions, and
-unknown scopes force every context. The four Next.js apps restore host-local `.next/cache` archives
+unknown scopes force every context. The five Next.js apps restore host-local `.next/cache` archives
 before building and publish only complete, symlink-free archives afterward; cache damage is treated
 as a miss, never a deployment failure. A second content-addressed cache stores each context's
 complete runtime outputs under an exact tracked-input, toolchain, platform, and build-environment
@@ -86,6 +87,7 @@ The production queue remains strictly one SHA at a time.
 | Native Gemini provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-gemini.service` | `http://127.0.0.1:8795/ready`, stable 8794 |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
+| Admin panel (admin.apitoken.sale) | `/opt/apitoken/admin-releases/<sha>` through `current` | `apitoken-admin.service` | `http://127.0.0.1:3700/api/health` |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
 The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL

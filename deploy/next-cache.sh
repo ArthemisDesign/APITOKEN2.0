@@ -39,6 +39,7 @@ next_apps=(
   apps/content-studio
   apps/sales-web
   apps/openkeys
+  apps/admin
 )
 
 archive_is_safe() {

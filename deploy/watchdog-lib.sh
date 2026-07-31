@@ -309,6 +309,9 @@ wd_typescript_component_artifact_digest() {
     web)
       artifacts=(apps/web/.next/BUILD_ID)
       ;;
+    admin)
+      artifacts=(apps/admin/.next/BUILD_ID)
+      ;;
     *) wd_die "unknown TypeScript artifact component: $component" ;;
   esac
   for relative in "${artifacts[@]}"; do
@@ -342,8 +345,8 @@ wd_typescript_artifact_digest() {
 
 wd_typescript_component_list_contains() {
   local components=$1 expected=$2 component IFS=,
-  [[ $expected == commerce || $expected == sales || $expected == openkeys || $expected == web ]] \
-    || wd_die "unknown TypeScript component: $expected"
+  [[ $expected == commerce || $expected == sales || $expected == openkeys || $expected == web \
+    || $expected == admin ]] || wd_die "unknown TypeScript component: $expected"
   for component in $components; do
     [[ $component == "$expected" ]] && return 0
   done
@@ -352,10 +355,15 @@ wd_typescript_component_list_contains() {
 
 wd_typescript_component_list_is_canonical() {
   case "$1" in
-    commerce|sales|openkeys|web|\
-    commerce,sales|commerce,openkeys|commerce,web|sales,openkeys|sales,web|openkeys,web|\
-    commerce,sales,openkeys|commerce,sales,web|commerce,openkeys,web|sales,openkeys,web|\
-    commerce,sales,openkeys,web)
+    commerce|sales|openkeys|web|admin|\
+    commerce,sales|commerce,openkeys|commerce,web|commerce,admin|\
+    sales,openkeys|sales,web|sales,admin|openkeys,web|openkeys,admin|web,admin|\
+    commerce,sales,openkeys|commerce,sales,web|commerce,sales,admin|\
+    commerce,openkeys,web|commerce,openkeys,admin|commerce,web,admin|\
+    sales,openkeys,web|sales,openkeys,admin|sales,web,admin|openkeys,web,admin|\
+    commerce,sales,openkeys,web|commerce,sales,openkeys,admin|commerce,sales,web,admin|\
+    commerce,openkeys,web,admin|sales,openkeys,web,admin|\
+    commerce,sales,openkeys,web,admin)
       return 0
       ;;
     *) return 1 ;;
@@ -534,12 +542,13 @@ wd_infrastructure_scope_has() {
 # controller-only and documentation deliveries need no serving-runtime check at all.
 wd_final_verification_plan() {
   local infrastructure_scope=$1 engine_changed=$2 backend_changed=$3
-  local sales_changed=$4 openkeys_changed=$5
+  local sales_changed=$4 openkeys_changed=$5 admin_changed=$6
   local checks=()
   local broad_infrastructure=0 caddy_infrastructure=0 monitoring_infrastructure=0
   wd_infrastructure_scope_is_valid "$infrastructure_scope" || return 2
   local flag
-  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"; do
+  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" \
+    "$admin_changed"; do
     [[ $flag == 0 || $flag == 1 ]] || return 2
   done
 
@@ -559,7 +568,7 @@ wd_final_verification_plan() {
     checks+=(routing)
   fi
   if (( engine_changed == 1 || backend_changed == 1 || sales_changed == 1 \
-        || openkeys_changed == 1 || caddy_infrastructure == 1 \
+        || openkeys_changed == 1 || admin_changed == 1 || caddy_infrastructure == 1 \
         || monitoring_infrastructure == 1 || broad_infrastructure == 1 )); then
     checks+=(monitoring)
   fi
@@ -656,6 +665,19 @@ wd_path_is_openkeys() {
   esac
 }
 
+# Admin panel bounded context (admin.apitoken.sale). Свой релизный корень
+# (/opt/apitoken/admin-releases), без собственной БД и без workspace-зависимостей,
+# поэтому shared build-файлы включены, как у apps/web: бамп зависимостей
+# пере-собирает admin-релиз.
+wd_path_is_admin() {
+  case "$1" in
+    apps/admin/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_infrastructure() {
   case "$1" in
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -707,7 +729,8 @@ wd_path_is_systemd_definition() {
     systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
     systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\
     systemd/apitoken-sales-web.service|systemd/claude-authbot.service|\
-    systemd/apitoken-openkeys.service|systemd/apitoken-monitoring-collector.service|\
+    systemd/apitoken-openkeys.service|systemd/apitoken-admin.service|\
+    systemd/apitoken-monitoring-collector.service|\
     systemd/apitoken-monitoring-collector.timer|systemd/journald-apitoken.conf|\
     systemd/apitoken-tmpfiles.conf|systemd/sysctl-apitoken-redis.conf|\
     deploy/install-tmpfiles.sh|deploy/install-sysctl.sh)
@@ -741,7 +764,8 @@ wd_path_is_controller_definition() {
     deploy/deploy.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
     deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
     deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/engine-migrate.sh|deploy/codex-homes-migrate.sh|deploy/codex-app-servers.sh|\
-    deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh)
+    deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh|\
+    deploy/admin-deploy.sh)
       return 0
       ;;
     *) return 1 ;;
@@ -887,7 +911,7 @@ wd_typescript_components_for_range() {
   [[ $force_full == 0 || $force_full == 1 ]] \
     || wd_die "TypeScript full-scope flag must be 0 or 1"
   if (( force_full == 1 )); then
-    printf 'commerce,sales,openkeys,web\n'
+    printf 'commerce,sales,openkeys,web,admin\n'
     return 0
   fi
   wd_range_has_class "$repo" "$base" "$target" wd_path_is_backend \
@@ -898,10 +922,12 @@ wd_typescript_components_for_range() {
     && components+=(openkeys)
   wd_range_has_class "$repo" "$base" "$target" wd_path_is_web \
     && components+=(web)
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_admin \
+    && components+=(admin)
   if (( ${#components[@]} == 0 )); then
     # A TypeScript lane with no known owner can be a newly introduced workspace surface. Building
     # everything is the only safe default until its bounded context is explicitly classified.
-    printf 'commerce,sales,openkeys,web\n'
+    printf 'commerce,sales,openkeys,web,admin\n'
     return 0
   fi
   local joined IFS=,

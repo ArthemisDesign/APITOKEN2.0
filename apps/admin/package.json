@@ -1,0 +1,27 @@
+{
+  "name": "@claude-api/admin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3700",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 3700",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "16.2.10",
+    "typescript": "^5.8.0",
+    "vitest": "^4.0.0"
+  }
+}

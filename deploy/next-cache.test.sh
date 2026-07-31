@@ -11,6 +11,7 @@ apps=(
   apps/content-studio
   apps/sales-web
   apps/openkeys
+  apps/admin
 )
 
 new_candidate() {

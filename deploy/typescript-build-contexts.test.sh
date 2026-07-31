@@ -22,12 +22,14 @@ elif [[ $args == *" --filter=@claude-api/openkeys "* ]]; then
   label=openkeys
 elif [[ $args == *" --filter=@claude-api/web "* ]]; then
   label=web
+elif [[ $args == *" --filter=@claude-api/admin "* ]]; then
+  label=admin
 else
   printf '%s\n' "$*" >"$state/shared.args"
   : >"$state/shared.done"
   exit 0
 fi
-[[ -f $state/shared.done || $label == web ]] \
+[[ -f $state/shared.done || $label == web || $label == admin ]] \
   || { printf 'context started before shared packages: %s\n' "$label" >&2; exit 71; }
 printf '%s\n' "$*" >"$state/$label.args"
 mkdir "$state/started/$label"
@@ -42,9 +44,9 @@ done
 STUB
 chmod +x "$TEMP/bin/pnpm"
 
-PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=4 \
-  bash "$RUNNER" "$ROOT" commerce sales openkeys web
-for context in commerce sales openkeys web; do
+PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=5 \
+  bash "$RUNNER" "$ROOT" commerce sales openkeys web admin
+for context in commerce sales openkeys web admin; do
   [[ -f $TEMP/state/$context.args ]] || fail "$context context was not built"
 done
 grep -Fq -- '--filter=@claude-api/contracts' "$TEMP/state/shared.args" \
@@ -62,6 +64,13 @@ grep -Fq -- '--filter=@claude-api/sales-db' "$TEMP/state/shared.args" \
   || fail 'sales-only build omitted its database package'
 [[ -f $TEMP/state/sales.args && ! -e $TEMP/state/commerce.args ]] \
   || fail 'sales-only build started an unrelated context'
+
+rm -rf "$TEMP/state"
+mkdir -p "$TEMP/state/started"
+PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=1 \
+  bash "$RUNNER" "$ROOT" admin
+[[ -f $TEMP/state/admin.args && ! -e $TEMP/state/shared.args && ! -e $TEMP/state/commerce.args ]] \
+  || fail 'admin-only build started shared or unrelated contexts'
 
 rm -rf "$TEMP/state"
 mkdir -p "$TEMP/state/started"

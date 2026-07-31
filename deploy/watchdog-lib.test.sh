@@ -113,31 +113,33 @@ fi
 # Component-specific controllers already gate their own release, while full infrastructure keeps
 # every cross-component smoke. The order is canonical so the controller can dispatch it safely.
 final_plan_cases=(
-  'none 0 0 0 0|none'
-  'controller 0 0 0 0|none'
-  'none 1 0 0 0|runtime,panel,monitoring,codex,gemini'
-  'none 0 1 0 0|monitoring'
-  'none 0 0 1 0|monitoring'
-  'none 0 0 0 1|monitoring'
-  'caddy 0 0 0 0|routing,monitoring,codex,gemini'
-  'monitoring 0 0 0 0|monitoring'
-  'controller+caddy+monitoring 0 0 0 0|routing,monitoring,codex,gemini'
-  'systemd 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'controller+systemd 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'full 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'full 1 1 1 1|runtime,panel,routing,monitoring,codex,gemini'
+  'none 0 0 0 0 0|none'
+  'controller 0 0 0 0 0|none'
+  'none 1 0 0 0 0|runtime,panel,monitoring,codex,gemini'
+  'none 0 1 0 0 0|monitoring'
+  'none 0 0 1 0 0|monitoring'
+  'none 0 0 0 1 0|monitoring'
+  'none 0 0 0 0 1|monitoring'
+  'caddy 0 0 0 0 0|routing,monitoring,codex,gemini'
+  'monitoring 0 0 0 0 0|monitoring'
+  'controller+caddy+monitoring 0 0 0 0 0|routing,monitoring,codex,gemini'
+  'systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'controller+systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'full 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
+  'full 1 1 1 1 1|runtime,panel,routing,monitoring,codex,gemini'
 )
 for final_plan_case in "${final_plan_cases[@]}"; do
   final_plan_args=${final_plan_case%%|*}
   final_plan_expected=${final_plan_case#*|}
-  # shellcheck disable=SC2086 # The table intentionally supplies five positional scalar fields.
+  # shellcheck disable=SC2086 # The table intentionally supplies six positional scalar fields.
   final_plan_actual=$(wd_final_verification_plan $final_plan_args)
   [[ $final_plan_actual == "$final_plan_expected" ]] \
     || wd_die "final verification plan mismatch for $final_plan_args: $final_plan_actual"
 done
-if wd_final_verification_plan unknown 0 0 0 0 >/dev/null 2>&1 \
-    || wd_final_verification_plan caddy+controller 0 0 0 0 >/dev/null 2>&1 \
-    || wd_final_verification_plan none 2 0 0 0 >/dev/null 2>&1; then
+if wd_final_verification_plan unknown 0 0 0 0 0 >/dev/null 2>&1 \
+    || wd_final_verification_plan caddy+controller 0 0 0 0 0 >/dev/null 2>&1 \
+    || wd_final_verification_plan none 2 0 0 0 0 >/dev/null 2>&1 \
+    || wd_final_verification_plan none 0 0 0 0 2 >/dev/null 2>&1; then
   wd_die "invalid final verification inputs did not fail closed"
 fi
 for valid_scope in none controller caddy systemd monitoring \
@@ -215,25 +217,25 @@ publish_pipeline_start_statuses
   || wd_die "pipeline start statuses were not both published"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=5
-publish_unchanged_component_statuses 0 0 0 0
+STATUS_BARRIER_EXPECTED=6
+publish_unchanged_component_statuses 0 0 0 0 0
 [[ $(sort -u "$status_barrier_log" | tr '\n' ',') \
-    == 'deploy/backend,deploy/engine,deploy/migration,deploy/openkeys,deploy/sales,' ]] \
+    == 'deploy/admin,deploy/backend,deploy/engine,deploy/migration,deploy/openkeys,deploy/sales,' ]] \
   || wd_die "unchanged status publication lost a component context"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=2
-publish_unchanged_component_statuses 1 1 0 0
-[[ $(sort -u "$status_barrier_log" | tr '\n' ',') == 'deploy/openkeys,deploy/sales,' ]] \
+STATUS_BARRIER_EXPECTED=3
+publish_unchanged_component_statuses 1 1 0 0 0
+[[ $(sort -u "$status_barrier_log" | tr '\n' ',') == 'deploy/admin,deploy/openkeys,deploy/sales,' ]] \
   || wd_die "changed components received a false no-change status"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=5
+STATUS_BARRIER_EXPECTED=6
 STATUS_FAIL_CONTEXT=deploy/engine
-if ( publish_unchanged_component_statuses 0 0 0 0 ) >/dev/null 2>&1; then
+if ( publish_unchanged_component_statuses 0 0 0 0 0 ) >/dev/null 2>&1; then
   wd_die "a failed status worker did not fail the parent publication batch"
 fi
-(( $(wc -l <"$status_barrier_log") == 5 )) \
+(( $(wc -l <"$status_barrier_log") == 6 )) \
   || wd_die "a failed status worker abandoned sibling publication requests"
 STATUS_FAIL_CONTEXT=
 
@@ -676,6 +678,14 @@ wd_path_is_backend packages/sales-db/src/schema.ts \
   && wd_die "sales-db must not trigger the independent commerce backend"
 wd_path_is_backend packages/openkeys-db/src/schema.ts \
   && wd_die "openkeys-db must not trigger the independent commerce backend"
+wd_path_is_admin apps/admin/src/app/page.tsx || wd_die "admin app not classified as admin"
+wd_path_is_admin apps/api/src/main.ts && wd_die "commerce api wrongly classified as admin"
+wd_path_is_admin crates/server/src/http.rs && wd_die "engine wrongly classified as admin"
+wd_path_is_backend apps/admin/src/app/page.tsx \
+  && wd_die "apps/admin must not trigger the independent commerce backend"
+wd_path_is_sales apps/admin/src/app/page.tsx && wd_die "admin app wrongly classified as sales"
+wd_path_is_openkeys apps/admin/src/app/page.tsx \
+  && wd_die "admin app wrongly classified as openkeys"
 wd_path_is_backend packages/engine-client/src/index.ts \
   || wd_die "engine-client remains shared with the commerce backend"
 wd_path_is_backend packages/contracts/src/index.ts \
@@ -700,6 +710,15 @@ grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}' \
 grep -Fq 'WEB_ROLLBACK_HEALTH=${OPENKEYS_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3410/docs}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
   || wd_die "OpenKeys rollback health must remain compatible with the previous release"
+grep -Fq 'WEB_HEALTH=${ADMIN_WEB_HEALTH:-http://127.0.0.1:3700/api/health}' \
+  "$ROOT/deploy/admin-deploy.sh" \
+  || wd_die "admin rollout must gate on the application health endpoint"
+grep -Fq 'WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3700/api/health}' \
+  "$ROOT/deploy/admin-deploy.sh" \
+  || wd_die "admin rollback health must remain compatible with the previous release"
+if grep -Fq 'migrate.js' "$ROOT/deploy/admin-deploy.sh"; then
+  wd_die "the admin panel has no database and must not run migrations"
+fi
 
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
 wd_engine_topology_is_steady 0 0 0 0 1 1 1 1 0 0
@@ -784,6 +803,8 @@ wd_path_is_systemd_definition deploy/install-tmpfiles.sh
 wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
 wd_path_is_systemd_definition systemd/claude-api-gemini.service
+wd_path_is_systemd_definition systemd/apitoken-admin.service \
+  || wd_die "the admin panel unit escaped the narrow systemd installer"
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
   wd_die "unknown systemd definition entered the narrow installer"
 fi
@@ -809,7 +830,8 @@ for controller_definition in \
   deploy/codex-homes-migrate.sh \
   deploy/rollback.sh \
   deploy/sales-deploy.sh \
-  deploy/openkeys-deploy.sh; do
+  deploy/openkeys-deploy.sh \
+  deploy/admin-deploy.sh; do
   wd_path_is_controller_definition "$controller_definition" \
     || wd_die "fixed controller definition escaped the narrow installer: $controller_definition"
 done
@@ -1077,16 +1099,24 @@ validation_web_context=$(git -C "$validation_repo" rev-parse HEAD)
 [[ $(wd_typescript_components_for_range "$validation_repo" \
   "$validation_typescript_deletion" "$validation_web_context" 0) == web ]] \
   || wd_die "a web-only range selected unrelated runtime contexts"
+mkdir -p "$validation_repo/apps/admin"
+printf 'admin\n' >"$validation_repo/apps/admin/page.ts"
+git -C "$validation_repo" add apps/admin/page.ts
+git -C "$validation_repo" commit --quiet -m admin-context
+validation_admin_context=$(git -C "$validation_repo" rev-parse HEAD)
+[[ $(wd_typescript_components_for_range "$validation_repo" \
+  "$validation_web_context" "$validation_admin_context" 0) == admin ]] \
+  || wd_die "an admin-only range selected unrelated runtime contexts"
 mkdir -p "$validation_repo/packages/contracts"
 printf 'contracts\n' >"$validation_repo/packages/contracts/index.ts"
 git -C "$validation_repo" add packages/contracts/index.ts
 git -C "$validation_repo" commit --quiet -m shared-context
 validation_shared_context=$(git -C "$validation_repo" rev-parse HEAD)
 [[ $(wd_typescript_components_for_range "$validation_repo" \
-  "$validation_web_context" "$validation_shared_context" 0) == commerce,sales,openkeys ]] \
+  "$validation_admin_context" "$validation_shared_context" 0) == commerce,sales,openkeys ]] \
   || wd_die "the contracts package did not select every host consumer context"
 [[ $(wd_typescript_components_for_range "$validation_repo" \
-  "$validation_web_context" "$validation_shared_context" 1) == commerce,sales,openkeys,web ]] \
+  "$validation_admin_context" "$validation_shared_context" 1) == commerce,sales,openkeys,web,admin ]] \
   || wd_die "full TypeScript validation did not select every runtime context"
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
@@ -1125,6 +1155,7 @@ artifact_paths=(
   apps/sales-web/.next/BUILD_ID
   apps/openkeys/.next/BUILD_ID
   apps/web/.next/BUILD_ID
+  apps/admin/.next/BUILD_ID
   packages/db/dist/migrate.js
   packages/sales-db/dist/migrate.js
   packages/openkeys-db/dist/migrate.js
@@ -1138,7 +1169,7 @@ deploy_artifact_digest=$(bash -c \
   'source "$1"; tested_typescript_artifact_digest "$2"' _ "$ROOT/deploy/lib.sh" "$artifact_tree")
 [[ $watchdog_artifact_digest == "$deploy_artifact_digest" ]] \
   || wd_die "watchdog and release promoter disagree on the TypeScript artifact identity"
-for artifact_component in commerce sales openkeys web; do
+for artifact_component in commerce sales openkeys web admin; do
   watchdog_component_digest=$(wd_typescript_component_artifact_digest \
     "$artifact_tree" "$artifact_component")
   deploy_component_digest=$(bash -c \
@@ -1794,6 +1825,7 @@ final_verification_contract=(
   'run_github_status_lane success deploy/backend'
   'run_github_status_lane success deploy/sales'
   'run_github_status_lane success deploy/openkeys'
+  'run_github_status_lane success deploy/admin'
   'wd_final_verification_plan "$delivery_infra_scope" "$engine_changed"'
   'run_final_verification_lane final_verify_admin_panel &'
   'run_final_verification_lane final_verify_admin_routing &'
@@ -1881,6 +1913,7 @@ gate_contract=(
   'typescript_artifact_digest_sales=%s'
   'typescript_artifact_digest_openkeys=%s'
   'typescript_artifact_digest_web=%s'
+  'typescript_artifact_digest_admin=%s'
   'commerce_release_bundle_sha256=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
@@ -1901,6 +1934,7 @@ const path = require("node:path");
 
 const root = process.argv[2];
 const required = new Set([
+  "apps/admin",
   "apps/api",
   "apps/content-studio",
   "apps/openkeys",
@@ -1970,6 +2004,28 @@ grep -Fq 'controller/rollback.sh' "$ROOT/deploy/install-watchdog.sh" \
 grep -Fq 'watchdog-retention.sh' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the dump retention helper is not installed'
 
+# The admin lane is installed exactly like the other independent release lanes: its deploy
+# controller, its systemd unit, and a least-privilege sudo grant for the fixed script path.
+grep -Fq 'controller/admin-deploy.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the admin deploy controller is not installed'
+grep -Fq 'apitoken-admin.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the admin panel unit is not installed'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke the fixed admin deploy controller'
+grep -Fxq 'WorkingDirectory=/opt/apitoken/admin-releases/current/apps/admin' \
+  "$ROOT/systemd/apitoken-admin.service" \
+  || wd_die 'the admin unit does not run from the immutable admin release'
+grep -Fxq 'ExecStart=/opt/apitoken/admin-releases/current/apps/admin/node_modules/.bin/next start -H 127.0.0.1 -p 3700' \
+  "$ROOT/systemd/apitoken-admin.service" \
+  || wd_die 'the admin unit does not serve the fixed loopback port 3700'
+grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' \
+  "$ROOT/systemd/apitoken-admin.service" \
+  || wd_die 'the admin unit lost AF_NETLINK and Next.js will crash on uv_interface_addresses'
+if grep -Fq 'EnvironmentFile' "$ROOT/systemd/apitoken-admin.service"; then
+  wd_die 'the admin panel has no secrets and must not load an environment file'
+fi
+
 # A pre-candidate failure must never quarantine a commit: no SHA has been evaluated at that point.
 grep -Fq 'no commit was evaluated' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'pre-candidate failures are not separated from candidate quarantine'
@@ -2033,7 +2089,7 @@ subshell_result=$(trap_case_output subshell)
 
 
 # Operator visibility: independent controller and application baselines must appear in status.
-grep -Fq 'for entry in processed infrastructure engine backend sales openkeys rejected pending-migration' \
+grep -Fq 'for entry in processed infrastructure engine backend sales openkeys admin rejected pending-migration' \
   "$ROOT/deploy/watchdog-control.sh" \
   || wd_die 'watchdog status omits an independent deployment baseline'
 
@@ -2267,15 +2323,17 @@ processed_line=$(grep -nF 'wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"' \
 [[ -n $handoff_line && -n $processed_line && $handoff_line -lt $processed_line ]] \
   || wd_die 'self-update handoff is not fenced before the processed/green path'
 
-# Stateful component rollouts use three joined lanes. Engine and commerce remain ordered behind
-# their shared deploy lock; bounded sales/OpenKeys roots can make progress concurrently.
+# Stateful component rollouts use joined lanes. Engine and commerce remain ordered behind
+# their shared deploy lock; bounded sales/OpenKeys/admin roots can make progress concurrently.
 rollout_contract=(
   'run_rollout_lane deploy_core_components "$CANDIDATE_SHA" "$engine_changed"'
   'run_rollout_lane deploy_sales "$CANDIDATE_SHA" &'
   'run_rollout_lane deploy_openkeys "$CANDIDATE_SHA" &'
+  'run_rollout_lane deploy_admin "$CANDIDATE_SHA" &'
   'wait "$core_pid"'
   'wait "$sales_pid"'
   'wait "$openkeys_pid"'
+  'wait "$admin_pid"'
   'component rollout lanes failed'
   'github_phase_failure "$phase"'
 )
@@ -2337,9 +2395,9 @@ grep -Fq 'wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha"' \
   || wd_die 'final verification does not verify the selected Content Studio runtime directory'
 grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
   || wd_die 'engine is rebuilt after the candidate gate'
-[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys)' \
+[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys|admin)' \
   "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
-  || wd_die 'GitHub deployment reporting does not allow the OpenKeys environment'
+  || wd_die 'GitHub deployment reporting does not allow the admin environment'
 
 # Trusted pre-merge validation is host-owned and SHA-keyed. A separate low-priority service can
 # validate two distinct descendants while production is active, but it shares only the exact-SHA

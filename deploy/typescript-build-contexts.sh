@@ -17,7 +17,7 @@ shift
 CONTEXTS=()
 for requested in "$@"; do
   case "$requested" in
-    commerce|sales|openkeys|web) ;;
+    commerce|sales|openkeys|web|admin) ;;
     *) die "unknown build context: $requested" ;;
   esac
   for existing in ${CONTEXTS[@]+"${CONTEXTS[@]}"}; do
@@ -34,6 +34,7 @@ const path = require("node:path");
 
 const root = process.argv[2];
 const expected = new Set([
+  "@claude-api/admin",
   "@claude-api/commercial-api",
   "@claude-api/content-studio",
   "@claude-api/openkeys",
@@ -134,6 +135,9 @@ cache_input_paths() {
     web)
       CACHE_INPUT_PATHS+=(apps/web)
       ;;
+    admin)
+      CACHE_INPUT_PATHS+=(apps/admin)
+      ;;
   esac
 }
 
@@ -195,6 +199,7 @@ const names = {
     "SCREENSHOT_DIR",
     "SITE_URL",
   ],
+  admin: [...common],
 }[context];
 for (const name of [...new Set(names)].sort()) {
   const value = Object.hasOwn(process.env, name) ? process.env[name] : "<unset>";
@@ -246,6 +251,7 @@ const rootsByContext = {
     "apps/openkeys/.next",
   ],
   web: ["apps/web/.next"],
+  admin: ["apps/admin/.next"],
 };
 const requiredByContext = {
   commerce: [
@@ -264,6 +270,7 @@ const requiredByContext = {
     "apps/openkeys/.next/BUILD_ID",
   ],
   web: ["apps/web/.next/BUILD_ID"],
+  admin: ["apps/admin/.next/BUILD_ID"],
 };
 const roots = rootsByContext[context];
 const required = requiredByContext[context];
@@ -725,6 +732,9 @@ for context in "${BUILD_CONTEXTS[@]}"; do
       ;;
     web)
       start_context web @claude-api/web
+      ;;
+    admin)
+      start_context admin @claude-api/admin
       ;;
   esac
 done

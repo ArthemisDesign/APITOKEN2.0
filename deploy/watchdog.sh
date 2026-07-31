@@ -34,6 +34,7 @@ INFRASTRUCTURE_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-infrastructure.s
 RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
+ADMIN_RUNNER=/usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
 CODEX_APP_SERVERS_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
@@ -52,6 +53,7 @@ ENGINE_FILE=$STATE_ROOT/engine.sha
 BACKEND_FILE=$STATE_ROOT/backend.sha
 SALES_FILE=$STATE_ROOT/sales.sha
 OPENKEYS_FILE=$STATE_ROOT/openkeys.sha
+ADMIN_FILE=$STATE_ROOT/admin.sha
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
@@ -125,10 +127,11 @@ publish_pipeline_start_statuses() {
 }
 
 publish_unchanged_component_statuses() {
-  local engine_changed=$1 backend_changed=$2 sales_changed=$3 openkeys_changed=$4
-  local migration_pid='' engine_pid='' backend_pid='' sales_pid='' openkeys_pid=''
-  local migration_rc=0 engine_rc=0 backend_rc=0 sales_rc=0 openkeys_rc=0 flag
-  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"; do
+  local engine_changed=$1 backend_changed=$2 sales_changed=$3 openkeys_changed=$4 admin_changed=$5
+  local migration_pid='' engine_pid='' backend_pid='' sales_pid='' openkeys_pid='' admin_pid=''
+  local migration_rc=0 engine_rc=0 backend_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 flag
+  for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" \
+    "$admin_changed"; do
     [[ $flag == 0 || $flag == 1 ]] || wd_die "invalid component reporting flag: $flag"
   done
 
@@ -152,15 +155,20 @@ publish_unchanged_component_statuses() {
     run_github_status_lane success deploy/openkeys "No openkeys changes" &
     openkeys_pid=$!
   fi
+  if (( admin_changed == 0 )); then
+    run_github_status_lane success deploy/admin "No admin changes" &
+    admin_pid=$!
+  fi
 
   if [[ -n $migration_pid ]]; then wait "$migration_pid" || migration_rc=$?; fi
   if [[ -n $engine_pid ]]; then wait "$engine_pid" || engine_rc=$?; fi
   if [[ -n $backend_pid ]]; then wait "$backend_pid" || backend_rc=$?; fi
   if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
   if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
+  if [[ -n $admin_pid ]]; then wait "$admin_pid" || admin_rc=$?; fi
   (( migration_rc == 0 && engine_rc == 0 && backend_rc == 0 \
-      && sales_rc == 0 && openkeys_rc == 0 )) \
-    || wd_die "unchanged-component status publication failed (migration=$migration_rc engine=$engine_rc backend=$backend_rc sales=$sales_rc openkeys=$openkeys_rc)"
+      && sales_rc == 0 && openkeys_rc == 0 && admin_rc == 0 )) \
+    || wd_die "unchanged-component status publication failed (migration=$migration_rc engine=$engine_rc backend=$backend_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc)"
 }
 
 test_db() {
@@ -240,6 +248,7 @@ github_phase_failure() {
     deploying-backend) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/backend "$diagnostic" >/dev/null 2>&1 || true ;;
     deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" >/dev/null 2>&1 || true ;;
     deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/admin "$diagnostic" >/dev/null 2>&1 || true ;;
   esac
 }
 
@@ -475,7 +484,7 @@ candidate_is_tested() {
       [[ $actual_hash == "$expected_hash" ]] || return 1
     else
       wd_typescript_component_list_is_canonical "$marker_typescript_components" || return 1
-      for component in commerce sales openkeys web; do
+      for component in commerce sales openkeys web admin; do
         wd_typescript_component_list_contains "$required_typescript_components" "$component" \
           || continue
         wd_typescript_component_list_contains "$marker_typescript_components" "$component" \
@@ -671,7 +680,7 @@ test_typescript_lane() {
   if [[ $mode != filtered ]]; then
     # A shared/full/failed package scope needs every clean runtime context. This keeps the fallback
     # fail-closed and aligns full typecheck/tests with the artifacts they exercise.
-    lane_components=commerce,sales,openkeys,web
+    lane_components=commerce,sales,openkeys,web,admin
   fi
   IFS=, read -r -a build_contexts <<<"$lane_components"
   wd_log "building complete TypeScript context(s): $lane_components"
@@ -775,6 +784,7 @@ prepare_and_test_candidate_unlocked() {
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
+  local typescript_digest_admin=none
   local commerce_release_bundle_hash=none
   local engine_hash=none authbot_hash=none codex_hash=none
   local codex_source_commit=none codex_version=none
@@ -863,7 +873,7 @@ prepare_and_test_candidate_unlocked() {
   digest=$(wd_manifest_digest "$manifest")
   tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
   if (( typescript_required == 1 )); then
-    for component in commerce sales openkeys web; do
+    for component in commerce sales openkeys web admin; do
       wd_typescript_component_list_contains "$typescript_components" "$component" || continue
       case "$component" in
         commerce)
@@ -880,6 +890,10 @@ prepare_and_test_candidate_unlocked() {
           ;;
         web)
           typescript_digest_web=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+        admin)
+          typescript_digest_admin=$(wd_typescript_component_artifact_digest \
             "$candidate" "$component")
           ;;
       esac
@@ -928,6 +942,7 @@ prepare_and_test_candidate_unlocked() {
     printf 'typescript_artifact_digest_sales=%s\n' "$typescript_digest_sales"
     printf 'typescript_artifact_digest_openkeys=%s\n' "$typescript_digest_openkeys"
     printf 'typescript_artifact_digest_web=%s\n' "$typescript_digest_web"
+    printf 'typescript_artifact_digest_admin=%s\n' "$typescript_digest_admin"
     printf 'commerce_release_bundle_sha256=%s\n' "$commerce_release_bundle_hash"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
@@ -1183,6 +1198,7 @@ load_production_baselines() {
   BACKEND_SHA=$(wd_read_sha "$BACKEND_FILE")
   SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
   OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
+  ADMIN_SHA=$(wd_read_sha "$ADMIN_FILE" 2>/dev/null || printf '')
 }
 
 shadow_validation_exit() {
@@ -1257,6 +1273,8 @@ run_shadow_candidate_validation() (
     || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" shadow-sales
   [[ -z $OPENKEYS_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" shadow-openkeys
+  [[ -z $ADMIN_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" shadow-admin
 
   # Validate from the real production component baselines. The committed parent can be red when
   # agent-merge is repairing it; treating that undeployed parent as a production baseline both
@@ -1343,6 +1361,8 @@ candidate_validator_main() {
     || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$master_sha" validator-sales
   [[ -z $OPENKEYS_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$master_sha" validator-openkeys
+  [[ -z $ADMIN_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$master_sha" validator-admin
 
   for index in "${!validation_ids[@]}"; do
     slot=$((index + 1))
@@ -2010,10 +2030,24 @@ deploy_openkeys() {
   wd_log "openkeys $sha promoted and verified (openkeys.apitoken.sale)"
 }
 
+deploy_admin() {
+  local sha=$1
+  CURRENT_PHASE=deploying-admin
+  CURRENT_PHASE_BEFORE_FAILURE=deploying-admin
+  status "promoting and health-gating the admin panel (own release lifecycle)"
+  github_status pending deploy/admin "Admin panel deployment in progress"
+  github_deployment_start admin production-admin https://admin.apitoken.sale/
+  "$ADMIN_RUNNER" "$sha"
+  wd_atomic_write "$ADMIN_FILE" "$sha"
+  github_deployment_success admin
+  github_status success deploy/admin "Admin panel verified in production"
+  wd_log "admin $sha promoted and verified (admin.apitoken.sale)"
+}
+
 deploy_core_components() {
   local sha=$1 engine_changed=$2 backend_changed=$3 codex_changed=$4
   # The engine and commerce controllers deliberately share apitoken-deploy.lock. Keep their
-  # cutovers ordered inside one lane while sales/OpenKeys use their independent roots and units.
+  # cutovers ordered inside one lane while sales/OpenKeys/admin use their independent roots and units.
   if (( engine_changed == 1 )); then deploy_engine "$sha" "$codex_changed"; fi
   if (( backend_changed == 1 )); then deploy_backend "$sha"; fi
 }
@@ -2072,11 +2106,11 @@ main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none delivery_infra_scope=none
   local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
+  local openkeys_changed=0 admin_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
-  local core_pid= sales_pid= openkeys_pid= core_rc=0 sales_rc=0 openkeys_rc=0
+  local core_pid= sales_pid= openkeys_pid= admin_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -2094,6 +2128,7 @@ main() {
   require_fixed_file "$RETENTION_HELPER"
   require_fixed_file "$SALES_RUNNER"
   require_fixed_file "$OPENKEYS_RUNNER"
+  require_fixed_file "$ADMIN_RUNNER"
   require_fixed_file "$VALIDATION_PLANNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
@@ -2137,6 +2172,7 @@ main() {
   wd_require_ancestor "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" backend
   [[ -z $SALES_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" sales
   [[ -z $OPENKEYS_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" openkeys
+  [[ -z $ADMIN_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" admin
 
   if rejected=$(wd_read_sha "$REJECTED_FILE" 2>/dev/null) && [[ $rejected == "$CANDIDATE_SHA" ]]; then
     CURRENT_PHASE=quarantined
@@ -2183,6 +2219,15 @@ main() {
     wd_range_has_class "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" wd_path_is_openkeys \
       && openkeys_changed=1
   fi
+  # Admin panel держит собственную релизную базу. Как и у OpenKeys: пока admin.sha не
+  # существует, первый запуск деплоим безусловно — иначе контекст никогда не получит
+  # свой первый релиз.
+  if [[ -z ${ADMIN_SHA:-} ]]; then
+    admin_changed=1
+  else
+    wd_range_has_class "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" wd_path_is_admin \
+      && admin_changed=1
+  fi
 
   select_candidate_validation_requirements "$CANDIDATE_SHA"
   typescript_required=$VALIDATION_TYPESCRIPT_REQUIRED
@@ -2197,7 +2242,8 @@ main() {
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
-        && $sales_changed == 0 && $openkeys_changed == 0 && $codex_changed == 0 ]]; then
+        && $sales_changed == 0 && $openkeys_changed == 0 && $admin_changed == 0 \
+        && $codex_changed == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -2205,7 +2251,7 @@ main() {
       prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
       prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
       prune_expired_dumps
-      final_verification_plan=$(wd_final_verification_plan full 0 0 0 0) \
+      final_verification_plan=$(wd_final_verification_plan full 0 0 0 0 0) \
         || wd_die "could not derive the idle-maintenance verification plan"
       run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA"
       mark_idle_maintenance_complete
@@ -2285,8 +2331,12 @@ main() {
     # First run before openkeys.sha exists: adopt the current commit as the baseline.
     wd_atomic_write "$OPENKEYS_FILE" "$CANDIDATE_SHA"
   fi
+  if (( admin_changed == 0 )) && [[ -z ${ADMIN_SHA:-} ]]; then
+    # First run before admin.sha exists: adopt the current commit as the baseline.
+    wd_atomic_write "$ADMIN_FILE" "$CANDIDATE_SHA"
+  fi
   publish_unchanged_component_statuses \
-    "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed"
+    "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" "$admin_changed"
 
   CURRENT_PHASE=deploying-components
   CURRENT_PHASE_BEFORE_FAILURE=deploying-components
@@ -2304,21 +2354,26 @@ main() {
     run_rollout_lane deploy_openkeys "$CANDIDATE_SHA" &
     openkeys_pid=$!
   fi
+  if (( admin_changed == 1 )); then
+    run_rollout_lane deploy_admin "$CANDIDATE_SHA" &
+    admin_pid=$!
+  fi
 
   # Always join every started lane before quarantine/final verification. A failed lane owns its
   # component-specific failure status; this parent owns the single overall verdict.
   if [[ -n $core_pid ]]; then wait "$core_pid" || core_rc=$?; fi
   if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
   if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
-  if (( core_rc != 0 || sales_rc != 0 || openkeys_rc != 0 )); then
-    wd_die "component rollout lanes failed (core=$core_rc sales=$sales_rc openkeys=$openkeys_rc)"
+  if [[ -n $admin_pid ]]; then wait "$admin_pid" || admin_rc=$?; fi
+  if (( core_rc != 0 || sales_rc != 0 || openkeys_rc != 0 || admin_rc != 0 )); then
+    wd_die "component rollout lanes failed (core=$core_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc)"
   fi
   if (( engine_changed == 1 )); then ENGINE_SHA=$CANDIDATE_SHA; fi
 
   CURRENT_PHASE=verifying
   CURRENT_PHASE_BEFORE_FAILURE=verifying
   final_verification_plan=$(wd_final_verification_plan "$delivery_infra_scope" "$engine_changed" \
-    "$backend_changed" "$sales_changed" "$openkeys_changed") \
+    "$backend_changed" "$sales_changed" "$openkeys_changed" "$admin_changed") \
     || wd_die "could not derive the final production verification plan"
   status "running selected final production verification ($final_verification_plan)"
   if ! ( run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA" ); then
@@ -2332,7 +2387,7 @@ main() {
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
-  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed)"
+  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed admin=$admin_changed)"
 }
 
 case "${1:-}" in

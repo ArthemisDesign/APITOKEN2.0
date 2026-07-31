@@ -83,7 +83,8 @@ case "$args" in
   *' --filter=@claude-api/sales-api '*|*' --filter=@claude-api/sales-db '*) group=sales ;;
   *' --filter=@claude-api/openkeys '*) group=openkeys ;;
   *' --filter=@claude-api/content-studio '*|*' --filter=@claude-api/web '*|\
-  *' --filter=@claude-api/engine-client '*|*' --filter=@claude-api/payments '*) group=pure ;;
+  *' --filter=@claude-api/engine-client '*|*' --filter=@claude-api/payments '*|\
+  *' --filter=@claude-api/admin '*) group=pure ;;
   *) printf 'could not identify test group: %s\n' "$*" >&2; exit 91 ;;
 esac
 if [[ $group != pure && -n ${TYPESCRIPT_TEST_COMPONENTS:-} ]]; then
@@ -110,7 +111,7 @@ chmod +x "$BIN/pnpm"
 full_capture=$TEMP/full
 mkdir -p "$full_capture"
 PNPM_CAPTURE=$full_capture PNPM_EXPECT_BARRIER=4 MIGRATION_EXPECT_BARRIER=3 \
-  TYPESCRIPT_TEST_COMPONENTS=commerce,sales,openkeys,web \
+  TYPESCRIPT_TEST_COMPONENTS=commerce,sales,openkeys,web,admin \
   TEST_DATABASE_URL=postgresql://commerce-test \
   TEST_SALES_DATABASE_URL=postgresql://sales-test \
   TEST_OPENKEYS_DATABASE_URL=postgresql://openkeys-test PATH="$BIN:$PATH" \
@@ -118,6 +119,13 @@ PNPM_CAPTURE=$full_capture PNPM_EXPECT_BARRIER=4 MIGRATION_EXPECT_BARRIER=3 \
 for group in pure commerce sales openkeys; do
   [[ -f $full_capture/$group.completed ]] || fail "$group group did not complete"
 done
+# The admin component is selected but database-free: its tests join the database-free pure lane
+# and no disposable migration may run for it.
+grep -Fq -- '--filter=@claude-api/admin' "$full_capture/pure.args" \
+  || fail 'pure group omitted @claude-api/admin'
+if find "$full_capture" -name 'admin.migration.*' -print -quit | grep -q .; then
+  fail 'the database-free admin component launched a migration lane'
+fi
 for group in commerce sales openkeys; do
   [[ -f $full_capture/$group.migration.completed ]] \
     || fail "$group migration did not complete"

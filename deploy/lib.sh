@@ -115,6 +115,9 @@ tested_typescript_component_artifact_digest() {
     web)
       artifacts=(apps/web/.next/BUILD_ID)
       ;;
+    admin)
+      artifacts=(apps/admin/.next/BUILD_ID)
+      ;;
     *) die "unknown tested TypeScript component: $component" ;;
   esac
   for relative in "${artifacts[@]}"; do
