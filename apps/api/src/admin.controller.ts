@@ -42,6 +42,11 @@ const userListSchema = z.object({
   status: z.enum(["active", "disabled"]).optional(),
   auth: z.enum(["password", "google", "github"]).optional(),
   customer_type: z.enum(["b2c", "b2b"]).optional(),
+  // Сортировка — только закрытый enum: значение уходит в ORDER BY белого списка на стороне БД.
+  // balance_usd/spent_usd осознанно недоступны: это live-поля движка, доклеиваемые после
+  // пагинации, — глобальную сортировку по ним на стороне БД не построить (см. admin-overview.ts).
+  sort: z.enum(["created_at", "last_seen_at", "paid_total", "topup_total", "spent_30d"]).default("created_at"),
+  dir: z.enum(["asc", "desc"]).default("desc"),
 });
 
 @Controller("admin")
@@ -58,12 +63,18 @@ export class AdminController {
     @Query("status") status?: string,
     @Query("auth") auth?: string,
     @Query("customer_type") customerType?: string,
+    @Query("sort") sort?: string,
+    @Query("dir") dir?: string,
   ): Promise<unknown> {
-    const parsed = userListSchema.safeParse({ limit, offset, q, status, auth, customer_type: customerType });
+    const parsed = userListSchema.safeParse({
+      limit, offset, q, status, auth, customer_type: customerType, sort, dir,
+    });
     if (!parsed.success) throw new BadRequestException("invalid user list filters");
     return this.admin.listUsers({
       limit: parsed.data.limit,
       offset: parsed.data.offset,
+      sort: parsed.data.sort,
+      dir: parsed.data.dir,
       ...(parsed.data.q === undefined ? {} : { search: parsed.data.q }),
       ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
       ...(parsed.data.auth === undefined ? {} : { auth: parsed.data.auth }),

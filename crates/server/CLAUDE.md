@@ -79,7 +79,11 @@
   урезанным до 200 символов (settle-ошибки — invariant/SQLSTATE детали, без секретов), и лаг
   pricing-консьюмера (max(ledger.id) vs ledger_consumer_checkpoints, возраст старейшей
   неподтверждённой строки); читается через registry (`PgStore::settlement_health` / SQLite-twin
-  в registry::settlement_health), server в PG напрямую не лезет. `/gemini-subs` существует
+  в registry::settlement_health), server в PG напрямую не лезет. `/spend-stats` принимает
+  опциональные `from`/`to` (epoch-секунды, вместе): ответ дополняется блоком `custom` за
+  полуоткрытый диапазон [from, to) шириной ≤ 92 дней (мусор/from ≥ to/будущее/шире лимита — 400,
+  `to` зажимается до now+1); `custom` считается на каждый запрос мимо TTL-кэша, в котором лежат
+  только стандартные окна d1/d7/d30. Range-агрегации — через registry `spend_by_*_range`. `/gemini-subs` существует
   только в fixed Gemini runtime, гейтится
   `readonly_authed` и сериализует opaque ids/quota/cooling, per-model generation health и
   low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и

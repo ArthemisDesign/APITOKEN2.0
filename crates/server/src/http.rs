@@ -46,7 +46,9 @@ const DASH_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 type DashCache =
     std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>>;
 static OVERVIEW_CACHE: DashCache = std::sync::OnceLock::new();
-/// /spend-stats сканирует usage_events за 30 дней — TTL длиннее дашбордного.
+/// /spend-stats сканирует usage_events за 30 дней — TTL длиннее дашбордного. В кэше только
+/// стандартные окна (d1/d7/d30): произвольный диапазон ?from&to считается на каждый запрос
+/// мимо кэша, чтобы ответы с разными границами не смешивались.
 const SPEND_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 static SPEND_CACHE: DashCache = std::sync::OnceLock::new();
 /// Порог backlog для /settlement-health: несеттленая строка outbox старше 5 минут — уже аномалия
@@ -1739,10 +1741,19 @@ async fn overview(
 /// Панель «кто тратит»: разбивка расхода по engine-аккаунтам за окна 24ч/7д/30д.
 /// На каждую строку — списано клиенту (charge, с его множителем) И real-API эквивалент,
 /// чтобы был виден эффект скидки. Гейт — control-ключ, как у /overview.
+///
+/// Опциональный произвольный диапазон `?from&to` (epoch-секунды, обязательны вместе): ответ
+/// дополняется блоком `custom` той же формы, что окно periods, плюс эхо from/to. Окно
+/// полуоткрытое [from, to) — стыкующиеся диапазоны не задваивают события; ширина ≤ 92 дней.
+/// `to` в будущем зажимается до now+1 (без +1 «по сейчас» теряло бы события текущей секунды);
+/// диапазон целиком в будущем, from ≥ to и нечисловой мусор — 400. Блок custom считается на
+/// каждый запрос и НЕ кладётся в TTL-кэш (кэш хранит только стандартные окна), поэтому ответы
+/// с разными from/to не смешиваются; periods-часть custom-запрос переиспользует из кэша.
 async fn spend_stats(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(params): Query<BTreeMap<String, String>>,
 ) -> Response {
     if !control_authed(&app, &headers, &peer) {
         Metrics::inc(&app.metrics.auth_failures);
@@ -1759,108 +1770,173 @@ async fn spend_stats(
         )
             .into_response();
     };
-    if let Some(v) = cache_get_ttl(&SPEND_CACHE, SPEND_TTL) {
-        return Json(v).into_response();
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let r2 = |nano: i64| (nano as f64 / 1e9 * 100.0).round() / 100.0;
-    let mut periods = serde_json::Map::new();
-    for (key, secs) in [("d1", 86_400i64), ("d7", 7 * 86_400), ("d30", 30 * 86_400)] {
-        let rows = match b.spend_by_account(now - secs, 50).await {
-            Ok(rows) => rows,
-            Err(error) => {
-                eprintln!("billing spend stats query failed: {error:#}");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error": "billing authority unavailable"})),
-                )
-                    .into_response();
-            }
+    let custom = match spend_custom_range(&params, now) {
+        Ok(range) => range,
+        Err(response) => return response,
+    };
+    let mut v = if let Some(cached) = cache_get_ttl(&SPEND_CACHE, SPEND_TTL) {
+        cached
+    } else {
+        let mut periods = serde_json::Map::new();
+        for (key, secs) in [("d1", 86_400i64), ("d7", 7 * 86_400), ("d30", 30 * 86_400)] {
+            let window = match spend_window_json(b, now - secs, i64::MAX).await {
+                Ok(window) => window,
+                Err(response) => return response,
+            };
+            periods.insert(key.into(), window);
+        }
+        let built = json!({"now": now, "periods": periods});
+        cache_put(&SPEND_CACHE, &built);
+        built
+    };
+    if let Some((from, to)) = custom {
+        let mut window = match spend_window_json(b, from, to).await {
+            Ok(window) => window,
+            Err(response) => return response,
         };
-        let (mut charge_total, mut real_total, mut requests_total) = (0i64, 0i64, 0i64);
-        let accounts: Vec<_> = rows
-            .iter()
+        window["from"] = json!(from);
+        window["to"] = json!(to);
+        v["custom"] = window;
+    }
+    Json(v).into_response()
+}
+
+/// Разбор query `from`/`to` для /spend-stats. Оба параметра — epoch-секунды и обязательны вместе;
+/// без обоих — Ok(None), отвечаем только стандартными окнами. Валидация: from ≥ 0, from < to
+/// (после зажатия to до now+1 — см. хендлер), ширина ≤ 92 дней; нарушение — 400 с текстом причины.
+fn spend_custom_range(
+    params: &BTreeMap<String, String>,
+    now: i64,
+) -> Result<Option<(i64, i64)>, Response> {
+    /// Ручной разбор — до квартала; стандартные окна (≤30д) этим лимитом не ограничены.
+    const MAX_CUSTOM_RANGE_SECS: i64 = 92 * 86_400;
+    let bad =
+        |message: &str| (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+    let from_raw = params.get("from");
+    let to_raw = params.get("to");
+    if from_raw.is_none() && to_raw.is_none() {
+        return Ok(None);
+    }
+    let (Some(from_raw), Some(to_raw)) = (from_raw, to_raw) else {
+        return Err(bad("from and to must be given together (epoch seconds)"));
+    };
+    let Ok(from) = from_raw.parse::<i64>() else {
+        return Err(bad("from must be epoch seconds"));
+    };
+    let Ok(to) = to_raw.parse::<i64>() else {
+        return Err(bad("to must be epoch seconds"));
+    };
+    let to = to.min(now + 1);
+    if from < 0 || from >= to {
+        return Err(bad(
+            "from must be non-negative and less than to (a range fully in the future is rejected)",
+        ));
+    }
+    if to - from > MAX_CUSTOM_RANGE_SECS {
+        return Err(bad("custom range is too wide (max 92 days)"));
+    }
+    Ok(Some((from, to)))
+}
+
+/// Одна usage_events-агрегация «кто тратит» за полуоткрытое окно [since_ts, until_ts):
+/// топ-50 аккаунтов по charge + провайдеры + топ-20 моделей; суммарные charge/real/requests
+/// считаются по строкам топ-50 (семантика стандартных окон, custom её наследует). Ошибка любого
+/// запроса → 503 «billing authority unavailable», как у соседних денежных ручек.
+async fn spend_window_json(
+    b: &forward::AsyncBilling,
+    since_ts: i64,
+    until_ts: i64,
+) -> Result<serde_json::Value, Response> {
+    let r2 = |nano: i64| (nano as f64 / 1e9 * 100.0).round() / 100.0;
+    let rows = match b.spend_by_account_range(since_ts, until_ts, 50).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("billing spend stats query failed: {error:#}");
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
+            )
+                .into_response());
+        }
+    };
+    let (mut charge_total, mut real_total, mut requests_total) = (0i64, 0i64, 0i64);
+    let accounts: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            charge_total += row.charge_nano;
+            real_total += row.real_nano;
+            requests_total += row.requests;
+            json!({
+                "account": row.account_id,
+                "handle": row.handle,
+                "requests": row.requests,
+                "charge_usd": r2(row.charge_nano),
+                "real_usd": r2(row.real_nano),
+                "last_ts": row.last_ts,
+            })
+        })
+        .collect();
+    // Which upstream earned the window. Both providers settle into the same money tables, so
+    // this split comes from the explicit provider column rather than from a model-name guess.
+    let providers: Vec<_> = match b.spend_by_provider_range(since_ts, until_ts).await {
+        Ok(rows) => rows
+            .into_iter()
             .map(|row| {
-                charge_total += row.charge_nano;
-                real_total += row.real_nano;
-                requests_total += row.requests;
                 json!({
-                    "account": row.account_id,
-                    "handle": row.handle,
+                    "provider": row.provider,
                     "requests": row.requests,
                     "charge_usd": r2(row.charge_nano),
                     "real_usd": r2(row.real_nano),
-                    "last_ts": row.last_ts,
                 })
             })
-            .collect();
-        // Which upstream earned the window. Both providers settle into the same money tables, so
-        // this split comes from the explicit provider column rather than from a model-name guess.
-        let providers: Vec<_> = match b.spend_by_provider(now - secs).await {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|row| {
-                    json!({
-                        "provider": row.provider,
-                        "requests": row.requests,
-                        "charge_usd": r2(row.charge_nano),
-                        "real_usd": r2(row.real_nano),
-                    })
+            .collect(),
+        Err(error) => {
+            eprintln!("billing provider spend query failed: {error:#}");
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
+            )
+                .into_response());
+        }
+    };
+    // Top-20 моделей по charge из того же usage_events, что и providers[]. `model` там —
+    // served id из ответа апстрима, по которому реально посчитан charge (фолбэк — модель
+    // запроса): разбивка отражает фактический прайсинг, а не клиентский алиас/`-latest`.
+    // Группировка по (model, provider): один model ID могут обслуживать разные апстримы.
+    let models: Vec<_> = match b.spend_by_model_range(since_ts, until_ts, 20).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "model": row.model,
+                    "provider": row.provider,
+                    "requests": row.requests,
+                    "charge_usd": r2(row.charge_nano),
+                    "real_usd": r2(row.real_nano),
                 })
-                .collect(),
-            Err(error) => {
-                eprintln!("billing provider spend query failed: {error:#}");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error": "billing authority unavailable"})),
-                )
-                    .into_response();
-            }
-        };
-        // Top-20 моделей по charge из того же usage_events, что и providers[]. `model` там —
-        // served id из ответа апстрима, по которому реально посчитан charge (фолбэк — модель
-        // запроса): разбивка отражает фактический прайсинг, а не клиентский алиас/`-latest`.
-        // Группировка по (model, provider): один model ID могут обслуживать разные апстримы.
-        let models: Vec<_> = match b.spend_by_model(now - secs, 20).await {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|row| {
-                    json!({
-                        "model": row.model,
-                        "provider": row.provider,
-                        "requests": row.requests,
-                        "charge_usd": r2(row.charge_nano),
-                        "real_usd": r2(row.real_nano),
-                    })
-                })
-                .collect(),
-            Err(error) => {
-                eprintln!("billing model spend query failed: {error:#}");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error": "billing authority unavailable"})),
-                )
-                    .into_response();
-            }
-        };
-        periods.insert(
-            key.into(),
-            json!({
-                "charge_usd": r2(charge_total),
-                "real_usd": r2(real_total),
-                "requests": requests_total,
-                "accounts": accounts,
-                "providers": providers,
-                "models": models,
-            }),
-        );
-    }
-    let v = json!({"now": now, "periods": periods});
-    cache_put(&SPEND_CACHE, &v);
-    Json(v).into_response()
+            })
+            .collect(),
+        Err(error) => {
+            eprintln!("billing model spend query failed: {error:#}");
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "billing authority unavailable"})),
+            )
+                .into_response());
+        }
+    };
+    Ok(json!({
+        "charge_usd": r2(charge_total),
+        "real_usd": r2(real_total),
+        "requests": requests_total,
+        "accounts": accounts,
+        "providers": providers,
+        "models": models,
+    }))
 }
 
 /// Здоровье settlement pipeline — «тихие деньги»: зависшие/битые settle и лаг pricing-воркера
@@ -3864,6 +3940,7 @@ mod tests {
             "/admin/topups",
             "/admin/business-invites",
             "/admin/audit",
+            "/admin/audit/actions",
             "/admin/admin-accounts",
             "/admin/finance/overview",
             "/admin/finance/revenue",
@@ -3935,6 +4012,14 @@ mod tests {
             "class=\"loading-grid\"",
             "customer_type=b2b",
             "data-page=users",
+            // Качество данных: серверные сортировки/фильтры, пагинация и ручная CSV-выгрузка
+            // текущей страницы, произвольный диапазон «Кто тратит».
+            "downloadCsv",
+            "payments_total",
+            "data-page=topups",
+            "data-page=audit",
+            "spent_30d",
+            "spend-custom",
         ] {
             assert!(
                 panel_source.contains(resilience_capability),
@@ -4135,6 +4220,18 @@ mod tests {
         (app, dir)
     }
 
+    /// /spend-stats кэширует periods в процессном static, а cargo test гоняет тесты параллельно:
+    /// без сериализации соседний тест получил бы periods чужого tempdir-биллинга. Гард держится
+    /// до конца теста и на захвате сбрасывает кэш.
+    fn spend_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK.lock().unwrap();
+        if let Some(cell) = SPEND_CACHE.get() {
+            *cell.lock().unwrap() = None;
+        }
+        guard
+    }
+
     #[tokio::test]
     async fn settlement_health_enforces_control_key_and_reports_pipeline() {
         let (app, dir) = billing_test_app("settlement");
@@ -4225,6 +4322,7 @@ mod tests {
     #[tokio::test]
     async fn spend_stats_includes_served_model_breakdown() {
         let (app, dir) = billing_test_app("spend");
+        let _lock = spend_test_lock();
         let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
         registry::account_create(&conn, "acct", None, 2000).unwrap();
         let usage = registry::UsageEventInput {
@@ -4258,6 +4356,140 @@ mod tests {
         // accounts/providers не потерялись рядом с новой разбивкой.
         assert_eq!(d1["accounts"].as_array().unwrap().len(), 1);
         assert_eq!(d1["providers"].as_array().unwrap().len(), 1);
+        // Без ?from&to произвольного диапазона в ответе нет.
+        assert!(body.get("custom").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn spend_stats_validates_custom_range() {
+        let (app, dir) = billing_test_app("spend_range_bad");
+        let _lock = spend_test_lock();
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let now = pool::now();
+        let mut bad = vec![
+            "/spend-stats?from=abc&to=123".to_string(),
+            "/spend-stats?from=100&to=xyz".to_string(),
+            "/spend-stats?from=100".to_string(),
+            "/spend-stats?to=100".to_string(),
+            "/spend-stats?from=200&to=100".to_string(),
+            "/spend-stats?from=-5&to=100".to_string(),
+            // шире 92 дней даже после зажатия to до now
+            "/spend-stats?from=0&to=99999999999".to_string(),
+            // диапазон целиком в будущем
+            format!("/spend-stats?from={}&to={}", now + 3_600, now + 7_200),
+        ];
+        // Гейт идёт первым: без ключа даже мусорные параметры отвечают 401, а не 400.
+        let mut request = Request::builder()
+            .uri(bad[0].as_str())
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for uri in bad.drain(..) {
+            let mut request = Request::builder()
+                .uri(uri.as_str())
+                .header("x-api-key", "control-key")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "uri {uri}");
+            let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert!(body["error"].as_str().unwrap().len() > 10, "uri {uri}");
+        }
+        // Валидный диапазон на пустых данных: custom присутствует с нулевыми суммами,
+        // to из будущего зажимается (внутренний код кладёт now+1 — проверяем только границы).
+        let uri = format!("/spend-stats?from={}&to={}", now - 3_600, now + 3_600);
+        let mut request = Request::builder()
+            .uri(uri.as_str())
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let custom = &body["custom"];
+        assert_eq!(custom["from"], now - 3_600);
+        assert_eq!(custom["requests"], 0);
+        assert_eq!(custom["accounts"], json!([]));
+        assert_eq!(custom["providers"], json!([]));
+        assert_eq!(custom["models"], json!([]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn spend_stats_custom_range_aggregates_window() {
+        let (app, dir) = billing_test_app("spend_custom");
+        let _lock = spend_test_lock();
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        registry::account_create(&conn, "acct", None, 2000).unwrap();
+        let usage = registry::UsageEventInput {
+            model: "claude-opus-5".into(),
+            real_nano: 100_000_000,
+            ..Default::default()
+        };
+        registry::usage_event_add(&conn, "acct", None, &usage, 50_000_000, Some("r1")).unwrap();
+        registry::usage_event_add(&conn, "acct", None, &usage, 25_000_000, Some("r2")).unwrap();
+        // Старое событие вне диапазона, но внутри стандартного окна d30.
+        registry::usage_event_add(&conn, "acct", None, &usage, 70_000_000, Some("r3")).unwrap();
+        conn.execute(
+            "UPDATE usage_events SET ts=?1 WHERE ref='r3'",
+            rusqlite::params![pool::now() - 10 * 86_400],
+        )
+        .unwrap();
+        drop(conn);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let now = pool::now();
+        let uri = format!("/spend-stats?from={}&to={}", now - 3_600, now + 3_600);
+        let mut request = Request::builder()
+            .uri(uri.as_str())
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let custom = &body["custom"];
+        assert_eq!(custom["from"], now - 3_600);
+        assert!(custom["to"].as_i64().unwrap() <= now + 1);
+        // В диапазон попали только r1+r2: 75M nano charge → $0.08, 200M real → $0.2.
+        assert_eq!(custom["requests"], 2);
+        assert_eq!(custom["charge_usd"], 0.08);
+        assert_eq!(custom["real_usd"], 0.2);
+        let accounts = custom["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0]["account"], "acct");
+        assert_eq!(accounts[0]["requests"], 2);
+        assert!(accounts[0]["last_ts"].as_i64().unwrap() >= now - 3_600);
+        let providers = custom["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0]["provider"], "anthropic");
+        let models = custom["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["model"], "claude-opus-5");
+        // Стандартное окно d30 рядом видит и старое событие.
+        assert_eq!(body["periods"]["d30"]["requests"], 3);
+        // Кэш не загрязнён custom: повторный запрос без параметров отдаёт чистые periods.
+        let mut request = Request::builder()
+            .uri("/spend-stats")
+            .header("x-api-key", "control-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert!(body.get("custom").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

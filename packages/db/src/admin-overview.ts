@@ -56,7 +56,9 @@ export interface AdminTopupRow {
   amountNano: string;
   currency: string;
   status: string;
-  paidAt: Date;
+  // NULL возможен только со status-фильтром (например failed-платежи без оплаты); в окне
+  // по умолчанию (без фильтров) список ограничен paid_at IS NOT NULL, как и раньше.
+  paidAt: Date | null;
   createdAt: Date;
   creditStatus: string | null;
 }
@@ -143,6 +145,11 @@ export interface AdminUserOverviewRow {
   spent30dNano: string;
 }
 
+/** Допустимые поля сортировки админ-списка пользователей (GET /admin/users?sort=). */
+export type AdminUserSort = "created_at" | "last_seen_at" | "paid_total" | "topup_total" | "spent_30d";
+
+export type AdminSortDir = "asc" | "desc";
+
 export interface AdminUserOverviewQuery {
   limit?: number;
   offset?: number;
@@ -150,6 +157,8 @@ export interface AdminUserOverviewQuery {
   status?: "active" | "disabled";
   auth?: "password" | "google" | "github";
   customerType?: "b2c" | "b2b";
+  sort?: AdminUserSort;
+  dir?: AdminSortDir;
 }
 
 export interface AdminUserOverviewPage {
@@ -189,6 +198,20 @@ interface RawRow {
   last_seen_at: Date | null;
   spent_30d_nano: string;
 }
+
+// Белый список сортировок admin-списка пользователей. В SQL интерполируется ТОЛЬКО значение
+// из этой закрытой таблицы, никогда — сырое значение из query-параметра: это защита от
+// SQL-инъекции через sort/dir (HTTP-слой дополнительно валидирует zod-enum'ом).
+// Намеренно НЕТ balance_usd/spent_usd: это live-поля движка, которых нет в commerce БД —
+// apps/api доклеивает их через Control API уже после пагинации страницы. Сортировать на
+// стороне БД по ним невозможно, а сортировка одной страницы врала бы о глобальном порядке.
+const ADMIN_USER_SORT_SQL: Record<AdminUserSort, string> = {
+  created_at: "u.created_at",
+  last_seen_at: "s.last_seen_at",
+  paid_total: "COALESCE(p.paid_total, 0)",
+  topup_total: "COALESCE(cp.cumulative_topup_nano, 0)",
+  spent_30d: "COALESCE(ue.spent_30d, 0)",
+};
 
 /** След админского начисления в audit_log (движок уже кредитован идемпотентно по ref). */
 export async function recordAdminCredit(database: Database, input: {
@@ -265,6 +288,17 @@ export async function listAdminUserOverview(
   const status = query.status ?? "";
   const auth = query.auth ?? "";
   const customerType = query.customerType ?? "";
+  const sort = query.sort ?? "created_at";
+  const dir = query.dir ?? "desc";
+  const sortExpr: string | undefined = ADMIN_USER_SORT_SQL[sort];
+  if (sortExpr === undefined) throw new Error(`unsupported admin user sort: ${String(query.sort)}`);
+  if (dir !== "asc" && dir !== "desc") throw new Error(`unsupported admin user sort dir: ${String(query.dir)}`);
+  // Дефолт (created_at DESC) повторяет исторический ORDER BY байт-в-байт — обратная
+  // совместимость ответа. Остальные сортировки идут с NULLS LAST и стабильным tiebreaker,
+  // чтобы offset-пагинация не перескакивала через строки.
+  const orderBy = sort === "created_at" && dir === "desc"
+    ? "u.created_at DESC"
+    : `${sortExpr} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, u.id ASC`;
   const filters = `
     ($1::text = '' OR u.email ILIKE '%' || $1 || '%'
       OR u.display_name ILIKE '%' || $1 || '%' OR u.id::text ILIKE '%' || $1 || '%')
@@ -328,7 +362,7 @@ export async function listAdminUserOverview(
       WHERE user_id = u.id AND occurred_at > now() - interval '30 days'
     ) ue ON TRUE
     WHERE ${filters}
-    ORDER BY u.created_at DESC
+    ORDER BY ${orderBy}
     LIMIT $5 OFFSET $6
   `, params),
     database.pool.query<{ total: string }>(`
@@ -477,38 +511,96 @@ export async function getAdminDashboard(database: Database): Promise<AdminDashbo
   };
 }
 
-export async function listAdminTopups(database: Database, limit: number): Promise<{
+/**
+ * Фильтры GET /admin/topups. `status` — объединение статусов платежей и чекаутов:
+ * один фильтр применяется к ОБОИМ спискам (к платежам по payments.status, к чекаутам по
+ * checkout_sessions.status, exact match). Без `status` списки сохраняют исторические окна:
+ * payments — только строки с paid_at (реально оплаченные/возвращённые/диспуты), checkouts —
+ * только неоплаченные (status <> 'paid'). С заданным `status` эти окна снимаются: так
+ * status=failed показывает и неудачные платежи (у них paid_at NULL), и failed-чекауты,
+ * а status=paid — оплаченные чекауты рядом с оплаченными платежами.
+ */
+export type AdminTopupStatus =
+  | "paid" | "refunded" | "disputed" | "failed" | "pending" | "canceled" | "creating";
+
+export interface AdminTopupsQuery {
+  limit: number;
+  offset?: number;
+  q?: string;
+  provider?: string;
+  status?: AdminTopupStatus;
+}
+
+export interface AdminTopupsPage {
   payments: AdminTopupRow[];
   checkouts: AdminCheckoutRow[];
-}> {
-  const [payments, checkouts] = await Promise.all([
+  paymentsTotal: number;
+  checkoutsTotal: number;
+}
+
+export async function listAdminTopups(
+  database: Database,
+  query: AdminTopupsQuery,
+): Promise<AdminTopupsPage> {
+  const limit = Math.max(1, Math.min(500, query.limit));
+  const offset = Math.max(0, query.offset ?? 0);
+  const search = query.q?.trim() ?? "";
+  const provider = query.provider?.trim() ?? "";
+  const status = query.status ?? "";
+  // Общие фильтры обоих списков: $1 — подстрока email (case-insensitive), $2 — точный
+  // provider, $3 — status (семантика окна по умолчанию описана у AdminTopupStatus).
+  const paymentFilters = `
+    ($1::text = '' OR u.email ILIKE '%' || $1 || '%')
+    AND ($2::text = '' OR p.provider = $2)
+    AND (($3::text = '' AND p.paid_at IS NOT NULL) OR ($3::text <> '' AND p.status::text = $3))
+  `;
+  const checkoutFilters = `
+    ($1::text = '' OR u.email ILIKE '%' || $1 || '%')
+    AND ($2::text = '' OR cs.provider = $2)
+    AND (($3::text = '' AND cs.status <> 'paid') OR ($3::text <> '' AND cs.status::text = $3))
+  `;
+  const filterParams = [search, provider, status];
+  const pageParams = [...filterParams, limit, offset];
+  const [payments, paymentsCount, checkouts, checkoutsCount] = await Promise.all([
     database.pool.query<{
       id: string; user_id: string; email: string; provider: string; provider_payment_id: string;
-      amount_nano: string; currency: string; status: string; paid_at: Date; created_at: Date;
+      amount_nano: string; currency: string; status: string; paid_at: Date | null; created_at: Date;
       credit_status: string | null;
     }>(`
       SELECT p.id, p.user_id, u.email, p.provider, p.provider_payment_id,
-             p.amount_nano::text AS amount_nano, p.currency, p.status, p.paid_at, p.created_at,
+             p.amount_nano::text AS amount_nano, p.currency, p.status::text AS status, p.paid_at, p.created_at,
              ec.status AS credit_status
       FROM payments p
       JOIN users u ON u.id = p.user_id
       LEFT JOIN engine_credits ec ON ec.payment_id = p.id
-      WHERE p.paid_at IS NOT NULL
-      ORDER BY p.paid_at DESC
-      LIMIT $1
-    `, [limit]),
+      WHERE ${paymentFilters}
+      ORDER BY COALESCE(p.paid_at, p.created_at) DESC, p.id
+      LIMIT $4 OFFSET $5
+    `, pageParams),
+    database.pool.query<{ total: string }>(`
+      SELECT count(*)::text AS total
+      FROM payments p
+      JOIN users u ON u.id = p.user_id
+      WHERE ${paymentFilters}
+    `, filterParams),
     database.pool.query<{
       id: string; user_id: string; email: string; provider: string; provider_payment_id: string | null;
       amount_usd: string; status: string; created_at: Date; completed_at: Date | null; expires_at: Date | null;
     }>(`
       SELECT cs.id, cs.user_id, u.email, cs.provider, cs.provider_payment_id,
-             cs.amount_usd::text AS amount_usd, cs.status, cs.created_at, cs.completed_at, cs.expires_at
+             cs.amount_usd::text AS amount_usd, cs.status::text AS status, cs.created_at, cs.completed_at, cs.expires_at
       FROM checkout_sessions cs
       JOIN users u ON u.id = cs.user_id
-      WHERE cs.status <> 'paid'
-      ORDER BY cs.created_at DESC
-      LIMIT $1
-    `, [limit]),
+      WHERE ${checkoutFilters}
+      ORDER BY cs.created_at DESC, cs.id
+      LIMIT $4 OFFSET $5
+    `, pageParams),
+    database.pool.query<{ total: string }>(`
+      SELECT count(*)::text AS total
+      FROM checkout_sessions cs
+      JOIN users u ON u.id = cs.user_id
+      WHERE ${checkoutFilters}
+    `, filterParams),
   ]);
   return {
     payments: payments.rows.map((row) => ({
@@ -522,23 +614,79 @@ export async function listAdminTopups(database: Database, limit: number): Promis
       providerPaymentId: row.provider_payment_id, amountUsd: row.amount_usd,
       status: row.status, createdAt: row.created_at, completedAt: row.completed_at, expiresAt: row.expires_at,
     })),
+    paymentsTotal: Number(paymentsCount.rows[0]?.total ?? 0),
+    checkoutsTotal: Number(checkoutsCount.rows[0]?.total ?? 0),
   };
 }
 
-export async function listAdminAudit(database: Database, limit: number): Promise<AdminAuditRow[]> {
-  const result = await database.pool.query<{
-    id: string; actor_type: string; actor_id: string | null; action: string; target_type: string;
-    target_id: string; metadata: unknown; created_at: Date;
-  }>(`
-    SELECT id::text, actor_type, actor_id, action, target_type, target_id, metadata, created_at
-    FROM audit_log
-    ORDER BY created_at DESC
-    LIMIT $1
-  `, [limit]);
-  return result.rows.map((row) => ({
-    id: row.id, actorType: row.actor_type, actorId: row.actor_id, action: row.action,
-    targetType: row.target_type, targetId: row.target_id, metadata: row.metadata, createdAt: row.created_at,
-  }));
+/**
+ * Фильтры GET /admin/audit. `q` — case-insensitive подстрока по target_id И по сериализованному
+ * JSON metadata (metadata::text): так находятся и события по id цели, и по значениям внутри
+ * payload (ref, reason, engine_account_id). `%`/`_` во входе работают как ILIKE-шаблон —
+ * то же поведение, что у поиска в GET /admin/users. `from`/`to` — границы created_at
+ * (включительно); HTTP-слой принимает их ISO-строками.
+ */
+export interface AdminAuditQuery {
+  limit: number;
+  offset?: number;
+  action?: string;
+  actorType?: string;
+  q?: string;
+  from?: Date;
+  to?: Date;
+}
+
+export async function listAdminAudit(
+  database: Database,
+  query: AdminAuditQuery,
+): Promise<{ rows: AdminAuditRow[]; total: number }> {
+  const limit = Math.max(1, Math.min(500, query.limit));
+  const offset = Math.max(0, query.offset ?? 0);
+  const action = query.action?.trim() ?? "";
+  const actorType = query.actorType?.trim() ?? "";
+  const search = query.q?.trim() ?? "";
+  const from = query.from ?? null;
+  const to = query.to ?? null;
+  const filters = `
+    ($1::text = '' OR action = $1)
+    AND ($2::text = '' OR actor_type = $2)
+    AND ($3::text = '' OR target_id ILIKE '%' || $3 || '%' OR metadata::text ILIKE '%' || $3 || '%')
+    AND ($4::timestamptz IS NULL OR created_at >= $4)
+    AND ($5::timestamptz IS NULL OR created_at <= $5)
+  `;
+  const filterParams = [action, actorType, search, from, to];
+  const [result, countResult] = await Promise.all([
+    database.pool.query<{
+      id: string; actor_type: string; actor_id: string | null; action: string; target_type: string;
+      target_id: string; metadata: unknown; created_at: Date;
+    }>(`
+      SELECT id::text, actor_type, actor_id, action, target_type, target_id, metadata, created_at
+      FROM audit_log
+      WHERE ${filters}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $6 OFFSET $7
+    `, [...filterParams, limit, offset]),
+    database.pool.query<{ total: string }>(`
+      SELECT count(*)::text AS total
+      FROM audit_log
+      WHERE ${filters}
+    `, filterParams),
+  ]);
+  return {
+    rows: result.rows.map((row) => ({
+      id: row.id, actorType: row.actor_type, actorId: row.actor_id, action: row.action,
+      targetType: row.target_type, targetId: row.target_id, metadata: row.metadata, createdAt: row.created_at,
+    })),
+    total: Number(countResult.rows[0]?.total ?? 0),
+  };
+}
+
+/** Distinct-список action в audit_log — для выпадающего фильтра панели (GET /admin/audit/actions). */
+export async function listAdminAuditActions(database: Database): Promise<string[]> {
+  const result = await database.pool.query<{ action: string }>(`
+    SELECT DISTINCT action FROM audit_log ORDER BY action
+  `);
+  return result.rows.map((row) => row.action);
 }
 
 export async function listAdminBusinessInvites(database: Database, limit: number): Promise<AdminBusinessInviteRow[]> {

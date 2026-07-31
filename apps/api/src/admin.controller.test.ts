@@ -13,6 +13,8 @@ describe("admin user list HTTP contract", () => {
     expect(listUsers).toHaveBeenCalledWith({
       limit: 25,
       offset: 50,
+      sort: "created_at",
+      dir: "desc",
       search: "alice",
       status: "active",
       auth: "google",
@@ -20,10 +22,28 @@ describe("admin user list HTTP contract", () => {
     });
   });
 
-  it("rejects unbounded or unknown filters", async () => {
-    const controller = new AdminController({ listUsers: vi.fn() } as unknown as AdminService);
+  it("passes a whitelisted sort and direction to the service", async () => {
+    const listUsers = vi.fn().mockResolvedValue({ users: [], total: 0, limit: 50, offset: 0 });
+    const controller = new AdminController({ listUsers } as unknown as AdminService);
+
+    await expect(controller.listUsers(undefined, undefined, undefined, undefined, undefined, undefined, "paid_total", "asc"))
+      .resolves.toMatchObject({ total: 0 });
+    expect(listUsers).toHaveBeenCalledWith({ limit: 50, offset: 0, sort: "paid_total", dir: "asc" });
+  });
+
+  it("rejects unbounded or unknown filters and non-whitelisted sorts", async () => {
+    const listUsers = vi.fn();
+    const controller = new AdminController({ listUsers } as unknown as AdminService);
     await expect(controller.listUsers("500", "0")).rejects.toBeInstanceOf(BadRequestException);
     await expect(controller.listUsers("50", "0", "", "unknown")).rejects.toBeInstanceOf(BadRequestException);
+    // sort интерполируется в ORDER BY — принимаются только значения белого списка.
+    await expect(controller.listUsers(undefined, undefined, undefined, undefined, undefined, undefined, "balance_usd"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.listUsers(undefined, undefined, undefined, undefined, undefined, undefined, "created_at; DROP TABLE users;--"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.listUsers(undefined, undefined, undefined, undefined, undefined, undefined, "spent_30d", "sideways"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(listUsers).not.toHaveBeenCalled();
   });
 
   it("accepts copy-only invitations and forwards the verified operator identity", async () => {

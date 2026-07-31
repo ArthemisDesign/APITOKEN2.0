@@ -673,15 +673,17 @@ enum ReadCmd {
         i64,
         oneshot::Sender<anyhow::Result<registry::UsageReport>>,
     ),
-    SpendByAccount(
-        i64,
-        i64,
-        oneshot::Sender<anyhow::Result<Vec<registry::SpendAccountAgg>>>,
-    ),
-    SpendByProvider(
-        i64,
-        oneshot::Sender<anyhow::Result<Vec<registry::SpendProviderAgg>>>,
-    ),
+    SpendByAccount {
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+        reply: oneshot::Sender<anyhow::Result<Vec<registry::SpendAccountAgg>>>,
+    },
+    SpendByProvider {
+        since_ts: i64,
+        until_ts: i64,
+        reply: oneshot::Sender<anyhow::Result<Vec<registry::SpendProviderAgg>>>,
+    },
     PricingCatalogByGeneration {
         product_id: String,
         generation: i64,
@@ -711,11 +713,12 @@ enum ReadCmd {
         account_id: String,
         reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
     },
-    SpendByModel(
-        i64,
-        i64,
-        oneshot::Sender<anyhow::Result<Vec<registry::SpendModelAgg>>>,
-    ),
+    SpendByModel {
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+        reply: oneshot::Sender<anyhow::Result<Vec<registry::SpendModelAgg>>>,
+    },
     SettlementHealth(
         i64,
         String,
@@ -1306,11 +1309,24 @@ impl AsyncBilling {
                             ReadCmd::UsageReport(id, since, until, r) => {
                                 let _ = r.send(registry::usage_report(&conn, &id, since, until));
                             }
-                            ReadCmd::SpendByAccount(since, lim, r) => {
-                                let _ = r.send(registry::spend_by_account(&conn, since, lim));
+                            ReadCmd::SpendByAccount {
+                                since_ts,
+                                until_ts,
+                                limit,
+                                reply,
+                            } => {
+                                let _ = reply.send(registry::spend_by_account_range(
+                                    &conn, since_ts, until_ts, limit,
+                                ));
                             }
-                            ReadCmd::SpendByProvider(since, r) => {
-                                let _ = r.send(registry::spend_by_provider(&conn, since));
+                            ReadCmd::SpendByProvider {
+                                since_ts,
+                                until_ts,
+                                reply,
+                            } => {
+                                let _ = reply.send(registry::spend_by_provider_range(
+                                    &conn, since_ts, until_ts,
+                                ));
                             }
                             ReadCmd::PricingCatalogByGeneration {
                                 product_id,
@@ -1370,8 +1386,15 @@ impl AsyncBilling {
                                     &account_id,
                                 ));
                             }
-                            ReadCmd::SpendByModel(since, lim, r) => {
-                                let _ = r.send(registry::spend_by_model(&conn, since, lim));
+                            ReadCmd::SpendByModel {
+                                since_ts,
+                                until_ts,
+                                limit,
+                                reply,
+                            } => {
+                                let _ = reply.send(registry::spend_by_model_range(
+                                    &conn, since_ts, until_ts, limit,
+                                ));
                             }
                             ReadCmd::SettlementHealth(backlog, consumer, r) => {
                                 let _ =
@@ -1942,11 +1965,20 @@ impl AsyncBilling {
                             ReadCmd::UsageReport(id, since, until, r) => {
                                 answer!(r, pg.usage_report(&id, since, until))
                             }
-                            ReadCmd::SpendByAccount(since, lim, r) => {
-                                answer!(r, pg.spend_by_account(since, lim))
+                            ReadCmd::SpendByAccount {
+                                since_ts,
+                                until_ts,
+                                limit,
+                                reply,
+                            } => {
+                                answer!(reply, pg.spend_by_account_range(since_ts, until_ts, limit))
                             }
-                            ReadCmd::SpendByProvider(since, r) => {
-                                answer!(r, pg.spend_by_provider(since))
+                            ReadCmd::SpendByProvider {
+                                since_ts,
+                                until_ts,
+                                reply,
+                            } => {
+                                answer!(reply, pg.spend_by_provider_range(since_ts, until_ts))
                             }
                             ReadCmd::PricingCatalogByGeneration {
                                 product_id,
@@ -1979,8 +2011,13 @@ impl AsyncBilling {
                             ReadCmd::PricingReadBundle { account_id, reply } => {
                                 answer!(reply, pg.pricing_read_bundle(&account_id))
                             }
-                            ReadCmd::SpendByModel(since, lim, r) => {
-                                answer!(r, pg.spend_by_model(since, lim))
+                            ReadCmd::SpendByModel {
+                                since_ts,
+                                until_ts,
+                                limit,
+                                reply,
+                            } => {
+                                answer!(reply, pg.spend_by_model_range(since_ts, until_ts, limit))
                             }
                             ReadCmd::SettlementHealth(backlog, consumer, r) => {
                                 answer!(r, pg.settlement_health(backlog, &consumer))
@@ -2629,9 +2666,24 @@ impl AsyncBilling {
         since_ts: i64,
         limit: i64,
     ) -> anyhow::Result<Vec<registry::SpendAccountAgg>> {
+        self.spend_by_account_range(since_ts, i64::MAX, limit).await
+    }
+    /// То же с явной верхней границей: полуоткрытое окно [since_ts, until_ts) — произвольный
+    /// диапазон панели (/spend-stats?from&to). Одна SQL-агрегация, без вычитания кумулятивов.
+    pub async fn spend_by_account_range(
+        &self,
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<registry::SpendAccountAgg>> {
         let (r, rx) = oneshot::channel();
         self.reader()
-            .send(ReadCmd::SpendByAccount(since_ts, limit, r))
+            .send(ReadCmd::SpendByAccount {
+                since_ts,
+                until_ts,
+                limit,
+                reply: r,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await
@@ -2642,9 +2694,21 @@ impl AsyncBilling {
         &self,
         since_ts: i64,
     ) -> anyhow::Result<Vec<registry::SpendProviderAgg>> {
+        self.spend_by_provider_range(since_ts, i64::MAX).await
+    }
+    /// То же с явной верхней границей окна — см. spend_by_account_range.
+    pub async fn spend_by_provider_range(
+        &self,
+        since_ts: i64,
+        until_ts: i64,
+    ) -> anyhow::Result<Vec<registry::SpendProviderAgg>> {
         let (r, rx) = oneshot::channel();
         self.reader()
-            .send(ReadCmd::SpendByProvider(since_ts, r))
+            .send(ReadCmd::SpendByProvider {
+                since_ts,
+                until_ts,
+                reply: r,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await
@@ -2656,9 +2720,23 @@ impl AsyncBilling {
         since_ts: i64,
         limit: i64,
     ) -> anyhow::Result<Vec<registry::SpendModelAgg>> {
+        self.spend_by_model_range(since_ts, i64::MAX, limit).await
+    }
+    /// То же с явной верхней границей окна — см. spend_by_account_range.
+    pub async fn spend_by_model_range(
+        &self,
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<registry::SpendModelAgg>> {
         let (r, rx) = oneshot::channel();
         self.reader()
-            .send(ReadCmd::SpendByModel(since_ts, limit, r))
+            .send(ReadCmd::SpendByModel {
+                since_ts,
+                until_ts,
+                limit,
+                reply: r,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await

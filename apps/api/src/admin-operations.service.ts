@@ -9,12 +9,15 @@ import {
   getAdminUserControlTarget,
   getEngineAccountMapping,
   listAdminAudit,
+  listAdminAuditActions,
   listAdminBusinessInvites,
   listAdminTopups,
   recordAdminCredit,
   resetAdminUserTotp,
   revokeAdminUserSessions,
   setAdminUserStatus,
+  type AdminTopupsQuery,
+  type AdminAuditQuery,
   type Database,
 } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
@@ -77,8 +80,14 @@ export class AdminOperationsService {
     };
   }
 
-  async topups(limit: number): Promise<Record<string, unknown>> {
-    const value = await listAdminTopups(this.database, limit);
+  /**
+   * Два списка пополнений с общими фильтрами (семантика status — у AdminTopupsQuery) и
+   * независимой пагинацией каждого: limit/offset применяются к обоим, а payments_total /
+   * checkouts_total — COUNT с теми же фильтрами, чтобы панель рисовала пагинацию.
+   * Без фильтров выдача байт-в-байт совпадает с исторической (paid-платежи + неоплаченные чекауты).
+   */
+  async topups(query: AdminTopupsQuery & { limit: number; offset: number }): Promise<Record<string, unknown>> {
+    const value = await listAdminTopups(this.database, query);
     return {
       payments: value.payments.map((row) => ({
         id: row.id,
@@ -89,7 +98,7 @@ export class AdminOperationsService {
         amount_usd: nanoToUsd(row.amountNano),
         currency: row.currency,
         status: row.status,
-        paid_at: row.paidAt.toISOString(),
+        paid_at: row.paidAt?.toISOString() ?? null,
         created_at: row.createdAt.toISOString(),
         credit_status: row.creditStatus,
       })),
@@ -105,21 +114,33 @@ export class AdminOperationsService {
         completed_at: row.completedAt?.toISOString() ?? null,
         expires_at: row.expiresAt?.toISOString() ?? null,
       })),
+      payments_total: value.paymentsTotal,
+      checkouts_total: value.checkoutsTotal,
     };
   }
 
-  async audit(limit: number): Promise<Record<string, unknown>> {
-    const rows = await listAdminAudit(this.database, limit);
-    return { rows: rows.map((row) => ({
-      id: row.id,
-      actor_type: row.actorType,
-      actor_id: row.actorId,
-      action: row.action,
-      target_type: row.targetType,
-      target_id: row.targetId,
-      metadata: row.metadata,
-      created_at: row.createdAt.toISOString(),
-    })) };
+  async audit(query: AdminAuditQuery & { limit: number; offset: number }): Promise<Record<string, unknown>> {
+    const page = await listAdminAudit(this.database, query);
+    return {
+      rows: page.rows.map((row) => ({
+        id: row.id,
+        actor_type: row.actorType,
+        actor_id: row.actorId,
+        action: row.action,
+        target_type: row.targetType,
+        target_id: row.targetId,
+        metadata: row.metadata,
+        created_at: row.createdAt.toISOString(),
+      })),
+      total: page.total,
+      limit: query.limit,
+      offset: query.offset,
+    };
+  }
+
+  /** Distinct-список action для выпадающего фильтра аудита в панели. */
+  async auditActions(): Promise<Record<string, unknown>> {
+    return { actions: await listAdminAuditActions(this.database) };
   }
 
   async businessInvites(limit: number): Promise<Record<string, unknown>> {

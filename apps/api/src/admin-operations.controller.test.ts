@@ -56,6 +56,74 @@ describe("admin operations HTTP contract", () => {
     await expect(failure).rejects.toMatchObject({ status: 409 });
   });
 
+  it("forwards validated topup filters and rejects unknown statuses", async () => {
+    const operations = fakeOperations();
+    const controller = new AdminOperationsController(operations.service);
+    operations.topups.mockResolvedValue({ payments: [], checkouts: [], payments_total: 0, checkouts_total: 0 });
+
+    await expect(controller.topups("20", "40", "Alice@Example", "cryptomus", "failed"))
+      .resolves.toMatchObject({ payments_total: 0 });
+    expect(operations.topups).toHaveBeenCalledWith({
+      limit: 20,
+      offset: 40,
+      q: "Alice@Example",
+      provider: "cryptomus",
+      status: "failed",
+    });
+
+    // Валидация бросает синхронно (как исторический parseLimit), поэтому toThrow, а не rejects.
+    expect(() => controller.topups(undefined, undefined, undefined, undefined, "settled"))
+      .toThrow(BadRequestException);
+    expect(() => controller.topups("501")).toThrow(BadRequestException);
+    expect(operations.topups).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the default topups and audit calls filter-free", async () => {
+    const operations = fakeOperations();
+    const controller = new AdminOperationsController(operations.service);
+    operations.topups.mockResolvedValue({});
+    operations.audit.mockResolvedValue({ rows: [], total: 0, limit: 100, offset: 0 });
+
+    await controller.topups();
+    expect(operations.topups).toHaveBeenCalledWith({ limit: 100, offset: 0 });
+
+    await controller.audit();
+    expect(operations.audit).toHaveBeenCalledWith({ limit: 100, offset: 0 });
+  });
+
+  it("forwards validated audit filters with ISO date bounds", async () => {
+    const operations = fakeOperations();
+    const controller = new AdminOperationsController(operations.service);
+    operations.audit.mockResolvedValue({ rows: [], total: 0, limit: 50, offset: 10 });
+
+    await expect(controller.audit(
+      "50", "10", "admin.credit", "commercial-admin", "order-7",
+      "2026-07-01T00:00:00.000Z", "2026-07-31T23:59:59.000Z",
+    )).resolves.toMatchObject({ total: 0 });
+    expect(operations.audit).toHaveBeenCalledWith({
+      limit: 50,
+      offset: 10,
+      action: "admin.credit",
+      actorType: "commercial-admin",
+      q: "order-7",
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-31T23:59:59.000Z"),
+    });
+
+    expect(() => controller.audit(undefined, undefined, undefined, undefined, undefined, "01.07.2026"))
+      .toThrow(BadRequestException);
+    expect(operations.audit).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the distinct audit action list for the filter dropdown", async () => {
+    const operations = fakeOperations();
+    const controller = new AdminOperationsController(operations.service);
+    operations.auditActions.mockResolvedValue({ actions: ["admin.credit", "admin.user.disabled"] });
+
+    await expect(controller.auditActions()).resolves.toEqual({ actions: ["admin.credit", "admin.user.disabled"] });
+    expect(operations.auditActions).toHaveBeenCalledTimes(1);
+  });
+
   it("forwards an audited B2B conversion request", async () => {
     const operations = fakeOperations();
     const controller = new AdminOperationsController(operations.service);
@@ -92,6 +160,7 @@ function fakeOperations() {
     dashboard: vi.fn(),
     topups: vi.fn(),
     audit: vi.fn(),
+    auditActions: vi.fn(),
     businessInvites: vi.fn(),
     creditUser: vi.fn(),
     convertToBusiness: vi.fn(),

@@ -1834,6 +1834,17 @@ impl PgStore {
         })
     }
     pub fn spend_by_account(&mut self, since_ts: i64, limit: i64) -> Result<Vec<SpendAccountAgg>> {
+        self.spend_by_account_range(since_ts, i64::MAX, limit)
+    }
+
+    /// То же с явной верхней границей: полуоткрытое окно `since_ts ≤ ts < until_ts` (стыкующиеся
+    /// диапазоны не задваивают события). Для произвольного диапазона панели (/spend-stats?from&to).
+    pub fn spend_by_account_range(
+        &mut self,
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+    ) -> Result<Vec<SpendAccountAgg>> {
         Ok(self
             .client
             .query(
@@ -1841,9 +1852,9 @@ impl PgStore {
                  COALESCE(SUM(u.charge_nano),0)::bigint, COALESCE(SUM(u.real_nano),0)::bigint, \
                  COALESCE(MAX(u.ts),0)::bigint \
                  FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
-                 WHERE u.ts>=$1 GROUP BY u.account_id, a.handle \
-                 ORDER BY SUM(u.charge_nano) DESC LIMIT $2",
-                &[&since_ts, &limit],
+                 WHERE u.ts>=$1 AND u.ts<$2 GROUP BY u.account_id, a.handle \
+                 ORDER BY SUM(u.charge_nano) DESC LIMIT $3",
+                &[&since_ts, &until_ts, &limit],
             )?
             .into_iter()
             .map(|r| SpendAccountAgg {
@@ -1857,13 +1868,22 @@ impl PgStore {
             .collect())
     }
     pub fn spend_by_provider(&mut self, since_ts: i64) -> Result<Vec<SpendProviderAgg>> {
+        self.spend_by_provider_range(since_ts, i64::MAX)
+    }
+
+    /// То же с явной верхней границей окна — см. spend_by_account_range.
+    pub fn spend_by_provider_range(
+        &mut self,
+        since_ts: i64,
+        until_ts: i64,
+    ) -> Result<Vec<SpendProviderAgg>> {
         Ok(self
             .client
             .query(
                 "SELECT COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*)::bigint, \
                  COALESCE(SUM(charge_nano),0)::bigint, COALESCE(SUM(real_nano),0)::bigint \
-                 FROM usage_events WHERE ts>=$1 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
-                &[&since_ts],
+                 FROM usage_events WHERE ts>=$1 AND ts<$2 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
+                &[&since_ts, &until_ts],
             )?
             .into_iter()
             .map(|r| SpendProviderAgg {
@@ -1878,15 +1898,25 @@ impl PgStore {
     /// Top-`limit` моделей по charge за окно — тот же источник, что и spend_by_provider.
     /// `model` — served id из ответа апстрима (по нему посчитан charge), см. lib.rs.
     pub fn spend_by_model(&mut self, since_ts: i64, limit: i64) -> Result<Vec<SpendModelAgg>> {
+        self.spend_by_model_range(since_ts, i64::MAX, limit)
+    }
+
+    /// То же с явной верхней границей окна — см. spend_by_account_range.
+    pub fn spend_by_model_range(
+        &mut self,
+        since_ts: i64,
+        until_ts: i64,
+        limit: i64,
+    ) -> Result<Vec<SpendModelAgg>> {
         Ok(self
             .client
             .query(
                 "SELECT COALESCE(NULLIF(model,''),'(unknown)'), \
                  COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*)::bigint, \
                  COALESCE(SUM(charge_nano),0)::bigint, COALESCE(SUM(real_nano),0)::bigint \
-                 FROM usage_events WHERE ts>=$1 GROUP BY 1,2 \
-                 ORDER BY SUM(charge_nano) DESC, 1, 2 LIMIT $2",
-                &[&since_ts, &limit],
+                 FROM usage_events WHERE ts>=$1 AND ts<$2 GROUP BY 1,2 \
+                 ORDER BY SUM(charge_nano) DESC, 1, 2 LIMIT $3",
+                &[&since_ts, &until_ts, &limit],
             )?
             .into_iter()
             .map(|r| SpendModelAgg {

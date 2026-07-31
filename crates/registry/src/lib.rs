@@ -3537,13 +3537,25 @@ pub fn spend_by_account(
     since_ts: i64,
     limit: i64,
 ) -> Result<Vec<SpendAccountAgg>> {
+    spend_by_account_range(conn, since_ts, i64::MAX, limit)
+}
+
+/// То же с явной верхней границей: полуоткрытое окно `since_ts ≤ ts < until_ts` (стыкующиеся
+/// диапазоны не задваивают события). Для произвольного диапазона панели (/spend-stats?from&to).
+pub fn spend_by_account_range(
+    conn: &Connection,
+    since_ts: i64,
+    until_ts: i64,
+    limit: i64,
+) -> Result<Vec<SpendAccountAgg>> {
     let mut stmt = conn.prepare(
         "SELECT u.account_id, COALESCE(a.handle,''), COUNT(*), \
          COALESCE(SUM(u.charge_nano),0), COALESCE(SUM(u.real_nano),0), COALESCE(MAX(u.ts),0) \
          FROM usage_events u LEFT JOIN accounts a ON a.id=u.account_id \
-         WHERE u.ts>=?1 GROUP BY u.account_id, a.handle ORDER BY SUM(u.charge_nano) DESC LIMIT ?2",
+         WHERE u.ts>=?1 AND u.ts<?2 GROUP BY u.account_id, a.handle \
+         ORDER BY SUM(u.charge_nano) DESC LIMIT ?3",
     )?;
-    let rows = stmt.query_map(rusqlite::params![since_ts, limit], |r| {
+    let rows = stmt.query_map(rusqlite::params![since_ts, until_ts, limit], |r| {
         Ok(SpendAccountAgg {
             account_id: r.get(0)?,
             handle: r.get(1)?,
@@ -3567,12 +3579,21 @@ pub struct SpendProviderAgg {
 }
 
 pub fn spend_by_provider(conn: &Connection, since_ts: i64) -> Result<Vec<SpendProviderAgg>> {
+    spend_by_provider_range(conn, since_ts, i64::MAX)
+}
+
+/// То же с явной верхней границей окна: `since_ts ≤ ts < until_ts` — см. spend_by_account_range.
+pub fn spend_by_provider_range(
+    conn: &Connection,
+    since_ts: i64,
+    until_ts: i64,
+) -> Result<Vec<SpendProviderAgg>> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(NULLIF(provider,''),'anthropic'), COUNT(*), \
          COALESCE(SUM(charge_nano),0), COALESCE(SUM(real_nano),0) \
-         FROM usage_events WHERE ts>=?1 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
+         FROM usage_events WHERE ts>=?1 AND ts<?2 GROUP BY 1 ORDER BY SUM(charge_nano) DESC",
     )?;
-    let rows = stmt.query_map(rusqlite::params![since_ts], |r| {
+    let rows = stmt.query_map(rusqlite::params![since_ts, until_ts], |r| {
         Ok(SpendProviderAgg {
             provider: r.get(0)?,
             requests: r.get(1)?,
@@ -3598,12 +3619,23 @@ pub struct SpendModelAgg {
 }
 
 pub fn spend_by_model(conn: &Connection, since_ts: i64, limit: i64) -> Result<Vec<SpendModelAgg>> {
+    spend_by_model_range(conn, since_ts, i64::MAX, limit)
+}
+
+/// То же с явной верхней границей окна: `since_ts ≤ ts < until_ts` — см. spend_by_account_range.
+pub fn spend_by_model_range(
+    conn: &Connection,
+    since_ts: i64,
+    until_ts: i64,
+    limit: i64,
+) -> Result<Vec<SpendModelAgg>> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(NULLIF(model,''),'(unknown)'), COALESCE(NULLIF(provider,''),'anthropic'), \
          COUNT(*), COALESCE(SUM(charge_nano),0), COALESCE(SUM(real_nano),0) \
-         FROM usage_events WHERE ts>=?1 GROUP BY 1,2 ORDER BY SUM(charge_nano) DESC, 1, 2 LIMIT ?2",
+         FROM usage_events WHERE ts>=?1 AND ts<?2 GROUP BY 1,2 ORDER BY SUM(charge_nano) DESC, 1, 2 \
+         LIMIT ?3",
     )?;
-    let rows = stmt.query_map(rusqlite::params![since_ts, limit], |r| {
+    let rows = stmt.query_map(rusqlite::params![since_ts, until_ts, limit], |r| {
         Ok(SpendModelAgg {
             model: r.get(0)?,
             provider: r.get(1)?,
@@ -7294,6 +7326,61 @@ mod tests {
         // limit обрезает выдачу, окно — по ts, как у остальных spend-агрегатов
         assert_eq!(spend_by_model(&c, 0, 1).unwrap().len(), 1);
         assert!(spend_by_model(&c, now() + 10_000, 20).unwrap().is_empty());
+    }
+
+    /// Верхняя граница range-вариантов spend-агрегатов: полуоткрытое окно [since, until) —
+    /// событие ровно на `until` не попадает (стыкующиеся диапазоны не задваиваются), а open-ended
+    /// обёртки эквивалентны until=i64::MAX.
+    #[test]
+    fn spend_range_honors_upper_bound() {
+        let c = db();
+        acct_with_key(&c, "a", "k", 100_000_000_000, 2000);
+        let usage = UsageEventInput {
+            model: "claude-opus-5".into(),
+            real_nano: 10_000_000,
+            ..Default::default()
+        };
+        for (i, ts) in [1_000i64, 2_000, 3_000].iter().enumerate() {
+            usage_event_add(
+                &c,
+                "a",
+                Some("k"),
+                &usage,
+                1_000_000,
+                Some(&format!("req{i}")),
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE usage_events SET ts=?1 WHERE ref=?2",
+                rusqlite::params![ts, format!("req{i}")],
+            )
+            .unwrap();
+        }
+        // [1000, 3000): события 1000 и 2000 внутри, 3000 — ровно на границе, исключено.
+        let accounts = spend_by_account_range(&c, 1_000, 3_000, 50).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].requests, 2);
+        assert_eq!(accounts[0].charge_nano, 2_000_000);
+        assert_eq!(accounts[0].real_nano, 20_000_000);
+        assert_eq!(accounts[0].last_ts, 2_000);
+        let providers = spend_by_provider_range(&c, 1_000, 3_000).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].requests, 2);
+        let models = spend_by_model_range(&c, 1_000, 3_000, 20).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].requests, 2);
+        // Нижняя граница включительна, пустой хвост за последним событием — пуст.
+        assert_eq!(
+            spend_by_account_range(&c, 2_000, 3_000, 50).unwrap()[0].requests,
+            1
+        );
+        assert!(spend_by_provider_range(&c, 3_001, 9_999)
+            .unwrap()
+            .is_empty());
+        // Open-ended обёртки видят всё, как раньше.
+        assert_eq!(spend_by_account(&c, 0, 50).unwrap()[0].requests, 3);
+        assert_eq!(spend_by_provider(&c, 0).unwrap()[0].requests, 3);
+        assert_eq!(spend_by_model(&c, 0, 20).unwrap()[0].requests, 3);
     }
 
     /// Сводка settlement pipeline: counts по state, failed за 24ч, backlog старых несеттленых,

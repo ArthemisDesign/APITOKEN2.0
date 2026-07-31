@@ -12,9 +12,21 @@ const NAV=[
 const validTabs=NAV.flatMap(group=>group.items.map(item=>item[0]));
 const getTab=()=>validTabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
 let tab=getTab(),timer=null,recoveryTimer=null,refreshController=null,usersCache=[],adminDomainFilter='',lastRefreshAt=0;
-let userPage={offset:0,limit:50,q:'',status:'',auth:''},partnerOffset=0,businessOffset=0;
+let userPage={offset:0,limit:50,q:'',status:'',auth:'',sort:'created_at',dir:'desc'},partnerOffset=0,businessOffset=0;
 let partnersPage={offset:0,limit:50,sort:'unpaid',dir:'desc'};
 let openkeysPage={offset:0,limit:50,q:'',batch:'',status:'',usage:''};
+let topupsPage={offset:0,limit:50,q:'',provider:'',status:''};
+let auditPage={offset:0,limit:50,action:'',actorType:'',q:''},auditActions=null;
+// Серверные сортировки /admin/users — ровно sort-enum apps/api admin.controller; live-поля движка
+// (balance/spent) сервер не сортирует, поэтому их в списке нет.
+const USER_SORTS=[['created_at','создан'],['last_seen_at','активность'],['paid_total','оплачено'],['topup_total','пополнено'],['spent_30d','расход 30д']];
+// Реальные значения payments/checkout_sessions: provider — свободный текст в API, статусы — enum
+// topupsQuerySchema (один status-фильтр применяется к обоим спискам).
+const TOPUP_PROVIDERS=['cryptomus','platega'];
+const TOPUP_STATUSES=['paid','refunded','disputed','failed','pending','canceled','creating'];
+// actor_type в audit_log по коду коммерции (packages/db): операторы пишут commercial-admin,
+// operator — старое имя того же типа, оставлено для исторических строк.
+const AUDIT_ACTORS=['commercial-admin','user','provider','operator'];
 const failures=new Map();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 // Встроенные модалки вместо window.prompt/confirm: браузеры (или галка «блокировать диалоги»)
@@ -61,6 +73,13 @@ const count=(n,one,few,many)=>n+' '+plural(n,one,few,many);
 const pager=(offset,limit,total,scope)=>'<div class="pager"><span>'+(total?offset+1:0)+'–'+Math.min(offset+limit,total)+' из '+total+'</span>'+
   '<button type="button" class="btn ghost" data-page="'+scope+'" data-offset="'+Math.max(0,offset-limit)+'" '+(offset<=0?'disabled':'')+'>Назад</button>'+
   '<button type="button" class="btn ghost" data-page="'+scope+'" data-offset="'+(offset+limit)+'" '+(offset+limit>=total?'disabled':'')+'>Дальше</button></div>';
+// CSV текущей загруженной страницы: разделитель ';' (Excel-RU), экранирование кавычек/разделителей/
+// переводов строк по RFC 4180, BOM в начале — чтобы Excel открыл UTF-8 без «кракозябр». Без библиотек.
+function downloadCsv(filename,header,rows){const cell=value=>{value=String(value??'');return /[";\n\r]/.test(value)?'"'+value.replace(/"/g,'""')+'"':value};
+  const csv=[header].concat(rows).map(row=>row.map(cell).join(';')).join('\r\n');
+  const link=document.createElement('a');link.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));link.download=filename;
+  document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),1000)}
+const csvDate=()=>new Date().toISOString().slice(0,10);
 const windowLabel=minutes=>{minutes=Number(minutes)||0;if(!minutes)return'окно';if(minutes<60)return minutes+' мин';if(minutes<1440)return Math.round(minutes/60)+' ч';return Math.round(minutes/1440)+' д'};
 function shell(title,subtitle,body,badge=''){app.innerHTML='<div id="shell"><aside><div class="brand">api<i>Token</i>.sale<small>admin</small></div><nav aria-label="Разделы админ-панели">'+
   NAV.map(group=>'<div class="nav-group">'+esc(group.group)+'</div>'+group.items.map(item=>
@@ -79,7 +98,7 @@ const sourceName=path=>({
   '/admin/dashboard':'Коммерческая сводка','/overview':'Движок','/capacity':'Ёмкость флота','/subs':'Claude-подписки',
   '/codex-subs':'GPT-подписки','/gemini-subs':'Gemini-подписки','/fleet-history':'История флота','/partner-admin/overview':'Партнёрская сводка','/partner-admin/partner-analytics':'Партнёрские аккаунты',
   '/partner-admin/payout-list':'Выплаты за период','/partner-admin/payouts':'История выплат','/partner-admin/payouts/engine':'Окно выплат','/partner-admin/payouts/batches':'On-chain батчи',
-  '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/business-invites':'B2B-инвайты',
+  '/admin/users':'Пользователи','/admin/topups':'Пополнения','/admin/audit':'Аудит','/admin/audit/actions':'Действия аудита','/admin/business-invites':'B2B-инвайты',
   '/admin/finance/overview':'Финансовая сводка','/admin/finance/revenue':'Выручка по дням','/admin/finance/funnel':'Воронка чекаутов',
   '/admin/finance/top-customers':'Топ клиентов','/admin/refunds':'Возвраты','/admin/finance/cohorts':'Когорты','/admin/finance/churn-signals':'Сигналы оттока',
   '/openkeys-admin/keys':'Ключи OpenKeys',
@@ -397,7 +416,7 @@ async function spendStats(){let data,okDir;
   const periods=[['d1','Сутки (24ч)'],['d7','7 дней'],['d30','30 дней']];
   const discount=(charge,real)=>real>0?Math.round((1-charge/real)*100)+'%':'—';
   const overlay=document.createElement('div');overlay.className='overlay';
-  const render=key=>{const period=data.periods[key]||{accounts:[]};
+  const render=(period,subtitle)=>{period=period||{accounts:[]};
     const providerLabel=name=>name==='openai'?'OpenAI (Codex)':name==='anthropic'?'Claude (подписки)':name;
     const providerRows=(period.providers||[]).map(item=>'<tr><td class="left"><b>'+esc(providerLabel(item.provider))+'</b></td><td>'+item.requests+
       '</td><td><b>'+money(item.charge_usd)+'</b></td><td>'+money(item.real_usd)+'</td><td>'+discount(item.charge_usd,item.real_usd)+'</td></tr>').join('');
@@ -411,7 +430,7 @@ async function spendStats(){let data,okDir;
     const okCharge=ok.reduce((sum,item)=>sum+(item.charge_usd||0),0);
     const okReal=ok.reduce((sum,item)=>sum+(item.real_usd||0),0);
     const okRequests=ok.reduce((sum,item)=>sum+(item.requests||0),0);
-    return '<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
+    return (subtitle?'<p class="dlg-sub">'+esc(subtitle)+'</p>':'')+'<div class="cards">'+card('списано клиентам',money(period.charge_usd),period.requests+' запросов')+
       card('real-API эквивалент',money(period.real_usd),'средняя скидка '+discount(period.charge_usd,period.real_usd))+
       card('OpenKeys',money(okReal),ok.length+' ключей · '+okRequests+' запросов · списано '+money(okCharge))+'</div>'+
       '<div class="sect"><h2>По провайдерам</h2></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">провайдер</th><th>запросы</th><th>списано</th><th>real-API</th><th>скидка</th></tr></thead><tbody>'+
@@ -422,7 +441,10 @@ async function spendStats(){let data,okDir;
       (rows||empty(6))+'</tbody></table></div></div>'};
   overlay.innerHTML='<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="spend-title"><h3 id="spend-title">Кто тратит</h3><p class="dlg-sub">«списано» — по множителю аккаунта · «real-API» — полный эквивалент провайдера · топ-50 за окно</p>'+
     '<div class="spend-tabs">'+periods.map((item,index)=>'<button type="button" class="btn'+(index===0?' on':'')+'" data-period="'+item[0]+'">'+item[1]+'</button>').join('')+'</div>'+
-    '<div id="spend-body">'+render('d1')+'</div><div class="dlg-actions"><button type="button" class="btn ghost" data-dlg="cancel">Закрыть</button></div></div>';
+    '<form id="spend-custom" class="toolbar" style="margin:0 0 12px"><label class="sr-only" for="spend-from">С даты</label><input id="spend-from" type="date">'+
+    '<label class="sr-only" for="spend-to">По дату</label><input id="spend-to" type="date"><button class="btn" type="submit">Показать</button>'+
+    '<span id="spend-custom-err" class="note" style="color:var(--bad)"></span></form>'+
+    '<div id="spend-body">'+render(data.periods.d1)+'</div><div class="dlg-actions"><button type="button" class="btn ghost" data-dlg="cancel">Закрыть</button></div></div>';
   const done=()=>{overlay.remove();if(previous instanceof HTMLElement)previous.focus()};
   overlay.addEventListener('mousedown',event=>{if(event.target===overlay)done()});
   overlay.querySelector('[data-dlg=cancel]').onclick=done;
@@ -432,7 +454,24 @@ async function spendStats(){let data,okDir;
       if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
       else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}});
   overlay.querySelectorAll('[data-period]').forEach(button=>button.onclick=()=>{overlay.querySelectorAll('[data-period]').forEach(other=>other.classList.remove('on'));
-    button.classList.add('on');overlay.querySelector('#spend-body').innerHTML=render(button.dataset.period)});
+    button.classList.add('on');overlay.querySelector('#spend-custom-err').textContent='';overlay.querySelector('#spend-body').innerHTML=render(data.periods[button.dataset.period])});
+  // Произвольный диапазон: /spend-stats?from&to (epoch-секунды). «по» включительно → полуоткрытая
+  // граница +1 сутки; лимит 92 дней и зажатие будущего — на сервере, его 400 показываем текстом.
+  const customForm=overlay.querySelector('#spend-custom');
+  customForm.onsubmit=async event=>{event.preventDefault();
+    const errBox=overlay.querySelector('#spend-custom-err');errBox.textContent='';
+    const fromValue=overlay.querySelector('#spend-from').value,toValue=overlay.querySelector('#spend-to').value;
+    if(!fromValue||!toValue){errBox.textContent='Выберите обе даты.';return}
+    const fromParts=fromValue.split('-').map(Number),toParts=toValue.split('-').map(Number);
+    const from=new Date(fromParts[0],fromParts[1]-1,fromParts[2]).getTime()/1000|0;
+    const to=new Date(toParts[0],toParts[1]-1,toParts[2]).getTime()/1000|0;
+    const submit=customForm.querySelector('[type=submit]');submit.disabled=true;
+    try{const custom=(await rawApi('/spend-stats?from='+from+'&to='+(to+86400))).custom;
+      if(!custom)throw new Error('Ответ без custom-блока — обновите страницу панели.');
+      overlay.querySelectorAll('[data-period]').forEach(other=>other.classList.remove('on'));
+      overlay.querySelector('#spend-body').innerHTML=render(custom,'Диапазон '+date(from*1000)+' — '+date(to*1000)+' · те же top-50, что у стандартных окон')}
+    catch(error){errBox.textContent=error.message}
+    finally{submit.disabled=false}};
   document.body.appendChild(overlay);overlay.querySelector('[data-dlg=cancel]').focus()}
 
 /* ── Аккаунты ────────────────────────────────────────────── */
@@ -596,15 +635,17 @@ function bindOpenkeys(){const form=document.getElementById('openkeys-filter');fo
     if(!values)return;button.disabled=true;try{await send('/openkeys-admin/keys','POST',{id:button.dataset.openkey,enabled:next});toast(next?'Ключ включён.':'Ключ отключён.');await refresh({force:true})}catch(error){toast(error.message,'bad');button.disabled=false}})}
 
 /* ── Пользователи ────────────────────────────────────────── */
-async function users(){const params=new URLSearchParams({limit:String(userPage.limit),offset:String(userPage.offset)});
+async function users(){const params=new URLSearchParams({limit:String(userPage.limit),offset:String(userPage.offset),sort:userPage.sort,dir:userPage.dir});
   if(userPage.q)params.set('q',userPage.q);if(userPage.status)params.set('status',userPage.status);if(userPage.auth)params.set('auth',userPage.auth);
-  const [userData,dashboardData]=await Promise.all([
-    api('/admin/users?'+params).catch(()=>null),api('/admin/dashboard').catch(()=>null)
+  const [userData,dashboardData,overview]=await Promise.all([
+    api('/admin/users?'+params).catch(()=>null),api('/admin/dashboard').catch(()=>null),api('/overview').catch(()=>null)
   ]),page=userData||{users:[],total:0,limit:userPage.limit,offset:userPage.offset};
   if(userPage.offset>=page.total&&page.total>0){userPage.offset=Math.max(0,Math.floor((page.total-1)/userPage.limit)*userPage.limit);return users()}
-  usersCache=page.users||[];renderUsers(dashboardData||{users:{}},page)}
-function renderUsers(dashboard,page){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
+  usersCache=page.users||[];renderUsers(dashboardData||{users:{}},page,overview)}
+function renderUsers(dashboard,page,overview){const totalBalance=usersCache.reduce((sum,user)=>sum+Number(user.balance_usd||0),0);
   const totalSpent=usersCache.reduce((sum,user)=>sum+Number(user.spent_usd||0),0);
+  // Платформенные итоги из /overview (engine demand): подсказка к «видимым» суммам страницы.
+  const demand=overview&&overview.demand||{};
   const rows=usersCache.map(user=>{const pay=user.payments||{},keys=user.api_keys||{},methods=user.auth_methods||[];
     const statusKind=user.status==='disabled'?'bad':user.engine_live_status==='disabled'?'warn':'ok';
     const tier=user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
@@ -624,23 +665,36 @@ function renderUsers(dashboard,page){const totalBalance=usersCache.reduce((sum,u
       '</td><td>'+Number(keys.active||0)+'/'+Number(keys.total||0)+'</td><td>'+ago(user.last_seen_at)+'</td><td>'+date(user.created_at)+      '</td><td><div class="actions wrap">'+actions+'</div></td></tr>'}).join('');
   const stats=dashboard.users||{};
   const body='<div class="cards">'+card('клиенты',page.total,(stats.registered_oauth??'—')+' OAuth-рег. · '+(stats.registered_password??'—')+' обычных')+
-    card('активны 7 дней',stats.active_7d??'—',(stats.disabled??'—')+' отключены')+card('баланс страницы',money(totalBalance),'только '+usersCache.length+' показанных записей')+
-    card('расход страницы',money(totalSpent),'только текущая страница')+'</div><div class="sect"><h2>Все пользователи</h2></div>'+
+    card('активны 7 дней',stats.active_7d??'—',(stats.disabled??'—')+' отключены')+card('баланс видимых',money(totalBalance),usersCache.length+' показанных'+(demand.balance_usd==null?'':' · платформа '+money(demand.balance_usd)))+
+    card('расход видимых',money(totalSpent),'текущая страница'+(demand.spent_usd==null?'':' · платформа '+money(demand.spent_usd)))+'</div><div class="sect"><h2>Все пользователи</h2></div>'+
     '<form id="user-filter" class="toolbar"><label class="sr-only" for="search">Поиск пользователей</label><input id="search" type="search" value="'+esc(userPage.q)+'" placeholder="email, имя или UUID…">'+
     '<label class="sr-only" for="status">Статус</label><select id="status"><option value="">все статусы</option>'+
     '<option value="active" '+(userPage.status==='active'?'selected':'')+'>active</option><option value="disabled" '+(userPage.status==='disabled'?'selected':'')+'>disabled</option></select>'+
     '<label class="sr-only" for="auth">Способ регистрации</label><select id="auth"><option value="">любая регистрация</option>'+
     '<option value="password" '+(userPage.auth==='password'?'selected':'')+'>password</option><option value="google" '+(userPage.auth==='google'?'selected':'')+'>Google</option>'+
-    '<option value="github" '+(userPage.auth==='github'?'selected':'')+'>GitHub</option></select><button class="btn" type="submit">Найти</button></form>'+
+    '<option value="github" '+(userPage.auth==='github'?'selected':'')+'>GitHub</option></select>'+
+    '<label class="sr-only" for="sort">Сортировка</label><select id="sort">'+USER_SORTS.map(item=>'<option value="'+item[0]+'" '+(userPage.sort===item[0]?'selected':'')+'>'+item[1]+'</option>').join('')+'</select>'+
+    '<label class="sr-only" for="dir">Направление</label><select id="dir"><option value="desc" '+(userPage.dir==='desc'?'selected':'')+'>по убыванию</option><option value="asc" '+(userPage.dir==='asc'?'selected':'')+'>по возрастанию</option></select>'+
+    '<button class="btn" type="submit">Найти</button><button class="btn ghost" type="button" id="users-csv" title="Выгрузить текущую страницу в CSV">CSV</button></form>'+
     '<div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">пользователь</th><th class="left">тариф</th><th>баланс</th>'+
     '<th><span data-spend-stats title="Разбивка: сутки / 7 дней / 30 дней">потрачено</span></th><th>пополнения</th><th>ключи</th><th>был(а)</th><th>регистрация</th><th>действия</th></tr></thead><tbody>'+
     (rows||empty(9))+'</tbody></table></div></div>'+pager(userPage.offset,userPage.limit,page.total,'users')+'<footer>Отключение синхронно блокирует engine-аккаунт и отзывает все сессии. Каждое действие аудируется.</footer>';
   shell('Пользователи','серверный поиск, балансы, ключи и действия по клиентам',body,pill(count(page.total,'клиент','клиента','клиентов'),'ok'));bindUserPage()}
-function bindUserPage(){const form=document.getElementById('user-filter'),search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth');
-  form.onsubmit=event=>{event.preventDefault();userPage={...userPage,offset:0,q:search.value.trim(),status:status.value,auth:auth.value};refresh({force:true})};
+function bindUserPage(){const form=document.getElementById('user-filter'),search=document.getElementById('search'),status=document.getElementById('status'),auth=document.getElementById('auth'),
+    sort=document.getElementById('sort'),dir=document.getElementById('dir');
+  const apply=()=>{userPage={...userPage,offset:0,q:search.value.trim(),status:status.value,auth:auth.value,sort:sort.value,dir:dir.value};refresh({force:true})};
+  form.onsubmit=event=>{event.preventDefault();apply()};sort.onchange=apply;dir.onchange=apply;
   document.querySelectorAll('[data-page=users]').forEach(button=>button.onclick=()=>{userPage.offset=Number(button.dataset.offset)||0;refresh({force:true})});
+  document.getElementById('users-csv').onclick=usersCsv;
   document.querySelectorAll('[data-credit]').forEach(button=>button.onclick=()=>creditUser(button));
   document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>userAction(button))}
+// CSV текущей загруженной страницы (usersCache): колонки повторяют таблицу, деньги — сырыми
+// числами USD, даты — ISO, чтобы файл пригодился для сверки, а не только для просмотра.
+function usersCsv(){const tier=user=>user.customer_type==='b2b'?'B2B':(['Starter','Builder','Pro','Studio','Scale'][user.tier]||'—');
+  downloadCsv('users-'+csvDate()+'.csv',
+    ['email','имя','статус','тариф','баланс_usd','потрачено_usd','расход_30д_usd','пополнено_всего_usd','оплачено_usd','платежей','ключи_активные','ключи_всего','последняя_активность','регистрация'],
+    usersCache.map(user=>{const pay=user.payments||{},keys=user.api_keys||{};
+      return [user.email,user.display_name||'',user.status,tier(user),user.balance_usd??'',user.spent_usd??'',user.spent_30d_usd??'',user.cumulative_topup_usd??'',pay.paid_total_usd??'',pay.paid_count??'',Number(keys.active||0),Number(keys.total||0),user.last_seen_at||'',user.created_at||'']}))}
 // Backend требует reason в каждом действии (audit_log) — панель шлёт стандартную причину,
 // чтобы не заставлять оператора печатать её на каждый клик.
 const PANEL_REASON='ручное действие из админ-панели';
@@ -676,19 +730,40 @@ async function userAction(button){const action=button.dataset.action,labels={dis
     await refresh()}catch(error){toast(error.message,'bad');button.disabled=false}}
 
 /* ── Пополнения ──────────────────────────────────────────── */
-async function topups(){const data=await api('/admin/topups?limit=200').catch(()=>({payments:[],checkouts:[]})),payments=data.payments||[],checkouts=data.checkouts||[];
+async function topups(){const params=new URLSearchParams({limit:String(topupsPage.limit),offset:String(topupsPage.offset)});
+  if(topupsPage.q)params.set('q',topupsPage.q);if(topupsPage.provider)params.set('provider',topupsPage.provider);if(topupsPage.status)params.set('status',topupsPage.status);
+  const data=await api('/admin/topups?'+params).catch(()=>null)||{payments:[],checkouts:[]},payments=data.payments||[],checkouts=data.checkouts||[];
+  // Старый backend totals не отдаёт — деградируем к размеру текущей страницы (пагинация скрывается).
+  const paymentsTotal=data.payments_total??payments.length,checkoutsTotal=data.checkouts_total??checkouts.length,total=Math.max(paymentsTotal,checkoutsTotal);
+  if(topupsPage.offset>=total&&total>0){topupsPage.offset=Math.max(0,Math.floor((total-1)/topupsPage.limit)*topupsPage.limit);return topups()}
   const paymentRows=payments.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b><div class="sub mono">'+esc(item.user_id)+'</div></td><td>'+pill(item.provider)+
     '</td><td><b>'+money(item.amount_usd)+'</b></td><td>'+pill(item.status,item.status==='paid'?'ok':'warn')+'</td><td>'+
     pill(item.credit_status||'—',item.credit_status==='confirmed'?'ok':'warn')+'</td><td>'+date(item.paid_at,true)+'</td><td class="left mono muted">'+esc(item.provider_payment_id)+'</td></tr>').join('');
   const checkoutRows=checkouts.map(item=>'<tr><td class="left"><b>'+esc(item.email)+'</b></td><td>'+pill(item.provider)+'</td><td><b>'+money(item.amount_usd)+
     '</b></td><td>'+pill(item.status,item.status==='pending'?'warn':'bad')+'</td><td>'+date(item.created_at,true)+'</td><td>'+date(item.expires_at,true)+
     '</td><td class="left mono muted">'+esc(item.provider_payment_id||'—')+'</td></tr>').join('');
-  const body='<div class="sect"><h2>Подтверждённые платежи</h2><span class="sect-sub">'+payments.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th><th>сумма</th>'+
+  const toolbar='<form id="topups-filter" class="toolbar"><label class="sr-only" for="topup-q">Поиск по email</label><input id="topup-q" type="search" value="'+esc(topupsPage.q)+'" placeholder="email клиента…">'+
+    '<label class="sr-only" for="topup-provider">Провайдер</label><select id="topup-provider"><option value="">все провайдеры</option>'+
+    TOPUP_PROVIDERS.map(p=>'<option value="'+p+'" '+(topupsPage.provider===p?'selected':'')+'>'+p+'</option>').join('')+'</select>'+
+    '<label class="sr-only" for="topup-status">Статус</label><select id="topup-status"><option value="">все статусы</option>'+
+    TOPUP_STATUSES.map(s=>'<option value="'+s+'" '+(topupsPage.status===s?'selected':'')+'>'+s+'</option>').join('')+'</select>'+
+    '<button class="btn" type="submit">Найти</button><button class="btn ghost" type="button" id="topups-csv" title="Выгрузить текущую страницу обоих списков в CSV">CSV</button></form>';
+  const body=toolbar+'<div class="sect"><h2>Подтверждённые платежи</h2><span class="sect-sub">'+paymentsTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th><th>сумма</th>'+
     '<th>платёж</th><th>зачисление</th><th>оплачен</th><th class="left">provider id</th></tr></thead><tbody>'+(paymentRows||empty(7))+'</tbody></table></div></div>'+
-    '<div class="sect"><h2>Незавершённые и проблемные checkout</h2><span class="sect-sub">'+checkouts.length+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th>'+
+    '<div class="sect"><h2>Незавершённые и проблемные checkout</h2><span class="sect-sub">'+checkoutsTotal+'</span></div><div class="tcard"><div class="tscroll"><table><thead><tr><th class="left">клиент</th><th>провайдер</th>'+
     '<th>сумма</th><th>статус</th><th>создан</th><th>истекает</th><th class="left">provider id</th></tr></thead><tbody>'+(checkoutRows||empty(7))+
-    '</tbody></table></div></div><footer>Последние 200 записей. Worker зачисляет баланс только после верифицированного платежа.</footer>';
-  shell('Пополнения','платежи и checkout-воронка',body,pill(count(payments.length,'платёж','платежа','платежей'),'ok'))}
+    '</tbody></table></div></div>'+pager(topupsPage.offset,topupsPage.limit,total,'topups')+
+    '<footer>Один «Назад/Дальше» листает оба списка сразу (общий offset); status-фильтр применяется к платежам и чекаутам одновременно. CSV выгружает текущую страницу обоих списков с колонкой kind. Worker зачисляет баланс только после верифицированного платежа.</footer>';
+  shell('Пополнения','платежи и checkout-воронка',body,pill(count(total,'запись','записи','записей'),'ok'));
+  bindTopupsPage(payments,checkouts)}
+function bindTopupsPage(payments,checkouts){const form=document.getElementById('topups-filter');
+  form.onsubmit=event=>{event.preventDefault();topupsPage={...topupsPage,offset:0,q:document.getElementById('topup-q').value.trim(),provider:document.getElementById('topup-provider').value,status:document.getElementById('topup-status').value};refresh({force:true})};
+  document.querySelectorAll('[data-page=topups]').forEach(button=>button.onclick=()=>{topupsPage.offset=Number(button.dataset.offset)||0;refresh({force:true})});
+  // Один CSV на оба списка: строки различаются колонкой kind=payment|checkout.
+  document.getElementById('topups-csv').onclick=()=>downloadCsv('topups-'+csvDate()+'.csv',
+    ['kind','email','user_id','провайдер','сумма_usd','статус','зачисление','оплачен','создан','истекает','provider_id'],
+    payments.map(item=>['payment',item.email,item.user_id,item.provider,item.amount_usd,item.status,item.credit_status||'',item.paid_at||'','','',item.provider_payment_id||'']).concat(
+      checkouts.map(item=>['checkout',item.email,item.user_id||'',item.provider,item.amount_usd,item.status,'','',item.created_at||'',item.expires_at||'',item.provider_payment_id||''])))}
 
 /* ── Финансы: выручка, воронка, топ клиентов, возвраты ───── */
 // Read-only агрегаты commerce БД (apps/api /admin/finance/*). Без автообновления — только
@@ -949,10 +1024,37 @@ function bindTrends(){document.querySelectorAll('[data-trends-window]').forEach(
   const select=document.getElementById('trends-sub');if(select)select.onchange=()=>{trendsSub=select.value;refresh({force:true})}}
 
 /* ── Аудит ───────────────────────────────────────────────── */
-async function audit(){const rows=(await api('/admin/audit?limit=200').catch(()=>({rows:[]}))).rows||[],bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
+async function audit(){const params=new URLSearchParams({limit:String(auditPage.limit),offset:String(auditPage.offset)});
+  if(auditPage.action)params.set('action',auditPage.action);if(auditPage.actorType)params.set('actor_type',auditPage.actorType);if(auditPage.q)params.set('q',auditPage.q);
+  const requests=[api('/admin/audit?'+params).catch(()=>null)];
+  // Distinct-список action для выпадайки тянем лениво один раз; ошибка/404 старого backend —
+  // просто нет опций, список событий работает независимо.
+  if(auditActions===null)requests.push(api('/admin/audit/actions').catch(()=>null));
+  const [data,actions]=await Promise.all(requests);
+  if(actions)auditActions=Array.isArray(actions)?actions:actions.actions||[];
+  // Старый backend отдаёт {rows} без total — деградируем к размеру страницы (пагинация скрывается).
+  const page=data||{rows:[],total:0},rows=page.rows||[],total=page.total??rows.length;
+  if(auditPage.offset>=total&&total>0){auditPage.offset=Math.max(0,Math.floor((total-1)/auditPage.limit)*auditPage.limit);return audit()}
+  const bodyRows=rows.map(item=>'<tr><td>'+date(item.created_at,true)+'</td><td class="left">'+
   pill(item.action,item.action.startsWith('admin.')?'warn':'')+'</td><td class="left">'+esc(item.actor_type)+'<div class="sub mono">'+esc(item.actor_id||'system')+'</div></td><td class="left">'+
   esc(item.target_type)+' · '+esc(item.target_id)+'</td><td class="left"><div class="json" title="'+esc(JSON.stringify(item.metadata||{}))+'">'+esc(JSON.stringify(item.metadata||{}))+'</div></td></tr>').join('');
-  shell('Аудит','operator/user/provider события и причины действий','<div class="tcard"><div class="tscroll"><table><thead><tr><th>время</th><th class="left">действие</th><th class="left">актор</th>'+
-  '<th class="left">цель</th><th class="left">метаданные</th></tr></thead><tbody>'+(bodyRows||empty(5))+'</tbody></table></div></div><footer>Последние 200 событий. Секреты и полные API-ключи не записываются.</footer>',pill(count(rows.length,'событие','события','событий'),'ok'))}
+  // Выбранный action мог прийти из URL/прошлого фильтра до загрузки списка — показываем его опцией.
+  const actionOptions=(auditActions||[]).slice();if(auditPage.action&&!actionOptions.includes(auditPage.action))actionOptions.unshift(auditPage.action);
+  const toolbar='<form id="audit-filter" class="toolbar"><label class="sr-only" for="audit-action">Действие</label><select id="audit-action"><option value="">все действия</option>'+
+  actionOptions.map(a=>'<option value="'+esc(a)+'" '+(auditPage.action===a?'selected':'')+'>'+esc(a)+'</option>').join('')+'</select>'+
+  '<label class="sr-only" for="audit-actor">Тип актора</label><select id="audit-actor"><option value="">все акторы</option>'+
+  AUDIT_ACTORS.map(a=>'<option value="'+a+'" '+(auditPage.actorType===a?'selected':'')+'>'+a+'</option>').join('')+'</select>'+
+  '<label class="sr-only" for="audit-q">Поиск по аудиту</label><input id="audit-q" type="search" value="'+esc(auditPage.q)+'" placeholder="id цели или текст в metadata…">'+
+  '<button class="btn" type="submit">Найти</button><button class="btn ghost" type="button" id="audit-csv" title="Выгрузить текущую страницу в CSV">CSV</button></form>';
+  shell('Аудит','operator/user/provider события и причины действий',toolbar+'<div class="tcard"><div class="tscroll"><table><thead><tr><th>время</th><th class="left">действие</th><th class="left">актор</th>'+
+  '<th class="left">цель</th><th class="left">метаданные</th></tr></thead><tbody>'+(bodyRows||empty(5))+'</tbody></table></div></div>'+
+  pager(auditPage.offset,auditPage.limit,total,'audit')+'<footer>Поиск ищет подстроку в id цели и в metadata. Секреты и полные API-ключи не записываются.</footer>',pill(count(total,'событие','события','событий'),'ok'));
+  bindAuditPage(rows)}
+function bindAuditPage(rows){const form=document.getElementById('audit-filter');
+  form.onsubmit=event=>{event.preventDefault();auditPage={...auditPage,offset:0,action:document.getElementById('audit-action').value,actorType:document.getElementById('audit-actor').value,q:document.getElementById('audit-q').value.trim()};refresh({force:true})};
+  document.querySelectorAll('[data-page=audit]').forEach(button=>button.onclick=()=>{auditPage.offset=Number(button.dataset.offset)||0;refresh({force:true})});
+  document.getElementById('audit-csv').onclick=()=>downloadCsv('audit-'+csvDate()+'.csv',
+    ['время','действие','актор_тип','актор_id','цель_тип','цель_id','metadata'],
+    rows.map(item=>[item.created_at||'',item.action,item.actor_type,item.actor_id||'',item.target_type,item.target_id,JSON.stringify(item.metadata||{})]))}
 showLoading();
 refresh();

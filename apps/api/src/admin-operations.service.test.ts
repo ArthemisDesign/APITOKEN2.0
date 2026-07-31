@@ -97,9 +97,15 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     });
     expect(dashboard.topups).toMatchObject({ paid_count: 1, paid_users: 1, paid_usd: "25" });
 
-    const topups = await service.topups(20) as { payments: Array<Record<string, unknown>> };
+    const topups = await service.topups({ limit: 20, offset: 0 }) as {
+      payments: Array<Record<string, unknown>>;
+      payments_total: number;
+      checkouts_total: number;
+    };
     expect(topups.payments).toHaveLength(1);
     expect(topups.payments[0]).toMatchObject({ email: "password@example.com", amount_usd: "25", credit_status: "confirmed" });
+    expect(topups.payments_total).toBe(1);
+    expect(topups.checkouts_total).toBe(0);
   });
 
   it("paginates users and resolves live balances with one bounded engine request", async () => {
