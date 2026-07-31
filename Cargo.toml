@@ -5,6 +5,7 @@
 resolver = "2"
 members = [
     "crates/gemini-credential",
+    "crates/codex-credential",
     "crates/registry",
     "crates/pool",
     "crates/forward",

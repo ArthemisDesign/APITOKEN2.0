@@ -1640,11 +1640,12 @@ pub async fn resume_batches(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>) {
     }
 }
 
-/// Передача ChatGPT-подписки: device-флоу в свой CODEX_HOME.
+/// Передача ChatGPT-подписки: device-флоу в скрытый staging-каталог, затем seal в encrypted
+/// roster движка (та же модель, что у Gemini).
 ///
 /// В отличие от Claude здесь нет второго шага с `code#state`: codex сам опрашивает OpenAI и
 /// завершается, поэтому продавцу достаточно открыть ссылку и ввести код. Ждём в фоне, чтобы не
-/// заморозить приём сообщений, и ничего из auth store не читаем и не пересылаем.
+/// заморозить приём сообщений; ни один секрет не попадает в Telegram или логи.
 async fn start_codex_handoff(
     bot: &Bot,
     store: &Arc<Store>,
@@ -1653,6 +1654,15 @@ async fn start_codex_handoff(
     email: &str,
     proxy: &str,
 ) {
+    let Some(roster) = cfg.codex_roster.clone() else {
+        let _ = bot
+            .send(
+                chat,
+                "❌ Приём ChatGPT-аккаунтов не настроен (AUTH_BOT_CODEX_CREDENTIAL_KEYS). Сообщи администратору.",
+            )
+            .await;
+        return;
+    };
     let (bin, dir, em, px) = (
         cfg.codex_bin.clone(),
         cfg.codex_homes_dir.clone(),
@@ -1690,7 +1700,7 @@ async fn start_codex_handoff(
     let (bot2, store2, cfg2) = (bot.clone(), store.clone(), cfg.clone());
     tokio::spawn(async move {
         let outcome =
-            tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin)).await;
+            tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin, &roster)).await;
         match outcome {
             Ok(crate::codex_login::Outcome::Authorized { label, has_proxy }) => {
                 let _ = store2.set_hproxy(chat, "");

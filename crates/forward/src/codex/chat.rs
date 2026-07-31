@@ -1,6 +1,6 @@
-//! OpenAI-compatible Chat Completions adapter over the same Responses/app-server core.
+//! OpenAI-compatible Chat Completions adapter over the same native Responses core.
 //!
-//! The adapter is deliberately lenient: parameters that the app-server cannot honor are
+//! The adapter is deliberately lenient: parameters that the backend cannot honor are
 //! accepted and ignored instead of rejected, so stock SDKs and agent terminals never fail on
 //! defaults they send. Both streaming and non-streaming calls use exact upstream token usage
 //! for settlement.
@@ -79,7 +79,7 @@ pub async fn completions(
     };
     prepared.turn.base_instructions = parsed.base_instructions;
     // Chat has two distinct instruction roles: system replaces the base prompt above, while
-    // developer remains an explicit developer-history item in the patched app-server context.
+    // developer remains an explicit developer-history item in the upstream context.
     prepared.turn.developer_instructions = prepared.request.instructions.clone();
     let routing =
         super::api::build_turn_routing(&app, &tenant_scope, &parts.headers, &prepared).await;
@@ -1372,35 +1372,72 @@ impl Stream for ChatReceiverStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::{CodexConfig, CodexModel, CodexPrices, CodexTransport};
+    use crate::codex::{CodexConfig, CodexModel, CodexPrices};
     use std::collections::BTreeMap;
 
     fn gateway() -> CodexGateway {
-        let ownership_lock =
-            std::env::temp_dir().join(format!("{}.lock", new_id("codex-chat-test")));
-        std::fs::write(&ownership_lock, []).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "claude-api-codex-chat-test-{}",
+            new_id("roster")
+        ));
+        let credentials = root.join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        let keyring = codex_credential::CredentialKeyring::parse(&format!(
+            "current:{}",
+            "cd".repeat(32)
+        ))
+        .unwrap();
+        let credential = codex_credential::CodexCredential {
+            version: 1,
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            expires_at: i64::MAX / 2,
+            oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+            token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.to_string(),
+            account_id: "acct_test_1234".to_string(),
+            email: "owner@example.com".to_string(),
+            plan: "chatgpt_plus".to_string(),
+            proxy: String::new(),
+            proxy_order_id: 0,
+            issued_at: 0,
+        };
+        let envelope = keyring.seal("current", "alpha", &credential).unwrap();
+        std::fs::write(
+            credentials.join("alpha.json"),
+            codex_credential::encode_envelope(&envelope).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "profiles": [{
+                    "id": "alpha",
+                    "credential_file": credentials.join("alpha.json").to_str().unwrap(),
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
-            transport: CodexTransport::OwnedChild,
-            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
-            binary: "/tmp/codex".to_string(),
-            binary_sha256: "0".repeat(64),
-            expected_version: "codex-cli test".to_string(),
-            homes: vec!["/tmp/home".to_string()],
-            homes_dir: None,
-            work_dir: "/tmp/work".to_string(),
-            startup_timeout_ms: 1,
+            base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
+            profiles_file: root.join("profiles.json").to_str().unwrap().to_string(),
+            credential_keys: keyring,
+            cli_version: codex_credential::CODEX_CLI_VERSION.to_string(),
             request_timeout_ms: 1,
             turn_timeout_ms: 1,
             turn_silence_timeout_ms: 1,
             health_probe_interval_secs: 300,
+            reserve_5h: 0.10,
+            reserve_7d: 0.03,
+            reserve_jitter: 0.0,
             reserve_overhead_tokens: 1,
             history_ttl_secs: 60,
             history_local_cap: 8,
             history_redis_url: None,
             history_secret: None,
             history_redis_timeout_ms: 1,
-            child_proxy_env: BTreeMap::new(),
+            default_proxy_env: BTreeMap::new(),
             models: vec![CodexModel {
                 id: "gpt-5.6".to_string(),
                 upstream: "gpt-5.6-sol".to_string(),

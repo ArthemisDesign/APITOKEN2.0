@@ -97,14 +97,15 @@
   `readonly_authed`; `/fleet-history`, `/settlement-health` и `/admin/*` — `control_authed`.
 - Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
-  в 503 из-за размера пула; deploy отдельно требует точного паритета authenticated-home set старого
-  и нового gateway как readiness-условие перед cutover, без минимального soak-интервала.
+  в 503 из-за размера пула; оба blue-green поколения читают один sealed roster, поэтому паритет
+  authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
 - `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes; raw client
   IDs, prompt content, account IDs и subscription IDs в Redis/метрики не попадают.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
-- Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks, затем reaps children;
-  только после этого billing FIFO-flush может завершить процесс и отпустить общий home lock.
+- Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер
+  не держит child-процессов — abort-сигнал рвёт upstream read на deadline); только после этого
+  billing FIFO-flush может завершить процесс.
 - Shutdown Gemini сначала закрывает admission и ждёт detached SSE drain; на deadline abort-сигнал
   прерывает upstream read, task settle-ит последний usage snapshot и пересекает semaphore barrier.
   Billing FIFO-flush разрешён только после этого. Gemini health/preflight/network живут в `forward`,

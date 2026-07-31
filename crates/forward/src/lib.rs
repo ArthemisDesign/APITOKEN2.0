@@ -31,8 +31,8 @@ pub use breaker::Breaker;
 pub use codex::{
     openai_chat_completions, openai_delete_response, openai_get_response, openai_input_tokens,
     openai_model, openai_models, openai_response_input_items, openai_responses, CodexConfig,
-    CodexGateway, CodexModel, CodexOperationalStatus, CodexPrices, CodexRateLimitWindow,
-    CodexRateLimits, CodexTransport,
+    CodexGateway, CodexModel, CodexOperationalStatus, CodexPrices, CodexProfileSpec,
+    CodexProfilesFile, CodexRateLimitWindow, CodexRateLimits,
 };
 pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
 pub use gemini::{

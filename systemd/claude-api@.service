@@ -24,7 +24,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-home.lock
+ReadWritePaths=/srv/claude-api/data
 MemoryMax=2G
 
 [Install]

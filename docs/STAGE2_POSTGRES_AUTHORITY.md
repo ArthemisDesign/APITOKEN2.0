@@ -96,8 +96,8 @@ writes.
 
 Every process uses a distinct `CLAUDE_API_INSTANCE_ID`. PostgreSQL remains authoritative for shared
 customer balances, request reservations, settlement and fencing across all provider processes. Codex adds a
-host-local invariant: the OpenAI process takes `/run/apitoken/codex-home.lock` before discovering any
-home and holds that single process-wide fence across every child restart.
+the native OpenAI provider additionally shares one sealed credential roster across generations;
+refresh rotation is fenced per profile by the credential mutex plus atomic envelope re-sealing.
 
 ## One-time cutover and rollback boundary
 

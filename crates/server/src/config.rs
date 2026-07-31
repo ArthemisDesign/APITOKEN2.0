@@ -2,9 +2,8 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
-    CodexConfig, CodexModel, CodexTransport, GeminiConfig, GeminiModel, PricingBridgeConfig,
-    PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
-    CLAUDE_CODE_IDENTITY,
+    CodexConfig, CodexModel, GeminiConfig, GeminiModel, PricingBridgeConfig, PricingShadowConfig,
+    PricingShadowConfigValues, ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
 
@@ -34,8 +33,8 @@ pub struct Settings {
     pub affinity_ttl_secs: u64,
     pub affinity_local_ttl_secs: u64,
     pub affinity_redis_timeout_ms: u64,
-    /// Optional second provider. Disabled by default; enabling it requires a pinned binary and a
-    /// dedicated ChatGPT-authenticated CODEX_HOME.
+    /// Optional second provider. Disabled by default; enabling it requires the encrypted OAuth
+    /// roster (sealed ChatGPT profiles) and its keyring.
     pub codex: Option<CodexConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
@@ -54,27 +53,16 @@ fn ev_or(k: &str, d: &str) -> String {
     ev(k).unwrap_or_else(|| d.to_string())
 }
 
-const OPENAI_DRAIN_DEADLINE_SECS: u64 = 30;
-/// Shared slots have already been removed from Caddy before systemd stops them. Preserve a full
-/// ten-minute Codex turn plus settlement margin; the 660-second unit timeout still bounds a broken
-/// process without delaying or endangering the replacement slot.
 const OPENAI_SHARED_DRAIN_DEADLINE_SECS: u64 = 620;
 
-/// A legacy gateway owns the authenticated app-server children, so systemd cannot start its
-/// replacement while it drains; cap that compatibility path to keep emergency recovery bounded.
-/// Blue-green HTTP slots own only disposable proxies and may use the normal long graceful drain:
-/// their replacement is already authenticated and serving through Caddy before the old slot stops.
-fn provider_drain_deadline(
-    provider: ProviderMode,
-    transport: Option<CodexTransport>,
-    configured: u64,
-) -> u64 {
-    match (provider.serves_openai(), transport) {
-        (true, Some(CodexTransport::SharedDaemonProxy)) => {
-            configured.max(OPENAI_SHARED_DRAIN_DEADLINE_SECS)
-        }
-        (true, _) => configured.min(OPENAI_DRAIN_DEADLINE_SECS),
-        (false, _) => configured,
+/// The native Codex transport owns no child processes and no home directories, so HTTP slots can
+/// overlap during a cutover exactly like the Gemini fleet: the replacement is already
+/// authenticated and serving through Caddy before the old slot stops, and a ten-minute turn may
+/// finish gracefully.
+fn provider_drain_deadline(provider: ProviderMode, configured: u64) -> u64 {
+    match provider.serves_openai() {
+        true => configured.max(OPENAI_SHARED_DRAIN_DEADLINE_SECS),
+        false => configured,
     }
 }
 fn ev_bool(k: &str, d: bool) -> bool {
@@ -227,21 +215,6 @@ fn pricing_shadow_runtime_manifest() -> registry::pricing::PricingRuntimeManifes
     .expect("built-in pricing evaluator capability is valid");
     registry::pricing::PricingRuntimeManifestEvidence::new(1, vec![capability])
         .expect("built-in pricing evaluator manifest is valid")
-}
-
-fn parse_codex_transport(value: Option<&str>) -> Result<CodexTransport, String> {
-    match value
-        .unwrap_or("owned-child")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "owned-child" => Ok(CodexTransport::OwnedChild),
-        "shared-daemon" => Ok(CodexTransport::SharedDaemonProxy),
-        other => Err(format!(
-            "CLAUDE_API_CODEX_TRANSPORT={other:?}: expected owned-child or shared-daemon"
-        )),
-    }
 }
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
@@ -543,7 +516,7 @@ fn codex_model_catalog(now_unix: i64) -> Vec<CodexModel> {
             id: spec.id.to_string(),
             upstream: spec.upstream.to_string(),
             // Public `/v1/models` keeps the field for SDK compatibility without inventing an
-            // upstream creation timestamp that app-server does not provide.
+            // upstream creation timestamp that the backend does not provide.
             created: 0,
             owned_by: "apitoken".to_string(),
             max_output_tokens: spec.max_output_tokens,
@@ -558,50 +531,33 @@ fn codex_model_catalog(now_unix: i64) -> Vec<CodexModel> {
         .collect()
 }
 
-/// Authenticated Codex profiles, in pool order.
-///
-/// `CLAUDE_API_CODEX_HOMES` is the pool form; `CLAUDE_API_CODEX_HOME` remains the single-home
-/// spelling so an existing production environment keeps working unchanged. Duplicates are rejected:
-/// two children sharing one auth store would corrupt its token refresh and would also double-count
-/// one subscription's capacity in the pool.
-fn codex_homes() -> Vec<String> {
-    let configured = ev("CLAUDE_API_CODEX_HOMES")
-        .or_else(|| ev("CLAUDE_API_CODEX_HOME"))
-        .unwrap_or_else(|| "/srv/claude-api/data/codex/home".to_string());
-    let mut homes: Vec<String> = Vec::new();
-    for home in configured
-        .split(',')
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        if homes.iter().any(|existing| existing == home) {
-            panic!("CLAUDE_API_CODEX_HOMES lists {home:?} more than once; every home needs its own authentication store");
-        }
-        homes.push(home.to_string());
+/// Sealed Codex profiles live in one roster JSON (`profiles: [{id, credential_file}]`) next to
+/// `<roster>/credentials/<id>.json`. The authbot republishes it atomically; the gateway rescans it
+/// on every health tick, so a purchased account joins without a restart.
+fn codex_profiles_file() -> String {
+    let profiles_file = ev_or(
+        "CLAUDE_API_CODEX_PROFILES_FILE",
+        "/srv/claude-api/data/codex/profiles.json",
+    );
+    if !std::path::Path::new(&profiles_file).is_absolute() {
+        panic!("CLAUDE_API_CODEX_PROFILES_FILE must be an absolute path");
     }
-    if homes.is_empty() {
-        panic!("CLAUDE_API_CODEX_HOMES must contain at least one absolute CODEX_HOME path");
-    }
-    homes
+    profiles_file
 }
 
-/// Directory scanned for profiles the authbot has finished buying.
-///
-/// Defaulted rather than required: the pool directory simply may not exist yet, which reads as an
-/// empty pool. Set it to an empty value to disable discovery and pin the pool to the explicit list.
-fn codex_homes_dir() -> Option<String> {
-    let configured = ev_or(
-        "CLAUDE_API_CODEX_HOMES_DIR",
-        "/srv/claude-api/data/codex-homes",
+/// The native backend base URL. HTTPS is required outside an explicit loopback opt-in used only
+/// by integration tests.
+fn codex_base_url() -> String {
+    let base_url = ev_or(
+        "CLAUDE_API_CODEX_BASE_URL",
+        codex_credential::CODEX_DEFAULT_BASE_URL,
     );
-    let configured = configured.trim().to_string();
-    if configured.is_empty() {
-        return None;
+    let loopback = ev_opt_in("CLAUDE_API_CODEX_ALLOW_INSECURE_LOOPBACK_UPSTREAM")
+        && (base_url.starts_with("http://127.0.0.1:") || base_url.starts_with("http://[::1]:"));
+    if !base_url.starts_with("https://") && !loopback {
+        panic!("CLAUDE_API_CODEX_BASE_URL must be https (loopback requires an explicit opt-in)");
     }
-    if !std::path::Path::new(&configured).is_absolute() {
-        panic!("CLAUDE_API_CODEX_HOMES_DIR must be an absolute path");
-    }
-    Some(configured)
+    base_url.trim_end_matches('/').to_string()
 }
 
 fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Option<CodexConfig> {
@@ -638,7 +594,14 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         panic!("CLAUDE_API_CODEX_MODELS must contain at least one model");
     }
 
-    let mut child_proxy_env = BTreeMap::new();
+    let credential_keys = codex_credential::CredentialKeyring::parse(
+        &ev("CLAUDE_API_CODEX_CREDENTIAL_KEYS").unwrap_or_else(|| {
+            panic!("CLAUDE_API_CODEX_CREDENTIAL_KEYS is required for the encrypted OAuth roster")
+        }),
+    )
+    .unwrap_or_else(|_| panic!("CLAUDE_API_CODEX_CREDENTIAL_KEYS is invalid"));
+
+    let mut default_proxy_env = BTreeMap::new();
     for name in [
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -650,36 +613,27 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         "no_proxy",
     ] {
         if let Some(value) = ev(name) {
-            child_proxy_env.insert(name.to_string(), value);
+            default_proxy_env.insert(name.to_string(), value);
         }
     }
 
     Some(CodexConfig {
         enabled: true,
-        transport: parse_codex_transport(ev("CLAUDE_API_CODEX_TRANSPORT").as_deref())
-            .unwrap_or_else(|error| panic!("{error}")),
-        ownership_lock_file: "/run/apitoken/codex-home.lock".to_string(),
-        binary: ev_or(
-            "CLAUDE_API_CODEX_BIN",
-            "/srv/claude-api/data/codex/bin/codex",
+        base_url: codex_base_url(),
+        profiles_file: codex_profiles_file(),
+        credential_keys,
+        cli_version: ev_or(
+            "CLAUDE_API_CODEX_CLI_VERSION",
+            codex_credential::CODEX_CLI_VERSION,
         ),
-        binary_sha256: ev("CLAUDE_API_CODEX_BIN_SHA256").unwrap_or_else(|| {
-            panic!("CLAUDE_API_CODEX_BIN_SHA256 is required when CLAUDE_API_CODEX_ENABLED=true")
-        }),
-        expected_version: ev_or("CLAUDE_API_CODEX_VERSION", "codex-cli 0.145.0"),
-        homes: codex_homes(),
-        homes_dir: codex_homes_dir(),
-        work_dir: ev_or(
-            "CLAUDE_API_CODEX_WORK_DIR",
-            "/srv/claude-api/data/codex/work",
-        ),
-        startup_timeout_ms: bounded_u64(
-            "CLAUDE_API_CODEX_STARTUP_TIMEOUT_MS",
-            20_000,
-            1_000,
+        request_timeout_ms: bounded_u64(
+            "CLAUDE_API_CODEX_REQUEST_TIMEOUT_MS",
+            ev("CLAUDE_API_CODEX_RPC_TIMEOUT_MS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(15_000),
+            500,
             120_000,
         ),
-        request_timeout_ms: bounded_u64("CLAUDE_API_CODEX_RPC_TIMEOUT_MS", 15_000, 500, 120_000),
         turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
         // Generous on purpose: this must never cut short a model that is genuinely thinking, only
         // catch one that has stopped answering. It is a liveness bound, not a latency budget.
@@ -695,6 +649,20 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             10,
             3_600,
         ),
+        // Мягкий запас окон на профиль: не роутим выше ~90% 5h и ~97% недельного окна — подписка
+        // не упирается в стену (меньше 429, нет отпечатка автомата, максящего квоту под ноль).
+        // Общие fleet-ключи по умолчанию, codex-специфичные могут переопределить.
+        // GPT-окна короче недели ограничиваем мягко: не выше 98% (не наследуем Claude-флотские
+        // 10% — у Codex иной профиль риска и сейчас фактически только недельный лимит).
+        reserve_5h: ev("CLAUDE_API_CODEX_RESERVE_5H")
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or_else(|| ev_frac("CLAUDE_API_CODEX_RESERVE_5H", 0.02)),
+        reserve_7d: ev("CLAUDE_API_CODEX_RESERVE_7D")
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or_else(|| ev_frac("CLAUDE_API_RESERVE_7D", 0.03)),
+        reserve_jitter: ev("CLAUDE_API_CODEX_RESERVE_JITTER")
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or_else(|| ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02)),
         reserve_overhead_tokens: bounded_u64(
             "CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS",
             16_384,
@@ -716,7 +684,7 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             1,
             5_000,
         ),
-        child_proxy_env,
+        default_proxy_env,
         models,
     })
 }
@@ -873,13 +841,11 @@ impl Settings {
             reserve7d: ev_frac("CLAUDE_API_RESERVE_7D", 0.03),
             reserve_jitter: ev_frac("CLAUDE_API_RESERVE_JITTER", 0.02),
             // Fail-closed clamps: readiness-delay ≤ 30с; общий drain-deadline в [5, 595]с.
-            // Legacy singleton OpenAI ограничен 30с: новый owner не может стартовать до его stop.
-            // Shared-daemon slots получают полный 620с drain: новый slot уже авторизован и
+            // OpenAI-слоты получают полный 620с drain: новый slot уже авторизован и
             // обслуживает трафик, поэтому старый может спокойно закончить десятиминутный turn.
             readiness_delay_secs: bounded_u64("CLAUDE_API_READINESS_DELAY_SECS", 3, 0, 30),
             drain_deadline_secs: provider_drain_deadline(
                 provider,
-                codex.as_ref().map(|config| config.transport),
                 bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
             ),
             // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
@@ -1127,47 +1093,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_transport_requires_an_explicit_bounded_mode() {
-        assert_eq!(parse_codex_transport(None), Ok(CodexTransport::OwnedChild));
-        assert_eq!(
-            parse_codex_transport(Some(" SHARED-DAEMON ")),
-            Ok(CodexTransport::SharedDaemonProxy)
-        );
-        assert!(parse_codex_transport(Some("proxy")).is_err());
-        assert!(parse_codex_transport(Some("stdio")).is_err());
-    }
-
-    #[test]
-    fn only_a_home_owning_openai_singleton_gets_the_emergency_drain_cap() {
-        assert_eq!(
-            provider_drain_deadline(ProviderMode::OpenAi, Some(CodexTransport::OwnedChild), 540),
-            30
-        );
-        assert_eq!(
-            provider_drain_deadline(
-                ProviderMode::Combined,
-                Some(CodexTransport::OwnedChild),
-                595
-            ),
-            30
-        );
-        assert_eq!(
-            provider_drain_deadline(
-                ProviderMode::OpenAi,
-                Some(CodexTransport::SharedDaemonProxy),
-                540
-            ),
-            620
-        );
-        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, None, 12), 12);
-        assert_eq!(
-            provider_drain_deadline(ProviderMode::Anthropic, None, 540),
-            540
-        );
-        assert_eq!(
-            provider_drain_deadline(ProviderMode::Gemini, None, 540),
-            540
-        );
+    fn openai_slots_get_the_long_drain_and_other_providers_do_not() {
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 540), 620);
+        assert_eq!(provider_drain_deadline(ProviderMode::Combined, 540), 620);
+        assert_eq!(provider_drain_deadline(ProviderMode::OpenAi, 12), 620);
+        assert_eq!(provider_drain_deadline(ProviderMode::Anthropic, 540), 540);
+        assert_eq!(provider_drain_deadline(ProviderMode::Gemini, 540), 540);
     }
 
     #[test]

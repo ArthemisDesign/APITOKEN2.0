@@ -435,14 +435,14 @@ impl HomeHealth {
         }
     }
 
-    /// An explicit provider verdict, or a window the provider reports as full.
+    /// Only an explicit provider verdict excludes a home.
     ///
-    /// `usedPercent` is quantised to whole percent, so `100` can arrive slightly before the true
-    /// wall. That remainder is not worth selling: selection is fail-closed and an excluded home
-    /// becomes a real `429 + Retry-After`, which beats spending a customer request on a
-    /// subscription that has stopped answering.
+    /// A window reporting `usedPercent=100` with `allowed: true` still serves (verified live):
+    /// the provider's percentage can include usage outside this gateway, and its own
+    /// `allowed`/`limit_reached` fields are the only authoritative stop signal. Near-full windows
+    /// are the soft reserve's job (97%/98% caps), not a hard exclusion's.
     fn is_provider_limited(limits: &LimitView) -> bool {
-        limits.reached || limits.max_used_percent.is_some_and(|used| used >= 100)
+        limits.reached
     }
 }
 
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_full_window_rejects_with_its_reset_time() {
+    fn a_fresh_full_window_stays_routable_without_an_explicit_verdict() {
         let health = HomeHealth::new();
         let full = LimitView {
             reached: false,
@@ -631,11 +631,12 @@ mod tests {
             observed_at: 100,
             soonest_reset_at: Some(9_000),
         };
+        // `usedPercent=100` with `allowed: true` still serves (verified live): only an explicit
+        // provider verdict rejects. Steering around the near-full window is the soft reserve's job.
         assert_eq!(
             health.admission(Some(&full), 105, INTERVAL),
-            Admission::Reject {
-                reason: RejectReason::ProviderLimit,
-                ready_at: Some(9_000)
+            Admission::Admit {
+                snapshot_stale: false
             }
         );
     }

@@ -46,8 +46,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-retention.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh
-  install -o root -g root -m 0755 "$ROOT/deploy/watchdog-codex-promote.sh" \
-    /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-github
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" \
@@ -70,8 +68,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
-  install -o root -g root -m 0755 "$ROOT/deploy/codex-app-servers.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
   # Required by the watchdog's post-admission recovery path.
   install -o root -g root -m 0755 "$ROOT/deploy/rollback.sh" \
     /usr/local/lib/apitoken-watchdog/controller/rollback.sh
@@ -104,7 +100,7 @@ install_systemd_definitions() {
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-sysctl-install.service \
-    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-codex-app-server@.service claude-api-codex-app-servers.service claude-api-codex-app-servers-ready.target claude-api-codex-app-servers.timer claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     apitoken-openkeys.service \
@@ -126,17 +122,6 @@ install_systemd_definitions() {
     install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
   done
   systemctl daemon-reload
-  engine_current=$(readlink -f -- /srv/claude-api/releases/current 2>/dev/null || true)
-  if [[ -n $engine_current \
-      && -f "$engine_current/.openai-bluegreen-v1" \
-      && ! -L "$engine_current/.openai-bluegreen-v1" \
-      && $(<"$engine_current/.openai-bluegreen-v1") == openai-bluegreen-v1 ]]; then
-    systemctl enable --now claude-api-codex-app-servers.timer
-  else
-    # A legacy binary ignores shared-daemon transport. Keep the timer disarmed across reboot so it
-    # cannot race the singleton and create two owners of the same auth.json.
-    systemctl disable --now claude-api-codex-app-servers.timer
-  fi
   if (( restart_authbot )); then
     # Unit contract changes must take effect; ordinary binary-only engine deploys still preserve
     # in-flight device authorization in deploy.sh.

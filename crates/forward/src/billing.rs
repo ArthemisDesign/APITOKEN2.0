@@ -831,7 +831,7 @@ impl AsyncBilling {
 
     /// Read the durable account-level verdict for one home.
     ///
-    /// Only the account axis is durable: transport health belongs to one app-server generation and
+    /// Only the account axis is durable: transport health belongs to one transport generation and
     /// a restarted gateway holds a new bridge, so it deserves a fresh verdict rather than an
     /// inherited one.
     pub async fn load_codex_health(

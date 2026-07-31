@@ -2,93 +2,97 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=deploy/codex-homes-migrate.sh
-source "$ROOT/deploy/codex-homes-migrate.sh"
-
 TEMP=$(mktemp -d "${TMPDIR:-/tmp}/apitoken-codex-homes-migrate-test.XXXXXXXX")
 trap 'rm -rf -- "$TEMP"' EXIT
-EXPECTED_UID=$(id -u)
-EXPECTED_GID=$(id -g)
-
-# Production uses GNU mv -T so a concurrently created target can never turn the rename into a
-# nested move. macOS contributors have BSD mv; emulate only that already-preflighted test rename.
-if ! mv --help 2>&1 | grep -q -- '-T'; then
-  mv() {
-    [[ ${1:-} == -T && ${2:-} == -- ]] || command mv "$@"
-    shift 2
-    [[ ! -e $2 && ! -L $2 ]] || return 1
-    command mv -- "$1" "$2"
-  }
-fi
 
 fail() {
   printf '[codex-homes-migrate-test] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
-make_fixture() {
-  local root=$1
-  mkdir -p "$root/codex/home" "$root/codex-homes"
-  chmod 0700 "$root/codex/home" "$root/codex-homes"
-  : >"$root/codex/home/auth.json"
-  chmod 0600 "$root/codex/home/auth.json"
+make_home() {
+  local home=$1
+  mkdir -p -- "$home"
+  printf '{}' > "$home/auth.json"
 }
 
-safe_root="$TEMP/safe"
-make_fixture "$safe_root"
-codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com check \
-  "$EXPECTED_UID" "$EXPECTED_GID"
-[[ -d $safe_root/codex/home && ! -e $safe_root/codex-homes/mikala1158qqq-gmail-com ]] \
-  || fail "check mode changed the filesystem"
-codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply \
-  "$EXPECTED_UID" "$EXPECTED_GID"
-[[ ! -e $safe_root/codex/home \
-  && -f $safe_root/codex-homes/mikala1158qqq-gmail-com/auth.json ]] \
-  || fail "apply mode did not move the authenticated home"
-codex_migrate_legacy_home \
-  "$safe_root/codex/home" "$safe_root/codex-homes" mikala1158qqq-gmail-com apply \
-  "$EXPECTED_UID" "$EXPECTED_GID"
+# --check / --apply require a discoverable engine binary and seal env.
+export CODEX_LEGACY_SINGLE_HOME="$TEMP/legacy/home"
+export CODEX_LEGACY_HOMES_DIR="$TEMP/legacy-homes"
+export CODEX_ROSTER_DIR="$TEMP/roster"
+export CODEX_SEAL_ENV="$TEMP/seal.env"
+export ENGINE_BIN="$TEMP/engine/claude-api"
 
-ambiguous_root="$TEMP/ambiguous"
-make_fixture "$ambiguous_root"
-mkdir "$ambiguous_root/codex-homes/mikala1158qqq-gmail-com"
-chmod 0700 "$ambiguous_root/codex-homes/mikala1158qqq-gmail-com"
-: >"$ambiguous_root/codex-homes/mikala1158qqq-gmail-com/auth.json"
-chmod 0600 "$ambiguous_root/codex-homes/mikala1158qqq-gmail-com/auth.json"
-if codex_migrate_legacy_home \
-    "$ambiguous_root/codex/home" "$ambiguous_root/codex-homes" \
-    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
-  fail "migration accepted simultaneous legacy and destination homes"
+# Unknown arguments are rejected before any filesystem work.
+if bash "$ROOT/deploy/codex-homes-migrate.sh" >/dev/null 2>&1; then
+  fail 'missing mode argument was accepted'
 fi
-[[ -d $ambiguous_root/codex/home \
-  && -d $ambiguous_root/codex-homes/mikala1158qqq-gmail-com ]] \
-  || fail "ambiguous migration changed either home"
-
-unsafe_root="$TEMP/unsafe"
-make_fixture "$unsafe_root"
-chmod 0644 "$unsafe_root/codex/home/auth.json"
-if codex_migrate_legacy_home \
-    "$unsafe_root/codex/home" "$unsafe_root/codex-homes" \
-    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
-  fail "migration accepted an exposed auth store"
+if bash "$ROOT/deploy/codex-homes-migrate.sh" --maybe >/dev/null 2>&1; then
+  fail 'unknown mode argument was accepted'
 fi
-[[ -d $unsafe_root/codex/home && ! -e $unsafe_root/codex-homes/mikala1158qqq-gmail-com ]] \
-  || fail "unsafe migration changed the filesystem"
 
-symlink_root="$TEMP/symlink"
-make_fixture "$symlink_root"
-rm "$symlink_root/codex/home/auth.json"
-: >"$symlink_root/elsewhere-auth.json"
-chmod 0600 "$symlink_root/elsewhere-auth.json"
-ln -s "$symlink_root/elsewhere-auth.json" "$symlink_root/codex/home/auth.json"
-if codex_migrate_legacy_home \
-    "$symlink_root/codex/home" "$symlink_root/codex-homes" \
-    mikala1158qqq-gmail-com apply "$EXPECTED_UID" "$EXPECTED_GID" >/dev/null 2>&1; then
-  fail "migration accepted a symlinked auth store"
+# --check fails closed without the engine binary and the seal env.
+if bash "$ROOT/deploy/codex-homes-migrate.sh" --check >/dev/null 2>&1; then
+  fail '--check passed without an engine binary'
 fi
-[[ -d $symlink_root/codex/home && ! -e $symlink_root/codex-homes/mikala1158qqq-gmail-com ]] \
-  || fail "symlink refusal changed the filesystem"
+mkdir -p -- "$TEMP/engine"
+printf '#!/usr/bin/env bash\n' > "$ENGINE_BIN"
+chmod 0755 "$ENGINE_BIN"
+if bash "$ROOT/deploy/codex-homes-migrate.sh" --check >/dev/null 2>&1; then
+  fail '--check passed without a seal env'
+fi
+printf 'CODEX_SEAL_KEYS=test:0000000000000000000000000000000000000000000000000000000000000000\nCODEX_SEAL_ACTIVE_KID=test\n' \
+  > "$CODEX_SEAL_ENV"
 
-printf 'Codex homes migration tests passed\n'
+# Discovery: regular homes only; dot-staging and symlinks are skipped.
+make_home "$CODEX_LEGACY_SINGLE_HOME"
+make_home "$CODEX_LEGACY_HOMES_DIR/account-one"
+make_home "$CODEX_LEGACY_HOMES_DIR/account-two"
+mkdir -p -- "$CODEX_LEGACY_HOMES_DIR/.staging-hidden"
+ln -s "$CODEX_LEGACY_HOMES_DIR/account-one" "$CODEX_LEGACY_HOMES_DIR/account-link"
+out=$(bash "$ROOT/deploy/codex-homes-migrate.sh" --check) \
+  || fail '--check failed on a valid fixture'
+[[ $out == *'3 legacy home(s)'* ]] || fail "--check counted the wrong homes: $out"
+
+# A home without auth.json is not migratable.
+make_home "$CODEX_LEGACY_HOMES_DIR/broken" && rm -- "$CODEX_LEGACY_HOMES_DIR/broken/auth.json"
+if bash "$ROOT/deploy/codex-homes-migrate.sh" --check >/dev/null 2>&1; then
+  fail '--check accepted a home without auth.json'
+fi
+rmdir -- "$CODEX_LEGACY_HOMES_DIR/broken"
+
+# --apply seals every home through the engine migrator and deletes it afterwards.
+cat > "$ENGINE_BIN" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+home= roster= keys= kid= delete=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    codex-seal) ;;
+    --home) home=$2; shift ;;
+    --roster) roster=$2; shift ;;
+    --keys) keys=$2; shift ;;
+    --active-kid) kid=$2; shift ;;
+    --delete-home) delete=1 ;;
+    *) exit 2 ;;
+  esac
+  shift
+done
+[[ -n $home && -n $roster && -n $keys && -n $kid && $delete == 1 ]] || exit 2
+id=$(basename -- "$home")
+mkdir -p -- "$roster/credentials"
+printf '{}' > "$roster/credentials/$id.json"
+rm -rf -- "$home"
+printf '%s\n' "$id"
+EOF
+chmod 0755 "$ENGINE_BIN"
+
+bash "$ROOT/deploy/codex-homes-migrate.sh" --apply >/dev/null \
+  || fail '--apply failed on a valid fixture'
+[[ ! -e $CODEX_LEGACY_SINGLE_HOME ]] || fail '--apply kept the legacy single home'
+[[ ! -e $CODEX_LEGACY_HOMES_DIR/account-one ]] || fail '--apply kept a sealed pool home'
+[[ -f $CODEX_ROSTER_DIR/credentials/home.json ]] || fail '--apply produced no single-home profile'
+[[ -f $CODEX_ROSTER_DIR/credentials/account-one.json ]] || fail '--apply produced no pool profile'
+[[ -d $CODEX_LEGACY_HOMES_DIR/.staging-hidden ]] || fail '--apply touched a hidden staging dir'
+
+printf '[codex-homes-migrate-test] ok\n'

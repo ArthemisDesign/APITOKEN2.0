@@ -1,8 +1,9 @@
 # crates/forward — CLAUDE.md
 
 **Роль:** прозрачный форвардинг Claude `/v1/*` на api.anthropic.com (Шаг B) + поллер лимитов;
-отдельно — optional strict OpenAI-compatible text adapter через pinned official
-`codex app-server` и native Gemini surface поверх encrypted Code Assist OAuth pool. Три provider path не смешивать.
+отдельно — optional strict OpenAI-compatible text adapter поверх encrypted ChatGPT OAuth roster
+(native HTTPS к Codex backend) и native Gemini surface поверх encrypted Code Assist OAuth pool.
+Три provider path не смешивать.
 
 **Владелец-ветка:** `comp/forward`.
 
@@ -97,9 +98,10 @@ settlement pricing этим caller не затронуты.
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
-`codex/` содержит typed app-server transport, Responses/Chat adapters, tenant-bound history,
-Codex admission/settlement и reconstruction SSE events; `gemini/` — native route allowlist,
-encrypted OAuth pool, Code Assist translation и settlement. Env для обоих читает только `server::config`.
+`codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
+Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
+events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
+settlement. Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
 аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта.
@@ -194,138 +196,77 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `InvalidKey` (401), `LowBalance` (**402**, контракт docs-portal). Новую ошибку добавляй ТОЛЬКО как
    вариант `LocalErr` (не сырой `err_response`); regression-тест `local_err_never_leaks_*` это гейтит.
 
-**Инварианты Codex adapter (не применять к Claude byte-for-byte path):**
-0. **Пул homes = тот же дисциплинарный минимум, что и Claude-флот.** `CodexGateway` держит N
-   `CodexHome` (каждый — свой `CODEX_HOME`, свой attested child, своё cooling/auth-состояние).
-   Любой transport сохраняет service floor в один authenticated home: одна рабочая подписка не
-   становится 503 из-за отсутствия запасной. Production `shared-daemon` blue-green отдельно
-   сравнивает точный opaque home set старого и candidate gateway; subset не допускается к cutover.
-   Лишний умерший home карантинится и не блокирует одинаковую оставшуюся когорту.
-   **Параллелизм на home НЕ ограничен** (как у Claude-флота): вместо семафора turn'ов — атомарный
-   счётчик in-flight (`TurnSlot` RAII, снимается на успехе/ошибке/дисконнекте), он лишь сигнал
-   загрузки для выбора, не потолок. Общий Claude `AppState::concurrency` и коммерческий per-key
-   limiter к Codex не применяются.
-   **Выбор — cache-first (как `affinity.rs`):** сначала home, к которому закреплён этот разговор
-   (`AffinityStore::resolve` через `infer_codex` → тот же стор/Redis-namespace, что у Claude).
-   Новый общий cache-root без ожиданий прогревается на двух homes; затем выбирается наименее
-   загруженная тёплая копия. После preferred affinity кандидаты упорядочиваются только по in-flight
-   и вращающемуся discovery order: измеренная USD-ёмкость — отчёт, не admission/routing policy.
-   Один рабочий home всегда обслуживает трафик, фонового repair-сервиса и временных окон нет. OpenAI root warmth
-   живёт 30 минут (provider default), Claude cache_control сохраняет собственные 5m/1h TTL. Равные
-   по capacity и in-flight кандидаты обязаны чередоваться через атомарный cursor: discovery order
-   нельзя превращать в постоянный приоритет или burst-herd на первый home. После успеха
-   `run_turn` пишет обслуживший home обратно (`claim`/`remember`/`rebind`/`mark_cache_warm`), чтобы
-   продолжение разговора попало на тот же тёплый кеш. Affinity — fail-open оптимизация (с пулом из 1
-   home — no-op). Здоровье home — ЧИСТАЯ политика в `codex/health.rs`
-   (детерминирована по `now`, без I/O и часов) по ДВУМ независимым осям, у них разный радиус
-   поражения. `AccountState` healthy→suspect→dead — свойство ПОДПИСКИ, терминал только по
-   коррелированной серии (счётчик И время), как `DEAD_STREAK`/`DEAD_MIN_SECS` в `pool`.
-   `TransportState` responsive→degraded→wedged — свойство ОДНОГО поколения app-server: серия
-   пропущенных дедлайнов закрывает допуск НОВЫХ ходов (идущие доживают — recycle убил бы соседей по
-   мультиплексу), и лишь корроборированная временем серия пересоздаёт поколение. Классификация вины:
-   usage-limit/auth → вина АККАУНТА (cooling до reset / 900s карантин, бюджет ретраев НЕ тратят,
-   крутимся по пулу), timeout → вина неизвестна, но НЕ игнорируется (streak → degraded → wedged),
-   EOF/protocol → вина ТРАНСПОРТА (recycle сразу), 400/context/rpc → вина КЛИЕНТА (не студим, не
-   ретраим). Возраст снапшота лимитов — первоклассная величина: протухший НЕ отклоняет и НЕ выигрывает
-   тай-брейк, а НИКОГДА не приходивший равен свежему (иначе первый получивший снапшот home становится
-   магнитом и курсор ротации не работает). Свип идёт ПАРАЛЛЕЛЬНО (один зависший home не крадёт
-   свежесть у остальных), а провалившийся ход будит свип немедленно — аналог `request_probe`/
-   `probe_poke` в Claude-пути. **Ретрай только ДО первого delta:** `emitted`-флаг в `send_update` — как только байт ушёл
-   клиенту, вторая попытка запрещена. Все homes за лимитом → один OpenAI-shaped 429 с ближайшим reset,
-   а не ошибка конкретного аккаунта. Homes адресуются ИНДЕКСОМ (в логах/метриках нет путей и identity).
-   Весь пул ограждён ОДНИМ pre-provisioned lock под root-owned `/run/apitoken`: per-home locks
-   запрещены, иначе два процесса разделят homes или rename создаст второй inode. Замена home/proxy
-   сначала закрывает admission, ждёт все `TurnSlot`, reaps child и лишь затем публикует поколение.
-   Detached streaming tasks входят в shutdown-barrier до history+settlement; lock живёт до process exit.
-1. Только official `codex app-server` и ChatGPT-owned auth store; токены не читать и не replay-ить.
-2. Проверять exact binary SHA-256/version до запуска; child `env_clear`, только allowlisted proxy env.
-3. Model-visible initial context = explicit client system/developer + transcript + request-local
-   dynamic client tools (function, namespace/function и custom Lark grammar). Codex
-   personality/environment/project/plugin/skill/permission/built-in tools запрещены. Custom tool
-   выполняет клиент: gateway возвращает raw input и никогда не исполняет его сам.
-4. Raw reasoning text не публиковать; только provider summary. `encrypted_content` — только по
-   явному Responses `include`, но хранить tenant-bound для корректной continuity.
-5. **SDK-совместимость через lenient parsing:** параметры, которые app-server не может исполнить
-   (sampling/seed/logprobs/n/store/stream_options, forced
-   tool_choice → degrade в "auto", parallel_tool_calls=false, strict=true tools → non-strict,
-   неизвестные include, effort вне каталога модели → дефолт модели, message `name`, assistant
-   `refusal`/`audio`, legacy `functions`/`function_call` → маппятся в tools/tool_choice, любые
-   неизвестные/будущие поля) — принимать и игнорировать, НЕ отклонять: стоковые SDK и агентские
-   терминалы шлют их по умолчанию и не должны падать. 400 остаётся только для структурно
-   непригодных запросов (нет model/input, пустые messages, битая tool-history, невалидный image
-   URL, >4 stop-последовательностей). User-сообщения могут нести изображения: chat `image_url` и
-   Responses `input_image` части (data:image/… или http(s)://) транслируются в app-server image
-   turn inputs и канонические input_image части истории; base64 data-URL в estimate для reserve
-   заменяется placeholder'ом (`sanitize_estimate_images`), чтобы не завышать резерв, но только в
-   estimate: `injected_items` истории обязан нести исходные data-URL дословно, иначе app-server не
-   декодирует placeholder и подставляет своё «image content omitted». **Client-side
-   output-контролы (chat):** `stop` обрезает выдачу по последовательности (StopFilter держит
-   хвост longest-1 байт для стреддлинга дельт; сама последовательность не эмитится), а
-   `max_tokens`/`max_completion_tokens` — приблизительный кап ~4 char/token с
-   `finish_reason="length"`; settlement ВСЕГДА по authoritative upstream usage (клиентская обрезка
-   не экономит провайдерские токены). **Полный wire-контракт:** chat стримит reasoning summaries
-   как `reasoning_content` дельты (+ join в non-stream message); оба стрима шлют data-bearing SSE
-   progress каждые 15с (`SSE_HEARTBEAT_INTERVAL`); Responses-стрим завершается
-   `response.completed` ИЛИ `error`+`response.failed` с полным failed-объектом; non-stream ответы
-   несут `x-ratelimit-*` из окна провайдера (процентная база 100). **Retrieval:** `store=true`
-   ответы читаются/удаляются через `GET/DELETE /v1/responses/{id}` и `/input_items` из того же
-   tenant-bound history store (TTL, зашифрованный Redis); StoredHistory хранит полный response
-   object + input_count (serde default — старые записи читаются, response=None → 404);
-   `store=false` не персистится и не читается. `POST /v1/responses/input_tokens` отдаёт оценку
-   (estimate/4) без turn и reserve. Ограниченные диагностические
-   compatibility-поля текущего Codex (`client_metadata`, `safety_identifier`) разрешено валидировать
-   и отбрасывать без логирования/форвардинга; `prompt_cache_key` валидируется, отражается в публичном
-   ответе и входит как strong alias в affinity. В pooled app-server передавать только стабильный
-   tenant-scoped keyed digest (или такой же digest автоматически выведенной cache-lineage), никогда
-   raw customer key и никогда эфемерный thread UUID. Responses `input_tokens_details` и Chat
-   `prompt_tokens_details` обязаны отражать authoritative `cache_write_tokens` вместе с
-   `cached_tokens`. `service_tier=fast|priority` для Fast-capable модели нормализуется в
-   app-server `priority`; `thread/start` обязан подтвердить тот же tier, иначе запрос fail closed,
-   потому что молчаливый downgrade нарушит биллинг. Для standard/default всегда передавать явный
-   app-server sentinel `"default"` (не JSON null), чтобы локальный config home не апгрейдил трафик;
-   ответ `thread/start` обязан подтвердить `"default"`. Остальные tier-значения leniently
-   деградируют в default. Codex CLI 0.146 присылает client-executed `tool_search` в developer
-   `additional_tools`: до обновления pinned app-server этот public wire-item транслировать во
-   внутреннюю dynamic function и обратно; `tool_search_call`/`tool_search_output` истории хранить
-   в публичной форме, а в app-server replay преобразовывать в function call/output. Function tool
-   `defer_loading` принимать и передавать как dynamic `deferLoading`. Codex `GET /v1/models`
-   (originator/UA начинается с `codex`) требует native `{"models":[]}` overlay, который CLI
-   объединяет со своим version-matched bundled catalog; остальным клиентам сохранять стандартный
-   OpenAI list envelope. Usage для settlement брать из authoritative completed app-server turn.
-6. Не заявлять OpenAI ownership: public `owned_by` остаётся `apitoken`; полный scope и runbook —
-   `docs/CODEX_APP_SERVER.md`.
-7. **Цены — только из `metering::codex`** (audited, effective-dated таблица, как Claude-тарифы).
-   `forward` цену не объявляет; reserve и settle резолвят её по одному и тому же clock. Fast
-   множитель ChatGPT credits (GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x) применяется одинаково к reserve,
-   settle, provider ledger и capacity spend; неизвестная Fast-модель резервируется консервативно
-   по 2.5x.
-8. **Калибровка ёмкости окна — только по фактическим данным.** Каждый успешный turn (billed ИЛИ
-   admin) durable-кредитует home exact official-price cost в integer nanoUSD; snapshot принимается
-   только с реальными `windowDurationMins` + `resetsAt` и хранится отдельно по `(home,duration)`.
-   Первый snapshot и первое последующее движение — только границы частично наблюдённого
-   процентного bucket, поэтому capacity/remaining остаются `null`/без Prometheus sample до
-   следующего завершённого %-интервала. Новый процент с ещё нулевым `Δspend` ждёт, пока independent
-   settlement stream догонит snapshot, чтобы их краткая гонка не публиковала ложную `$0` capacity
-   и не сдвигала anchor. Затем every positive-spend high-water interval входит в cumulative integer
-   weighted least squares `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без minimum delta, prior, EMA,
-   plausibility/foreign-share reject или jump clamp. Квантование выражается low/high/evidence, а
-   не отбрасыванием данных: endpoint uncertainty телескопируется как `observedPoints±1`, а wire-поле
-   `confidence` означает deterministic coverage maturity и достигает 100% после 20 завершённых
-   процентных пунктов, не статистическую вероятность. Дрейф `resetsAt` меньше половины реальной
-   длительности считается тем же concrete window; сдвиг минимум на полдлительности начинает новый
-   либо признаётся старым окном. Настоящий reset rearm-ит censored boundary, но не стирает
-   накопленные измеренные интервалы. Cumulative spend, CAS-versioned state и raw
-   observations живут в engine authority, переживают restart/blue-green и переигрываются при
-   estimator upgrade. `usedPercent=100` выводит home из
-   ротации немедленно, вместе с явным provider reached-флагом: подписка, о заполнении окна которой
-   отчитался провайдер, перестаёт отвечать, и каждый turn на ней сжигает клиентский запрос.
-   Selection fail-closed — исключённый home отдаёт `429 + Retry-After` до reset окна. Admission
-   также прекращается по 429, auth/subscription failure и cooling. Статус в `/codex-subs`
-   (`limit_reached`) считает тот же предикат, поэтому панель не может показать `active` для home,
-   на который движок не маршрутизирует.
-9. **Санитайзер ошибок:** публичный конверт не должен раскрывать пул/child/binary/ChatGPT-профиль
-   или upstream-текст. Гейтит `codex::api::tests::public_errors_never_leak_internal_architecture`
-   (близнец `local_err_never_leaks_*`).
+**Инварианты native Codex gateway (та же планка, что у Gemini):**
+0. **Пул профилей = sealed roster, без дочерних процессов.** Каждый home — AEAD-конверт
+   (`codex-credential`, XChaCha20Poly1305, profile id как AAD) с OAuth-материалом ChatGPT
+   (access/refresh token, account_id, план, прокси). Roster — `profiles.json` +
+   `credentials/<id>.json`; symlink/другой path/duplicate id запрещены. Нативный HTTPS к
+   `chatgpt.com/backend-api/codex` через per-profile wreq-клиент со своим прокси: никаких
+   supervised child, pinned binary, ownership locks и ownership transition'ов — blue-green
+   поколения свободно пересекаются, потому что состояние живёт в roster, а не в процессах.
+   Service floor — один рабочий профиль: одна подписка не становится 503 из-за отсутствия
+   запасной. **Параллелизм на home НЕ ограничен** (как у Claude-флота): атомарный счётчик
+   in-flight (`TurnSlot` RAII) — лишь сигнал загрузки для выбора, не потолок.
+   **Выбор — cache-first (как `affinity.rs`):** preferred home разговора → warm-прогрев общего
+   cache-root на двух homes → наименее загруженный; равные кандидаты чередуются атомарным
+   cursor. После успеха home пишется обратно в affinity. Selection: свежесть quota-снапшота →
+   in-flight → remaining window (bucketed steering ≥50%) → cursor; hard-exclusion ТОЛЬКО по
+   явному вердикту провайдера (`limit_reached` / `allowed:false` / 429) — проверено живьём:
+   `usedPercent=100` при `allowed:true` обслуживает; отвод от почти-полных окон — задача
+   reserve-кепок. Все homes за лимитом → один OpenAI-shaped 429+Retry-After до ближайшего reset.
+   **Мягкий запас окон (как `pool::Reserve`):** не роутим выше `1−base` окна (5h деф 10%,
+   weekly деф 3%) с детерминированным джиттером по profile id; под пиком фильтр fail-open
+   ослабляется до провайдерской стены. Кэш-липкость: upstream `session_id` = tenant-scoped
+   cache digest, разговор выглядит одной непрерывной сессией.
+1. **Только AEAD envelopes и pinned official client identity.** `originator: codex_cli_rs`,
+   UA `codex_cli_rs/<CODEX_CLI_VERSION> (…)`, `OpenAI-Beta: responses=experimental`,
+   `ChatGPT-Account-ID` из envelope. Tokens/email/account_id/proxy дешифруются только в память
+   и не попадают в log/metric/response. Homes адресуются opaque id (в логах/метриках нет путей
+   и identity). Версия клиента движется только reviewed-коммитом после live probe
+   (`research/CODEX_NATIVE_WIRE.md`).
+2. **Refresh — single-flight с durable ротацией (критично, отличие от Gemini).** OpenAI вращает
+   refresh_token на КАЖДОМ refresh со strict reuse detection: credential mutex сериализует
+   проверку expiry и refresh (401-бёрст переиспользует победителя), ротированный envelope
+   атомарно перезапечатывается (tmp+rename) ДО отпускания блокировки. При `invalid_grant` —
+   ровно один reload envelope с диска (blue-green peer мог ротировать раньше) и один retry.
+   Первый 401 на turn → один force-refresh+retry того же home до первого байта; повторный 401 →
+   auth quarantine по health-политике.
+3. **Model-visible context = explicit client base/developer instructions + replayed Responses
+   items + client tools.** Body собирается конструкцией (`build_responses_body`): личности,
+   environment/project/plugin/skill/permission контекста и built-in tools просто не существует
+   — граница патча app-server теперь структурная. `store:false`, stateless полный input на
+   turn; tenant continuity — только `prompt_cache_key` digest (никогда raw customer key).
+   Custom tool выполняет клиент: gateway возвращает raw call item и никогда не исполняет его.
+4. **Провайдерские окна — из `/wham/usage` и live-заголовков/SSE `codex.rate_limits`.**
+   Снапшот принимается только с реальными duration+reset; stale не отклоняет и не выигрывает
+   тай-брейк, никогда не приходивший равен свежему. Схема `/wham/usage` и имена заголовков
+   зафиксированы по живому probe (research/CODEX_NATIVE_WIRE.md, 2026-07-31). Свип селективен:
+   занятые homes кормятся
+   живым трафиком, здоровые idle — на медленном floor-каденсе, stale/suspect/unprobed — каждый
+   тик, всё с bounded concurrency (sweep не должен сам стать upstream-нагрузкой на флоте).
+   Провалившийся turn будит свип немедленно (`probe_poke`, как `request_probe` у Claude).
+   Калибровку питают ТОЛЬКО wire-события (probe/turn headers): чтения не пишут, роутинг не
+   стоит DB-работы.
+5. **Ретрай только ДО первого байта:** `emitted`-флаг — как только delta ушла клиенту, вторая
+   попытка запрещена. Классификация вины: 429/usage-limit → вина АККАУНТА (cooling до reset,
+   бюджет ретраев не тратят), 401/403 → auth (refresh+retry один раз, потом quarantine 900s),
+   timeout/5xx/EOF → вина ТРАНСПОРТА (streak → degraded → wedged → rebuild клиента),
+   400/context → вина КЛИЕНТА (не студим, не ретраим). Все homes за лимитом → один
+   OpenAI-shaped 429 с ближайшим reset. Health — чистая политика в `health.rs` по двум осям
+   (account healthy→suspect→dead; transport responsive→degraded→wedged), durable account axis в
+   authority.
+6. **Калибровка ёмкости окна — только по фактическим данным** (без изменений от app-server
+   эпохи): каждый успешный turn durable-кредитует home exact official-price cost в integer
+   nanoUSD; cumulative integer WLS `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без prior/EMA; cold
+   capacity/remaining = `null` до следующего complete positive-spend interval; raw
+   observations/CAS/spend в engine authority, переживают restart/blue-green.
+7. **Цены — только из `metering::codex`** (audited, effective-dated). Fast множитель применяется
+   одинаково к reserve/settle/ledger/capacity spend. Public synthetic errors только
+   OpenAI-shaped и без pool/profile/upstream internals — гейтит
+   `api::tests::public_errors_never_leak_internal_architecture`.
+8. **Shutdown:** detached streaming tasks входят в shutdown-barrier до history+settlement;
+   `TurnEvents` Drop abort-ит upstream read, settle последнего snapshot — до освобождения
+   background permit. Полный контракт/provisioning/runbook — `docs/CODEX_PROVIDER.md`.
 
 **Инварианты native Gemini gateway:**
 1. Только AEAD envelopes проверенных paid Code Assist OAuth identities. Roster содержит opaque id и

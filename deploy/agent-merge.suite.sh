@@ -423,8 +423,8 @@ grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the activation-journal suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the Codex home migration suite'
-grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/agent-merge.sh" \
-  || wd_die 'the merge gate does not run the Codex app-server ownership suite'
+! grep -Fq 'deploy/codex-app-servers.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate still runs the removed Codex app-server ownership suite'
 grep -Fq 'deploy/sccache-cargo.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not test serialized sccache startup'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \

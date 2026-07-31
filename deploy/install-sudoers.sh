@@ -164,36 +164,8 @@ require_permitted 'OpenAI reverse old-slot async stop' \
   /usr/bin/systemctl --no-block stop claude-api-openai@8797.service
 require_permitted 'OpenAI slot drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai@8793.service
-require_permitted 'Codex reconciler timer start' \
-  /usr/bin/systemctl start claude-api-codex-app-servers.timer
-require_permitted 'Codex reconciler timer stop' \
-  /usr/bin/systemctl stop claude-api-codex-app-servers.timer
-require_permitted 'Codex reconciler timer enable' \
-  /usr/bin/systemctl enable claude-api-codex-app-servers.timer
-require_permitted 'Codex reconciler timer disable' \
-  /usr/bin/systemctl disable claude-api-codex-app-servers.timer
 require_permitted 'legacy Codex home migration' \
   /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply
-require_permitted 'Codex app-server reconciliation' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile
-require_permitted 'Codex cutover admission' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh admit-cutover
-require_permitted 'Codex ownership transition preparation' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-transition
-require_permitted 'Codex ownership transition commit' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-transition
-require_permitted 'Codex ownership transition rollback' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-transition
-require_permitted 'Codex legacy transition preparation' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-legacy-transition
-require_permitted 'Codex legacy transition commit' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-legacy-transition
-require_permitted 'Codex legacy transition rollback' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-legacy-transition
-require_permitted 'Codex app-server verification' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify
-require_permitted 'Codex legacy-owner verification' \
-  /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify-legacy
 require_permitted 'Gemini provider restart' /usr/bin/systemctl restart claude-api-gemini.service
 require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemini.service
 require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service
@@ -211,8 +183,6 @@ require_permitted 'engine schema migration runner' \
 require_permitted 'engine schema migration helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
-require_permitted 'Codex promotion helper' \
-  /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh "$sample_sha"
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'controller-only infrastructure runner' \
   /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha" --controller-only

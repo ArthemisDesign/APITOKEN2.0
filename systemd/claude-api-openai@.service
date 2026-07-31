@@ -1,10 +1,9 @@
-# Health-gated OpenAI HTTP slot. Both generations may overlap because their official proxy children
-# carry websocket bytes only; authenticated CODEX_HOME ownership stays in the daemon template.
+# Health-gated OpenAI HTTP slot. Both generations may overlap freely: the native Codex provider
+# reads the same sealed credential roster and owns no per-generation child processes.
 [Unit]
 Description=claude-api OpenAI-compatible gateway slot on port %i
-After=network-online.target apitoken-affinity-redis.service claude-api-codex-app-servers-ready.target
+After=network-online.target apitoken-affinity-redis.service
 Wants=network-online.target apitoken-affinity-redis.service
-Requires=claude-api-codex-app-servers-ready.target
 
 [Service]
 Type=simple
@@ -14,12 +13,12 @@ Environment=SUB_CFG_DIR=/srv/claude-api/data
 EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
-# A pre-blue-green binary ignores CLAUDE_API_CODEX_TRANSPORT and would launch direct children.
+# A pre-migration binary expects the app-server machinery and would misread the sealed roster.
 # Refuse the process even if an operator accidentally starts/enables this template during rollback.
 ExecCondition=/usr/bin/test -f /srv/claude-api/releases/current/.openai-bluegreen-v1
 ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1
 ExecCondition=/usr/bin/grep -Fxq openai-bluegreen-v1 /srv/claude-api/releases/current/.openai-bluegreen-v1
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=openai CLAUDE_API_CODEX_TRANSPORT=shared-daemon CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:openai:%i CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com CLAUDE_API_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:openai:%i /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
@@ -29,7 +28,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-app-servers
+ReadWritePaths=/srv/claude-api/data
 MemoryMax=2G
 
 [Install]

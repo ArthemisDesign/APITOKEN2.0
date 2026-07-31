@@ -4263,7 +4263,7 @@ pub fn credit_gemini_profile_spend(
 
 /// Durable account-level health for one Codex home.
 ///
-/// Only the account axis is stored. Transport health belongs to one app-server generation and must
+/// Only the account axis is stored. Transport health belongs to one transport generation and must
 /// not survive it: a restarted gateway holds a brand new bridge and deserves a fresh verdict.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexHomeHealthRow {

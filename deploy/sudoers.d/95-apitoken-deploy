@@ -22,22 +22,11 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-backup.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-retention.sh [0-9]*, \
-    /usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --controller-only, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --caddy-only, \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --apply-caddy, \
     /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh reconcile, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh admit-cutover, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh prepare-legacy-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh commit-legacy-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh abort-legacy-transition, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify, \
-    /usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh verify-legacy, \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \
     /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*, \
@@ -126,10 +115,6 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl disable claude-api-openai@[0-9]*.service, \
     /usr/bin/systemctl restart claude-api-openai@[0-9]*.service, \
     /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-openai@[0-9]*.service, \
-    /usr/bin/systemctl start claude-api-codex-app-servers.timer, \
-    /usr/bin/systemctl stop claude-api-codex-app-servers.timer, \
-    /usr/bin/systemctl enable claude-api-codex-app-servers.timer, \
-    /usr/bin/systemctl disable claude-api-codex-app-servers.timer, \
     /usr/bin/systemctl start claude-api-gemini.service, \
     /usr/bin/systemctl stop claude-api-gemini.service, \
     /usr/bin/systemctl restart claude-api-gemini.service, \
@@ -191,7 +176,6 @@ Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/systemd/system/claude-api@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service, \
-    /usr/bin/test -f /etc/systemd/system/claude-api-codex-app-servers.timer, \
     /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
 
 deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \

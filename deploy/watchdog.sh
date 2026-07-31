@@ -35,7 +35,6 @@ RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 ADMIN_RUNNER=/usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
-CODEX_APP_SERVERS_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 CANDIDATE_VALIDATOR_LOCK=/run/lock/apitoken-candidate-validator.lock
@@ -43,9 +42,6 @@ SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
-CODEX_RUNTIME_BIN_ROOT=/srv/claude-api/data/codex/bin
-CODEX_RUNTIME_LINK=$CODEX_RUNTIME_BIN_ROOT/codex
-CODEX_RUNTIME_ATTESTATION=$CODEX_RUNTIME_BIN_ROOT/.promoted
 
 PROCESSED_FILE=$STATE_ROOT/processed.sha
 INFRASTRUCTURE_FILE=$STATE_ROOT/infrastructure.sha
@@ -341,59 +337,6 @@ candidate_for() {
   printf '%s/%s\n' "$CANDIDATE_ROOT" "$1"
 }
 
-CODEX_RUNTIME_DETAIL=
-
-# Prove that the binary selected on the host was promoted from the exact Codex tooling tree in the
-# candidate. Component SHAs cannot provide this proof: a failed deployment may promote a binary and
-# then leave the last-green engine baseline untouched, while a rollback can restore the same Git
-# content as that baseline. The root-owned attestation is written only after config+symlink commit.
-codex_runtime_matches_candidate() {
-  local target=$1 desired_tree pin desired_source desired_version
-  local format tooling_tree source_commit binary_sha256 version resolved expected
-  CODEX_RUNTIME_DETAIL=unknown
-  wd_validate_sha "$target" || return 1
-  desired_tree=$(git -C "$SOURCE_REPO" rev-parse "$target:tools/codex-app-server" 2>/dev/null) \
-    || { CODEX_RUNTIME_DETAIL='candidate tooling tree is unavailable'; return 1; }
-  [[ $desired_tree =~ ^[0-9a-f]{40}$ ]] \
-    || { CODEX_RUNTIME_DETAIL='candidate tooling tree is malformed'; return 1; }
-  pin=$(git -C "$SOURCE_REPO" show "$target:tools/codex-app-server/UPSTREAM.pin" 2>/dev/null) \
-    || { CODEX_RUNTIME_DETAIL='candidate pin is unavailable'; return 1; }
-  desired_source=$(sed -n \
-    "s/^CODEX_GIT_COMMIT='\\([0-9a-f]\\{40\\}\\)'$/\\1/p" <<<"$pin")
-  desired_version=$(sed -n \
-    "s/^CODEX_EXPECTED_VERSION='\\(codex-cli [0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\)'$/\\1/p" \
-    <<<"$pin")
-  [[ $desired_source =~ ^[0-9a-f]{40}$ \
-      && $desired_version =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || { CODEX_RUNTIME_DETAIL='candidate pin identity is malformed'; return 1; }
-  [[ -f $CODEX_RUNTIME_ATTESTATION && ! -L $CODEX_RUNTIME_ATTESTATION \
-      && $(stat -c '%u' -- "$CODEX_RUNTIME_ATTESTATION" 2>/dev/null) == 0 ]] \
-    || { CODEX_RUNTIME_DETAIL='root-owned promotion attestation is absent'; return 1; }
-  format=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" format 2>/dev/null) || return 1
-  tooling_tree=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" tooling_tree 2>/dev/null) \
-    || return 1
-  source_commit=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" source_commit 2>/dev/null) \
-    || return 1
-  binary_sha256=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" binary_sha256 2>/dev/null) \
-    || return 1
-  version=$(wd_marker_value "$CODEX_RUNTIME_ATTESTATION" version 2>/dev/null) || return 1
-  [[ $format == 1 && $tooling_tree == "$desired_tree" \
-      && $source_commit == "$desired_source" && $version == "$desired_version" \
-      && $binary_sha256 =~ ^[0-9a-f]{64}$ ]] \
-    || { CODEX_RUNTIME_DETAIL='promotion attestation does not match candidate'; return 1; }
-  [[ -L $CODEX_RUNTIME_LINK ]] \
-    || { CODEX_RUNTIME_DETAIL='stable Codex link is absent or unsafe'; return 1; }
-  resolved=$(readlink -f -- "$CODEX_RUNTIME_LINK" 2>/dev/null) \
-    || { CODEX_RUNTIME_DETAIL='stable Codex link is broken'; return 1; }
-  expected="$CODEX_RUNTIME_BIN_ROOT/codex-$source_commit-$binary_sha256"
-  [[ $resolved == "$expected" && -f $resolved && ! -L $resolved && -x $resolved ]] \
-    || { CODEX_RUNTIME_DETAIL='stable Codex link does not select the attested binary'; return 1; }
-  [[ $(wd_sha256_file "$resolved" 2>/dev/null) == "$binary_sha256" ]] \
-    || { CODEX_RUNTIME_DETAIL='attested Codex binary digest changed'; return 1; }
-  CODEX_RUNTIME_DETAIL="aligned:$desired_version:$desired_tree"
-  return 0
-}
-
 candidate_is_tested() {
   local sha=$1 typescript_required=$2 typescript_full=$3 typescript_base=$4
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
@@ -510,19 +453,6 @@ candidate_is_tested() {
     expected_hash=$(wd_marker_value "$marker" authbot_binary_sha256 2>/dev/null) || return 1
     actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot") || return 1
     [[ $actual_hash == "$expected_hash" ]] || return 1
-  fi
-  if (( codex_artifacts_required == 1 )); then
-    [[ -f $candidate/.deploy-artifacts/codex/codex \
-        && ! -L $candidate/.deploy-artifacts/codex/codex \
-        && -x $candidate/.deploy-artifacts/codex/codex ]] || return 1
-    expected_hash=$(wd_marker_value "$marker" codex_binary_sha256 2>/dev/null) || return 1
-    [[ $expected_hash =~ ^[0-9a-f]{64}$ ]] || return 1
-    actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/codex/codex") || return 1
-    [[ $actual_hash == "$expected_hash" ]] || return 1
-    [[ $(wd_marker_value "$marker" codex_source_commit 2>/dev/null) =~ ^[0-9a-f]{40}$ ]] \
-      || return 1
-    [[ $(wd_marker_value "$marker" codex_version 2>/dev/null) \
-        =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   fi
   return 0
 }
@@ -723,20 +653,6 @@ test_rust_lane() {
   fi
 }
 
-test_codex_lane() {
-  local candidate=$1 stage artifact_root built_binary
-  stage="$candidate/.deploy-artifacts/codex-stage"
-  artifact_root="$candidate/.deploy-artifacts/codex"
-  wd_log "building and testing the pinned official Codex binary from its attested source"
-  run_as_ci "$candidate/tools/codex-app-server/build-pinned.sh" --install-dir "$stage"
-  built_binary=$(readlink -f -- "$stage/codex")
-  [[ $built_binary == "$stage"/codex-* && -f $built_binary && ! -L $built_binary ]] \
-    || wd_die "pinned Codex builder produced an unsafe artifact"
-  run_as_ci install -d -m 0755 "$artifact_root"
-  run_as_ci install -m 0555 "$built_binary" "$artifact_root/codex"
-  run_as_ci rm -rf -- "$stage"
-}
-
 test_static_lane() {
   local candidate=$1 sha=$2 run_regression_suites=$3 shell_file
   local diff_base=${VALIDATION_BASE_SHA:-${PROCESSED_SHA:-}}
@@ -779,15 +695,14 @@ prepare_and_test_candidate_unlocked() {
   local validation_policy_sha256=$8 validation_plan_sha256=$9
   local codex_artifacts_required=${10}
   local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
-  local typescript_pid= rust_pid= codex_pid= static_pid=
+  local typescript_pid= rust_pid= static_pid=
   local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
   local typescript_digest_admin=none
   local commerce_release_bundle_hash=none
-  local engine_hash=none authbot_hash=none codex_hash=none
-  local codex_source_commit=none codex_version=none
+  local engine_hash=none authbot_hash=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -843,10 +758,6 @@ prepare_and_test_candidate_unlocked() {
   if (( rust_required == 1 )); then
     run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &
     rust_pid=$!
-  fi
-  if (( codex_artifacts_required == 1 )); then
-    run_candidate_lane test_codex_lane "$candidate" &
-    codex_pid=$!
   fi
   run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &
   static_pid=$!
@@ -911,17 +822,6 @@ prepare_and_test_candidate_unlocked() {
     engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
     authbot_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot")
   fi
-  if (( codex_artifacts_required == 1 )); then
-    codex_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/codex/codex")
-    codex_version=$(run_as_ci "$candidate/.deploy-artifacts/codex/codex" --version)
-    [[ $codex_version =~ ^codex-cli\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
-      || wd_die "tested Codex binary reported a malformed version"
-    codex_source_commit=$(sed -n \
-      "s/^CODEX_GIT_COMMIT='\\([0-9a-f]\\{40\\}\\)'$/\\1/p" \
-      "$candidate/tools/codex-app-server/UPSTREAM.pin")
-    [[ $codex_source_commit =~ ^[0-9a-f]{40}$ ]] \
-      || wd_die "Codex source pin is malformed"
-  fi
   {
     printf 'sha=%s\n' "$sha"
     printf 'tree=%s\n' "$tree"
@@ -946,9 +846,6 @@ prepare_and_test_candidate_unlocked() {
     printf 'commerce_release_bundle_sha256=%s\n' "$commerce_release_bundle_hash"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
-    printf 'codex_binary_sha256=%s\n' "$codex_hash"
-    printf 'codex_source_commit=%s\n' "$codex_source_commit"
-    printf 'codex_version=%s\n' "$codex_version"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
   } >"${marker}.tmp.${BASHPID:-$$}"
   chmod 0640 "${marker}.tmp.${BASHPID:-$$}"
@@ -1174,18 +1071,8 @@ select_candidate_validation_requirements() {
     VALIDATION_TYPESCRIPT_BASE_SHA=$processed_base
     VALIDATION_TYPESCRIPT_FULL=1
   fi
-  # Keep the public plan envelope at format 1 during this staged controller upgrade. Older
-  # production controllers can validate the feature candidate, while the newly installed
-  # controller adds this artifact requirement before any production promotion.
-  if wd_range_has_class "$SOURCE_REPO" "$engine_base" "$target" wd_path_is_codex_tooling \
-      || ! codex_runtime_matches_candidate "$target"; then
-    VALIDATION_CODEX_ARTIFACTS_REQUIRED=1
-    # A Codex promotion must start a fresh HTTP slot so its proxy children load the same immutable
-    # binary as the daemon cohort. Reuse/build the tested engine artifacts for that health-gated
-    # cutover even when Git itself contains no engine delta (pure runtime-drift repair).
-    VALIDATION_RUST_REQUIRED=1
-    VALIDATION_ENGINE_ARTIFACTS_REQUIRED=1
-  fi
+  # The native Codex provider has no pinned sidecar artifact: its wire identity ships inside
+  # the tested engine binary, so the engine lane already proves every Codex-affecting change.
   (( VALIDATION_ENGINE_ARTIFACTS_REQUIRED == 0 )) || VALIDATION_RUST_REQUIRED=1
   (( VALIDATION_TYPESCRIPT_FULL == 0 )) || VALIDATION_TYPESCRIPT_REQUIRED=1
   VALIDATION_PLAN_SHA256=$(validation_plan_digest)
@@ -1391,6 +1278,7 @@ final_verify_engine() {
 }
 
 engine_runtime_aligned() {
+  # $2 is a retained no-op: the native provider needs no daemon-cohort convergence phase.
   local sha=$1 codex_alignment=${2:-converged}
   local expected current legacy_active=0 legacy_enabled=0 stable_status
   local active_8787=0 ready_8787=0 current_8787=0 enabled_8787=0
@@ -1399,7 +1287,6 @@ engine_runtime_aligned() {
   local openai_active_8797=0 openai_ready_8797=0 openai_current_8797=0 openai_enabled_8797=0
   local openai_legacy_active=0 openai_legacy_ready=0 openai_legacy_current=0
   local openai_legacy_enabled=0 openai_shared_supported=0 openai_stable_status
-  local codex_timer_active=0 codex_timer_enabled=0
   local gemini_supported=0 gemini_active=0 gemini_ready=0 gemini_current=0 gemini_enabled=0 gemini_stable_status
   local port unit pid executable status combined_unit environment
 
@@ -1456,7 +1343,7 @@ engine_runtime_aligned() {
         environment=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null || true)
         if [[ $executable == "$expected/claude-api" ]] \
             && grep -Fxq 'CLAUDE_API_PROVIDER=openai' <<<"$environment" \
-            && grep -Fxq 'CLAUDE_API_CODEX_TRANSPORT=shared-daemon' <<<"$environment"; then
+            && ! grep -Fq 'CLAUDE_API_CODEX_TRANSPORT' <<<"$environment"; then
           openai_selected=1
         fi
       fi
@@ -1494,8 +1381,6 @@ engine_runtime_aligned() {
         && $(<"$expected/.openai-bluegreen-v1") == openai-bluegreen-v1 ]] || return 1
     openai_shared_supported=1
   fi
-  systemctl is-active --quiet claude-api-codex-app-servers.timer && codex_timer_active=1
-  systemctl is-enabled --quiet claude-api-codex-app-servers.timer && codex_timer_enabled=1
   [[ -f "$expected/.gemini-provider-v1" \
       && $(<"$expected/.gemini-provider-v1") == gemini-provider-v1 ]] && gemini_supported=1
   unit=claude-api-gemini.service
@@ -1517,7 +1402,7 @@ engine_runtime_aligned() {
   fi
   gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8794/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled timer=$codex_timer_active:$codex_timer_enabled] gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
   [[ $openai_stable_status == 200 ]] || return 1
   if (( openai_shared_supported == 0 )); then
@@ -1525,12 +1410,9 @@ engine_runtime_aligned() {
       && openai_legacy_current == 1 && openai_legacy_enabled == 1 \
       && openai_active_8793 == 0 && openai_current_8793 == 0 && openai_enabled_8793 == 0 \
       && openai_active_8797 == 0 && openai_ready_8797 == 0 \
-      && openai_current_8797 == 0 && openai_enabled_8797 == 0 \
-      && codex_timer_active == 0 && codex_timer_enabled == 0 )) || return 1
-    sudo -n "$CODEX_APP_SERVERS_HELPER" verify-legacy >/dev/null 2>&1 || return 1
+      && openai_current_8797 == 0 && openai_enabled_8797 == 0 )) || return 1
   else
     (( openai_legacy_active == 0 && openai_legacy_enabled == 0 )) || return 1
-    (( codex_timer_active == 1 && codex_timer_enabled == 1 )) || return 1
     if (( openai_active_8793 == 1 )); then
       (( openai_ready_8793 == 1 && openai_current_8793 == 1 && openai_enabled_8793 == 1 \
         && openai_active_8797 == 0 && openai_ready_8797 == 0 \
@@ -1540,11 +1422,6 @@ engine_runtime_aligned() {
         && openai_current_8797 == 1 && openai_enabled_8797 == 1 \
         && openai_active_8793 == 0 && openai_ready_8793 == 0 \
         && openai_current_8793 == 0 && openai_enabled_8793 == 0 )) || return 1
-    fi
-    if [[ $codex_alignment == serving ]]; then
-      sudo -n "$CODEX_APP_SERVERS_HELPER" admit-cutover >/dev/null 2>&1 || return 1
-    else
-      sudo -n "$CODEX_APP_SERVERS_HELPER" verify >/dev/null 2>&1 || return 1
     fi
   fi
   if (( gemini_supported == 1 )); then
@@ -1949,17 +1826,6 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine runtime has no admitted single-slot serving state after cutover: $ENGINE_RUNTIME_DETAIL"
   fi
-  if (( codex_changed == 1 )); then
-    CURRENT_PHASE=deploying-codex
-    CURRENT_PHASE_BEFORE_FAILURE=deploying-codex
-    status "rolling the promoted Codex pin sequentially behind the admitted OpenAI gateway"
-    sudo -n "$CODEX_APP_SERVERS_HELPER" reconcile \
-      || wd_die "promoted Codex daemon cohort did not reconcile"
-    sudo -n "$CODEX_APP_SERVERS_HELPER" verify \
-      || wd_die "promoted Codex daemon cohort did not converge"
-    codex_runtime_matches_candidate "$sha" \
-      || wd_die "promoted Codex runtime attestation is not aligned: $CODEX_RUNTIME_DETAIL"
-  fi
   if ! engine_runtime_aligned "$sha" converged; then
     rollback_engine || true
     wd_die "engine runtime is not converged after cutover: $ENGINE_RUNTIME_DETAIL"
@@ -2188,13 +2054,6 @@ main() {
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
     && codex_changed=1
-  if ! codex_runtime_matches_candidate "$CANDIDATE_SHA"; then
-    wd_log "Codex runtime drift requires promotion for $CANDIDATE_SHA: $CODEX_RUNTIME_DETAIL"
-    codex_changed=1
-    # The gateway proxy binary is loaded at process start. A runtime-only Codex repair therefore
-    # uses the normal health-gated engine cutover even when no tracked engine source changed.
-    engine_changed=1
-  fi
   wd_range_has_class "$SOURCE_REPO" "$BACKEND_SHA" "$CANDIDATE_SHA" wd_path_is_backend \
     && backend_changed=1
   # Sales has its own release baseline; fall back to processed on first run (before sales.sha exists).

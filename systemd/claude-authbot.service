@@ -1,6 +1,6 @@
 # Бот пополнения пула: покупает подписки у продавцов и передаёт их движку.
 #
-# Claude-подписка становится строкой-токеном в реестре, ChatGPT-подписка — каталогом CODEX_HOME,
+# Claude-подписка становится строкой-токеном в реестре, ChatGPT-подписка — sealed-профилем в roster,
 # а Antigravity OAuth — AEAD-конвертом и атомарной записью в отдельный Gemini roster.
 # Поэтому боту нужен доступ на запись в каталоги покупок и к пиннованному codex CLI, но НЕ нужен
 # root и не нужны права на config.env или управление сервисами.
@@ -22,7 +22,7 @@ EnvironmentFile=/srv/claude-api/data/authbot.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # Command assignments override legacy values from EnvironmentFile even for the old binary that may
 # still be current when an infrastructure transaction restarts this unit before promotion.
-ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes /srv/claude-api/releases/current/authbot
+ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex /srv/claude-api/releases/current/authbot
 WorkingDirectory=/srv/claude-api/data
 Restart=always
 RestartSec=5

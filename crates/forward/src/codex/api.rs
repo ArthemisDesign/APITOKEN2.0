@@ -30,7 +30,7 @@ const MAX_CLIENT_METADATA_VALUE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_CACHE_KEY_BYTES: usize = 256;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 256 * 1024;
 /// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
-/// tool. The pinned 0.145 app-server does not know that wire type, so the gateway presents an
+/// tool. The pinned 0.145 upstream client does not know that wire type, so the gateway presents an
 /// equivalent private dynamic function to the model and translates calls/results at the boundary.
 const TOOL_SEARCH_DYNAMIC_NAME: &str = "__codex_client_tool_search";
 /// Serialized-body bytes per input token. Used both by the public `input_tokens` estimate and by
@@ -182,10 +182,6 @@ impl From<ProcessError> for ApiError {
                 "The request could not be processed by the selected model.",
                 None::<String>,
             ),
-            ProcessError::Rpc { code: -32602, .. } => Self::invalid(
-                "The request could not be processed by the selected model.",
-                None::<String>,
-            ),
             other => {
                 eprintln!(
                     "Codex provider request failed [{}]",
@@ -204,7 +200,7 @@ pub(super) struct ParsedResponsesRequest {
     pub(super) instructions: Option<String>,
     previous_response_id: Option<String>,
     prompt_cache_key: Option<String>,
-    /// Normalized app-server/OpenAI request value. `Some("priority")` is Codex Fast mode.
+    /// Normalized upstream/OpenAI request value. `Some("priority")` is Codex Fast mode.
     pub(super) service_tier: Option<String>,
     reasoning_effort: Option<String>,
     reasoning_summary: Option<String>,
@@ -365,7 +361,7 @@ pub async fn models(
     if requests_codex_models_envelope(&headers) {
         return json_response(StatusCode::OK, json!({"models": []}), &new_id("req"));
     }
-    // Standard SDK discovery must not block on a live app-server catalog refresh. The health loop
+    // Standard SDK discovery must not block on a live upstream catalog refresh. The health loop
     // updates the last-good intersection in the background; before its first success, the local
     // reviewed/configured catalog keeps the endpoint useful during startup or an upstream outage.
     let available = gateway.cached_model_catalog().await;
@@ -665,51 +661,7 @@ async fn authorize_models(
 pub(super) async fn available_upstream_models(
     gateway: &CodexGateway,
 ) -> Result<HashSet<String>, ProcessError> {
-    let process = gateway.any_process().await?;
-    let mut available = HashSet::new();
-    let mut seen_cursors = HashSet::new();
-    let mut cursor: Option<String> = None;
-    for _ in 0..32 {
-        let response = process
-            .request(
-                "model/list",
-                json!({
-                    "cursor": cursor,
-                    "limit": 100,
-                    "includeHidden": false
-                }),
-            )
-            .await?;
-        let data = response
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                ProcessError::Protocol("model/list response omitted data".to_string())
-            })?;
-        available.extend(
-            data.iter()
-                .filter_map(|model| model.get("model").and_then(Value::as_str))
-                .map(str::to_string),
-        );
-        let next = match response.get("nextCursor") {
-            None | Some(Value::Null) => return Ok(available),
-            Some(Value::String(next)) if !next.is_empty() => next.clone(),
-            Some(_) => {
-                return Err(ProcessError::Protocol(
-                    "model/list returned an invalid nextCursor".to_string(),
-                ))
-            }
-        };
-        if !seen_cursors.insert(next.clone()) {
-            return Err(ProcessError::Protocol(
-                "model/list repeated a pagination cursor".to_string(),
-            ));
-        }
-        cursor = Some(next);
-    }
-    Err(ProcessError::Protocol(
-        "model/list exceeded the pagination safety limit".to_string(),
-    ))
+    gateway.fetch_live_models().await
 }
 
 fn model_object(model: &CodexModel) -> Value {
@@ -770,9 +722,9 @@ fn combined_instructions(turn: &super::CodexTurnRequest) -> Option<String> {
 
 /// Drop reasoning items from a replayed history. Reasoning (and its `encrypted_content`) is
 /// model-bound internal state; when a `previous_response_id` chain switches models, replaying it is
-/// meaningless and can be rejected by the app-server. The remaining message and tool-call items are
+/// meaningless and can be rejected by the backend. The remaining message and tool-call items are
 /// portable, and a reasoning-free history is structurally identical to any first-turn conversation
-/// the app-server already accepts.
+/// the backend already accepts.
 fn strip_reasoning_items(items: Vec<Value>) -> Vec<Value> {
     items
         .into_iter()
@@ -818,7 +770,7 @@ pub(super) async fn prepare_turn(
     injected.extend(request.input.prior_items.clone());
     let injected = injected
         .into_iter()
-        .map(tool_search_item_for_app_server)
+        .map(tool_search_item_for_upstream)
         .collect::<Vec<_>>();
     let mut history_after_input = full_history_prefix.clone();
     history_after_input.extend(request.input.canonical_items.clone());
@@ -832,11 +784,11 @@ pub(super) async fn prepare_turn(
     });
     // The thread receives the real history; only the billing-reserve estimate below may see the
     // fixed-size image placeholders. Taking `injected_items` from `estimate_value` after
-    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the app-server, which
+    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the backend, which
     // cannot decode them and substitutes its own "image content omitted" placeholder.
     // The thread receives the real history; only the billing-reserve estimate below may see the
     // fixed-size image placeholders. Taking `injected_items` from `estimate_value` after
-    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the app-server, which
+    // `sanitize_estimate_images` would ship `data:image/estimate…` URLs to the backend, which
     // cannot decode them and substitutes its own "image content omitted" placeholder.
     let injected_items = estimate_value
         .get("history")
@@ -1081,9 +1033,9 @@ fn optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool
     }
 }
 
-/// Normalize the public Responses/Chat spelling onto the value used by the pinned app-server.
+/// Normalize the public Responses/Chat spelling onto the value used by the pinned client.
 ///
-/// Codex exposes the feature to users as `fast`, while the current app-server and OpenAI Responses
+/// Codex exposes the feature to users as `fast`, while the current client and OpenAI Responses
 /// wire use `priority`. Unknown tiers remain leniently accepted as standard service, preserving the
 /// adapter's compatibility policy for SDK fields the ChatGPT-subscription transport cannot honor.
 fn parse_service_tier(value: Option<&Value>, model: &CodexModel) -> Option<String> {
@@ -1803,7 +1755,7 @@ fn normalize_tool_search_output(
     Ok(normalized)
 }
 
-fn tool_search_item_for_app_server(item: Value) -> Value {
+fn tool_search_item_for_upstream(item: Value) -> Value {
     match item.get("type").and_then(Value::as_str) {
         Some("tool_search_call") => {
             let arguments = item
@@ -2866,7 +2818,7 @@ async fn stream_responses(
             emitted_non_messages.insert(item_id);
         }
 
-        // Backfill any authoritative non-message item for which app-server emitted no raw
+        // Backfill any authoritative non-message item for which the stream emitted no raw
         // completion notification. This preserves a valid lifecycle without inventing content.
         for item in result.output.iter().filter_map(|item| {
             normalize_output_item_with_options(item, prepared.request.include_encrypted_reasoning)
@@ -3305,7 +3257,7 @@ pub(super) fn insert_extra_headers(response: &mut Response, headers: Vec<(&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::{CodexConfig, CodexPrices, CodexTransport};
+    use crate::codex::{CodexConfig, CodexPrices};
     use std::collections::BTreeMap;
 
     #[test]
@@ -3346,27 +3298,10 @@ mod tests {
         }
         for process in [
             ProcessError::Disabled,
-            ProcessError::InvalidConfig("codex_home must be absolute".to_string()),
-            ProcessError::VersionMismatch {
-                expected: "codex-cli 0.145.0".to_string(),
-                actual: "codex-cli 0.1.0".to_string(),
-            },
-            ProcessError::DigestMismatch {
-                expected: "a".repeat(64),
-                actual: "b".repeat(64),
-            },
-            ProcessError::Spawn("permission denied /srv/claude-api/data/codex/home".to_string()),
+            ProcessError::InvalidConfig("credential file unreadable".to_string()),
             ProcessError::Closed,
             ProcessError::Timeout("turn completion"),
-            ProcessError::Protocol("app-server served unexpected model".to_string()),
-            ProcessError::Rpc {
-                code: -32602,
-                message: "sensitive upstream diagnostic".to_string(),
-            },
-            ProcessError::Rpc {
-                code: -32000,
-                message: "sensitive upstream diagnostic".to_string(),
-            },
+            ProcessError::Protocol("upstream served an unexpected model".to_string()),
             ProcessError::ContextWindowExceeded,
             ProcessError::UsageLimitExceeded {
                 retry_after: Some(60),
@@ -3515,31 +3450,68 @@ mod tests {
     }
 
     fn gateway() -> CodexGateway {
-        let ownership_lock =
-            std::env::temp_dir().join(format!("{}.lock", new_id("codex-api-test")));
-        std::fs::write(&ownership_lock, []).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "claude-api-codex-api-test-{}",
+            new_id("roster")
+        ));
+        let credentials = root.join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        let keyring = codex_credential::CredentialKeyring::parse(&format!(
+            "current:{}",
+            "ab".repeat(32)
+        ))
+        .unwrap();
+        let credential = codex_credential::CodexCredential {
+            version: 1,
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            expires_at: i64::MAX / 2,
+            oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+            token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.to_string(),
+            account_id: "acct_test_1234".to_string(),
+            email: "owner@example.com".to_string(),
+            plan: "chatgpt_plus".to_string(),
+            proxy: String::new(),
+            proxy_order_id: 0,
+            issued_at: 0,
+        };
+        let envelope = keyring.seal("current", "alpha", &credential).unwrap();
+        std::fs::write(
+            credentials.join("alpha.json"),
+            codex_credential::encode_envelope(&envelope).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "profiles": [{
+                    "id": "alpha",
+                    "credential_file": credentials.join("alpha.json").to_str().unwrap(),
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         CodexGateway::new(CodexConfig {
             enabled: true,
-            transport: CodexTransport::OwnedChild,
-            ownership_lock_file: ownership_lock.to_str().unwrap().to_string(),
-            binary: "/tmp/codex".to_string(),
-            binary_sha256: "0".repeat(64),
-            expected_version: "codex-cli test".to_string(),
-            homes: vec!["/tmp/codex-home".to_string()],
-            homes_dir: None,
-            work_dir: "/tmp/codex-work".to_string(),
-            startup_timeout_ms: 1_000,
+            base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
+            profiles_file: root.join("profiles.json").to_str().unwrap().to_string(),
+            credential_keys: keyring,
+            cli_version: codex_credential::CODEX_CLI_VERSION.to_string(),
             request_timeout_ms: 1_000,
             turn_timeout_ms: 1_000,
             turn_silence_timeout_ms: 1_000,
             health_probe_interval_secs: 300,
+            reserve_5h: 0.10,
+            reserve_7d: 0.03,
+            reserve_jitter: 0.0,
             reserve_overhead_tokens: 0,
             history_ttl_secs: 600,
             history_local_cap: 32,
             history_redis_url: None,
             history_secret: Some("test".to_string()),
             history_redis_timeout_ms: 10,
-            child_proxy_env: BTreeMap::new(),
+            default_proxy_env: BTreeMap::new(),
             models: vec![model()],
         })
         .unwrap()
@@ -3608,7 +3580,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_ignores_fields_that_app_server_cannot_honor() {
+    fn parser_ignores_fields_the_backend_cannot_honor() {
         let parsed = parse_responses_request(
             &gateway(),
             json!({
@@ -3749,7 +3721,7 @@ mod tests {
         let history = &parsed.input.prior_items[0];
         assert_eq!(history["content"][1]["type"], "input_image");
         assert_eq!(history["content"][1]["detail"], "low");
-        // Final user message becomes app-server image turn inputs.
+        // Final user message becomes upstream image turn inputs.
         assert_eq!(parsed.input.turn_input[0]["type"], "image");
         assert_eq!(
             parsed.input.turn_input[0]["url"],
@@ -3798,7 +3770,7 @@ mod tests {
         )
         .expect("data-url history image must parse");
         let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
-        // The app-server cannot decode the fixed-size estimate placeholder; injecting it would
+        // The backend cannot decode the fixed-size estimate placeholder; injecting it would
         // surface codex's "image content omitted" text instead of the screenshot.
         let injected_image = prepared.turn.injected_items[0]["content"][1]["image_url"]
             .as_str()
@@ -4180,7 +4152,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_tool_search_history_roundtrips_through_pinned_app_server() {
+    async fn codex_tool_search_history_roundtrips_through_pinned_client() {
         let parsed = parse_responses_request(
             &gateway(),
             json!({

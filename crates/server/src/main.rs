@@ -149,6 +149,25 @@ enum Cmd {
         #[command(subcommand)]
         op: DbOp,
     },
+    /// One-time migration: seal a legacy CODEX_HOME (auth.json + proxy.url) into the encrypted
+    /// Codex roster. Prints only the opaque profile id; never echoes token material.
+    CodexSeal {
+        /// Legacy CODEX_HOME containing auth.json.
+        #[arg(long)]
+        home: String,
+        /// Roster root (profiles.json + credentials/<id>.json).
+        #[arg(long)]
+        roster: String,
+        /// Credential keyring specification (kid:64-hex[,kid:64-hex...]).
+        #[arg(long)]
+        keys: String,
+        /// Active key id used for sealing.
+        #[arg(long)]
+        active_kid: String,
+        /// Delete the legacy home after a successful seal. Without this flag the home is kept.
+        #[arg(long)]
+        delete_home: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -305,7 +324,169 @@ fn main() -> Result<()> {
         Cmd::Key { op } => key_cmd(op),
         Cmd::Backup { out, keep } => backup_cmd(out, keep),
         Cmd::Db { op } => db_cmd(op),
+        Cmd::CodexSeal {
+            home,
+            roster,
+            keys,
+            active_kid,
+            delete_home,
+        } => codex_seal_cmd(&home, &roster, &keys, &active_kid, delete_home),
     }
+}
+
+/// Seal one legacy CODEX_HOME into the encrypted roster. The legacy auth store is read exactly
+/// once; nothing it contained is printed, logged, or left behind after `--delete-home`.
+fn codex_seal_cmd(
+    home: &str,
+    roster: &str,
+    keys: &str,
+    active_kid: &str,
+    delete_home: bool,
+) -> Result<()> {
+    use base64::Engine as _;
+    let jwt_claims = |token: &str| -> Option<serde_json::Value> {
+        let payload = token.split('.').nth(1)?;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+
+    let home_path = std::path::Path::new(home);
+    if !home_path.is_dir() || home_path.symlink_metadata()?.file_type().is_symlink() {
+        bail!("legacy CODEX_HOME is missing or unsafe: {home}");
+    }
+    let raw = zeroize::Zeroizing::new(
+        std::fs::read_to_string(home_path.join("auth.json"))
+            .context("read legacy auth.json")?,
+    );
+    let store: serde_json::Value = serde_json::from_str(&raw).context("parse legacy auth.json")?;
+    let tokens = store
+        .get("tokens")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("legacy auth.json has no tokens"))?;
+    let get = |name: &str| -> Result<String> {
+        tokens
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("legacy auth.json has no {name}"))
+    };
+    let access_token = get("access_token")?;
+    let refresh_token = get("refresh_token")?;
+    let id_token = get("id_token")?;
+    let id_claims = jwt_claims(&id_token).unwrap_or(serde_json::Value::Null);
+    let auth_claims = id_claims
+        .get("https://api.openai.com/auth")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let account_id = tokens
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            auth_claims
+                .get("chatgpt_account_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| anyhow::anyhow!("cannot determine the ChatGPT account id"))?;
+    let plan_claim = auth_claims
+        .get("chatgpt_plan_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let plan = codex_credential::supported_plan_for_claim(plan_claim)
+        .ok_or_else(|| {
+            anyhow::anyhow!("plan {plan_claim:?} is not a paid ChatGPT subscription")
+        })?
+        .to_string();
+    let email = id_claims
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() >= 3)
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown@example.com".to_string());
+    let expires_at = jwt_claims(&access_token)
+        .and_then(|claims| claims.get("exp").and_then(serde_json::Value::as_i64))
+        .unwrap_or(now + 3_600);
+    let proxy = std::fs::read_to_string(home_path.join("proxy.url"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let profile_id: String = account_id
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let credential = codex_credential::CodexCredential {
+        version: 1,
+        access_token,
+        refresh_token,
+        expires_at,
+        oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+        token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.to_string(),
+        account_id,
+        email,
+        plan,
+        proxy,
+        proxy_order_id: 0,
+        issued_at: now,
+    };
+    let keyring = codex_credential::CredentialKeyring::parse(keys)?;
+    let envelope = keyring.seal(active_kid, &profile_id, &credential)?;
+    let encoded = codex_credential::encode_envelope(&envelope)?;
+
+    let roster_path = std::path::Path::new(roster);
+    let credentials_dir = roster_path.join("credentials");
+    std::fs::create_dir_all(&credentials_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&credentials_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let credential_file = credentials_dir.join(format!("{profile_id}.json"));
+    let tmp = credential_file.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, &encoded)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, &credential_file)?;
+
+    let profiles_path = roster_path.join("profiles.json");
+    let mut profiles: Vec<serde_json::Value> = std::fs::read(&profiles_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value.get("profiles")?.as_array().cloned())
+        .unwrap_or_default();
+    let credential_file = credential_file.to_string_lossy().to_string();
+    profiles
+        .retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(&*profile_id));
+    profiles.push(serde_json::json!({
+        "id": profile_id,
+        "credential_file": credential_file,
+    }));
+    let document = serde_json::to_vec(&serde_json::json!({ "profiles": profiles }))?;
+    let tmp = profiles_path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, &document)?;
+    std::fs::rename(&tmp, &profiles_path)?;
+
+    if delete_home {
+        std::fs::remove_dir_all(home_path).context("remove the sealed legacy home")?;
+    }
+    println!("{profile_id}");
+    Ok(())
 }
 
 fn authority_config(s: &Settings) -> registry::authority::AuthorityConfig {
@@ -1071,7 +1252,7 @@ async fn serve() -> Result<()> {
             .preflight()
             .await
             .context("validate Codex provider")?;
-        eprintln!("Codex app-server provider preflight passed");
+        eprintln!("Codex native provider preflight passed");
         tokio::spawn(poller::codex_health_loop(gateway.clone()));
         spawn_codex_reconcile_signal(gateway.clone());
         Some(gateway)
@@ -1318,7 +1499,7 @@ async fn serve() -> Result<()> {
         eprintln!("graceful shutdown: дренаж стримов завершён");
     }
     if let Some(codex) = &flush_app.codex {
-        eprintln!("graceful shutdown: жду Codex settlement tasks и останавливаю children");
+        eprintln!("graceful shutdown: жду Codex settlement tasks");
         codex.shutdown_until(shutdown_deadline).await;
     }
     if let Some(gemini) = &flush_app.gemini {
@@ -1411,10 +1592,8 @@ fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
 #[cfg(not(unix))]
 fn spawn_pre_drain_signal(_accepting: Arc<AtomicBool>) {}
 
-/// SIGUSR2 is the per-home drain handshake with the Codex app-server supervisor. Rediscovery first
-/// removes a fenced home from selection, then waits for its admitted turns and closes that slot's
-/// official websocket bridge. The supervisor does not restart the daemon until those proxies are
-/// gone.
+/// SIGUSR2 asks the Codex pool to reconcile out of band: rediscover the roster and re-probe every
+/// profile now instead of waiting for the next health tick.
 #[cfg(unix)]
 fn spawn_codex_reconcile_signal(gateway: Arc<forward::CodexGateway>) {
     tokio::spawn(async move {

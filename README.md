@@ -135,9 +135,10 @@ OpenAI-compatible процесс —
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
 
-Опциональный pinned `codex app-server` транспорт для строгого OpenAI-compatible text subset
-доступен только через `https://openai.api.apitoken.sale/v1` и описан в
-[`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md). Он выключен по умолчанию и не изменяет
+Опциональный native Codex-транспорт для строгого OpenAI-compatible text subset (пул sealed
+ChatGPT OAuth-профилей, как у Gemini) доступен только через
+`https://openai.api.apitoken.sale/v1` и описан в
+[`docs/CODEX_PROVIDER.md`](docs/CODEX_PROVIDER.md). Он выключен по умолчанию и не изменяет
 существующий Claude-маршрут на `https://api.apitoken.sale`.
 
 Gemini использует отдельный пул платных Google-подписок, авторизованных через Antigravity OAuth с

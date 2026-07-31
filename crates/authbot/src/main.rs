@@ -33,7 +33,8 @@ pub struct Config {
     pub bsc_script: String,        // путь к bsc_pay.py
     pub iproyal_key: String,       // ключ IPRoyal reseller API (авто-выпуск прокси); пусто = выкл
     pub codex_bin: String,         // пиннованный codex CLI (device-флоу покупки ChatGPT-подписки)
-    pub codex_homes_dir: String,   // каталог, который сканирует движок: подкаталог = аккаунт в пуле
+    pub codex_homes_dir: String,   // staging-каталог device-флоу (скрытые каталоги логина; не пул)
+    pub codex_roster: Option<codex_login::RosterConfig>, // encrypted roster движка (seal-публикация)
     pub gemini_dir: String, // каталог encrypted credentials + roster отдельного Gemini provider
     pub gemini_oauth: Option<gemini_oauth::Config>,
 }
@@ -43,6 +44,31 @@ fn env_opt(k: &str) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Конфигурация encrypted roster движка для ChatGPT-аккаунтов. Intake гейтится только на AEAD
+/// keyring — как и у Gemini: без ключей модуль просто не публикует профили.
+fn codex_roster_config() -> Result<Option<codex_login::RosterConfig>> {
+    let keys = env_opt("AUTH_BOT_CODEX_CREDENTIAL_KEYS");
+    let active = env_opt("AUTH_BOT_CODEX_CREDENTIAL_ACTIVE_KID");
+    if keys.is_none() && active.is_none() {
+        return Ok(None);
+    }
+    let keyring = codex_credential::CredentialKeyring::parse(
+        &keys.ok_or_else(|| anyhow!("AUTH_BOT_CODEX_CREDENTIAL_KEYS не задан"))?,
+    )?;
+    let active = active.ok_or_else(|| anyhow!("AUTH_BOT_CODEX_CREDENTIAL_ACTIVE_KID не задан"))?;
+    let dir = std::path::PathBuf::from(
+        env_opt("AUTH_BOT_CODEX_ROSTER_DIR").unwrap_or_else(|| "/srv/claude-api/data/codex".into()),
+    );
+    if dir.is_relative() {
+        return Err(anyhow!("AUTH_BOT_CODEX_ROSTER_DIR должен быть абсолютным путём"));
+    }
+    Ok(Some(codex_login::RosterConfig {
+        dir,
+        keyring,
+        active_key_id: active,
+    }))
 }
 
 fn parse_admins(raw: &str) -> (HashSet<i64>, HashSet<String>) {
@@ -445,7 +471,8 @@ async fn main() -> Result<()> {
         codex_bin: env_opt("AUTH_BOT_CODEX_BIN")
             .unwrap_or_else(|| "/srv/claude-api/data/codex/bin/codex".into()),
         codex_homes_dir: env_opt("AUTH_BOT_CODEX_HOMES_DIR")
-            .unwrap_or_else(|| "/srv/claude-api/data/codex-homes".into()),
+            .unwrap_or_else(|| "/srv/claude-api/data/codex-staging".into()),
+        codex_roster: codex_roster_config()?,
         gemini_dir,
         gemini_oauth,
     });

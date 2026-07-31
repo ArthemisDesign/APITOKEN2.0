@@ -60,12 +60,10 @@ release. Gemini activation additionally requires `.gemini-provider-v1`; rollback
 release stops and disables only that runtime.
 `claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
 
-The optional official Codex child has a parallel content-addressed artifact root under
-`/srv/claude-api/data/codex/bin`. It is not rebuilt while assembling an engine release. When pinned
-Codex tooling changed, the watchdog marker supplies the tested executable digest and the fixed
-promotion helper atomically selects its immutable path in `config.env` before a new engine slot is
-started. The provider process holds `/run/apitoken/codex-home.lock` for the complete pool lifetime,
-so a failed handoff cannot split homes between two app-server generations.
+The native Codex provider has no sidecar artifact: its wire identity and credentials discipline
+ship inside the tested engine binary, so a Codex-affecting change is gated by the same engine lane
+as everything else. Profiles are sealed envelopes under `/srv/claude-api/data/codex`, shared
+read-only between generations, so a failed handoff cannot split homes between two engine slots.
 
 ## Link validity
 

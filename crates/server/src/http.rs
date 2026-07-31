@@ -2628,19 +2628,18 @@ fn readiness_snapshot(
     }
 }
 
-fn codex_provider_ready(
-    transport: forward::CodexTransport,
-    live_authenticated_homes: usize,
-) -> bool {
-    live_authenticated_homes >= transport.minimum_ready_homes()
+fn codex_provider_ready(live_authenticated_homes: usize) -> bool {
+    // One working subscription is real capacity: a single authenticated home keeps the service
+    // floor, exactly like the Claude pool. Blue-green safety comes from old/candidate cohort
+    // parity while both generations overlap, not from a fixed fleet-size threshold.
+    live_authenticated_homes >= 1
 }
 
 async fn ready(State(state): State<HttpState>) -> Response {
-    // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. A shared
-    // generation remains useful with one authenticated home, exactly like the Claude pool: rollout
-    // safety comes from old/candidate cohort parity while both generations overlap, not from hiding
-    // valid capacity behind a fixed fleet-size threshold. `codex=None` deliberately stays ready so
-    // the provider kill switch can serve its stable OpenAI-shaped disabled envelope.
+    // Only the dedicated OpenAI slots use provider liveness for load-balancer admission. A home
+    // counts once its sealed credential opened and this generation proved the profile works
+    // (`ready_published`). `codex=None` deliberately stays ready so the provider kill switch can
+    // serve its stable OpenAI-shaped disabled envelope.
     let provider_ready = if state.app.provider == forward::ProviderMode::OpenAi {
         match &state.app.codex {
             Some(codex) => {
@@ -2650,7 +2649,7 @@ async fn ready(State(state): State<HttpState>) -> Response {
                     .iter()
                     .filter(|home| home.process_live && home.auth_ok)
                     .count();
-                Some(codex_provider_ready(codex.config().transport, ready))
+                Some(codex_provider_ready(ready))
             }
             None => None,
         }
@@ -3490,15 +3489,9 @@ mod tests {
 
     #[test]
     fn openai_readiness_preserves_a_single_working_home() {
-        assert!(codex_provider_ready(forward::CodexTransport::OwnedChild, 1));
-        assert!(codex_provider_ready(
-            forward::CodexTransport::SharedDaemonProxy,
-            1
-        ));
-        assert!(!codex_provider_ready(
-            forward::CodexTransport::SharedDaemonProxy,
-            0
-        ));
+        assert!(codex_provider_ready(1));
+        assert!(codex_provider_ready(7));
+        assert!(!codex_provider_ready(0));
     }
 
     #[test]

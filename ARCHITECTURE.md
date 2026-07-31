@@ -31,7 +31,7 @@
                 ▼
 ┌────────────────────────────────────────────────────────────┐
 │ forward  — Claude + Codex adapter + native Gemini gateway   │
-│   AffinityStore · Clients · codex app-server · Gemini pool  │
+│   AffinityStore · Clients · Codex native pool · Gemini pool │
 └───────────────┬────────────────────────────────────────────┘
                 ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -66,8 +66,9 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
 - **Claude: форвардинг, а не CLI.** Прокси шлёт сырой HTTP на api.anthropic.com на OAuth-токене
   подписки — поэтому Claude-ответ идёт байт-в-байт, в отличие от CLI-обёртки.
 - **Codex: отдельная строгая граница.** Опциональные `/v1/responses`, `/v1/chat/completions` и
-  OpenAI model-discovery на `openai.api.apitoken.sale` проходят через pinned official
-  `codex app-server`; это совместимый текстовый subset, а не прозрачный OpenAI Platform forwarding.
+  OpenAI model-discovery на `openai.api.apitoken.sale` обслуживает native HTTPS-пул sealed
+  ChatGPT OAuth-профилей (как у Gemini); это совместимый текстовый subset, а не прозрачный
+  OpenAI Platform forwarding.
   `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
   выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном
   singleton `claude-api-openai.service`, а native Gemini — в `claude-api-gemini.service` через
@@ -106,8 +107,8 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
 [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md). Production runbook —
 [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
-Граница совместимости, pinned build, prompt isolation, авторизация и rollback Codex-провайдера
-описаны отдельно в [`docs/CODEX_APP_SERVER.md`](docs/CODEX_APP_SERVER.md).
+Граница совместимости, sealed roster, refresh-дисциплина, авторизация и rollback Codex-провайдера
+описаны отдельно в [`docs/CODEX_PROVIDER.md`](docs/CODEX_PROVIDER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
 `systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai.service`,

@@ -42,16 +42,20 @@ Gemini ждёт отдельного подтверждения «Аккаунт
 handoff; состояние batch и незавершённый мастер переживают рестарт authbot.
 
 **Инварианты Codex-ветки (критично):**
-1. **Auth store не читаем, не логируем, не пересылаем.** Единственное, что бот берёт из профиля, —
-   строка `codex login status` (нужно убедиться, что это ChatGPT-подписка, а не вход по API-ключу).
-2. **Незавершённая покупка не оставляет следов.** Истёк код, отказ, не тот тип аккаунта → каталог
-   удаляется. Каталог без `auth.json` движок в пул не берёт, но мусор не копим.
+1. **Логин — только официальный клиент в PTY; секреты не логируем и не пересылаем.** Бот никогда
+   не видит пароль и второй фактор. После device-флоу бот ОДИН РАЗ читает `auth.json` staging-
+   каталога, запечатывает OAuth-материал в AEAD envelope (`codex-credential`) в roster движка и
+   полностью удаляет staging — открытого токена больше нигде нет. Тип аккаунта до этого проверяется
+   строкой `codex login status`, план — claim `chatgpt_plan_type` id_token (free отклоняется).
+2. **Незавершённая покупка не оставляет следов.** Истёк код, отказ, не тот тип аккаунта → staging
+   удаляется; в roster профиль попадает только после успешного seal.
 3. **Логин уходит через тот же прокси, что и будущий трафик аккаунта** — иначе покупка и
    эксплуатация выглядят как два разных пользователя.
-4. **Прокси — секрет:** `proxy.url` пишется 0600, каталог 0700, значение никогда не печатается
-   ни в лог, ни в чат. Движок откажется брать home с world-readable `proxy.url`.
-5. Бот НЕ правит `config.env`, не рестартит движок и не ходит под root: каталог в
-   `AUTH_BOT_CODEX_HOMES_DIR` — вся его часть контракта.
+4. **Прокси — секрет:** существует только внутри envelope, никогда не печатается ни в лог, ни в чат.
+5. **Roster публикуется атомарно** (tmp+rename, credential 0600, каталог 0700): движок никогда не
+   читает половину файла и подхватывает профиль ближайшим health-тиком без рестарта.
+6. Бот НЕ правит `config.env`, не рестартит движок и не ходит под root: `AUTH_BOT_CODEX_ROSTER_DIR`
+   + keyring — вся его часть контракта.
 
 **Инварианты Gemini-ветки (критично):**
 1. OAuth использует публичный installed-application client id/secret Antigravity и фиксированный
@@ -99,8 +103,12 @@ handoff; состояние batch и незавершённый мастер п�
 - `AUTH_BOT_CLAUDE_CONFIG_DIR` — writable-корень изолированных Claude-сессий (деф
   `/srv/claude-api/data/authbot`); токены и состояние не должны лежать в home.
 - `AUTH_BOT_CODEX_BIN` — пиннованный codex CLI (деф `/srv/claude-api/data/codex/bin/codex`).
-- `AUTH_BOT_CODEX_HOMES_DIR` — каталог покупок; ДОЛЖЕН совпадать с движковым
-  `CLAUDE_API_CODEX_HOMES_DIR`, иначе купленный аккаунт никто не подхватит.
+- `AUTH_BOT_CODEX_HOMES_DIR` — staging-каталог device-флоу (скрытые каталоги логина; НЕ пул).
+- `AUTH_BOT_CODEX_ROSTER_DIR` — корень `credentials/` + `profiles.json` движка (деф
+  `/srv/claude-api/data/codex`); движковый `CLAUDE_API_CODEX_PROFILES_FILE` должен указывать на
+  `<этот каталог>/profiles.json`.
+- `AUTH_BOT_CODEX_CREDENTIAL_KEYS`, `AUTH_BOT_CODEX_CREDENTIAL_ACTIVE_KID` — общий с runtime
+  AEAD keyring и активный ключ публикации/rotation (`CLAUDE_API_CODEX_CREDENTIAL_KEYS` у движка).
 - `AUTH_BOT_GEMINI_DIR` — корень `credentials/` + `profiles.json` (деф
   `/srv/claude-api/data/gemini`); движковый `CLAUDE_API_GEMINI_PROFILES_FILE` должен указывать на
   `<этот каталог>/profiles.json`.

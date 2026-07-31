@@ -1,19 +1,19 @@
 //! Покупка ChatGPT-подписки: `codex login --device-auth` в PTY, отдаём продавцу ссылку и
-//! одноразовый код, ждём завершения флоу, проверяем результат.
+//! одноразовый код, ждём завершения флоу, запечатываем результат в encrypted roster.
 //!
-//! **Чем это принципиально отличается от Claude.** `claude setup-token` выдаёт СТРОКУ-токен, её
-//! можно положить в реестр — движок сам предъявит её как Bearer. У Codex токена, который нам
-//! позволено хранить, НЕТ: `codex login` пишет auth store внутрь `CODEX_HOME`, а шлюз намеренно
-//! никогда не читает и не реплеит его содержимое. Поэтому «купленная подписка» здесь — это
-//! КАТАЛОГ, а не строка: бот создаёт его, проводит device-флоу, и движок подхватывает каталог
-//! сканом (`CLAUDE_API_CODEX_HOMES_DIR`) без рестарта и без root.
+//! **Модель доверия (та же, что у Gemini).** Логин выполняет ТОЛЬКО официальный клиент в PTY —
+//! бот не знает пароля и не видит второй фактор. По завершении `codex login` пишет auth store в
+//! скрытый staging-каталог; бот ОДИН РАЗ читает из него OAuth-материал, запечатывает его в AEAD
+//! envelope (`codex-credential`) в roster движка и ПОЛНОСТЬЮ удаляет staging. После этого
+//! открытого токена не существует ни на диске, ни в Telegram, ни в логах.
 //!
 //! Отсюда инварианты этого модуля:
-//! * ни один секрет из auth store не читается, не логируется и не пересылается в Telegram;
-//! * незавершённая покупка не оставляет каталог в пуле — он либо аутентифицирован, либо удалён;
-//! * прокси продавца — секрет: файл `proxy.url` пишется 0600 и никогда не печатается.
+//! * ни один секрет не логируется и не пересылается в Telegram;
+//! * незавершённая покупка не оставляет профиль в пуле — он либо запечатан в roster, либо удалён;
+//! * прокси продавца — секрет: он существует только внутри envelope;
+//! * roster обновляется атомарно (tmp+rename): движок никогда не читает половину файла.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -21,19 +21,24 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Маркер завершённого логина внутри `CODEX_HOME`.
+/// Маркер завершённого логина внутри staging-каталога.
 const AUTH_STORE: &str = "auth.json";
-/// Персональный egress аккаунта, который читает движок.
-const PROXY_FILE: &str = "proxy.url";
 /// Одноразовый код живёт 15 минут — дальше ждать нечего.
 const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// Конфигурация encrypted roster, в который запечатываются купленные аккаунты.
+#[derive(Clone)]
+pub struct RosterConfig {
+    /// Корень roster: `<dir>/profiles.json` + `<dir>/credentials/<id>.json`.
+    pub dir: PathBuf,
+    pub keyring: codex_credential::CredentialKeyring,
+    pub active_key_id: String,
+}
+
 struct Session {
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    buf: Arc<Mutex<Vec<u8>>>,
-    /// Hidden staging directory. The engine scanner ignores dot-prefixed entries.
+    /// Hidden staging directory. The roster never points at it.
     home: PathBuf,
-    published_home: PathBuf,
     proxy: String,
     label: String,
     _master: Box<dyn portable_pty::MasterPty + Send>,
@@ -67,11 +72,11 @@ pub struct DeviceAuth {
 }
 
 pub enum Outcome {
-    /// Аккаунт в пуле: auth store на месте, тип аккаунта — ChatGPT.
+    /// Аккаунт в пуле: envelope в roster, staging удалён.
     Authorized { label: String, has_proxy: bool },
     /// Продавец не завершил флоу за отведённое время.
     Expired,
-    /// Флоу завершился, но это не ChatGPT-подписка (например, вход по API-ключу).
+    /// Флоу завершился, но это не ChatGPT-подписка (например, вход по API-ключу или free-план).
     NotChatgpt,
     Failed(String),
 }
@@ -148,12 +153,7 @@ pub(crate) fn scan_code(s: &str) -> Option<String> {
     None
 }
 
-pub fn has(chat: i64) -> bool {
-    sessions().lock().unwrap().contains_key(&chat)
-}
-
-/// Прибить незавершённый флоу и НЕ оставлять полупустой каталог: движок его и так не увидит
-/// (нет auth store), но мусор в пуле покупок никому не нужен.
+/// Прибить незавершённый флоу и НЕ оставлять полупустой каталог.
 pub fn cancel(chat: i64) {
     if let Some(mut s) = sessions().lock().unwrap().remove(&chat) {
         let _ = s.child.kill();
@@ -173,46 +173,30 @@ fn secure_dir(_path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn write_secret(path: &Path, value: &str) -> std::io::Result<()> {
+fn write_secret(path: &Path, value: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, value)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 #[cfg(not(unix))]
-fn write_secret(path: &Path, value: &str) -> std::io::Result<()> {
+fn write_secret(path: &Path, value: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, value)
 }
 
-fn prepare_published_home(path: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            // The previous authbot authenticated directly in the published directory. A restart
-            // can strand a pre-auth directory there; its child died in the old service cgroup, so
-            // that one migration shape is safe to remove. Never remove a symlink or auth store.
-            if metadata.file_type().is_dir() && !path.join(AUTH_STORE).is_file() {
-                std::fs::remove_dir_all(path).map_err(|e| {
-                    anyhow!("не смог убрать незавершённый старый вход: {}", e.kind())
-                })
-            } else {
-                Err(anyhow!("каталог такого аккаунта уже существует"))
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(anyhow!(
-            "не смог проверить каталог аккаунта: {}",
-            error.kind()
-        )),
+/// Атомарная публикация файла (tmp + rename): читатель никогда не видит половину записи.
+fn publish(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    if secret {
+        write_secret(&tmp, bytes)?;
+    } else {
+        std::fs::write(&tmp, bytes)?;
     }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Начать device-флоу для нового аккаунта. Возвращает ссылку и код для продавца.
-pub fn start(
-    chat: i64,
-    label: &str,
-    proxy: &str,
-    codex_bin: &str,
-    homes_dir: &str,
-) -> Result<DeviceAuth> {
+pub fn start(chat: i64, label: &str, proxy: &str, codex_bin: &str, staging_dir: &str) -> Result<DeviceAuth> {
     cancel(chat);
     let slug = slug(label);
     if slug.is_empty() {
@@ -221,11 +205,9 @@ pub fn start(
     if !Path::new(codex_bin).is_file() {
         return Err(anyhow!("codex CLI недоступен на этом хосте"));
     }
-    let published_home = Path::new(homes_dir).join(&slug);
-    prepare_published_home(&published_home)?;
-    // Authenticate under a hidden sibling and publish with one rename only after account type and
-    // egress are final. Otherwise discovery can race auth.json appearing before proxy.url.
-    let home = Path::new(homes_dir).join(format!(".{slug}.pending-{chat}"));
+    // Authenticate under a hidden directory; the roster only learns about the account once its
+    // credential is sealed. Nothing here is ever scanned by the engine.
+    let home = Path::new(staging_dir).join(format!(".{slug}.pending-{chat}"));
     let _ = std::fs::remove_dir_all(&home);
     let mut staging = StagingDir(Some(home.clone()));
     std::fs::create_dir_all(&home)
@@ -284,9 +266,7 @@ pub fn start(
         chat,
         Session {
             child,
-            buf: buf.clone(),
             home: home.clone(),
-            published_home,
             proxy: proxy.trim().to_string(),
             label: label.to_string(),
             _master: pair.master,
@@ -308,8 +288,8 @@ pub fn start(
     }
 }
 
-/// Спросить у CLI, чем именно закончился логин. Единственное, что мы читаем из профиля, —
-/// эта строка статуса; сам auth store не открываем.
+/// Спросить у CLI, чем именно закончился логин. Строка статуса — официальная проверка типа
+/// аккаунта до того, как мы вообще прикоснёмся к auth store.
 fn status_reports_chatgpt(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
     success
         && [stdout, stderr].iter().any(|stream| {
@@ -337,9 +317,137 @@ fn is_chatgpt_login(codex_bin: &str, home: &Path) -> bool {
     }
 }
 
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Распарсить JWT payload без проверки подписи: токен только что записан официальным клиентом в
+/// локальный файл, нам нужны его claims (account id, план, email, expiry).
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Извлечь из auth store официального клиента ровно тот материал, который войдёт в envelope.
+/// Это единственная точка модуля, где открытый токен существует в памяти; по выходу из неё
+/// staging удаляется.
+fn credential_from_auth_store(home: &Path, proxy: &str) -> Result<(String, codex_credential::CodexCredential)> {
+    let raw = std::fs::read_to_string(home.join(AUTH_STORE))
+        .context("прочитать auth store")?;
+    let raw = zeroize::Zeroizing::new(raw);
+    let store: serde_json::Value = serde_json::from_str(&raw).context("разобрать auth store")?;
+    let tokens = store
+        .get("tokens")
+        .cloned()
+        .ok_or_else(|| anyhow!("в auth store нет tokens"))?;
+    let get = |name: &str| -> Result<String> {
+        tokens
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("в auth store нет {name}"))
+    };
+    let access_token = get("access_token")?;
+    let refresh_token = get("refresh_token")?;
+    let id_token = get("id_token")?;
+    let id_claims = jwt_claims(&id_token).unwrap_or(serde_json::Value::Null);
+    let auth_claims = id_claims
+        .get("https://api.openai.com/auth")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let account_id = tokens
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            auth_claims
+                .get("chatgpt_account_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| anyhow!("не смог определить account id аккаунта"))?;
+    let plan_claim = auth_claims
+        .get("chatgpt_plan_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let plan = codex_credential::supported_plan_for_claim(plan_claim)
+        .ok_or_else(|| anyhow!("план {plan_claim:?} не является платной подпиской ChatGPT"))?
+        .to_string();
+    let email = id_claims
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() >= 3)
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown@example.com".to_string());
+    let expires_at = jwt_claims(&access_token)
+        .and_then(|claims| claims.get("exp").and_then(serde_json::Value::as_i64))
+        .unwrap_or_else(|| now() + 3_600);
+    let profile_id = slug(&account_id);
+    let credential = codex_credential::CodexCredential {
+        version: 1,
+        access_token,
+        refresh_token,
+        expires_at,
+        oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+        token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.to_string(),
+        account_id,
+        email,
+        plan,
+        proxy: proxy.to_string(),
+        proxy_order_id: 0,
+        issued_at: now(),
+    };
+    Ok((profile_id, credential))
+}
+
+/// Запечатать credential в roster и атомарно обновить `profiles.json`.
+fn publish_credential(
+    roster: &RosterConfig,
+    profile_id: &str,
+    credential: &codex_credential::CodexCredential,
+) -> Result<()> {
+    codex_credential::validate_profile_id(profile_id)?;
+    let credentials_dir = roster.dir.join("credentials");
+    std::fs::create_dir_all(&credentials_dir)?;
+    secure_dir(&credentials_dir)?;
+    let envelope = roster
+        .keyring
+        .seal(&roster.active_key_id, profile_id, credential)
+        .context("запечатать credential")?;
+    let encoded = codex_credential::encode_envelope(&envelope)?;
+    let credential_file = credentials_dir.join(format!("{profile_id}.json"));
+    publish(&credential_file, &encoded, true)?;
+
+    // Republish the roster with this profile present (replace on re-login of the same account).
+    let profiles_path = roster.dir.join("profiles.json");
+    let mut profiles: Vec<serde_json::Value> = std::fs::read(&profiles_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| value.get("profiles")?.as_array().cloned())
+        .unwrap_or_default();
+    let credential_file = credential_file.to_string_lossy().to_string();
+    profiles.retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(profile_id));
+    profiles.push(serde_json::json!({
+        "id": profile_id,
+        "credential_file": credential_file,
+    }));
+    let document = serde_json::to_vec(&serde_json::json!({ "profiles": profiles }))?;
+    publish(&profiles_path, &document, false)?;
+    Ok(())
+}
+
 /// Дождаться, пока продавец подтвердит вход. CLI сам опрашивает OpenAI и завершается —
 /// докармливать код, как в Claude-флоу, здесь не нужно.
-pub fn wait(chat: i64, codex_bin: &str) -> Outcome {
+pub fn wait(chat: i64, codex_bin: &str, roster: &RosterConfig) -> Outcome {
     let deadline = Instant::now() + DEVICE_FLOW_TIMEOUT;
     loop {
         let finished = {
@@ -378,29 +486,31 @@ pub fn wait(chat: i64, codex_bin: &str) -> Outcome {
         return Outcome::Expired;
     }
     if !is_chatgpt_login(codex_bin, &s.home) {
-        // Вход по API-ключу движок всё равно отвергнет на account/read — лучше сказать об этом
-        // сразу и не оставлять каталог, который никогда не заработает.
+        // Вход по API-ключу движок всё равно отвергнет — лучше сказать об этом сразу и не
+        // оставлять материал, который никогда не заработает.
         let _ = std::fs::remove_dir_all(&s.home);
         return Outcome::NotChatgpt;
     }
     let has_proxy = !s.proxy.is_empty();
-    if has_proxy {
-        if let Err(e) = write_secret(&s.home.join(PROXY_FILE), &s.proxy) {
-            let _ = std::fs::remove_dir_all(&s.home);
-            return Outcome::Failed(format!("не смог сохранить прокси аккаунта: {}", e.kind()));
+    let outcome = (|| {
+        let (profile_id, credential) = credential_from_auth_store(&s.home, &s.proxy)?;
+        publish_credential(roster, &profile_id, &credential)
+    })();
+    // С этого момента открытый auth store не нужен ни при каком исходе.
+    let _ = std::fs::remove_dir_all(&s.home);
+    match outcome {
+        Ok(()) => Outcome::Authorized {
+            label: s.label,
+            has_proxy,
+        },
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("платной подпиской") {
+                Outcome::NotChatgpt
+            } else {
+                Outcome::Failed(message)
+            }
         }
-    }
-    if std::fs::symlink_metadata(&s.published_home).is_ok() {
-        let _ = std::fs::remove_dir_all(&s.home);
-        return Outcome::Failed("каталог аккаунта появился во время авторизации".into());
-    }
-    if let Err(e) = std::fs::rename(&s.home, &s.published_home) {
-        let _ = std::fs::remove_dir_all(&s.home);
-        return Outcome::Failed(format!("не смог опубликовать аккаунт в пул: {}", e.kind()));
-    }
-    Outcome::Authorized {
-        label: s.label,
-        has_proxy,
     }
 }
 
@@ -500,21 +610,6 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
     }
 
     #[test]
-    fn interrupted_legacy_home_is_removed_but_an_auth_store_is_preserved() {
-        let root = temp_dir();
-        let home = root.join("account");
-        std::fs::create_dir(&home).unwrap();
-        prepare_published_home(&home).unwrap();
-        assert!(!home.exists());
-
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(home.join(AUTH_STORE), "{}").unwrap();
-        assert!(prepare_published_home(&home).is_err());
-        assert!(home.join(AUTH_STORE).is_file());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn staging_guard_removes_failures_and_preserves_published_state() {
         let root = temp_dir();
         let failed = root.join("failed");
@@ -528,6 +623,103 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
         guard.disarm();
         drop(guard);
         assert!(published.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn fake_jwt(claims: serde_json::Value) -> String {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!(
+            "{}.{}.sig",
+            engine.encode(b"{}"),
+            engine.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
+    #[test]
+    fn auth_store_becomes_a_sealed_roster_profile() {
+        let root = temp_dir();
+        let home = root.join("staging");
+        std::fs::create_dir(&home).unwrap();
+        let id_token = fake_jwt(serde_json::json!({
+            "email": "owner@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_test_0001",
+                "chatgpt_plan_type": "plus"
+            }
+        }));
+        let access_token = fake_jwt(serde_json::json!({"exp": 4_102_444_800i64}));
+        std::fs::write(
+            home.join(AUTH_STORE),
+            serde_json::to_vec(&serde_json::json!({
+                "tokens": {
+                    "id_token": id_token,
+                    "access_token": access_token,
+                    "refresh_token": "refresh-material",
+                    "account_id": "acct_test_0001"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (profile_id, credential) =
+            credential_from_auth_store(&home, "http://user:pass@127.0.0.1:8080").unwrap();
+        assert_eq!(profile_id, "acct-test-0001");
+        assert_eq!(credential.plan, "chatgpt_plus");
+        assert_eq!(credential.account_id, "acct_test_0001");
+        assert_eq!(credential.email, "owner@example.com");
+        assert_eq!(credential.expires_at, 4_102_444_800);
+        credential.validate().unwrap();
+
+        let roster = RosterConfig {
+            dir: root.join("roster"),
+            keyring: codex_credential::CredentialKeyring::parse(&format!(
+                "current:{}",
+                "ef".repeat(32)
+            ))
+            .unwrap(),
+            active_key_id: "current".to_string(),
+        };
+        publish_credential(&roster, &profile_id, &credential).unwrap();
+        let sealed = std::fs::read(roster.dir.join("credentials/acct-test-0001.json")).unwrap();
+        assert!(!String::from_utf8_lossy(&sealed).contains("refresh-material"));
+        let envelope = codex_credential::decode_envelope(&sealed).unwrap();
+        let opened = roster.keyring.open(&profile_id, &envelope).unwrap();
+        assert_eq!(opened.refresh_token, "refresh-material");
+        let profiles: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(roster.dir.join("profiles.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profiles["profiles"][0]["id"], "acct-test-0001");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn free_plan_is_not_a_paid_subscription() {
+        let root = temp_dir();
+        let home = root.join("staging");
+        std::fs::create_dir(&home).unwrap();
+        let id_token = fake_jwt(serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_free_0001",
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        std::fs::write(
+            home.join(AUTH_STORE),
+            serde_json::to_vec(&serde_json::json!({
+                "tokens": {
+                    "id_token": id_token,
+                    "access_token": fake_jwt(serde_json::json!({"exp": 4_102_444_800i64})),
+                    "refresh_token": "refresh-material",
+                    "account_id": "acct_free_0001"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let error = credential_from_auth_store(&home, "").unwrap_err();
+        assert!(error.to_string().contains("платной подпиской"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -691,18 +691,18 @@ wd_path_is_backend packages/engine-client/src/index.ts \
 wd_path_is_backend packages/contracts/src/index.ts \
   || wd_die "contracts remain shared with the commerce backend"
 wd_path_is_backend apps/content-studio/src/app/page.tsx || wd_die "content studio must trigger commerce deployment"
-wd_path_is_engine tools/codex-app-server/build-pinned.sh \
-  || wd_die "pinned Codex tooling must trigger an engine deployment"
+wd_path_is_engine tools/codex-native/probe-live.py \
+  || wd_die "native Codex tooling must trigger an engine deployment"
 for provider_unit in systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
   systemd/claude-api-gemini.service; do
   wd_path_is_engine "$provider_unit" \
     || wd_die "provider unit change does not force runtime adoption: $provider_unit"
 done
-wd_path_is_codex_tooling tools/codex-app-server/build-pinned.sh \
-  || wd_die "pinned Codex tooling must request a tested Codex artifact"
+wd_path_is_codex_tooling tools/codex-native/probe-live.py \
+  || wd_die "native Codex tooling must stay on the engine deployment path"
 if wd_path_is_codex_tooling crates/forward/src/codex/api.rs; then
-  wd_die "gateway-only changes must not rebuild the pinned upstream Codex binary"
+  wd_die "gateway-only changes must not rebuild any sidecar Codex artifact"
 fi
 grep -Fq 'WEB_HEALTH=${OPENKEYS_WEB_HEALTH:-http://127.0.0.1:3410/api/ready}' \
   "$ROOT/deploy/openkeys-deploy.sh" \
@@ -818,7 +818,6 @@ for controller_definition in \
   deploy/watchdog-lib.sh \
   deploy/validation-plan.sh \
   deploy/watchdog-infrastructure.sh \
-  deploy/watchdog-codex-promote.sh \
   deploy/deploy.sh \
   deploy/lib.sh \
   deploy/commerce-release-bundle.sh \
@@ -1224,14 +1223,12 @@ tested_marker="$TEMP/tested-candidate.marker"
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/authbot")"
   printf 'codex_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/codex/codex")"
-  printf 'codex_source_commit=25af12f7e61572b0bc18ddb1008be543b91519b0\n'
-  printf 'codex_version=codex-cli 0.145.0\n'
 } >"$tested_marker"
 validate_candidate_fixture() {
   bash -c '
     source "$1"
     stat_owner_uid(){ printf "0\n"; }
-    validate_tested_candidate "$2" "$3" "$4" 1 1 commerce 1
+    validate_tested_candidate "$2" "$3" "$4" 1 1 commerce
   ' _ "$ROOT/deploy/lib.sh" "$tested_candidate" "$tested_marker" "$tested_sha"
 }
 validate_candidate_fixture || wd_die "release promoter rejected an intact tested candidate"
@@ -1325,42 +1322,23 @@ grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST
   "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai@.service"
-grep -Fq 'CLAUDE_API_CODEX_TRANSPORT=shared-daemon' \
+! grep -Fq 'CLAUDE_API_CODEX_TRANSPORT' "$ROOT/systemd/claude-api-openai@.service" \
+  || wd_die 'OpenAI blue-green slots still pin the removed app-server transport'
+! grep -Fq 'claude-api-codex-app-servers' "$ROOT/systemd/claude-api-openai@.service" \
+  || wd_die 'OpenAI slots still wait on the removed daemon boot barrier'
+grep -Fq 'ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1' \
   "$ROOT/systemd/claude-api-openai@.service" \
-  || wd_die 'OpenAI blue-green slots can launch direct home owners'
-grep -Fq 'Requires=claude-api-codex-app-servers-ready.target' \
+  || wd_die 'legacy releases can start pre-migration binaries through the shared slot'
+grep -Fq 'ExecCondition=/usr/bin/grep -Fxq openai-bluegreen-v1' \
   "$ROOT/systemd/claude-api-openai@.service" \
-  || wd_die 'OpenAI slots lost their one-time app-server boot barrier'
-! grep -Fq 'Requires=claude-api-codex-app-servers.service' \
-  "$ROOT/systemd/claude-api-openai@.service" \
-  || wd_die 'OpenAI slot activation can still queue behind a timer-driven daemon reconciliation'
-grep -Fxq 'Requires=claude-api-codex-app-servers.service' \
-  "$ROOT/systemd/claude-api-codex-app-servers-ready.target" \
-  || wd_die 'Codex boot barrier does not require initial daemon reconciliation'
-grep -Fxq 'After=claude-api-codex-app-servers.service' \
-  "$ROOT/systemd/claude-api-codex-app-servers-ready.target" \
-  || wd_die 'Codex boot barrier can activate before initial daemon reconciliation'
-grep -Fxq 'Before=claude-api-codex-app-servers-ready.target' \
-  "$ROOT/systemd/claude-api-codex-app-servers.service" \
-  || wd_die 'initial daemon reconciliation is not ordered before its boot barrier'
-for guarded_shared_unit in systemd/claude-api-openai@.service \
-  systemd/claude-api-codex-app-servers.service; do
-  grep -Fq 'ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.openai-bluegreen-v1' \
-    "$ROOT/$guarded_shared_unit" \
-    || wd_die "legacy releases can start shared home owners through $guarded_shared_unit"
-  grep -Fq 'ExecCondition=/usr/bin/grep -Fxq openai-bluegreen-v1' \
-    "$ROOT/$guarded_shared_unit" \
-    || wd_die "shared release marker contents are not checked by $guarded_shared_unit"
+  || wd_die 'shared release marker contents are not checked by the OpenAI slot'
+for removed_unit in systemd/claude-api-codex-app-server@.service \
+  systemd/claude-api-codex-app-servers.service \
+  systemd/claude-api-codex-app-servers-ready.target \
+  systemd/claude-api-codex-app-servers.timer; do
+  [[ ! -e $ROOT/$removed_unit ]] \
+    || wd_die "app-server unit still exists: $removed_unit"
 done
-grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh serve %i' \
-  "$ROOT/systemd/claude-api-codex-app-server@.service" \
-  || wd_die 'authenticated Codex homes lack independent official app-server owners'
-grep -Fxq 'User=root' "$ROOT/systemd/claude-api-codex-app-servers.service" \
-  || wd_die 'Codex app-server reconciliation cannot mutate ownership fences'
-grep -Fxq 'TimeoutStartSec=infinity' "$ROOT/systemd/claude-api-codex-app-servers.service" \
-  || wd_die 'a fleet-wide timer can abort a safe sequential Codex daemon roll'
-grep -Fxq 'OnUnitActiveSec=30s' "$ROOT/systemd/claude-api-codex-app-servers.timer" \
-  || wd_die 'new authenticated Codex homes do not join the daemon cohort automatically'
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
   "$ROOT/systemd/claude-api-gemini.service"
@@ -1406,19 +1384,16 @@ grep -Fq 'openai-bluegreen-v1 >"$ENGINE_STAGE/.openai-bluegreen-v1"' "$ROOT/depl
 grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-anthropic@8787.service' \
   "$ROOT/deploy/install-sudoers.sh"
 grep -Fxq 'd /run/apitoken 0755 root root -' "$ROOT/systemd/apitoken-tmpfiles.conf"
-grep -Fxq 'f /run/apitoken/codex-home.lock 0600 deploy deploy -' \
-  "$ROOT/systemd/apitoken-tmpfiles.conf"
-grep -Fxq 'd /run/apitoken/codex-app-servers 0700 deploy deploy -' \
-  "$ROOT/systemd/apitoken-tmpfiles.conf" \
-  || wd_die 'official Codex app-servers have no private runtime directory'
-grep -Fxq 'd /run/apitoken/codex-app-server-control 0750 root root -' \
-  "$ROOT/systemd/apitoken-tmpfiles.conf" \
-  || wd_die 'Codex ownership transitions have no root-owned control directory'
+! grep -Fq 'codex-home.lock' "$ROOT/systemd/apitoken-tmpfiles.conf" \
+  || wd_die 'the removed Codex ownership lock still has a runtime entry'
+! grep -Fq 'codex-app-server' "$ROOT/systemd/apitoken-tmpfiles.conf" \
+  || wd_die 'removed Codex app-server runtime directories still exist'
 for codex_owner_unit in systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-openai.service; do
-  grep -Fq 'ReadWritePaths=/srv/claude-api/data /run/apitoken/codex-home.lock' \
-    "$ROOT/$codex_owner_unit" \
-    || wd_die "Codex ownership lock is read-only inside $codex_owner_unit"
+  ! grep -Fq 'codex-home.lock' "$ROOT/$codex_owner_unit" \
+    || wd_die "removed Codex ownership lock still referenced in $codex_owner_unit"
+  grep -Fq 'ReadWritePaths=/srv/claude-api/data' "$ROOT/$codex_owner_unit" \
+    || wd_die "provider data root is not writable in $codex_owner_unit"
 done
 grep -Fq 'systemd-tmpfiles --create "$TARGET"' "$ROOT/deploy/install-tmpfiles.sh"
 grep -Fq 'CLAUDE_API_AFFINITY_SECRET' "$ROOT/deploy/install-watchdog.sh"
@@ -1587,7 +1562,7 @@ grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot binary is not installed into the engine release"
 grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without an authbot binary must fail closed"
-grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes /srv/claude-api/releases/current/authbot' \
+grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex /srv/claude-api/releases/current/authbot' \
   "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot unit must override legacy CLI/home paths and run the current release"
 grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
@@ -1628,22 +1603,21 @@ grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/d
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot unit check must not require sudo"
 
-# A pinned-tooling change must build the official Codex binary in the isolated candidate and
-# promote only that digest through a fixed root helper while the release lock is held.
-grep -Fq 'test_codex_lane' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "pinned Codex tooling has no isolated build lane"
-grep -Fq 'VALIDATION_CODEX_ARTIFACTS_REQUIRED=1' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "Codex tooling changes do not request their production artifact"
-grep -Fq 'privileged_command "$CODEX_PROMOTION_HELPER" "$SHA"' "$ROOT/deploy/deploy.sh" \
-  || wd_die "release controller does not promote the tested Codex artifact under its lock"
-grep -Fq 'watchdog-codex-promote.sh' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die "fixed Codex promotion helper is not installed"
-grep -Fq '/usr/local/lib/apitoken-watchdog/watchdog-codex-promote.sh [0-9a-f]*' \
-  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die "deploy user cannot invoke the fixed Codex promotion helper"
-grep -Fq "require_permitted 'Codex promotion helper'" \
+# The native Codex provider ships its wire identity inside the tested engine binary: there is no
+# sidecar artifact, no isolated build lane and no promotion helper left.
+! grep -Fq 'test_codex_lane' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "a sidecar Codex build lane survived the native migration"
+! grep -Fq 'VALIDATION_CODEX_ARTIFACTS_REQUIRED=1' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "Codex tooling changes still request a sidecar production artifact"
+! grep -Fq 'CODEX_PROMOTION_HELPER' "$ROOT/deploy/deploy.sh" \
+  || wd_die "release controller still promotes a sidecar Codex artifact"
+! grep -Fq 'watchdog-codex-promote.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "removed Codex promotion helper is still installed"
+! grep -Fq 'codex-promote' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "deploy user can still invoke a removed Codex promotion helper"
+! grep -Fq "require_permitted 'Codex promotion helper'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  || wd_die "sudo policy installer does not verify Codex promotion access"
+  || wd_die "sudo policy installer still verifies a removed Codex promotion helper"
 
 grep -Fq 'final_verify_admin_data' "$ROOT/deploy/watchdog.sh"
 # The admin data check runs immediately after cutover, while the stable listener still round-robins
@@ -1665,45 +1639,38 @@ grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled{provider=\"openai\
   "$ROOT/deploy/watchdog.sh" \
   || wd_die "disabled Codex detection is not scoped to the OpenAI provider process"
 
-# OpenAI is a true health-gated two-slot cohort. Home ownership lives below HTTP generations in one
-# official Unix-socket app-server per account; the first forward transition and its compatibility
-# rollback fence disjoint homes before two HTTP origins overlap.
+# OpenAI is a true health-gated two-slot cohort. The native provider owns no child processes and
+# no per-generation ownership fences: candidate readiness over the shared sealed roster is the
+# admission gate, exactly like the Gemini fleet.
 provider_controller="$ROOT/deploy/engine-bluegreen.sh"
 old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
 openai_start_line=$(grep -nF 'systemctl_command start "$OPENAI_TARGET_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
-openai_admit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" admit-cutover' \
-  "$provider_controller" | sed -n '2p' | cut -d: -f1)
 openai_enable_line=$(grep -nF 'systemctl_command enable "$OPENAI_TARGET_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
 openai_drain_line=$(grep -nF 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$OPENAI_ACTIVE_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
 openai_async_stop_line=$(grep -nF 'systemctl_command --no-block stop "$OPENAI_ACTIVE_UNIT"' \
   "$provider_controller" | head -1 | cut -d: -f1)
-openai_commit_line=$(grep -nF '"$CODEX_APP_SERVERS_HELPER" commit-transition' \
-  "$provider_controller" | tail -1 | cut -d: -f1)
 [[ -n $old_stop_line && -n $openai_start_line && $old_stop_line -lt $openai_start_line ]] \
   || wd_die 'OpenAI can start before the old combined engine cgroup has stopped'
-[[ -n $openai_start_line && -n $openai_drain_line && -n $openai_async_stop_line \
-    && -n $openai_commit_line && $openai_start_line -lt $openai_drain_line \
-    && $openai_drain_line -lt $openai_async_stop_line \
-    && $openai_async_stop_line -lt $openai_commit_line ]] \
-  || wd_die 'OpenAI does not admit the target before draining and committing the old generation'
-[[ -n $openai_admit_line && -n $openai_enable_line \
-    && $openai_start_line -lt $openai_admit_line && $openai_admit_line -lt $openai_enable_line \
-    && $openai_enable_line -lt $openai_drain_line ]] \
-  || wd_die 'OpenAI can drain the old slot before redundant admission and boot durability'
-[[ $(grep -Fc '"$CODEX_APP_SERVERS_HELPER" admit-cutover' "$provider_controller") == 3 ]] \
-  || wd_die 'OpenAI cutover/recovery does not re-observe serving capacity without daemon convergence'
-! grep -Fq '"$CODEX_APP_SERVERS_HELPER" reconcile' "$provider_controller" \
-  || wd_die 'HTTP blue-green still starts or waits for a stateful Codex daemon roll'
-! grep -Fq '"$CODEX_APP_SERVERS_HELPER" verify \' "$provider_controller" \
-  || wd_die 'HTTP blue-green still requires full daemon-pin convergence'
+[[ -n $openai_start_line && -n $openai_enable_line && -n $openai_drain_line \
+    && -n $openai_async_stop_line \
+    && $openai_start_line -lt $openai_enable_line \
+    && $openai_enable_line -lt $openai_drain_line \
+    && $openai_drain_line -lt $openai_async_stop_line ]] \
+  || wd_die 'OpenAI does not admit and boot-durable the target before draining the old generation'
+! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$provider_controller" \
+  || wd_die 'HTTP blue-green still drives a stateful Codex daemon cohort'
+! grep -Fq 'CLAUDE_API_CODEX_TRANSPORT' "$provider_controller" \
+  || wd_die 'OpenAI slots still pin the removed app-server transport mode'
+! grep -Fq 'claude-api-codex-app-servers' "$provider_controller" \
+  || wd_die 'provider controller still references the removed daemon units'
+! grep -Fq 'CODEX_HOME_MIGRATION_HELPER' "$provider_controller" \
+  || wd_die 'provider controller still runs the legacy CODEX_HOME relocation'
 grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" anthropic' \
   "$provider_controller" || wd_die "Anthropic slot gate does not prove provider mode"
 grep -Fq 'unit_release_binding_ok engine "$OPENAI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT"' \
   "$provider_controller" || wd_die 'legacy OpenAI rollback gate does not prove the exact release'
-grep -Fq 'process_environment_has "$pid" '\''CLAUDE_API_CODEX_TRANSPORT=shared-daemon'\''' \
-  "$provider_controller" || wd_die 'shared OpenAI gate does not prove its transport mode'
 grep -Fq 'preserving it without another cutover' "$provider_controller" \
   || wd_die 'same-release OpenAI drift can trigger a needless second slot cutover'
 grep -Fq 'OPENAI_TARGET_PREEXISTING=1' "$provider_controller" \
@@ -1720,59 +1687,44 @@ grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "
   "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
   "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
-grep -Fq 'privileged_command "$CODEX_HOME_MIGRATION_HELPER" --apply' "$provider_controller" \
-  || wd_die "provider controller does not apply the guarded legacy Codex home migration"
-grep -Fq '"$CODEX_APP_SERVERS_HELPER" prepare-transition' "$provider_controller" \
-  || wd_die 'singleton-to-daemon ownership handoff is absent'
-grep -Fq 'kill --kill-whom=main --signal=SIGUSR2 "$unit"' \
-  "$ROOT/deploy/codex-app-servers.sh" \
-  || wd_die 'Codex reconciliation can signal and kill the gateway proxy children'
-grep -Fq '"$CODEX_APP_SERVERS_HELPER" prepare-legacy-transition' "$provider_controller" \
-  || wd_die 'the first shared release cannot roll back without duplicate home owners'
-grep -Fq '"$CODEX_APP_SERVERS_HELPER" commit-legacy-transition' "$provider_controller" \
-  || wd_die 'legacy rollback never finalizes exclusive singleton ownership'
 grep -Fq 'OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1' "$provider_controller" \
   || wd_die 'provider controller cannot distinguish safe shared releases from legacy binaries'
-grep -Fq 'recovery is completing the one-way legacy handoff' "$provider_controller" \
-  || wd_die 'post-drain rollback recovery can restart an old binary as an unsafe shared slot'
 grep -Fq 'recovery commits verified OpenAI target' "$provider_controller" \
   || wd_die 'post-drain shared recovery can leave the admitted target boot-fragile'
 grep -Fq 'systemctl_raw enable "$OPENAI_TARGET_UNIT"' "$provider_controller" \
   || wd_die 'post-drain recovery does not make the admitted OpenAI target boot-durable'
-grep -Fq 'systemctl_command disable "$CODEX_APP_SERVERS_TIMER"' "$provider_controller" \
-  || wd_die 'legacy rollback leaves daemon reconciliation armed across reboot'
-grep -Fq 'systemctl_command enable "$CODEX_APP_SERVERS_TIMER"' "$provider_controller" \
-  || wd_die 'shared-daemon cutover does not restore continuous home reconciliation'
-grep -Fq '"$engine_current/.openai-bluegreen-v1"' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'systemd installation ignores the selected release ownership mode'
+! grep -Fq 'codex-app-servers' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'systemd installation still installs or arms the removed daemon reconciliation'
 grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797' "$ROOT/deploy/Caddyfile" \
   || wd_die 'stable OpenAI origin does not health-balance two HTTP generations'
-grep -Fq 'codex-app-servers.sh prepare-legacy-transition' \
-  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'deploy user cannot invoke the compatibility ownership handoff'
-grep -Fq 'codex-app-servers.sh admit-cutover' \
-  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'deploy user cannot invoke redundant OpenAI cutover admission'
-grep -Fq '/usr/bin/systemctl disable claude-api-codex-app-servers.timer' \
-  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'deploy user cannot disarm daemon reconciliation in legacy mode'
+! grep -Fq 'codex-app-servers.sh' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user can still invoke the removed daemon reconciler'
 grep -Fq 'codex-homes-migrate.sh' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die "Codex home migration helper is not installed with its controller"
-grep -Fq 'CLAUDE_API_CODEX_HOMES=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com' \
+  || wd_die "Codex seal-migration helper is not installed with its controller"
+grep -Fq 'CLAUDE_API_CODEX_PROFILES_FILE=/srv/claude-api/data/codex/profiles.json' \
   "$ROOT/systemd/claude-api-openai.service" \
-  || wd_die "OpenAI unit does not pin the migrated legacy Codex home"
-grep -Fq 'CLAUDE_API_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
-  "$ROOT/systemd/claude-api-openai.service" \
-  || wd_die "OpenAI unit does not scan the authbot Codex homes directory"
-grep -Fq 'AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-homes' \
+  || wd_die "OpenAI unit does not pin the sealed Codex roster"
+! grep -Fq 'CODEX_HOMES' "$ROOT/systemd/claude-api-openai.service" \
+  || wd_die "OpenAI unit still scans legacy CODEX_HOME directories"
+grep -Fq 'AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex' \
   "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "authbot and OpenAI provider do not share the Codex homes directory"
+  || wd_die "authbot and OpenAI provider do not share the sealed Codex roster"
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die "deploy user cannot invoke the fixed Codex home migration helper"
+  || wd_die "deploy user cannot invoke the fixed Codex seal-migration helper"
 grep -Fq "require_permitted 'legacy Codex home migration'" \
   "$ROOT/deploy/install-sudoers.sh" \
   || wd_die "sudo policy installer does not verify Codex home migration access"
+grep -Fq 'codex_credential::CredentialKeyring' \
+  "$ROOT/crates/forward/src/codex/config.rs" \
+  || wd_die "Codex provider has no sealed credential keyring"
+grep -Fq 'chatgpt.com/backend-api/codex' \
+  "$ROOT/crates/codex-credential/src/lib.rs" \
+  || wd_die "Codex native backend is not pinned in the credential crate"
+grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
+  || wd_die "detached Codex response streams bypass the shutdown barrier"
+grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
+  || wd_die "detached Codex chat streams bypass the shutdown barrier"
 grep -Fq 'PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1' "$provider_controller" \
   || wd_die "provider controller can accept a release without fixed-provider rollback support"
 grep -Fq 'exit 2' "$provider_controller" \
@@ -1783,10 +1735,10 @@ controller_failure_body=$(sed -n '/if (( controller_rc != 0 )); then/,/^[[:space
   "$ROOT/deploy/watchdog.sh")
 grep -Fq 'rollback_engine || true' <<<"$controller_failure_body" \
   || wd_die "watchdog does not restore the release after every provider controller failure"
-grep -Fq 'acquire_provider_lock(&cfg.ownership_lock_file)' \
-  "$ROOT/crates/forward/src/codex/mod.rs" || wd_die "Codex homes have no process-wide ownership fence"
-grep -Fq 'ownership_lock_file: "/run/apitoken/codex-home.lock"' \
-  "$ROOT/crates/server/src/config.rs" || wd_die "Codex ownership fence is not pinned outside the homes"
+grep -Fq 'codex_credential::CredentialKeyring' \
+  "$ROOT/crates/forward/src/codex/config.rs" || wd_die "Codex provider has no sealed credential keyring"
+grep -Fq 'CLAUDE_API_CODEX_CREDENTIAL_KEYS' \
+  "$ROOT/crates/server/src/config.rs" || wd_die "Codex credential keyring is not wired into the server config"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
   || wd_die "detached Codex response streams bypass the shutdown barrier"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
@@ -1811,8 +1763,6 @@ grep -Fq 'self.detached.wait_idle().await;' "$ROOT/crates/forward/src/billing.rs
   || wd_die "billing flush can overtake a backpressured detached settlement"
 grep -Fq 'track_detached_work()' "$ROOT/crates/forward/src/meter.rs" \
   || wd_die "billing flush can overtake an Anthropic disconnect drain before settlement exists"
-grep -Fq 'process_group(0)' "$ROOT/crates/forward/src/codex/process.rs" \
-  || wd_die "Codex helpers are not isolated for process-tree retirement"
 [[ $(grep -Fc '.env_clear()' "$ROOT/crates/authbot/src/codex_login.rs") -eq 2 ]] \
   || wd_die "Codex login children inherit unrelated authbot secrets"
 
@@ -1879,7 +1829,6 @@ gate_contract=(
   'bash -n "$shell_file"'
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
-  'run_as_ci bash "$candidate/deploy/watchdog-codex-promote.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
@@ -1891,7 +1840,6 @@ gate_contract=(
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
   'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
-  'run_candidate_lane test_codex_lane "$candidate" &'
   'run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &'
   'wait "$typescript_pid"'
   'wait "$rust_pid"'
@@ -2513,13 +2461,12 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
 [[ $(grep -Fc 'select_candidate_validation_requirements "$CANDIDATE_SHA"' \
   "$ROOT/deploy/watchdog.sh") == 2 ]] \
   || wd_die 'production and shadow validation do not share one requirement selector'
-grep -Fq 'codex_runtime_matches_candidate "$CANDIDATE_SHA"' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'watchdog still treats Git baselines as proof of the promoted Codex runtime'
-grep -Fq 'CODEX_RUNTIME_ATTESTATION=$CODEX_RUNTIME_BIN_ROOT/.promoted' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'watchdog has no root-owned Codex runtime attestation fence'
-grep -Fq 'sudo -n "$CODEX_APP_SERVERS_HELPER" reconcile' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'a promoted Codex pin can be reported green before daemon convergence'
+! grep -Fq 'codex_runtime_matches_candidate' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog still attests a sidecar Codex runtime against Git baselines'
+! grep -Fq 'CODEX_RUNTIME_ATTESTATION' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog still fences a sidecar Codex runtime attestation'
+! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog still waits on a Codex daemon cohort before reporting green'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

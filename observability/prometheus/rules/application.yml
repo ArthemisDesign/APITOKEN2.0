@@ -108,7 +108,7 @@ groups:
           severity: critical
           component: codex-provider
         annotations:
-          summary: 'Codex provider has no live app-server'
+          summary: 'Codex provider has no working sealed profile'
           description: 'The OpenAI-compatible surface cannot serve any request: no configured home has a live child.'
           runbook: 'MONITORING.md#codexproviderdown'
 

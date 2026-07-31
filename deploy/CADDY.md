@@ -91,23 +91,16 @@ Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admi
 slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
-start OpenAI, preventing overlap with a legacy combined process. Shared OpenAI releases keep one
-official Unix-socket app-server per authenticated home below both HTTP generations. The candidate
-must expose exactly the same opaque authenticated-home set as the old generation. This parity is a
-readiness condition, not a soak timer: admission returns on the first complete process-fenced
-snapshot; one equal working home is valid, while any candidate subset is rejected. Only then is the
-old HTTP slot pre-drained and stopped. Candidate admission is purely observational and uses the
-cohort that is actually serving both gateway generations; it does not require those persistent
-daemons to have already converged to a newly promoted Codex binary pin.
-When an actual daemon topology change separately requires rediscovery, its signal is sent strictly
-to the Rust `MainPID`—never its proxy children—and a steady-state timer pass performs no signalling.
+start OpenAI, preventing overlap with a legacy combined process. OpenAI slots run the native Codex
+provider: both generations read the same sealed credential roster, so authenticated-home parity is
+inherent rather than a gate. This parity is a readiness condition, not a soak timer: the candidate's
+own preflight proves its profiles open, refresh and answer before any traffic anchor moves; one
+equal working home is valid. Only then is the old HTTP slot pre-drained and stopped.
 
 Established OpenAI streams remain on the old HTTP slot during pre-drain and may finish through the
-shared server deadline. The persistent app-server daemon is not restarted by the HTTP cutover, so
-the replacement generation reuses the same authenticated Codex state without taking ownership of
-the home or interrupting unrelated sessions. Daemon pin convergence is serialized independently;
-an app-server that is finishing a real turn cannot hold the gateway deployment lock or make a
-healthy HTTP candidate roll back.
+shared server deadline. The roster is stateless with respect to the cutover, so the replacement
+generation reuses the same authenticated Codex state without taking ownership of anything or
+interrupting unrelated sessions.
 
 The public OpenAI vhost negotiates `zstd` or `gzip` only for complete `application/json` responses
 of at least 512 bytes. Compression happens at the public TLS boundary, after the loopback OpenAI

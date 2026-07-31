@@ -60,7 +60,7 @@ pub struct AppState {
     /// shares bindings across engine slots. It never authorizes money or capacity.
     pub affinity: Arc<AffinityStore>,
     pub clients: Arc<Clients>,
-    /// Optional OpenAI-compatible text provider backed by an official Codex app-server child.
+    /// Optional OpenAI-compatible text provider backed by the native Codex profile pool.
     /// It owns no OAuth material; the child reads the dedicated authenticated `CODEX_HOME`.
     pub codex: Option<Arc<CodexGateway>>,
     /// Optional native Gemini surface backed by encrypted paid Code Assist OAuth profiles.

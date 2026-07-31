@@ -235,13 +235,11 @@ without a false allocation refusal; verify it with `sysctl vm.overcommit_memory`
 
 Only the OpenAI-compatible surface is affected; Claude routing is independent. Check
 `systemctl status claude-api-openai.service` and its journal first, then check
-`claude_api_codex_home_process_live` per home to see whether every child failed or only one.
-Restarting a child is automatic and lazy, so a persistent zero means the binary attestation, the
-`CODEX_HOME` permissions, or the pinned version no longer matches `docs/CODEX_APP_SERVER.md`. Do not
-edit the pinned build on the host; correct it with a commit and let the watchdog roll the provider
-cohort. If the journal reports that a home is already owned, do not delete the lock file: find and
-stop the competing process through its systemd unit. Advisory ownership is attached to the open file
-descriptor, not the directory entry.
+`claude_api_codex_home_process_live` per profile to see whether every sealed credential failed to
+open or only one. A persistent zero means the roster or the keyring no longer matches
+`docs/CODEX_PROVIDER.md` (profiles unreadable, wrong `CLAUDE_API_CODEX_CREDENTIAL_KEYS`, or an
+envelope that fails validation). Do not edit envelopes on the host; republish them through the
+authbot or `claude-api codex-seal`, and the gateway picks the roster up on its next health tick.
 `CLAUDE_API_CODEX_ENABLED=0` is the provider-only kill switch if the surface must be withdrawn while
 the cause is investigated.
 
@@ -274,12 +272,10 @@ authority problem rather than a reason to impose an admission limit.
 
 ## CodexHomeUnauthenticated
 
-That home's device login expired or was revoked. New homes should be republished through the authbot's
-hidden staging flow. For an in-place manual reauthentication, stop only
-`claude-api-openai.service`, authenticate as the unprivileged engine user against that home's own
-`CODEX_HOME`, then start the same unit and require 8792 readiness. Claude remains online throughout.
-Never copy, print or archive an auth store, never replace `/run/apitoken/codex-home.lock`, and never
-point two homes at one store.
+That home's login expired or was revoked. Republish the profile through the authbot's device flow:
+the new envelope replaces the stale one in the roster and the gateway picks it up on its next
+health tick — no restart, and Claude remains online throughout. Never copy, print or archive an
+auth store or an unsealed token, and never point two profiles at one account.
 
 ## CodexHomeNearRateLimit
 
@@ -293,13 +289,15 @@ capacity is insufficient.
 
 ## CodexHomeRateLimited
 
-The home reports a subscription window at 100%, so the gateway took it out of rotation until that
-window resets; the panel shows «лимит достигнут» and `/codex-subs` reports `limit_reached`. This is
-expected, not a fault: a spent subscription cannot serve turns. Check that the remaining homes cover
+The provider returned an explicit limit verdict (`limit_reached`/`allowed: false`), so the
+gateway took the home out of rotation until that window resets; the panel shows «лимит достигнут»
+and `/codex-subs` reports `limit_reached`. This is expected, not a fault. A window merely reading
+100% does NOT fire this alert — the provider can report full while still serving, so the gateway
+only acts on the provider's own verdict. Check that the remaining homes cover
 the load (`claude_api_codex_homes_available`, the panel's remaining API-dollar column) and add an
 authenticated home if they cannot. Do not restart the process or reauthenticate — the background
 health probe refreshes the snapshot and the home returns by itself after the reset. If the alert
-stays on past the reported reset, verify that `account/rateLimits/read` still answers for that home:
+stays on past the reported reset, verify that the `/wham/usage` probe still answers for that home:
 recovery depends on that probe succeeding, so a home whose probe is timing out cannot return on its
 own. `CodexHomeSnapshotStale` distinguishes the two cases.
 
@@ -319,23 +317,20 @@ routing itself. A brief spike right after a deploy or a subscription being retir
 
 ## CodexHomeUnresponsive
 
-The home's app-server generation is missing RPC deadlines. The gateway has closed admission for new
-turns while leaving in-flight turns to finish, because recycling a shared child would kill every
-sibling turn multiplexed over it.
+The home's native transport is missing request deadlines (connect, first byte, or mid-stream
+silence). The gateway has closed admission for new turns while leaving in-flight turns to finish.
 
 This is the failure this alert exists for: a deadline is not an authentication error and not a quota
-error, so a home in this state can otherwise look perfectly healthy — its process is alive, its
+error, so a home in this state can otherwise look perfectly healthy — its credential opens, its
 account is authenticated, and its last quota snapshot still reports whatever it reported before it
 went quiet. Read `claude_api_codex_home_transport_degraded` and `..._transport_wedged` to tell
 "missing deadlines" from "corroborated unusable", and `claude_api_codex_home_snapshot_age_seconds` to
 confirm the refresh path stopped with it.
 
-A wedged transport is recycled automatically, and the home returns as soon as one probe or turn
-succeeds. If the alert persists past a few sweeps, the daemon itself is not recovering: check
-`claude-api-codex-app-server@<socket>.service` for that home and the bridge process the gateway holds
-against it. A daemon that was restarted underneath a running gateway is the known case — the bridge
-survives, so the process looks alive while nothing it sends is ever answered. Restarting the gateway
-slot re-establishes every bridge.
+A wedged transport is rebuilt automatically (the per-profile client and its pooled connections are
+recreated; there is no child to reap), and the home returns as soon as one probe or turn succeeds.
+If the alert persists past a few sweeps, the account's egress is the suspect: verify the profile's
+proxy from the sealed credential before suspecting the upstream.
 
 ## CodexHomeSnapshotStale
 
@@ -346,8 +341,8 @@ this alert is the only signal that separates "the quota is 32%" from "the quota 
 Selection already accounts for it — stale evidence never rejects a home and never wins a tie against
 current evidence — so this is a diagnosis alert rather than an outage. It usually fires alongside
 `CodexHomeUnresponsive`, since the probe that refreshes the snapshot is the same probe that is timing
-out. If it fires alone, `account/rateLimits/read` is failing for that home while `account/read` still
-answers; the home keeps serving on unknown quota until the endpoint recovers.
+out. If it fires alone, `/wham/usage` is failing for that home while generation still answers; the
+home keeps serving on unknown quota until the endpoint recovers.
 
 ## CodexAccountDead
 

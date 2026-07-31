@@ -27,7 +27,7 @@ pub struct CodexPrices {
     pub long_output_basis_points: i64,
 }
 
-/// One advertised OpenAI-compatible model: public id, the id sent to app-server, and its rates as
+/// One advertised OpenAI-compatible model: public id, the id sent upstream, and its rates as
 /// of the requested moment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexModelSpec {

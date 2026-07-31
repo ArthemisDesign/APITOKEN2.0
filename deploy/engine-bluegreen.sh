@@ -11,7 +11,7 @@ usage() {
     'Usage: engine-bluegreen.sh [--target-port 8787|8788] [--timeout SECONDS] [--dry-run]' \
     '' \
     'Health-gated provider cutover. Admit both Anthropic and OpenAI targets before draining their' \
-    'old slots; the shared Codex app-server cohort keeps OpenAI homes alive across the cutover.'
+    'old slots; the native Codex provider keeps sealed profiles stateless across the cutover.'
 }
 
 DRY_RUN=0
@@ -31,12 +31,7 @@ PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
 OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
-CODEX_HOME_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh
-CODEX_APP_SERVERS_HELPER=/usr/local/lib/apitoken-watchdog/controller/codex-app-servers.sh
 ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
-CODEX_APP_SERVERS_TIMER=claude-api-codex-app-servers.timer
-CODEX_LEGACY_HOME=/srv/claude-api/data/codex/home
-CODEX_MIGRATED_HOME=/srv/claude-api/data/codex-homes/mikala1158qqq-gmail-com
 GEMINI_READY_URL=${GEMINI_READY_URL:-http://127.0.0.1:8795/ready}
 GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-http://127.0.0.1:8794/ready}
 CURRENT_RELEASE=
@@ -170,9 +165,7 @@ openai_slot_serves_current() {
   local port=$1 unit
   unit=$(openai_slot_unit "$port")
   unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" openai \
-    && openai_ready_port "$port" \
-    && process_environment_has "$(systemctl_show_value "$unit" MainPID)" \
-      'CLAUDE_API_CODEX_TRANSPORT=shared-daemon'
+    && openai_ready_port "$port"
 }
 openai_slot_serves_release() {
   local port=$1 release=$2 unit pid executable
@@ -183,7 +176,6 @@ openai_slot_serves_release() {
   executable=$(realpath -- "/proc/$pid/exe" 2>/dev/null) || return 1
   [[ $executable == "$release/claude-api" ]] || return 1
   process_environment_has "$pid" 'CLAUDE_API_PROVIDER=openai' || return 1
-  process_environment_has "$pid" 'CLAUDE_API_CODEX_TRANSPORT=shared-daemon' || return 1
   openai_ready_port "$port"
 }
 openai_legacy_ready() {
@@ -213,10 +205,6 @@ openai_unit_for_ready_port() {
 stable_openai_ready() {
   curl --noproxy '*' --fail --silent --show-error --max-time 2 \
     "$OPENAI_STABLE_READY_URL" >/dev/null 2>&1
-}
-codex_legacy_home_migrated() {
-  [[ ! -e $CODEX_LEGACY_HOME && ! -L $CODEX_LEGACY_HOME \
-    && -d $CODEX_MIGRATED_HOME && ! -L $CODEX_MIGRATED_HOME ]]
 }
 gemini_serves_current() {
   unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini \
@@ -302,9 +290,6 @@ recover() {
             systemctl_raw disable "$OPENAI_ACTIVE_UNIT" || failed=1
           fi
           if [[ -z $OPENAI_ACTIVE_UNIT ]] || unit_stopped "$OPENAI_ACTIVE_UNIT"; then
-            privileged_command "$CODEX_APP_SERVERS_HELPER" commit-legacy-transition || failed=1
-            systemctl_raw stop "$CODEX_APP_SERVERS_TIMER" || failed=1
-            systemctl_raw disable "$CODEX_APP_SERVERS_TIMER" || failed=1
             systemctl_raw enable "$OPENAI_LEGACY_UNIT" || failed=1
             systemctl_raw disable "$(openai_slot_unit 8793)" || failed=1
             systemctl_raw disable "$(openai_slot_unit 8797)" || failed=1
@@ -319,7 +304,6 @@ recover() {
       else
         warn 'recovery is releasing the unadmitted legacy target back to the shared generation'
         systemctl_raw stop "$OPENAI_LEGACY_UNIT" || failed=1
-        privileged_command "$CODEX_APP_SERVERS_HELPER" abort-legacy-transition || failed=1
       fi
     elif [[ $OPENAI_TARGET_STARTED == 1 && $OPENAI_OLD_STOPPED == 1 ]] \
         && openai_target_serves_current; then
@@ -332,12 +316,6 @@ recover() {
         systemctl_raw disable "$OPENAI_ACTIVE_UNIT" || failed=1
       fi
       systemctl_raw disable "$OPENAI_LEGACY_UNIT" || failed=1
-      if [[ $OPENAI_TRANSITION_STARTED == 1 ]]; then
-        privileged_command "$CODEX_APP_SERVERS_HELPER" commit-transition || failed=1
-      fi
-      systemctl_raw enable "$CODEX_APP_SERVERS_TIMER" || failed=1
-      systemctl_raw start "$CODEX_APP_SERVERS_TIMER" || failed=1
-      privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover || failed=1
     else
       if [[ $OPENAI_TARGET_STARTED == 1 && -n $OPENAI_ACTIVE_UNIT \
           && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" \
@@ -366,9 +344,6 @@ recover() {
             systemctl_raw stop "$OPENAI_TARGET_UNIT" || failed=1
             systemctl_raw disable "$OPENAI_TARGET_UNIT" || failed=1
           fi
-        fi
-        if [[ $OPENAI_TRANSITION_STARTED == 1 ]]; then
-          privileged_command "$CODEX_APP_SERVERS_HELPER" abort-transition || failed=1
         fi
       fi
     fi
@@ -444,14 +419,6 @@ privileged_command test -f "/etc/systemd/system/$OPENAI_LEGACY_UNIT" \
   || die "legacy OpenAI provider unit is not installed"
 privileged_command test -f /etc/systemd/system/claude-api-openai@.service \
   || die "OpenAI slot template is not installed"
-privileged_command test -f "/etc/systemd/system/$CODEX_APP_SERVERS_TIMER" \
-  || die "Codex app-server reconciliation timer is not installed"
-[[ -x $CODEX_HOME_MIGRATION_HELPER && ! -L $CODEX_HOME_MIGRATION_HELPER ]] \
-  || die "Codex home migration helper is missing or unsafe"
-[[ -x $CODEX_APP_SERVERS_HELPER && ! -L $CODEX_APP_SERVERS_HELPER ]] \
-  || die "Codex app-server reconciler is missing or unsafe"
-"$CODEX_HOME_MIGRATION_HELPER" --check \
-  || die "legacy Codex home is not safe to migrate"
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
 privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
@@ -608,34 +575,17 @@ for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 87
   fi
 done
 
-# OpenAI mirrors the Anthropic two-slot cutover once both releases support shared daemons. The first
-# migration and its one possible rollback cross an ownership boundary explicitly: each generation
-# receives a disjoint home before its HTTP slot is admitted, so old binaries can never ignore a new
-# transport setting and launch a second app-server against the same auth.json.
-if ! codex_legacy_home_migrated; then
-  [[ $OPENAI_SHARED_SUPPORTED == 1 ]] \
-    || post_admission_die 'legacy OpenAI rollback cannot precede the one-time home migration'
-  if openai_legacy_ready; then
-    post_admission_die "legacy Codex home relocation cannot preserve the active OpenAI topology"
-  fi
-  systemctl_command stop "$OPENAI_LEGACY_UNIT" \
-    || post_admission_die "could not stop inactive legacy OpenAI runtime"
-  privileged_command "$CODEX_HOME_MIGRATION_HELPER" --apply \
-    || post_admission_die "could not migrate the legacy Codex home"
-fi
-
+# OpenAI mirrors the Anthropic two-slot cutover. The native provider shares one sealed roster
+# between generations, so there is no ownership boundary to migrate: readiness alone gates
+# admission, exactly like the Gemini fleet.
 if [[ $OPENAI_SHARED_SUPPORTED == 0 ]]; then
   OPENAI_LEGACY_TARGET=1
   OPENAI_TARGET_PORT=8793
   OPENAI_TARGET_UNIT=$OPENAI_LEGACY_UNIT
-  # Mark recovery ownership before the helper mutates any home fence. A failed preparation can then
-  # always stop a partial singleton and return the seed to the still-ready shared generation.
   OPENAI_TARGET_STARTED=1
   if openai_slot_serves_release 8797 "$PREVIOUS_RELEASE"; then
     OPENAI_ACTIVE_PORT=8797
     OPENAI_ACTIVE_UNIT=$(openai_slot_unit 8797)
-    privileged_command "$CODEX_APP_SERVERS_HELPER" prepare-legacy-transition \
-      || post_admission_die 'could not prepare zero-downtime rollback to the legacy OpenAI owner'
   elif ! openai_legacy_serves_current; then
     post_admission_die 'legacy OpenAI rollback has neither its previous shared anchor nor a ready target'
   fi
@@ -647,20 +597,14 @@ else
     OPENAI_ACTIVE_PORT=8793
     OPENAI_ACTIVE_UNIT=$OPENAI_LEGACY_UNIT
     OPENAI_TARGET_PORT=8797
-    OPENAI_TRANSITION_STARTED=1
-    privileged_command "$CODEX_APP_SERVERS_HELPER" prepare-transition \
-      || post_admission_die "could not prepare zero-downtime Codex ownership transition"
   else
     if unit_active "$OPENAI_LEGACY_UNIT"; then
       warn "stopping unready legacy OpenAI runtime before daemon reconciliation"
       systemctl_command stop "$OPENAI_LEGACY_UNIT" \
         || post_admission_die "could not stop unready legacy OpenAI runtime"
     fi
-    # Persistent app-servers are a separate availability domain from the two HTTP generations.
-    # Never start or wait for a daemon roll here: a busy official app-server may correctly spend
-    # the remainder of its in-flight turn draining, while both gateway slots can already use the
-    # serving cohort. The lock-free admission gate below proves actual cross-version transport and
-    # authenticated-home parity before any OpenAI traffic anchor is touched.
+    # The sealed roster is shared state, not a per-generation ownership domain. Candidate
+    # readiness proves its profiles are authenticated before any traffic anchor is touched.
     OPENAI_READY_8793=0; OPENAI_READY_8797=0
     OPENAI_CURRENT_8793=0; OPENAI_CURRENT_8797=0
     openai_unit_for_ready_port 8793 >/dev/null && OPENAI_READY_8793=1
@@ -722,12 +666,9 @@ if [[ $DRY_RUN == 0 ]]; then
     || post_admission_die "stable OpenAI origin lost readiness while admitting the target"
 fi
 if [[ $OPENAI_LEGACY_TARGET == 0 ]]; then
-  # Exact authenticated-home parity is part of candidate readiness, not a time-based soak. The old
-  # origin remains fully ready while clients converge; admission returns on the first process-fenced
-  # exact match. One shared home is valid, but a subset is not. The gate sends no signals and performs
-  # no repair: candidate startup either establishes the invariant or cutover fails with old untouched.
-  privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
-    || post_admission_die "OpenAI target failed authenticated-capacity parity admission"
+  # Both generations read the same sealed roster, so authenticated-home parity is inherent; the
+  # candidate's own readiness probe is the admission proof. The old origin remains fully ready
+  # while clients converge.
   if [[ $DRY_RUN == 0 ]]; then
     openai_target_serves_current \
       || post_admission_die "OpenAI target lost readiness during capacity parity admission"
@@ -783,29 +724,6 @@ if [[ -n $OPENAI_ACTIVE_UNIT && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" ]];
   OPENAI_OLD_STOPPED=1
 fi
 
-if [[ $OPENAI_LEGACY_TARGET == 1 ]]; then
-  privileged_command "$CODEX_APP_SERVERS_HELPER" commit-legacy-transition \
-    || post_admission_die 'could not commit rollback to the legacy Codex owner'
-  privileged_command "$CODEX_APP_SERVERS_HELPER" verify-legacy \
-    || post_admission_die 'legacy Codex owner failed isolation verification'
-  systemctl_command stop "$CODEX_APP_SERVERS_TIMER" \
-    || post_admission_die 'could not stop daemon reconciliation in legacy mode'
-  systemctl_command disable "$CODEX_APP_SERVERS_TIMER" \
-    || post_admission_die 'could not disable daemon reconciliation in legacy mode'
-else
-  if [[ $OPENAI_TRANSITION_STARTED == 1 ]]; then
-    privileged_command "$CODEX_APP_SERVERS_HELPER" commit-transition \
-      || post_admission_die "could not commit Codex ownership transition"
-  fi
-  # Re-observe the committed serving cohort, but do not require daemon-version convergence. Pin
-  # rollout is intentionally independent and cannot hold the HTTP deployment hostage.
-  privileged_command "$CODEX_APP_SERVERS_HELPER" admit-cutover \
-    || post_admission_die "committed OpenAI target lost authenticated serving capacity"
-  systemctl_command enable "$CODEX_APP_SERVERS_TIMER" \
-    || post_admission_die 'could not enable Codex app-server reconciliation'
-  systemctl_command start "$CODEX_APP_SERVERS_TIMER" \
-    || post_admission_die 'could not start Codex app-server reconciliation'
-fi
 if [[ $DRY_RUN == 0 ]]; then
   openai_target_serves_current \
     || post_admission_die "OpenAI target failed post-ownership verification"
@@ -904,12 +822,6 @@ if [[ $DRY_RUN == 0 ]]; then
         post_admission_die "shared OpenAI slot remains enabled: $OPENAI_OTHER_UNIT"
       fi
     done
-    privileged_command "$CODEX_APP_SERVERS_HELPER" verify-legacy \
-      || post_admission_die 'legacy Codex owner failed final isolation verification'
-    if systemctl_raw is-active --quiet "$CODEX_APP_SERVERS_TIMER" \
-        || systemctl_raw is-enabled --quiet "$CODEX_APP_SERVERS_TIMER"; then
-      post_admission_die 'Codex daemon reconciliation remains armed in legacy mode'
-    fi
   else
     openai_slot_retired "$OPENAI_OTHER_UNIT" "$OPENAI_OTHER_PORT" \
       || post_admission_die "inactive OpenAI slot is neither stopped nor retiring: $OPENAI_OTHER_UNIT"
@@ -921,10 +833,6 @@ if [[ $DRY_RUN == 0 ]]; then
     if systemctl_raw is-enabled --quiet "$OPENAI_LEGACY_UNIT"; then
       post_admission_die "legacy OpenAI singleton remains enabled"
     fi
-    systemctl_raw is-active --quiet "$CODEX_APP_SERVERS_TIMER" \
-      || post_admission_die 'Codex app-server reconciliation timer is not active'
-    systemctl_raw is-enabled --quiet "$CODEX_APP_SERVERS_TIMER" \
-      || post_admission_die 'Codex app-server reconciliation timer is not enabled'
   fi
   if [[ $GEMINI_SUPPORTED == 1 ]]; then
     systemctl_raw is-enabled --quiet "$GEMINI_UNIT" \
