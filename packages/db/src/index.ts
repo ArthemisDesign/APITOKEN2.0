@@ -15,6 +15,7 @@ export * from "./admin-pipelines.js";
 export * from "./payments.js";
 export * from "./pricing.js";
 export * from "./pricing-control-jobs.js";
+export * from "./multi-discount-backfill.js";
 export * from "./totp.js";
 export * from "./sales-feed.js";
 export * from "./content-studio.js";
