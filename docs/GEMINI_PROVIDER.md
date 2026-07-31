@@ -196,7 +196,7 @@ Gemini runtime (`config.env` or `server.env`):
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE=6
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
@@ -292,7 +292,8 @@ For every request the runtime:
   Assist wrapper fields, credits, private trace ids, unknown top-level fields and headers;
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean
   truncation;
-- caps response bodies and pending stream frames at 32 MiB;
+- caps documented inline-media requests at 20 MiB and generated-image response bodies/pending
+  stream frames at 64 MiB;
 - periodically calls Antigravity `v1internal:fetchAvailableModels`, keeps a sanitized per-model
   `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
   Google's reset time;
@@ -353,21 +354,68 @@ will move the blend, new workload regimes can widen the envelope, and Google can
 policy. Raw observations are retained so estimator upgrades replay the same evidence rather than
 starting over. Official source: <https://antigravity.google/docs/plans>.
 
-The model allowlist is local and price-catalog pinned. The default list contains the six text
-models whose non-stream, native stream and token-count paths were reconfirmed against the
-production Google AI Pro profile on 2026-07-31: `gemini-3.6-flash`, `gemini-3.5-flash`,
+The model allowlist is local and price-catalog pinned. The default list contains six text models
+whose non-stream, native stream and token-count paths were reconfirmed against the production
+Google AI Pro profile on 2026-07-31, plus the separately routed Nano Banana 2 image model:
+`gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
 `gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: it is absent from the
 official Antigravity reasoning-model table, and its residual quota bucket does not produce a
 working generation route. Private tier ids are never public model names, while
-image/agent/foreign-provider ids have no honest public text-model mapping.
+unreviewed agent/foreign-provider ids have no honest public model mapping.
 A Developer API price entry proves only that the gateway can meter a model; it does not prove that
 an Antigravity subscription can serve it. Publication additionally requires an official
 Antigravity model contract, an exact canonical-to-private route and live generation evidence.
 A configured id still needs a live smoke test against every tier because Google can change private
-model availability independently. The production systemd argv pins this calibrated six-model
+model availability independently. The production systemd argv pins this calibrated seven-model
 set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
+
+### Nano Banana 2 image route and accounting
+
+Antigravity's official model page identifies Nano Banana 2 as the non-customizable generative
+image tool, and the authenticated Google AI Pro catalogue exposes an independent
+`gemini-3.1-flash-image` quota bucket. The public route keeps the native Gemini
+`generateContent`/`streamGenerateContent`/`countTokens` envelope and returns generated media as
+`candidates[].content.parts[].inlineData`; images are never written to server disk.
+
+For Antigravity the wrapper uses the exact image identity `requestType=image_gen` rather than the
+text-agent identity. `candidateCount` is fixed at one. Missing image controls become explicit
+`aspectRatio=1:1` and `imageSize=1K`; the accepted sizes are `0.5K`, `1K`, `2K`, and `4K`, and the
+accepted ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`, `5:4`,
+`8:1`, `9:16`, `16:9`, and `21:9`. Up to 14 inline reference images are accepted, using only the
+documented PNG, JPEG, WEBP, HEIC and HEIF MIME types with valid base64. Project-scoped `fileData`,
+system instructions, tools, structured output, multiple candidates, response-modalities overrides
+and private-route thinking controls fail closed rather than being silently dropped.
+
+Official paid-standard equivalence is pinned as integer nanoUSD: `$0.50/M` input tokens,
+`$3/M` text plus thinking output tokens, and `$60/M` generated-image tokens. Authoritative
+settlement splits `usageMetadata.candidatesTokensDetails[modality=IMAGE]` from ordinary candidate
+tokens, then charges the two output SKUs separately. Preflight reserves the complete requested
+image without silently lowering its quality: 747 image tokens for 0.5K (`$0.04482`), 1,120 for 1K
+(`$0.0672`), 1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded text/input and
+grounding. Final money always follows the provider's actual usage metadata; the size table is a
+fail-closed hold when delivery usage is missing.
+
+### Video is a separate provider surface
+
+Neither the official Antigravity model table nor the authenticated subscription catalogue exposes
+Gemini Omni Flash or any `veo-*` identity. Google AI Pro/Ultra access inside the Gemini app or Flow
+does not grant a Code Assist OAuth API route, so this gateway does not publish a fake video model.
+Video requires a separately configured Gemini Developer API key/Cloud Billing credential and a
+long-running file/operation lifecycle before it can be admitted to production.
+
+The reviewed official paid-tier accounting basis for that future provider is:
+
+| Developer API model | Official output accounting |
+|---|---:|
+| `gemini-omni-flash-preview` | `$17.50/M` video tokens at 5,792 tokens/second of 720p = `$0.10136/second` (documented as approximately `$0.10/second`); input `$1.50/M`, text output `$9/M` |
+| `veo-3.1-generate-preview` | `$0.40/second` at 720p/1080p; `$0.60/second` at 4K |
+| `veo-3.1-fast-generate-preview` | `$0.10/second` at 720p; `$0.12/second` at 1080p; `$0.30/second` at 4K |
+| `veo-3.1-lite-generate-preview` | `$0.05/second` at 720p; `$0.08/second` at 1080p; 4K unsupported |
+
+Veo is charged only for successfully generated video. These prices are not folded into the
+subscription 5h/weekly calibration because no subscription video quota or request path exists.
 
 ### Text-model evidence matrix
 
@@ -417,6 +465,10 @@ Official evidence reviewed on 2026-07-31:
 - Gemini 3.5 Flash shape (1,048,576 input / 65,536 output, text output):
   <https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash>;
 - Gemini 3.1 Pro Preview shape: <https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview>;
+- Nano Banana 2 generation, sizes, ratios and input formats:
+  <https://ai.google.dev/gemini-api/docs/image-generation> and
+  <https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image>;
+- Gemini video generation contracts and lifecycle: <https://ai.google.dev/gemini-api/docs/video>;
 - paid standard prices: <https://ai.google.dev/gemini-api/docs/pricing>;
 - thinking-level defaults and supported values: <https://ai.google.dev/gemini-api/docs/thinking#thinking-levels>;
 - REST schema/discovery revision `20260729`:

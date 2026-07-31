@@ -403,7 +403,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         // supported thinking level of the current subscription profile. In particular, 2.5 Pro
         // advertises quota but generation returns persistent UNAVAILABLE; quota evidence alone
         // never enables a model.
-        "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)
@@ -420,7 +420,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         };
         if !forward::gemini::subscription_model_supported(spec.id) {
             panic!(
-                "CLAUDE_API_GEMINI_MODELS contains {requested:?}, which has no reviewed text-generation route on the Antigravity subscription surface"
+                "CLAUDE_API_GEMINI_MODELS contains {requested:?}, which has no reviewed generation route on the Antigravity subscription surface"
             );
         }
         if models.iter().any(|model: &GeminiModel| model.id == spec.id) {

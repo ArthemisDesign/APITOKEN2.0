@@ -1942,6 +1942,7 @@ mod tests {
                     cached_input: 1,
                     cached_audio_input: 1,
                     output: 1,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 1,
                     long_audio_input: 1,

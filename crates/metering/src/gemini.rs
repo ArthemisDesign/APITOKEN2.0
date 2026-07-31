@@ -24,6 +24,8 @@ pub struct GeminiPrices {
     pub cached_audio_input: i128,
     /// Candidate and thinking tokens share the published output rate.
     pub output: i128,
+    /// Generated image tokens have their own media-output rate. Text-only models keep this zero.
+    pub image_output: i128,
     /// Models with tiered long-context pricing apply the higher rates to the whole request.
     pub long_context_threshold: u64,
     pub long_input: i128,
@@ -56,8 +58,9 @@ pub struct GeminiUsage {
     pub audio_input_tokens: u64,
     pub cached_input_tokens: u64,
     pub cached_audio_input_tokens: u64,
-    /// Candidate + thinking tokens. Google publishes one output rate for both.
+    /// Text candidate + thinking tokens. Image candidate tokens are split out below.
     pub output_tokens: u64,
+    pub image_output_tokens: u64,
     /// Both raw facts are retained because Gemini 3 and 2.5 bill Search differently.
     pub search_queries: u64,
     pub grounded_search_prompts: u64,
@@ -70,6 +73,7 @@ impl GeminiUsage {
             .saturating_add(self.cached_input_tokens)
             .saturating_add(self.cached_audio_input_tokens)
             .saturating_add(self.output_tokens)
+            .saturating_add(self.image_output_tokens)
     }
 
     pub fn is_zero(&self) -> bool {
@@ -103,6 +107,7 @@ const fn flat_prices(
         cached_input,
         cached_audio_input,
         output,
+        image_output: 0,
         long_context_threshold: u64::MAX,
         long_input: input,
         long_audio_input: audio_input,
@@ -139,6 +144,7 @@ const GEMINI_31_PRO_PREVIEW: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
         cached_input: 200,
         cached_audio_input: 200,
         output: 12_000,
+        image_output: 0,
         long_context_threshold: 200_000,
         long_input: 4_000,
         long_audio_input: 4_000,
@@ -156,6 +162,7 @@ const GEMINI_25_PRO: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
         cached_input: 125,
         cached_audio_input: 125,
         output: 10_000,
+        image_output: 0,
         long_context_threshold: 200_000,
         long_input: 2_500,
         long_audio_input: 2_500,
@@ -174,7 +181,35 @@ const GEMINI_25_FLASH_LITE: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
     prices: flat_prices(100, 300, 10, 30, 400, SEARCH_GEMINI_25),
 }];
 
+// Official standard paid-tier rates, rechecked 2026-07-31:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image
+const GEMINI_31_FLASH_IMAGE: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
+    effective_from: 0,
+    prices: GeminiPrices {
+        input: 500,
+        audio_input: 500,
+        cached_input: 500,
+        cached_audio_input: 500,
+        output: 3_000,
+        image_output: 60_000,
+        long_context_threshold: u64::MAX,
+        long_input: 500,
+        long_audio_input: 500,
+        long_cached_input: 500,
+        long_cached_audio_input: 500,
+        long_output: 3_000,
+        search: SEARCH_GEMINI_3,
+    },
+}];
+
 const CATALOG: &[CatalogEntry] = &[
+    CatalogEntry {
+        id: "gemini-3.1-flash-image",
+        display_name: "Gemini 3.1 Flash Image (Nano Banana 2)",
+        input_token_limit: 131_072,
+        output_token_limit: 32_768,
+        schedule: GEMINI_31_FLASH_IMAGE,
+    },
     CatalogEntry {
         id: "gemini-3.6-flash",
         display_name: "Gemini 3.6 Flash",
@@ -311,6 +346,8 @@ fn usage_from_metadata(metadata: &Value) -> GeminiUsage {
         .get("candidatesTokenCount")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let image_candidates =
+        count_modality(&metadata["candidatesTokensDetails"], "IMAGE").min(candidates);
     let thoughts = metadata
         .get("thoughtsTokenCount")
         .and_then(Value::as_u64)
@@ -321,7 +358,10 @@ fn usage_from_metadata(metadata: &Value) -> GeminiUsage {
         audio_input_tokens: audio_input,
         cached_input_tokens: cached_input,
         cached_audio_input_tokens: cached_audio,
-        output_tokens: candidates.saturating_add(thoughts),
+        output_tokens: candidates
+            .saturating_sub(image_candidates)
+            .saturating_add(thoughts),
+        image_output_tokens: image_candidates,
         ..GeminiUsage::default()
     }
 }
@@ -439,6 +479,7 @@ pub fn cost_nanodollars(usage: &GeminiUsage, prices: &GeminiPrices) -> i128 {
         .saturating_add((usage.cached_input_tokens as i128).saturating_mul(cached))
         .saturating_add((usage.cached_audio_input_tokens as i128).saturating_mul(cached_audio))
         .saturating_add((usage.output_tokens as i128).saturating_mul(output))
+        .saturating_add((usage.image_output_tokens as i128).saturating_mul(prices.image_output))
         .saturating_add(search)
 }
 
@@ -450,6 +491,24 @@ mod tests {
     fn standard_paid_catalog_matches_the_official_rates() {
         let cases = [
             (
+                "gemini-3.1-flash-image",
+                GeminiPrices {
+                    input: 500,
+                    audio_input: 500,
+                    cached_input: 500,
+                    cached_audio_input: 500,
+                    output: 3_000,
+                    image_output: 60_000,
+                    long_context_threshold: u64::MAX,
+                    long_input: 500,
+                    long_audio_input: 500,
+                    long_cached_input: 500,
+                    long_cached_audio_input: 500,
+                    long_output: 3_000,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
                 "gemini-3.6-flash",
                 GeminiPrices {
                     input: 1_500,
@@ -457,6 +516,7 @@ mod tests {
                     cached_input: 150,
                     cached_audio_input: 150,
                     output: 7_500,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 1_500,
                     long_audio_input: 1_500,
@@ -474,6 +534,7 @@ mod tests {
                     cached_input: 150,
                     cached_audio_input: 150,
                     output: 9_000,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 1_500,
                     long_audio_input: 1_500,
@@ -491,6 +552,7 @@ mod tests {
                     cached_input: 25,
                     cached_audio_input: 50,
                     output: 1_500,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 250,
                     long_audio_input: 500,
@@ -508,6 +570,7 @@ mod tests {
                     cached_input: 200,
                     cached_audio_input: 200,
                     output: 12_000,
+                    image_output: 0,
                     long_context_threshold: 200_000,
                     long_input: 4_000,
                     long_audio_input: 4_000,
@@ -525,6 +588,7 @@ mod tests {
                     cached_input: 125,
                     cached_audio_input: 125,
                     output: 10_000,
+                    image_output: 0,
                     long_context_threshold: 200_000,
                     long_input: 2_500,
                     long_audio_input: 2_500,
@@ -542,6 +606,7 @@ mod tests {
                     cached_input: 30,
                     cached_audio_input: 100,
                     output: 2_500,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 300,
                     long_audio_input: 1_000,
@@ -559,6 +624,7 @@ mod tests {
                     cached_input: 10,
                     cached_audio_input: 30,
                     output: 400,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 100,
                     long_audio_input: 300,
@@ -577,8 +643,16 @@ mod tests {
                 .iter()
                 .find(|spec| spec.id == model)
                 .expect("official model must be catalogued");
-            assert_eq!(spec.input_token_limit, 1_048_576, "{model} input limit");
-            assert_eq!(spec.output_token_limit, 65_536, "{model} output limit");
+            let (input_limit, output_limit) = if model == "gemini-3.1-flash-image" {
+                (131_072, 32_768)
+            } else {
+                (1_048_576, 65_536)
+            };
+            assert_eq!(spec.input_token_limit, input_limit, "{model} input limit");
+            assert_eq!(
+                spec.output_token_limit, output_limit,
+                "{model} output limit"
+            );
         }
     }
 
@@ -642,9 +716,35 @@ mod tests {
                 cached_input_tokens: 250,
                 cached_audio_input_tokens: 150,
                 output_tokens: 50,
+                image_output_tokens: 0,
                 search_queries: 2,
                 grounded_search_prompts: 1,
             })
+        );
+    }
+
+    #[test]
+    fn image_candidate_tokens_are_split_and_priced_at_the_media_rate() {
+        let response = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 1_140,
+                "thoughtsTokenCount": 20,
+                "candidatesTokensDetails": [
+                    {"modality": "TEXT", "tokenCount": 20},
+                    {"modality": "IMAGE", "tokenCount": 1_120}
+                ]
+            }
+        });
+        let usage = usage_from_response_value(&response).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.image_output_tokens, 1_120);
+
+        let prices = gemini_prices_at("gemini-3.1-flash-image", 0).unwrap();
+        assert_eq!(
+            cost_nanodollars(&usage, &prices),
+            100 * 500 + 40 * 3_000 + 1_120 * 60_000
         );
     }
 
@@ -706,6 +806,7 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
             cached_input_tokens: u64::MAX,
             cached_audio_input_tokens: u64::MAX,
             output_tokens: u64::MAX,
+            image_output_tokens: u64::MAX,
             search_queries: u64::MAX,
             grounded_search_prompts: u64::MAX,
         };

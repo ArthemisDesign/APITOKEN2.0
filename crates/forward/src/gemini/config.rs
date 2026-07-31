@@ -42,6 +42,10 @@ pub struct GeminiModel {
 }
 
 impl GeminiModel {
+    pub fn is_image_generation(&self) -> bool {
+        self.id == "gemini-3.1-flash-image"
+    }
+
     /// Resolve the public Developer API model to the exact private Antigravity quota/generation
     /// bucket. The authenticated Code Assist catalogue encodes Gemini 3 reasoning effort in the
     /// model id; sending the public family id itself returns `INVALID_ARGUMENT`/`UNAVAILABLE`.
@@ -109,10 +113,11 @@ impl GeminiModel {
 }
 
 /// Product access is intentionally narrower than the global Developer API price catalogue. These
-/// are the only text-output models whose Antigravity wire identity has a reviewed mapping; live
-/// generation calibration remains an additional deployment gate before a model enters systemd's
+/// are the only models whose Antigravity wire identity and modality contract have a reviewed
+/// mapping; live generation remains an additional deployment gate before a model enters systemd's
 /// public allowlist.
-const SUBSCRIPTION_TEXT_MODELS: [&str; 6] = [
+const SUBSCRIPTION_MODELS: [&str; 7] = [
+    "gemini-3.1-flash-image",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
@@ -122,7 +127,7 @@ const SUBSCRIPTION_TEXT_MODELS: [&str; 6] = [
 ];
 
 pub fn subscription_model_supported(id: &str) -> bool {
-    SUBSCRIPTION_TEXT_MODELS.contains(&id)
+    SUBSCRIPTION_MODELS.contains(&id)
 }
 
 #[derive(Clone, Debug)]
@@ -218,13 +223,14 @@ impl GeminiConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{subscription_model_supported, SUBSCRIPTION_TEXT_MODELS};
+    use super::{subscription_model_supported, SUBSCRIPTION_MODELS};
 
     #[test]
-    fn subscription_text_catalog_is_exact_and_fail_closed() {
+    fn subscription_catalog_is_exact_and_fail_closed() {
         assert_eq!(
-            SUBSCRIPTION_TEXT_MODELS,
+            SUBSCRIPTION_MODELS,
             [
+                "gemini-3.1-flash-image",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
                 "gemini-3.1-pro-preview",
@@ -233,7 +239,7 @@ mod tests {
                 "gemini-2.5-flash-lite",
             ]
         );
-        assert!(SUBSCRIPTION_TEXT_MODELS
+        assert!(SUBSCRIPTION_MODELS
             .iter()
             .all(|id| subscription_model_supported(id)));
 

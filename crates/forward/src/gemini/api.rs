@@ -12,6 +12,7 @@ use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use gemini_credential::OAuthKind;
@@ -22,11 +23,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-const GEMINI_BODY_LIMIT: usize = 32 * 1024 * 1024;
+// Preserve the existing text-request envelope. Gemini's documented inline-media request ceiling is
+// lower, so image generation is bounded independently after the route model is resolved. Generated
+// 4K images are returned as base64 inside JSON and need a larger, still bounded response envelope.
+const GEMINI_TEXT_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
+const GEMINI_IMAGE_REQUEST_BODY_LIMIT: usize = 20 * 1024 * 1024;
+const GEMINI_BODY_LIMIT: usize = 64 * 1024 * 1024;
 const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_START_MAX_BYTES: usize = 1024 * 1024;
 const STREAM_START_MAX_CHUNKS: usize = 1024;
+const IMAGE_STREAM_START_MAX_CHUNKS: usize = 8192;
 // The public Gemini catalogue advertises 65,536 output tokens, but the private Antigravity
 // generation endpoint rejects that exact boundary while accepting 65,535. Keep the public model
 // contract intact and adapt only the private wire request.
@@ -71,7 +78,17 @@ const GENERATION_CONFIG_FIELD_ALIASES: &[(&str, &str)] = &[
     ("frequency_penalty", "frequencyPenalty"),
     ("response_logprobs", "responseLogprobs"),
     ("thinking_config", "thinkingConfig"),
+    ("image_config", "imageConfig"),
+    ("response_modalities", "responseModalities"),
 ];
+
+const PART_FIELD_ALIASES: &[(&str, &str)] = &[
+    ("inline_data", "inlineData"),
+    ("file_data", "fileData"),
+    ("thought_signature", "thoughtSignature"),
+];
+
+const MEDIA_DATA_FIELD_ALIASES: &[(&str, &str)] = &[("mime_type", "mimeType")];
 
 const THINKING_CONFIG_FIELD_ALIASES: &[(&str, &str)] = &[
     ("thinking_level", "thinkingLevel"),
@@ -95,6 +112,29 @@ fn canonicalize_native_request(value: &mut Value) {
         return;
     };
     promote_aliases(object, REQUEST_FIELD_ALIASES);
+    for content_name in ["contents", "systemInstruction"] {
+        let contents = match object.get_mut(content_name) {
+            Some(Value::Array(contents)) => contents.as_mut_slice(),
+            Some(content) => std::slice::from_mut(content),
+            None => continue,
+        };
+        for content in contents {
+            let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for part in parts {
+                let Some(part) = part.as_object_mut() else {
+                    continue;
+                };
+                promote_aliases(part, PART_FIELD_ALIASES);
+                for media_name in ["inlineData", "fileData"] {
+                    if let Some(media) = part.get_mut(media_name).and_then(Value::as_object_mut) {
+                        promote_aliases(media, MEDIA_DATA_FIELD_ALIASES);
+                    }
+                }
+            }
+        }
+    }
     if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
         for tool in tools {
             let Some(tool) = tool.as_object_mut() else {
@@ -638,7 +678,7 @@ fn retry_info_delay(value: &Value) -> Option<i64> {
         .then(|| (delay.ceil() as i64).clamp(1, 86_400))
 }
 
-fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64, u64, bool) {
+fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64, u64, u64, bool) {
     let output = body
         .pointer("/generationConfig/maxOutputTokens")
         .and_then(Value::as_u64)
@@ -654,11 +694,25 @@ fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64
                     || tool.get("googleSearchRetrieval").is_some()
             })
         });
-    // One input token cannot encode less than one body byte for inline UTF-8/base64 content. URI
-    // content can exceed the body estimate; exact settlement plus the account overdraft floor keeps
-    // that unavoidable provider-side expansion bounded.
-    let estimate = (body.to_string().len() as u64).saturating_add(overhead);
-    (estimate, output, grounding)
+    // Text keeps the longstanding byte-conservative estimate. Base64 bytes are transport, not
+    // image tokens: Gemini 3 allocates at most 2,240 input tokens per inline image, so replacing
+    // their encoded payload length avoids rejecting an affordable edit solely because its JPEG is
+    // large. Authoritative usageMetadata still decides settlement.
+    let mut estimate = (body.to_string().len() as u64).saturating_add(overhead);
+    if model.is_image_generation() {
+        for inline in inline_image_data(body) {
+            if let Some(data) = inline.get("data").and_then(Value::as_str) {
+                estimate = estimate
+                    .saturating_sub(data.len() as u64)
+                    .saturating_add(2_240);
+            }
+        }
+    }
+    let media_output = model
+        .is_image_generation()
+        .then(|| image_output_tokens(body))
+        .unwrap_or(0);
+    (estimate, output, media_output, grounding)
 }
 
 fn cap_generation_output(body: &mut Value, max_output_tokens: u64) -> Result<(), ApiError> {
@@ -705,14 +759,32 @@ fn normalize_private_content_roles(request: &mut serde_json::Map<String, Value>)
     }
 }
 
-fn adapt_antigravity_generation_request(request: &mut serde_json::Map<String, Value>) {
+fn adapt_antigravity_generation_request(
+    request: &mut serde_json::Map<String, Value>,
+    image_generation: bool,
+) {
     normalize_private_content_roles(request);
-    let Some(generation_config) = request
-        .get_mut("generationConfig")
-        .and_then(Value::as_object_mut)
-    else {
+    let generation_config = request
+        .entry("generationConfig")
+        .or_insert_with(|| json!({}));
+    let Some(generation_config) = generation_config.as_object_mut() else {
         return;
     };
+    if image_generation {
+        generation_config.insert("candidateCount".to_string(), json!(1));
+        let image_config = generation_config
+            .entry("imageConfig")
+            .or_insert_with(|| json!({}));
+        if let Some(image_config) = image_config.as_object_mut() {
+            image_config
+                .entry("aspectRatio".to_string())
+                .or_insert_with(|| json!("1:1"));
+            image_config
+                .entry("imageSize".to_string())
+                .or_insert_with(|| json!("1K"));
+        }
+        return;
+    }
     let max_output_tokens = generation_config
         .get("maxOutputTokens")
         .and_then(Value::as_u64);
@@ -722,6 +794,209 @@ fn adapt_antigravity_generation_request(request: &mut serde_json::Map<String, Va
             json!(ANTIGRAVITY_WIRE_OUTPUT_TOKEN_LIMIT),
         );
     }
+}
+
+const IMAGE_ASPECT_RATIOS: &[&str] = &[
+    "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9",
+    "21:9",
+];
+const IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+];
+
+fn image_output_tokens(body: &Value) -> u64 {
+    match body
+        .pointer("/generationConfig/imageConfig/imageSize")
+        .and_then(Value::as_str)
+        .unwrap_or("1K")
+    {
+        "0.5K" => 747,
+        "1K" => 1_120,
+        "2K" => 1_680,
+        "4K" => 2_520,
+        _ => 2_520,
+    }
+}
+
+fn inline_image_data(body: &Value) -> impl Iterator<Item = &Value> {
+    body.get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|part| part.get("inlineData"))
+}
+
+fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
+    if body.get("systemInstruction").is_some() {
+        return Err(ApiError::invalid(
+            "systemInstruction is not supported by the subscription image route.",
+        ));
+    }
+    if body
+        .get("tools")
+        .is_some_and(|tools| tools.as_array().is_none_or(|tools| !tools.is_empty()))
+    {
+        return Err(ApiError::invalid(
+            "Tools are not supported by the subscription image route.",
+        ));
+    }
+    let contents = body
+        .get("contents")
+        .and_then(Value::as_array)
+        .filter(|contents| !contents.is_empty())
+        .ok_or_else(|| ApiError::invalid("Image generation requires non-empty contents."))?;
+    let has_prompt = contents.iter().any(|content| {
+        content
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+            })
+    });
+    if !has_prompt {
+        return Err(ApiError::invalid(
+            "Image generation requires at least one non-empty text prompt.",
+        ));
+    }
+
+    let config = body.get("generationConfig");
+    if config.is_some_and(|value| !value.is_object()) {
+        return Err(ApiError::invalid(
+            "The generationConfig field must be a JSON object.",
+        ));
+    }
+    if let Some(config) = config.and_then(Value::as_object) {
+        if let Some(max_output_tokens) = config.get("maxOutputTokens") {
+            let max_output_tokens = max_output_tokens.as_u64().ok_or_else(|| {
+                ApiError::invalid("generationConfig.maxOutputTokens must be an integer.")
+            })?;
+            if !(1..=model.output_token_limit).contains(&max_output_tokens) {
+                return Err(ApiError::invalid(
+                    "generationConfig.maxOutputTokens is outside the image model limit.",
+                ));
+            }
+        }
+        if config
+            .get("candidateCount")
+            .is_some_and(|count| count.as_u64() != Some(1))
+        {
+            return Err(ApiError::invalid(
+                "Gemini 3.1 Flash Image supports candidateCount=1 only.",
+            ));
+        }
+        for unsupported in [
+            "thinkingConfig",
+            "responseModalities",
+            "responseMimeType",
+            "responseSchema",
+            "responseJsonSchema",
+            "responseLogprobs",
+            "logprobs",
+        ] {
+            if config.contains_key(unsupported) {
+                return Err(ApiError::invalid(
+                    "This generationConfig control is not supported by the subscription image route.",
+                ));
+            }
+        }
+        if let Some(image_config) = config.get("imageConfig") {
+            let image_config = image_config.as_object().ok_or_else(|| {
+                ApiError::invalid("generationConfig.imageConfig must be a JSON object.")
+            })?;
+            if image_config
+                .keys()
+                .any(|name| !matches!(name.as_str(), "aspectRatio" | "imageSize"))
+            {
+                return Err(ApiError::invalid(
+                    "The imageConfig contains an unsupported field.",
+                ));
+            }
+            if let Some(ratio) = image_config.get("aspectRatio") {
+                let ratio = ratio.as_str().ok_or_else(|| {
+                    ApiError::invalid("imageConfig.aspectRatio must be a string.")
+                })?;
+                if !IMAGE_ASPECT_RATIOS.contains(&ratio) {
+                    return Err(ApiError::invalid(
+                        "The requested image aspect ratio is not supported.",
+                    ));
+                }
+            }
+            if let Some(size) = image_config.get("imageSize") {
+                let size = size
+                    .as_str()
+                    .ok_or_else(|| ApiError::invalid("imageConfig.imageSize must be a string."))?;
+                if !matches!(size, "0.5K" | "1K" | "2K" | "4K") {
+                    return Err(ApiError::invalid(
+                        "imageConfig.imageSize must be one of 0.5K, 1K, 2K, or 4K.",
+                    ));
+                }
+            }
+        }
+    }
+
+    let inline_images = inline_image_data(body).collect::<Vec<_>>();
+    if inline_images.len() > 14 {
+        return Err(ApiError::invalid(
+            "Gemini 3.1 Flash Image accepts at most 14 reference images.",
+        ));
+    }
+    let mut decoded_bytes = 0usize;
+    for inline in inline_images {
+        let inline = inline
+            .as_object()
+            .ok_or_else(|| ApiError::invalid("The inlineData field must be a JSON object."))?;
+        let mime_type = inline
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::invalid("The inline image mimeType must be a string."))?;
+        let data = inline
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::invalid("The inline image data must be a base64 string."))?;
+        if !IMAGE_MIME_TYPES.contains(&mime_type) {
+            return Err(ApiError::invalid(
+                "The inline image MIME type is not supported.",
+            ));
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| ApiError::invalid("The inline image data is not valid base64."))?;
+        if decoded.is_empty() {
+            return Err(ApiError::invalid(
+                "The inline image data must not be empty.",
+            ));
+        }
+        decoded_bytes = decoded_bytes.saturating_add(decoded.len());
+        if decoded_bytes > GEMINI_IMAGE_REQUEST_BODY_LIMIT {
+            return Err(ApiError::invalid("The inline image data is too large."));
+        }
+    }
+    if contents.iter().any(|content| {
+        content
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(|part| part.get("fileData").is_some()))
+    }) {
+        return Err(ApiError::invalid(
+            "fileData is not supported because subscription rotation cannot preserve project-scoped files.",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_generation_request(body: &Value) -> Result<(), ApiError> {
@@ -785,9 +1060,18 @@ fn validate_generation_request(body: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_native_request(operation: Operation, body: &Value) -> Result<(), ApiError> {
+fn validate_native_request(
+    operation: Operation,
+    body: &Value,
+    model: &GeminiModel,
+) -> Result<(), ApiError> {
     if operation != Operation::CountTokens {
-        return validate_generation_request(body);
+        validate_generation_request(body)?;
+        return if model.is_image_generation() {
+            validate_image_generation_request(body, model)
+        } else {
+            Ok(())
+        };
     }
     let object = body
         .as_object()
@@ -799,11 +1083,25 @@ fn validate_native_request(operation: Operation, body: &Value) -> Result<(), Api
         ));
     }
     match nested {
-        Some(request) if request.is_object() => validate_generation_request(request),
+        Some(request) if request.is_object() => {
+            validate_generation_request(request)?;
+            if model.is_image_generation() {
+                validate_image_generation_request(request, model)
+            } else {
+                Ok(())
+            }
+        }
         Some(_) => Err(ApiError::invalid(
             "The generateContentRequest field must be a JSON object.",
         )),
-        None => validate_generation_request(body),
+        None => {
+            validate_generation_request(body)?;
+            if model.is_image_generation() {
+                validate_image_generation_request(body, model)
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -883,8 +1181,9 @@ fn wrap_code_assist_request(
                     request.insert(field.to_string(), value.clone());
                 }
             }
+            let image_generation = model == "gemini-3.1-flash-image";
             if oauth_kind == OAuthKind::Antigravity {
-                adapt_antigravity_generation_request(&mut request);
+                adapt_antigravity_generation_request(&mut request, image_generation);
             }
             if let Some(session_id) = session_id {
                 let field = match oauth_kind {
@@ -899,7 +1198,7 @@ fn wrap_code_assist_request(
                     "project": project,
                     "request": request,
                     "userAgent": "antigravity",
-                    "requestType": "agent",
+                    "requestType": if image_generation { "image_gen" } else { "agent" },
                     "requestId": request_id.unwrap_or_default(),
                 }),
                 OAuthKind::LegacyGeminiCli => json!({
@@ -1219,10 +1518,12 @@ fn account_stream_start_chunk(
     observed_bytes: &mut usize,
     observed_chunks: &mut usize,
     chunk_bytes: usize,
+    max_bytes: usize,
+    max_chunks: usize,
 ) -> Result<(), ()> {
     *observed_bytes = observed_bytes.saturating_add(chunk_bytes);
     *observed_chunks = observed_chunks.saturating_add(1);
-    if *observed_bytes > STREAM_START_MAX_BYTES || *observed_chunks > STREAM_START_MAX_CHUNKS {
+    if *observed_bytes > max_bytes || *observed_chunks > max_chunks {
         return Err(());
     }
     Ok(())
@@ -1369,6 +1670,8 @@ async fn stream_response(
                             &mut private_bytes,
                             &mut private_chunks,
                             chunk_len,
+                            STREAM_START_MAX_BYTES,
+                            STREAM_START_MAX_CHUNKS,
                         )
                         .is_err()
                         {
@@ -1647,8 +1950,13 @@ async fn api_inner(
         route.operation == Operation::StreamGenerate,
     )?;
 
+    let request_body_limit = if model.is_image_generation() {
+        GEMINI_IMAGE_REQUEST_BODY_LIMIT
+    } else {
+        GEMINI_TEXT_REQUEST_BODY_LIMIT
+    };
     let (parts, body) = request.into_parts();
-    let body = to_bytes(body, GEMINI_BODY_LIMIT)
+    let body = to_bytes(body, request_body_limit)
         .await
         .map_err(|_| ApiError::invalid("The request body is invalid or too large."))?;
     let mut value: Value = serde_json::from_slice(&body)
@@ -1660,7 +1968,7 @@ async fn api_inner(
     // like the real API: normalize to camelCase up front so validation, reservation, the upstream
     // wrapper and settlement all see a single canonical shape instead of silently dropping fields.
     canonicalize_native_request(&mut value);
-    validate_native_request(route.operation, &value)?;
+    validate_native_request(route.operation, &value, &model)?;
     let wire_model_id = wire_model_for_request(route.operation, &model, &value)?;
     let affinity_input = pending.affinity_scope().and_then(|scope| {
         app.affinity
@@ -1696,14 +2004,24 @@ async fn api_inner(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
     ) {
-        let (input, output, grounding) =
+        let (input, output, image_output, grounding) =
             generation_controls(&value, &model, gateway.config().reserve_overhead_tokens);
         let (admission, effective_output) = pending
-            .reserve(&app, &model, input, output, grounding)
+            .reserve(
+                &app,
+                &model,
+                input,
+                output,
+                image_output,
+                grounding,
+                !model.is_image_generation(),
+            )
             .await?;
         // Always write the validated ceiling: this also clamps a hostile value above the model
         // limit (and normalizes zero) even when the account can afford the complete request.
-        cap_generation_output(&mut value, effective_output)?;
+        if !model.is_image_generation() {
+            cap_generation_output(&mut value, effective_output)?;
+        }
         admission
     } else {
         pending.without_reserve()
@@ -1841,6 +2159,11 @@ async fn api_inner(
         if status.is_success() && route.operation == Operation::StreamGenerate {
             let mut stream = response.bytes_stream();
             let mut translator = SseTranslator::new(framing, &model.id);
+            let (stream_start_max_bytes, stream_start_max_chunks) = if model.is_image_generation() {
+                (GEMINI_BODY_LIMIT, IMAGE_STREAM_START_MAX_CHUNKS)
+            } else {
+                (STREAM_START_MAX_BYTES, STREAM_START_MAX_CHUNKS)
+            };
             // Do not return 200 until at least one public native event exists, because retries are
             // forbidden after delivery. Bound this private prelude independently from per-event
             // framing: an upstream that emits endless credit/accounting events (or empty chunks)
@@ -1855,6 +2178,8 @@ async fn api_inner(
                                 &mut observed_bytes,
                                 &mut observed_chunks,
                                 chunk.len(),
+                                stream_start_max_bytes,
+                                stream_start_max_chunks,
                             )?;
                             match translator.push(&chunk) {
                                 Ok(translated) if translated.is_empty() => {}
@@ -2558,6 +2883,7 @@ mod tests {
                     cached_input: 1,
                     cached_audio_input: 1,
                     output: 1,
+                    image_output: 0,
                     long_context_threshold: u64::MAX,
                     long_input: 1,
                     long_audio_input: 1,
@@ -2946,6 +3272,100 @@ mod tests {
     }
 
     #[test]
+    fn nano_banana_request_is_validated_and_wrapped_as_image_generation() {
+        let model = catalog_model("gemini-3.1-flash-image");
+        let mut native = json!({
+            "contents": [{
+                "parts": [
+                    {"text": "Draw a tiny banana astronaut"},
+                    {"inline_data": {"mime_type": "image/png", "data": "aGVsbG8="}}
+                ]
+            }],
+            "generation_config": {
+                "candidate_count": 1,
+                "image_config": {"aspectRatio": "16:9", "imageSize": "4K"}
+            }
+        });
+        canonicalize_native_request(&mut native);
+        validate_native_request(Operation::Generate, &native, &model).unwrap();
+        assert_eq!(image_output_tokens(&native), 2_520);
+        let (estimated_input, _, image_output, _) = generation_controls(&native, &model, 0);
+        assert_eq!(image_output, 2_520);
+        assert!(estimated_input < native.to_string().len() as u64 + 2_240);
+
+        let wrapped = wrap_code_assist_request(
+            Operation::Generate,
+            OAuthKind::Antigravity,
+            &model.id,
+            "paid-project",
+            &native,
+            "prompt-id",
+            Some("session-id"),
+            Some("request-id"),
+        )
+        .unwrap();
+        let wrapped: Value = serde_json::from_slice(&wrapped).unwrap();
+        assert_eq!(wrapped["requestType"], "image_gen");
+        assert_eq!(wrapped["model"], "gemini-3.1-flash-image");
+        assert_eq!(wrapped["request"]["contents"][0]["role"], "user");
+        assert_eq!(
+            wrapped["request"]["generationConfig"]["imageConfig"]["imageSize"],
+            "4K"
+        );
+        assert_eq!(wrapped["request"]["generationConfig"]["candidateCount"], 1);
+    }
+
+    #[test]
+    fn nano_banana_defaults_are_explicit_and_unsupported_controls_fail_closed() {
+        let model = catalog_model("gemini-3.1-flash-image");
+        let native = json!({"contents": [{"parts": [{"text": "Draw a banana"}]}]});
+        validate_native_request(Operation::Generate, &native, &model).unwrap();
+        let wrapped = wrap_code_assist_request(
+            Operation::Generate,
+            OAuthKind::Antigravity,
+            &model.id,
+            "paid-project",
+            &native,
+            "prompt-id",
+            Some("session-id"),
+            Some("request-id"),
+        )
+        .unwrap();
+        let wrapped: Value = serde_json::from_slice(&wrapped).unwrap();
+        assert_eq!(
+            wrapped["request"]["generationConfig"]["imageConfig"],
+            json!({"aspectRatio": "1:1", "imageSize": "1K"})
+        );
+
+        for invalid in [
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"candidateCount": 2}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 0}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 32_769}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": "100"}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"imageConfig": {"imageSize": "8K"}}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"thinkingConfig": {}}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "tools": [{"googleSearch": {}}]}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "tools": {}}),
+            json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": {"mimeType": "image/png", "data": "not base64"}}]}]}),
+            json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": {"data": "aGVsbG8="}}]}]}),
+            json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": {"mimeType": "image/png"}}]}]}),
+            json!({"contents": [{"parts": [{"text": "x"}, {"inlineData": "aGVsbG8="}]}]}),
+        ] {
+            assert!(validate_native_request(Operation::Generate, &invalid, &model).is_err());
+        }
+
+        let references = (0..15)
+            .map(|_| json!({"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}))
+            .collect::<Vec<_>>();
+        let too_many_references = json!({
+            "contents": [{"parts": [{"text": "x"}]} , {"parts": references}]
+        });
+        assert!(
+            validate_native_request(Operation::Generate, &too_many_references, &model).is_err()
+        );
+    }
+
+    #[test]
     fn model_value_is_native_shaped() {
         let model = GeminiModel {
             id: "gemini-2.5-flash".to_string(),
@@ -2958,6 +3378,7 @@ mod tests {
                 cached_input: 1,
                 cached_audio_input: 1,
                 output: 1,
+                image_output: 0,
                 long_context_threshold: u64::MAX,
                 long_input: 1,
                 long_audio_input: 1,
@@ -3038,15 +3459,54 @@ mod tests {
     fn private_stream_prelude_has_independent_byte_and_chunk_bounds() {
         let mut bytes = 0usize;
         let mut chunks = 0usize;
-        account_stream_start_chunk(&mut bytes, &mut chunks, STREAM_START_MAX_BYTES).unwrap();
-        assert!(account_stream_start_chunk(&mut bytes, &mut chunks, 1).is_err());
+        account_stream_start_chunk(
+            &mut bytes,
+            &mut chunks,
+            STREAM_START_MAX_BYTES,
+            STREAM_START_MAX_BYTES,
+            STREAM_START_MAX_CHUNKS,
+        )
+        .unwrap();
+        assert!(account_stream_start_chunk(
+            &mut bytes,
+            &mut chunks,
+            1,
+            STREAM_START_MAX_BYTES,
+            STREAM_START_MAX_CHUNKS,
+        )
+        .is_err());
 
         let mut bytes = 0usize;
         let mut chunks = 0usize;
         for _ in 0..STREAM_START_MAX_CHUNKS {
-            account_stream_start_chunk(&mut bytes, &mut chunks, 0).unwrap();
+            account_stream_start_chunk(
+                &mut bytes,
+                &mut chunks,
+                0,
+                STREAM_START_MAX_BYTES,
+                STREAM_START_MAX_CHUNKS,
+            )
+            .unwrap();
         }
-        assert!(account_stream_start_chunk(&mut bytes, &mut chunks, 0).is_err());
+        assert!(account_stream_start_chunk(
+            &mut bytes,
+            &mut chunks,
+            0,
+            STREAM_START_MAX_BYTES,
+            STREAM_START_MAX_CHUNKS,
+        )
+        .is_err());
+
+        let mut image_bytes = 0usize;
+        let mut image_chunks = 0usize;
+        account_stream_start_chunk(
+            &mut image_bytes,
+            &mut image_chunks,
+            STREAM_START_MAX_BYTES + 1,
+            GEMINI_BODY_LIMIT,
+            IMAGE_STREAM_START_MAX_CHUNKS,
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -3987,12 +4447,14 @@ mod tests {
             &json!({
                 "contents": [],
                 "generateContentRequest": {"contents": []}
-            })
+            }),
+            &catalog_model("gemini-2.5-flash")
         )
         .is_err());
         assert!(validate_native_request(
             Operation::CountTokens,
-            &json!({"generateContentRequest": []})
+            &json!({"generateContentRequest": []}),
+            &catalog_model("gemini-2.5-flash")
         )
         .is_err());
         for body in [
@@ -4000,11 +4462,17 @@ mod tests {
             json!({"contents": [], "store": false}),
             json!({"generateContentRequest": {"contents": [], "store": true}}),
         ] {
-            assert!(validate_native_request(Operation::CountTokens, &body).is_err());
+            assert!(validate_native_request(
+                Operation::CountTokens,
+                &body,
+                &catalog_model("gemini-2.5-flash"),
+            )
+            .is_err());
         }
         assert!(validate_native_request(
             Operation::Generate,
-            &json!({"contents": [], "serviceTier": "standard"})
+            &json!({"contents": [], "serviceTier": "standard"}),
+            &catalog_model("gemini-2.5-flash")
         )
         .is_err());
     }
