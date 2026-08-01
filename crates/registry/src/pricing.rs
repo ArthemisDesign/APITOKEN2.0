@@ -6,11 +6,17 @@
 //! policy and the independently moving admission heads. Nothing here participates in live request
 //! admission, charging, key issuance, HTTP, policy resolution, or production shadow execution.
 
+mod policy;
 pub(crate) mod postgres;
 mod shadow;
 mod snapshots;
 mod sqlite;
 
+pub(crate) use policy::PolicySnapshotLookup;
+pub use policy::{
+    PolicyAdmissionSnapshot, PolicyAdmissionSnapshotInput, PolicyReserveConflict,
+    PolicyReserveOutcome, PolicyReserveReceipt, POLICY_ADMISSION_SNAPSHOT_SCHEMA_VERSION,
+};
 pub(crate) use shadow::PricingShadowStorageRow;
 pub use shadow::{
     PricingRuntimeCapabilityEvidence, PricingRuntimeManifestEvidence,
@@ -34,7 +40,8 @@ pub use snapshots::{
     LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION, PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS,
 };
 pub(crate) use sqlite::{
-    sqlite_insert_legacy_scalar_admission_snapshot, sqlite_legacy_scalar_snapshot_lookup,
+    sqlite_insert_legacy_scalar_admission_snapshot, sqlite_insert_policy_admission_snapshot,
+    sqlite_legacy_scalar_snapshot_lookup, sqlite_policy_snapshot_lookup,
 };
 
 pub use sqlite::{
@@ -42,10 +49,10 @@ pub use sqlite::{
     sqlite_activate_pricing_catalog, sqlite_activate_provider_switches,
     sqlite_active_account_policy, sqlite_active_pricing_catalog, sqlite_active_provider_switches,
     sqlite_insert_pricing_shadow_admission_evaluation, sqlite_legacy_scalar_admission_snapshot,
-    sqlite_prepare_account_policy, sqlite_prepare_pricing_catalog,
-    sqlite_prepare_provider_switches, sqlite_pricing_catalog_by_generation,
-    sqlite_pricing_read_bundle, sqlite_pricing_shadow_admission_evaluation,
-    sqlite_provider_switches_by_generation,
+    sqlite_policy_admission_snapshot, sqlite_prepare_account_policy,
+    sqlite_prepare_pricing_catalog, sqlite_prepare_provider_switches,
+    sqlite_pricing_catalog_by_generation, sqlite_pricing_read_bundle,
+    sqlite_pricing_shadow_admission_evaluation, sqlite_provider_switches_by_generation,
 };
 
 use anyhow::{bail, Result};
@@ -707,10 +714,15 @@ pub fn validate_provider_switches(spec: &ProviderSwitchSpec) -> Result<()> {
 }
 
 pub fn validate_account_policy_binding(binding: &AccountPolicyBindingSpec) -> Result<()> {
-    if binding.policy_enforcement == PolicyEnforcement::Strict
-        || binding.funding_enforcement == FundingEnforcement::Strict
-    {
-        bail!("strict enforcement is unavailable during Stage 3A");
+    let policy_strict = binding.policy_enforcement == PolicyEnforcement::Strict;
+    let funding_strict = binding.funding_enforcement == FundingEnforcement::Strict;
+    if policy_strict || funding_strict {
+        if !policy_strict
+            || !funding_strict
+            || binding.reconciliation_state != ReconciliationState::Verified
+        {
+            bail!("strict policy and funding enforcement require one verified atomic binding");
+        }
     }
     Ok(())
 }

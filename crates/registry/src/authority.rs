@@ -74,10 +74,38 @@ impl Authority {
             Self::Postgres(pg) => Ok(Some(pg.claim_instance(instance_id, ttl_secs)?)),
         }
     }
+    pub fn claim_instance_with_pricing_manifest(
+        &mut self,
+        instance_id: &str,
+        ttl_secs: i64,
+        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<Option<Owner>> {
+        match self {
+            Self::Sqlite(_) => Ok(None),
+            Self::Postgres(pg) => Ok(Some(pg.claim_instance_with_pricing_manifest(
+                instance_id,
+                ttl_secs,
+                manifest,
+            )?)),
+        }
+    }
     pub fn heartbeat_instance(&mut self, owner: &Owner, ttl_secs: i64) -> Result<bool> {
         match self {
             Self::Postgres(pg) => pg.heartbeat_instance(owner, ttl_secs),
             Self::Sqlite(_) => Ok(true),
+        }
+    }
+    pub fn heartbeat_instance_with_pricing_manifest(
+        &mut self,
+        owner: &Owner,
+        ttl_secs: i64,
+        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<bool> {
+        match self {
+            Self::Sqlite(_) => Ok(true),
+            Self::Postgres(pg) => {
+                pg.heartbeat_instance_with_pricing_manifest(owner, ttl_secs, manifest)
+            }
         }
     }
     pub fn load_active(&mut self, fleet: Option<&str>) -> Result<Vec<Sub>> {
@@ -295,6 +323,35 @@ impl Authority {
             }
         }
     }
+    pub fn key_issue_with_policy_ack(
+        &mut self,
+        key: &str,
+        account_id: &str,
+        label: Option<&str>,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<()> {
+        match self {
+            Self::Sqlite(c) => crate::key_issue_with_policy_ack(
+                c,
+                key,
+                account_id,
+                label,
+                spend_limit_nano,
+                expires_ts,
+                activation_policy_ack,
+            ),
+            Self::Postgres(pg) => pg.key_issue_with_policy_ack(
+                key,
+                account_id,
+                label,
+                spend_limit_nano,
+                expires_ts,
+                activation_policy_ack,
+            ),
+        }
+    }
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
         match self {
             Self::Sqlite(c) => crate::key_account(c, key),
@@ -325,10 +382,43 @@ impl Authority {
             Self::Postgres(pg) => pg.key_set_status(key, status),
         }
     }
+    pub fn key_set_status_with_policy_ack(
+        &mut self,
+        key: &str,
+        status: &str,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<usize> {
+        match self {
+            Self::Sqlite(c) => {
+                crate::key_set_status_with_policy_ack(c, key, status, activation_policy_ack)
+            }
+            Self::Postgres(pg) => {
+                pg.key_set_status_with_policy_ack(key, status, activation_policy_ack)
+            }
+        }
+    }
     pub fn key_set_status_by_id(&mut self, key_id: &str, status: &str) -> Result<usize> {
         match self {
             Self::Sqlite(c) => crate::key_set_status_by_id(c, key_id, status),
             Self::Postgres(pg) => pg.key_set_status_by_id(key_id, status),
+        }
+    }
+    pub fn key_set_status_by_id_with_policy_ack(
+        &mut self,
+        key_id: &str,
+        status: &str,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<usize> {
+        match self {
+            Self::Sqlite(c) => crate::key_set_status_by_id_with_policy_ack(
+                c,
+                key_id,
+                status,
+                activation_policy_ack,
+            ),
+            Self::Postgres(pg) => {
+                pg.key_set_status_by_id_with_policy_ack(key_id, status, activation_policy_ack)
+            }
         }
     }
     pub fn key_set_label_by_id(&mut self, key_id: &str, label: &str) -> Result<usize> {

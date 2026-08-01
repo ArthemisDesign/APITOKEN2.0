@@ -1498,6 +1498,12 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
     install_sqlite_runtime_pin_guards(conn)?;
 
     ensure_sqlite_column(conn, "billing_settlement_outbox", "provider", "TEXT")?;
+    ensure_sqlite_column(
+        conn,
+        "billing_settlement_outbox",
+        "disposition",
+        "TEXT NOT NULL DEFAULT 'settle'",
+    )?;
     ensure_sqlite_column(conn, "ledger", "provider", "TEXT")?;
     ensure_sqlite_column(conn, "ledger", "official_nano", "INTEGER")?;
     ensure_sqlite_column(conn, "ledger", "request_id", "TEXT")?;
@@ -2294,6 +2300,25 @@ pub enum KeyPolicyUpdate {
     ExpiryNotFuture,
 }
 
+/// Exact immutable policy identity acknowledged before a key becomes usable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyActivationPolicyAck {
+    pub effective_policy_version: i64,
+    pub policy_digest: String,
+}
+
+impl KeyActivationPolicyAck {
+    pub fn validate(&self) -> Result<()> {
+        if self.effective_policy_version <= 0
+            || self.policy_digest.is_empty()
+            || self.policy_digest.trim() != self.policy_digest
+        {
+            anyhow::bail!("invalid key activation policy ACK identity");
+        }
+        Ok(())
+    }
+}
+
 /// Выпустить ключ ПОД аккаунт (баланс — на аккаунте, ключ лишь ссылается). `label` — имя ключа.
 pub fn key_issue(
     conn: &Connection,
@@ -2312,15 +2337,92 @@ pub fn key_issue_with_policy(
     spend_limit_nano: Option<i64>,
     expires_ts: Option<i64>,
 ) -> Result<()> {
+    key_issue_with_policy_ack(
+        conn,
+        key,
+        account_id,
+        label,
+        spend_limit_nano,
+        expires_ts,
+        None,
+    )
+}
+
+pub fn key_issue_with_policy_ack(
+    conn: &Connection,
+    key: &str,
+    account_id: &str,
+    label: Option<&str>,
+    spend_limit_nano: Option<i64>,
+    expires_ts: Option<i64>,
+    activation_policy_ack: Option<&KeyActivationPolicyAck>,
+) -> Result<()> {
     if key.trim().is_empty() || account_id.trim().is_empty() {
         anyhow::bail!("key and account id must not be empty");
     }
-    let changed = conn.execute(
+    activation_policy_ack
+        .map(KeyActivationPolicyAck::validate)
+        .transpose()?;
+    let tx = conn.unchecked_transaction()?;
+    let policy_state = tx.query_row(
+        "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
+           FROM account_policy_bindings binding
+           LEFT JOIN account_policy_versions policy
+             ON policy.account_id=binding.account_id
+            AND policy.effective_version=binding.active_effective_version
+          WHERE binding.account_id=?1",
+        rusqlite::params![account_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    );
+    let policy_state = match policy_state {
+        Ok(state) => Some(state),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let strict = policy_state
+        .as_ref()
+        .is_some_and(|state| state.0 == "strict");
+    let ack_matches = activation_policy_ack.is_some_and(|ack| {
+        policy_state.as_ref().is_some_and(|state| {
+            state.1 == Some(ack.effective_policy_version)
+                && state.2.as_deref() == Some(ack.policy_digest.as_str())
+        })
+    });
+    if activation_policy_ack.is_some() && !ack_matches {
+        anyhow::bail!("key activation policy ACK does not match the exact active policy");
+    }
+    if strict && !ack_matches {
+        anyhow::bail!("strict key activation requires the exact active policy ACK");
+    }
+    let ack_version = activation_policy_ack.map(|ack| ack.effective_policy_version);
+    let ack_digest = activation_policy_ack.map(|ack| ack.policy_digest.as_str());
+    let ack_ts = activation_policy_ack.map(|_| now());
+    let changed = tx.execute(
         "INSERT INTO api_keys(key, key_id, account_id, label, spent_nano, reserved_nano, \
-         spend_limit_nano, expires_ts, status, created_ts, created) \
-         VALUES(?1, 'key_' || lower(hex(randomblob(16))), ?2, ?3, 0, 0, ?4, ?5, 'active', ?6, ?7) \
+         spend_limit_nano,expires_ts,status,created_ts,created,activation_policy_effective_version,
+         activation_policy_digest,activation_policy_ack_ts) \
+         VALUES(?1,'key_' || lower(hex(randomblob(16))),?2,?3,0,0,?4,?5,'active',?6,?7,
+                ?8,?9,?10) \
          ON CONFLICT(key) DO UPDATE SET label=excluded.label, \
-         spend_limit_nano=excluded.spend_limit_nano, expires_ts=excluded.expires_ts \
+         spend_limit_nano=excluded.spend_limit_nano,expires_ts=excluded.expires_ts,
+         activation_policy_effective_version=COALESCE(
+             excluded.activation_policy_effective_version,
+             api_keys.activation_policy_effective_version
+         ),
+         activation_policy_digest=COALESCE(
+             excluded.activation_policy_digest,
+             api_keys.activation_policy_digest
+         ),
+         activation_policy_ack_ts=COALESCE(
+             excluded.activation_policy_ack_ts,
+             api_keys.activation_policy_ack_ts
+         ) \
          WHERE api_keys.account_id=excluded.account_id",
         rusqlite::params![
             key,
@@ -2329,12 +2431,16 @@ pub fn key_issue_with_policy(
             spend_limit_nano,
             expires_ts,
             now(),
-            chrono_like(now())
+            chrono_like(now()),
+            ack_version,
+            ack_digest,
+            ack_ts,
         ],
     )?;
     if changed == 0 {
         anyhow::bail!("key is already owned by another account");
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -2370,11 +2476,29 @@ pub struct KeyAuth {
     pub spend_limit_nano: Option<i64>,
     pub expires_ts: Option<i64>,
     pub active: bool, // ключ активен И аккаунт активен
+    pub policy_enforcement: Option<pricing::PolicyEnforcement>,
+    pub funding_enforcement: Option<pricing::FundingEnforcement>,
+    pub reconciliation_state: Option<pricing::ReconciliationState>,
+    pub active_policy_effective_version: Option<i64>,
+    pub active_policy_digest: Option<String>,
+    pub activation_policy_effective_version: Option<i64>,
+    pub activation_policy_digest: Option<String>,
+    pub activation_policy_ack_ts: Option<i64>,
+    pub policy_ack_current: bool,
+    pub paid_available_nano: Option<i64>,
+    pub track_available_nano: Option<i64>,
 }
 
 impl KeyAuth {
+    pub fn strict_policy(&self) -> bool {
+        self.policy_enforcement == Some(pricing::PolicyEnforcement::Strict)
+            || self.funding_enforcement == Some(pricing::FundingEnforcement::Strict)
+    }
+
     pub fn active_at(&self, ts: i64) -> bool {
-        self.active && self.expires_ts.is_none_or(|expires| expires > ts)
+        self.active
+            && self.expires_ts.is_none_or(|expires| expires > ts)
+            && (!self.strict_policy() || self.policy_ack_current)
     }
 }
 
@@ -2483,7 +2607,21 @@ pub fn account_topup(
     if matches!(reference, Some(r) if r.trim().is_empty()) {
         anyhow::bail!("monetary idempotency reference must not be empty");
     }
+    let allocation_amount = amount_nano
+        .checked_abs()
+        .context("top-up amount cannot be represented as a funding allocation")?;
     let tx = conn.unchecked_transaction()?;
+    let strict_funding: bool = tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM account_policy_bindings
+              WHERE account_id=?1
+                AND policy_enforcement='strict'
+                AND funding_enforcement='strict'
+                AND reconciliation_state='verified'
+         )",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )?;
     // Начисляем баланс...
     let bal = match tx.query_row(
         "UPDATE accounts SET balance_nano = balance_nano + ?1 WHERE id = ?2 RETURNING balance_nano",
@@ -2497,6 +2635,29 @@ pub fn account_topup(
         Err(e) => return Err(e.into()),
     };
     let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
+    let strict_bucket = if strict_funding {
+        let source_ref = reference.unwrap_or("");
+        Some(tx.query_row(
+            "INSERT INTO funding_buckets(
+                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts)
+             VALUES('fund_' || lower(hex(randomblob(16))),?1,'paid',?2,'any',?3,0,0,1,
+                    CASE WHEN ?3>0 THEN 'active' ELSE 'exhausted' END,?4,?4)
+             ON CONFLICT(account_id,source_type,source_ref) DO UPDATE SET
+                 balance_nano=funding_buckets.balance_nano+excluded.balance_nano,
+                 version=funding_buckets.version+1,updated_ts=excluded.updated_ts,
+                 status=CASE
+                   WHEN funding_buckets.status='retired' THEN funding_buckets.status
+                   WHEN funding_buckets.balance_nano+excluded.balance_nano>0 THEN 'active'
+                   ELSE 'exhausted'
+                 END
+             RETURNING bucket_id,version",
+            rusqlite::params![id, source_ref, amount_nano, now()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?)
+    } else {
+        None
+    };
     // ...и пишем ledger. UNIQUE откатывает предварительный UPDATE. После конфликта считаем операцию
     // идемпотентным повтором ТОЛЬКО при точном совпадении account + amount + kind.
     match tx.execute(
@@ -2505,6 +2666,23 @@ pub fn account_topup(
         rusqlite::params![id, kind, amount_nano, reference, bal, now()],
     ) {
         Ok(_) => {
+            if let Some((bucket_id, bucket_version)) = strict_bucket {
+                let ledger_id = tx.last_insert_rowid();
+                tx.execute(
+                    "INSERT INTO ledger_funding_allocations(
+                         ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                         direction,amount_nano)
+                     VALUES(?1,?2,?3,'paid',?4,?5,?6)",
+                    rusqlite::params![
+                        ledger_id,
+                        id,
+                        bucket_id,
+                        bucket_version,
+                        if amount_nano >= 0 { "credit" } else { "debit" },
+                        allocation_amount,
+                    ],
+                )?;
+            }
             tx.commit()?;
             Ok(Some(bal))
         }
@@ -2743,29 +2921,100 @@ pub fn account_settle_in(
 
 /// Резолв ключа в аккаунт для авторизации запроса (JOIN api_keys→accounts).
 pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
-    match conn.query_row(
+    let row = conn.query_row(
         "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
          k.spend_limit_nano, k.expires_ts, \
-         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active') \
-         FROM api_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key = ?1",
+         (COALESCE(k.status,'active')='active' AND COALESCE(a.status,'active')='active'),
+         binding.policy_enforcement,binding.funding_enforcement,binding.reconciliation_state,
+         binding.active_effective_version,policy.content_digest,
+         k.activation_policy_effective_version,k.activation_policy_digest,
+         k.activation_policy_ack_ts,
+         COALESCE(
+             k.activation_policy_effective_version=binding.active_effective_version
+             AND k.activation_policy_digest=policy.content_digest
+             AND k.activation_policy_ack_ts IS NOT NULL,
+             0
+         ),
+         CASE WHEN binding.funding_enforcement='strict' THEN (
+             SELECT COALESCE(SUM(bucket.balance_nano),0)
+               FROM funding_buckets bucket
+              WHERE bucket.account_id=a.id AND bucket.eligibility='any'
+         ) END,
+         CASE WHEN binding.funding_enforcement='strict' THEN (
+             SELECT COALESCE(SUM(bucket.balance_nano),0)
+               FROM funding_buckets bucket
+              WHERE bucket.account_id=a.id AND bucket.eligibility IN ('track','any')
+         ) END \
+         FROM api_keys k
+         JOIN accounts a ON a.id = k.account_id
+         LEFT JOIN account_policy_bindings binding ON binding.account_id=a.id
+         LEFT JOIN account_policy_versions policy
+           ON policy.account_id=binding.account_id
+          AND policy.effective_version=binding.active_effective_version
+         WHERE k.key = ?1",
         rusqlite::params![key],
         |r| {
-            Ok(KeyAuth {
-                account_id: r.get(0)?,
-                mult_bp: r.get(1)?,
-                balance_nano: r.get(2)?,
-                spent_nano: r.get(3)?,
-                reserved_nano: r.get(4)?,
-                spend_limit_nano: r.get(5)?,
-                expires_ts: r.get(6)?,
-                active: r.get::<_, i64>(7)? != 0,
-            })
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+                r.get::<_, i64>(7)? != 0,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<i64>>(11)?,
+                r.get::<_, Option<String>>(12)?,
+                r.get::<_, Option<i64>>(13)?,
+                r.get::<_, Option<String>>(14)?,
+                r.get::<_, Option<i64>>(15)?,
+                r.get::<_, i64>(16)? != 0,
+                r.get::<_, Option<i64>>(17)?,
+                r.get::<_, Option<i64>>(18)?,
+            ))
         },
-    ) {
-        Ok(a) => Ok(Some(a)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    );
+    let row = match row {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(Some(KeyAuth {
+        account_id: row.0,
+        mult_bp: row.1,
+        balance_nano: row.2,
+        spent_nano: row.3,
+        reserved_nano: row.4,
+        spend_limit_nano: row.5,
+        expires_ts: row.6,
+        active: row.7,
+        policy_enforcement: row
+            .8
+            .as_deref()
+            .map(pricing::PolicyEnforcement::from_db)
+            .transpose()?,
+        funding_enforcement: row
+            .9
+            .as_deref()
+            .map(pricing::FundingEnforcement::from_db)
+            .transpose()?,
+        reconciliation_state: row
+            .10
+            .as_deref()
+            .map(pricing::ReconciliationState::from_db)
+            .transpose()?,
+        active_policy_effective_version: row.11,
+        active_policy_digest: row.12,
+        activation_policy_effective_version: row.13,
+        activation_policy_digest: row.14,
+        activation_policy_ack_ts: row.15,
+        policy_ack_current: row.16,
+        paid_available_nano: row.17,
+        track_available_nano: row.18,
+    }))
 }
 
 /// Консистентный ОНЛАЙН-бэкап всей БД в `out_path` через `VACUUM INTO` (best-practice для живого
@@ -3079,6 +3328,395 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
     }))
 }
 
+fn sqlite_policy_state_matches(
+    conn: &Connection,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+) -> Result<bool> {
+    let (rule_scope, rule_provider, rule_model) = snapshot.rule_scope.db_parts();
+    let (scoped_type, scoped_product, scoped_segment) = match snapshot.account_class {
+        pricing::AccountClass::B2c => ("segment", snapshot.product_id.as_str(), "b2c"),
+        pricing::AccountClass::B2b => ("segment", snapshot.product_id.as_str(), "b2b"),
+        pricing::AccountClass::OpenKeys | pricing::AccountClass::Service => {
+            ("product", snapshot.product_id.as_str(), "")
+        }
+    };
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1
+           FROM account_policy_bindings binding
+           JOIN account_policy_versions policy
+             ON policy.account_id=binding.account_id
+            AND policy.effective_version=binding.active_effective_version
+           JOIN account_policy_rules rule
+             ON rule.account_id=policy.account_id
+            AND rule.effective_version=policy.effective_version
+           JOIN pricing_catalog_versions policy_catalog
+             ON policy_catalog.product_id=policy.product_id
+            AND policy_catalog.generation=policy.catalog_generation
+           JOIN pricing_catalog_entries policy_model
+             ON policy_model.product_id=policy_catalog.product_id
+            AND policy_model.generation=policy_catalog.generation
+           JOIN provider_switch_versions policy_switches
+             ON policy_switches.generation=policy.switch_generation
+           JOIN provider_switch_entries policy_master
+             ON policy_master.generation=policy_switches.generation
+           JOIN provider_switch_entries policy_scoped
+             ON policy_scoped.generation=policy_switches.generation
+           JOIN pricing_catalog_heads catalog_head ON catalog_head.product_id=policy.product_id
+           JOIN pricing_catalog_versions catalog
+             ON catalog.product_id=catalog_head.product_id
+            AND catalog.generation=catalog_head.active_generation
+           JOIN pricing_catalog_entries admission_model
+             ON admission_model.product_id=catalog.product_id
+            AND admission_model.generation=catalog.generation
+           JOIN provider_switch_head switch_head ON switch_head.singleton=1
+           JOIN provider_switch_versions switches
+             ON switches.generation=switch_head.active_generation
+           JOIN provider_switch_entries admission_master
+             ON admission_master.generation=switches.generation
+           JOIN provider_switch_entries admission_scoped
+             ON admission_scoped.generation=switches.generation
+           WHERE binding.account_id=?1
+             AND binding.policy_enforcement='strict'
+             AND binding.funding_enforcement='strict'
+             AND binding.reconciliation_state='verified'
+             AND policy.effective_version=?2
+             AND policy.policy_id=?3
+             AND policy.policy_version=?4
+             AND policy.source_policy_digest=?5
+             AND policy.content_digest=?6
+             AND policy.product_id=?7
+             AND policy.account_class=?8
+             AND policy.catalog_generation=?9
+             AND policy.switch_generation=?10
+             AND catalog.generation=?11
+             AND catalog.content_digest=?12
+             AND switches.generation=?13
+             AND switches.content_digest=?14
+             AND rule.rule_id=?15
+             AND rule.rule_digest=?16
+             AND rule.scope_type=?17
+             AND rule.provider_id=?18
+             AND rule.canonical_model_id IS ?19
+             AND rule.pricing_mode=?20
+             AND rule.rule_origin=?21
+             AND rule.discount_bps IS ?22
+             AND rule.payable_multiplier_bp=?23
+             AND rule.track_eligible=?24
+             AND rule.retention_eligible=?25
+             AND rule.commission_eligible=?26
+             AND policy_model.provider_id=?18
+             AND policy_model.canonical_model_id=?27
+             AND policy_model.enabled=1
+             AND admission_model.provider_id=?18
+             AND admission_model.canonical_model_id=?27
+             AND admission_model.enabled=1
+             AND policy_master.provider_id=?18
+             AND policy_master.scope_type='master'
+             AND policy_master.product_id=''
+             AND policy_master.segment=''
+             AND policy_master.enabled=1
+             AND policy_scoped.provider_id=?18
+             AND policy_scoped.scope_type=?28
+             AND policy_scoped.product_id=?29
+             AND policy_scoped.segment=?30
+             AND policy_scoped.catalog_generation=policy_catalog.generation
+             AND policy_scoped.enabled=1
+             AND admission_master.provider_id=?18
+             AND admission_master.scope_type='master'
+             AND admission_master.product_id=''
+             AND admission_master.segment=''
+             AND admission_master.enabled=1
+             AND admission_scoped.provider_id=?18
+             AND admission_scoped.scope_type=?28
+             AND admission_scoped.product_id=?29
+             AND admission_scoped.segment=?30
+             AND admission_scoped.catalog_generation IN (
+                 catalog.generation, policy_catalog.generation
+             )
+             AND admission_scoped.enabled=1
+         )",
+        rusqlite::params![
+            snapshot.account_id,
+            snapshot.effective_policy_version,
+            snapshot.policy_id,
+            snapshot.policy_version,
+            snapshot.source_policy_digest,
+            snapshot.policy_digest,
+            snapshot.product_id,
+            snapshot.account_class.as_str(),
+            snapshot.policy_catalog_generation,
+            snapshot.policy_switch_generation,
+            snapshot.admission_catalog_generation,
+            snapshot.admission_catalog_digest,
+            snapshot.admission_switch_generation,
+            snapshot.admission_switch_digest,
+            snapshot.rule_id,
+            snapshot.rule_digest,
+            rule_scope,
+            rule_provider,
+            rule_model,
+            snapshot.pricing_mode.as_str(),
+            snapshot.rule_origin.as_str(),
+            snapshot.discount_bps,
+            snapshot.payable_multiplier_bp,
+            i64::from(snapshot.track_eligible),
+            i64::from(snapshot.retention_eligible),
+            i64::from(snapshot.commission_eligible),
+            snapshot.canonical_model_id,
+            scoped_type,
+            scoped_product,
+            scoped_segment,
+        ],
+        |row| row.get(0),
+    )?)
+}
+
+/// Atomically validate the current strict binding, reserve exact eligible funding sources and
+/// persist the immutable policy snapshot. Track spends welcome bonus before paid; discount/static
+/// requests can reserve only `any` (paid) funding.
+pub fn sqlite_reserve_request_with_policy_snapshot(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+) -> Result<pricing::PolicyReserveOutcome> {
+    sqlite_reserve_request_with_policy_snapshot_guarded(conn, key, lease_secs, snapshot, || true)
+}
+
+/// Guarded strict reserve for the async writer. The callback is the final linearization gate for
+/// inserted reservations and exact active replays; a rejected gate rolls the transaction back
+/// before any money or snapshot mutation becomes visible.
+pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    mut commit_gate: impl FnMut() -> bool,
+) -> Result<pricing::PolicyReserveOutcome> {
+    use pricing::{
+        PolicyReserveConflict as Conflict, PolicyReserveOutcome as Outcome,
+        PolicyReserveReceipt as Receipt, PolicySnapshotLookup as Lookup,
+    };
+
+    snapshot.validate()?;
+    if key.trim().is_empty() || lease_secs <= 0 {
+        anyhow::bail!("invalid SQLite policy snapshot reservation parameters");
+    }
+    let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
+        match snapshot.validate_idempotency_window_at(trusted_now_ts) {
+            Ok(()) => Ok(None),
+            Err(pricing::LegacyScalarIdempotencyWindowError::Expired) => {
+                Ok(Some(Conflict::ExpiredIdempotencyWindow))
+            }
+            Err(pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
+                Ok(Some(Conflict::AdmissionTimestampInFuture))
+            }
+            Err(pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp) => {
+                anyhow::bail!("trusted SQLite reservation clock is invalid")
+            }
+        }
+    };
+    if let Some(conflict) = window_conflict(now())? {
+        return Ok(Outcome::Conflict(conflict));
+    }
+
+    let request_id = snapshot.request_id();
+    let account_id = snapshot.account_id();
+    let hold = snapshot.charged_hold_nano();
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let existing = tx.query_row(
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano
+           FROM billing_reservations WHERE request_id=?1",
+        rusqlite::params![request_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    );
+    match existing {
+        Ok((stored_account, stored_key, stored_hold, state, balance)) => {
+            let outcome =
+                if stored_account != account_id || stored_key != key || stored_hold != hold {
+                    Outcome::Conflict(Conflict::ReservationIdentity)
+                } else if state != "reserved" && state != "delivering" {
+                    Outcome::Conflict(Conflict::TerminalReservation)
+                } else {
+                    match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
+                        Lookup::Missing => {
+                            Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+                        }
+                        Lookup::NonPolicy => Outcome::Conflict(Conflict::ExistingNonPolicySnapshot),
+                        Lookup::Policy(stored) if stored.as_ref() == snapshot => {
+                            Outcome::Unchanged(Receipt {
+                                balance_after_reserve_nano: balance,
+                                snapshot: *stored,
+                            })
+                        }
+                        Lookup::Policy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+                    }
+                };
+            if matches!(&outcome, Outcome::Unchanged(_)) && !commit_gate() {
+                tx.rollback()?;
+                return Ok(Outcome::AbortedBeforeCommit);
+            }
+            tx.commit()?;
+            return Ok(outcome);
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.into()),
+    }
+    if let Some(conflict) = window_conflict(now())? {
+        tx.rollback()?;
+        return Ok(Outcome::Conflict(conflict));
+    }
+    if !sqlite_policy_state_matches(&tx, snapshot)? {
+        tx.rollback()?;
+        return Ok(Outcome::Conflict(Conflict::PolicyStateChanged));
+    }
+
+    let eligibility = if snapshot.track_eligible() {
+        "track"
+    } else {
+        "any"
+    };
+    let buckets: Vec<(String, i64, i64)> = {
+        let mut statement = tx.prepare(
+            "SELECT bucket_id,version,balance_nano
+               FROM funding_buckets
+              WHERE account_id=?1 AND status='active' AND balance_nano>0
+                AND ((?2='track' AND eligibility IN ('track','any'))
+                  OR (?2='any' AND eligibility='any'))
+              ORDER BY CASE source_type
+                         WHEN 'welcome_track_bonus' THEN 0
+                         WHEN 'paid' THEN 1
+                         ELSE 2
+                       END, created_ts, bucket_id",
+        )?;
+        let rows = statement
+            .query_map(rusqlite::params![account_id, eligibility], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    let eligible_total = buckets.iter().try_fold(0_i64, |total, (_, _, balance)| {
+        total
+            .checked_add(*balance)
+            .context("eligible funding balance overflow")
+    })?;
+    if eligible_total < hold {
+        tx.rollback()?;
+        return Ok(Outcome::NotReserved);
+    }
+
+    let balance: i64 = match tx.query_row(
+        "UPDATE accounts
+            SET balance_nano=balance_nano-?1,reserved_nano=reserved_nano+?1
+          WHERE id=?2 AND status='active' AND balance_nano>=?1
+          RETURNING balance_nano",
+        rusqlite::params![hold, account_id],
+        |row| row.get(0),
+    ) {
+        Ok(balance) => balance,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if tx.execute(
+        "UPDATE api_keys SET reserved_nano=reserved_nano+?1
+          WHERE key=?2 AND account_id=?3 AND status='active'
+            AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER))
+            AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+?1<=spend_limit_nano)",
+        rusqlite::params![hold, key, account_id],
+    )? != 1
+    {
+        tx.rollback()?;
+        return Ok(Outcome::NotReserved);
+    }
+    let timestamp = now();
+    tx.execute(
+        "INSERT INTO billing_reservations(
+           request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,lease_until,
+           created_ts,updated_ts)
+         VALUES(?1,?2,?3,?4,'reserved',?5,?6,?7,?7)",
+        rusqlite::params![
+            request_id,
+            account_id,
+            key,
+            hold,
+            balance,
+            timestamp.saturating_add(lease_secs),
+            timestamp
+        ],
+    )?;
+    pricing::sqlite_insert_policy_admission_snapshot(&tx, snapshot)?;
+
+    let mut remaining = hold;
+    let mut allocation_order = 1_i64;
+    for (bucket_id, version, available) in buckets {
+        if remaining == 0 {
+            break;
+        }
+        let reserved = remaining.min(available);
+        let next_version = version
+            .checked_add(1)
+            .context("funding bucket version overflow")?;
+        if tx.execute(
+            "UPDATE funding_buckets
+                SET balance_nano=balance_nano-?1,reserved_nano=reserved_nano+?1,
+                    version=?2,updated_ts=?3,
+                    status=CASE WHEN balance_nano-?1=0 THEN 'exhausted' ELSE 'active' END
+              WHERE bucket_id=?4 AND account_id=?5 AND version=?6 AND balance_nano>=?1",
+            rusqlite::params![
+                reserved,
+                next_version,
+                timestamp,
+                bucket_id,
+                account_id,
+                version
+            ],
+        )? != 1
+        {
+            anyhow::bail!("strict funding bucket changed during SQLite reserve");
+        }
+        tx.execute(
+            "INSERT INTO reservation_funding_allocations(
+               request_id,account_id,bucket_id,bucket_version,reserved_nano,allocation_order)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                request_id,
+                account_id,
+                bucket_id,
+                next_version,
+                reserved,
+                allocation_order
+            ],
+        )?;
+        remaining -= reserved;
+        allocation_order += 1;
+    }
+    if remaining != 0 {
+        anyhow::bail!("strict funding allocation did not cover the reserved hold");
+    }
+    if !commit_gate() {
+        tx.rollback()?;
+        return Ok(Outcome::AbortedBeforeCommit);
+    }
+    tx.commit()?;
+    Ok(Outcome::Inserted(Receipt {
+        balance_after_reserve_nano: balance,
+        snapshot: snapshot.clone(),
+    }))
+}
+
 /// Mark a reservation as provider-accepted before handing its response body to the client.
 pub fn sqlite_mark_delivering(
     conn: &Connection,
@@ -3113,6 +3751,294 @@ pub fn sqlite_renew_reservation_lease(
     )? == 1)
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+struct PolicyFundingAllocationEvidence {
+    bucket_id: String,
+    source_type: String,
+    bucket_version: i64,
+    reserved_nano: i64,
+    charged_nano: i64,
+    released_nano: i64,
+    allocation_order: i64,
+}
+
+#[derive(Clone, Debug)]
+struct PolicyFundingEvidence {
+    allocations: Vec<PolicyFundingAllocationEvidence>,
+    paid_funded_nano: i64,
+    bonus_funded_nano: i64,
+    other_funded_nano: i64,
+    allocation_json: String,
+}
+
+fn sqlite_policy_funding_evidence(
+    conn: &Connection,
+    request_id: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+) -> Result<PolicyFundingEvidence> {
+    if actual_nano < 0 || actual_nano > hold_nano {
+        anyhow::bail!("strict settlement actual must be within the reserved hold");
+    }
+    let mut statement = conn.prepare(
+        "SELECT allocation.bucket_id,bucket.source_type,allocation.bucket_version,
+                allocation.reserved_nano,allocation.allocation_order
+           FROM reservation_funding_allocations allocation
+           JOIN funding_buckets bucket
+             ON bucket.bucket_id=allocation.bucket_id
+            AND bucket.account_id=allocation.account_id
+          WHERE allocation.request_id=?1
+          ORDER BY allocation.allocation_order,allocation.bucket_id",
+    )?;
+    let rows = statement
+        .query_map(rusqlite::params![request_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let reserved_total = rows.iter().try_fold(0_i64, |total, row| {
+        total
+            .checked_add(row.3)
+            .context("strict funding reservation total overflow")
+    })?;
+    if rows.is_empty() || reserved_total != hold_nano {
+        anyhow::bail!("strict settlement funding allocations do not cover the hold");
+    }
+
+    let mut charge_remaining = actual_nano;
+    let mut paid_funded_nano = 0_i64;
+    let mut bonus_funded_nano = 0_i64;
+    let mut other_funded_nano = 0_i64;
+    let mut allocations = Vec::with_capacity(rows.len());
+    for (bucket_id, source_type, bucket_version, reserved_nano, allocation_order) in rows {
+        let charged_nano = charge_remaining.min(reserved_nano);
+        let released_nano = reserved_nano - charged_nano;
+        charge_remaining -= charged_nano;
+        let category = match source_type.as_str() {
+            "paid" => &mut paid_funded_nano,
+            "welcome_track_bonus" => &mut bonus_funded_nano,
+            _ => &mut other_funded_nano,
+        };
+        *category = category
+            .checked_add(charged_nano)
+            .context("strict funding charge category overflow")?;
+        allocations.push(PolicyFundingAllocationEvidence {
+            bucket_id,
+            source_type,
+            bucket_version,
+            reserved_nano,
+            charged_nano,
+            released_nano,
+            allocation_order,
+        });
+    }
+    if charge_remaining != 0 {
+        anyhow::bail!("strict settlement funding allocations do not cover the actual charge");
+    }
+    let allocation_json = serde_json::to_string(&allocations)?;
+    Ok(PolicyFundingEvidence {
+        allocations,
+        paid_funded_nano,
+        bonus_funded_nano,
+        other_funded_nano,
+        allocation_json,
+    })
+}
+
+fn validate_policy_settlement(
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    hold_nano: i64,
+    actual_nano: i64,
+    usage: Option<&UsageEventInput>,
+    disposition: &str,
+) -> Result<()> {
+    snapshot.validate()?;
+    if hold_nano != snapshot.charged_hold_nano() || actual_nano < 0 || actual_nano > hold_nano {
+        anyhow::bail!("strict settlement amount is outside its immutable admission hold");
+    }
+    let Some(usage) = usage else {
+        let valid_terminal = (disposition == "cancel" && actual_nano == 0)
+            || (disposition == "reconcile_full_hold" && actual_nano == hold_nano);
+        if !valid_terminal {
+            anyhow::bail!("strict settlement without usage must be cancel or full-hold recovery");
+        }
+        return Ok(());
+    };
+    if disposition != "settle" {
+        anyhow::bail!("strict usage settlement has an invalid disposition");
+    }
+    if usage.provider != snapshot.provider().as_str() {
+        anyhow::bail!("strict settlement provider differs from the fixed admission plane");
+    }
+    if usage.priced_ts != snapshot.tariff_priced_ts() {
+        anyhow::bail!("strict settlement did not use the admission-pinned tariff timestamp");
+    }
+    if usage.model.trim().is_empty() {
+        anyhow::bail!("strict settlement served model must not be empty");
+    }
+    for amount in [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_5m_tokens,
+        usage.cache_write_1h_tokens,
+        usage.web_search_requests,
+        usage.real_nano,
+        usage.input_nano,
+        usage.output_nano,
+        usage.cache_read_nano,
+        usage.cache_write_5m_nano,
+        usage.cache_write_1h_nano,
+        usage.web_search_nano,
+    ] {
+        if amount < 0 {
+            anyhow::bail!("strict settlement usage contains a negative integer amount");
+        }
+    }
+    if usage.real_nano > snapshot.official_hold_nano()
+        || snapshot.charge_for_official_nano(usage.real_nano)? != actual_nano
+    {
+        anyhow::bail!("strict settlement charge does not match pinned official pricing");
+    }
+    Ok(())
+}
+
+fn policy_official_cost_json(
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    usage: Option<&UsageEventInput>,
+    disposition: &str,
+) -> Result<String> {
+    let premium_modifiers: serde_json::Value =
+        serde_json::from_str(&snapshot.premium_modifiers_json()?)?;
+    let value = match usage {
+        Some(usage) => serde_json::json!({
+            "schema_version": 1,
+            "provider": usage.provider,
+            "official_nano": usage.real_nano,
+            "input_nano": usage.input_nano,
+            "output_nano": usage.output_nano,
+            "cache_read_nano": usage.cache_read_nano,
+            "cache_write_5m_nano": usage.cache_write_5m_nano,
+            "cache_write_1h_nano": usage.cache_write_1h_nano,
+            "web_search_nano": usage.web_search_nano,
+            "premium_modifiers": premium_modifiers,
+        }),
+        None => serde_json::json!({
+            "schema_version": 1,
+            "provider": snapshot.provider().as_str(),
+            "official_nano": if disposition == "reconcile_full_hold" {
+                snapshot.official_hold_nano()
+            } else {
+                0
+            },
+            "disposition": disposition,
+            "premium_modifiers": premium_modifiers,
+        }),
+    };
+    Ok(serde_json::to_string(&value)?)
+}
+
+fn sqlite_write_policy_attribution(
+    conn: &Connection,
+    table: &str,
+    request_id: &str,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    usage: Option<&UsageEventInput>,
+    disposition: &str,
+    funding: &PolicyFundingEvidence,
+) -> Result<()> {
+    let predicate = match table {
+        "billing_settlement_outbox" | "usage_events" => "request_id=?1",
+        "ledger" => "kind='charge' AND request_id=?1",
+        _ => anyhow::bail!("unsupported SQLite policy attribution target"),
+    };
+    let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
+    let served_model = usage
+        .map(|value| value.model.as_str())
+        .or_else(|| (disposition == "reconcile_full_hold").then(|| snapshot.canonical_model_id()));
+    let invariant = if disposition == "reconcile_full_hold" {
+        Some("reconciled_full_hold_without_usage")
+    } else {
+        served_model
+            .filter(|model| *model != snapshot.canonical_model_id())
+            .map(|_| "served_canonical_model_mismatch")
+    };
+    let official_cost_json = policy_official_cost_json(snapshot, usage, disposition)?;
+    let sql = format!(
+        "UPDATE {table} SET
+             provider=?2,attribution_schema_version=?3,snapshot_kind='policy_v1',product_id=?4,
+             account_class=?5,requested_model_id=?6,canonical_model_id=?7,served_model_id=?8,
+             served_canonical_model_id=?8,billing_invariant_code=?9,alias_generation=?10,
+             rule_id=?11,rule_digest=?12,rule_scope=?13,pricing_mode=?14,rule_origin=?15,
+             discount_bps=?16,payable_multiplier_bp=?17,policy_id=?18,policy_version=?19,
+             effective_policy_version=?20,policy_digest=?21,catalog_generation=?22,
+             switch_generation=?23,tariff_schedule_id=?24,tariff_priced_ts=?25,
+             official_cost_json=?26,paid_funded_nano=?27,bonus_funded_nano=?28,
+             other_funded_nano=?29,funding_allocation_json=?30,track_eligible=?31,
+             retention_eligible=?32,commission_eligible=?33,snapshot_digest=?34,
+             source_policy_digest=?35,admission_catalog_generation=?36,
+             admission_catalog_digest=?37,admission_switch_generation=?38,
+             admission_switch_digest=?39,runtime_manifest_generation=?40,
+             runtime_manifest_digest=?41
+           WHERE {predicate}"
+    );
+    if conn.execute(
+        &sql,
+        rusqlite::params![
+            request_id,
+            snapshot.provider().as_str(),
+            pricing::POLICY_ADMISSION_SNAPSHOT_SCHEMA_VERSION,
+            snapshot.product_id(),
+            snapshot.account_class().as_str(),
+            snapshot.requested_model_id(),
+            snapshot.canonical_model_id(),
+            served_model,
+            invariant,
+            snapshot.alias_generation(),
+            snapshot.rule_id(),
+            snapshot.rule_digest(),
+            rule_scope,
+            snapshot.pricing_mode().as_str(),
+            snapshot.rule_origin.as_str(),
+            snapshot.discount_bps,
+            snapshot.payable_multiplier_bp(),
+            snapshot.policy_id(),
+            snapshot.policy_version(),
+            snapshot.effective_policy_version(),
+            snapshot.policy_digest(),
+            snapshot.policy_catalog_generation(),
+            snapshot.policy_switch_generation(),
+            snapshot.tariff_schedule_id(),
+            snapshot.tariff_priced_ts(),
+            official_cost_json,
+            funding.paid_funded_nano,
+            funding.bonus_funded_nano,
+            funding.other_funded_nano,
+            funding.allocation_json,
+            i64::from(snapshot.track_eligible()),
+            i64::from(snapshot.retention_eligible()),
+            i64::from(snapshot.commission_eligible()),
+            snapshot.snapshot_digest(),
+            snapshot.source_policy_digest(),
+            snapshot.admission_catalog_generation(),
+            snapshot.admission_catalog_digest(),
+            snapshot.admission_switch_generation(),
+            snapshot.admission_switch_digest(),
+            snapshot.runtime_manifest_generation(),
+            snapshot.runtime_manifest_digest(),
+        ],
+    )? != 1
+    {
+        anyhow::bail!("SQLite policy attribution target row is missing");
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sqlite_enqueue_settlement(
     conn: &Connection,
@@ -3123,8 +4049,11 @@ fn sqlite_enqueue_settlement(
     actual_nano: i64,
     reference: Option<&str>,
     usage: Option<&UsageEventInput>,
+    disposition: &str,
 ) -> Result<Option<i64>> {
-    let actual = actual_nano.max(0);
+    if !matches!(disposition, "settle" | "cancel" | "reconcile_full_hold") {
+        anyhow::bail!("invalid SQLite settlement disposition");
+    }
     let usage_json = usage.map(serde_json::to_string).transpose()?;
     let tx = conn.unchecked_transaction()?;
     let reservation = tx.query_row(
@@ -3154,6 +4083,16 @@ fn sqlite_enqueue_settlement(
     if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
         anyhow::bail!("settlement parameters do not match reservation");
     }
+    let policy_snapshot = match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
+        pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
+        pricing::PolicySnapshotLookup::Missing | pricing::PolicySnapshotLookup::NonPolicy => None,
+    };
+    let actual = if let Some(snapshot) = policy_snapshot.as_ref() {
+        validate_policy_settlement(snapshot, stored_hold, actual_nano, usage, disposition)?;
+        actual_nano
+    } else {
+        actual_nano.max(0)
+    };
     if state == "settled" {
         if stored_actual == Some(actual) && stored_ref.as_deref() == reference {
             tx.commit()?;
@@ -3165,35 +4104,328 @@ fn sqlite_enqueue_settlement(
     let timestamp = now();
     let inserted = tx.execute(
         "INSERT INTO billing_settlement_outbox( \
-           request_id,actual_nano,reference,usage_json,state,attempts,next_attempt_ts,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,'pending',0,0,?5,?5) ON CONFLICT(request_id) DO NOTHING",
-        rusqlite::params![request_id, actual, reference, usage_json, timestamp],
+           request_id,actual_nano,reference,usage_json,disposition,state,attempts,next_attempt_ts,
+           created_ts,updated_ts) \
+         VALUES(?1,?2,?3,?4,?5,'pending',0,0,?6,?6) ON CONFLICT(request_id) DO NOTHING",
+        rusqlite::params![
+            request_id,
+            actual,
+            reference,
+            usage_json,
+            disposition,
+            timestamp
+        ],
     )?;
     if inserted == 0 {
         let existing = tx.query_row(
-            "SELECT actual_nano,reference,usage_json FROM billing_settlement_outbox WHERE request_id=?1",
+            "SELECT actual_nano,reference,usage_json,disposition
+               FROM billing_settlement_outbox WHERE request_id=?1",
             rusqlite::params![request_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
         )?;
-        if existing != (actual, reference.map(str::to_owned), usage_json) {
+        if existing
+            != (
+                actual,
+                reference.map(str::to_owned),
+                usage_json,
+                disposition.to_owned(),
+            )
+        {
             anyhow::bail!("settlement request ID was reused with different parameters");
         }
     }
+    if let Some(snapshot) = policy_snapshot.as_ref() {
+        let funding = sqlite_policy_funding_evidence(&tx, request_id, stored_hold, actual)?;
+        sqlite_write_policy_attribution(
+            &tx,
+            "billing_settlement_outbox",
+            request_id,
+            snapshot,
+            usage,
+            disposition,
+            &funding,
+        )?;
+    }
     tx.commit()?;
     Ok(None)
+}
+
+fn sqlite_process_policy_settlement(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+    reference: Option<&str>,
+    usage: Option<&UsageEventInput>,
+    disposition: &str,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+) -> Result<i64> {
+    validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
+    let funding = sqlite_policy_funding_evidence(conn, request_id, hold_nano, actual_nano)?;
+    let released_total = hold_nano - actual_nano;
+    let balance: i64 = conn
+        .query_row(
+            "UPDATE accounts
+            SET balance_nano=balance_nano+?1,spent_nano=spent_nano+?2,
+                reserved_nano=reserved_nano-?3
+          WHERE id=?4 AND reserved_nano>=?3
+          RETURNING balance_nano",
+            rusqlite::params![released_total, actual_nano, hold_nano, account_id],
+            |row| row.get(0),
+        )
+        .context("strict SQLite reservation/account aggregate invariant failed")?;
+    let key_updated = conn.execute(
+        "UPDATE api_keys
+            SET spent_nano=spent_nano+?1,reserved_nano=reserved_nano-?2
+          WHERE key=?3 AND account_id=?4 AND reserved_nano>=?2",
+        rusqlite::params![actual_nano, hold_nano, key, account_id],
+    )?;
+    if key_updated != 1 {
+        let key_still_exists = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM api_keys WHERE key=?1)",
+            rusqlite::params![key],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if key_still_exists {
+            anyhow::bail!("strict SQLite reservation/key aggregate invariant failed");
+        }
+    }
+
+    let timestamp = now();
+    for allocation in &funding.allocations {
+        let next_version: i64 = conn
+            .query_row(
+                "UPDATE funding_buckets
+                SET balance_nano=balance_nano+?1,reserved_nano=reserved_nano-?2,
+                    spent_nano=spent_nano+?3,version=version+1,updated_ts=?4,
+                    status=CASE
+                      WHEN status='retired' THEN status
+                      WHEN balance_nano+?1>0 THEN 'active'
+                      ELSE 'exhausted'
+                    END
+              WHERE bucket_id=?5 AND account_id=?6 AND reserved_nano>=?2
+              RETURNING version",
+                rusqlite::params![
+                    allocation.released_nano,
+                    allocation.reserved_nano,
+                    allocation.charged_nano,
+                    timestamp,
+                    allocation.bucket_id,
+                    account_id,
+                ],
+                |row| row.get(0),
+            )
+            .with_context(|| {
+                format!(
+                    "strict SQLite funding bucket {} invariant failed",
+                    allocation.bucket_id
+                )
+            })?;
+        if next_version <= allocation.bucket_version {
+            anyhow::bail!("strict SQLite funding bucket version did not advance");
+        }
+        if conn.execute(
+            "UPDATE reservation_funding_allocations
+                SET charged_nano=?1,released_nano=?2
+              WHERE request_id=?3 AND account_id=?4 AND bucket_id=?5
+                AND charged_nano IS NULL AND released_nano IS NULL",
+            rusqlite::params![
+                allocation.charged_nano,
+                allocation.released_nano,
+                request_id,
+                account_id,
+                allocation.bucket_id,
+            ],
+        )? != 1
+        {
+            anyhow::bail!("strict SQLite funding allocation was already terminalized");
+        }
+    }
+
+    if let Some(usage) = usage {
+        let ledger_id: i64 = conn.query_row(
+            "INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                 provider,official_nano)
+             VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,NULLIF(?8,''),?9,?10)
+             RETURNING id",
+            rusqlite::params![
+                account_id,
+                key,
+                request_id,
+                actual_nano,
+                reference,
+                balance,
+                timestamp,
+                usage.model,
+                usage.provider,
+                usage.real_nano,
+            ],
+            |row| row.get(0),
+        )?;
+        sqlite_write_policy_attribution(
+            conn,
+            "ledger",
+            request_id,
+            snapshot,
+            Some(usage),
+            disposition,
+            &funding,
+        )?;
+        for allocation in funding
+            .allocations
+            .iter()
+            .filter(|allocation| allocation.charged_nano > 0)
+        {
+            conn.execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano)
+                 VALUES(?1,?2,?3,?4,?5,'debit',?6)",
+                rusqlite::params![
+                    ledger_id,
+                    account_id,
+                    allocation.bucket_id,
+                    allocation.source_type,
+                    allocation.bucket_version,
+                    allocation.charged_nano,
+                ],
+            )?;
+        }
+        conn.execute(
+            "INSERT INTO usage_events(
+                 request_id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens,
+                 cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,
+                 charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano,
+                 cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
+                    ?17,?18,?19,?20,?21,?22,?23,?24)",
+            rusqlite::params![
+                request_id,
+                account_id,
+                key,
+                usage.model,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_5m_tokens,
+                usage.cache_write_1h_tokens,
+                usage.web_search_requests,
+                usage.real_nano,
+                actual_nano,
+                reference,
+                timestamp,
+                usage.speed,
+                usage.inference_geo,
+                usage.input_nano,
+                usage.output_nano,
+                usage.cache_read_nano,
+                usage.cache_write_5m_nano,
+                usage.cache_write_1h_nano,
+                usage.web_search_nano,
+                usage.priced_ts,
+                usage.provider,
+            ],
+        )?;
+        sqlite_write_policy_attribution(
+            conn,
+            "usage_events",
+            request_id,
+            snapshot,
+            Some(usage),
+            disposition,
+            &funding,
+        )?;
+    } else if actual_nano > 0 {
+        let ledger_id: i64 = conn.query_row(
+            "INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                 provider,official_nano)
+             VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,?8,?9,?10)
+             RETURNING id",
+            rusqlite::params![
+                account_id,
+                key,
+                request_id,
+                actual_nano,
+                reference,
+                balance,
+                timestamp,
+                snapshot.canonical_model_id(),
+                snapshot.provider().as_str(),
+                snapshot.official_hold_nano(),
+            ],
+            |row| row.get(0),
+        )?;
+        sqlite_write_policy_attribution(
+            conn,
+            "ledger",
+            request_id,
+            snapshot,
+            None,
+            disposition,
+            &funding,
+        )?;
+        for allocation in funding
+            .allocations
+            .iter()
+            .filter(|allocation| allocation.charged_nano > 0)
+        {
+            conn.execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano)
+                 VALUES(?1,?2,?3,?4,?5,'debit',?6)",
+                rusqlite::params![
+                    ledger_id,
+                    account_id,
+                    allocation.bucket_id,
+                    allocation.source_type,
+                    allocation.bucket_version,
+                    allocation.charged_nano,
+                ],
+            )?;
+        }
+    }
+    sqlite_write_policy_attribution(
+        conn,
+        "billing_settlement_outbox",
+        request_id,
+        snapshot,
+        usage,
+        disposition,
+        &funding,
+    )?;
+    Ok(balance)
 }
 
 /// Apply one already-durable SQLite settlement intent atomically with its ledger/usage rows.
 pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<Option<i64>> {
     let tx = conn.unchecked_transaction()?;
     let outbox = tx.query_row(
-        "SELECT actual_nano,reference,usage_json,state FROM billing_settlement_outbox WHERE request_id=?1",
+        "SELECT actual_nano,reference,usage_json,state,disposition
+           FROM billing_settlement_outbox WHERE request_id=?1",
         rusqlite::params![request_id],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)),
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        },
     );
-    let (actual, reference, usage_json, outbox_state) = match outbox {
+    let (actual, reference, usage_json, outbox_state, disposition) = match outbox {
         Ok(row) => row,
         Err(rusqlite::Error::QueryReturnedNoRows) => anyhow::bail!("settlement outbox row missing"),
         Err(error) => return Err(error.into()),
@@ -3213,7 +4445,7 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
             ))
         },
     )?;
-    if reservation.3 == "settled" || outbox_state == "done" {
+    if matches!(reservation.3.as_str(), "settled" | "canceled") || outbox_state == "done" {
         if reservation.4 != Some(actual) {
             anyhow::bail!("stored settlement differs from outbox");
         }
@@ -3232,22 +4464,53 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         .as_deref()
         .map(serde_json::from_str::<UsageEventInput>)
         .transpose()?;
-    let balance = account_settle_in(
-        &tx,
-        &reservation.0,
-        &reservation.1,
-        reservation.2,
-        actual,
-        reference.as_deref(),
-        usage.as_ref(),
-    )?
-    .ok_or_else(|| anyhow::anyhow!("settlement account no longer exists"))?;
+    let policy_snapshot = match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
+        pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
+        pricing::PolicySnapshotLookup::Missing | pricing::PolicySnapshotLookup::NonPolicy => None,
+    };
+    let balance = if let Some(snapshot) = policy_snapshot.as_ref() {
+        sqlite_process_policy_settlement(
+            &tx,
+            request_id,
+            &reservation.0,
+            &reservation.1,
+            reservation.2,
+            actual,
+            reference.as_deref(),
+            usage.as_ref(),
+            &disposition,
+            snapshot,
+        )?
+    } else {
+        account_settle_in(
+            &tx,
+            &reservation.0,
+            &reservation.1,
+            reservation.2,
+            actual,
+            reference.as_deref(),
+            usage.as_ref(),
+        )?
+        .ok_or_else(|| anyhow::anyhow!("settlement account no longer exists"))?
+    };
     let timestamp = now();
+    let final_state = if policy_snapshot.is_some() && disposition == "cancel" {
+        "canceled"
+    } else {
+        "settled"
+    };
     tx.execute(
-        "UPDATE billing_reservations SET state='settled',actual_nano=?2, \
-         balance_after_settle_nano=?3,reference=?4,updated_ts=?5,settled_ts=?5 \
+        "UPDATE billing_reservations SET state=?2,actual_nano=?3, \
+         balance_after_settle_nano=?4,reference=?5,updated_ts=?6,settled_ts=?6 \
          WHERE request_id=?1 AND state IN ('reserved','delivering')",
-        rusqlite::params![request_id, actual, balance, reference, timestamp],
+        rusqlite::params![
+            request_id,
+            final_state,
+            actual,
+            balance,
+            reference,
+            timestamp
+        ],
     )?;
     tx.execute(
         "UPDATE billing_settlement_outbox SET state='done',attempts=attempts+1, \
@@ -3278,6 +4541,38 @@ pub fn sqlite_settle_request(
         actual_nano,
         reference,
         usage,
+        "settle",
+    )? {
+        return Ok(Some(balance));
+    }
+    match sqlite_process_settlement(conn, request_id) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            let message: String = format!("{error:#}").chars().take(1000).collect();
+            let timestamp = now();
+            let _ = conn.execute(
+                "UPDATE billing_settlement_outbox SET attempts=attempts+1,last_error=?2, \
+                 updated_ts=?3,next_attempt_ts=?3+MIN(60,MAX(1,attempts+1)) WHERE request_id=?1",
+                rusqlite::params![request_id, message, timestamp],
+            );
+            Err(error)
+        }
+    }
+}
+
+/// Persist and apply an explicit cancellation. Strict policy reservations distinguish this from a
+/// zero-value usage settlement so the immutable snapshot and funding allocations can be validated
+/// and returned to their original buckets without weakening the settlement contract.
+#[allow(clippy::too_many_arguments)]
+pub fn sqlite_cancel_request(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+) -> Result<Option<i64>> {
+    if let Some(balance) = sqlite_enqueue_settlement(
+        conn, request_id, account_id, key, hold_nano, 0, None, None, "cancel",
     )? {
         return Ok(Some(balance));
     }
@@ -3346,20 +4641,32 @@ pub fn sqlite_reconcile_expired(
     };
     for (request_id, account_id, key, hold, state) in expired {
         let actual = if state == "delivering" { hold } else { 0 };
-        match sqlite_settle_request(
+        let disposition = if state == "delivering" {
+            "reconcile_full_hold"
+        } else {
+            "cancel"
+        };
+        let reference = if state == "delivering" {
+            "lease-expired-delivering"
+        } else {
+            "lease-expired-reserved"
+        };
+        let result = sqlite_enqueue_settlement(
             conn,
             &request_id,
             &account_id,
             &key,
             hold,
             actual,
-            Some(if state == "delivering" {
-                "lease-expired-delivering"
-            } else {
-                "lease-expired-reserved"
-            }),
+            Some(reference),
             None,
-        ) {
+            disposition,
+        )
+        .and_then(|balance| match balance {
+            Some(balance) => Ok(Some(balance)),
+            None => sqlite_process_settlement(conn, &request_id),
+        });
+        match result {
             Ok(_) if state == "delivering" => report.charged_after_delivery += 1,
             Ok(_) => report.canceled_before_delivery += 1,
             Err(error) => {
@@ -3385,7 +4692,7 @@ pub fn sqlite_maintenance_prune(
     let (pricing_snapshots_cascaded, pricing_shadow_evaluations_cascaded) = tx.query_row(
         "WITH doomed AS ( \
            SELECT r.request_id FROM billing_reservations r \
-           WHERE r.state='settled' AND r.settled_ts<?1 \
+           WHERE r.state IN ('settled','canceled') AND r.settled_ts<?1 \
              AND r.request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
            ORDER BY r.settled_ts,r.request_id LIMIT 5000 \
          ) \
@@ -3404,7 +4711,8 @@ pub fn sqlite_maintenance_prune(
     )?;
     let reservations = tx.execute(
         "DELETE FROM billing_reservations WHERE request_id IN ( \
-           SELECT request_id FROM billing_reservations WHERE state='settled' AND settled_ts<?1 \
+           SELECT request_id FROM billing_reservations
+            WHERE state IN ('settled','canceled') AND settled_ts<?1 \
              AND request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
            ORDER BY settled_ts,request_id LIMIT 5000)",
         rusqlite::params![older_than_ts],
@@ -3982,18 +5290,96 @@ pub fn key_get(conn: &Connection, key: &str) -> Result<Option<KeyRow>> {
 }
 
 pub fn key_set_status(conn: &Connection, key: &str, status: &str) -> Result<usize> {
-    Ok(conn.execute(
-        "UPDATE api_keys SET status=?1 WHERE key=?2",
-        rusqlite::params![status, key],
-    )?)
+    key_set_status_with_policy_ack(conn, key, status, None)
+}
+
+pub fn key_set_status_with_policy_ack(
+    conn: &Connection,
+    key: &str,
+    status: &str,
+    activation_policy_ack: Option<&KeyActivationPolicyAck>,
+) -> Result<usize> {
+    sqlite_key_set_status_with_policy_ack(conn, "key", key, status, activation_policy_ack)
 }
 
 /// Change key status through its non-secret control-plane identifier.
 pub fn key_set_status_by_id(conn: &Connection, key_id: &str, status: &str) -> Result<usize> {
-    Ok(conn.execute(
-        "UPDATE api_keys SET status=?1 WHERE key_id=?2",
-        rusqlite::params![status, key_id],
-    )?)
+    key_set_status_by_id_with_policy_ack(conn, key_id, status, None)
+}
+
+pub fn key_set_status_by_id_with_policy_ack(
+    conn: &Connection,
+    key_id: &str,
+    status: &str,
+    activation_policy_ack: Option<&KeyActivationPolicyAck>,
+) -> Result<usize> {
+    sqlite_key_set_status_with_policy_ack(conn, "key_id", key_id, status, activation_policy_ack)
+}
+
+fn sqlite_key_set_status_with_policy_ack(
+    conn: &Connection,
+    identity_column: &str,
+    identity: &str,
+    status: &str,
+    activation_policy_ack: Option<&KeyActivationPolicyAck>,
+) -> Result<usize> {
+    if !matches!(identity_column, "key" | "key_id") {
+        anyhow::bail!("invalid key status identity column");
+    }
+    activation_policy_ack
+        .map(KeyActivationPolicyAck::validate)
+        .transpose()?;
+    let tx = conn.unchecked_transaction()?;
+    let query = format!(
+        "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
+           FROM api_keys key
+           LEFT JOIN account_policy_bindings binding ON binding.account_id=key.account_id
+           LEFT JOIN account_policy_versions policy
+             ON policy.account_id=binding.account_id
+            AND policy.effective_version=binding.active_effective_version
+          WHERE key.{identity_column}=?1"
+    );
+    let policy_state = tx.query_row(&query, rusqlite::params![identity], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    });
+    let policy_state = match policy_state {
+        Ok(state) => state,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    let ack_matches = activation_policy_ack.is_some_and(|ack| {
+        policy_state.1 == Some(ack.effective_policy_version)
+            && policy_state.2.as_deref() == Some(ack.policy_digest.as_str())
+    });
+    if activation_policy_ack.is_some() && !ack_matches {
+        anyhow::bail!("key activation policy ACK does not match the exact active policy");
+    }
+    if status == "active" && policy_state.0.as_deref() == Some("strict") && !ack_matches {
+        anyhow::bail!("strict key reactivation requires the exact active policy ACK");
+    }
+    let update = format!(
+        "UPDATE api_keys SET status=?1,
+             activation_policy_effective_version=COALESCE(?2,activation_policy_effective_version),
+             activation_policy_digest=COALESCE(?3,activation_policy_digest),
+             activation_policy_ack_ts=COALESCE(?4,activation_policy_ack_ts)
+          WHERE {identity_column}=?5"
+    );
+    let changed = tx.execute(
+        &update,
+        rusqlite::params![
+            status,
+            activation_policy_ack.map(|ack| ack.effective_policy_version),
+            activation_policy_ack.map(|ack| ack.policy_digest.as_str()),
+            activation_policy_ack.map(|_| now()),
+            identity,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(changed)
 }
 
 /// Change key label through its non-secret control-plane identifier.
@@ -7158,8 +8544,18 @@ mod tests {
         sqlite_mark_delivering(&c, "req", 60).unwrap();
         // Simulate a process crash after durable intent commit but before the balance transaction.
         assert_eq!(
-            sqlite_enqueue_settlement(&c, "req", "a", "k", 500, 175, Some("provider:req"), None)
-                .unwrap(),
+            sqlite_enqueue_settlement(
+                &c,
+                "req",
+                "a",
+                "k",
+                500,
+                175,
+                Some("provider:req"),
+                None,
+                "settle",
+            )
+            .unwrap(),
             None,
         );
         let before = account_get(&c, "a").unwrap().unwrap();
@@ -7617,12 +9013,12 @@ mod tests {
 
         acct_with_key(&c, "a", "k", 100_000_000_000, 2000);
         let ts = now();
-        let mut seed_outbox = |request_id: &str,
-                               state: &str,
-                               attempts: i64,
-                               error: Option<&str>,
-                               created: i64,
-                               updated: i64| {
+        let seed_outbox = |request_id: &str,
+                           state: &str,
+                           attempts: i64,
+                           error: Option<&str>,
+                           created: i64,
+                           updated: i64| {
             c.execute(
                 "INSERT INTO billing_settlement_outbox(request_id,actual_nano,state,attempts, \
                  next_attempt_ts,last_error,created_ts,updated_ts) \
@@ -8142,5 +9538,317 @@ mod tests {
         assert!(rest[0].id > first[0].id);
         assert_eq!(account_set_mult_bp(&c, "acct", 3500).unwrap(), 1);
         assert_eq!(account_get(&c, "acct").unwrap().unwrap().mult_bp, 3500);
+    }
+
+    #[test]
+    fn strict_policy_reserve_settlement_and_topup_preserve_funding_identity() {
+        use crate::pricing::{
+            AccountClass, FundingEnforcement, LegacyPremiumModifiers, PolicyAdmissionSnapshot,
+            PolicyAdmissionSnapshotInput, PolicyEnforcement, PolicyReserveOutcome, PolicyRuleScope,
+            PricingMode, ReconciliationState, RuleOrigin, SnapshotAnthropicInferenceGeo,
+            SnapshotAnthropicSpeed, SnapshotProvider,
+        };
+
+        let c = db();
+        account_create(&c, "strict-account", None, 5_000).unwrap();
+        account_topup(&c, "strict-account", 1_000, Some("strict-seed")).unwrap();
+        c.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES('main',1,1,1,'capability','catalog-digest',1);
+             INSERT INTO pricing_catalog_entries(
+                 product_id,generation,provider_id,canonical_model_id,enabled
+             ) VALUES('main',1,'anthropic','claude-test',1);
+             INSERT INTO pricing_catalog_heads(product_id,active_generation,updated_ts)
+             VALUES('main',1,1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES(1,1,1,'capability','switch-digest',1);
+             INSERT INTO provider_switch_entries(
+                 generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+             ) VALUES
+                 (1,'anthropic','master','','',NULL,1),
+                 (1,'anthropic','segment','main','b2c',1,1);
+             INSERT INTO provider_switch_head(singleton,active_generation,updated_ts)
+             VALUES(1,1,1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+                 switch_generation,content_digest,replacement_locked,created_ts
+             ) VALUES(
+                 'strict-account',1,'b2c:global',1,'source-policy','global_b2c','global','b2c',
+                 'main',1,1,1,'policy-digest',0,1
+             );
+             INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                 track_eligible,retention_eligible,commission_eligible
+             ) VALUES
+                 ('strict-account',1,'track-provider','track-digest','provider','anthropic',NULL,
+                  'track','managed',NULL,5000,1,1,1),
+                 ('strict-account',1,'static-model','static-digest','model','anthropic',
+                  'claude-test','discount','managed',0,10000,0,0,0);
+             INSERT INTO account_policy_bindings(
+                 account_id,product_id,account_class,active_effective_version,
+                 policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+             ) VALUES('strict-account','main','b2c',1,'shadow','shadow','verified',1);
+             INSERT INTO funding_buckets(
+                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES
+                 ('strict-bonus','strict-account','welcome_track_bonus','welcome','track',400,
+                  0,0,1,'active',1,1),
+                 ('strict-paid','strict-account','paid','seed','any',600,
+                  0,0,1,'active',2,2);",
+        )
+        .unwrap();
+        let ack = KeyActivationPolicyAck {
+            effective_policy_version: 1,
+            policy_digest: "policy-digest".into(),
+        };
+        key_issue_with_policy_ack(
+            &c,
+            "strict-key",
+            "strict-account",
+            None,
+            None,
+            None,
+            Some(&ack),
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE account_policy_bindings
+                SET policy_enforcement='strict',funding_enforcement='strict'
+              WHERE account_id='strict-account'",
+            [],
+        )
+        .unwrap();
+        let auth = key_account(&c, "strict-key").unwrap().unwrap();
+        assert!(auth.active_at(now()));
+        assert_eq!(auth.policy_enforcement, Some(PolicyEnforcement::Strict));
+        assert_eq!(auth.funding_enforcement, Some(FundingEnforcement::Strict));
+        assert_eq!(
+            auth.reconciliation_state,
+            Some(ReconciliationState::Verified)
+        );
+        assert_eq!(
+            (auth.paid_available_nano, auth.track_available_nano),
+            (Some(600), Some(1_000))
+        );
+
+        let admission_ts = now();
+        let track_snapshot = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+            request_id: "strict-track-request".into(),
+            account_id: "strict-account".into(),
+            provider: SnapshotProvider::Anthropic,
+            product_id: "main".into(),
+            account_class: AccountClass::B2c,
+            requested_model_id: "claude-test".into(),
+            canonical_model_id: "claude-test".into(),
+            alias_generation: 1,
+            rule_id: "track-provider".into(),
+            rule_digest: "track-digest".into(),
+            rule_scope: PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: PricingMode::Track,
+            rule_origin: RuleOrigin::Managed,
+            discount_bps: None,
+            payable_multiplier_bp: 5_000,
+            policy_id: "b2c:global".into(),
+            policy_version: 1,
+            effective_policy_version: 1,
+            source_policy_digest: "source-policy".into(),
+            policy_digest: "policy-digest".into(),
+            policy_catalog_generation: 1,
+            policy_switch_generation: 1,
+            admission_catalog_generation: 1,
+            admission_catalog_digest: "catalog-digest".into(),
+            admission_switch_generation: 1,
+            admission_switch_digest: "switch-digest".into(),
+            runtime_manifest_generation: 1,
+            runtime_manifest_digest: "runtime-manifest".into(),
+            tariff_schedule_id: "anthropic/claude-test/v1".into(),
+            tariff_priced_ts: admission_ts,
+            admission_ts,
+            official_hold_nano: 1_000,
+            charged_hold_nano: 500,
+            track_eligible: true,
+            retention_eligible: true,
+            commission_eligible: true,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: SnapshotAnthropicSpeed::Standard,
+                inference_geo: SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap();
+        assert!(matches!(
+            sqlite_reserve_request_with_policy_snapshot(&c, "strict-key", 60, &track_snapshot)
+                .unwrap(),
+            PolicyReserveOutcome::Inserted(_)
+        ));
+        assert_eq!(
+            c.query_row(
+                "SELECT group_concat(bucket_id || ':' || reserved_nano, ',')
+                   FROM (
+                       SELECT bucket_id,reserved_nano
+                         FROM reservation_funding_allocations
+                        WHERE request_id='strict-track-request'
+                        ORDER BY allocation_order
+                   )",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "strict-bonus:400,strict-paid:100"
+        );
+        let usage = UsageEventInput {
+            model: "claude-test".into(),
+            provider: PROVIDER_ANTHROPIC.into(),
+            input_tokens: 1,
+            real_nano: 600,
+            input_nano: 600,
+            priced_ts: admission_ts,
+            speed: "standard".into(),
+            inference_geo: "global".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "strict-track-request",
+                "strict-account",
+                "strict-key",
+                500,
+                300,
+                Some("strict-provider-ref"),
+                Some(&usage),
+            )
+            .unwrap(),
+            Some(700)
+        );
+        let account = account_get(&c, "strict-account").unwrap().unwrap();
+        assert_eq!(
+            (
+                account.balance_nano,
+                account.spent_nano,
+                account.reserved_nano
+            ),
+            (700, 300, 0)
+        );
+        let buckets: Vec<(String, i64, i64, i64)> = {
+            let mut statement = c
+                .prepare(
+                    "SELECT bucket_id,balance_nano,reserved_nano,spent_nano
+                   FROM funding_buckets
+                  WHERE bucket_id IN ('strict-bonus','strict-paid') ORDER BY bucket_id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            buckets,
+            vec![
+                ("strict-bonus".into(), 100, 0, 300),
+                ("strict-paid".into(), 600, 0, 0)
+            ]
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT allocation.bucket_id || ':' || allocation.amount_nano
+                   FROM ledger_funding_allocations allocation
+                   JOIN ledger ON ledger.id=allocation.ledger_id
+                  WHERE ledger.request_id='strict-track-request'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "strict-bonus:300"
+        );
+        let attribution: (String, i64, i64, i64, String) = c
+            .query_row(
+                "SELECT snapshot_kind,paid_funded_nano,bonus_funded_nano,
+                    runtime_manifest_generation,runtime_manifest_digest
+               FROM ledger WHERE request_id='strict-track-request'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            attribution,
+            ("policy_v1".into(), 0, 300, 1, "runtime-manifest".into())
+        );
+
+        assert_eq!(
+            account_topup(&c, "strict-account", 200, Some("strict-topup")).unwrap(),
+            Some(900)
+        );
+        assert_eq!(
+            account_topup(&c, "strict-account", 200, Some("strict-topup")).unwrap(),
+            Some(900)
+        );
+        let parity: (i64, i64) = c
+            .query_row(
+                "SELECT account.balance_nano,COALESCE(SUM(bucket.balance_nano),0)
+               FROM accounts account
+               LEFT JOIN funding_buckets bucket ON bucket.account_id=account.id
+              WHERE account.id='strict-account' GROUP BY account.id",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(parity, (900, 900));
+
+        let static_snapshot = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+            request_id: "strict-static-request".into(),
+            rule_id: "static-model".into(),
+            rule_digest: "static-digest".into(),
+            rule_scope: PolicyRuleScope::Model {
+                provider_id: "anthropic".into(),
+                canonical_model_id: "claude-test".into(),
+            },
+            pricing_mode: PricingMode::Discount,
+            discount_bps: Some(0),
+            payable_multiplier_bp: 10_000,
+            official_hold_nano: 850,
+            charged_hold_nano: 850,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+            ..track_snapshot.as_input()
+        })
+        .unwrap();
+        assert_eq!(
+            sqlite_reserve_request_with_policy_snapshot(&c, "strict-key", 60, &static_snapshot)
+                .unwrap(),
+            PolicyReserveOutcome::NotReserved
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM billing_reservations
+                  WHERE request_id='strict-static-request'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 }

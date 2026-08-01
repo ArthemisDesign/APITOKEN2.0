@@ -30,8 +30,7 @@ const MIGRATION_0011: &str =
 const MIGRATION_0012: &str = include_str!("../migrations_pg/0012_codex_home_health.sql");
 const MIGRATION_0013: &str = include_str!("../migrations_pg/0013_gemini_window_calibration.sql");
 const MIGRATION_0014: &str = include_str!("../migrations_pg/0014_gemini_workload_calibration.sql");
-const MIGRATION_0015: &str =
-    include_str!("../migrations_pg/0015_codex_fractional_calibration.sql");
+const MIGRATION_0015: &str = include_str!("../migrations_pg/0015_codex_fractional_calibration.sql");
 const MIGRATION_0016: &str =
     include_str!("../migrations_pg/0016_multi_discount_strict_enforcement.sql");
 const MIGRATION_0017: &str = include_str!("../migrations_pg/0017_policy_runtime_floor.sql");
@@ -222,6 +221,393 @@ pub fn is_statement_or_lock_timeout(error: &anyhow::Error) -> bool {
     })
 }
 
+fn postgres_policy_funding_evidence(
+    tx: &mut Transaction<'_>,
+    request_id: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+    lock_buckets: bool,
+) -> Result<crate::PolicyFundingEvidence> {
+    if actual_nano < 0 || actual_nano > hold_nano {
+        bail!("strict settlement actual must be within the reserved hold");
+    }
+    let lock = if lock_buckets {
+        " FOR UPDATE OF allocation,bucket"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT allocation.bucket_id,bucket.source_type,allocation.bucket_version,
+                allocation.reserved_nano,allocation.allocation_order
+           FROM reservation_funding_allocations allocation
+           JOIN funding_buckets bucket
+             ON bucket.bucket_id=allocation.bucket_id
+            AND bucket.account_id=allocation.account_id
+          WHERE allocation.request_id=$1
+          ORDER BY allocation.allocation_order,allocation.bucket_id{lock}"
+    );
+    let rows: Vec<(String, String, i64, i64, i64)> = tx
+        .query(&sql, &[&request_id])?
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+        .collect();
+    let reserved_total = rows.iter().try_fold(0_i64, |total, row| {
+        total
+            .checked_add(row.3)
+            .context("strict funding reservation total overflow")
+    })?;
+    if rows.is_empty() || reserved_total != hold_nano {
+        bail!("strict settlement funding allocations do not cover the hold");
+    }
+
+    let mut charge_remaining = actual_nano;
+    let mut paid_funded_nano = 0_i64;
+    let mut bonus_funded_nano = 0_i64;
+    let mut other_funded_nano = 0_i64;
+    let mut allocations = Vec::with_capacity(rows.len());
+    for (bucket_id, source_type, bucket_version, reserved_nano, allocation_order) in rows {
+        let charged_nano = charge_remaining.min(reserved_nano);
+        let released_nano = reserved_nano - charged_nano;
+        charge_remaining -= charged_nano;
+        let category = match source_type.as_str() {
+            "paid" => &mut paid_funded_nano,
+            "welcome_track_bonus" => &mut bonus_funded_nano,
+            _ => &mut other_funded_nano,
+        };
+        *category = category
+            .checked_add(charged_nano)
+            .context("strict funding charge category overflow")?;
+        allocations.push(crate::PolicyFundingAllocationEvidence {
+            bucket_id,
+            source_type,
+            bucket_version,
+            reserved_nano,
+            charged_nano,
+            released_nano,
+            allocation_order,
+        });
+    }
+    if charge_remaining != 0 {
+        bail!("strict settlement funding allocations do not cover the actual charge");
+    }
+    let allocation_json = serde_json::to_string(&allocations)?;
+    Ok(crate::PolicyFundingEvidence {
+        allocations,
+        paid_funded_nano,
+        bonus_funded_nano,
+        other_funded_nano,
+        allocation_json,
+    })
+}
+
+fn postgres_write_policy_attribution(
+    tx: &mut Transaction<'_>,
+    table: &str,
+    request_id: &str,
+    snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+    usage: Option<&UsageEventInput>,
+    disposition: &str,
+    funding: &crate::PolicyFundingEvidence,
+) -> Result<()> {
+    let predicate = match table {
+        "settlement_outbox" | "usage_events" => "request_id=$1",
+        "ledger" => "kind='charge' AND request_id=$1",
+        _ => bail!("unsupported PostgreSQL policy attribution target"),
+    };
+    let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
+    let served_model = usage
+        .map(|value| value.model.as_str())
+        .or_else(|| (disposition == "reconcile_full_hold").then(|| snapshot.canonical_model_id()));
+    let invariant = if disposition == "reconcile_full_hold" {
+        Some("reconciled_full_hold_without_usage")
+    } else {
+        served_model
+            .filter(|model| *model != snapshot.canonical_model_id())
+            .map(|_| "served_canonical_model_mismatch")
+    };
+    let official_cost_json = crate::policy_official_cost_json(snapshot, usage, disposition)?;
+    let sql = format!(
+        "UPDATE {table} SET
+             provider=$2,attribution_schema_version=$3,snapshot_kind='policy_v1',product_id=$4,
+             account_class=$5,requested_model_id=$6,canonical_model_id=$7,served_model_id=$8,
+             served_canonical_model_id=$8,billing_invariant_code=$9,alias_generation=$10,
+             rule_id=$11,rule_digest=$12,rule_scope=$13,pricing_mode=$14,rule_origin=$15,
+             discount_bps=$16,payable_multiplier_bp=$17,policy_id=$18,policy_version=$19,
+             effective_policy_version=$20,policy_digest=$21,catalog_generation=$22,
+             switch_generation=$23,tariff_schedule_id=$24,tariff_priced_ts=$25,
+             official_cost_json=$26::text::jsonb,paid_funded_nano=$27,bonus_funded_nano=$28,
+             other_funded_nano=$29,funding_allocation_json=$30::text::jsonb,track_eligible=$31,
+             retention_eligible=$32,commission_eligible=$33,snapshot_digest=$34,
+             source_policy_digest=$35,admission_catalog_generation=$36,
+             admission_catalog_digest=$37,admission_switch_generation=$38,
+             admission_switch_digest=$39,runtime_manifest_generation=$40,
+             runtime_manifest_digest=$41
+           WHERE {predicate}"
+    );
+    if tx.execute(
+        &sql,
+        &[
+            &request_id,
+            &snapshot.provider().as_str(),
+            &crate::pricing::POLICY_ADMISSION_SNAPSHOT_SCHEMA_VERSION,
+            &snapshot.product_id(),
+            &snapshot.account_class().as_str(),
+            &snapshot.requested_model_id(),
+            &snapshot.canonical_model_id(),
+            &served_model,
+            &invariant,
+            &snapshot.alias_generation(),
+            &snapshot.rule_id(),
+            &snapshot.rule_digest(),
+            &rule_scope,
+            &snapshot.pricing_mode().as_str(),
+            &snapshot.rule_origin.as_str(),
+            &snapshot.discount_bps,
+            &snapshot.payable_multiplier_bp(),
+            &snapshot.policy_id(),
+            &snapshot.policy_version(),
+            &snapshot.effective_policy_version(),
+            &snapshot.policy_digest(),
+            &snapshot.policy_catalog_generation(),
+            &snapshot.policy_switch_generation(),
+            &snapshot.tariff_schedule_id(),
+            &snapshot.tariff_priced_ts(),
+            &official_cost_json,
+            &funding.paid_funded_nano,
+            &funding.bonus_funded_nano,
+            &funding.other_funded_nano,
+            &funding.allocation_json,
+            &snapshot.track_eligible(),
+            &snapshot.retention_eligible(),
+            &snapshot.commission_eligible(),
+            &snapshot.snapshot_digest(),
+            &snapshot.source_policy_digest(),
+            &snapshot.admission_catalog_generation(),
+            &snapshot.admission_catalog_digest(),
+            &snapshot.admission_switch_generation(),
+            &snapshot.admission_switch_digest(),
+            &snapshot.runtime_manifest_generation(),
+            &snapshot.runtime_manifest_digest(),
+        ],
+    )? != 1
+    {
+        bail!("PostgreSQL policy attribution target row is missing");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn postgres_process_policy_settlement(
+    tx: &mut Transaction<'_>,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+    disposition: &str,
+    reference: Option<&str>,
+    usage: Option<&UsageEventInput>,
+    snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+    timestamp: i64,
+) -> Result<i64> {
+    crate::validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
+    let funding = postgres_policy_funding_evidence(tx, request_id, hold_nano, actual_nano, true)?;
+    let released_total = hold_nano - actual_nano;
+    let balance: i64 = tx
+        .query_one(
+            "UPDATE accounts
+            SET balance_nano=balance_nano+$1,spent_nano=spent_nano+$2,
+                reserved_nano=reserved_nano-$3
+          WHERE id=$4 AND reserved_nano >= $3
+          RETURNING balance_nano",
+            &[&released_total, &actual_nano, &hold_nano, &account_id],
+        )
+        .context("strict PostgreSQL reservation/account aggregate invariant failed")?
+        .get(0);
+    let key_updated = tx.execute(
+        "UPDATE api_keys
+            SET spent_nano=spent_nano+$1,reserved_nano=reserved_nano-$2
+          WHERE key=$3 AND account_id=$4 AND reserved_nano >= $2",
+        &[&actual_nano, &hold_nano, &key, &account_id],
+    )?;
+    if key_updated != 1 {
+        let key_still_exists = tx
+            .query_opt("SELECT 1 FROM api_keys WHERE key=$1", &[&key])?
+            .is_some();
+        if key_still_exists {
+            bail!("strict PostgreSQL reservation/key aggregate invariant failed");
+        }
+    }
+
+    for allocation in &funding.allocations {
+        let next_version: i64 = tx
+            .query_one(
+                "UPDATE funding_buckets
+                SET balance_nano=balance_nano+$1,reserved_nano=reserved_nano-$2,
+                    spent_nano=spent_nano+$3,version=version+1,updated_ts=$4,
+                    status=CASE
+                      WHEN status='retired' THEN status
+                      WHEN balance_nano+$1>0 THEN 'active'
+                      ELSE 'exhausted'
+                    END
+              WHERE bucket_id=$5 AND account_id=$6 AND reserved_nano >= $2
+              RETURNING version",
+                &[
+                    &allocation.released_nano,
+                    &allocation.reserved_nano,
+                    &allocation.charged_nano,
+                    &timestamp,
+                    &allocation.bucket_id,
+                    &account_id,
+                ],
+            )
+            .with_context(|| {
+                format!(
+                    "strict PostgreSQL funding bucket {} invariant failed",
+                    allocation.bucket_id
+                )
+            })?
+            .get(0);
+        if next_version <= allocation.bucket_version {
+            bail!("strict PostgreSQL funding bucket version did not advance");
+        }
+        if tx.execute(
+            "UPDATE reservation_funding_allocations
+                SET charged_nano=$1,released_nano=$2
+              WHERE request_id=$3 AND account_id=$4 AND bucket_id=$5
+                AND charged_nano IS NULL AND released_nano IS NULL",
+            &[
+                &allocation.charged_nano,
+                &allocation.released_nano,
+                &request_id,
+                &account_id,
+                &allocation.bucket_id,
+            ],
+        )? != 1
+        {
+            bail!("strict PostgreSQL funding allocation was already terminalized");
+        }
+    }
+
+    if usage.is_some() || actual_nano > 0 {
+        let model = usage
+            .map(|value| value.model.as_str())
+            .unwrap_or_else(|| snapshot.canonical_model_id());
+        let provider = usage
+            .map(|value| value.provider.as_str())
+            .unwrap_or_else(|| snapshot.provider().as_str());
+        let official_nano = usage
+            .map(|value| value.real_nano)
+            .unwrap_or_else(|| snapshot.official_hold_nano());
+        let ledger_id: i64 = tx
+            .query_one(
+                "INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                 provider,official_nano)
+             VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10)
+             RETURNING id",
+                &[
+                    &account_id,
+                    &key,
+                    &request_id,
+                    &actual_nano,
+                    &reference,
+                    &balance,
+                    &timestamp,
+                    &model,
+                    &provider,
+                    &official_nano,
+                ],
+            )?
+            .get(0);
+        postgres_write_policy_attribution(
+            tx,
+            "ledger",
+            request_id,
+            snapshot,
+            usage,
+            disposition,
+            &funding,
+        )?;
+        for allocation in funding
+            .allocations
+            .iter()
+            .filter(|allocation| allocation.charged_nano > 0)
+        {
+            tx.execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano)
+                 VALUES($1,$2,$3,$4,$5,'debit',$6)",
+                &[
+                    &ledger_id,
+                    &account_id,
+                    &allocation.bucket_id,
+                    &allocation.source_type,
+                    &allocation.bucket_version,
+                    &allocation.charged_nano,
+                ],
+            )?;
+        }
+    }
+    if let Some(usage) = usage {
+        tx.execute(
+            "INSERT INTO usage_events(
+                 request_id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens,
+                 cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,
+                 charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano,
+                 cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                    $19,$20,$21,$22,$23,$24)",
+            &[
+                &request_id,
+                &account_id,
+                &key,
+                &usage.model,
+                &usage.input_tokens,
+                &usage.output_tokens,
+                &usage.cache_read_tokens,
+                &usage.cache_write_5m_tokens,
+                &usage.cache_write_1h_tokens,
+                &usage.web_search_requests,
+                &usage.real_nano,
+                &actual_nano,
+                &reference,
+                &timestamp,
+                &usage.speed,
+                &usage.inference_geo,
+                &usage.input_nano,
+                &usage.output_nano,
+                &usage.cache_read_nano,
+                &usage.cache_write_5m_nano,
+                &usage.cache_write_1h_nano,
+                &usage.web_search_nano,
+                &usage.priced_ts,
+                &usage.provider,
+            ],
+        )?;
+        postgres_write_policy_attribution(
+            tx,
+            "usage_events",
+            request_id,
+            snapshot,
+            Some(usage),
+            disposition,
+            &funding,
+        )?;
+    }
+    postgres_write_policy_attribution(
+        tx,
+        "settlement_outbox",
+        request_id,
+        snapshot,
+        usage,
+        disposition,
+        &funding,
+    )?;
+    Ok(balance)
+}
+
 impl PgStore {
     pub fn connect(url: &str) -> Result<Self> {
         Self::connect_with_application_name(url, DEFAULT_APPLICATION_NAME)
@@ -351,6 +737,153 @@ impl PgStore {
         })
     }
 
+    fn strict_pricing_heads_supported(
+        tx: &mut Transaction<'_>,
+        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<bool> {
+        manifest.capabilities().iter().try_for_each(|capability| {
+            if capability.pricing_schema_version() != crate::pricing::PRICING_SCHEMA_VERSION {
+                bail!("runtime manifest contains an unsupported pricing schema version");
+            }
+            Ok(())
+        })?;
+        tx.query(
+            "SELECT account_id
+               FROM account_policy_bindings
+              WHERE policy_enforcement='strict' OR funding_enforcement='strict'
+              FOR SHARE",
+            &[],
+        )?;
+        tx.query(
+            "SELECT head.product_id
+               FROM account_policy_bindings binding
+               JOIN account_policy_versions policy
+                 ON policy.account_id=binding.account_id
+                AND policy.effective_version=binding.active_effective_version
+               JOIN pricing_catalog_heads head ON head.product_id=policy.product_id
+              WHERE binding.policy_enforcement='strict'
+                 OR binding.funding_enforcement='strict'
+              FOR SHARE OF head",
+            &[],
+        )?;
+        tx.query(
+            "SELECT singleton
+               FROM provider_switch_head
+              WHERE EXISTS(
+                  SELECT 1 FROM account_policy_bindings
+                   WHERE policy_enforcement='strict' OR funding_enforcement='strict'
+              )
+              FOR SHARE",
+            &[],
+        )?;
+        let dependencies = tx.query(
+            "SELECT DISTINCT pricing_schema_version,capability_generation,capability_digest
+               FROM (
+                   SELECT catalog.schema_version AS pricing_schema_version,
+                          catalog.capability_generation,catalog.capability_digest
+                     FROM account_policy_bindings binding
+                     JOIN account_policy_versions policy
+                       ON policy.account_id=binding.account_id
+                      AND policy.effective_version=binding.active_effective_version
+                     JOIN pricing_catalog_versions catalog
+                       ON catalog.product_id=policy.product_id
+                      AND catalog.generation=policy.catalog_generation
+                    WHERE binding.policy_enforcement='strict'
+                       OR binding.funding_enforcement='strict'
+                   UNION
+                   SELECT switches.schema_version,switches.capability_generation,
+                          switches.capability_digest
+                     FROM account_policy_bindings binding
+                     JOIN account_policy_versions policy
+                       ON policy.account_id=binding.account_id
+                      AND policy.effective_version=binding.active_effective_version
+                     JOIN provider_switch_versions switches
+                       ON switches.generation=policy.switch_generation
+                    WHERE binding.policy_enforcement='strict'
+                       OR binding.funding_enforcement='strict'
+                   UNION
+                   SELECT catalog.schema_version,catalog.capability_generation,
+                          catalog.capability_digest
+                     FROM account_policy_bindings binding
+                     JOIN account_policy_versions policy
+                       ON policy.account_id=binding.account_id
+                      AND policy.effective_version=binding.active_effective_version
+                     JOIN pricing_catalog_heads head ON head.product_id=policy.product_id
+                     JOIN pricing_catalog_versions catalog
+                       ON catalog.product_id=head.product_id
+                      AND catalog.generation=head.active_generation
+                    WHERE binding.policy_enforcement='strict'
+                       OR binding.funding_enforcement='strict'
+                   UNION
+                   SELECT switches.schema_version,switches.capability_generation,
+                          switches.capability_digest
+                     FROM provider_switch_head head
+                     JOIN provider_switch_versions switches
+                       ON switches.generation=head.active_generation
+                    WHERE EXISTS(
+                        SELECT 1 FROM account_policy_bindings
+                         WHERE policy_enforcement='strict' OR funding_enforcement='strict'
+                    )
+               ) dependency",
+            &[],
+        )?;
+        Ok(dependencies.into_iter().all(|row| {
+            let schema_version: i64 = row.get(0);
+            let capability_generation: i64 = row.get(1);
+            let capability_digest: String = row.get(2);
+            manifest.capabilities().iter().any(|capability| {
+                capability.pricing_schema_version() == schema_version
+                    && capability.capability_generation() == capability_generation
+                    && capability.capability_digest() == capability_digest
+            })
+        }))
+    }
+
+    pub fn claim_instance_with_pricing_manifest(
+        &mut self,
+        instance_id: &str,
+        ttl_secs: i64,
+        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<Owner> {
+        if instance_id.trim().is_empty() {
+            bail!("engine instance id must not be empty");
+        }
+        let ts = now();
+        let mut tx = self.client.transaction()?;
+        if !Self::strict_pricing_heads_supported(&mut tx, manifest)? {
+            bail!("runtime pricing manifest does not support every active strict dependency");
+        }
+        let epoch: i64 = tx
+            .query_one("SELECT nextval('engine_owner_epoch_seq')::bigint", &[])?
+            .get(0);
+        tx.execute(
+            "INSERT INTO engine_instances(
+                 instance_id,owner_epoch,lease_until,started_ts,updated_ts,pricing_schema_version,
+                 pricing_runtime_manifest_generation,pricing_runtime_manifest_digest)
+             VALUES($1,$2,$3,$4,$4,$5,$6,$7)
+             ON CONFLICT(instance_id) DO UPDATE SET
+                 owner_epoch=EXCLUDED.owner_epoch,lease_until=EXCLUDED.lease_until,
+                 started_ts=EXCLUDED.started_ts,updated_ts=EXCLUDED.updated_ts,
+                 pricing_schema_version=EXCLUDED.pricing_schema_version,
+                 pricing_runtime_manifest_generation=EXCLUDED.pricing_runtime_manifest_generation,
+                 pricing_runtime_manifest_digest=EXCLUDED.pricing_runtime_manifest_digest",
+            &[
+                &instance_id,
+                &epoch,
+                &ts.saturating_add(ttl_secs.max(1)),
+                &ts,
+                &crate::pricing::PRICING_SCHEMA_VERSION,
+                &manifest.manifest_generation(),
+                &manifest.manifest_digest(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Owner {
+            instance_id: instance_id.to_owned(),
+            epoch,
+        })
+    }
+
     pub fn heartbeat_instance(&mut self, owner: &Owner, ttl_secs: i64) -> Result<bool> {
         let ts = now();
         Ok(self.client.execute(
@@ -363,6 +896,38 @@ impl PgStore {
                 &ts,
             ],
         )? == 1)
+    }
+
+    pub fn heartbeat_instance_with_pricing_manifest(
+        &mut self,
+        owner: &Owner,
+        ttl_secs: i64,
+        manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<bool> {
+        let ts = now();
+        let mut tx = self.client.transaction()?;
+        if !Self::strict_pricing_heads_supported(&mut tx, manifest)? {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let changed = tx.execute(
+            "UPDATE engine_instances SET lease_until=$3,updated_ts=$4
+              WHERE instance_id=$1 AND owner_epoch=$2
+                AND pricing_schema_version=$5
+                AND pricing_runtime_manifest_generation=$6
+                AND pricing_runtime_manifest_digest=$7",
+            &[
+                &owner.instance_id,
+                &owner.epoch,
+                &ts.saturating_add(ttl_secs.max(1)),
+                &ts,
+                &crate::pricing::PRICING_SCHEMA_VERSION,
+                &manifest.manifest_generation(),
+                &manifest.manifest_digest(),
+            ],
+        )? == 1;
+        tx.commit()?;
+        Ok(changed)
     }
 
     fn assert_owner(tx: &mut Transaction<'_>, owner: &Owner, ts: i64) -> Result<()> {
@@ -658,6 +1223,436 @@ impl PgStore {
         }))
     }
 
+    /// Atomically revalidate the complete strict policy/admission decision, reserve its exact
+    /// eligible funding buckets and persist the immutable admission snapshot.
+    pub fn reserve_request_with_policy_snapshot(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+    ) -> Result<crate::pricing::PolicyReserveOutcome> {
+        self.reserve_request_with_policy_snapshot_guarded(owner, key, lease_secs, snapshot, || true)
+    }
+
+    /// Guarded strict reserve for the async writer. A lost caller cannot leave behind an
+    /// unobserved committed hold: the final owner fence and caller gate run immediately before
+    /// commit for both inserts and exact active replays.
+    pub fn reserve_request_with_policy_snapshot_guarded(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+        mut commit_gate: impl FnMut() -> bool,
+    ) -> Result<crate::pricing::PolicyReserveOutcome> {
+        use crate::pricing::{
+            PolicyReserveConflict as Conflict, PolicyReserveOutcome as Outcome,
+            PolicyReserveReceipt as Receipt, PolicySnapshotLookup as Lookup,
+        };
+
+        snapshot.validate()?;
+        if key.trim().is_empty() || lease_secs <= 0 {
+            bail!("invalid PostgreSQL policy snapshot reservation parameters");
+        }
+        let window_conflict = |trusted_now_ts| -> Result<Option<Conflict>> {
+            match snapshot.validate_idempotency_window_at(trusted_now_ts) {
+                Ok(()) => Ok(None),
+                Err(crate::pricing::LegacyScalarIdempotencyWindowError::Expired) => {
+                    Ok(Some(Conflict::ExpiredIdempotencyWindow))
+                }
+                Err(crate::pricing::LegacyScalarIdempotencyWindowError::AdmissionFromFuture) => {
+                    Ok(Some(Conflict::AdmissionTimestampInFuture))
+                }
+                Err(
+                    crate::pricing::LegacyScalarIdempotencyWindowError::InvalidTrustedTimestamp,
+                ) => bail!("trusted PostgreSQL reservation clock is invalid"),
+            }
+        };
+        let preflight_ts = now();
+        if let Some(conflict) = window_conflict(preflight_ts)? {
+            return Ok(Outcome::Conflict(conflict));
+        }
+
+        let request_id = snapshot.request_id();
+        let account_id = snapshot.account_id();
+        let hold = snapshot.charged_hold_nano();
+        let mut tx = self.client.transaction()?;
+        Self::assert_owner(&mut tx, owner, preflight_ts)?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&request_id],
+        )?;
+        let fence_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
+        if let Some(conflict) = window_conflict(fence_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
+
+        if let Some(row) = tx.query_opt(
+            "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
+                    owner_epoch,state
+               FROM reservations
+              WHERE request_id=$1
+              FOR UPDATE",
+            &[&request_id],
+        )? {
+            let balance: i64 = row.get(3);
+            let outcome = if row.get::<_, String>(0) != account_id
+                || row.get::<_, String>(1) != key
+                || row.get::<_, i64>(2) != hold
+                || row.get::<_, String>(4) != owner.instance_id
+                || row.get::<_, i64>(5) != owner.epoch
+            {
+                Outcome::Conflict(Conflict::ReservationIdentity)
+            } else if !matches!(row.get::<_, String>(6).as_str(), "reserved" | "delivering") {
+                Outcome::Conflict(Conflict::TerminalReservation)
+            } else {
+                match crate::pricing::postgres::postgres_policy_snapshot_lookup(
+                    &mut tx, request_id, true,
+                )? {
+                    Lookup::Missing => {
+                        Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
+                    }
+                    Lookup::NonPolicy => Outcome::Conflict(Conflict::ExistingNonPolicySnapshot),
+                    Lookup::Policy(stored) if stored.as_ref() == snapshot => {
+                        Outcome::Unchanged(Receipt {
+                            balance_after_reserve_nano: balance,
+                            snapshot: *stored,
+                        })
+                    }
+                    Lookup::Policy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+                }
+            };
+            if matches!(&outcome, Outcome::Unchanged(_)) {
+                Self::assert_owner_locked(&mut tx, owner, now())?;
+                if !commit_gate() {
+                    tx.rollback()?;
+                    return Ok(Outcome::AbortedBeforeCommit);
+                }
+            }
+            tx.commit()?;
+            return Ok(outcome);
+        }
+
+        let reservation_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
+        if let Some(conflict) = window_conflict(reservation_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
+
+        let (rule_scope, rule_provider, rule_model) = snapshot.rule_scope.db_parts();
+        let (scoped_type, scoped_product, scoped_segment) = match snapshot.account_class {
+            crate::pricing::AccountClass::B2c => ("segment", snapshot.product_id.as_str(), "b2c"),
+            crate::pricing::AccountClass::B2b => ("segment", snapshot.product_id.as_str(), "b2b"),
+            crate::pricing::AccountClass::OpenKeys | crate::pricing::AccountClass::Service => {
+                ("product", snapshot.product_id.as_str(), "")
+            }
+        };
+        let policy_state_matches: bool = tx
+            .query_one(
+                "SELECT EXISTS(
+               SELECT 1
+               FROM account_policy_bindings binding
+               JOIN account_policy_versions policy
+                 ON policy.account_id=binding.account_id
+                AND policy.effective_version=binding.active_effective_version
+               JOIN account_policy_rules rule
+                 ON rule.account_id=policy.account_id
+                AND rule.effective_version=policy.effective_version
+               JOIN pricing_catalog_versions policy_catalog
+                 ON policy_catalog.product_id=policy.product_id
+                AND policy_catalog.generation=policy.catalog_generation
+               JOIN pricing_catalog_entries policy_model
+                 ON policy_model.product_id=policy_catalog.product_id
+                AND policy_model.generation=policy_catalog.generation
+               JOIN provider_switch_versions policy_switches
+                 ON policy_switches.generation=policy.switch_generation
+               JOIN provider_switch_entries policy_master
+                 ON policy_master.generation=policy_switches.generation
+               JOIN provider_switch_entries policy_scoped
+                 ON policy_scoped.generation=policy_switches.generation
+               JOIN pricing_catalog_heads catalog_head
+                 ON catalog_head.product_id=policy.product_id
+               JOIN pricing_catalog_versions catalog
+                 ON catalog.product_id=catalog_head.product_id
+                AND catalog.generation=catalog_head.active_generation
+               JOIN pricing_catalog_entries admission_model
+                 ON admission_model.product_id=catalog.product_id
+                AND admission_model.generation=catalog.generation
+               JOIN provider_switch_head switch_head ON switch_head.singleton=1
+               JOIN provider_switch_versions switches
+                 ON switches.generation=switch_head.active_generation
+               JOIN provider_switch_entries admission_master
+                 ON admission_master.generation=switches.generation
+               JOIN provider_switch_entries admission_scoped
+                 ON admission_scoped.generation=switches.generation
+               JOIN engine_instances instance
+                 ON instance.instance_id=$31 AND instance.owner_epoch=$32
+              WHERE binding.account_id=$1
+                AND binding.policy_enforcement='strict'
+                AND binding.funding_enforcement='strict'
+                AND binding.reconciliation_state='verified'
+                AND policy.effective_version=$2
+                AND policy.policy_id=$3
+                AND policy.policy_version=$4
+                AND policy.source_policy_digest=$5
+                AND policy.content_digest=$6
+                AND policy.product_id=$7
+                AND policy.account_class=$8
+                AND policy.catalog_generation=$9
+                AND policy.switch_generation=$10
+                AND catalog.generation=$11
+                AND catalog.content_digest=$12
+                AND switches.generation=$13
+                AND switches.content_digest=$14
+                AND rule.rule_id=$15
+                AND rule.rule_digest=$16
+                AND rule.scope_type=$17
+                AND rule.provider_id=$18
+                AND rule.canonical_model_id IS NOT DISTINCT FROM $19
+                AND rule.pricing_mode=$20
+                AND rule.rule_origin=$21
+                AND rule.discount_bps IS NOT DISTINCT FROM $22
+                AND rule.payable_multiplier_bp=$23
+                AND rule.track_eligible=$24
+                AND rule.retention_eligible=$25
+                AND rule.commission_eligible=$26
+                AND policy_model.provider_id=$18
+                AND policy_model.canonical_model_id=$27
+                AND policy_model.enabled
+                AND admission_model.provider_id=$18
+                AND admission_model.canonical_model_id=$27
+                AND admission_model.enabled
+                AND policy_master.provider_id=$18
+                AND policy_master.scope_type='master'
+                AND policy_master.product_id=''
+                AND policy_master.segment=''
+                AND policy_master.enabled
+                AND policy_scoped.provider_id=$18
+                AND policy_scoped.scope_type=$28
+                AND policy_scoped.product_id=$29
+                AND policy_scoped.segment=$30
+                AND policy_scoped.catalog_generation=policy_catalog.generation
+                AND policy_scoped.enabled
+                AND admission_master.provider_id=$18
+                AND admission_master.scope_type='master'
+                AND admission_master.product_id=''
+                AND admission_master.segment=''
+                AND admission_master.enabled
+                AND admission_scoped.provider_id=$18
+                AND admission_scoped.scope_type=$28
+                AND admission_scoped.product_id=$29
+                AND admission_scoped.segment=$30
+                AND admission_scoped.catalog_generation IN (
+                    catalog.generation, policy_catalog.generation
+                )
+                AND admission_scoped.enabled
+                AND instance.lease_until >= $33
+                AND instance.pricing_schema_version=$34
+                AND instance.pricing_runtime_manifest_generation=$35
+                AND instance.pricing_runtime_manifest_digest=$36
+             )",
+                &[
+                    &snapshot.account_id,
+                    &snapshot.effective_policy_version,
+                    &snapshot.policy_id,
+                    &snapshot.policy_version,
+                    &snapshot.source_policy_digest,
+                    &snapshot.policy_digest,
+                    &snapshot.product_id,
+                    &snapshot.account_class.as_str(),
+                    &snapshot.policy_catalog_generation,
+                    &snapshot.policy_switch_generation,
+                    &snapshot.admission_catalog_generation,
+                    &snapshot.admission_catalog_digest,
+                    &snapshot.admission_switch_generation,
+                    &snapshot.admission_switch_digest,
+                    &snapshot.rule_id,
+                    &snapshot.rule_digest,
+                    &rule_scope,
+                    &rule_provider,
+                    &rule_model,
+                    &snapshot.pricing_mode.as_str(),
+                    &snapshot.rule_origin.as_str(),
+                    &snapshot.discount_bps,
+                    &snapshot.payable_multiplier_bp,
+                    &snapshot.track_eligible,
+                    &snapshot.retention_eligible,
+                    &snapshot.commission_eligible,
+                    &snapshot.canonical_model_id,
+                    &scoped_type,
+                    &scoped_product,
+                    &scoped_segment,
+                    &owner.instance_id,
+                    &owner.epoch,
+                    &reservation_ts,
+                    &crate::pricing::PRICING_SCHEMA_VERSION,
+                    &snapshot.runtime_manifest_generation,
+                    &snapshot.runtime_manifest_digest,
+                ],
+            )?
+            .get(0);
+        if !policy_state_matches {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(Conflict::PolicyStateChanged));
+        }
+
+        let eligibility = if snapshot.track_eligible() {
+            "track"
+        } else {
+            "any"
+        };
+        let buckets: Vec<(String, i64, i64)> = tx
+            .query(
+                "SELECT bucket_id,version,balance_nano
+               FROM funding_buckets
+              WHERE account_id=$1 AND status='active' AND balance_nano>0
+                AND (($2='track' AND eligibility IN ('track','any'))
+                  OR ($2='any' AND eligibility='any'))
+              ORDER BY CASE source_type
+                         WHEN 'welcome_track_bonus' THEN 0
+                         WHEN 'paid' THEN 1
+                         ELSE 2
+                       END, created_ts, bucket_id
+              FOR UPDATE",
+                &[&account_id, &eligibility],
+            )?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect();
+        let eligible_total = buckets.iter().try_fold(0_i64, |total, (_, _, balance)| {
+            total
+                .checked_add(*balance)
+                .context("eligible funding balance overflow")
+        })?;
+        if eligible_total < hold {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        }
+
+        let Some(row) = tx.query_opt(
+            "UPDATE accounts
+                SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1
+              WHERE id=$2 AND status='active' AND balance_nano >= $1
+              RETURNING balance_nano",
+            &[&hold, &account_id],
+        )?
+        else {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        };
+        let balance: i64 = row.get(0);
+        if tx.execute(
+            "UPDATE api_keys SET reserved_nano=reserved_nano+$1
+              WHERE key=$2 AND account_id=$3 AND status='active'
+                AND (expires_ts IS NULL OR expires_ts>
+                    floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint)
+                AND (spend_limit_nano IS NULL OR
+                    spent_nano+reserved_nano+$1<=spend_limit_nano)",
+            &[&hold, &key, &account_id],
+        )? != 1
+        {
+            tx.rollback()?;
+            return Ok(Outcome::NotReserved);
+        }
+        tx.execute(
+            "INSERT INTO reservations(request_id,account_id,key,hold_nano,
+                 balance_after_reserve_nano,owner_instance,owner_epoch,lease_until,state,
+                 created_ts,updated_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9)",
+            &[
+                &request_id,
+                &account_id,
+                &key,
+                &hold,
+                &balance,
+                &owner.instance_id,
+                &owner.epoch,
+                &reservation_ts.saturating_add(lease_secs),
+                &reservation_ts,
+            ],
+        )?;
+        crate::pricing::postgres::postgres_insert_policy_admission_snapshot(&mut tx, snapshot)?;
+
+        let mut remaining = hold;
+        let mut allocation_order = 1_i64;
+        for (bucket_id, version, available) in buckets {
+            if remaining == 0 {
+                break;
+            }
+            let reserved = remaining.min(available);
+            let next_version = version
+                .checked_add(1)
+                .context("funding bucket version overflow")?;
+            if tx.execute(
+                "UPDATE funding_buckets
+                    SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1,
+                        version=$2,updated_ts=$3,
+                        status=CASE WHEN balance_nano-$1=0 THEN 'exhausted' ELSE 'active' END
+                  WHERE bucket_id=$4 AND account_id=$5 AND version=$6 AND balance_nano >= $1",
+                &[
+                    &reserved,
+                    &next_version,
+                    &reservation_ts,
+                    &bucket_id,
+                    &account_id,
+                    &version,
+                ],
+            )? != 1
+            {
+                bail!("strict funding bucket changed during PostgreSQL reserve");
+            }
+            tx.execute(
+                "INSERT INTO reservation_funding_allocations(
+                     request_id,account_id,bucket_id,bucket_version,reserved_nano,allocation_order)
+                 VALUES($1,$2,$3,$4,$5,$6)",
+                &[
+                    &request_id,
+                    &account_id,
+                    &bucket_id,
+                    &next_version,
+                    &reserved,
+                    &allocation_order,
+                ],
+            )?;
+            remaining -= reserved;
+            allocation_order += 1;
+        }
+        if remaining != 0 {
+            bail!("strict funding allocation did not cover the reserved hold");
+        }
+        Self::assert_owner_locked(&mut tx, owner, now())?;
+        if !commit_gate() {
+            tx.rollback()?;
+            return Ok(Outcome::AbortedBeforeCommit);
+        }
+        tx.commit()?;
+        Ok(Outcome::Inserted(Receipt {
+            balance_after_reserve_nano: balance,
+            snapshot: snapshot.clone(),
+        }))
+    }
+
+    pub fn policy_admission_snapshot(
+        &mut self,
+        request_id: &str,
+    ) -> Result<Option<crate::pricing::PolicyAdmissionSnapshot>> {
+        use crate::pricing::PolicySnapshotLookup as Lookup;
+
+        match crate::pricing::postgres::postgres_policy_snapshot_lookup(
+            &mut self.client,
+            request_id,
+            false,
+        )? {
+            Lookup::Missing => Ok(None),
+            Lookup::Policy(snapshot) => Ok(Some(*snapshot)),
+            Lookup::NonPolicy => bail!("pricing admission snapshot is not a policy snapshot"),
+        }
+    }
+
     pub fn legacy_scalar_admission_snapshot(
         &mut self,
         request_id: &str,
@@ -765,8 +1760,21 @@ impl PgStore {
                 &[&request_id],
             )?
             .context("settlement reservation does not exist")?;
+        let hold: i64 = reservation.get(0);
         let state: String = reservation.get(1);
-        let actual = actual_nano.max(0);
+        let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
+            &mut tx, request_id, true,
+        )? {
+            crate::pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
+            crate::pricing::PolicySnapshotLookup::Missing
+            | crate::pricing::PolicySnapshotLookup::NonPolicy => None,
+        };
+        let actual = if let Some(snapshot) = policy_snapshot.as_ref() {
+            crate::validate_policy_settlement(snapshot, hold, actual_nano, usage, disposition)?;
+            actual_nano
+        } else {
+            actual_nano.max(0)
+        };
         let u = usage.cloned().unwrap_or_default();
         let inserted = tx.execute(
             "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,reference,model,input_tokens, \
@@ -815,6 +1823,19 @@ impl PgStore {
             if !exact {
                 bail!("settlement request ID conflicts with different outbox payload");
             }
+        }
+        if let Some(snapshot) = policy_snapshot.as_ref() {
+            let funding =
+                postgres_policy_funding_evidence(&mut tx, request_id, hold, actual, false)?;
+            postgres_write_policy_attribution(
+                &mut tx,
+                "settlement_outbox",
+                request_id,
+                snapshot,
+                usage,
+                disposition,
+                &funding,
+            )?;
         }
         if !matches!(state.as_str(), "settled" | "canceled") {
             tx.execute(
@@ -886,49 +1907,93 @@ impl PgStore {
         let model: String = row.get(3);
         let account_key: String = row.get(23);
         let hold: i64 = row.get(24);
-        let balance: i64 = tx.query_one(
+        let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
+            &mut tx, request_id, true,
+        )? {
+            crate::pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
+            crate::pricing::PolicySnapshotLookup::Missing
+            | crate::pricing::PolicySnapshotLookup::NonPolicy => None,
+        };
+        let policy_usage =
+            (policy_snapshot.is_some() && disposition == "settle").then(|| UsageEventInput {
+                model: model.clone(),
+                provider: provider.clone(),
+                input_tokens: row.get(4),
+                output_tokens: row.get(5),
+                cache_read_tokens: row.get(6),
+                cache_write_5m_tokens: row.get(7),
+                cache_write_1h_tokens: row.get(8),
+                web_search_requests: row.get(9),
+                real_nano: row.get(10),
+                speed: row.get(11),
+                inference_geo: row.get(12),
+                input_nano: row.get(13),
+                output_nano: row.get(14),
+                cache_read_nano: row.get(15),
+                cache_write_5m_nano: row.get(16),
+                cache_write_1h_nano: row.get(17),
+                web_search_nano: row.get(18),
+                priced_ts: row.get(19),
+            });
+        let balance: i64;
+        if let Some(snapshot) = policy_snapshot.as_ref() {
+            balance = postgres_process_policy_settlement(
+                &mut tx,
+                request_id,
+                &account_id,
+                &account_key,
+                hold,
+                actual,
+                &disposition,
+                reference.as_deref(),
+                policy_usage.as_ref(),
+                snapshot,
+                ts,
+            )?;
+        } else {
+            balance = tx.query_one(
             "UPDATE accounts SET balance_nano=balance_nano+$1-$2, spent_nano=spent_nano+$2, \
              reserved_nano=reserved_nano-$1 WHERE id=$3 AND reserved_nano >= $1 RETURNING balance_nano",
             &[&hold, &actual, &account_id],
         ).context("reservation/account aggregate invariant failed")?.get(0);
-        let key_updated = tx.execute(
+            let key_updated = tx.execute(
             "UPDATE api_keys SET spent_nano=spent_nano+$1, \
              reserved_nano=CASE WHEN reserved_nano >= $2 THEN reserved_nano-$2 ELSE reserved_nano END \
              WHERE key=$3 AND (reserved_nano >= $2 OR spend_limit_nano IS NULL)",
             &[&actual, &hold, &account_key],
         )?;
-        if key_updated != 1 {
-            let key_still_exists = tx
-                .query_opt("SELECT 1 FROM api_keys WHERE key=$1", &[&account_key])?
-                .is_some();
-            if key_still_exists {
-                bail!("reservation/key aggregate invariant failed");
+            if key_updated != 1 {
+                let key_still_exists = tx
+                    .query_opt("SELECT 1 FROM api_keys WHERE key=$1", &[&account_key])?
+                    .is_some();
+                if key_still_exists {
+                    bail!("reservation/key aggregate invariant failed");
+                }
             }
-        }
-        if actual > 0 {
-            tx.execute(
+            if actual > 0 {
+                tx.execute(
                 "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model) \
                  VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,'')) ON CONFLICT DO NOTHING",
                 &[&account_id, &account_key, &request_id, &actual, &reference, &balance, &ts, &model],
             )?;
-            if !model.is_empty() {
-                let input_tokens: i64 = row.get(4);
-                let output_tokens: i64 = row.get(5);
-                let cache_read_tokens: i64 = row.get(6);
-                let cache_write_5m_tokens: i64 = row.get(7);
-                let cache_write_1h_tokens: i64 = row.get(8);
-                let web_search_requests: i64 = row.get(9);
-                let real_nano: i64 = row.get(10);
-                let speed: String = row.get(11);
-                let inference_geo: String = row.get(12);
-                let input_nano: i64 = row.get(13);
-                let output_nano: i64 = row.get(14);
-                let cache_read_nano: i64 = row.get(15);
-                let cache_write_5m_nano: i64 = row.get(16);
-                let cache_write_1h_nano: i64 = row.get(17);
-                let web_search_nano: i64 = row.get(18);
-                let priced_ts: i64 = row.get(19);
-                tx.execute(
+                if !model.is_empty() {
+                    let input_tokens: i64 = row.get(4);
+                    let output_tokens: i64 = row.get(5);
+                    let cache_read_tokens: i64 = row.get(6);
+                    let cache_write_5m_tokens: i64 = row.get(7);
+                    let cache_write_1h_tokens: i64 = row.get(8);
+                    let web_search_requests: i64 = row.get(9);
+                    let real_nano: i64 = row.get(10);
+                    let speed: String = row.get(11);
+                    let inference_geo: String = row.get(12);
+                    let input_nano: i64 = row.get(13);
+                    let output_nano: i64 = row.get(14);
+                    let cache_read_nano: i64 = row.get(15);
+                    let cache_write_5m_nano: i64 = row.get(16);
+                    let cache_write_1h_nano: i64 = row.get(17);
+                    let web_search_nano: i64 = row.get(18);
+                    let priced_ts: i64 = row.get(19);
+                    tx.execute(
                     "INSERT INTO usage_events(request_id,account_id,key,model,input_tokens,output_tokens, \
                      cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
                      real_nano,charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano, \
@@ -941,6 +2006,7 @@ impl PgStore {
                       &input_nano,&output_nano,&cache_read_nano,&cache_write_5m_nano,
                       &cache_write_1h_nano,&web_search_nano,&priced_ts,&provider],
                 )?;
+                }
             }
         }
         let final_state = if disposition == "cancel" {
@@ -1504,6 +2570,9 @@ impl PgStore {
         if matches!(reference, Some(r) if r.trim().is_empty()) {
             bail!("monetary idempotency reference must not be empty");
         }
+        let allocation_amount = amount_nano
+            .checked_abs()
+            .context("top-up amount cannot be represented as a funding allocation")?;
         let ts = now();
         let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
         let mut tx = self.client.transaction()?;
@@ -1524,6 +2593,18 @@ impl PgStore {
                 return Ok(original);
             }
         }
+        let strict_funding: bool = tx
+            .query_one(
+                "SELECT EXISTS(
+                 SELECT 1 FROM account_policy_bindings
+                  WHERE account_id=$1
+                    AND policy_enforcement='strict'
+                    AND funding_enforcement='strict'
+                    AND reconciliation_state='verified'
+             )",
+                &[&id],
+            )?
+            .get(0);
         let Some(row) = tx.query_opt(
             "UPDATE accounts SET balance_nano=balance_nano+$1 WHERE id=$2 RETURNING balance_nano",
             &[&amount_nano, &id],
@@ -1533,11 +2614,54 @@ impl PgStore {
             return Ok(None);
         };
         let balance: i64 = row.get(0);
-        tx.execute(
-            "INSERT INTO ledger(account_id,kind,amount_nano,ref,balance_after_nano,ts) \
-             VALUES($1,$2,$3,$4,$5,$6)",
-            &[&id, &kind, &amount_nano, &reference, &balance, &ts],
-        )?;
+        let strict_bucket = if strict_funding {
+            let source_ref = reference.unwrap_or("");
+            Some(tx.query_one(
+                "INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts)
+                 VALUES('fund_' || md5(random()::text || clock_timestamp()::text),$1,'paid',$2,
+                        'any',$3,0,0,1,CASE WHEN $3>0 THEN 'active' ELSE 'exhausted' END,$4,$4)
+                 ON CONFLICT(account_id,source_type,source_ref) DO UPDATE SET
+                     balance_nano=funding_buckets.balance_nano+EXCLUDED.balance_nano,
+                     version=funding_buckets.version+1,updated_ts=EXCLUDED.updated_ts,
+                     status=CASE
+                       WHEN funding_buckets.status='retired' THEN funding_buckets.status
+                       WHEN funding_buckets.balance_nano+EXCLUDED.balance_nano>0 THEN 'active'
+                       ELSE 'exhausted'
+                     END
+                 RETURNING bucket_id,version",
+                &[&id, &source_ref, &amount_nano, &ts],
+            )?)
+        } else {
+            None
+        };
+        let ledger_id: i64 = tx
+            .query_one(
+                "INSERT INTO ledger(account_id,kind,amount_nano,ref,balance_after_nano,ts)
+             VALUES($1,$2,$3,$4,$5,$6) RETURNING id",
+                &[&id, &kind, &amount_nano, &reference, &balance, &ts],
+            )?
+            .get(0);
+        if let Some(bucket) = strict_bucket {
+            let bucket_id: String = bucket.get(0);
+            let bucket_version: i64 = bucket.get(1);
+            let direction = if amount_nano >= 0 { "credit" } else { "debit" };
+            tx.execute(
+                "INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano)
+                 VALUES($1,$2,$3,'paid',$4,$5,$6)",
+                &[
+                    &ledger_id,
+                    &id,
+                    &bucket_id,
+                    &bucket_version,
+                    &direction,
+                    &allocation_amount,
+                ],
+            )?;
+        }
         tx.commit()?;
         Ok(Some(balance))
     }
@@ -1553,42 +2677,167 @@ impl PgStore {
         spend_limit_nano: Option<i64>,
         expires_ts: Option<i64>,
     ) -> Result<()> {
+        self.key_issue_with_policy_ack(key, account_id, label, spend_limit_nano, expires_ts, None)
+    }
+    pub fn key_issue_with_policy_ack(
+        &mut self,
+        key: &str,
+        account_id: &str,
+        label: Option<&str>,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<()> {
         if key.trim().is_empty() || account_id.trim().is_empty() {
             bail!("key and account id must not be empty");
         }
+        activation_policy_ack
+            .map(crate::KeyActivationPolicyAck::validate)
+            .transpose()?;
         let ts = now();
-        let changed = self.client.execute(
-            "INSERT INTO api_keys(key,key_id,account_id,label,spend_limit_nano,expires_ts,status,created_ts,created) \
-             VALUES($1,'key_' || md5(random()::text || clock_timestamp()::text),$2,$3,$4,$5,'active',$6,$7) \
+        let mut tx = self.client.transaction()?;
+        let policy_state = tx.query_opt(
+            "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
+               FROM account_policy_bindings binding
+               LEFT JOIN account_policy_versions policy
+                 ON policy.account_id=binding.account_id
+                AND policy.effective_version=binding.active_effective_version
+              WHERE binding.account_id=$1",
+            &[&account_id],
+        )?;
+        let strict = policy_state
+            .as_ref()
+            .is_some_and(|row| row.get::<_, String>(0) == "strict");
+        let ack_matches = activation_policy_ack.is_some_and(|ack| {
+            policy_state.as_ref().is_some_and(|row| {
+                row.get::<_, Option<i64>>(1) == Some(ack.effective_policy_version)
+                    && row.get::<_, Option<String>>(2).as_deref()
+                        == Some(ack.policy_digest.as_str())
+            })
+        });
+        if activation_policy_ack.is_some() && !ack_matches {
+            bail!("key activation policy ACK does not match the exact active policy");
+        }
+        if strict && !ack_matches {
+            bail!("strict key activation requires the exact active policy ACK");
+        }
+        let ack_version = activation_policy_ack.map(|ack| ack.effective_policy_version);
+        let ack_digest = activation_policy_ack.map(|ack| ack.policy_digest.as_str());
+        let ack_ts = activation_policy_ack.map(|_| ts);
+        let changed = tx.execute(
+            "INSERT INTO api_keys(
+                 key,key_id,account_id,label,spend_limit_nano,expires_ts,status,created_ts,created,
+                 activation_policy_effective_version,activation_policy_digest,
+                 activation_policy_ack_ts) \
+             VALUES($1,'key_' || md5(random()::text || clock_timestamp()::text),$2,$3,$4,$5,
+                    'active',$6,$7,$8,$9,$10) \
              ON CONFLICT(key) DO UPDATE SET label=EXCLUDED.label, \
-             spend_limit_nano=EXCLUDED.spend_limit_nano,expires_ts=EXCLUDED.expires_ts \
+             spend_limit_nano=EXCLUDED.spend_limit_nano,expires_ts=EXCLUDED.expires_ts,
+             activation_policy_effective_version=COALESCE(
+                 EXCLUDED.activation_policy_effective_version,
+                 api_keys.activation_policy_effective_version
+             ),
+             activation_policy_digest=COALESCE(
+                 EXCLUDED.activation_policy_digest,
+                 api_keys.activation_policy_digest
+             ),
+             activation_policy_ack_ts=COALESCE(
+                 EXCLUDED.activation_policy_ack_ts,
+                 api_keys.activation_policy_ack_ts
+             ) \
              WHERE api_keys.account_id=EXCLUDED.account_id",
-            &[&key,&account_id,&label,&spend_limit_nano,&expires_ts,&ts,&chrono_like(ts)],
+            &[
+                &key,
+                &account_id,
+                &label,
+                &spend_limit_nano,
+                &expires_ts,
+                &ts,
+                &chrono_like(ts),
+                &ack_version,
+                &ack_digest,
+                &ack_ts,
+            ],
         )?;
         if changed == 0 {
             bail!("key is already owned by another account");
         }
+        tx.commit()?;
         Ok(())
     }
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
-        Ok(self
-            .client
-            .query_opt(
-                "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano, \
-             k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active') \
-             FROM api_keys k JOIN accounts a ON a.id=k.account_id WHERE k.key=$1",
-                &[&key],
-            )?
-            .map(|row| KeyAuth {
-                account_id: row.get(0),
-                mult_bp: row.get(1),
-                balance_nano: row.get(2),
-                spent_nano: row.get(3),
-                reserved_nano: row.get(4),
-                spend_limit_nano: row.get(5),
-                expires_ts: row.get(6),
-                active: row.get(7),
-            }))
+        let Some(row) = self.client.query_opt(
+            "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano,
+                    k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active'),
+                    binding.policy_enforcement,binding.funding_enforcement,
+                    binding.reconciliation_state,binding.active_effective_version,
+                    policy.content_digest,k.activation_policy_effective_version,
+                    k.activation_policy_digest,k.activation_policy_ack_ts,
+                    COALESCE(
+                        k.activation_policy_effective_version=binding.active_effective_version
+                        AND k.activation_policy_digest=policy.content_digest
+                        AND k.activation_policy_ack_ts IS NOT NULL,
+                        false
+                    ),
+                    CASE WHEN binding.funding_enforcement='strict' THEN (
+                        SELECT COALESCE(SUM(bucket.balance_nano),0)::bigint
+                          FROM funding_buckets bucket
+                         WHERE bucket.account_id=a.id AND bucket.eligibility='any'
+                    ) END,
+                    CASE WHEN binding.funding_enforcement='strict' THEN (
+                        SELECT COALESCE(SUM(bucket.balance_nano),0)::bigint
+                          FROM funding_buckets bucket
+                         WHERE bucket.account_id=a.id
+                           AND bucket.eligibility IN ('track','any')
+                    ) END
+               FROM api_keys k
+               JOIN accounts a ON a.id=k.account_id
+               LEFT JOIN account_policy_bindings binding ON binding.account_id=a.id
+               LEFT JOIN account_policy_versions policy
+                 ON policy.account_id=binding.account_id
+                AND policy.effective_version=binding.active_effective_version
+              WHERE k.key=$1",
+            &[&key],
+        )?
+        else {
+            return Ok(None);
+        };
+        let policy_enforcement = row
+            .get::<_, Option<String>>(8)
+            .as_deref()
+            .map(crate::pricing::PolicyEnforcement::from_db)
+            .transpose()?;
+        let funding_enforcement = row
+            .get::<_, Option<String>>(9)
+            .as_deref()
+            .map(crate::pricing::FundingEnforcement::from_db)
+            .transpose()?;
+        let reconciliation_state = row
+            .get::<_, Option<String>>(10)
+            .as_deref()
+            .map(crate::pricing::ReconciliationState::from_db)
+            .transpose()?;
+        Ok(Some(KeyAuth {
+            account_id: row.get(0),
+            mult_bp: row.get(1),
+            balance_nano: row.get(2),
+            spent_nano: row.get(3),
+            reserved_nano: row.get(4),
+            spend_limit_nano: row.get(5),
+            expires_ts: row.get(6),
+            active: row.get(7),
+            policy_enforcement,
+            funding_enforcement,
+            reconciliation_state,
+            active_policy_effective_version: row.get(11),
+            active_policy_digest: row.get(12),
+            activation_policy_effective_version: row.get(13),
+            activation_policy_digest: row.get(14),
+            activation_policy_ack_ts: row.get(15),
+            policy_ack_current: row.get(16),
+            paid_available_nano: row.get(17),
+            track_available_nano: row.get(18),
+        }))
     }
     pub fn key_get(&mut self, key: &str) -> Result<Option<KeyRow>> {
         Ok(self.client.query_opt(
@@ -1626,16 +2875,96 @@ impl PgStore {
         )?.into_iter().map(|r| key_row(&r)).collect())
     }
     pub fn key_set_status(&mut self, key: &str, status: &str) -> Result<usize> {
-        Ok(self.client.execute(
-            "UPDATE api_keys SET status=$1 WHERE key=$2",
-            &[&status, &key],
-        )? as usize)
+        self.key_set_status_with_policy_ack(key, status, None)
+    }
+    pub fn key_set_status_with_policy_ack(
+        &mut self,
+        key: &str,
+        status: &str,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<usize> {
+        self.key_set_status_identity_with_policy_ack("key", key, status, activation_policy_ack)
     }
     pub fn key_set_status_by_id(&mut self, key_id: &str, status: &str) -> Result<usize> {
-        Ok(self.client.execute(
-            "UPDATE api_keys SET status=$1 WHERE key_id=$2",
-            &[&status, &key_id],
-        )? as usize)
+        self.key_set_status_by_id_with_policy_ack(key_id, status, None)
+    }
+    pub fn key_set_status_by_id_with_policy_ack(
+        &mut self,
+        key_id: &str,
+        status: &str,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<usize> {
+        self.key_set_status_identity_with_policy_ack(
+            "key_id",
+            key_id,
+            status,
+            activation_policy_ack,
+        )
+    }
+    fn key_set_status_identity_with_policy_ack(
+        &mut self,
+        identity_column: &str,
+        identity: &str,
+        status: &str,
+        activation_policy_ack: Option<&crate::KeyActivationPolicyAck>,
+    ) -> Result<usize> {
+        if !matches!(identity_column, "key" | "key_id") {
+            bail!("invalid key status identity column");
+        }
+        activation_policy_ack
+            .map(crate::KeyActivationPolicyAck::validate)
+            .transpose()?;
+        let mut tx = self.client.transaction()?;
+        let query = format!(
+            "SELECT binding.policy_enforcement,binding.active_effective_version,
+                    policy.content_digest
+               FROM api_keys key
+               LEFT JOIN account_policy_bindings binding ON binding.account_id=key.account_id
+               LEFT JOIN account_policy_versions policy
+                 ON policy.account_id=binding.account_id
+                AND policy.effective_version=binding.active_effective_version
+              WHERE key.{identity_column}=$1
+              FOR UPDATE OF key"
+        );
+        let Some(policy_state) = tx.query_opt(&query, &[&identity])? else {
+            tx.rollback()?;
+            return Ok(0);
+        };
+        let ack_matches = activation_policy_ack.is_some_and(|ack| {
+            policy_state.get::<_, Option<i64>>(1) == Some(ack.effective_policy_version)
+                && policy_state.get::<_, Option<String>>(2).as_deref()
+                    == Some(ack.policy_digest.as_str())
+        });
+        if activation_policy_ack.is_some() && !ack_matches {
+            bail!("key activation policy ACK does not match the exact active policy");
+        }
+        if status == "active"
+            && policy_state.get::<_, Option<String>>(0).as_deref() == Some("strict")
+            && !ack_matches
+        {
+            bail!("strict key reactivation requires the exact active policy ACK");
+        }
+        let update = format!(
+            "UPDATE api_keys SET status=$1,
+                 activation_policy_effective_version=COALESCE(
+                     $2,activation_policy_effective_version
+                 ),
+                 activation_policy_digest=COALESCE($3,activation_policy_digest),
+                 activation_policy_ack_ts=COALESCE($4,activation_policy_ack_ts)
+              WHERE {identity_column}=$5"
+        );
+        let changed = tx.execute(
+            &update,
+            &[
+                &status,
+                &activation_policy_ack.map(|ack| ack.effective_policy_version),
+                &activation_policy_ack.map(|ack| ack.policy_digest.as_str()),
+                &activation_policy_ack.map(|_| now()),
+                &identity,
+            ],
+        )? as usize;
+        tx.commit()?;
+        Ok(changed)
     }
     pub fn key_set_label_by_id(&mut self, key_id: &str, label: &str) -> Result<usize> {
         Ok(self.client.execute(
@@ -4475,7 +5804,11 @@ mod tests {
                     },
                     rule: stage8_pg_rule(
                         provider_id,
-                        if provider_id == "anthropic" { 2_000 } else { 3_000 },
+                        if provider_id == "anthropic" {
+                            2_000
+                        } else {
+                            3_000
+                        },
                     ),
                 },
             )
@@ -4538,8 +5871,7 @@ mod tests {
         pg.account_create("stage8-account", None, 2_000).unwrap();
         pg.account_topup("stage8-account", 190_000_000, None)
             .unwrap();
-        pg.key_issue("stage8-key", "stage8-account", None)
-            .unwrap();
+        pg.key_issue("stage8-key", "stage8-account", None).unwrap();
 
         for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
             assert_eq!(
@@ -7089,13 +8421,19 @@ mod tests {
                  INSERT INTO pricing_catalog_entries(
                      product_id,generation,provider_id,canonical_model_id,enabled
                  ) VALUES('stage9-product',1,'anthropic','claude-stage9',true);
+                 INSERT INTO pricing_catalog_heads(product_id,active_generation,updated_ts)
+                 VALUES('stage9-product',1,1);
                  INSERT INTO provider_switch_versions(
                      generation,schema_version,capability_generation,capability_digest,
                      content_digest,created_ts
                  ) VALUES(1,1,1,'stage9-capability','stage9-switch-v1',1);
                  INSERT INTO provider_switch_entries(
                      generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
-                 ) VALUES(1,'anthropic','segment','stage9-product','b2c',1,true);
+                 ) VALUES
+                     (1,'anthropic','master','','',NULL,true),
+                     (1,'anthropic','segment','stage9-product','b2c',1,true);
+                 INSERT INTO provider_switch_head(singleton,active_generation,updated_ts)
+                 VALUES(1,1,1);
                  INSERT INTO account_policy_versions(
                      account_id,effective_version,policy_id,policy_version,source_policy_digest,
                      owner_type,owner_id,account_class,product_id,schema_version,
@@ -7254,26 +8592,43 @@ mod tests {
             .get(0);
         assert_eq!(bucket_balance, 1025);
 
-        // The old scalar top-up cannot commit against a strict funding binding.
-        assert!(pg
-            .account_topup("stage9-strict", 1, Some("stage9-scalar-topup"))
-            .is_err());
-        let scalar_topup_state: (i64, i64, i64) = {
+        // The runtime top-up now dual-writes the strict paid source and aggregate atomically;
+        // exact replay remains one monetary operation. A compensating adjustment uses its own
+        // paid-source evidence and restores the original total without hiding either ledger row.
+        assert_eq!(
+            pg.account_topup("stage9-strict", 1, Some("stage9-strict-topup"))
+                .unwrap(),
+            Some(1026)
+        );
+        assert_eq!(
+            pg.account_topup("stage9-strict", 1, Some("stage9-strict-topup"))
+                .unwrap(),
+            Some(1026)
+        );
+        assert_eq!(
+            pg.account_topup("stage9-strict", -1, Some("stage9-strict-adjust"))
+                .unwrap(),
+            Some(1025)
+        );
+        let strict_topup_state: (i64, i64, i64, i64) = {
             let row = pg
                 .client
                 .query_one(
                     "SELECT
                          (SELECT balance_nano FROM accounts WHERE id='stage9-strict'),
-                         (SELECT balance_nano FROM funding_buckets
-                          WHERE bucket_id='stage9-strict-paid'),
+                         (SELECT COALESCE(SUM(balance_nano),0)::bigint FROM funding_buckets
+                          WHERE account_id='stage9-strict'),
                          (SELECT COUNT(*)::bigint FROM ledger
-                          WHERE ref='stage9-scalar-topup')",
+                          WHERE ref IN ('stage9-strict-topup','stage9-strict-adjust')),
+                         (SELECT COUNT(*)::bigint FROM ledger_funding_allocations allocation
+                          JOIN ledger ON ledger.id=allocation.ledger_id
+                          WHERE ledger.ref IN ('stage9-strict-topup','stage9-strict-adjust'))",
                     &[],
                 )
                 .unwrap();
-            (row.get(0), row.get(1), row.get(2))
+            (row.get(0), row.get(1), row.get(2), row.get(3))
         };
-        assert_eq!(scalar_topup_state, (1025, 1025, 0));
+        assert_eq!(strict_topup_state, (1025, 1025, 2, 2));
 
         let owner = Owner {
             instance_id: "stage9-guard-engine".to_owned(),
@@ -7307,6 +8662,89 @@ mod tests {
             (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
         };
         assert_eq!(scalar_reserve_state, (1025, 0, 0, 0, 0));
+
+        let strict_admission_ts = now();
+        let strict_snapshot = crate::pricing::PolicyAdmissionSnapshot::new(
+            crate::pricing::PolicyAdmissionSnapshotInput {
+                request_id: "stage9-runtime-reserve".into(),
+                account_id: "stage9-strict".into(),
+                provider: crate::pricing::SnapshotProvider::Anthropic,
+                product_id: "stage9-product".into(),
+                account_class: crate::pricing::AccountClass::B2c,
+                requested_model_id: "claude-stage9".into(),
+                canonical_model_id: "claude-stage9".into(),
+                alias_generation: 1,
+                rule_id: "stage9-rule".into(),
+                rule_digest: "stage9-rule-strict-v1".into(),
+                rule_scope: crate::pricing::PolicyRuleScope::Provider {
+                    provider_id: "anthropic".into(),
+                },
+                pricing_mode: crate::pricing::PricingMode::Track,
+                rule_origin: crate::pricing::RuleOrigin::Managed,
+                discount_bps: None,
+                payable_multiplier_bp: 10_000,
+                policy_id: "stage9-policy".into(),
+                policy_version: 1,
+                effective_policy_version: 1,
+                source_policy_digest: "stage9-source-strict-v1".into(),
+                policy_digest: "stage9-policy-strict-v1".into(),
+                policy_catalog_generation: 1,
+                policy_switch_generation: 1,
+                admission_catalog_generation: 1,
+                admission_catalog_digest: "stage9-catalog-v1".into(),
+                admission_switch_generation: 1,
+                admission_switch_digest: "stage9-switch-v1".into(),
+                runtime_manifest_generation: 1,
+                runtime_manifest_digest: "stage9-runtime-v1".into(),
+                tariff_schedule_id: "stage9-tariff-v1".into(),
+                tariff_priced_ts: strict_admission_ts,
+                admission_ts: strict_admission_ts,
+                official_hold_nano: 100,
+                charged_hold_nano: 100,
+                track_eligible: true,
+                retention_eligible: true,
+                commission_eligible: false,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                    speed: crate::pricing::SnapshotAnthropicSpeed::Standard,
+                    inference_geo: crate::pricing::SnapshotAnthropicInferenceGeo::Global,
+                    inference_geo_basis_points: 10_000,
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            pg.reserve_request_with_policy_snapshot(
+                &owner,
+                "stage9-strict-key",
+                60,
+                &strict_snapshot,
+            )
+            .unwrap(),
+            crate::pricing::PolicyReserveOutcome::Inserted(_)
+        ));
+        assert_eq!(
+            pg.cancel_request("stage9-runtime-reserve").unwrap(),
+            Some(1025)
+        );
+        let runtime_reserve_state: (String, i64, i64, String, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT reservation.state,allocation.charged_nano,allocation.released_nano,
+                        outbox.snapshot_kind,outbox.runtime_manifest_generation
+                   FROM reservations reservation
+                   JOIN reservation_funding_allocations allocation USING(request_id)
+                   JOIN settlement_outbox outbox USING(request_id)
+                  WHERE reservation.request_id='stage9-runtime-reserve'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+        };
+        assert_eq!(
+            runtime_reserve_state,
+            ("canceled".into(), 0, 100, "policy_v1".into(), 1)
+        );
 
         // Seed a valid strict reservation atomically, then prove the scalar settlement path cannot
         // move aggregate money without terminalizing the exact source-bucket allocation.
@@ -7401,16 +8839,7 @@ mod tests {
         };
         assert_eq!(
             scalar_settlement_state,
-            (
-                925,
-                100,
-                925,
-                100,
-                100,
-                "settlement_pending".into(),
-                Some(60),
-                0,
-            )
+            (925, 100, 925, 100, 100, "reserved".into(), None, 0,)
         );
         pg.client
             .batch_execute(
@@ -7502,6 +8931,48 @@ mod tests {
                 .contains("strict pricing requires a policy-capable engine runtime manifest"),
             "unexpected incapable claim error: {incapable_claim:#}"
         );
+        let compatible_manifest = crate::pricing::PricingRuntimeManifestEvidence::new(
+            1,
+            vec![crate::pricing::PricingRuntimeCapabilityEvidence::new(
+                crate::pricing::PRICING_SCHEMA_VERSION,
+                1,
+                "stage9-capability",
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let capable_owner = pg
+            .claim_instance_with_pricing_manifest(
+                "stage9-policy-capable-runtime",
+                600,
+                &compatible_manifest,
+            )
+            .unwrap();
+        assert!(pg
+            .heartbeat_instance_with_pricing_manifest(&capable_owner, 600, &compatible_manifest,)
+            .unwrap());
+        let unsupported_manifest = crate::pricing::PricingRuntimeManifestEvidence::new(
+            2,
+            vec![crate::pricing::PricingRuntimeCapabilityEvidence::new(
+                crate::pricing::PRICING_SCHEMA_VERSION,
+                2,
+                "unsupported-stage9-capability",
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let unsupported_claim = pg
+            .claim_instance_with_pricing_manifest(
+                "stage9-policy-unsupported-runtime",
+                600,
+                &unsupported_manifest,
+            )
+            .expect_err("unsupported pricing runtime unexpectedly claimed an owner epoch");
+        assert!(format!("{unsupported_claim:#}")
+            .contains("does not support every active strict dependency"));
+        assert!(!pg
+            .heartbeat_instance_with_pricing_manifest(&capable_owner, 600, &unsupported_manifest,)
+            .unwrap());
 
         // First strict cutover fails with an unstamped active key.
         let cutover_error = pg

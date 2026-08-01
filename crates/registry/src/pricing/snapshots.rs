@@ -239,7 +239,7 @@ impl LegacyPremiumModifiers {
         Ok(decoded)
     }
 
-    fn feed_digest(&self, encoder: &mut CanonicalDigestEncoder) {
+    pub(crate) fn feed_digest(&self, encoder: &mut CanonicalDigestEncoder) {
         match self {
             Self::AnthropicV1 {
                 speed,
@@ -582,7 +582,7 @@ pub(crate) fn validate_legacy_snapshot_request_id(value: &str) -> Result<()> {
     require_bounded_id("snapshot request id", value, SNAPSHOT_ID_MAX_BYTES)
 }
 
-fn require_bounded_id(label: &str, value: &str, max_bytes: usize) -> Result<()> {
+pub(crate) fn require_bounded_id(label: &str, value: &str, max_bytes: usize) -> Result<()> {
     if value.is_empty() || value.trim() != value {
         bail!("{label} must be non-empty and contain no surrounding whitespace");
     }
@@ -595,30 +595,30 @@ fn require_bounded_id(label: &str, value: &str, max_bytes: usize) -> Result<()> 
     Ok(())
 }
 
-struct CanonicalDigestEncoder(Sha256);
+pub(crate) struct CanonicalDigestEncoder(Sha256);
 
 impl CanonicalDigestEncoder {
-    fn new(domain: &[u8]) -> Self {
+    pub(crate) fn new(domain: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(domain);
         Self(hasher)
     }
 
-    fn field(&mut self, tag: u16, payload: &[u8]) {
+    pub(crate) fn field(&mut self, tag: u16, payload: &[u8]) {
         self.0.update(tag.to_be_bytes());
         self.0.update((payload.len() as u64).to_be_bytes());
         self.0.update(payload);
     }
 
-    fn string(&mut self, tag: u16, value: &str) {
+    pub(crate) fn string(&mut self, tag: u16, value: &str) {
         self.field(tag, value.as_bytes());
     }
 
-    fn i64(&mut self, tag: u16, value: i64) {
+    pub(crate) fn i64(&mut self, tag: u16, value: i64) {
         self.field(tag, &value.to_be_bytes());
     }
 
-    fn finish(self) -> String {
+    pub(crate) fn finish(self) -> String {
         let digest = self.0.finalize();
         let mut hex = String::with_capacity(64);
         for byte in digest {

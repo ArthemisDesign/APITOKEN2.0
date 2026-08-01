@@ -16,12 +16,13 @@ use super::{
     AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
     FundingEnforcement, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
     LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
-    PolicyBindingState, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
-    PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode, PricingMutation,
-    PricingPolicySnapshot, PricingReadBundle, PricingRejection, PricingShadowAdmissionEvaluation,
-    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, PricingShadowStorageRow,
-    ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
-    RuleOrigin, ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
+    PolicyAdmissionSnapshot, PolicyAdmissionSnapshotInput, PolicyBindingState, PolicyEnforcement,
+    PolicyOwnerType, PolicyRuleScope, PolicySnapshotLookup, PricingCatalogEntrySpec,
+    PricingCatalogSpec, PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle,
+    PricingRejection, PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
+    PricingShadowEvaluationWrite, PricingShadowStorageRow, ProviderSwitchEntrySpec,
+    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin,
+    ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
 };
 use anyhow::{bail, Context, Result};
 use postgres::{Client, GenericClient, IsolationLevel, Transaction};
@@ -210,6 +211,162 @@ pub(crate) fn postgres_insert_legacy_scalar_admission_snapshot<C: GenericClient>
         .context("insert PostgreSQL legacy scalar admission snapshot")?;
     if inserted != 1 {
         bail!("PostgreSQL legacy scalar admission snapshot insert changed no row");
+    }
+    Ok(())
+}
+
+pub(crate) fn postgres_policy_snapshot_lookup<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+    key_share: bool,
+) -> Result<PolicySnapshotLookup> {
+    validate_legacy_snapshot_request_id(request_id)?;
+    let lock = if key_share { " FOR KEY SHARE" } else { "" };
+    let sql = format!(
+        "SELECT snapshot_kind,schema_version,account_id,provider_id,product_id,account_class,
+                requested_model_id,canonical_model_id,alias_generation,rule_id,rule_digest,
+                rule_scope,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                policy_id,policy_version,effective_policy_version,source_policy_digest,
+                policy_digest,catalog_generation,switch_generation,
+                admission_catalog_generation,admission_catalog_digest,
+                admission_switch_generation,admission_switch_digest,
+                runtime_manifest_generation,runtime_manifest_digest,tariff_schedule_id,
+                tariff_priced_ts,admission_ts,official_hold_nano,charged_hold_nano,
+                track_eligible,retention_eligible,commission_eligible,premium_modifiers::text,
+                snapshot_digest
+           FROM pricing_admission_snapshots WHERE request_id=$1{lock}"
+    );
+    let Some(row) = client.query_opt(&sql, &[&request_id])? else {
+        return Ok(PolicySnapshotLookup::Missing);
+    };
+    let kind: String = row.get(0);
+    if kind != "policy_v1" {
+        return Ok(PolicySnapshotLookup::NonPolicy);
+    }
+    let provider_id: String = row.get(3);
+    let canonical_model_id: String = row.get(7);
+    let rule_scope: String = row.get(11);
+    let input = PolicyAdmissionSnapshotInput {
+        request_id: request_id.to_owned(),
+        account_id: row.get(2),
+        provider: SnapshotProvider::from_db(&provider_id)?,
+        product_id: row.get(4),
+        account_class: AccountClass::from_db(&row.get::<_, String>(5))?,
+        requested_model_id: row.get(6),
+        canonical_model_id: canonical_model_id.clone(),
+        alias_generation: row.get(8),
+        rule_id: row.get(9),
+        rule_digest: row.get(10),
+        rule_scope: PolicyRuleScope::from_db(
+            &rule_scope,
+            provider_id,
+            (rule_scope == "model").then_some(canonical_model_id),
+        )?,
+        pricing_mode: PricingMode::from_db(&row.get::<_, String>(12))?,
+        rule_origin: RuleOrigin::from_db(&row.get::<_, String>(13))?,
+        discount_bps: row.get(14),
+        payable_multiplier_bp: row.get(15),
+        policy_id: row.get(16),
+        policy_version: row.get(17),
+        effective_policy_version: row.get(18),
+        source_policy_digest: row.get(19),
+        policy_digest: row.get(20),
+        policy_catalog_generation: row.get(21),
+        policy_switch_generation: row.get(22),
+        admission_catalog_generation: row.get(23),
+        admission_catalog_digest: row.get(24),
+        admission_switch_generation: row.get(25),
+        admission_switch_digest: row.get(26),
+        runtime_manifest_generation: row.get(27),
+        runtime_manifest_digest: row.get(28),
+        tariff_schedule_id: row.get(29),
+        tariff_priced_ts: row.get(30),
+        admission_ts: row.get(31),
+        official_hold_nano: row.get(32),
+        charged_hold_nano: row.get(33),
+        track_eligible: row.get(34),
+        retention_eligible: row.get(35),
+        commission_eligible: row.get(36),
+        premium_modifiers: LegacyPremiumModifiers::from_json(&row.get::<_, String>(37))?,
+    };
+    Ok(PolicySnapshotLookup::Policy(Box::new(
+        PolicyAdmissionSnapshot::from_stored(row.get(1), input, row.get(38))?,
+    )))
+}
+
+pub(crate) fn postgres_insert_policy_admission_snapshot<C: GenericClient>(
+    client: &mut C,
+    snapshot: &PolicyAdmissionSnapshot,
+) -> Result<()> {
+    snapshot.validate()?;
+    let premium_modifiers = snapshot.premium_modifiers_json()?;
+    let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
+    let provider_id = snapshot.provider.as_str();
+    let account_class = snapshot.account_class.as_str();
+    let pricing_mode = snapshot.pricing_mode.as_str();
+    let rule_origin = snapshot.rule_origin.as_str();
+    let inserted = client
+        .execute(
+            "INSERT INTO pricing_admission_snapshots(
+             request_id,account_id,snapshot_kind,schema_version,provider_id,product_id,
+             account_class,requested_model_id,canonical_model_id,alias_generation,rule_id,
+             rule_digest,rule_scope,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+             policy_id,policy_version,effective_policy_version,source_policy_digest,policy_digest,
+             catalog_generation,switch_generation,admission_catalog_generation,
+             admission_catalog_digest,admission_switch_generation,admission_switch_digest,
+             runtime_manifest_generation,runtime_manifest_digest,tariff_schedule_id,
+             tariff_priced_ts,admission_ts,official_hold_nano,charged_hold_nano,track_eligible,
+             retention_eligible,commission_eligible,premium_modifiers,snapshot_digest
+         ) VALUES(
+             $1,$2,'policy_v1',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+             $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,
+             $38::text::jsonb,$39
+         )",
+            &[
+                &snapshot.request_id,
+                &snapshot.account_id,
+                &snapshot.schema_version,
+                &provider_id,
+                &snapshot.product_id,
+                &account_class,
+                &snapshot.requested_model_id,
+                &snapshot.canonical_model_id,
+                &snapshot.alias_generation,
+                &snapshot.rule_id,
+                &snapshot.rule_digest,
+                &rule_scope,
+                &pricing_mode,
+                &rule_origin,
+                &snapshot.discount_bps,
+                &snapshot.payable_multiplier_bp,
+                &snapshot.policy_id,
+                &snapshot.policy_version,
+                &snapshot.effective_policy_version,
+                &snapshot.source_policy_digest,
+                &snapshot.policy_digest,
+                &snapshot.policy_catalog_generation,
+                &snapshot.policy_switch_generation,
+                &snapshot.admission_catalog_generation,
+                &snapshot.admission_catalog_digest,
+                &snapshot.admission_switch_generation,
+                &snapshot.admission_switch_digest,
+                &snapshot.runtime_manifest_generation,
+                &snapshot.runtime_manifest_digest,
+                &snapshot.tariff_schedule_id,
+                &snapshot.tariff_priced_ts,
+                &snapshot.admission_ts,
+                &snapshot.official_hold_nano,
+                &snapshot.charged_hold_nano,
+                &snapshot.track_eligible,
+                &snapshot.retention_eligible,
+                &snapshot.commission_eligible,
+                &premium_modifiers,
+                &snapshot.snapshot_digest(),
+            ],
+        )
+        .context("insert PostgreSQL policy admission snapshot")?;
+    if inserted != 1 {
+        bail!("PostgreSQL policy admission snapshot insert changed no row");
     }
     Ok(())
 }
