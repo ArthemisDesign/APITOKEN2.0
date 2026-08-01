@@ -86,6 +86,7 @@
 .ib-icon.p-gemini{-webkit-mask-image:url("/assets/providers/gemini.svg");mask-image:url("/assets/providers/gemini.svg")}
 .ib-icon.t-claude-code{-webkit-mask-image:url("/assets/tools/claude-code.svg");mask-image:url("/assets/tools/claude-code.svg")}
 .ib-icon.t-codex{-webkit-mask-image:url("/assets/tools/codex.svg");mask-image:url("/assets/tools/codex.svg")}
+.ib-icon.t-gemini-cli{-webkit-mask-image:url("/assets/providers/gemini.svg");mask-image:url("/assets/providers/gemini.svg")}
 .ib-icon.t-opencode{-webkit-mask-image:url("/assets/tools/opencode.svg");mask-image:url("/assets/tools/opencode.svg")}
 .ib-icon.t-pi{-webkit-mask-image:url("/assets/tools/pi.svg");mask-image:url("/assets/tools/pi.svg")}
 .ib-icon.t-hermes{-webkit-mask-image:url("/assets/tools/hermes.svg");mask-image:url("/assets/tools/hermes.svg")}

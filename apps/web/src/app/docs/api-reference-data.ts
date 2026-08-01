@@ -3,6 +3,7 @@
 // can never drift away from what the gateway actually serves.
 import {
   ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL,
   INTEGRATION_MODELS,
   OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -33,11 +34,15 @@ function localize(language: IntegrationLanguage, en: string, ru: string): string
 }
 
 function endpointFor(provider: IntegrationProvider): string {
-  return provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL;
+  if (provider === "anthropic") return ANTHROPIC_BASE_URL;
+  if (provider === "gemini") return GEMINI_BASE_URL;
+  return OPENAI_BASE_URL;
 }
 
 function authFor(provider: IntegrationProvider): string {
-  return provider === "anthropic" ? "x-api-key · anthropic-version" : "Authorization: Bearer";
+  if (provider === "anthropic") return "x-api-key · anthropic-version";
+  if (provider === "gemini") return "x-goog-api-key";
+  return "Authorization: Bearer";
 }
 
 function requestCode(provider: IntegrationProvider, apiLanguage: ApiLanguage, modelId: string): string {
@@ -90,6 +95,44 @@ for (const block of message.content) {
   if (block.type === "text") console.log(block.text);
 }`;
   }
+  if (provider === "gemini") {
+    if (apiLanguage === "curl") {
+      return `curl ${GEMINI_BASE_URL}/v1beta/models/${modelId}:generateContent \\
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{"parts": [{"text": "${prompt}"}]}]
+  }'`;
+    }
+    if (apiLanguage === "python") {
+      return `import os
+from google import genai
+from google.genai import types
+
+client = genai.Client(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    http_options=types.HttpOptions(base_url="${GEMINI_BASE_URL}"),
+)
+
+response = client.models.generate_content(
+    model="${modelId}",
+    contents="${prompt}",
+)
+print(response.text)`;
+    }
+    return `import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env["APITOKEN_API_KEY"],
+  httpOptions: { baseUrl: "${GEMINI_BASE_URL}" },
+});
+
+const response = await ai.models.generateContent({
+  model: "${modelId}",
+  contents: "${prompt}",
+});
+console.log(response.text);`;
+  }
   if (apiLanguage === "curl") {
     return `curl ${OPENAI_BASE_URL}/responses \\
   -H "Authorization: Bearer $APITOKEN_API_KEY" \\
@@ -132,8 +175,8 @@ console.log(response.output_text);`;
 function installStep(provider: IntegrationProvider, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
   if (apiLanguage === "curl") return null;
   const pkg = apiLanguage === "python"
-    ? (provider === "anthropic" ? "anthropic" : "openai")
-    : (provider === "anthropic" ? "@anthropic-ai/sdk" : "openai");
+    ? (provider === "anthropic" ? "anthropic" : provider === "gemini" ? "google-genai" : "openai")
+    : (provider === "anthropic" ? "@anthropic-ai/sdk" : provider === "gemini" ? "@google/genai" : "openai");
   const command = apiLanguage === "python" ? `pip install ${pkg}` : `npm install ${pkg}`;
   return {
     title: localize(language,
@@ -157,7 +200,7 @@ export function buildApiGuide({
   language: IntegrationLanguage;
 }): ApiGuide {
   const model = INTEGRATION_MODELS[provider][0];
-  const providerName = provider === "anthropic" ? "Claude" : "GPT";
+  const providerName = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
   const languageName = apiLanguage === "curl" ? "cURL" : apiLanguage === "python" ? "Python" : "TypeScript";
 
   const steps: ApiStep[] = [
@@ -187,9 +230,13 @@ export function buildApiGuide({
       ? localize(language,
         "Anthropic Messages API with your sk-pool key in `x-api-key`. SDKs add `anthropic-version` automatically.",
         "Anthropic Messages API с ключом sk-pool в `x-api-key`. SDK добавляют `anthropic-version` автоматически.")
-      : localize(language,
-        "OpenAI-compatible Responses API with the same sk-pool key as `Authorization: Bearer`.",
-        "OpenAI-совместимый Responses API с тем же ключом sk-pool в `Authorization: Bearer`."),
+      : provider === "gemini"
+        ? localize(language,
+          "Native Google Gemini API with the same sk-pool key in `x-goog-api-key`.",
+          "Нативный Google Gemini API с тем же ключом sk-pool в `x-goog-api-key`.")
+        : localize(language,
+          "OpenAI-compatible Responses API with the same sk-pool key as `Authorization: Bearer`.",
+          "OpenAI-совместимый Responses API с тем же ключом sk-pool в `Authorization: Bearer`."),
     endpoint: endpointFor(provider),
     auth: authFor(provider),
     steps,

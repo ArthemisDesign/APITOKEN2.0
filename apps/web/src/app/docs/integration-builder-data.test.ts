@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ANTHROPIC_BASE_URL as CANONICAL_ANTHROPIC_BASE_URL, OPENAI_BASE_URL as CANONICAL_OPENAI_BASE_URL, claudeModels, openaiModels } from "@/lib/models";
+import { ANTHROPIC_BASE_URL as CANONICAL_ANTHROPIC_BASE_URL, GEMINI_BASE_URL as CANONICAL_GEMINI_BASE_URL, OPENAI_BASE_URL as CANONICAL_OPENAI_BASE_URL, claudeModels, geminiModels, openaiModels } from "@/lib/models";
 import {
   ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL,
   INTEGRATION_MODELS,
   OPENAI_BASE_URL,
   TOOL_COMPATIBILITY,
@@ -15,17 +16,30 @@ import {
 
 const operatingSystems: IntegrationOs[] = ["unix", "powershell", "cmd"];
 const languages: IntegrationLanguage[] = ["en", "ru"];
-const providers: IntegrationProvider[] = ["anthropic", "openai"];
+const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini"];
 const tools = Object.keys(TOOL_COMPATIBILITY) as IntegrationTool[];
+const providerEndpoints: Record<IntegrationProvider, string> = {
+  anthropic: ANTHROPIC_BASE_URL,
+  openai: OPENAI_BASE_URL,
+  gemini: GEMINI_BASE_URL,
+};
+const providerTitleNames: Record<IntegrationProvider, string> = {
+  anthropic: "Claude",
+  openai: "GPT",
+  gemini: "Gemini",
+};
 
 describe("integration builder guide", () => {
   it("keeps the browser catalog in parity with the canonical model registry", () => {
     expect(ANTHROPIC_BASE_URL).toBe(CANONICAL_ANTHROPIC_BASE_URL);
     expect(OPENAI_BASE_URL).toBe(CANONICAL_OPENAI_BASE_URL);
+    expect(GEMINI_BASE_URL).toBe(CANONICAL_GEMINI_BASE_URL);
     expect(INTEGRATION_MODELS.anthropic.map(({ id }) => id)).toEqual(claudeModels.map(({ id }) => id));
     expect(INTEGRATION_MODELS.openai.map(({ id }) => id)).toEqual(openaiModels.map(({ id }) => id));
+    expect(INTEGRATION_MODELS.gemini.map(({ id }) => id)).toEqual(geminiModels.map(({ id }) => id));
     expect(INTEGRATION_MODELS.anthropic.every(({ name }) => name.length > 0)).toBe(true);
     expect(INTEGRATION_MODELS.openai.every(({ name }) => name.length > 0)).toBe(true);
+    expect(INTEGRATION_MODELS.gemini.every(({ name }) => name.length > 0)).toBe(true);
   });
 
   it("builds every compatible provider, tool, OS, and language combination", () => {
@@ -38,8 +52,8 @@ describe("integration builder guide", () => {
             const guide = buildIntegrationGuide({ provider, tool, os, modelId, language });
 
             expect(guide.steps).toHaveLength(3);
-            expect(guide.endpoint).toBe(provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL);
-            expect(guide.title).toContain(modelId.includes("claude") ? "Claude" : "GPT");
+            expect(guide.endpoint).toBe(providerEndpoints[provider]);
+            expect(guide.title).toContain(providerTitleNames[provider]);
             expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
             expect(JSON.stringify(guide)).not.toContain("YOUR_SK_POOL_API_KEY");
           }
@@ -80,6 +94,17 @@ describe("integration builder guide", () => {
     expect(piConfig.providers.apitoken.api).toBe("openai-completions");
     expect(piConfig.providers.apitoken.apiKey).toBe("$APITOKEN_API_KEY");
     expect(piConfig.providers.apitoken.models[0].id).toBe("gpt-5.6-sol");
+
+    const geminiOpenCode = buildIntegrationGuide({ provider: "gemini", tool: "opencode", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
+    const geminiOpenCodeConfig = JSON.parse(geminiOpenCode.steps[0].code) as { provider: { apitoken: { npm: string; options: { baseURL: string; apiKey: string } } } };
+    expect(geminiOpenCodeConfig.provider.apitoken.npm).toBe("@ai-sdk/google");
+    expect(geminiOpenCodeConfig.provider.apitoken.options.baseURL).toBe(`${GEMINI_BASE_URL}/v1beta`);
+    expect(geminiOpenCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
+
+    const geminiPi = buildIntegrationGuide({ provider: "gemini", tool: "pi", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
+    const geminiPiConfig = JSON.parse(geminiPi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string } } };
+    expect(geminiPiConfig.providers.apitoken.baseUrl).toBe(GEMINI_BASE_URL);
+    expect(geminiPiConfig.providers.apitoken.api).toBe("google-generative-ai");
   });
 
   it("keeps shell syntax and provider-specific wire formats correct", () => {
@@ -96,5 +121,15 @@ describe("integration builder guide", () => {
     expect(hermes.steps[1].code).toContain("API mode: Chat Completions");
     expect(hermes.steps[1].code).not.toContain("Responses API");
     expect(hermes.securityNote).toContain("~/.hermes");
+
+    const geminiCli = buildIntegrationGuide({ provider: "gemini", tool: "gemini-cli", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
+    expect(geminiCli.endpoint).toBe(GEMINI_BASE_URL);
+    expect(geminiCli.steps[0].code).toContain(`export GOOGLE_GEMINI_BASE_URL="${GEMINI_BASE_URL}"`);
+    expect(geminiCli.steps[0].code).toContain('export GEMINI_API_KEY="sk-pool-•••"');
+    expect(geminiCli.steps[1].code).toBe("gemini --model gemini-3.6-flash");
+    expect(geminiCli.requirement).toContain("/auth");
+
+    const geminiCliWindows = buildIntegrationGuide({ provider: "gemini", tool: "gemini-cli", os: "powershell", modelId: "gemini-3.6-flash", language: "en" });
+    expect(geminiCliWindows.steps[0].code).toContain(`$env:GOOGLE_GEMINI_BASE_URL = "${GEMINI_BASE_URL}"`);
   });
 });

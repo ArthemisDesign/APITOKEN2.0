@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { localeHref } from "@/lib/locale-routes";
 import {
   INTEGRATION_MODELS,
+  TOOL_COMPATIBILITY,
   buildIntegrationGuide,
   isToolCompatible,
   type IntegrationLanguage,
@@ -18,11 +19,13 @@ import { Prose } from "./prose";
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
   { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
+  { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
 ];
 
 const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }> = [
   { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },
   { id: "codex", name: "Codex", en: "Responses API agent", ru: "Агент Responses API" },
+  { id: "gemini-cli", name: "Gemini CLI", en: "Native Gemini agent", ru: "Нативный агент Gemini" },
   { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал" },
   { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness" },
   { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced" },
@@ -37,10 +40,23 @@ const operatingSystems: Array<{ id: IntegrationOs; name: string; detail: string 
 const defaultTool: Record<IntegrationProvider, IntegrationTool> = {
   anthropic: "claude-code",
   openai: "codex",
+  gemini: "gemini-cli",
 };
 
 function tr(language: IntegrationLanguage, en: string, ru: string): string {
   return language === "ru" ? ru : en;
+}
+
+const PROVIDER_SHORT_NAMES: Record<IntegrationProvider, string> = {
+  anthropic: "Claude",
+  openai: "GPT",
+  gemini: "Gemini",
+};
+
+function compatibilityTag(language: IntegrationLanguage, tool: IntegrationTool): string {
+  const names = TOOL_COMPATIBILITY[tool].map((candidate) => PROVIDER_SHORT_NAMES[candidate]);
+  if (names.length === 1) return tr(language, `${names[0]} only`, `Только ${names[0]}`);
+  return names.join(" · ");
 }
 
 export function IntegrationBuilder({ language }: { language: IntegrationLanguage }) {
@@ -122,7 +138,7 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
                 <span className="ib-row-text"><strong>{candidate.name}</strong><small>{tr(language, candidate.en, candidate.ru)}</small></span>
                 {active
                   ? <CheckIcon />
-                  : !compatible && <em className="ib-row-tag">{tr(language, provider === "anthropic" ? "GPT only" : "Claude only", provider === "anthropic" ? "Только GPT" : "Только Claude")}</em>}
+                  : !compatible && <em className="ib-row-tag">{compatibilityTag(language, candidate.id)}</em>}
               </button>;
             })}
           </div>

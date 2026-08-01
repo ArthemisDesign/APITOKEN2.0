@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL,
   INTEGRATION_MODELS,
   OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -8,9 +9,14 @@ import {
 } from "./integration-builder-data";
 import { buildApiGuide, type ApiLanguage } from "./api-reference-data";
 
-const providers: IntegrationProvider[] = ["anthropic", "openai"];
+const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini"];
 const apiLanguages: ApiLanguage[] = ["curl", "python", "typescript"];
 const languages: IntegrationLanguage[] = ["en", "ru"];
+const providerEndpoints: Record<IntegrationProvider, string> = {
+  anthropic: ANTHROPIC_BASE_URL,
+  openai: OPENAI_BASE_URL,
+  gemini: GEMINI_BASE_URL,
+};
 
 describe("API reference guide", () => {
   it("builds every provider, language, and UI-locale combination without a real key", () => {
@@ -18,7 +24,7 @@ describe("API reference guide", () => {
       for (const apiLanguage of apiLanguages) {
         for (const language of languages) {
           const guide = buildApiGuide({ provider, apiLanguage, language });
-          expect(guide.endpoint).toBe(provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL);
+          expect(guide.endpoint).toBe(providerEndpoints[provider]);
           expect(guide.steps.length).toBe(apiLanguage === "curl" ? 2 : 3);
           expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
           const request = guide.steps.at(-1)!.code;
@@ -41,6 +47,11 @@ describe("API reference guide", () => {
     expect(openai.auth).toBe("Authorization: Bearer");
     expect(openai.steps[1].code).toContain("Authorization: Bearer $APITOKEN_API_KEY");
     expect(openai.steps[1].code).toContain(`${OPENAI_BASE_URL}/responses`);
+
+    const gemini = buildApiGuide({ provider: "gemini", apiLanguage: "curl", language: "en" });
+    expect(gemini.auth).toBe("x-goog-api-key");
+    expect(gemini.steps[1].code).toContain("x-goog-api-key: $APITOKEN_API_KEY");
+    expect(gemini.steps[1].code).toContain(`${GEMINI_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent`);
   });
 
   it("emits install steps with the official SDK packages", () => {
@@ -50,6 +61,10 @@ describe("API reference guide", () => {
     expect(openaiTs.steps[1].code).toBe("npm install openai");
     const anthropicTs = buildApiGuide({ provider: "anthropic", apiLanguage: "typescript", language: "ru" });
     expect(anthropicTs.steps[1].code).toBe("npm install @anthropic-ai/sdk");
+    const geminiPython = buildApiGuide({ provider: "gemini", apiLanguage: "python", language: "en" });
+    expect(geminiPython.steps[1].code).toBe("pip install google-genai");
+    const geminiTs = buildApiGuide({ provider: "gemini", apiLanguage: "typescript", language: "en" });
+    expect(geminiTs.steps[1].code).toBe("npm install @google/genai");
   });
 
   it("keeps SDK examples parseable-looking and pointed at apiToken.sale", () => {
@@ -59,5 +74,11 @@ describe("API reference guide", () => {
     const ts = buildApiGuide({ provider: "openai", apiLanguage: "typescript", language: "en" });
     expect(ts.steps[2].code).toContain('import OpenAI from "openai"');
     expect(ts.steps[2].code).toContain(`baseURL: "${OPENAI_BASE_URL}"`);
+    const geminiPython = buildApiGuide({ provider: "gemini", apiLanguage: "python", language: "en" });
+    expect(geminiPython.steps[2].code).toContain("from google import genai");
+    expect(geminiPython.steps[2].code).toContain(`base_url="${GEMINI_BASE_URL}"`);
+    const geminiTs = buildApiGuide({ provider: "gemini", apiLanguage: "typescript", language: "en" });
+    expect(geminiTs.steps[2].code).toContain('import { GoogleGenAI } from "@google/genai"');
+    expect(geminiTs.steps[2].code).toContain(`baseUrl: "${GEMINI_BASE_URL}"`);
   });
 });

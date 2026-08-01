@@ -11,6 +11,7 @@ import { Prose } from "./prose";
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
   { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
+  { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
 ];
 
 const apiLanguages: Array<{ id: ApiLanguage; name: string }> = [
@@ -93,7 +94,7 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
       </ol>
 
       <footer className="ib-guide-foot">
-        <span><ShieldIcon />{tr(language, "One sk-pool key works on both surfaces. Never ship it in client-side code.", "Один ключ sk-pool работает на обеих поверхностях. Не включайте его в клиентский код.")}</span>
+        <span><ShieldIcon />{tr(language, "One sk-pool key works on every surface. Never ship it in client-side code.", "Один ключ sk-pool работает на всех поверхностях. Не включайте его в клиентский код.")}</span>
         <Link href={localeHref("/dashboard?view=keys", language)}>{tr(language, "Get API key", "Получить API‑ключ")}<ArrowIcon /></Link>
       </footer>
     </section>

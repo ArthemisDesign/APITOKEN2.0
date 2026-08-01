@@ -3,9 +3,10 @@
 // two endpoint strings.
 export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
+export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
 
-export type IntegrationProvider = "anthropic" | "openai";
-export type IntegrationTool = "claude-code" | "codex" | "opencode" | "pi" | "hermes";
+export type IntegrationProvider = "anthropic" | "openai" | "gemini";
+export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "opencode" | "pi" | "hermes";
 export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
 
@@ -47,25 +48,42 @@ export const INTEGRATION_MODELS: Record<IntegrationProvider, readonly Integratio
     { id: "gpt-5.5", name: "GPT-5.5" },
     { id: "gpt-5.4", name: "GPT-5.4" },
   ],
+  gemini: [
+    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" },
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
+    { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash-Lite" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash-Lite" },
+    { id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image (Nano Banana 2)" },
+  ],
 };
 
 export const TOOL_COMPATIBILITY: Record<IntegrationTool, readonly IntegrationProvider[]> = {
   "claude-code": ["anthropic"],
   codex: ["openai"],
-  opencode: ["anthropic", "openai"],
-  pi: ["anthropic", "openai"],
+  "gemini-cli": ["gemini"],
+  opencode: ["anthropic", "openai", "gemini"],
+  pi: ["anthropic", "openai", "gemini"],
   hermes: ["openai"],
 };
 
 const TOOL_NAMES: Record<IntegrationTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
+  "gemini-cli": "Gemini CLI",
   opencode: "OpenCode",
   pi: "Pi",
   hermes: "Hermes",
 };
 
 const keyPlaceholder = "sk-pool-•••";
+
+const PROVIDER_ENDPOINTS: Record<IntegrationProvider, string> = {
+  anthropic: ANTHROPIC_BASE_URL,
+  openai: OPENAI_BASE_URL,
+  gemini: GEMINI_BASE_URL,
+};
 
 function localize(language: IntegrationLanguage, en: string, ru: string): string {
   return language === "ru" ? ru : en;
@@ -165,15 +183,59 @@ env_key = "APITOKEN_API_KEY"`;
   };
 }
 
+function geminiCliGuide(model: IntegrationModel, os: IntegrationOs, language: IntegrationLanguage): IntegrationGuide {
+  const connection = environmentCommand(os, {
+    GOOGLE_GEMINI_BASE_URL: GEMINI_BASE_URL,
+    GEMINI_API_KEY: keyPlaceholder,
+  });
+  return {
+    title: `Gemini CLI · ${model.name}`,
+    summary: localize(language, "Native Gemini coding agent through the Google Gemini API.", "Нативный coding agent Gemini через Google Gemini API."),
+    endpoint: GEMINI_BASE_URL,
+    requirement: localize(language, "If you previously signed in with a Google account, run /auth inside Gemini CLI and switch to the API key — a saved OAuth login can take precedence.", "Если раньше входили через Google-аккаунт, выполните /auth внутри Gemini CLI и переключитесь на API key — сохранённый OAuth-логин может иметь приоритет."),
+    steps: [
+      {
+        title: localize(language, "Set the connection", "Задайте подключение"),
+        text: localize(language, "Run in the terminal that will start Gemini CLI. The key lives only in this session and is sent as x-goog-api-key.", "Выполните в терминале, из которого запустите Gemini CLI. Ключ останется только в этой сессии и отправляется как x-goog-api-key."),
+        code: connection,
+        codeLabel: localize(language, "Terminal", "Терминал"),
+      },
+      {
+        title: localize(language, "Start Gemini CLI", "Запустите Gemini CLI"),
+        text: localize(language, "The explicit model flag avoids inheriting a model from an old login or project setting.", "Явный model flag не даст подхватить модель из старого логина или настроек проекта."),
+        code: `gemini --model ${model.id}`,
+        codeLabel: localize(language, "Run", "Запуск"),
+      },
+      {
+        title: localize(language, "Verify inside Gemini CLI", "Проверьте внутри Gemini CLI"),
+        text: localize(language, "A normal answer confirms the gateway route, the key, and the model.", "Ответ подтвердит маршрут через gateway, ключ и модель."),
+        code: `Reply with exactly: connected`,
+        codeLabel: localize(language, "Inside Gemini CLI", "В Gemini CLI"),
+      },
+    ],
+  };
+}
+
 function openCodeConfig(provider: IntegrationProvider, model: IntegrationModel): string {
-  const npmProvider = provider === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
-  const baseURL = provider === "anthropic" ? `${ANTHROPIC_BASE_URL}/v1` : OPENAI_BASE_URL;
+  // The Google ai-sdk package expects the baseURL including the /v1beta prefix,
+  // while the Anthropic one wants the /v1 suffix; OpenAI already carries it.
+  const npmProvider = provider === "anthropic"
+    ? "@ai-sdk/anthropic"
+    : provider === "gemini"
+      ? "@ai-sdk/google"
+      : "@ai-sdk/openai-compatible";
+  const baseURL = provider === "anthropic"
+    ? `${ANTHROPIC_BASE_URL}/v1`
+    : provider === "gemini"
+      ? `${GEMINI_BASE_URL}/v1beta`
+      : OPENAI_BASE_URL;
+  const label = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
   return JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     provider: {
       apitoken: {
         npm: npmProvider,
-        name: `apiToken.sale · ${provider === "anthropic" ? "Claude" : "GPT"}`,
+        name: `apiToken.sale · ${label}`,
         options: {
           baseURL,
           apiKey: "{env:APITOKEN_API_KEY}",
@@ -193,7 +255,7 @@ function openCodeGuide(provider: IntegrationProvider, model: IntegrationModel, o
   return {
     title: `OpenCode · ${model.name}`,
     summary: localize(language, "Open-source terminal coding agent with an isolated custom provider.", "Open-source coding agent в терминале с отдельным custom provider."),
-    endpoint: provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL,
+    endpoint: PROVIDER_ENDPOINTS[provider],
     steps: [
       {
         title: localize(language, "Add the provider", "Добавьте провайдера"),
@@ -221,10 +283,10 @@ function piConfig(provider: IntegrationProvider, model: IntegrationModel): strin
   return JSON.stringify({
     providers: {
       apitoken: {
-        baseUrl: provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL,
+        baseUrl: PROVIDER_ENDPOINTS[provider],
         // Pi's OpenAI completions adapter is the broadest-compatible path for
         // gateways. Responses remains the dedicated wire format for Codex.
-        api: provider === "anthropic" ? "anthropic-messages" : "openai-completions",
+        api: provider === "anthropic" ? "anthropic-messages" : provider === "gemini" ? "google-generative-ai" : "openai-completions",
         apiKey: "$APITOKEN_API_KEY",
         models: [{
           id: model.id,
@@ -246,7 +308,7 @@ function piGuide(provider: IntegrationProvider, model: IntegrationModel, os: Int
   return {
     title: `Pi · ${model.name}`,
     summary: localize(language, "Minimal terminal coding harness with a custom model catalog.", "Минималистичный coding harness в терминале со своим каталогом моделей."),
-    endpoint: provider === "anthropic" ? ANTHROPIC_BASE_URL : OPENAI_BASE_URL,
+    endpoint: PROVIDER_ENDPOINTS[provider],
     requirement,
     steps: [
       {
@@ -330,6 +392,7 @@ export function buildIntegrationGuide({
 
   if (tool === "claude-code") return claudeCodeGuide(model, os, language);
   if (tool === "codex") return codexGuide(model, os, language);
+  if (tool === "gemini-cli") return geminiCliGuide(model, os, language);
   if (tool === "opencode") return openCodeGuide(provider, model, os, language);
   if (tool === "pi") return piGuide(provider, model, os, language);
   return hermesGuide(model, os, language);
