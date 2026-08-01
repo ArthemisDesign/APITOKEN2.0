@@ -272,10 +272,10 @@ for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooli
     "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
 done
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai|-gemini)?|authbot)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai|-gemini)?|authbot)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot)' \
   "$ROOT/observability/grafana/dashboards/production-overview.json" \
   || { printf 'Grafana systemd panel omits a provider runtime unit\n' >&2; exit 1; }
 [[ $(grep -Fc 'public-http|openai-http|gemini-http|protected-http|support-http|loopback-http' \

@@ -10,8 +10,8 @@ usage() {
   printf '%s\n' \
     'Usage: engine-bluegreen.sh [--target-port 8787|8788] [--timeout SECONDS] [--dry-run]' \
     '' \
-    'Health-gated provider cutover. Admit both Anthropic and OpenAI targets before draining their' \
-    'old slots; the native Codex provider keeps sealed profiles stateless across the cutover.'
+    'Health-gated provider cutover. Admit Anthropic, OpenAI and Gemini targets before draining' \
+    'their old slots; fixed-provider rosters remain sealed and shared across each handoff.'
 }
 
 DRY_RUN=0
@@ -26,13 +26,13 @@ CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
 CONTROL_READY_URL=${ENGINE_CONTROL_READY_URL:-http://127.0.0.1:8790/ready}
 LEGACY_UNIT=claude-api.service
 OPENAI_LEGACY_UNIT=claude-api-openai.service
-GEMINI_UNIT=claude-api-gemini.service
+GEMINI_LEGACY_UNIT=claude-api-gemini.service
 PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
+GEMINI_BLUEGREEN_MARKER=.gemini-bluegreen-v1
 OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
 ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
-GEMINI_READY_URL=${GEMINI_READY_URL:-http://127.0.0.1:8795/ready}
 GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-http://127.0.0.1:8794/ready}
 CURRENT_RELEASE=
 PREVIOUS_RELEASE=
@@ -58,7 +58,17 @@ OPENAI_SHARED_SUPPORTED=0
 OPENAI_PREVIOUS_SHARED_SUPPORTED=0
 OPENAI_COMMITTED=0
 GEMINI_SUPPORTED=0
-GEMINI_RESTART_ATTEMPTED=0
+GEMINI_SHARED_SUPPORTED=0
+GEMINI_PREVIOUS_SHARED_SUPPORTED=0
+GEMINI_ACTIVE_PORT=
+GEMINI_ACTIVE_UNIT=
+GEMINI_TARGET_PORT=
+GEMINI_TARGET_UNIT=
+GEMINI_TARGET_STARTED=0
+GEMINI_TARGET_PREEXISTING=0
+GEMINI_OLD_SIGNALLED=0
+GEMINI_OLD_STOPPED=0
+GEMINI_LEGACY_TARGET=0
 GEMINI_COMMITTED=0
 
 while [[ $# -gt 0 ]]; do
@@ -80,6 +90,9 @@ slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
 openai_other_port() { [[ $1 == 8793 ]] && printf '8797\n' || printf '8793\n'; }
 openai_slot_unit() { printf 'claude-api-openai@%s.service\n' "$1"; }
 openai_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
+gemini_other_port() { [[ $1 == 8795 ]] && printf '8799\n' || printf '8795\n'; }
+gemini_slot_unit() { printf 'claude-api-gemini@%s.service\n' "$1"; }
+gemini_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
 unit_active() { systemctl_raw is-active --quiet "$1" >/dev/null 2>&1; }
 unit_stopped() {
   local unit=$1 state pid control_group cgroup_file cgroup_pid=''
@@ -206,19 +219,82 @@ stable_openai_ready() {
   curl --noproxy '*' --fail --silent --show-error --max-time 2 \
     "$OPENAI_STABLE_READY_URL" >/dev/null 2>&1
 }
-gemini_serves_current() {
-  unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini \
-    && curl --noproxy '*' --fail --silent --show-error --max-time 2 "$GEMINI_READY_URL" >/dev/null 2>&1
+gemini_ready_port() {
+  local port=$1 status
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$(gemini_slot_url "$port")" 2>/dev/null) || return 1
+  [[ $status == 200 ]]
+}
+gemini_draining_port() {
+  local port=$1 status
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$(gemini_slot_url "$port")" 2>/dev/null) || return 1
+  [[ $status == 503 ]]
+}
+gemini_slot_retired() {
+  local unit=$1 port=$2 state
+  systemctl_raw is-enabled --quiet "$unit" >/dev/null 2>&1 && return 1
+  gemini_ready_port "$port" && return 1
+  state=$(systemctl_show_value "$unit" ActiveState) || return 1
+  case "$state" in
+    deactivating) return 0 ;;
+    inactive|failed) unit_stopped "$unit" ;;
+    *) return 1 ;;
+  esac
+}
+wait_gemini_retirement_ack() {
+  local unit=$1 port=$2 attempt
+  if [[ $DRY_RUN == 1 ]]; then return 0; fi
+  for attempt in $(seq 1 20); do
+    gemini_slot_retired "$unit" "$port" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+gemini_slot_serves_current() {
+  local port=$1 unit
+  unit=$(gemini_slot_unit "$port")
+  unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini \
+    && gemini_ready_port "$port"
+}
+gemini_slot_serves_release() {
+  local port=$1 release=$2 unit pid executable
+  unit=$(gemini_slot_unit "$port")
+  unit_active "$unit" || return 1
+  pid=$(systemctl_show_value "$unit" MainPID) || return 1
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  executable=$(realpath -- "/proc/$pid/exe" 2>/dev/null) || return 1
+  [[ $executable == "$release/claude-api" ]] || return 1
+  process_environment_has "$pid" 'CLAUDE_API_PROVIDER=gemini' || return 1
+  gemini_ready_port "$port"
+}
+gemini_legacy_ready() {
+  unit_active "$GEMINI_LEGACY_UNIT" && gemini_ready_port 8795
+}
+gemini_legacy_serves_current() {
+  unit_release_binding_ok engine "$GEMINI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT" \
+    "$CURRENT_RELEASE" gemini && gemini_ready_port 8795
+}
+gemini_target_serves_current() {
+  if [[ $GEMINI_LEGACY_TARGET == 1 ]]; then
+    gemini_legacy_serves_current
+  else
+    gemini_slot_serves_current "$GEMINI_TARGET_PORT"
+  fi
+}
+gemini_unit_for_ready_port() {
+  local port=$1 unit
+  unit=$(gemini_slot_unit "$port")
+  if unit_active "$unit" && gemini_ready_port "$port"; then printf '%s\n' "$unit"; return 0; fi
+  if [[ $port == 8795 ]] && gemini_legacy_ready; then
+    printf '%s\n' "$GEMINI_LEGACY_UNIT"
+    return 0
+  fi
+  return 1
 }
 stable_gemini_ready() {
   curl --noproxy '*' --fail --silent --show-error --max-time 2 \
     "$GEMINI_STABLE_READY_URL" >/dev/null 2>&1
-}
-gemini_draining() {
-  local status
-  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-    "$GEMINI_READY_URL" 2>/dev/null) || return 1
-  [[ $status == 503 ]]
 }
 gemini_provider_envelope() {
   local status body_file
@@ -267,6 +343,20 @@ wait_openai_target() {
     sleep 1
   done
   journalctl -u "$OPENAI_TARGET_UNIT" -n 60 --no-pager >&2 || true
+  return 1
+}
+
+wait_gemini_target() {
+  local deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
+  if [[ $DRY_RUN == 1 ]]; then
+    log "dry-run: would require $GEMINI_TARGET_UNIT on current release and HTTP 200 at $(gemini_slot_url "$GEMINI_TARGET_PORT")"
+    return 0
+  fi
+  while (( $(date +%s) < deadline )); do
+    if gemini_target_serves_current; then return 0; fi
+    sleep 1
+  done
+  journalctl -u "$GEMINI_TARGET_UNIT" -n 60 --no-pager >&2 || true
   return 1
 }
 
@@ -348,9 +438,75 @@ recover() {
       fi
     fi
   fi
-  if [[ $GEMINI_RESTART_ATTEMPTED == 1 && $GEMINI_COMMITTED == 0 ]]; then
-    warn "recovery stopping the unverified Gemini runtime"
-    systemctl_raw stop "$GEMINI_UNIT" || failed=1
+  if [[ $GEMINI_COMMITTED == 0 ]]; then
+    if [[ $GEMINI_LEGACY_TARGET == 1 && $GEMINI_TARGET_STARTED == 1 ]]; then
+      if [[ $GEMINI_OLD_SIGNALLED == 1 ]]; then
+        warn 'recovery is completing the one-way legacy Gemini handoff after the slot was drained'
+        if ! gemini_legacy_serves_current; then
+          systemctl_raw restart "$GEMINI_LEGACY_UNIT" || failed=1
+          for _ in $(seq 1 "$READINESS_TIMEOUT"); do
+            gemini_legacy_serves_current && break
+            sleep 1
+          done
+        fi
+        if gemini_legacy_serves_current; then
+          if [[ -n $GEMINI_ACTIVE_UNIT ]]; then
+            systemctl_raw stop "$GEMINI_ACTIVE_UNIT" || failed=1
+            systemctl_raw disable "$GEMINI_ACTIVE_UNIT" || failed=1
+          fi
+          if [[ -z $GEMINI_ACTIVE_UNIT ]] || unit_stopped "$GEMINI_ACTIVE_UNIT"; then
+            systemctl_raw enable "$GEMINI_LEGACY_UNIT" || failed=1
+            systemctl_raw disable "$(gemini_slot_unit 8795)" || failed=1
+            systemctl_raw disable "$(gemini_slot_unit 8799)" || failed=1
+          else
+            failed=1
+            warn 'Gemini slot did not stop; both generations were retained'
+          fi
+        else
+          failed=1
+          warn 'legacy Gemini target did not recover; preserving the slot generation'
+        fi
+      else
+        warn 'recovery is releasing the unadmitted legacy Gemini target back to the slot generation'
+        systemctl_raw stop "$GEMINI_LEGACY_UNIT" || failed=1
+      fi
+    elif [[ $GEMINI_TARGET_STARTED == 1 && $GEMINI_OLD_STOPPED == 1 ]] \
+        && gemini_target_serves_current; then
+      warn "recovery commits verified Gemini target $GEMINI_TARGET_UNIT after old-slot drain"
+      systemctl_raw enable "$GEMINI_TARGET_UNIT" || failed=1
+      if [[ -n $GEMINI_ACTIVE_UNIT && $GEMINI_ACTIVE_UNIT != "$GEMINI_TARGET_UNIT" ]]; then
+        systemctl_raw disable "$GEMINI_ACTIVE_UNIT" || failed=1
+      fi
+      systemctl_raw disable "$GEMINI_LEGACY_UNIT" || failed=1
+    else
+      local gemini_old_recovered=1
+      if [[ $GEMINI_TARGET_STARTED == 1 && -n $GEMINI_ACTIVE_UNIT \
+          && $GEMINI_ACTIVE_UNIT != "$GEMINI_TARGET_UNIT" \
+          && $GEMINI_OLD_SIGNALLED == 1 ]]; then
+        gemini_old_recovered=0
+        warn "recovery restoring the previous Gemini runtime before releasing the target"
+        systemctl_raw restart "$GEMINI_ACTIVE_UNIT" || failed=1
+        for _ in $(seq 1 "$READINESS_TIMEOUT"); do
+          gemini_ready_port "$GEMINI_ACTIVE_PORT" && break
+          sleep 1
+        done
+        if gemini_ready_port "$GEMINI_ACTIVE_PORT"; then
+          gemini_old_recovered=1
+        else
+          failed=1
+          warn "previous Gemini runtime is not ready; retaining the target to preserve availability"
+        fi
+      fi
+      if [[ $gemini_old_recovered == 1 && $GEMINI_TARGET_STARTED == 1 ]]; then
+        if [[ $GEMINI_TARGET_PREEXISTING == 1 ]]; then
+          warn "recovery retains the pre-existing current Gemini target $GEMINI_TARGET_UNIT"
+        else
+          warn "recovery stopping the unverified Gemini target $GEMINI_TARGET_UNIT"
+          systemctl_raw stop "$GEMINI_TARGET_UNIT" || failed=1
+          systemctl_raw disable "$GEMINI_TARGET_UNIT" || failed=1
+        fi
+      fi
+    fi
   fi
   if [[ $TARGET_COMMITTED == 1 ]] && slot_serves_current "$TARGET_PORT"; then
     warn "recovery retains the verified target $TARGET_UNIT"
@@ -399,7 +555,9 @@ validate_service_unit "$LEGACY_UNIT"
 validate_service_unit "$OPENAI_LEGACY_UNIT"
 validate_service_unit "$(openai_slot_unit 8793)"
 validate_service_unit "$(openai_slot_unit 8797)"
-validate_service_unit "$GEMINI_UNIT"
+validate_service_unit "$GEMINI_LEGACY_UNIT"
+validate_service_unit "$(gemini_slot_unit 8795)"
+validate_service_unit "$(gemini_slot_unit 8799)"
 validate_service_unit "$(slot_unit 8787)"
 validate_service_unit "$(slot_unit 8788)"
 validate_service_unit "$(legacy_slot_unit 8787)"
@@ -419,6 +577,10 @@ privileged_command test -f "/etc/systemd/system/$OPENAI_LEGACY_UNIT" \
   || die "legacy OpenAI provider unit is not installed"
 privileged_command test -f /etc/systemd/system/claude-api-openai@.service \
   || die "OpenAI slot template is not installed"
+privileged_command test -f "/etc/systemd/system/$GEMINI_LEGACY_UNIT" \
+  || die "legacy Gemini provider unit is not installed"
+privileged_command test -f /etc/systemd/system/claude-api-gemini@.service \
+  || die "Gemini slot template is not installed"
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
 privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
@@ -453,12 +615,20 @@ if [[ -f "$CURRENT_RELEASE/$GEMINI_CAPABILITY_MARKER" \
     && ! -L "$CURRENT_RELEASE/$GEMINI_CAPABILITY_MARKER" \
     && $(<"$CURRENT_RELEASE/$GEMINI_CAPABILITY_MARKER") == gemini-provider-v1 ]]; then
   GEMINI_SUPPORTED=1
-  privileged_command test -f "/etc/systemd/system/$GEMINI_UNIT" \
-    || die "Gemini provider unit is not installed"
+  if [[ -e "$CURRENT_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+      || -L "$CURRENT_RELEASE/$GEMINI_BLUEGREEN_MARKER" ]]; then
+    [[ -f "$CURRENT_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+        && ! -L "$CURRENT_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+        && $(<"$CURRENT_RELEASE/$GEMINI_BLUEGREEN_MARKER") == gemini-bluegreen-v1 ]] \
+      || die "current engine release has an invalid Gemini blue-green capability marker"
+    GEMINI_SHARED_SUPPORTED=1
+  fi
   privileged_command grep -q '127.0.0.1:8794' "$CADDY_CONFIG" \
     || die "Caddy is missing the stable Gemini listener on 127.0.0.1:8794"
   privileged_command grep -q '127.0.0.1:8795' "$CADDY_CONFIG" \
-    || die "Caddy is not configured with the Gemini runtime on 127.0.0.1:8795"
+    || die "Caddy is not configured with the Gemini slot on 127.0.0.1:8795"
+  privileged_command grep -q '127.0.0.1:8799' "$CADDY_CONFIG" \
+    || die "Caddy is not configured with the Gemini slot on 127.0.0.1:8799"
 fi
 PREVIOUS_RELEASE=$(release_path_from_link "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE_ROOT/previous") \
   || die "previous engine release is required for provider cutover rollback"
@@ -476,8 +646,20 @@ if [[ -e "$PREVIOUS_RELEASE/$OPENAI_CAPABILITY_MARKER" \
     || die "previous engine release has an invalid OpenAI blue-green capability marker"
   OPENAI_PREVIOUS_SHARED_SUPPORTED=1
 fi
+if [[ -e "$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+    || -L "$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER" ]]; then
+  [[ -f "$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+      && ! -L "$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
+      && $(<"$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER") == gemini-bluegreen-v1 ]] \
+    || die "previous engine release has an invalid Gemini blue-green capability marker"
+  GEMINI_PREVIOUS_SHARED_SUPPORTED=1
+fi
 if [[ $OPENAI_SHARED_SUPPORTED == 0 && $OPENAI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
   die 'legacy OpenAI rollback requires a previous shared-daemon release as its availability anchor'
+fi
+if [[ $GEMINI_SUPPORTED == 1 && $GEMINI_SHARED_SUPPORTED == 0 \
+    && $GEMINI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
+  die 'legacy Gemini rollback requires a previous blue-green release as its availability anchor'
 fi
 
 if [[ $DRY_RUN == 1 ]]; then
@@ -759,42 +941,171 @@ if [[ $DRY_RUN == 0 ]]; then
 fi
 
 if [[ $GEMINI_SUPPORTED == 1 ]]; then
-  if ! gemini_serves_current; then
-    GEMINI_RESTART_ATTEMPTED=1
-    if unit_active "$GEMINI_UNIT"; then
-      log "pre-draining $GEMINI_UNIT with SIGUSR1"
-      systemctl_command kill --kill-whom=main -s SIGUSR1 "$GEMINI_UNIT" \
-        || post_admission_die "could not pre-drain $GEMINI_UNIT"
-      run sleep "$PRE_DRAIN_SECONDS"
-      if [[ $DRY_RUN == 0 ]]; then
-        gemini_draining || post_admission_die "$GEMINI_UNIT did not flip readiness to 503"
-      fi
+  if [[ $GEMINI_SHARED_SUPPORTED == 0 ]]; then
+    GEMINI_LEGACY_TARGET=1
+    GEMINI_TARGET_PORT=8795
+    GEMINI_TARGET_UNIT=$GEMINI_LEGACY_UNIT
+    GEMINI_TARGET_STARTED=1
+    if gemini_slot_serves_release 8799 "$PREVIOUS_RELEASE"; then
+      GEMINI_ACTIVE_PORT=8799
+      GEMINI_ACTIVE_UNIT=$(gemini_slot_unit 8799)
+    elif ! gemini_legacy_serves_current; then
+      post_admission_die 'legacy Gemini rollback has neither its previous slot anchor nor a ready target'
     fi
-    systemctl_command restart "$GEMINI_UNIT" \
-      || post_admission_die "could not restart $GEMINI_UNIT"
-    wait_for_release_service "Gemini provider" engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" \
-      "$CURRENT_RELEASE" "$GEMINI_READY_URL" "$READINESS_TIMEOUT" gemini \
-      || post_admission_die "$GEMINI_UNIT did not become ready on current release"
+    if unit_active "$(gemini_slot_unit 8795)"; then
+      post_admission_die 'Gemini slot 8795 blocks the rollback singleton port'
+    fi
+  else
+    if gemini_legacy_ready; then
+      # First transition from the singleton: the alternate port is admitted before the legacy
+      # process is touched, so installing the slot topology itself is zero-downtime.
+      GEMINI_ACTIVE_PORT=8795
+      GEMINI_ACTIVE_UNIT=$GEMINI_LEGACY_UNIT
+      GEMINI_TARGET_PORT=8799
+    else
+      if unit_active "$GEMINI_LEGACY_UNIT"; then
+        warn "stopping unready legacy Gemini runtime before slot reconciliation"
+        systemctl_command stop "$GEMINI_LEGACY_UNIT" \
+          || post_admission_die "could not stop unready legacy Gemini runtime"
+      fi
+      GEMINI_READY_8795=0; GEMINI_READY_8799=0
+      GEMINI_CURRENT_8795=0; GEMINI_CURRENT_8799=0
+      gemini_unit_for_ready_port 8795 >/dev/null && GEMINI_READY_8795=1
+      gemini_unit_for_ready_port 8799 >/dev/null && GEMINI_READY_8799=1
+      gemini_slot_serves_current 8795 && GEMINI_CURRENT_8795=1
+      gemini_slot_serves_current 8799 && GEMINI_CURRENT_8799=1
+      case "$GEMINI_CURRENT_8795:$GEMINI_CURRENT_8799" in
+        1:0)
+          GEMINI_TARGET_PORT=8795
+          if (( GEMINI_READY_8799 == 1 )); then
+            GEMINI_ACTIVE_PORT=8799; GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8799)
+          fi
+          log 'Gemini current release already serves on 8795; preserving it without another cutover'
+          ;;
+        0:1)
+          GEMINI_TARGET_PORT=8799
+          if (( GEMINI_READY_8795 == 1 )); then
+            GEMINI_ACTIVE_PORT=8795; GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8795)
+          fi
+          log 'Gemini current release already serves on 8799; preserving it without another cutover'
+          ;;
+        1:1)
+          if systemctl_raw is-enabled --quiet "$(gemini_slot_unit 8799)"; then
+            GEMINI_TARGET_PORT=8799; GEMINI_ACTIVE_PORT=8795
+            GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8795)
+          else
+            GEMINI_TARGET_PORT=8795; GEMINI_ACTIVE_PORT=8799
+            GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8799)
+          fi
+          ;;
+        0:0)
+          case "$GEMINI_READY_8795:$GEMINI_READY_8799" in
+            1:0) GEMINI_ACTIVE_PORT=8795; GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8795); GEMINI_TARGET_PORT=8799 ;;
+            0:1) GEMINI_ACTIVE_PORT=8799; GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8799); GEMINI_TARGET_PORT=8795 ;;
+            0:0) GEMINI_TARGET_PORT=8795 ;;
+            1:1) GEMINI_TARGET_PORT=8799; GEMINI_ACTIVE_PORT=8795; GEMINI_ACTIVE_UNIT=$(gemini_unit_for_ready_port 8795) ;;
+          esac
+          ;;
+      esac
+    fi
+    GEMINI_TARGET_UNIT=$(gemini_slot_unit "$GEMINI_TARGET_PORT")
   fi
-  log "waiting ${HEALTH_WINDOW_SECONDS}s for Caddy to health-include the Gemini runtime"
+  log "Gemini cutover decision: ${GEMINI_ACTIVE_UNIT:-no ready old unit} -> $GEMINI_TARGET_UNIT"
+  if gemini_target_serves_current; then GEMINI_TARGET_PREEXISTING=1; fi
+  GEMINI_TARGET_STARTED=1
+  if ! gemini_target_serves_current; then
+    systemctl_command stop "$GEMINI_TARGET_UNIT"
+    systemctl_command start "$GEMINI_TARGET_UNIT" \
+      || post_admission_die "could not start Gemini target $GEMINI_TARGET_UNIT"
+  fi
+  wait_gemini_target \
+    || post_admission_die "$GEMINI_TARGET_UNIT did not become ready on current release"
+  log "waiting ${HEALTH_WINDOW_SECONDS}s for Caddy to health-include Gemini slot $GEMINI_TARGET_PORT"
   run sleep "$HEALTH_WINDOW_SECONDS"
   if [[ $DRY_RUN == 0 ]]; then
-    gemini_serves_current || post_admission_die "Gemini runtime failed final exact-release verification"
-    stable_gemini_ready || post_admission_die "stable Gemini origin failed readiness verification"
+    gemini_target_serves_current \
+      || post_admission_die "Gemini target lost readiness during Caddy inclusion"
+    stable_gemini_ready \
+      || post_admission_die "stable Gemini origin lost readiness while admitting the target"
+  fi
+  systemctl_command enable "$GEMINI_TARGET_UNIT" \
+    || post_admission_die "could not enable Gemini target $GEMINI_TARGET_UNIT"
+  if [[ $DRY_RUN == 0 ]]; then
+    systemctl_raw is-enabled --quiet "$GEMINI_TARGET_UNIT" \
+      || post_admission_die "Gemini target is not enabled before old-slot drain"
+  fi
+
+  if [[ -n $GEMINI_ACTIVE_UNIT && $GEMINI_ACTIVE_UNIT != "$GEMINI_TARGET_UNIT" ]]; then
+    log "pre-draining $GEMINI_ACTIVE_UNIT with SIGUSR1"
+    systemctl_command kill --kill-whom=main -s SIGUSR1 "$GEMINI_ACTIVE_UNIT" \
+      || post_admission_die "could not pre-drain $GEMINI_ACTIVE_UNIT"
+    GEMINI_OLD_SIGNALLED=1
+    run sleep "$PRE_DRAIN_SECONDS"
+    if [[ $DRY_RUN == 0 ]]; then
+      gemini_draining_port "$GEMINI_ACTIVE_PORT" \
+        || post_admission_die "$GEMINI_ACTIVE_UNIT did not flip readiness to 503"
+      gemini_target_serves_current \
+        || post_admission_die "Gemini target lost readiness during old-slot pre-drain"
+      stable_gemini_ready \
+        || post_admission_die "stable Gemini origin lost readiness during old-slot pre-drain"
+    fi
+    systemctl_command disable "$GEMINI_ACTIVE_UNIT" \
+      || post_admission_die "could not disable old Gemini unit $GEMINI_ACTIVE_UNIT"
+    if [[ $GEMINI_LEGACY_TARGET == 1 ]]; then
+      systemctl_command stop "$GEMINI_ACTIVE_UNIT" \
+        || post_admission_die "could not stop old Gemini unit $GEMINI_ACTIVE_UNIT"
+      if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$GEMINI_ACTIVE_UNIT"; then
+        post_admission_die "old Gemini cgroup remains active before legacy commit"
+      fi
+    else
+      # Readiness fencing removes this generation from new routing; asynchronous stop lets its
+      # established SSE requests finish under the normal bounded settlement deadline.
+      systemctl_command --no-block stop "$GEMINI_ACTIVE_UNIT" \
+        || post_admission_die "could not queue retirement of old Gemini unit $GEMINI_ACTIVE_UNIT"
+      wait_gemini_retirement_ack "$GEMINI_ACTIVE_UNIT" "$GEMINI_ACTIVE_PORT" \
+        || post_admission_die "old Gemini unit did not acknowledge background retirement"
+    fi
+    GEMINI_OLD_STOPPED=1
+  fi
+
+  if [[ $DRY_RUN == 0 ]]; then
+    gemini_target_serves_current \
+      || post_admission_die "Gemini target failed post-drain verification"
+    stable_gemini_ready \
+      || post_admission_die "stable Gemini origin failed post-drain verification"
     gemini_provider_envelope \
       || post_admission_die "stable Gemini origin does not expose the expected native provider envelope"
   fi
-  systemctl_command enable "$GEMINI_UNIT" || post_admission_die "could not enable $GEMINI_UNIT"
   GEMINI_COMMITTED=1
-else
-  # Rollback to a release predating Gemini must restore the two established providers instead of
-  # trying to launch an unsupported provider mode from the old binary.
-  if unit_active "$GEMINI_UNIT"; then
-    systemctl_command stop "$GEMINI_UNIT" \
-      || post_admission_die "could not stop unsupported Gemini runtime during rollback"
+  if [[ $GEMINI_LEGACY_TARGET == 1 ]]; then
+    for GEMINI_OTHER_UNIT in "$(gemini_slot_unit 8795)" "$(gemini_slot_unit 8799)"; do
+      systemctl_command stop "$GEMINI_OTHER_UNIT" \
+        || post_admission_die "could not stop inactive Gemini slot $GEMINI_OTHER_UNIT"
+      systemctl_command disable "$GEMINI_OTHER_UNIT" \
+        || post_admission_die "could not disable inactive Gemini slot $GEMINI_OTHER_UNIT"
+    done
+  else
+    GEMINI_OTHER_PORT=$(gemini_other_port "$GEMINI_TARGET_PORT")
+    GEMINI_OTHER_UNIT=$(gemini_slot_unit "$GEMINI_OTHER_PORT")
+    if [[ $GEMINI_OTHER_UNIT != "$GEMINI_ACTIVE_UNIT" ]]; then
+      systemctl_command stop "$GEMINI_OTHER_UNIT" \
+        || post_admission_die "could not stop inactive Gemini slot $GEMINI_OTHER_UNIT"
+      systemctl_command disable "$GEMINI_OTHER_UNIT" \
+        || post_admission_die "could not disable inactive Gemini slot $GEMINI_OTHER_UNIT"
+    fi
+    systemctl_command disable "$GEMINI_LEGACY_UNIT" \
+      || post_admission_die "could not disable legacy Gemini singleton"
   fi
-  systemctl_command disable "$GEMINI_UNIT" \
-    || post_admission_die "could not disable unsupported Gemini runtime during rollback"
+else
+  # Rollback to a release predating Gemini stops every provider incarnation.
+  for unit in "$GEMINI_LEGACY_UNIT" "$(gemini_slot_unit 8795)" "$(gemini_slot_unit 8799)"; do
+    if unit_active "$unit"; then
+      systemctl_command stop "$unit" \
+        || post_admission_die "could not stop unsupported Gemini runtime $unit during rollback"
+    fi
+    systemctl_command disable "$unit" \
+      || post_admission_die "could not disable unsupported Gemini runtime $unit during rollback"
+  done
 fi
 
 if [[ $DRY_RUN == 0 ]]; then
@@ -835,10 +1146,39 @@ if [[ $DRY_RUN == 0 ]]; then
     fi
   fi
   if [[ $GEMINI_SUPPORTED == 1 ]]; then
-    systemctl_raw is-enabled --quiet "$GEMINI_UNIT" \
-      || post_admission_die "Gemini provider is not enabled after cutover: $GEMINI_UNIT"
-  elif systemctl_raw is-enabled --quiet "$GEMINI_UNIT"; then
-    post_admission_die "unsupported Gemini provider remains enabled after rollback"
+    gemini_target_serves_current \
+      || post_admission_die "Gemini target failed final exact-release verification"
+    stable_gemini_ready \
+      || post_admission_die "stable Gemini origin failed final readiness verification"
+    systemctl_raw is-enabled --quiet "$GEMINI_TARGET_UNIT" \
+      || post_admission_die "Gemini target is not enabled: $GEMINI_TARGET_UNIT"
+    if [[ $GEMINI_LEGACY_TARGET == 1 ]]; then
+      for GEMINI_OTHER_UNIT in "$(gemini_slot_unit 8795)" "$(gemini_slot_unit 8799)"; do
+        ! unit_stopped "$GEMINI_OTHER_UNIT" \
+          && post_admission_die "Gemini slot is not fully stopped: $GEMINI_OTHER_UNIT"
+        if systemctl_raw is-enabled --quiet "$GEMINI_OTHER_UNIT"; then
+          post_admission_die "Gemini slot remains enabled: $GEMINI_OTHER_UNIT"
+        fi
+      done
+    else
+      gemini_slot_retired "$GEMINI_OTHER_UNIT" "$GEMINI_OTHER_PORT" \
+        || post_admission_die "inactive Gemini slot is neither stopped nor retiring: $GEMINI_OTHER_UNIT"
+      if systemctl_raw is-enabled --quiet "$GEMINI_OTHER_UNIT"; then
+        post_admission_die "inactive Gemini slot remains enabled: $GEMINI_OTHER_UNIT"
+      fi
+      ! unit_stopped "$GEMINI_LEGACY_UNIT" \
+        && post_admission_die "legacy Gemini singleton is not fully stopped"
+      if systemctl_raw is-enabled --quiet "$GEMINI_LEGACY_UNIT"; then
+        post_admission_die "legacy Gemini singleton remains enabled"
+      fi
+    fi
+  else
+    for GEMINI_OTHER_UNIT in "$GEMINI_LEGACY_UNIT" \
+      "$(gemini_slot_unit 8795)" "$(gemini_slot_unit 8799)"; do
+      if systemctl_raw is-enabled --quiet "$GEMINI_OTHER_UNIT"; then
+        post_admission_die "unsupported Gemini provider remains enabled after rollback: $GEMINI_OTHER_UNIT"
+      fi
+    done
   fi
   if systemctl_raw is-enabled --quiet "$OTHER_UNIT"; then
     post_admission_die "inactive engine slot remains enabled after cutover: $OTHER_UNIT"
@@ -861,5 +1201,5 @@ commit_cutover
 if [[ $DRY_RUN == 1 ]]; then
   log "dry-run complete; no provider or Caddy state changed"
 else
-  log "provider cutover complete; $TARGET_UNIT, $OPENAI_TARGET_UNIT and Gemini-supported=$GEMINI_SUPPORTED serve $(basename -- "$CURRENT_RELEASE")"
+  log "provider cutover complete; $TARGET_UNIT, $OPENAI_TARGET_UNIT and ${GEMINI_TARGET_UNIT:-Gemini-disabled} serve $(basename -- "$CURRENT_RELEASE")"
 fi

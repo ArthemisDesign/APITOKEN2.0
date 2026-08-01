@@ -73,8 +73,8 @@ an infrastructure fault rather than a verdict on a commit: it is logged and retr
 cycle without quarantining anything. Commerce migration
 failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
 slot untouched. Expensive retention and production-alignment checks remain on a separate one-minute
-idle cadence, where the watchdog requires exactly one Anthropic slot plus the OpenAI and supported
-Gemini singletons to be active, ready, selected on the recorded release, enabled, and running their
+idle cadence, where the watchdog requires exactly one slot for Anthropic, OpenAI, and supported
+Gemini to be active, ready, selected on the recorded release, enabled, and running their
 fixed provider modes. If an out-of-band service command
 reactivates the inactive slot, the watchdog reconverges through the same readiness-gated controller;
 it never stops the availability anchor before another current slot is verified. Normal releases
@@ -297,9 +297,9 @@ Phase 1 builds and finalizes `/srv/claude-api/releases/<sha>`, then atomically s
 touching either provider. Before Phase 2 starts a slot, `engine-bluegreen.sh` applies pending engine
 PostgreSQL migrations through the fixed root helper. Phase 2 then starts the inactive 8787/8788 Anthropic slot, proves its exact
 `MainPID`, binary and startup-fixed mode, admits it through Caddy, flips the old slot to 503 readiness
-with `SIGUSR1`, and fully stops its cgroup. It then gracefully restarts
-`claude-api-openai.service` and, for releases carrying `.gemini-provider-v1`,
-`claude-api-gemini.service`, proving the same selected binary in each startup-fixed provider mode.
+with `SIGUSR1`, and fully stops its cgroup. It then health-gates the inactive OpenAI slot and, for
+releases carrying `.gemini-bluegreen-v1`, the inactive Gemini slot, proving the same selected binary
+in each startup-fixed provider mode before draining the predecessor.
 On the first split, this order guarantees the old combined process releases every Codex home before
 OpenAI starts; Gemini remains a separate subscription-pool failure domain throughout.
 
@@ -324,13 +324,13 @@ curl -sS --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
       or (.error.status == "NOT_FOUND" and .error.code == 404)'
 systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
-systemctl status claude-api-openai.service
-systemctl status claude-api-gemini.service
+systemctl status 'claude-api-openai@*.service'
+systemctl status 'claude-api-gemini@*.service'
 ```
 
-The Anthropic slot alternates. Consumers must never hard-code 8787 or 8788; commerce always uses
-`http://127.0.0.1:8790`. OpenAI clients use only their public hostname; 8792/8793 remain loopback.
-Gemini clients use only `gemini.api.apitoken.sale`; its stable 8794 and runtime 8795 are loopback.
+All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, or 8795/8799;
+commerce always uses `http://127.0.0.1:8790`. OpenAI and Gemini clients use only their public
+hostnames; stable origins 8792/8794 and every runtime slot remain loopback-only.
 Provision paid Antigravity OAuth profiles first as documented in `docs/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API
@@ -423,12 +423,15 @@ the already-running process:
 ```bash
 sudo systemd-analyze verify systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
-  systemd/claude-api-gemini.service systemd/apitoken-api@.service
+  systemd/claude-api-openai@.service systemd/claude-api-gemini.service \
+  systemd/claude-api-gemini@.service systemd/apitoken-api@.service
 sudo install -o root -g root -m 0644 systemd/claude-api.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-anthropic@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-openai.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-openai@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-gemini.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-gemini@.service /etc/systemd/system/
 sudo install -d -o deploy -g deploy -m 0700 \
   /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials
 sudo install -o root -g root -m 0644 systemd/apitoken-api@.service /etc/systemd/system/

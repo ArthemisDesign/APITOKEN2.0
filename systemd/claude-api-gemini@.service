@@ -1,0 +1,47 @@
+# Health-gated native Gemini slot. Only one slot accepts new traffic in steady state; during
+# cutover the old process drains established streams while the candidate serves new requests.
+[Unit]
+Description=claude-api Gemini OAuth subscription-pool slot on port %i
+After=network-online.target apitoken-affinity-redis.service
+Wants=network-online.target apitoken-affinity-redis.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# A release predating the slot-safe handoff must never be started through this template. The
+# legacy singleton remains installed solely so rollback can run such a release on 8795.
+ExecCondition=/usr/bin/test -f /srv/claude-api/releases/current/.gemini-bluegreen-v1
+ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.gemini-bluegreen-v1
+ExecCondition=/usr/bin/grep -Fxq gemini-bluegreen-v1 /srv/claude-api/releases/current/.gemini-bluegreen-v1
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleapis.com CLAUDE_API_GEMINI_ALLOW_INSECURE_LOOPBACK_UPSTREAM=0 CLAUDE_API_GEMINI_ANTIGRAVITY_VERSION=2.2.1 CLAUDE_API_GEMINI_NODE_BINARY=/usr/bin/node CLAUDE_API_GEMINI_NODE_VERSION=v24.18.0 CLAUDE_API_GEMINI_NODE_SHA256=41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c /srv/claude-api/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=660
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/srv/claude-api/data
+ReadOnlyPaths=/srv/claude-api/data/gemini
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

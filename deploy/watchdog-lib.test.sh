@@ -695,7 +695,8 @@ wd_path_is_engine tools/codex-native/probe-live.py \
   || wd_die "native Codex tooling must trigger an engine deployment"
 for provider_unit in systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
-  systemd/claude-api-gemini.service; do
+  systemd/claude-api-openai@.service systemd/claude-api-gemini.service \
+  systemd/claude-api-gemini@.service; do
   wd_path_is_engine "$provider_unit" \
     || wd_die "provider unit change does not force runtime adoption: $provider_unit"
 done
@@ -761,7 +762,9 @@ for runtime_definition in \
   systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service \
   systemd/claude-api-openai.service \
+  systemd/claude-api-openai@.service \
   systemd/claude-api-gemini.service \
+  systemd/claude-api-gemini@.service \
   systemd/apitoken-tmpfiles.conf \
   observability/prometheus/prometheus.yml; do
   wd_path_requires_infrastructure_install "$runtime_definition" \
@@ -803,6 +806,7 @@ wd_path_is_systemd_definition deploy/install-tmpfiles.sh
 wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
 wd_path_is_systemd_definition systemd/claude-api-gemini.service
+wd_path_is_systemd_definition systemd/claude-api-gemini@.service
 wd_path_is_systemd_definition systemd/apitoken-admin.service \
   || wd_die "the admin panel unit escaped the narrow systemd installer"
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
@@ -1356,9 +1360,35 @@ grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleap
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   "$ROOT/systemd/claude-api-gemini.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini@.service"
+grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slot template does not pin fixed provider mode and its instance port'
+grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slot identities are not process-fenced by port'
+grep -Fq 'ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.gemini-bluegreen-v1' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'legacy releases can start through the Gemini slot template'
+grep -Fq 'ExecCondition=/usr/bin/grep -Fxq gemini-bluegreen-v1' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slot capability marker contents are not checked'
+grep -Fq 'CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slots do not share the sealed profile roster'
+grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
+  "$ROOT/systemd/claude-api-gemini@.service" \
+  || wd_die 'Gemini slots can mutate Auth Bot roster state'
+legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.service" \
+  | sed -e 's/CLAUDE_API_PORT=8795/CLAUDE_API_PORT=%i/' \
+    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:gemini /CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i /')
+slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service")
+[[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
+  || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins'
 grep -Fq '/srv/claude-api/data/gemini/credentials' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-gemini.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'claude-api-gemini@.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/bin/systemctl restart claude-api-openai.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
 grep -Fq '/usr/bin/systemctl --no-block stop claude-api-openai@[0-9]*.service' \
@@ -1366,6 +1396,9 @@ grep -Fq '/usr/bin/systemctl --no-block stop claude-api-openai@[0-9]*.service' \
   || wd_die "OpenAI blue-green cannot retire its old HTTP slot outside the deploy path"
 grep -Fq '/usr/bin/systemctl restart claude-api-gemini.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl --no-block stop claude-api-gemini@[0-9]*.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "Gemini blue-green cannot retire its old slot outside the deploy path"
 grep -Fq '/usr/bin/systemctl restart claude-api.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "combined bridge recovery restart is denied by sudo policy"
@@ -1378,6 +1411,14 @@ grep -Fq 'provider-runtime-v1 >"$ENGINE_STAGE/.provider-runtime-v1"' "$ROOT/depl
   || wd_die "engine releases do not record fixed-provider capability"
 grep -Fq 'openai-bluegreen-v1 >"$ENGINE_STAGE/.openai-bluegreen-v1"' "$ROOT/deploy/deploy.sh" \
   || wd_die "engine releases do not record OpenAI blue-green capability"
+grep -Fq 'gemini-bluegreen-v1 >"$ENGINE_STAGE/.gemini-bluegreen-v1"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine releases do not record Gemini blue-green capability"
+grep -Fq '[[ -f "$directory/.gemini-bluegreen-v1" && ! -L "$directory/.gemini-bluegreen-v1" ]]' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine staging does not reject an unsafe Gemini blue-green capability marker"
+grep -Fq '[[ $(<"$directory/.gemini-bluegreen-v1") == gemini-bluegreen-v1 ]]' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine staging does not validate Gemini blue-green marker contents"
 ! grep -Fq 'CLAUDE_API_CODEX_ENABLED=1 is required when CLAUDE_API_PROVIDER=openai' \
   "$ROOT/crates/server/src/config.rs" \
   || wd_die "disabled fixed OpenAI mode cannot serve a stable kill-switch envelope"
@@ -1449,7 +1490,11 @@ grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {' "$ROOT/deploy/Caddyfile
 grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
 grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8794 {' "$ROOT/deploy/Caddyfile"
-grep -Fq 'reverse_proxy 127.0.0.1:8795 {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8795 127.0.0.1:8799 {' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'stable Gemini origin does not expose both blue-green slots'
+gemini_stable_origin=$(sed -n '/^http:\/\/127\.0\.0\.1:8794 {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+grep -Fq 'lb_policy first' <<<"$gemini_stable_origin" \
+  || wd_die 'Gemini slots can round-robin the same OAuth roster during overlap'
 [[ $(grep -Fc 'health_uri /ready' "$ROOT/deploy/Caddyfile") -ge 3 ]]
 ! grep -Fq 'health_method POST' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'health_status 4xx' "$ROOT/deploy/Caddyfile"
@@ -1639,9 +1684,8 @@ grep -Fq -- "--data-urlencode 'query=claude_api_codex_enabled{provider=\"openai\
   "$ROOT/deploy/watchdog.sh" \
   || wd_die "disabled Codex detection is not scoped to the OpenAI provider process"
 
-# OpenAI is a true health-gated two-slot cohort. The native provider owns no child processes and
-# no per-generation ownership fences: candidate readiness over the shared sealed roster is the
-# admission gate, exactly like the Gemini fleet.
+# OpenAI and Gemini are health-gated two-slot cohorts. Candidate readiness over each shared sealed
+# roster is the admission gate; Gemini additionally keeps new routing active/passive in Caddy.
 provider_controller="$ROOT/deploy/engine-bluegreen.sh"
 old_stop_line=$(grep -nF 'systemctl_command stop "$ACTIVE_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
 openai_start_line=$(grep -nF 'systemctl_command start "$OPENAI_TARGET_UNIT"' "$provider_controller" | head -1 | cut -d: -f1)
@@ -1683,8 +1727,39 @@ grep -Fq 'wait_openai_retirement_ack "$OPENAI_ACTIVE_UNIT" "$OPENAI_ACTIVE_PORT"
 grep -Fq 'openai_slot_retired "$OPENAI_OTHER_UNIT" "$OPENAI_OTHER_PORT"' \
   "$provider_controller" \
   || wd_die 'OpenAI final verification rejects a safely draining old HTTP generation'
-grep -Fq 'unit_release_binding_ok engine "$GEMINI_UNIT" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini' \
-  "$provider_controller" || wd_die "Gemini gate does not prove provider mode"
+gemini_start_line=$(grep -nF 'systemctl_command start "$GEMINI_TARGET_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+gemini_enable_line=$(grep -nF 'systemctl_command enable "$GEMINI_TARGET_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+gemini_drain_line=$(grep -nF 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$GEMINI_ACTIVE_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+gemini_async_stop_line=$(grep -nF 'systemctl_command --no-block stop "$GEMINI_ACTIVE_UNIT"' \
+  "$provider_controller" | head -1 | cut -d: -f1)
+[[ -n $gemini_start_line && -n $gemini_enable_line && -n $gemini_drain_line \
+    && -n $gemini_async_stop_line \
+    && $gemini_start_line -lt $gemini_enable_line \
+    && $gemini_enable_line -lt $gemini_drain_line \
+    && $gemini_drain_line -lt $gemini_async_stop_line ]] \
+  || wd_die 'Gemini does not admit and boot-durable the target before draining the old generation'
+grep -Fq 'unit_release_binding_ok engine "$GEMINI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT"' \
+  "$provider_controller" || wd_die "legacy Gemini rollback gate does not prove the exact release"
+grep -Fq 'unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" gemini' \
+  "$provider_controller" || wd_die "Gemini slot gate does not prove provider mode"
+grep -Fq 'GEMINI_BLUEGREEN_MARKER=.gemini-bluegreen-v1' "$provider_controller" \
+  || wd_die 'provider controller cannot distinguish slot-safe Gemini releases from legacy binaries'
+grep -Fq '[[ -f "$expected/.gemini-provider-v1" && ! -L "$expected/.gemini-provider-v1"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog accepts a symlinked Gemini provider capability marker'
+grep -Fq 'GEMINI_TARGET_PREEXISTING=1' "$provider_controller" \
+  || wd_die 'same-release recovery can stop the only pre-existing current Gemini slot'
+grep -Fq 'recovery retains the pre-existing current Gemini target' "$provider_controller" \
+  || wd_die 'pre-drain recovery can destroy a previously admitted Gemini target'
+grep -Fq 'wait_gemini_retirement_ack "$GEMINI_ACTIVE_UNIT" "$GEMINI_ACTIVE_PORT"' \
+  "$provider_controller" \
+  || wd_die 'Gemini async retirement is not acknowledged before commit'
+grep -Fq 'gemini_slot_retired "$GEMINI_OTHER_UNIT" "$GEMINI_OTHER_PORT"' \
+  "$provider_controller" \
+  || wd_die 'Gemini final verification rejects a safely draining old generation'
 grep -Fq 'for old_unit in "$LEGACY_UNIT" "$(legacy_slot_unit 8787)" "$(legacy_slot_unit 8788)"' \
   "$provider_controller" || wd_die "active-but-unready engine cgroups can survive the OpenAI handoff"
 grep -Fq 'OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1' "$provider_controller" \
@@ -1749,7 +1824,8 @@ grep -Fq '$unit runs a different binary; restarting onto the tested release' \
 grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
 for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
-  claude-api-openai@8797.service claude-api-gemini.service claude-authbot.service; do
+  claude-api-openai@8797.service claude-api-gemini.service \
+  claude-api-gemini@8795.service claude-api-gemini@8799.service claude-authbot.service; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
     || wd_die "release retention can unlink the executable backing $retained_engine_unit"
 done

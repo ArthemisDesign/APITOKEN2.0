@@ -10,7 +10,7 @@ gemini.api.apitoken.sale/oauth/...   gemini.api.apitoken.sale/v1beta/...
 authbot 127.0.0.1:8796              Caddy stable origin 127.0.0.1:8794
                  │                                  │
                  └─ encrypted roster                ▼
-                                      claude-api-gemini.service :8795
+                                      active/passive slots :8795/:8799
                                                     │
                                                     ▼
                          daily-cloudcode-pa.sandbox.googleapis.com
@@ -531,13 +531,19 @@ headers so an existing sealed roster remains usable during migration.
 ## Operations
 
 ```bash
-systemctl status claude-authbot.service claude-api-gemini.service
-curl --fail http://127.0.0.1:8795/ready
+systemctl status claude-authbot.service 'claude-api-gemini@*.service'
+for port in 8795 8799; do curl -sS -o /dev/null -w "$port %{http_code}\\n" \
+  "http://127.0.0.1:$port/ready" || true; done
 curl --fail http://127.0.0.1:8794/ready
 curl -H 'x-api-key: <control-or-readonly-key>' http://127.0.0.1:8794/gemini-subs
 curl --resolve gemini.api.apitoken.sale:443:127.0.0.1 \
   https://gemini.api.apitoken.sale/v1beta/models
 ```
+
+Steady state is exactly one active, ready, enabled slot and one stopped, disabled slot. Operators and
+clients use stable origin 8794 (or the public hostname), never a runtime port. During deploy the
+candidate must pass exact-release/provider/readiness gates before the old slot returns 503 and stops
+accepting new requests; its established SSE requests may finish during bounded asynchronous drain.
 
 `/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
 sanitized quota/cooling timestamps, independent 5h/weekly fractions and workload-dependent

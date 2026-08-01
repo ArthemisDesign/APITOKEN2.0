@@ -70,9 +70,10 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
   ChatGPT OAuth-профилей (как у Gemini); это совместимый текстовый subset, а не прозрачный
   OpenAI Platform forwarding.
   `api.apitoken.sale` остаётся исключительно Claude-плоскостью: auth-заголовки провайдера не
-  выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в отдельном
-  singleton `claude-api-openai.service`, а native Gemini — в `claude-api-gemini.service` через
-  `gemini.api.apitoken.sale`. Все используют один fenced PostgreSQL billing authority, но не общий
+  выбирают. Anthropic работает в blue-green `claude-api-anthropic@8787/8788`, OpenAI — в
+  `claude-api-openai@8793/8797`, а native Gemini — в active/passive
+  `claude-api-gemini@8795/8799` через `gemini.api.apitoken.sale`. Все используют один fenced
+  PostgreSQL billing authority, но не общий
   HTTP process, router, credential pool или health state. Gemini profiles — отдельные encrypted
   Google OAuth identities с Cloud Code project, собственным proxy/refresh/cooling; private
   wrapper и identity никогда не выходят на публичную границу. Codex-патч удаляет локальные
@@ -111,9 +112,9 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
 описаны отдельно в [`docs/CODEX_PROVIDER.md`](docs/CODEX_PROVIDER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
-`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai.service`,
-`systemd/claude-api-gemini.service` и
-`deploy/engine-bluegreen.sh` (legacy cutover unit remains one-time only).
+`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai@.service`,
+`systemd/claude-api-gemini@.service` и `deploy/engine-bluegreen.sh` (legacy singleton units остаются
+только для rollback на выпуски до соответствующего blue-green marker).
 
 ## Коммерческий контур (отдельно от движка)
 

@@ -2282,4 +2282,6 @@ commerce integration tests с PostgreSQL, а не только unit snapshots.
 - `deploy/Caddyfile`
 - `systemd/claude-api-anthropic@.service`
 - `systemd/claude-api-openai.service`
+- `systemd/claude-api-openai@.service`
 - `systemd/claude-api-gemini.service`
+- `systemd/claude-api-gemini@.service`

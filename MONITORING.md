@@ -37,8 +37,8 @@ database state only. Grafana users are auto-provisioned as viewers.
   is recorded. Investigate directly with:
 
   ```bash
-  journalctl -u 'claude-api-anthropic@*.service' -u claude-api-openai.service \
-    -u claude-api-gemini.service \
+  journalctl -u 'claude-api-anthropic@*.service' -u 'claude-api-openai@*.service' \
+    -u 'claude-api-gemini@*.service' \
     --since today --grep='"event":"customer_http_error"'
   ```
 
@@ -366,13 +366,15 @@ authority and let the next real observations reconcile durable spend and calibra
 ## GeminiProviderDown
 
 Only `gemini.api.apitoken.sale` is affected; do not restart healthy Claude or OpenAI processes.
-Check `claude-api-gemini.service`, direct readiness on 8795, stable readiness on 8794, and the unit
-journal. Verify that both credential keyrings match, the roster is
+Check both `claude-api-gemini@8795.service` and `claude-api-gemini@8799.service`, direct readiness
+on 8795/8799, stable readiness on 8794, and both unit journals. Exactly one slot must be active,
+ready, enabled, and release-selected in steady state; the other must be stopped and disabled.
+Verify that both credential keyrings match, the roster is
 readable, every envelope has the exact `credentials/<profile-id>.json` non-symlink 0600 path, and at
 least one profile passes Antigravity `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
 `docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
 
-If the surface must be withdrawn during investigation, stop `claude-api-gemini.service` through the
+If the surface must be withdrawn during investigation, stop the selected Gemini slot through the
 normal provider rollout. A manual stop is only an immediate temporary action because watchdog
 reconciliation restores the configured topology. Neither action should change an established provider.
 

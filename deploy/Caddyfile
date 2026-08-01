@@ -203,12 +203,17 @@ http://127.0.0.1:8792 {
 	}
 }
 
-# Stable native Gemini origin. The runtime is an independent singleton because its project pool,
-# cooling and health lifecycle are a separate failure domain from Claude and OpenAI.
+# Stable native Gemini origin over active/passive blue-green slots. `first` prevents the two
+# generations from round-robining the same OAuth roster while both are healthy: the preferred
+# ready slot accepts new work, and the old slot keeps only its already-established streams.
 http://127.0.0.1:8794 {
 	bind 127.0.0.1
 
-	reverse_proxy 127.0.0.1:8795 {
+	reverse_proxy 127.0.0.1:8795 127.0.0.1:8799 {
+		lb_policy first
+		lb_try_duration 2s
+		lb_try_interval 100ms
+
 		health_uri /ready
 		health_interval 2s
 		health_timeout 2s

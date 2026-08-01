@@ -79,15 +79,18 @@ engine control credential under the dedicated `X-OpenKeys-Control-Key` header; t
 receives it. The public OpenKeys vhost returns `404` for `/api/internal/*`, so the internal catalog
 cannot be reached through the customer-facing hostname even with a forged actor header.
 
-Gemini is a second independent singleton: `gemini.api.apitoken.sale` targets stable loopback origin
-`127.0.0.1:8794`, which proxies only runtime `127.0.0.1:8795`. It never participates in the 8792
+Gemini is an independent active/passive pair: `gemini.api.apitoken.sale` targets stable loopback
+origin `127.0.0.1:8794`, which health-gates slots `127.0.0.1:8795` and `127.0.0.1:8799`. Its
+`lb_policy first` prevents two healthy generations from round-robining the same OAuth roster during
+cutover: the preferred ready slot takes new requests, while the readiness-drained predecessor keeps
+only established streams. It never participates in the 8792
 bridge and never accepts the request-level API-plane marker. Its public matcher allows `/v1beta/*`,
 `/health`, and `/balance`; an earlier exact `/oauth/callback` handler routes the no-store official
 CLI code-entry form and its POST only to Auth Bot on `127.0.0.1:8796`, so OAuth codes never enter
 the engine or Caddy access log. The vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
 public hostname for a native unauthenticated Gemini envelope before committing the provider cohort.
 
-Caddy probes `/ready` on both fixed-provider origins. `engine-bluegreen.sh` admits the new Anthropic
+Caddy probes `/ready` on all fixed-provider slots. `engine-bluegreen.sh` admits the new Anthropic
 slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
 drain under the systemd deadline. Only after the old cgroup is fully stopped does the first split
@@ -97,10 +100,10 @@ inherent rather than a gate. This parity is a readiness condition, not a soak ti
 own preflight proves its profiles open, refresh and answer before any traffic anchor moves; one
 equal working home is valid. Only then is the old HTTP slot pre-drained and stopped.
 
-Established OpenAI streams remain on the old HTTP slot during pre-drain and may finish through the
-shared server deadline. The roster is stateless with respect to the cutover, so the replacement
-generation reuses the same authenticated Codex state without taking ownership of anything or
-interrupting unrelated sessions.
+Established OpenAI and Gemini streams remain on the old HTTP slot during pre-drain and may finish
+through the shared server deadline. Each replacement generation reopens the same sealed read-only
+provider roster. New Gemini requests remain active/passive because readiness fencing and Caddy's
+ordered policy prevent normal dual-generation dispatch.
 
 The public OpenAI vhost negotiates `zstd` or `gzip` only for complete `application/json` responses
 of at least 512 bytes. Compression happens at the public TLS boundary, after the loopback OpenAI

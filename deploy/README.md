@@ -83,8 +83,8 @@ The production queue remains strictly one SHA at a time.
 |---|---|---|---|
 | Commerce API | `/opt/apitoken/releases/<sha>` | `apitoken-api@3000.service` / `apitoken-api@3001.service` | `http://127.0.0.1:<port>/v1/ready` |
 | Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-anthropic@8787.service` / `claude-api-anthropic@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
-| OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai.service` | `http://127.0.0.1:8793/ready`, stable 8792 |
-| Native Gemini provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-gemini.service` | `http://127.0.0.1:8795/ready`, stable 8794 |
+| OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai@8793.service` / `claude-api-openai@8797.service` | `http://127.0.0.1:<port>/ready`, stable 8792 |
+| Native Gemini provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-gemini@8795.service` / `claude-api-gemini@8799.service` | `http://127.0.0.1:<port>/ready`, stable 8794 |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
 | Admin panel (admin.apitoken.sale) | `/opt/apitoken/admin-releases/<sha>` through `current` | `apitoken-admin.service` | `http://127.0.0.1:3700/api/health` |
@@ -97,12 +97,15 @@ Caddy health-routes that origin to the active engine slot.
 
 After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
 `engine-bluegreen.sh`. That controller owns the provider cohort: it rolls the Anthropic pair, the
-two OpenAI HTTP slots over a persistent per-home Codex daemon cohort, and the isolated Gemini
-runtime from one selected SHA. An OpenAI candidate cannot drain its predecessor until the old and
+two OpenAI HTTP slots over a persistent per-home Codex daemon cohort, and the isolated active/passive
+Gemini slots from one selected SHA. An OpenAI candidate cannot drain its predecessor until the old and
 candidate HTTP generations expose the exact same opaque home set. Parity is candidate readiness,
 not a minimum-duration soak: the first complete process-fenced match admits the candidate. A single
-equal working home is sufficient; a candidate subset is not. Gemini is enabled
-only for releases carrying its capability marker; rollback to an older release stops it. Legacy
+equal working home is sufficient; a candidate subset is not. Gemini candidates share the sealed
+read-only roster, but Caddy's `first` policy admits new work to only one generation at a time; old
+SSE stays on the readiness-drained process until bounded shutdown. Gemini is enabled only for
+releases carrying its provider marker, and slots require `.gemini-bluegreen-v1`; rollback to the
+immediately preceding singleton release uses the retained legacy unit. Legacy
 restart mode refuses to run while the
 PostgreSQL credential is active.
 Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-owned

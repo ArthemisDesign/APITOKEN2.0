@@ -78,15 +78,15 @@ safe ownership overlap. PostgreSQL mode relaxes it only after the real fault mat
 Anthropic slots are `claude-api-anthropic@8787.service` and `claude-api-anthropic@8788.service`, each pinned to provider
 mode `anthropic`. `SIGUSR1` changes `/ready` to 503 immediately while leaving `/health`, the listener,
 and established SSE streams alive. After Caddy depools old, `SIGTERM` begins the bounded graceful
-drain. The OpenAI-compatible provider is the singleton `claude-api-openai.service`, pinned to mode
-`openai` on 8793; Caddy exposes its stable loopback origin on 8792. Native Gemini is the separate
-singleton `claude-api-gemini.service`, pinned to mode `gemini` on 8795 with stable origin 8794.
+drain. OpenAI uses `claude-api-openai@8793/8797` behind stable origin 8792. Native Gemini uses
+active/passive `claude-api-gemini@8795/8799` behind stable origin 8794; Caddy's ordered policy keeps
+new requests on one Gemini generation while the predecessor drains established streams.
 
 Public Anthropic traffic and the operator panel use the health-gated slots. Commerce uses
 `127.0.0.1:8790`, an explicitly loopback-bound Caddy listener, so slot alternation cannot break
 API/worker Control calls. OpenAI and Gemini traffic never traverse that listener; they use 8792 and
 8794 respectively. The provider controller requires 8790 before, during, and after Anthropic drain,
-then exact-release gates both singletons and their stable origins before committing the cohort.
+then exact-release gates both provider slot pairs and their stable origins before committing the cohort.
 
 Engine service startup is read-only with respect to schema: it verifies that the installed
 `engine_schema_migrations` version is supported and fails readiness if it is not. Pending engine DDL

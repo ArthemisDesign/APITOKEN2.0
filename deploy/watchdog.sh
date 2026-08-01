@@ -514,7 +514,8 @@ live_release_shas() {
   for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
     claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
-    claude-api-gemini.service claude-authbot.service \
+    claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
+    claude-authbot.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -1284,7 +1285,10 @@ engine_runtime_aligned() {
   local openai_active_8797=0 openai_ready_8797=0 openai_current_8797=0 openai_enabled_8797=0
   local openai_legacy_active=0 openai_legacy_ready=0 openai_legacy_current=0
   local openai_legacy_enabled=0 openai_shared_supported=0 openai_stable_status
-  local gemini_supported=0 gemini_active=0 gemini_ready=0 gemini_current=0 gemini_enabled=0 gemini_stable_status
+  local gemini_active_8795=0 gemini_ready_8795=0 gemini_current_8795=0 gemini_enabled_8795=0
+  local gemini_active_8799=0 gemini_ready_8799=0 gemini_current_8799=0 gemini_enabled_8799=0
+  local gemini_legacy_active=0 gemini_legacy_ready=0 gemini_legacy_current=0
+  local gemini_legacy_enabled=0 gemini_supported=0 gemini_shared_supported=0 gemini_stable_status
   local port unit pid executable status combined_unit environment
 
   [[ $codex_alignment == serving || $codex_alignment == converged ]] || return 2
@@ -1378,28 +1382,62 @@ engine_runtime_aligned() {
         && $(<"$expected/.openai-bluegreen-v1") == openai-bluegreen-v1 ]] || return 1
     openai_shared_supported=1
   fi
-  [[ -f "$expected/.gemini-provider-v1" \
-      && $(<"$expected/.gemini-provider-v1") == gemini-provider-v1 ]] && gemini_supported=1
-  unit=claude-api-gemini.service
-  systemctl is-active --quiet "$unit" && gemini_active=1
-  systemctl is-enabled --quiet "$unit" && gemini_enabled=1
+  if [[ -f "$expected/.gemini-provider-v1" && ! -L "$expected/.gemini-provider-v1" \
+      && $(<"$expected/.gemini-provider-v1") == gemini-provider-v1 ]]; then
+    gemini_supported=1
+  fi
+  if [[ -e "$expected/.gemini-bluegreen-v1" || -L "$expected/.gemini-bluegreen-v1" ]]; then
+    [[ -f "$expected/.gemini-bluegreen-v1" && ! -L "$expected/.gemini-bluegreen-v1" \
+        && $(<"$expected/.gemini-bluegreen-v1") == gemini-bluegreen-v1 ]] || return 1
+    (( gemini_supported == 1 )) || return 1
+    gemini_shared_supported=1
+  fi
+  for port in 8795 8799; do
+    unit="claude-api-gemini@$port.service"
+    local gemini_active=0 gemini_ready=0 gemini_selected=0 gemini_enabled=0
+    systemctl is-active --quiet "$unit" && gemini_active=1
+    systemctl is-enabled --quiet "$unit" && gemini_enabled=1
+    status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+    [[ $status == 200 ]] && gemini_ready=1
+    if (( gemini_active == 1 )); then
+      pid=$(systemctl show "$unit" -p MainPID --value)
+      if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+        executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+        if [[ $executable == "$expected/claude-api" ]] \
+            && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+              | grep -Fxq 'CLAUDE_API_PROVIDER=gemini'; then
+          gemini_selected=1
+        fi
+      fi
+    fi
+    if [[ $port == 8795 ]]; then
+      gemini_active_8795=$gemini_active; gemini_ready_8795=$gemini_ready
+      gemini_current_8795=$gemini_selected; gemini_enabled_8795=$gemini_enabled
+    else
+      gemini_active_8799=$gemini_active; gemini_ready_8799=$gemini_ready
+      gemini_current_8799=$gemini_selected; gemini_enabled_8799=$gemini_enabled
+    fi
+  done
+  systemctl is-active --quiet claude-api-gemini.service && gemini_legacy_active=1
+  systemctl is-enabled --quiet claude-api-gemini.service && gemini_legacy_enabled=1
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8795/ready 2>/dev/null || true)
-  [[ $status == 200 ]] && gemini_ready=1
-  if (( gemini_active == 1 )); then
-    pid=$(systemctl show "$unit" -p MainPID --value)
+  [[ $status == 200 && $gemini_legacy_active == 1 ]] && gemini_legacy_ready=1
+  if (( gemini_legacy_active == 1 )); then
+    pid=$(systemctl show claude-api-gemini.service -p MainPID --value)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
       executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
       if [[ $executable == "$expected/claude-api" ]] \
           && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
             | grep -Fxq 'CLAUDE_API_PROVIDER=gemini'; then
-        gemini_current=1
+        gemini_legacy_current=1
       fi
     fi
   fi
   gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8794/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini=$gemini_supported:$gemini_active:$gemini_ready:$gemini_current:$gemini_enabled:${gemini_stable_status:-unreachable} legacy=$legacy_active:$legacy_enabled"
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini[supported=$gemini_supported shared=$gemini_shared_supported 8795=$gemini_active_8795:$gemini_ready_8795:$gemini_current_8795:$gemini_enabled_8795 8799=$gemini_active_8799:$gemini_ready_8799:$gemini_current_8799:$gemini_enabled_8799 stable=${gemini_stable_status:-unreachable} legacy=$gemini_legacy_active:$gemini_legacy_ready:$gemini_legacy_current:$gemini_legacy_enabled] legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
   [[ $openai_stable_status == 200 ]] || return 1
   if (( openai_shared_supported == 0 )); then
@@ -1422,10 +1460,31 @@ engine_runtime_aligned() {
     fi
   fi
   if (( gemini_supported == 1 )); then
-    [[ $gemini_stable_status == 200 && $gemini_active == 1 && $gemini_ready == 1 \
-        && $gemini_current == 1 && $gemini_enabled == 1 ]] || return 1
+    [[ $gemini_stable_status == 200 ]] || return 1
+    if (( gemini_shared_supported == 0 )); then
+      (( gemini_legacy_active == 1 && gemini_legacy_ready == 1 \
+        && gemini_legacy_current == 1 && gemini_legacy_enabled == 1 \
+        && gemini_active_8795 == 0 && gemini_ready_8795 == 0 \
+        && gemini_current_8795 == 0 && gemini_enabled_8795 == 0 \
+        && gemini_active_8799 == 0 && gemini_ready_8799 == 0 \
+        && gemini_current_8799 == 0 && gemini_enabled_8799 == 0 )) || return 1
+    else
+      (( gemini_legacy_active == 0 && gemini_legacy_enabled == 0 )) || return 1
+      if (( gemini_active_8795 == 1 )); then
+        (( gemini_ready_8795 == 1 && gemini_current_8795 == 1 && gemini_enabled_8795 == 1 \
+          && gemini_active_8799 == 0 && gemini_ready_8799 == 0 \
+          && gemini_current_8799 == 0 && gemini_enabled_8799 == 0 )) || return 1
+      else
+        (( gemini_active_8799 == 1 && gemini_ready_8799 == 1 \
+          && gemini_current_8799 == 1 && gemini_enabled_8799 == 1 \
+          && gemini_active_8795 == 0 && gemini_ready_8795 == 0 \
+          && gemini_current_8795 == 0 && gemini_enabled_8795 == 0 )) || return 1
+      fi
+    fi
   else
-    (( gemini_active == 0 && gemini_enabled == 0 )) || return 1
+    (( gemini_legacy_active == 0 && gemini_legacy_enabled == 0 \
+      && gemini_active_8795 == 0 && gemini_enabled_8795 == 0 \
+      && gemini_active_8799 == 0 && gemini_enabled_8799 == 0 )) || return 1
   fi
   wd_engine_topology_is_steady \
     "$active_8787" "$ready_8787" "$current_8787" "$enabled_8787" \

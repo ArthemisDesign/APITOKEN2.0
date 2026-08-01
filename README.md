@@ -126,11 +126,11 @@ client.messages.create(model="claude-opus-4-8", max_tokens=256,
 
 Все переменные — в [`config.env.example`](config.env.example) (пул/порт/апстрим) и секреты в
 [`server.env.example`](server.env.example) (ключи API). Production Anthropic PostgreSQL-слоты
-запускает [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), а отдельный
-OpenAI-compatible процесс —
-[`systemd/claude-api-openai.service`](systemd/claude-api-openai.service). Native Gemini project pool
-работает через [`systemd/claude-api-gemini.service`](systemd/claude-api-gemini.service) и отдельный
-домен `https://gemini.api.apitoken.sale`; untemplated
+запускает [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), OpenAI —
+через [`systemd/claude-api-openai@.service`](systemd/claude-api-openai@.service), а native Gemini
+project pool — через [`systemd/claude-api-gemini@.service`](systemd/claude-api-gemini@.service) и
+отдельный домен `https://gemini.api.apitoken.sale`. Legacy singleton units сохраняются только для
+rollback на выпуски до slot-safe markers; untemplated
 [`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).

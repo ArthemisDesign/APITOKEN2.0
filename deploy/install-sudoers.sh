@@ -171,6 +171,17 @@ require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemi
 require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service
 require_permitted 'Gemini provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini.service
+require_permitted 'Gemini target start' /usr/bin/systemctl start claude-api-gemini@8799.service
+require_permitted 'Gemini old-slot stop' /usr/bin/systemctl stop claude-api-gemini@8795.service
+require_permitted 'Gemini old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-gemini@8795.service
+require_permitted 'Gemini target enable' /usr/bin/systemctl enable claude-api-gemini@8799.service
+require_permitted 'Gemini reverse target start' /usr/bin/systemctl start claude-api-gemini@8795.service
+require_permitted 'Gemini reverse old-slot stop' /usr/bin/systemctl stop claude-api-gemini@8799.service
+require_permitted 'Gemini reverse old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-gemini@8799.service
+require_permitted 'Gemini slot drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini@8795.service
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
@@ -201,6 +212,8 @@ require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claud
 require_permitted 'OpenAI slot-template probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service
 require_permitted 'Gemini unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
+require_permitted 'Gemini slot-template probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
 # Operator tooling must keep working: `apitoken-watchdog status|run|retry|logs`.
