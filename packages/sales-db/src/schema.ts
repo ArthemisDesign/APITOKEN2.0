@@ -234,6 +234,12 @@ export const partnerUsageEvents = pgTable("partner_usage_events", {
   commerceUserId: uuid("commerce_user_id").notNull(),
   partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  providerId: text("provider_id"),
+  accountClass: text("account_class"),
+  pricingMode: text("pricing_mode"),
+  paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }),
+  commissionEligible: boolean("commission_eligible"),
+  snapshotDigest: text("snapshot_digest"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -241,6 +247,32 @@ export const partnerUsageEvents = pgTable("partner_usage_events", {
   index("partner_usage_events_partner_time_idx").on(table.partnerId, table.occurredAt),
   index("partner_usage_events_user_idx").on(table.commerceUserId),
   check("partner_usage_events_amount_check", sql`${table.amountNano} > 0`),
+  check("partner_usage_events_multi_discount_check", sql`
+    (
+      ${table.providerId} IS NULL
+      AND ${table.accountClass} IS NULL
+      AND ${table.pricingMode} IS NULL
+      AND ${table.paidFundedNano} IS NULL
+      AND ${table.commissionEligible} IS NULL
+      AND ${table.snapshotDigest} IS NULL
+    )
+    OR (
+      ${table.providerId} IS NOT NULL
+      AND ${table.providerId} <> ''
+      AND ${table.accountClass} IN ('b2c', 'b2b', 'open_keys', 'service')
+      AND ${table.pricingMode} IN ('track', 'discount')
+      AND ${table.paidFundedNano} IS NOT NULL
+      AND ${table.paidFundedNano} > 0
+      AND ${table.amountNano} = ${table.paidFundedNano}
+      AND ${table.commissionEligible} IS NOT NULL
+      AND (NOT ${table.commissionEligible} OR (
+        ${table.pricingMode} = 'track'
+        AND ${table.accountClass} = 'b2c'
+      ))
+      AND ${table.snapshotDigest} IS NOT NULL
+      AND ${table.snapshotDigest} <> ''
+    )
+  `),
 ]);
 
 export const referredTopups = pgTable("referred_topups", {

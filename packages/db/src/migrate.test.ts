@@ -317,4 +317,32 @@ describe("migration configuration", () => {
         ?.columns["engine_bucket_id"],
     ).toMatchObject({ notNull: true });
   });
+
+  it("expands immutable usage lineage before the Stage 10 history writer", () => {
+    const migrationSql = readFileSync(
+      join(MIGRATIONS_FOLDER, "0025_multi_discount_history_expand.sql"),
+      "utf8",
+    );
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0025_snapshot.json"), "utf8"),
+    ) as {
+      tables: Record<string, { columns: Record<string, { notNull: boolean }> }>;
+    };
+    const expectedColumns = [
+      "source_policy_digest",
+      "admission_catalog_generation",
+      "admission_catalog_digest",
+      "admission_switch_generation",
+      "admission_switch_digest",
+      "runtime_manifest_generation",
+      "runtime_manifest_digest",
+    ];
+
+    expect(migrationSql).not.toMatch(/\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
+    for (const column of expectedColumns) {
+      expect(migrationSql).toContain(`ADD COLUMN "${column}"`);
+      expect(snapshot.tables["public.pricing_usage_attributions"]?.columns[column])
+        .toMatchObject({ notNull: false });
+    }
+  });
 });

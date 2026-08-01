@@ -176,6 +176,13 @@
       "when": 1785355351235,
       "tag": "0024_wild_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785586919972,
+      "tag": "0025_multi_discount_history_expand",
+      "breakpoints": true
     }
   ]
 }
