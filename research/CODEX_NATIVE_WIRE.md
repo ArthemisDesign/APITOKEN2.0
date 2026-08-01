@@ -68,9 +68,13 @@ response.content_part.done, response.output_item.done, response.completed`
 ## OAuth / идентичность (подтверждено)
 
 - `Authorization: Bearer`, `ChatGPT-Account-ID`, `originator: codex_cli_rs`,
-  `User-Agent: codex_cli_rs/0.145.0 (Linux; x86_64) codex_cli_rs`,
-  `OpenAI-Beta: responses=experimental`, `session_id` — приняты, 200.
-- Тело: `model, instructions:"", input, tools:[], store:false, stream:true` — принято.
+  `User-Agent: codex_cli_rs/0.146.0 (Linux; x86_64) codex_cli_rs`, `version`, а для turn также
+  `session-id`, `thread-id`, `x-client-request-id`, `x-codex-window-id` и
+  `x-codex-turn-metadata` — приняты, 200. Root `session-id == thread-id`; `turn_id` уникален для
+  turn, installation/thread/window стабильны. Legacy `OpenAI-Beta: responses=experimental`,
+  underscore `session_id` и отдельный installation header официальный 0.146 wire не посылает.
+- Тело: `model, instructions:"", input, tools:[], store:false, stream:true`,
+  `include:["reasoning.encrypted_content"]` и зеркальный `client_metadata` — принято.
 
 ## Fast / service tier (полный прогон 2026-08-01)
 
@@ -91,10 +95,24 @@ response.content_part.done, response.output_item.done, response.completed`
 
 Исходники официального `rust-v0.146.0` подтверждают: `ServiceTier::Fast.request_value()` — ровно
 `"priority"`; `/fast` меняет клиентскую настройку и не вызывает отдельный endpoint активации.
-Следовательно, провод сформирован правильно, а фактический downgrade — entitlement/rollout-вердикт
-OpenAI для этих аккаунтов. Источник истины для ответа и денег — только completed `service_tier`.
-Шлюз предпочитает профиль, уже доказавший `priority`, затем обследует неизвестные профили, но при
-отсутствии honor сохраняет fail-open стандартное обслуживание вместо ложного Fast или HTTP 400.
+Официальная документация описывает Fast как 1.5x режим для GPT-5.4/5.5/5.6, а config reference
+явно говорит, что пользовательский `fast` отображается в request value `priority`:
+
+- https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode
+- https://learn.chatgpt.com/docs/config-file/config-reference#configtoml
+
+Финальный `service_tier=default` для ChatGPT-auth не является downgrade-вердиктом. Это независимо
+воспроизведено в `openai/codex#14204`, `#30413` и `#32191`; maintainer в
+https://github.com/openai/codex/issues/14204#issuecomment-4033184620 подтвердил, что Fast в этом
+режиме маршрутизируется сервером, а поле финального ответа не годится для end-to-end проверки.
+
+Production A/B на одинаковом длинном выводе `gpt-5.5` подтвердил реальный Fast при reported
+`default`: медиана Standard `67.36 output tok/s`, priority `102.02 output tok/s`, то есть `1.514x`;
+медианное полное время `29.807s` против `20.985s`. Четыре priority-turn были успешно обслужены
+четырьмя разными pool-профилями. Поэтому успешный принятый `priority` — effective Fast для
+публичного ответа, settlement, ledger и калибровочного spend; completed tier хранится отдельно как
+`provider_reported_tier` только для wire-диагностики. Fast-routing опирается на capability каталога
+и не демотирует профиль из-за reported `default`.
 
 ## Открытые вопросы (не блокеры)
 

@@ -195,6 +195,15 @@ pub(crate) struct TokenRefresh {
     pub expires_in: i64,
 }
 
+#[derive(Debug)]
+struct WireIdentity {
+    session_id: String,
+    thread_id: String,
+    turn_id: String,
+    window_id: String,
+    turn_metadata: String,
+}
+
 /// Per-profile native client. Owns the connection pool and the pinned wire identity; it has no
 /// credential state of its own — every call receives its bearer explicitly. Clone is an Arc bump:
 /// the pool replaces the whole value when a wedged transport generation is recycled.
@@ -202,6 +211,7 @@ pub(crate) struct TokenRefresh {
 pub(crate) struct ProfileTransport {
     cfg: Arc<CodexConfig>,
     client: wreq::Client,
+    installation_id: String,
 }
 
 impl ProfileTransport {
@@ -223,7 +233,9 @@ impl ProfileTransport {
             // BoringSSL ClientHello with ALPN=http/1.1, same attested profile the Claude fleet
             // presents (see nodetls). ChatGPT's backend is fronted by the same edge stack.
             .emulation(crate::nodetls::bun_emulation())
-            .connect_timeout(std::time::Duration::from_millis(cfg.request_timeout_ms.max(1).min(30_000)))
+            .connect_timeout(std::time::Duration::from_millis(
+                cfg.request_timeout_ms.max(1).min(30_000),
+            ))
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .tcp_keepalive(std::time::Duration::from_secs(60))
             // Silence between reads bounds a connected-but-mute stream; SSE activity resets it.
@@ -231,18 +243,61 @@ impl ProfileTransport {
                 cfg.turn_silence_timeout_ms.max(30_000),
             ));
         if let Some(proxy) = proxy {
-            builder = builder.proxy(
-                wreq::Proxy::all(&proxy)
-                    .map_err(|error| ProcessError::InvalidConfig(format!("profile proxy: {error}")))?,
-            );
+            builder =
+                builder.proxy(wreq::Proxy::all(&proxy).map_err(|error| {
+                    ProcessError::InvalidConfig(format!("profile proxy: {error}"))
+                })?);
         }
         let client = builder
             .build()
             .map_err(|error| ProcessError::InvalidConfig(format!("http client: {error}")))?;
-        Ok(Self { cfg, client })
+        // The first-party installation id survives client restarts and account switches. Derive an
+        // equally opaque stable UUID from the configured roster location instead of rotating it
+        // whenever a profile transport generation is recycled.
+        let installation_id = stable_uuid("installation", &cfg.profiles_file);
+        Ok(Self {
+            cfg,
+            client,
+            installation_id,
+        })
     }
 
-    fn wire_headers(&self, auth: &AuthContext, session_id: &str) -> wreq::header::HeaderMap {
+    fn request_identity(&self, cache_key: &str) -> WireIdentity {
+        // A root Codex thread uses the same UUID for session and thread. The window remains stable
+        // across pool rotation for this tenant-scoped cache key; every user turn gets its own id.
+        let thread_id = stable_uuid("thread", cache_key);
+        let turn_id = uuid();
+        let window_id = stable_uuid("window", cache_key);
+        let turn_metadata = json!({
+            "installation_id": self.installation_id,
+            "session_id": thread_id,
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "window_id": window_id,
+            "request_kind": "turn",
+        })
+        .to_string();
+        WireIdentity {
+            session_id: thread_id.clone(),
+            thread_id,
+            turn_id,
+            window_id,
+            turn_metadata,
+        }
+    }
+
+    fn attach_client_metadata(&self, body: &mut Value, identity: &WireIdentity) {
+        body["client_metadata"] = json!({
+            "x-codex-installation-id": self.installation_id,
+            "session_id": identity.session_id,
+            "thread_id": identity.thread_id,
+            "turn_id": identity.turn_id,
+            "x-codex-window-id": identity.window_id,
+            "x-codex-turn-metadata": identity.turn_metadata,
+        });
+    }
+
+    fn wire_headers(&self, auth: &AuthContext) -> wreq::header::HeaderMap {
         let mut headers = wreq::header::HeaderMap::new();
         headers.insert(
             wreq::header::AUTHORIZATION,
@@ -258,9 +313,27 @@ impl ProfileTransport {
             // same reviewed value: backend feature rollout (including service tiers) must see the
             // exact client version identity rather than only the catalogue query parameter.
             ("version", self.cfg.cli_version.as_str()),
-            ("session_id", session_id),
-            ("OpenAI-Beta", "responses=experimental"),
             ("accept", "text/event-stream"),
+        ] {
+            if let Ok(value) = wreq::header::HeaderValue::from_str(value) {
+                headers.insert(
+                    wreq::header::HeaderName::from_bytes(name.as_bytes())
+                        .unwrap_or_else(|_| wreq::header::HeaderName::from_static("x-never")),
+                    value,
+                );
+            }
+        }
+        headers
+    }
+
+    fn turn_headers(&self, auth: &AuthContext, identity: &WireIdentity) -> wreq::header::HeaderMap {
+        let mut headers = self.wire_headers(auth);
+        for (name, value) in [
+            ("session-id", identity.session_id.as_str()),
+            ("thread-id", identity.thread_id.as_str()),
+            ("x-client-request-id", identity.thread_id.as_str()),
+            ("x-codex-window-id", identity.window_id.as_str()),
+            ("x-codex-turn-metadata", identity.turn_metadata.as_str()),
         ] {
             if let Ok(value) = wreq::header::HeaderValue::from_str(value) {
                 headers.insert(
@@ -284,14 +357,14 @@ impl ProfileTransport {
     pub(crate) async fn run_turn(
         &self,
         auth: &AuthContext,
-        body: Value,
+        mut body: Value,
         prompt_cache_key: Option<&str>,
         rate_limits: Arc<Mutex<Option<CodexRateLimits>>>,
     ) -> Result<TurnEvents, ProcessError> {
-        let session_id = prompt_cache_key
-            .map(bounded_cache_key)
-            .unwrap_or_else(uuid);
-        let headers = self.wire_headers(auth, &session_id);
+        let cache_key = prompt_cache_key.map(bounded_cache_key).unwrap_or_else(uuid);
+        let identity = self.request_identity(&cache_key);
+        self.attach_client_metadata(&mut body, &identity);
+        let headers = self.turn_headers(auth, &identity);
         let response = self
             .client
             .post(self.cfg.responses_url())
@@ -338,7 +411,7 @@ impl ProfileTransport {
         let response = self
             .client
             .get(self.cfg.usage_url())
-            .headers(self.wire_headers(auth, &uuid()))
+            .headers(self.wire_headers(auth))
             .send()
             .await
             .map_err(|error| {
@@ -350,7 +423,11 @@ impl ProfileTransport {
             })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(classify_http_error(status, response.headers().clone(), None));
+            return Err(classify_http_error(
+                status,
+                response.headers().clone(),
+                None,
+            ));
         }
         let body = response
             .bytes()
@@ -375,7 +452,7 @@ impl ProfileTransport {
                 self.cfg.models_url(),
                 self.cfg.cli_version
             ))
-            .headers(self.wire_headers(auth, &uuid()))
+            .headers(self.wire_headers(auth))
             .send()
             .await
             .map_err(|error| {
@@ -418,7 +495,10 @@ impl ProfileTransport {
         let response = self
             .client
             .post(token_uri)
-            .header("content-type", "application/x-www-form-urlencoded;charset=UTF-8")
+            .header(
+                "content-type",
+                "application/x-www-form-urlencoded;charset=UTF-8",
+            )
             .header("user-agent", self.cfg.user_agent())
             .header("originator", codex_credential::CODEX_ORIGINATOR)
             .header("accept", "application/json")
@@ -453,7 +533,9 @@ impl ProfileTransport {
             .and_then(Value::as_str)
             .filter(|token| (8..=16_384).contains(&token.len()))
             .map(str::to_string)
-            .ok_or_else(|| ProcessError::Protocol("refresh response omitted access_token".into()))?;
+            .ok_or_else(|| {
+                ProcessError::Protocol("refresh response omitted access_token".into())
+            })?;
         let expires_in = value
             .get("expires_in")
             .and_then(Value::as_i64)
@@ -672,7 +754,10 @@ fn parse_usage_response(value: &Value) -> Option<CodexRateLimits> {
 /// already owns. Kept in one place so the runner never learns wire spelling.
 fn translate_usage(usage: &Value) -> Value {
     let details = |root: &Value, key: &str| root.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input_details = usage.get("input_tokens_details").cloned().unwrap_or(Value::Null);
+    let input_details = usage
+        .get("input_tokens_details")
+        .cloned()
+        .unwrap_or(Value::Null);
     let output_details = usage
         .get("output_tokens_details")
         .cloned()
@@ -768,7 +853,9 @@ async fn drive_sse_stream(
         };
         buffer.extend_from_slice(&chunk);
         if buffer.len() > MAX_SSE_LINE_BYTES {
-            return Err(ProcessError::Protocol("SSE event exceeded bound".to_string()));
+            return Err(ProcessError::Protocol(
+                "SSE event exceeded bound".to_string(),
+            ));
         }
         while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=newline).collect();
@@ -813,10 +900,7 @@ async fn dispatch_sse_event(
         Ok(payload) => payload,
         Err(_) => return Ok(false),
     };
-    let kind = payload
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or(event);
+    let kind = payload.get("type").and_then(Value::as_str).unwrap_or(event);
     macro_rules! notify {
         ($method:expr, $params:expr $(,)?) => {
             let _ = sender
@@ -875,19 +959,23 @@ async fn dispatch_sse_event(
         }
         "response.completed" => {
             if let Some(usage) = payload.pointer("/response/usage").filter(|v| !v.is_null()) {
-                notify!("rawResponse/completed", json!({"usage": translate_usage(usage)}));
+                notify!(
+                    "rawResponse/completed",
+                    json!({"usage": translate_usage(usage)})
+                );
             } else {
                 notify!("rawResponse/completed", json!({"usage": Value::Null}));
             }
-            // Carry the tier the provider actually served: Fast billing must never settle a
-            // silently downgraded turn at the Fast multiplier.
-            let served_tier = payload
+            // Preserve the completed-response tier as a wire diagnostic. ChatGPT-authenticated
+            // Codex commonly reports `default` for measurably accelerated Fast turns, so the
+            // runner deliberately derives the effective tier from the accepted request.
+            let provider_reported_tier = payload
                 .pointer("/response/service_tier")
                 .and_then(Value::as_str)
                 .unwrap_or("default");
             notify!(
                 "turn/completed",
-                json!({"turn": {"status": "completed", "serviceTier": served_tier}})
+                json!({"turn": {"status": "completed", "serviceTier": provider_reported_tier}})
             );
             return Ok(true);
         }
@@ -926,8 +1014,24 @@ async fn dispatch_sse_event(
     Ok(false)
 }
 
-/// Random UUID for the per-request `session_id` header. Request-scoped by design: the only
-/// continuity signal sent upstream is the tenant-scoped `prompt_cache_key` in the body.
+/// Stable opaque UUIDs for the official session/thread/window metadata. They are derived from the
+/// already tenant-scoped cache key, so rotation keeps one conversation identity without exposing
+/// any customer key or raw session value to the provider.
+fn stable_uuid(scope: &str, cache_key: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"claude-api/codex-wire-identity/v1\0");
+    hasher.update(scope.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(cache_key.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format_uuid(bytes)
+}
+
+/// Random UUID for request-scoped identities when no tenant cache key exists.
 fn uuid() -> String {
     let mut bytes = [0u8; 16];
     if getrandom::fill(&mut bytes).is_err() {
@@ -935,6 +1039,10 @@ fn uuid() -> String {
     }
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format_uuid(bytes)
+}
+
+fn format_uuid(bytes: [u8; 16]) -> String {
     let mut out = String::with_capacity(36);
     for (index, byte) in bytes.iter().enumerate() {
         if matches!(index, 4 | 6 | 8 | 10) {
@@ -1071,10 +1179,14 @@ mod tests {
             classify_http_error(wreq::StatusCode::BAD_REQUEST, headers.clone(), None),
             ProcessError::BadRequest
         );
-        let context = serde_json::to_vec(&json!({"error": {"code": "context_length_exceeded"}}))
-            .unwrap();
+        let context =
+            serde_json::to_vec(&json!({"error": {"code": "context_length_exceeded"}})).unwrap();
         assert_eq!(
-            classify_http_error(wreq::StatusCode::BAD_REQUEST, headers.clone(), Some(context)),
+            classify_http_error(
+                wreq::StatusCode::BAD_REQUEST,
+                headers.clone(),
+                Some(context)
+            ),
             ProcessError::ContextWindowExceeded
         );
         assert!(matches!(
@@ -1196,10 +1308,14 @@ mod tests {
     }
 
     #[test]
-    fn wire_identity_includes_standalone_pinned_client_version() {
+    fn wire_identity_matches_the_pinned_official_request_shape() {
         let cfg = test_config("http://127.0.0.1:1");
         let transport = ProfileTransport::new(cfg.clone(), None).unwrap();
-        let headers = transport.wire_headers(&test_auth(), "session-test");
+        let identity = transport.request_identity("session-test");
+        let repeated = transport.request_identity("session-test");
+        let headers = transport.turn_headers(&test_auth(), &identity);
+        let mut body = json!({"model": "gpt-5.6-sol"});
+        transport.attach_client_metadata(&mut body, &identity);
 
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
@@ -1209,6 +1325,50 @@ mod tests {
             .get("user-agent")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.contains(cfg.cli_version.as_str())));
+        assert_eq!(identity.session_id, repeated.session_id);
+        assert_eq!(identity.thread_id, repeated.thread_id);
+        assert_eq!(identity.window_id, repeated.window_id);
+        assert_eq!(identity.session_id, identity.thread_id);
+        assert_ne!(identity.turn_id, repeated.turn_id);
+        for (header, expected) in [
+            ("session-id", identity.session_id.as_str()),
+            ("thread-id", identity.thread_id.as_str()),
+            ("x-client-request-id", identity.thread_id.as_str()),
+            ("x-codex-window-id", identity.window_id.as_str()),
+            ("x-codex-turn-metadata", identity.turn_metadata.as_str()),
+        ] {
+            assert_eq!(
+                headers.get(header).and_then(|value| value.to_str().ok()),
+                Some(expected),
+                "header {header}"
+            );
+        }
+        assert_eq!(
+            body["client_metadata"],
+            json!({
+                "x-codex-installation-id": transport.installation_id,
+                "session_id": identity.session_id,
+                "thread_id": identity.thread_id,
+                "turn_id": identity.turn_id,
+                "x-codex-window-id": identity.window_id,
+                "x-codex-turn-metadata": identity.turn_metadata,
+            })
+        );
+        assert!(headers.get("session_id").is_none());
+        assert!(headers.get("openai-beta").is_none());
+        assert!(headers.get("x-codex-installation-id").is_none());
+        let turn_metadata: Value = serde_json::from_str(
+            body["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(turn_metadata["request_kind"], "turn");
+        assert_eq!(turn_metadata["session_id"], identity.session_id);
+        assert_eq!(turn_metadata["thread_id"], identity.thread_id);
+        assert_eq!(turn_metadata["turn_id"], identity.turn_id);
+        assert_eq!(turn_metadata["window_id"], identity.window_id);
+        assert_eq!(turn_metadata["installation_id"], transport.installation_id);
     }
 
     fn sse_body(events: &[(&str, &str)]) -> String {
@@ -1303,7 +1463,11 @@ mod tests {
                     vec![("retry-after", "17".to_string())],
                 )
             } else {
-                (401, r#"{"error":{"code":"invalid_api_key"}}"#.to_string(), vec![])
+                (
+                    401,
+                    r#"{"error":{"code":"invalid_api_key"}}"#.to_string(),
+                    vec![],
+                )
             }
         })
         .await;
@@ -1356,7 +1520,12 @@ mod tests {
 
         let cell = Arc::new(Mutex::new(None));
         let mut events = transport
-            .run_turn(&test_auth(), json!({"model": "gpt-5.5"}), None, cell.clone())
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                cell.clone(),
+            )
             .await
             .unwrap();
         let _ = collect(&mut events).await;
@@ -1386,7 +1555,12 @@ mod tests {
         let transport = ProfileTransport::new(test_config(&base), None).unwrap();
         let cell = Arc::new(Mutex::new(None));
         let mut events = transport
-            .run_turn(&test_auth(), json!({"model": "gpt-5.5"}), None, cell.clone())
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                cell.clone(),
+            )
             .await
             .unwrap();
         let _ = collect(&mut events).await;
@@ -1399,7 +1573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_turn_carries_the_served_service_tier() {
+    async fn completed_turn_carries_the_provider_reported_service_tier() {
         let base = mock_upstream(|_, _| {
             let body = sse_body(&[(
                 "response.completed",
@@ -1432,7 +1606,8 @@ mod tests {
             // Never terminates by itself: only the client abort can end this request.
             (
                 200,
-                "event: response.output_text.delta\ndata: {\"item_id\":\"m\",\"delta\":\"x\"}\n\n".to_string(),
+                "event: response.output_text.delta\ndata: {\"item_id\":\"m\",\"delta\":\"x\"}\n\n"
+                    .to_string(),
                 vec![("content-type", "text/event-stream".to_string())],
             )
         })

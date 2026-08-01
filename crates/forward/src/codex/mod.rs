@@ -27,11 +27,11 @@ pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
+pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 pub(crate) use transport::{
     AppServerEvent, AuthContext, CodexModelCatalog, ProfileTransport, TurnEvents,
 };
 pub use transport::{CodexRateLimitWindow, CodexRateLimits, ProcessError};
-pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use crate::billing::AsyncBilling;
@@ -142,21 +142,15 @@ fn quota_rank(used_percent: Option<i64>) -> i64 {
         / QUOTA_STEER_BUCKET_PERCENT
 }
 
-/// Lower ranks are preferred for a requested Fast turn. Wire evidence wins over catalogue
-/// metadata; missing metadata stays fail-open and an unavailable model is attempted only after all
-/// profiles that advertised it.
-fn fast_route_rank(
-    observed: Option<FastServedTier>,
-    catalog_available: Option<bool>,
-    catalog_fast_supported: Option<bool>,
-) -> u8 {
-    match observed {
-        Some(FastServedTier::Priority) => 0,
-        Some(FastServedTier::Default) => 3,
-        None if catalog_fast_supported == Some(true) => 1,
-        None if catalog_available.is_none() => 2,
-        None if catalog_available == Some(false) => 4,
-        None => 3,
+/// Lower ranks are preferred for a requested Fast turn. The profile catalogue is the only useful
+/// account-specific capability signal: ChatGPT's completed response tier is not an end-to-end Fast
+/// verdict and must never defeat affinity or demote a profile that advertises Fast.
+fn fast_route_rank(catalog_available: Option<bool>, catalog_fast_supported: Option<bool>) -> u8 {
+    match (catalog_available, catalog_fast_supported) {
+        (Some(true), Some(true)) => 0,
+        (None, _) => 1,
+        (Some(true), _) => 2,
+        (Some(false), _) => 3,
     }
 }
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
@@ -278,8 +272,8 @@ pub struct CodexHomeStatus {
     pub calibration_persistence_ok: bool,
     /// Capacity estimate per reported window slot (empty until the first snapshot arrives).
     pub capacities: Vec<CodexWindowCapacityReport>,
-    /// Per-model Fast capability and actual served-tier evidence. Catalogue claims are advisory;
-    /// only a completed `priority` response proves that this profile currently honors Fast.
+    /// Per-model Fast capability, effective accepted Fast turns, and the provider's separate
+    /// completed-response diagnostic tier.
     pub fast_tiers: Vec<CodexFastTierStatus>,
 }
 
@@ -291,19 +285,21 @@ pub struct CodexFastTierStatus {
     pub catalog_available: Option<bool>,
     /// `None` when the model catalogue is unknown or does not contain this model.
     pub catalog_fast_supported: Option<bool>,
-    /// `priority` after an honored Fast turn, `default` after an observed downgrade, otherwise
-    /// `None`. Provider payloads, tokens and account identity never enter this surface.
+    /// Backward-compatible effective tier: a successful requested Fast turn is `priority`.
     pub served_tier: Option<&'static str>,
+    /// Raw completed-response tier for diagnostics. ChatGPT currently reports `default` even when
+    /// the accepted priority request runs at the documented Fast cadence.
+    pub provider_reported_tier: Option<&'static str>,
     pub observed_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FastServedTier {
+enum ProviderReportedTier {
     Priority,
     Default,
 }
 
-impl FastServedTier {
+impl ProviderReportedTier {
     fn as_str(self) -> &'static str {
         match self {
             Self::Priority => "priority",
@@ -314,7 +310,7 @@ impl FastServedTier {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FastTierObservation {
-    served: FastServedTier,
+    provider_reported: Option<ProviderReportedTier>,
     observed_at: i64,
 }
 
@@ -372,8 +368,8 @@ pub(crate) struct CodexHome {
     /// Last catalogue fetched through this exact profile. The provider may roll out model/tier
     /// availability account by account, so a fleet-wide set is insufficient for Fast routing.
     model_catalog: std::sync::RwLock<Option<CodexModelCatalog>>,
-    /// Actual completed Fast outcomes, keyed by upstream model. This is stronger evidence than the
-    /// catalogue and drives selection without ever turning a downgrade into a client error.
+    /// Successful requested Fast outcomes, keyed by upstream model. The provider-reported tier is
+    /// retained inside each observation for diagnostics but never drives selection.
     fast_observations: std::sync::Mutex<BTreeMap<String, FastTierObservation>>,
     /// Set once this generation proved the profile works (token plus usage read or a served turn).
     ready: AtomicBool,
@@ -450,10 +446,7 @@ impl CodexHome {
 
     /// Current transport generation (clone is an Arc bump; a recycle swaps the value).
     fn transport(&self) -> ProfileTransport {
-        self.transport
-            .lock()
-            .expect("codex transport lock")
-            .clone()
+        self.transport.lock().expect("codex transport lock").clone()
     }
 
     fn inflight(&self) -> usize {
@@ -684,9 +677,12 @@ impl CodexHome {
             .cfg
             .credential_keys
             .seal(&self.key_id, &self.spec.id, credential)
-            .map_err(|error| ProcessError::InvalidConfig(format!("re-seal credential: {error:#}")))?;
-        let encoded = codex_credential::encode_envelope(&envelope)
-            .map_err(|error| ProcessError::InvalidConfig(format!("encode credential: {error:#}")))?;
+            .map_err(|error| {
+                ProcessError::InvalidConfig(format!("re-seal credential: {error:#}"))
+            })?;
+        let encoded = codex_credential::encode_envelope(&envelope).map_err(|error| {
+            ProcessError::InvalidConfig(format!("encode credential: {error:#}"))
+        })?;
         let path = std::path::PathBuf::from(&self.spec.credential_file);
         let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
         let write_result = async {
@@ -725,7 +721,10 @@ impl CodexHome {
             return;
         }
         let Ok((_key_id, fresh, fresh_mtime)) = open_credential(&self.cfg, &self.spec) else {
-            eprintln!("Codex home {} credential reload failed; keeping current", self.id());
+            eprintln!(
+                "Codex home {} credential reload failed; keeping current",
+                self.id()
+            );
             return;
         };
         let mut credential = self.credential.lock().await;
@@ -761,21 +760,11 @@ impl CodexHome {
             .expect("Codex model catalog lock") = Some(catalog);
     }
 
-    /// Ordering signal for Fast requests. A completed priority turn is strongest, followed by an
-    /// untried profile whose catalogue advertises Fast. Observed downgrades remain usable as the
-    /// fail-open standard fallback, but cannot steal traffic from a profile proven to honor Fast.
+    /// Ordering signal for Fast requests. Catalogue support is the only account-specific
+    /// capability evidence; the completed response's tier is diagnostic and never affects
+    /// placement because ChatGPT reports `default` for measurably accelerated Fast turns.
     fn fast_route_rank(&self, model: &str) -> u8 {
-        let observed = self
-            .fast_observations
-            .lock()
-            .expect("Codex Fast observation lock")
-            .get(model)
-            .copied()
-            .map(|observation| observation.served);
-        let catalog = self
-            .model_catalog
-            .read()
-            .expect("Codex model catalog lock");
+        let catalog = self.model_catalog.read().expect("Codex model catalog lock");
         let catalog_available = catalog
             .as_ref()
             .map(|catalog| catalog.models.contains(model));
@@ -785,14 +774,14 @@ impl CodexHome {
                 .contains(model)
                 .then(|| catalog.fast_models.contains(model))
         });
-        fast_route_rank(observed, catalog_available, catalog_fast_supported)
+        fast_route_rank(catalog_available, catalog_fast_supported)
     }
 
-    fn observe_fast_result(&self, model: &str, served_tier: Option<&str>) {
-        let served = match served_tier {
-            Some("priority") => FastServedTier::Priority,
-            Some(_) => FastServedTier::Default,
-            None => return,
+    fn observe_fast_result(&self, model: &str, provider_reported_tier: Option<&str>) {
+        let provider_reported = match provider_reported_tier {
+            Some("priority") => Some(ProviderReportedTier::Priority),
+            Some("default") => Some(ProviderReportedTier::Default),
+            _ => None,
         };
         self.fast_observations
             .lock()
@@ -800,17 +789,14 @@ impl CodexHome {
             .insert(
                 model.to_string(),
                 FastTierObservation {
-                    served,
+                    provider_reported,
                     observed_at: pool::now(),
                 },
             );
     }
 
     fn fast_tier_statuses(&self) -> Vec<CodexFastTierStatus> {
-        let catalog = self
-            .model_catalog
-            .read()
-            .expect("Codex model catalog lock");
+        let catalog = self.model_catalog.read().expect("Codex model catalog lock");
         let observations = self
             .fast_observations
             .lock()
@@ -832,7 +818,10 @@ impl CodexHome {
                     model: model.upstream.clone(),
                     catalog_available,
                     catalog_fast_supported,
-                    served_tier: observation.map(|observation| observation.served.as_str()),
+                    served_tier: observation.map(|_| "priority"),
+                    provider_reported_tier: observation
+                        .and_then(|observation| observation.provider_reported)
+                        .map(ProviderReportedTier::as_str),
                     observed_at: observation.map(|observation| observation.observed_at),
                 }
             });
@@ -1250,7 +1239,10 @@ impl CodexHome {
         match ProfileTransport::new(self.cfg.clone(), Some(proxy.as_str())) {
             Ok(transport) => {
                 *self.transport.lock().expect("codex transport lock") = transport;
-                eprintln!("Codex home {} transport recycled after wedge verdict", self.id());
+                eprintln!(
+                    "Codex home {} transport recycled after wedge verdict",
+                    self.id()
+                );
             }
             Err(error) => {
                 eprintln!(
@@ -1271,12 +1263,15 @@ fn open_credential(
 ) -> Result<(String, CodexCredential, Option<std::time::SystemTime>), ProcessError> {
     let bytes = std::fs::read(&spec.credential_file)
         .map_err(|error| ProcessError::InvalidConfig(format!("credential unreadable: {error}")))?;
-    let envelope = codex_credential::decode_envelope(&bytes)
-        .map_err(|error| ProcessError::InvalidConfig(format!("credential undecodable: {error:#}")))?;
+    let envelope = codex_credential::decode_envelope(&bytes).map_err(|error| {
+        ProcessError::InvalidConfig(format!("credential undecodable: {error:#}"))
+    })?;
     let credential = cfg
         .credential_keys
         .open(&spec.id, &envelope)
-        .map_err(|error| ProcessError::InvalidConfig(format!("credential unsealable: {error:#}")))?;
+        .map_err(|error| {
+            ProcessError::InvalidConfig(format!("credential unsealable: {error:#}"))
+        })?;
     let mtime = std::fs::metadata(&spec.credential_file)
         .ok()
         .and_then(|metadata| metadata.modified().ok());
@@ -1288,19 +1283,11 @@ mod admission_tests {
     use super::*;
 
     #[test]
-    fn fast_routing_prefers_wire_honor_then_advertised_unknowns() {
-        assert_eq!(
-            fast_route_rank(Some(FastServedTier::Priority), Some(true), Some(true)),
-            0
-        );
-        assert_eq!(fast_route_rank(None, Some(true), Some(true)), 1);
-        assert_eq!(fast_route_rank(None, None, None), 2);
-        assert_eq!(
-            fast_route_rank(Some(FastServedTier::Default), Some(true), Some(true)),
-            3
-        );
-        assert_eq!(fast_route_rank(None, Some(true), Some(false)), 3);
-        assert_eq!(fast_route_rank(None, Some(false), None), 4);
+    fn fast_routing_uses_catalog_capability_without_false_response_demotion() {
+        assert_eq!(fast_route_rank(Some(true), Some(true)), 0);
+        assert_eq!(fast_route_rank(None, None), 1);
+        assert_eq!(fast_route_rank(Some(true), Some(false)), 2);
+        assert_eq!(fast_route_rank(Some(false), None), 3);
     }
 
     #[test]
@@ -1392,16 +1379,26 @@ mod admission_tests {
             reserve_blocked(Some(&reserve_limits(99, 10)), "home-a", &reserve98),
             Some(4_102_444_800)
         );
-        assert_eq!(reserve_blocked(Some(&reserve_limits(98, 10)), "home-a", &reserve98), None);
+        assert_eq!(
+            reserve_blocked(Some(&reserve_limits(98, 10)), "home-a", &reserve98),
+            None
+        );
         // 98% of the weekly window (cap 97%) blocks on the weekly reset.
         assert_eq!(
             reserve_blocked(Some(&reserve_limits(20, 98)), "home-a", &reserve),
             Some(4_102_500_000)
         );
         // At or below both caps the home stays routable; FULL never blocks, even at the wall.
-        assert_eq!(reserve_blocked(Some(&reserve_limits(90, 97)), "home-a", &reserve), None);
         assert_eq!(
-            reserve_blocked(Some(&reserve_limits(100, 100)), "home-a", &WindowReserve::FULL),
+            reserve_blocked(Some(&reserve_limits(90, 97)), "home-a", &reserve),
+            None
+        );
+        assert_eq!(
+            reserve_blocked(
+                Some(&reserve_limits(100, 100)),
+                "home-a",
+                &WindowReserve::FULL
+            ),
             None
         );
         // No evidence and missing resets never invent a block.
@@ -1417,11 +1414,24 @@ mod admission_tests {
         };
         let (a5, a7) = reserve.caps("home-a");
         let (b5, b7) = reserve.caps("home-b");
-        assert_eq!(reserve.caps("home-a"), (a5, a7), "caps must be stable per home");
-        assert!((0.86..=0.94).contains(&a5), "5h cap stays near its base: {a5}");
-        assert!((0.95..=0.99).contains(&a7), "weekly cap stays near 0.97: {a7}");
+        assert_eq!(
+            reserve.caps("home-a"),
+            (a5, a7),
+            "caps must be stable per home"
+        );
+        assert!(
+            (0.86..=0.94).contains(&a5),
+            "5h cap stays near its base: {a5}"
+        );
+        assert!(
+            (0.95..=0.99).contains(&a7),
+            "weekly cap stays near 0.97: {a7}"
+        );
         // The fleet must not cut at one percent: different homes get different thresholds.
-        assert!(a5 != b5 || a7 != b7, "jitter spreads thresholds across homes");
+        assert!(
+            a5 != b5 || a7 != b7,
+            "jitter spreads thresholds across homes"
+        );
     }
 }
 
@@ -1627,8 +1637,12 @@ impl CodexGateway {
             home.reload_if_republished().await;
         }
         for (order, spec) in joining {
-            match CodexHome::load(self.cfg.clone(), spec.clone(), order, self.calibration_store.clone())
-            {
+            match CodexHome::load(
+                self.cfg.clone(),
+                spec.clone(),
+                order,
+                self.calibration_store.clone(),
+            ) {
                 Ok(home) => {
                     eprintln!("Codex home {} joined the pool", spec.id);
                     let home = Arc::new(home);
@@ -1854,7 +1868,7 @@ impl CodexGateway {
 
     /// Choose a usable home and take one of its turn slots.
     ///
-    /// A conversation-pinned home is first inside the best Fast-evidence class. Other homes are
+    /// A conversation-pinned home is first inside the best Fast-capability class. Other homes are
     /// ordered by current in-flight load and a rotating tie-break; calibration is reporting
     /// evidence and never an admission/routing restriction. New shared roots still seed two homes,
     /// but no capacity ratio can veto warmth.
@@ -1885,11 +1899,11 @@ impl CodexGateway {
             let limits = home.rate_limits().await;
             match home.admission(limits.as_ref(), now) {
                 health::Admission::Admit { snapshot_stale } => {
-                    if let Some(blocked_until) = home.reserve_blocked_until(limits.as_ref(), reserve)
+                    if let Some(blocked_until) =
+                        home.reserve_blocked_until(limits.as_ref(), reserve)
                     {
-                        soonest = Some(soonest.map_or(blocked_until, |v: i64| {
-                            v.min(blocked_until)
-                        }));
+                        soonest =
+                            Some(soonest.map_or(blocked_until, |v: i64| v.min(blocked_until)));
                         continue;
                     }
                     // Remaining window, normalised per subscription by the provider itself. That
@@ -1945,13 +1959,7 @@ impl CodexGateway {
             // Peak escape hatch, mirroring the Claude fleet: when every home is past its soft
             // reserve, serve at up to the provider's own wall rather than fail the client.
             let (relaxed, relaxed_soonest) = self
-                .selection_candidates(
-                    &pool_homes,
-                    exclude,
-                    now,
-                    &WindowReserve::FULL,
-                    fast_model,
-                )
+                .selection_candidates(&pool_homes, exclude, now, &WindowReserve::FULL, fast_model)
                 .await;
             candidates = relaxed;
             if candidates.is_empty() {
@@ -1976,23 +1984,22 @@ impl CodexGateway {
              (fast_b, stale_b, inflight_b, used_b, home_b)| {
                 let rotated_a = (home_a.order() + width - cursor) % width;
                 let rotated_b = (home_b.order() + width - cursor) % width;
-                // Fast capability is a service-quality boundary, not a small balancing hint. Once
-                // one profile proves it can honor priority, a downgraded profile must not win on
-                // cache warmth, load or quota. Within the same Fast class, ordinary fleet
-                // discipline remains unchanged.
+                // Fast capability is a service-quality boundary, not a small balancing hint.
+                // Catalogue support outranks unknown or unsupported profiles before cache warmth,
+                // load or quota. Within the same Fast class, ordinary fleet discipline remains.
                 fast_a
                     .cmp(fast_b)
                     .then_with(|| stale_a.cmp(stale_b))
-                // A home whose quota evidence has gone stale is still routable — the snapshot is
-                // observational and must never become a hard dependency — but it must never win a
-                // tie against a home whose evidence is current. A frozen reading looks arbitrarily
-                // optimistic, and ranking on it is how one unresponsive home absorbed the whole pool.
-                //
-                // Below that, ordering mirrors the Claude pool's `select_best`: the load envelope is
-                // a full tier of its own, and only within it does remaining window decide. Ranking on
-                // capacity first would pile concurrent turns onto whichever subscription is emptiest.
-                // Quota steering is bucketed and only engages near the wall, so comparable homes stay
-                // tied and the rotation cursor keeps spreading them.
+                    // A home whose quota evidence has gone stale is still routable — the snapshot is
+                    // observational and must never become a hard dependency — but it must never win a
+                    // tie against a home whose evidence is current. A frozen reading looks arbitrarily
+                    // optimistic, and ranking on it is how one unresponsive home absorbed the whole pool.
+                    //
+                    // Below that, ordering mirrors the Claude pool's `select_best`: the load envelope is
+                    // a full tier of its own, and only within it does remaining window decide. Ranking on
+                    // capacity first would pile concurrent turns onto whichever subscription is emptiest.
+                    // Quota steering is bucketed and only engages near the wall, so comparable homes stay
+                    // tied and the rotation cursor keeps spreading them.
                     .then_with(|| inflight_a.cmp(inflight_b))
                     .then_with(|| used_a.cmp(used_b))
                     .then_with(|| rotated_a.cmp(&rotated_b))
@@ -2001,7 +2008,7 @@ impl CodexGateway {
         let best_fast_rank = candidates[0].0;
         // A resolved conversation is a hard first choice. For a new shared root, seed a cold home
         // until two copies exist, then prefer the least-loaded warm home. Fast requests keep that
-        // affinity only inside the best currently known served-tier class.
+        // affinity only inside the best currently known Fast-capability class.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
             if let Some((_, _, _, _, home)) = candidates
@@ -2018,17 +2025,13 @@ impl CodexGateway {
                 })
                 .count();
             let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
-                candidates
-                    .iter()
-                    .position(|(fast, _, _, _, home)| {
-                        *fast == best_fast_rank && !warm.iter().any(|id| id == home.id())
-                    })
+                candidates.iter().position(|(fast, _, _, _, home)| {
+                    *fast == best_fast_rank && !warm.iter().any(|id| id == home.id())
+                })
             } else {
-                candidates
-                    .iter()
-                    .position(|(fast, _, _, _, home)| {
-                        *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
-                    })
+                candidates.iter().position(|(fast, _, _, _, home)| {
+                    *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
+                })
             }
             .unwrap_or(0);
             ordered.push(candidates[primary].4.clone());
@@ -2066,10 +2069,7 @@ impl CodexGateway {
     /// same selection a real turn would and releases the acquired load slot immediately. A home can
     /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
     pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
-        match self
-            .select_home(&[], None, &[], false, false, None)
-            .await
-        {
+        match self.select_home(&[], None, &[], false, false, None).await {
             HomeSelection::Ready(_home, _slot) => Ok(()),
             HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
                 retry_after: ready_at

@@ -97,10 +97,31 @@ pub(crate) enum TurnUpdate {
 pub(crate) struct CodexTurnResult {
     pub output: Vec<Value>,
     pub usage: CodexUsage,
-    /// The tier the provider actually served (`response.service_tier` on the completed turn).
-    /// Settlement uses this, never the requested tier: a silently downgraded Fast request bills
-    /// at the standard rate, and an honored one bills at the Fast multiplier.
-    pub served_service_tier: Option<String>,
+    /// Effective product tier delivered by the gateway. On the private ChatGPT Codex backend a
+    /// successful `priority` request is Fast even though `response.completed.service_tier` commonly
+    /// remains `default`; official Codex maintainers explicitly document that field as unsuitable
+    /// for end-to-end Fast verification, and the production A/B shows the advertised 1.5x cadence.
+    pub effective_service_tier: Option<String>,
+    /// Diagnostic copy of `response.completed.response.service_tier`. This is retained for wire
+    /// drift monitoring only and must not drive placement, public responses, or settlement.
+    pub provider_reported_service_tier: Option<String>,
+}
+
+/// Resolve the customer-visible and billable tier after a successful turn.
+///
+/// ChatGPT-authenticated Codex routes Fast server-side. Its completed payload commonly reports
+/// `default` for both Standard and measurably accelerated Fast turns, so that provider field is
+/// diagnostic only. The accepted request is the product contract: `priority` is Fast and an
+/// absent tier is Standard.
+fn effective_service_tier(
+    requested_fast: bool,
+    _provider_reported_tier: Option<&str>,
+) -> &'static str {
+    if requested_fast {
+        "priority"
+    } else {
+        "default"
+    }
 }
 
 /// The native backend caps `prompt_cache_key` at 64 bytes (verified live: 129-byte affinity
@@ -175,6 +196,10 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
         "parallel_tool_calls": true,
         "store": false,
         "stream": true,
+        // Official Codex is stateless (`store:false`) and always requests the encrypted reasoning
+        // continuation item. Public adapters still expose it only when the customer explicitly
+        // requested that include; retaining it upstream preserves multi-turn reasoning continuity.
+        "include": ["reasoning.encrypted_content"],
     });
     if let Some(key) = &request.prompt_cache_key {
         body["prompt_cache_key"] = Value::String(bounded_cache_key(key));
@@ -258,14 +283,7 @@ impl CodexGateway {
                 .unwrap_or(&[]);
             let place_cache_root = routing.as_ref().is_some_and(TurnRouting::places_cache_root);
             let (home, slot) = match self
-                .select_home(
-                    &tried,
-                    preferred,
-                    warm,
-                    place_cache_root,
-                    true,
-                    fast_model,
-                )
+                .select_home(&tried, preferred, warm, place_cache_root, true, fast_model)
                 .await
             {
                 HomeSelection::Ready(home, slot) => (home, slot),
@@ -284,13 +302,16 @@ impl CodexGateway {
             let error = match result {
                 Ok(result) => {
                     if let Some(model) = fast_model {
-                        home.observe_fast_result(model, result.served_service_tier.as_deref());
+                        home.observe_fast_result(
+                            model,
+                            result.provider_reported_service_tier.as_deref(),
+                        );
                     }
                     home.record_spend(super::billing::price_real_nano(
                         &request.model,
                         &result.usage,
                         pool::now(),
-                        result.served_service_tier.as_deref() == Some("priority"),
+                        result.effective_service_tier.as_deref() == Some("priority"),
                     ))
                     .await;
                     // The served turn's response headers are the freshest window snapshot this
@@ -399,7 +420,14 @@ impl CodexHome {
                     return Err(error);
                 }
             };
-            return self.run_registered_turn(&mut events, updates, emitted).await;
+            return self
+                .run_registered_turn(
+                    &mut events,
+                    updates,
+                    emitted,
+                    request.service_tier.as_deref() == Some("priority"),
+                )
+                .await;
         }
     }
 
@@ -408,6 +436,7 @@ impl CodexHome {
         events: &mut TurnEvents,
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
+        requested_fast: bool,
     ) -> Result<CodexTurnResult, ProcessError> {
         let timeout = std::time::Duration::from_millis(self.config().turn_timeout_ms.max(1));
         // A silence bound at or above the total deadline simply never fires: the total governs and
@@ -419,8 +448,7 @@ impl CodexHome {
             let mut output = Vec::<Value>::new();
             let mut usage = CodexUsage::default();
             let mut saw_raw_usage = false;
-            let mut served_service_tier: Option<String> = None;
-            loop {
+            let provider_reported_service_tier = loop {
                 // Bound silence, not just total duration. A home that stopped answering mid-turn
                 // otherwise holds the client for the entire turn deadline before failing, and every
                 // one of those ten-minute waits is spent on a subscription that will never reply.
@@ -502,24 +530,16 @@ impl CodexHome {
                                     |call_id| {
                                         output.iter().any(|candidate| {
                                             matches!(
-                                                candidate
-                                                    .get("type")
-                                                    .and_then(Value::as_str),
+                                                candidate.get("type").and_then(Value::as_str),
                                                 Some("function_call" | "custom_tool_call")
-                                            ) && candidate
-                                                .get("call_id")
-                                                .and_then(Value::as_str)
+                                            ) && candidate.get("call_id").and_then(Value::as_str)
                                                 == Some(call_id)
                                         })
                                     },
                                 );
                             if !duplicate_tool_call {
-                                send_update(
-                                    &updates,
-                                    emitted,
-                                    TurnUpdate::RawItem(item.clone()),
-                                )
-                                .await;
+                                send_update(&updates, emitted, TurnUpdate::RawItem(item.clone()))
+                                    .await;
                                 output.push(item);
                             }
                         }
@@ -541,15 +561,14 @@ impl CodexHome {
                             .and_then(Value::as_str)
                             .unwrap_or("failed");
                         if status == "completed" {
-                            // Settlement keys on the tier the provider actually served, captured
-                            // from the completed response: a downgraded Fast request bills
-                            // standard, an honored one bills Fast. Nothing is rejected here —
-                            // the provider's verdict is authoritative for both service and money.
-                            served_service_tier = params
+                            // ChatGPT Codex routing accepts `priority` but normally leaves this
+                            // response field at `default`, including on demonstrably 1.5x Fast
+                            // streams. Preserve it as diagnostics and derive the effective product
+                            // tier from the accepted request below.
+                            break params
                                 .pointer("/turn/serviceTier")
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
-                            break;
                         }
                         if let Some(error) =
                             classify_turn_error(self, params.pointer("/turn/error/codexErrorInfo"))
@@ -569,11 +588,9 @@ impl CodexHome {
                             .and_then(Value::as_bool)
                             .unwrap_or(false)
                         {
-                            if let Some(error) = classify_turn_error(
-                                self,
-                                params.pointer("/error/codexErrorInfo"),
-                            )
-                            .await
+                            if let Some(error) =
+                                classify_turn_error(self, params.pointer("/error/codexErrorInfo"))
+                                    .await
                             {
                                 return Err(error);
                             }
@@ -586,11 +603,19 @@ impl CodexHome {
                     }
                     _ => {}
                 }
-            }
+            };
+            let effective_service_tier = Some(
+                effective_service_tier(
+                    requested_fast,
+                    provider_reported_service_tier.as_deref(),
+                )
+                .to_string(),
+            );
             Ok(CodexTurnResult {
                 output,
                 usage,
-                served_service_tier,
+                effective_service_tier,
+                provider_reported_service_tier,
             })
         };
 
@@ -734,6 +759,7 @@ mod tests {
         assert_eq!(body["instructions"], "");
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(body["tool_choice"], "auto");
         // Developer instructions lead, then the user message; nothing else exists to send.
         let input = body["input"].as_array().unwrap();
@@ -752,7 +778,13 @@ mod tests {
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert!(body.get("service_tier").is_none());
         let text = serde_json::to_string(&body).unwrap();
-        for forbidden in ["personality", "environment", "project", "plugin", "permission"] {
+        for forbidden in [
+            "personality",
+            "environment",
+            "project",
+            "plugin",
+            "permission",
+        ] {
             assert!(!text.contains(forbidden), "body leaks {forbidden}");
         }
     }
@@ -792,7 +824,8 @@ mod tests {
         assert_eq!(body["text"]["format"]["type"], "json_object");
         assert_eq!(body["text"]["verbosity"], "low");
 
-        request.output_schema = Some(json!({"type": "object", "properties": {"a": {"type": "string"}}}));
+        request.output_schema =
+            Some(json!({"type": "object", "properties": {"a": {"type": "string"}}}));
         let body = build_responses_body(&request);
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert_eq!(body["text"]["format"]["strict"], false);
@@ -800,5 +833,14 @@ mod tests {
             body["text"]["format"]["schema"]["properties"]["a"]["type"],
             "string"
         );
+    }
+
+    #[test]
+    fn accepted_priority_stays_effective_fast_when_provider_reports_default() {
+        assert_eq!(effective_service_tier(true, Some("default")), "priority");
+
+        // A Standard request remains Standard even if the non-authoritative diagnostic field
+        // changes in a future backend rollout.
+        assert_eq!(effective_service_tier(false, Some("priority")), "default");
     }
 }

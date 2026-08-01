@@ -92,17 +92,20 @@ token on every refresh with strict family reuse detection. The pool therefore:
 
 - **Wire.** One `POST {base}/responses` per turn: Responses body with explicit base
   instructions (`""` when the client supplied none), replayed history, new input and client
-  tools; `store:false`, `stream:true`, tenant-scoped `prompt_cache_key`. Headers carry the
-  pinned client identity (`originator: codex_cli_rs`, UA `codex_cli_rs/<version>`,
-  `OpenAI-Beta: responses=experimental`, `ChatGPT-Account-ID` from the envelope, per-request
-  `session_id`). The SSE `response.*` stream is translated into the same internal event
-  vocabulary the public adapters always consumed, so the public streaming contract is
-  byte-identical to the app-server era.
+  tools; `store:false`, `stream:true`, `include:["reasoning.encrypted_content"]`, tenant-scoped
+  `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client
+  identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
+  `ChatGPT-Account-ID` from the envelope) plus stable opaque installation/session/thread/window
+  metadata and a per-turn id. Root session and thread ids are equal, as in the official 0.146
+  client. Usage and model probes carry only the base auth/client headers. The SSE `response.*`
+  stream is translated into the same internal event vocabulary the public adapters always
+  consumed, so the public streaming contract is byte-identical to the app-server era.
 - **Selection** mirrors the Claude fleet: conversation affinity first, then freshness of quota
   evidence, in-flight envelope, bucketed quota steering above 50% utilisation, and an atomic
-  rotation cursor for ties. Cache stickiness is deliberate: the upstream `session_id` carries the
-  tenant-scoped cache digest, so one conversation reads as one continuous session instead of a
-  brand-new one per request. A home leaves rotation on an explicit provider `reached` verdict or
+  rotation cursor for ties. Cache stickiness is deliberate: tenant-scoped affinity derives stable
+  opaque prompt-cache/session/thread/window identities, so one conversation reads as one
+  continuous session across pool rotation without exposing the customer key. A home leaves
+  rotation on an explicit provider `reached` verdict or
   an explicit provider `limit_reached`/`allowed: false` verdict, and returns a single
   OpenAI-shaped `429 + Retry-After` at the soonest window reset.
 - **Blame classification.** 429/usage-limit → account fault (cooling until reset, rotation does
@@ -138,20 +141,19 @@ token on every refresh with strict family reuse detection. The pool therefore:
   (healthy→suspect→dead, durable in the authority) and transport
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that
   clears a verdict.
-- **Pricing** comes only from `metering::codex` (audited, effective-dated). The Fast service
-  tier (`service_tier: "priority"`, also accepted as `"fast"`) is requested for Fast-capable
-  catalog models, and money always follows the tier the provider actually served: reservation
-  holds the conservative Fast multiplier, while settlement, ledger, capacity spend and the
-  public `service_tier` response field all use the tier reported on the completed turn. A
-  silently downgraded request bills at the standard rate and is never rejected; an honored
-  priority turn bills at the multiplier. Model discovery retains `service_tiers` and legacy
-  `additional_speed_tiers` per profile; Fast routing walks catalogue-supported unknown profiles,
-  then sticks to any profile that has actually served `priority` without letting ordinary cache
-  affinity pull the turn back to a known downgrade. Verified live (2026-08-01) on all four Pro
-  pool profiles with the official 0.146 request shape: their catalogues advertise `priority`, but
-  completed turns report `default` (`fast` itself is rejected with HTTP 400). Those accounts serve
-  Fast requests normally at standard price until OpenAI enables the tier; there is no documented
-  account-toggle API, and the official `/fast` command only selects wire value `priority`.
+- **Pricing** comes only from `metering::codex` (audited, effective-dated). Public `fast` and
+  `priority` normalize to the official request value `priority`; Standard omits that value.
+  Reservation keeps the conservative Fast hold. After a successful turn the accepted request is
+  the effective product tier used by settlement, ledger, capacity spend and the public response:
+  requested `priority` remains Fast, while Standard remains `default`. The private ChatGPT backend's
+  completed `response.service_tier` is stored separately as diagnostic
+  `provider_reported_tier`; it commonly says `default` for measurably accelerated Fast and must not
+  drive money or placement. This behavior is confirmed by the official maintainer response in
+  `openai/codex#14204` and matching reports `#30413`/`#32191`. Production A/B on 2026-08-01 measured
+  `67.36` vs `102.02` median output tok/s (`1.514x`) while both paths reported `default`; all four
+  Pro profiles successfully served priority turns. Model discovery retains `service_tiers` and
+  legacy `additional_speed_tiers` per profile, and Fast routing prefers catalogue-supported homes
+  without allowing the non-authoritative completed field to break affinity or demote a profile.
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.
@@ -181,8 +183,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
 - **Status** stays at `GET /codex-subs` (control plane) and the Prometheus
   `claude_api_codex_*` series; `process_live` now means "credential opened and transport built",
   `ready_published` means this generation proved the profile works. Each home's `fast_tiers`
-  separates advisory catalogue availability/support from authoritative completed
-  `served_tier`/`observed_at`, so a provider downgrade cannot look like working Fast.
+  separates catalogue availability/support and effective `served_tier` from diagnostic
+  `provider_reported_tier`/`observed_at`; a misleading completed `default` therefore remains
+  visible without being mistaken for a Fast downgrade.
 - **Runbook alerts** are unchanged in name (`CodexNoAvailableHomes`, `CodexHomeUnauthenticated`,
   `CodexHomeQuotaSnapshotStale`); their meaning maps to sealed profiles.
 - **Wire verification** before enabling in production and after any `CODEX_CLI_VERSION` bump:

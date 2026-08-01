@@ -6,8 +6,8 @@ production. The probe completes the official device flow, then verifies the exac
 the Rust transport depends on, and prints them REDACTED (no tokens, no account ids):
 
   1. `GET /backend-api/codex/models`: model availability plus current/legacy Fast metadata;
-  2. `POST /backend-api/codex/responses` HTTP+SSE liveness: requested and actually served
-     service tier, SSE event types, and rate-limit response headers;
+  2. `POST /backend-api/codex/responses` HTTP+SSE liveness: requested tier, backend-reported
+     response tier, SSE event types, and rate-limit response headers;
   3. `GET /backend-api/wham/usage`: JSON shape (plan_type, rate_limit primary/secondary,
      resets spelling);
   4. refresh-token rotation: two consecutive refreshes must succeed, and the second one must
@@ -128,32 +128,48 @@ def jwt_claims(token):
 
 
 def request_identity():
+    thread = str(uuid.uuid4())
     return {
         "installation": str(uuid.uuid4()),
-        "session": str(uuid.uuid4()),
-        "thread": str(uuid.uuid4()),
+        # Root Codex sessions use their thread UUID as the session UUID.
+        "session": thread,
+        "thread": thread,
+        "turn": str(uuid.uuid4()),
         "window": str(uuid.uuid4()),
     }
 
 
-def auth_headers(tokens, client_version, identity=None):
-    headers = {
+def auth_headers(tokens, client_version):
+    return {
         "Authorization": f"Bearer {tokens['access_token']}",
         "ChatGPT-Account-ID": account_id_of(tokens),
         "originator": ORIGINATOR,
         "User-Agent": f"{ORIGINATOR}/{client_version} (Linux; x86_64) {ORIGINATOR}",
         "version": client_version,
-        "OpenAI-Beta": "responses=experimental",
     }
-    if identity:
-        headers.update({
-            "session-id": identity["session"],
-            "thread-id": identity["thread"],
-            "x-client-request-id": identity["thread"],
-            "x-codex-installation-id": identity["installation"],
-            "x-codex-window-id": identity["window"],
-        })
-    return headers
+
+
+def turn_metadata(identity):
+    return json.dumps({
+        "installation_id": identity["installation"],
+        "session_id": identity["session"],
+        "thread_id": identity["thread"],
+        "turn_id": identity["turn"],
+        "window_id": identity["window"],
+        "request_kind": "turn",
+    }, separators=(",", ":"))
+
+
+def turn_headers(tokens, client_version, identity):
+    metadata = turn_metadata(identity)
+    return {
+        **auth_headers(tokens, client_version),
+        "session-id": identity["session"],
+        "thread-id": identity["thread"],
+        "x-client-request-id": identity["thread"],
+        "x-codex-window-id": identity["window"],
+        "x-codex-turn-metadata": metadata,
+    }
 
 
 def probe_models(opener, tokens, client_version, model):
@@ -189,6 +205,7 @@ def probe_models(opener, tokens, client_version, model):
 
 
 def probe_responses(opener, tokens, client_version, model, service_tier, identity):
+    metadata = turn_metadata(identity)
     body = {
         "model": model,
         "instructions": "",
@@ -211,7 +228,9 @@ def probe_responses(opener, tokens, client_version, model, service_tier, identit
             "x-codex-installation-id": identity["installation"],
             "session_id": identity["session"],
             "thread_id": identity["thread"],
+            "turn_id": identity["turn"],
             "x-codex-window-id": identity["window"],
+            "x-codex-turn-metadata": metadata,
         },
     }
     if service_tier != "none":
@@ -220,7 +239,7 @@ def probe_responses(opener, tokens, client_version, model, service_tier, identit
         f"{BASE_URL}/responses",
         data=json.dumps(body).encode(),
         headers={
-            **auth_headers(tokens, client_version, identity),
+            **turn_headers(tokens, client_version, identity),
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         },
@@ -344,7 +363,7 @@ def main():
         "--expect-served-tier",
         choices=["default", "priority", "flex"],
         default=None,
-        help="exit non-zero unless response.completed reports this exact tier",
+        help="exit non-zero unless response.completed reports this exact tier (diagnostic only)",
     )
     parser.add_argument(
         "--no-refresh",
@@ -380,7 +399,8 @@ def main():
         )
         return 1
     if args.service_tier == "priority" and served_tier != "priority":
-        print("!! provider did not honor Fast; this account was served at the standard tier")
+        print("!! backend reported a non-priority response tier; for ChatGPT-auth Codex this is "
+              "not proof of a Fast downgrade (openai/codex#14204, #30413, #32191)")
     print("== probe complete; record findings in research/CODEX_NATIVE_WIRE.md")
     return 0 if ok else 1
 

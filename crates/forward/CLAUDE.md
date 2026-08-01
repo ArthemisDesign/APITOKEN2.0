@@ -218,11 +218,13 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    reserve-кепок. Все homes за лимитом → один OpenAI-shaped 429+Retry-After до ближайшего reset.
    **Мягкий запас окон (как `pool::Reserve`):** не роутим выше `1−base` окна (5h деф 10%,
    weekly деф 3%) с детерминированным джиттером по profile id; под пиком фильтр fail-open
-   ослабляется до провайдерской стены. Кэш-липкость: upstream `session_id` = tenant-scoped
-   cache digest, разговор выглядит одной непрерывной сессией.
+   ослабляется до провайдерской стены. Кэш-липкость: tenant-scoped affinity выводит стабильные
+   opaque `prompt_cache_key` и session/thread/window UUID, поэтому разговор выглядит одной
+   непрерывной сессией и не раскрывает raw customer key.
 1. **Только AEAD envelopes и pinned official client identity.** `originator: codex_cli_rs`,
-   UA `codex_cli_rs/<CODEX_CLI_VERSION> (…)`, `OpenAI-Beta: responses=experimental`,
-   `ChatGPT-Account-ID` из envelope. Tokens/email/account_id/proxy дешифруются только в память
+   UA `codex_cli_rs/<CODEX_CLI_VERSION> (…)`, `version`, `ChatGPT-Account-ID` из envelope;
+   turn также несёт first-party-shaped session/thread/window/turn metadata в headers и body.
+   Tokens/email/account_id/proxy дешифруются только в память
    и не попадают в log/metric/response. Homes адресуются opaque id (в логах/метриках нет путей
    и identity). Версия клиента движется только reviewed-коммитом после live probe
    (`research/CODEX_NATIVE_WIRE.md`).
@@ -237,7 +239,8 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    items + client tools.** Body собирается конструкцией (`build_responses_body`): личности,
    environment/project/plugin/skill/permission контекста и built-in tools просто не существует
    — граница патча app-server теперь структурная. `store:false`, stateless полный input на
-   turn; tenant continuity — только `prompt_cache_key` digest (никогда raw customer key).
+   turn; tenant continuity — `prompt_cache_key` digest плюс выведенные из него opaque
+   session/thread/window UUID (никогда raw customer key).
    Custom tool выполняет клиент: gateway возвращает raw call item и никогда не исполняет его.
 4. **Провайдерские окна — из `/wham/usage` и live-заголовков/SSE `codex.rate_limits`.**
    Снапшот принимается только с реальными duration+reset; stale не отклоняет и не выигрывает
@@ -262,10 +265,12 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    nanoUSD; cumulative integer WLS `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без prior/EMA; cold
    capacity/remaining = `null` до следующего complete positive-spend interval; raw
    observations/CAS/spend в engine authority, переживают restart/blue-green.
-7. **Цены — только из `metering::codex`** (audited, effective-dated). Fast множитель применяется
-   строго по ОБСЛУЖЕННОМУ tier (`response.service_tier` на completed turn): reserve держит
-   консервативный Fast-резерв, settle/ledger/capacity/публичный ответ — по факту обслуживания
-   (downgrade в default → стандартная цена, никогда не reject; honor → множитель). Public
+7. **Цены — только из `metering::codex`** (audited, effective-dated). Для успешного ChatGPT-auth
+   turn effective tier определяется принятым запросом: `priority` = Fast, отсутствие tier =
+   Standard. Completed `response.service_tier` хранится только как provider-reported диагностика:
+   официальный backend обычно возвращает `default` и на измеримо ускоренном Fast. Reserve держит
+   консервативный Fast-резерв; settle/ledger/capacity/публичный ответ используют effective tier.
+   Public
    synthetic errors только
    OpenAI-shaped и без pool/profile/upstream internals — гейтит
    `api::tests::public_errors_never_leak_internal_architecture`.

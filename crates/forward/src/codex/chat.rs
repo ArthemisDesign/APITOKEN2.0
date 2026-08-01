@@ -142,7 +142,7 @@ pub async fn completions(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
-        result.served_service_tier.as_deref() == Some("priority"),
+        result.effective_service_tier.as_deref() == Some("priority"),
     );
     let mut http_response = json_response(StatusCode::OK, response, &completion_id);
     super::api::insert_extra_headers(
@@ -955,7 +955,7 @@ fn completed_chat(
         }],
         "usage": chat_usage(&result.usage),
         "service_tier": result
-            .served_service_tier
+            .effective_service_tier
             .as_deref()
             .unwrap_or("default"),
         "system_fingerprint": Value::Null
@@ -1250,7 +1250,7 @@ async fn stream_chat(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
-            result.served_service_tier.as_deref() == Some("priority"),
+            result.effective_service_tier.as_deref() == Some("priority"),
         );
         if downstream_closed {
             return;
@@ -1264,7 +1264,7 @@ async fn stream_chat(
         );
         final_chunk["service_tier"] = Value::String(
             result
-                .served_service_tier
+                .effective_service_tier
                 .as_deref()
                 .unwrap_or("default")
                 .to_string(),
@@ -1282,7 +1282,7 @@ async fn stream_chat(
                     "model": prepared.request.public_model.id,
                     "choices": [],
                     "usage": chat_usage(&result.usage),
-                    "service_tier": result.served_service_tier.as_deref().unwrap_or("default"),
+                    "service_tier": result.effective_service_tier.as_deref().unwrap_or("default"),
                     "system_fingerprint": Value::Null
                 }),
             )
@@ -1324,9 +1324,7 @@ fn chat_chunk(
             "finish_reason": finish_reason
         }],
         "usage": Value::Null,
-        // A streaming chunk precedes the provider's completed verdict. Never claim Fast from the
-        // request alone; the terminal usage chunk publishes `priority` only after wire honor.
-        "service_tier": "default",
+        "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
         "system_fingerprint": Value::Null
     })
 }
@@ -1384,17 +1382,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn gateway() -> CodexGateway {
-        let root = std::env::temp_dir().join(format!(
-            "claude-api-codex-chat-test-{}",
-            new_id("roster")
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claude-api-codex-chat-test-{}", new_id("roster")));
         let credentials = root.join("credentials");
         std::fs::create_dir_all(&credentials).unwrap();
-        let keyring = codex_credential::CredentialKeyring::parse(&format!(
-            "current:{}",
-            "cd".repeat(32)
-        ))
-        .unwrap();
+        let keyring =
+            codex_credential::CredentialKeyring::parse(&format!("current:{}", "cd".repeat(32)))
+                .unwrap();
         let credential = codex_credential::CodexCredential {
             version: 1,
             access_token: "test-access-token".to_string(),
@@ -1782,7 +1776,8 @@ mod tests {
                 }),
             ],
             usage: CodexUsage::default(),
-            served_service_tier: None,
+            effective_service_tier: None,
+            provider_reported_service_tier: None,
         };
         assert_eq!(
             reasoning_summary_text(&result).as_deref(),
@@ -1791,7 +1786,8 @@ mod tests {
         let empty = CodexTurnResult {
             output: Vec::new(),
             usage: CodexUsage::default(),
-            served_service_tier: None,
+            effective_service_tier: None,
+            provider_reported_service_tier: None,
         };
         assert!(reasoning_summary_text(&empty).is_none());
     }

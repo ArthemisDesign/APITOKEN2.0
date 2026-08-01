@@ -335,7 +335,7 @@ pub async fn responses(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
-        result.served_service_tier.as_deref() == Some("priority"),
+        result.effective_service_tier.as_deref() == Some("priority"),
     );
     let mut http_response = json_response(StatusCode::OK, response, &response_id);
     insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
@@ -2015,12 +2015,12 @@ fn build_completed_response(
         output,
         Some(&result.usage),
     );
-    // The completed response reports only the tier the provider actually served. Missing wire
-    // evidence is standard, never requested Fast: claiming priority here would also make clients
-    // believe they received a service level that settlement correctly refused to bill.
+    // Publish the gateway's effective product tier. The private ChatGPT backend's completed
+    // `service_tier` is retained separately for diagnostics because it commonly says `default`
+    // while an accepted priority request is measurably served at the documented Fast cadence.
     response["service_tier"] = Value::String(
         result
-            .served_service_tier
+            .effective_service_tier
             .as_deref()
             .unwrap_or("default")
             .to_string(),
@@ -2060,9 +2060,7 @@ fn response_object(
             "summary": request.reasoning_summary
         },
         "safety_identifier": Value::Null,
-        // In-progress lifecycle events precede the completed provider verdict. The final object
-        // overwrites this with `priority` only when the upstream response proves Fast was served.
-        "service_tier": "default",
+        "service_tier": request.service_tier.as_deref().unwrap_or("default"),
         "store": request.store,
         "temperature": Value::Null,
         "text": request.text,
@@ -2699,7 +2697,7 @@ async fn stream_responses(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
-            result.served_service_tier.as_deref() == Some("priority"),
+            result.effective_service_tier.as_deref() == Some("priority"),
         );
         if downstream_closed || frame_tx.is_closed() {
             return;
@@ -3463,17 +3461,13 @@ mod tests {
     }
 
     fn gateway() -> CodexGateway {
-        let root = std::env::temp_dir().join(format!(
-            "claude-api-codex-api-test-{}",
-            new_id("roster")
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claude-api-codex-api-test-{}", new_id("roster")));
         let credentials = root.join("credentials");
         std::fs::create_dir_all(&credentials).unwrap();
-        let keyring = codex_credential::CredentialKeyring::parse(&format!(
-            "current:{}",
-            "ab".repeat(32)
-        ))
-        .unwrap();
+        let keyring =
+            codex_credential::CredentialKeyring::parse(&format!("current:{}", "ab".repeat(32)))
+                .unwrap();
         let credential = codex_credential::CodexCredential {
             version: 1,
             access_token: "test-access-token".to_string(),
@@ -3636,32 +3630,34 @@ mod tests {
             assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
             let response =
                 response_object(&parsed, "resp_fast", 0, "in_progress", Vec::new(), None);
+            assert_eq!(response["service_tier"], "priority");
+            let missing_effective_tier = build_completed_response(
+                &parsed,
+                &CodexTurnResult {
+                    output: Vec::new(),
+                    usage: CodexUsage::default(),
+                    effective_service_tier: None,
+                    provider_reported_service_tier: None,
+                },
+                "resp_fast",
+                0,
+            );
+            assert_eq!(missing_effective_tier["service_tier"], "default");
+            let accepted_fast_with_default_provider_report = build_completed_response(
+                &parsed,
+                &CodexTurnResult {
+                    output: Vec::new(),
+                    usage: CodexUsage::default(),
+                    effective_service_tier: Some("priority".to_string()),
+                    provider_reported_service_tier: Some("default".to_string()),
+                },
+                "resp_fast",
+                0,
+            );
             assert_eq!(
-                response["service_tier"], "default",
-                "requested Fast is not served-tier evidence"
+                accepted_fast_with_default_provider_report["service_tier"],
+                "priority"
             );
-            let downgraded = build_completed_response(
-                &parsed,
-                &CodexTurnResult {
-                    output: Vec::new(),
-                    usage: CodexUsage::default(),
-                    served_service_tier: None,
-                },
-                "resp_fast",
-                0,
-            );
-            assert_eq!(downgraded["service_tier"], "default");
-            let honored = build_completed_response(
-                &parsed,
-                &CodexTurnResult {
-                    output: Vec::new(),
-                    usage: CodexUsage::default(),
-                    served_service_tier: Some("priority".to_string()),
-                },
-                "resp_fast",
-                0,
-            );
-            assert_eq!(honored["service_tier"], "priority");
         }
         for requested in ["default", "auto", "flex", "future-tier"] {
             let parsed = parse_responses_request(
