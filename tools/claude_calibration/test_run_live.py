@@ -15,6 +15,7 @@ from tools.claude_calibration.run_live import (
     rate_catalog,
     rates_for_model,
     request_upper_bound_nano,
+    response_service_tier,
     require_healthy_delivery,
     row_deltas,
     usage_from_response,
@@ -134,6 +135,11 @@ class EvidenceTests(unittest.TestCase):
             },
         )
 
+    def test_response_speed_is_the_authoritative_service_tier(self):
+        self.assertEqual(response_service_tier({"usage": {"speed": "fast"}}), "fast")
+        self.assertEqual(response_service_tier({"usage": {"speed": "standard"}}), "standard")
+        self.assertEqual(response_service_tier({"usage": {}}), "standard")
+
 
 class BudgetTests(unittest.TestCase):
     def test_budget_guard_checks_every_possible_rebind_target_before_dispatch(self):
@@ -243,14 +249,6 @@ class CatalogueAndPlanTests(unittest.TestCase):
                             "cache_write_1h_nanousd_per_token": "10000",
                             "output_nanousd_per_token": "25000",
                         },
-                        {
-                            "id": "fast",
-                            "input_nanousd_per_token": "30000",
-                            "cache_read_nanousd_per_token": "3000",
-                            "cache_write_5m_nanousd_per_token": "37500",
-                            "cache_write_1h_nanousd_per_token": "60000",
-                            "output_nanousd_per_token": "150000",
-                        },
                     ],
                 },
             ]
@@ -263,23 +261,40 @@ class CatalogueAndPlanTests(unittest.TestCase):
             "claude-opus-4-8",
         )
         self.assertEqual(
+            canonical_rate_id("claude-opus-4-5-20251101", {key[0] for key in catalog}),
+            "claude-opus-4-8",
+        )
+        self.assertEqual(
             rates_for_model(catalog, ceiling, "future-model", "standard").output_nano,
-            150_000,
+            50_000,
         )
 
     def test_coverage_contains_every_model_tier_and_token_class(self):
-        models = ["claude-a", "claude-b", "claude-c", "claude-d"]
-        legs = build_coverage_legs(models, 4_096)
+        catalog, _ = rate_catalog(self.payload)
+        models = [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-5-20251101",
+        ]
+        legs = build_coverage_legs(models, 4_096, catalog)
         fresh = {(leg.model, leg.tier) for leg in legs if leg.kind == "fresh"}
         self.assertEqual(
             fresh,
-            {(model, tier) for model in models for tier in ("standard", "fast")},
+            {
+                ("claude-opus-4-8", "standard"),
+                ("claude-opus-4-8", "fast"),
+                ("claude-opus-4-7", "standard"),
+                ("claude-opus-4-5-20251101", "standard"),
+            },
         )
-        self.assertEqual({leg.cache_ttl for leg in legs if leg.kind == "cache"}, {"5m", "1h"})
-        self.assertEqual(
-            {leg.cache_phase for leg in legs if leg.kind == "cache"}, {"write", "read"}
-        )
-        self.assertEqual({leg.model for leg in legs if leg.kind == "web"}, set(models))
+        for model, tier in fresh:
+            pair = [leg for leg in legs if leg.model == model and leg.tier == tier]
+            self.assertEqual(len(pair), 6)
+            self.assertEqual(
+                {(leg.cache_ttl, leg.cache_phase) for leg in pair if leg.kind == "cache"},
+                {("5m", "write"), ("5m", "read"), ("1h", "write"), ("1h", "read")},
+            )
+            self.assertEqual(sum(leg.kind == "web" for leg in pair), 1)
 
     def test_profitability_is_sorted_by_observed_api_dollars_per_quota(self):
         rows = model_profitability(
@@ -337,6 +352,7 @@ class ProductionSshClientTests(unittest.TestCase):
         self.assertEqual(command[:2], ["ssh", "apitokensale"])
         self.assertIn("${CLAUDE_API_KEYS%%,*}", command[2])
         self.assertIn("x-apitoken-calibration-profile: besp", command[2])
+        self.assertIn("fast-mode-2026-02-01", command[2])
         self.assertNotIn("APITOKEN_API_KEY", command[2])
 
         with self.assertRaisesRegex(CalibrationError, "bounded profile hint"):

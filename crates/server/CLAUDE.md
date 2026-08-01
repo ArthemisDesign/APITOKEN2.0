@@ -99,8 +99,9 @@
   публикуют provider measurement resolution, а `plan_cohorts` объединяет только exact paid plan +
   duration в общий native-credit capacity per home/fleet; per-home evidence и workload-dependent
   API USD не заменяются этим агрегатом. `/capacity` публикует Claude 5ч/7д и horizon money как
-  decimal nanoUSD strings, per-sub remaining и authoritative Standard/Fast conversion catalogue из
-  `metering`. Claude full-window capacity pool-ится только внутри exact plan+duration по формуле
+  decimal nanoUSD strings, per-sub remaining и authoritative conversion catalogue из `metering`:
+  Standard для семи canonical-моделей, Fast только для фактически поддерживаемых Opus 5/4.8.
+  Claude full-window capacity pool-ится только внутри exact plan+duration по формуле
   `10^8*Σspend/Σfraction`; другой routable plan без evidence, snapshot старше 900с или pending/
   degraded calibration delivery fail-closed для fleet remaining. Историческая capacity при этом
   не стирается. `calibration_delivery` раскрывает только bounded queue counts/integrity, без identity.

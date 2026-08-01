@@ -1994,7 +1994,9 @@ fn mask_claude_email(email: &str) -> String {
 }
 
 fn anthropic_conversion_models(now: i64) -> Vec<Value> {
-    const MODELS: [(&str, &str); 5] = [
+    const MODELS: [(&str, &str); 7] = [
+        ("claude-opus-5", "Claude Opus 5"),
+        ("claude-fable-5", "Claude Fable 5"),
         ("claude-opus-4-8", "Claude Opus 4.8"),
         ("claude-opus-4-7", "Claude Opus 4.7"),
         ("claude-sonnet-5", "Claude Sonnet 5"),
@@ -2026,16 +2028,19 @@ fn anthropic_conversion_models(now: i64) -> Vec<Value> {
                     "output_nanousd_per_token": prices.output.to_string(),
                 }))
             };
+            let standard = tier(metering::AnthropicSpeed::Standard, "standard")?;
+            let tiers = if matches!(id, "claude-opus-5" | "claude-opus-4-8") {
+                vec![standard, tier(metering::AnthropicSpeed::Fast, "fast")?]
+            } else {
+                vec![standard]
+            };
             Some(json!({
                 "id": id,
                 "display_name": display_name,
                 "alias_generation": metering::ANTHROPIC_ALIAS_GENERATION,
                 "web_search_nanousd_per_request": metering::WEB_SEARCH_NANO.to_string(),
                 "us_inference_basis_points": 11_000,
-                "tiers": [
-                    tier(metering::AnthropicSpeed::Standard, "standard")?,
-                    tier(metering::AnthropicSpeed::Fast, "fast")?,
-                ],
+                "tiers": tiers,
             }))
         })
         .collect()
@@ -4614,7 +4619,7 @@ mod tests {
     #[test]
     fn claude_conversion_catalogue_publishes_every_metered_token_bucket() {
         let values = anthropic_conversion_models(1_785_369_601);
-        assert_eq!(values.len(), 5);
+        assert_eq!(values.len(), 7);
         let opus = values
             .iter()
             .find(|value| value["id"] == "claude-opus-4-8")
@@ -4629,6 +4634,24 @@ mod tests {
         assert_eq!(opus["tiers"][1]["id"], "fast");
         assert_eq!(opus["tiers"][1]["output_nanousd_per_token"], "50000");
         assert_eq!(opus["web_search_nanousd_per_request"], "10000000");
+
+        let opus5 = values
+            .iter()
+            .find(|value| value["id"] == "claude-opus-5")
+            .unwrap();
+        assert_eq!(opus5["tiers"][1]["id"], "fast");
+        let fable = values
+            .iter()
+            .find(|value| value["id"] == "claude-fable-5")
+            .unwrap();
+        assert_eq!(fable["tiers"].as_array().unwrap().len(), 1);
+        assert_eq!(fable["tiers"][0]["input_nanousd_per_token"], "10000");
+        assert_eq!(fable["tiers"][0]["output_nanousd_per_token"], "50000");
+        let opus47 = values
+            .iter()
+            .find(|value| value["id"] == "claude-opus-4-7")
+            .unwrap();
+        assert_eq!(opus47["tiers"].as_array().unwrap().len(), 1);
     }
 
     #[test]

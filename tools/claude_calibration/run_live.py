@@ -35,6 +35,9 @@ DEFAULT_BUDGET_NANO = 40 * NANO_PER_USD
 DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_PROFILE_DELAY_SECONDS = 16.0
 MIN_CACHE_WORDS = 2_048
+ANTHROPIC_BETAS = (
+    "web-search-2025-03-05,extended-cache-ttl-2025-04-11,fast-mode-2026-02-01"
+)
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -64,6 +67,16 @@ ROW_ID_FIELDS = (
 
 class CalibrationError(RuntimeError):
     """A fail-closed calibration invariant was not satisfied."""
+
+
+class HttpCalibrationError(CalibrationError):
+    """A typed provider response that is safe to classify without parsing log text."""
+
+    def __init__(self, path: str, status: int, detail: str) -> None:
+        super().__init__(f"{path} returned HTTP {status}: {detail}")
+        self.path = path
+        self.status = status
+        self.detail = detail
 
 
 @dataclasses.dataclass(frozen=True)
@@ -238,6 +251,12 @@ def usage_from_response(payload: dict[str, Any]) -> dict[str, int]:
     return parsed
 
 
+def response_service_tier(payload: dict[str, Any]) -> str:
+    usage = payload.get("usage")
+    speed = usage.get("speed") if isinstance(usage, dict) else None
+    return "fast" if isinstance(speed, str) and speed.lower() == "fast" else "standard"
+
+
 def attribute_exact_turn(
     before: dict[tuple[str, ...], dict[str, int]],
     after: dict[tuple[str, ...], dict[str, int]],
@@ -293,11 +312,16 @@ def canonical_rate_id(model: str, available: set[str]) -> str | None:
     if model in available:
         return model
     aliases = (
+        ("claude-opus-5", "claude-opus-5"),
         ("claude-opus-5", "claude-opus-4-8"),
+        ("claude-fable-5", "claude-fable-5"),
         ("claude-opus-4-8", "claude-opus-4-8"),
         ("claude-opus-4-7", "claude-opus-4-7"),
+        ("claude-opus-4-6", "claude-opus-4-8"),
+        ("claude-opus-4-5", "claude-opus-4-8"),
         ("claude-sonnet-5", "claude-sonnet-5"),
         ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("claude-sonnet-4-5", "claude-sonnet-4-6"),
         ("claude-haiku-4-5", "claude-haiku-4-5"),
     )
     for prefix, canonical in aliases:
@@ -419,10 +443,28 @@ def count_body(body: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in body.items() if key in allowed}
 
 
-def build_coverage_legs(models: list[str], prompt_words: int) -> list[Leg]:
+def supported_tiers(
+    model: str, catalog: dict[tuple[str, str], TokenRates]
+) -> tuple[str, ...]:
+    canonical = canonical_rate_id(model, {key[0] for key in catalog})
+    if canonical is None or (canonical, "standard") not in catalog:
+        raise CalibrationError(f"advertised model has no audited conversion rate: {model}")
+    fast_model = model == "claude-opus-5" or model.startswith("claude-opus-4-8")
+    return (
+        ("standard", "fast")
+        if fast_model and (canonical, "fast") in catalog
+        else ("standard",)
+    )
+
+
+def build_coverage_legs(
+    models: list[str],
+    prompt_words: int,
+    catalog: dict[tuple[str, str], TokenRates],
+) -> list[Leg]:
     legs: list[Leg] = []
     for model in models:
-        for tier in ("standard", "fast"):
+        for tier in supported_tiers(model, catalog):
             legs.append(
                 Leg(
                     name=f"fresh:{model}:{tier}",
@@ -433,36 +475,32 @@ def build_coverage_legs(models: list[str], prompt_words: int) -> list[Leg]:
                     max_tokens=32,
                 )
             )
-    for index, model in enumerate(models):
-        ttl = "5m" if index % 2 == 0 else "1h"
-        tier = "standard" if (index // 2) % 2 == 0 else "fast"
-        cache_id = f"coverage-{index}-{model}-{ttl}-{tier}"
-        for phase in ("write", "read"):
+            for ttl in ("5m", "1h"):
+                cache_id = f"coverage-{model}-{ttl}-{tier}"
+                for phase in ("write", "read"):
+                    legs.append(
+                        Leg(
+                            name=f"cache-{ttl}-{phase}:{model}:{tier}",
+                            model=model,
+                            tier=tier,
+                            kind="cache",
+                            cache_ttl=ttl,
+                            cache_id=cache_id,
+                            cache_phase=phase,
+                            prompt_words=max(prompt_words, MIN_CACHE_WORDS),
+                            max_tokens=16,
+                        )
+                    )
             legs.append(
                 Leg(
-                    name=f"cache-{ttl}-{phase}:{model}:{tier}",
+                    name=f"web:{model}:{tier}",
                     model=model,
                     tier=tier,
-                    kind="cache",
-                    cache_ttl=ttl,
-                    cache_id=cache_id,
-                    cache_phase=phase,
-                    prompt_words=max(prompt_words, MIN_CACHE_WORDS),
-                    max_tokens=16,
+                    kind="web",
+                    prompt_words=0,
+                    max_tokens=128,
                 )
             )
-    for index, model in enumerate(models):
-        tier = "standard" if index % 2 == 0 else "fast"
-        legs.append(
-            Leg(
-                name=f"web:{model}:{tier}",
-                model=model,
-                tier=tier,
-                kind="web",
-                prompt_words=0,
-                max_tokens=128,
-            )
-        )
     return legs
 
 
@@ -502,7 +540,7 @@ class JsonHttpClient:
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "accept": "application/json",
-            "anthropic-beta": "web-search-2025-03-05,extended-cache-ttl-2025-04-11",
+            "anthropic-beta": ANTHROPIC_BETAS,
         }
         if session_id:
             headers["x-session-id"] = session_id
@@ -516,7 +554,7 @@ class JsonHttpClient:
                 raw = response.read()
         except urllib.error.HTTPError as error:
             detail = error.read(800).decode(errors="replace")
-            raise CalibrationError(f"{path} returned HTTP {error.code}: {detail}") from error
+            raise HttpCalibrationError(path, error.code, detail) from error
         except urllib.error.URLError as error:
             raise CalibrationError(f"{path} failed: {error}") from error
         try:
@@ -555,7 +593,7 @@ class ProductionSshJsonHttpClient:
             "anthropic-version: 2023-06-01",
             "content-type: application/json",
             "accept: application/json",
-            "anthropic-beta: web-search-2025-03-05,extended-cache-ttl-2025-04-11",
+            f"anthropic-beta: {ANTHROPIC_BETAS}",
         ]
         if session_id:
             try:
@@ -601,7 +639,7 @@ class ProductionSshJsonHttpClient:
         status = int(status_raw)
         if status >= 400:
             detail = raw[:800].decode(errors="replace")
-            raise CalibrationError(f"{path} returned HTTP {status}: {detail}")
+            raise HttpCalibrationError(path, status, detail)
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
@@ -730,6 +768,7 @@ class Runner:
             target_profile=expected_profile if self.exact_profile_routing else None,
         )
         usage = usage_from_response(response)
+        actual_tier = response_service_tier(response)
         served_model = str(response.get("model") or leg.model)
         deadline = time.monotonic() + self.evidence_timeout
         match = None
@@ -741,7 +780,7 @@ class Runner:
             # the durable FIFO already reports that exact attribution cannot advance.
             require_healthy_delivery(after_payload, require_empty=False)
             match = attribute_exact_turn(
-                before_rows, evidence_rows(after_payload), usage, served_model, leg.tier
+                before_rows, evidence_rows(after_payload), usage, served_model, actual_tier
             )
             if match:
                 break
@@ -765,6 +804,10 @@ class Runner:
         coverage_error = None
         try:
             verify_leg_usage(leg, usage)
+            if actual_tier != leg.tier:
+                raise CalibrationError(
+                    f"{leg.name}: requested {leg.tier}, provider served {actual_tier}"
+                )
         except CalibrationError as error:
             coverage_error = str(error)
 
@@ -776,7 +819,8 @@ class Runner:
             "kind": leg.kind,
             "requested_model": leg.model,
             "served_model": served_model,
-            "tier": leg.tier,
+            "requested_tier": leg.tier,
+            "tier": actual_tier,
             "profile": profile,
             "session_hash": hashlib.sha256(session_id.encode()).hexdigest()[:12],
             "counted_input_tokens": input_tokens,
@@ -884,7 +928,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--panel-key-env", default="CLAUDE_API_PANEL_KEY")
     parser.add_argument("--budget-usd", default="40")
     parser.add_argument("--prompt-words", type=int, default=4_096)
-    parser.add_argument("--fill-model", default="claude-opus-4-7")
+    parser.add_argument("--fill-model", default="claude-fable-5")
+    parser.add_argument("--fill-tier", choices=("standard", "fast"), default="standard")
     parser.add_argument("--fill-leg-usd", default="2")
     parser.add_argument("--max-fill-turns", type=int, default=80)
     parser.add_argument("--no-fill", action="store_true")
@@ -967,6 +1012,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sessions: dict[str, str] = {}
+    unavailable_capabilities: list[dict[str, Any]] = []
+    unavailable_pairs: set[tuple[str, str, str]] = set()
+    profile_stops: dict[str, str] = {}
+    coverage_stops: set[str] = set()
     failure: str | None = None
     try:
         discovery_model = next((model for model in models if "haiku" in model), models[-1])
@@ -1002,27 +1051,80 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             raise CalibrationError(f"could not establish sticky sessions for: {', '.join(missing)}")
 
-        coverage = build_coverage_legs(models, args.prompt_words)
+        coverage = build_coverage_legs(models, args.prompt_words, catalog)
         for leg in coverage:
             for profile in profiles:
-                runner.execute_leg(leg, sessions[profile], expected_profile=profile)
+                pair = (profile, leg.model, leg.tier)
+                if profile in profile_stops or pair in unavailable_pairs:
+                    continue
+                try:
+                    _, record = runner.execute_leg(
+                        leg, sessions[profile], expected_profile=profile
+                    )
+                    if record["tier"] != leg.tier:
+                        unavailable_pairs.add(pair)
+                        unavailable_capabilities.append(
+                            {
+                                "profile": profile,
+                                "model": leg.model,
+                                "tier": leg.tier,
+                                "reason": record["coverage_error"],
+                            }
+                        )
+                except HttpCalibrationError as error:
+                    if leg.tier == "fast" and error.status in {400, 403, 429}:
+                        unavailable_pairs.add(pair)
+                        unavailable_capabilities.append(
+                            {
+                                "profile": profile,
+                                "model": leg.model,
+                                "tier": leg.tier,
+                                "http_status": error.status,
+                                "reason": error.detail[:300],
+                            }
+                        )
+                        print(
+                            f"{profile} {leg.model}: fast unavailable (HTTP {error.status})",
+                            flush=True,
+                        )
+                        continue
+                    if error.status == 429:
+                        profile_stops[profile] = str(error)
+                        coverage_stops.add(profile)
+                        print(f"{profile}: provider quota wall reached", flush=True)
+                        continue
+                    raise
+                except CalibrationError as error:
+                    if "became non-routable" in str(error):
+                        profile_stops[profile] = str(error)
+                        coverage_stops.add(profile)
+                        print(f"{profile}: provider made profile non-routable", flush=True)
+                        continue
+                    raise
 
         if not args.no_fill:
             if args.fill_model not in models:
                 raise CalibrationError(f"fill model is not advertised: {args.fill_model}")
             target_leg_nano = usd_to_nano(args.fill_leg_usd)
-            fill_rates = rates_for_model(catalog, ceiling, args.fill_model, "fast")
+            if args.fill_tier not in supported_tiers(args.fill_model, catalog):
+                raise CalibrationError(
+                    f"fill tier is not available for {args.fill_model}: {args.fill_tier}"
+                )
+            fill_rates = rates_for_model(catalog, ceiling, args.fill_model, args.fill_tier)
             words = max(
                 MIN_CACHE_WORDS,
                 min(120_000, target_leg_nano // max(fill_rates.cache_write_1h_nano, 1)),
             )
+            fill_done = set(profile_stops)
             for index in range(args.max_fill_turns):
                 made_progress = False
                 for profile in profiles:
+                    if profile in fill_done:
+                        continue
                     leg = Leg(
                         name=f"fill-cache-1h:{index}",
                         model=args.fill_model,
-                        tier="fast",
+                        tier=args.fill_tier,
                         kind="cache",
                         cache_ttl="1h",
                         cache_id=f"{run_id}-fill-{profile}-{index}",
@@ -1034,11 +1136,19 @@ def main(argv: list[str] | None = None) -> int:
                         runner.execute_leg(leg, sessions[profile], expected_profile=profile)
                         made_progress = True
                     except CalibrationError as error:
-                        if "budget guard stopped before dispatch" not in str(error):
-                            raise
-                        made_progress = False
-                        break
-                if not made_progress:
+                        if "budget guard stopped before dispatch" in str(error):
+                            fill_done.add(profile)
+                            continue
+                        if isinstance(error, HttpCalibrationError) and error.status == 429:
+                            profile_stops[profile] = str(error)
+                            fill_done.add(profile)
+                            continue
+                        if "became non-routable" in str(error):
+                            profile_stops[profile] = str(error)
+                            fill_done.add(profile)
+                            continue
+                        raise
+                if len(fill_done) == len(profiles) or not made_progress:
                     break
     except (CalibrationError, subprocess.TimeoutExpired) as error:
         failure = str(error)
@@ -1047,6 +1157,11 @@ def main(argv: list[str] | None = None) -> int:
     # useful evidence. They still make the run formally incomplete: a green report must prove every
     # requested input/cache/output/search leg, not merely receive successful HTTP responses.
     failure = failure or coverage_failure(runner.records)
+    if coverage_stops:
+        failure = failure or (
+            "coverage stopped at the provider quota wall for: "
+            + ", ".join(sorted(coverage_stops))
+        )
 
     try:
         final = capacity.read()
@@ -1061,6 +1176,8 @@ def main(argv: list[str] | None = None) -> int:
         "budget_nano_per_profile": str(budget_nano),
         "models": models,
         "profiles": profiles,
+        "unavailable_capabilities": unavailable_capabilities,
+        "profile_stops": profile_stops,
         "spent_nano_per_profile": {
             profile: str(spent) for profile, spent in sorted(budget.spent_nano.items())
         },

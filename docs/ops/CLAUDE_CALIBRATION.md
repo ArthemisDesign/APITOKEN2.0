@@ -1,10 +1,13 @@
 # Live-калибровка Claude-пула
 
 `tools/claude_calibration/run_live.py` — операторский нагрузочный прогон реального Claude-пула.
-Он проверяет все опубликованные Claude-модели, Standard/Fast, fresh input, output, cache write 5m,
-cache write 1h, cache read и Web Search, а затем при наличии бюджета добирает измеримый signal
-1h cache-write запросами. Итоговый JSON содержит exact spend, движение 5ч/7д quota и рейтинг
-модель × tier по наблюдённому API-dollar equivalent на 1% 5-часового окна.
+Он проверяет все опубликованные Claude model ID и для каждого реально поддерживаемого tier выполняет
+полную матрицу fresh input/output, cache write/read 5m, cache write/read 1h и Web Search. Fast Mode
+отправляется с обязательным beta `fast-mode-2026-02-01` только для Opus 5 и Opus 4.8; официальный
+conversion-каталог не изображает Fast у остальных моделей. Затем при наличии бюджета runner
+добирает измеримый signal стандартными 1h cache-write запросами Fable 5. Итоговый JSON содержит
+exact spend, движение 5ч/7д quota, реально недоступные capability и рейтинг модель × tier по
+наблюдённому API-dollar equivalent на 1% 5-часового окна.
 
 Это не frontend-тест и не расчёт по размеру prompt. Источники истины — backend `/capacity`,
 immutable `calibration_evidence` и provider quota snapshots.
@@ -20,9 +23,12 @@ immutable `calibration_evidence` и provider quota snapshots.
 - После generation следующий запрос запрещён, пока exact token vector не появился ровно в одном
   backend evidence aggregate. Конкурентный трафик в другой model/tier строке не мешает; совпавший
   конкурентный aggregate считается неоднозначностью и останавливает прогон.
-- Rebind, cooling/dead, HTTP 429, degraded/pending delivery, движение aggregate назад или actual
-  cost выше preflight bound останавливают прогон fail closed. Отсутствие требуемого token class не
-  прерывает оставшуюся матрицу, но помечает leg как `coverage_ok=false`, а весь отчёт как incomplete.
+- Rebind, cooling/dead, degraded/pending delivery, движение aggregate назад или actual cost выше
+  preflight bound останавливают конкретную небезопасную ветку fail closed. Provider quota wall
+  выводит только соответствующую подписку из оставшейся нагрузки, не лишая данных другие профили.
+  Ожидаемый 400/403/429 первого Fast-запроса сохраняется как `unavailable_capabilities` и не
+  повторяется для остальных token legs той же model/profile пары. Отсутствие требуемого token class
+  не прерывает оставшуюся матрицу, но помечает leg как `coverage_ok=false`, а весь отчёт как incomplete.
 - Между turn одной подписки выдерживается 16 секунд — больше 15-секундного backend probe debounce.
   Это даёт post-turn poll шанс связать exact spend с новой quota fraction.
 - API key и panel/control key читаются только из env/remote shell и в отчёт не попадают. Email уже
@@ -91,6 +97,8 @@ python3 -m unittest tools.claude_calibration.test_run_live
 
 `model_profitability` сортируется по `api_nano_per_1pct_5h` убыванию. `null` означает не нулевую
 выгодность, а отсутствие различимого движения quota: провайдерская fraction грубее этого сегмента.
+`unavailable_capabilities` отделяет проверенную недоступность Fast на конкретном профиле от нулевого
+расхода, а `profile_stops` фиксирует настоящий provider quota wall/cooling без spill на соседа.
 Для коммерческого вывода сравниваются только строки с положительным наблюдённым delta и достаточным
 числом turn; full-window `final_capacity.window_totals` остаётся pooled realized-workload оценкой,
 а не универсальным номиналом подписки для любой будущей смеси.
