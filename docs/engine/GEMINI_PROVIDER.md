@@ -562,9 +562,11 @@ streak/timestamps/classes, low-cardinality transport/backend/malformed/stream-st
 affinity counters, missing-usage count and pinned HTTPS/Undici transport versions/hashes. Unknown
 capacity stays JSON `null`; measured fleet totals include only profiles with evidence. The response
 marks this explicitly as `realized_workload_api_equivalent` with
-`fixed_subscription_nominal=false`. Subject, email, project, tier, proxy and OAuth material are
-never serialized. Caddy maps the same endpoint into the unified `admin.apitoken.sale` subscription
-page through stable origin `127.0.0.1:8794`.
+`fixed_subscription_nominal=false`. It also carries the reviewed non-secret paid-plan identity
+(`google_ai_pro|google_ai_ultra|code_assist_standard|code_assist_enterprise|workspace_ai_ultra`)
+for like-for-like admin sales aggregation. Subject, email, project, private tier, proxy and OAuth
+material are never serialized. Caddy maps the same endpoint into the unified
+`admin.apitoken.sale` subscription and calculator pages through stable origin `127.0.0.1:8794`.
 
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster

@@ -75,7 +75,9 @@
   возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/codex-subs`
+  `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
+  `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого
+  `admin.apitoken.sale/sales/calculator`; этот классификатор не является credential. `/codex-subs`
   гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
   символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy.
   `/fleet-history` читает историю metrics.db

@@ -156,6 +156,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
   the engine authority, survive restart/blue-green and are replayed on estimator upgrades.
   Calibration is fed only by wire events — reads never write — and each provider-reported duration
   (normally 5h and weekly) calibrates independently.
+  The control-authenticated `/codex-subs` projection includes the reviewed non-secret paid-plan
+  identity (`chatgpt_plus|chatgpt_pro|chatgpt_business`) so the admin sales calculator can aggregate
+  like-for-like profiles. Full email, account id, OAuth and proxy remain sealed.
 - **Health** is the same pure two-axis policy (`health.rs`): account
   (healthy→suspect→dead, durable in the authority) and transport
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that

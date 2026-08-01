@@ -226,7 +226,8 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    turn также несёт first-party-shaped session/thread/window/turn metadata в headers и body.
    Tokens/account_id/proxy и полный email дешифруются только в память и не попадают в
    log/metric/response. Control-authenticated `/codex-subs` может получить только bounded email hint
-   (первые четыре символа local-part без домена) для операторского сопоставления; homes по-прежнему
+   (первые четыре символа local-part без домена) и reviewed paid-plan identity для операторского
+   сопоставления/агрегации; homes по-прежнему
    адресуются opaque id (в логах/метриках нет путей и identity). Версия клиента движется только
    reviewed-коммитом после live probe
    (`research/CODEX_NATIVE_WIRE.md`).
@@ -359,7 +360,8 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    аккаунт. Deterministic soft reserve/jitter сохраняется; если все eligible profiles ниже резерва,
    service floor fail-open до explicit zero. Локальное saturation отдаёт короткий native RetryInfo.
    `/gemini-subs` отделяет quota presence от generation health через failure streak и last
-   success/failure evidence.
+   success/failure evidence и отдаёт reviewed paid-plan identity без Google subject/email/project
+   или private tier.
 6. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future

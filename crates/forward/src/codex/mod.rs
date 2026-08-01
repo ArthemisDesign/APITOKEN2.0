@@ -253,6 +253,8 @@ pub struct CodexHomeStatus {
     /// Privacy-safe operator hint derived from the credential email. The full address never leaves
     /// the sealed credential; this value contains at most four local-part characters.
     pub masked_email: String,
+    /// Reviewed paid-plan identity from the sealed credential; safe for commercial aggregation.
+    pub plan: String,
     /// The profile's credential opened and its transport was built.
     pub process_live: bool,
     /// This generation has proved the profile works (token plus one usage read or served turn).
@@ -380,6 +382,8 @@ pub(crate) struct CodexHome {
     /// Bounded operator hint, never the full credential identity. It is refreshed whenever a
     /// republished credential replaces the in-memory identity.
     masked_email: std::sync::RwLock<String>,
+    /// Non-secret paid-plan classification, refreshed with the sealed credential.
+    plan: std::sync::RwLock<String>,
     /// Position in the discovered pool: roster order. Only a tie-break for selection, so it may be
     /// renumbered freely as the pool changes; the stable identity used for labels is `spec.id`.
     order: AtomicUsize,
@@ -432,6 +436,7 @@ impl CodexHome {
     ) -> Result<Self, ProcessError> {
         let (key_id, credential, mtime) = open_credential(&cfg, &spec)?;
         let masked_email = mask_codex_email(&credential.email);
+        let plan = credential.plan.clone();
         let transport = std::sync::Mutex::new(ProfileTransport::new(
             cfg.clone(),
             Some(credential.proxy.as_str()),
@@ -439,6 +444,7 @@ impl CodexHome {
         Ok(Self {
             spec,
             masked_email: std::sync::RwLock::new(masked_email),
+            plan: std::sync::RwLock::new(plan),
             order: AtomicUsize::new(order),
             cfg,
             key_id,
@@ -654,8 +660,10 @@ impl CodexHome {
                     return Err(ProcessError::AuthenticationRequired);
                 }
                 let masked_email = mask_codex_email(&fresh.email);
+                let plan = fresh.plan.clone();
                 *credential = fresh;
                 *self.masked_email.write().expect("Codex masked email lock") = masked_email;
+                *self.plan.write().expect("Codex plan lock") = plan;
                 *self
                     .credential_mtime
                     .lock()
@@ -765,10 +773,13 @@ impl CodexHome {
         if fresh.refresh_token != credential.refresh_token
             || fresh.proxy != credential.proxy
             || fresh.email != credential.email
+            || fresh.plan != credential.plan
         {
             let masked_email = mask_codex_email(&fresh.email);
+            let plan = fresh.plan.clone();
             *credential = fresh;
             *self.masked_email.write().expect("Codex masked email lock") = masked_email;
+            *self.plan.write().expect("Codex plan lock") = plan;
             *self
                 .credential_mtime
                 .lock()
@@ -1166,6 +1177,7 @@ impl CodexHome {
                 .read()
                 .expect("Codex masked email lock")
                 .clone(),
+            plan: self.plan.read().expect("Codex plan lock").clone(),
             process_live: true,
             ready_published: self.ready.load(Ordering::Acquire),
             auth_ok: health.account != health::AccountState::Dead,

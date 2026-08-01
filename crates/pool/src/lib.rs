@@ -241,6 +241,8 @@ fn calib_window(
 #[derive(Clone, Debug)]
 pub struct Cap {
     pub email: String,
+    /// Safe subscription tier used to group like-for-like calibration evidence.
+    pub plan: String,
     pub calibrated: bool, // была ли хоть одна реальная калибровка (иначе цифры — прайор)
     pub util5h: f64,      // «живая» утилизация (заголовок + наш расход − rollover)
     pub util7d: f64,
@@ -1526,6 +1528,7 @@ impl Pool {
 
                 Cap {
                     email: s.email.clone(),
+                    plan: s.plan.clone(),
                     calibrated: l.calib_n > 0,
                     util5h: u5,
                     util7d: u7,

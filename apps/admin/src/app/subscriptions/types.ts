@@ -29,14 +29,23 @@ export interface SubsResponse {
 // GET /capacity — live ёмкость Claude-флота (ключуется по маскированному email)
 export interface CapacitySub {
   email?: string;
+  plan?: string;
   cooling?: boolean;
   calibrated?: boolean;
   util5h?: number;
   reset5h_in?: number;
   util7d?: number;
   reset7d_in?: number;
+  cap5h_nano?: string;
+  cap7d_nano?: string;
+  cap5h_usd?: number;
+  cap7d_usd?: number;
   rem5h_usd?: number;
   rem7d_usd?: number;
+  avail_1h_usd?: number;
+  avail_5h_usd?: number;
+  avail_1d_usd?: number;
+  avail_7d_usd?: number;
   routable?: boolean;
 }
 
@@ -87,6 +96,7 @@ export interface CodexRateLimit {
 
 export interface CodexHome {
   id?: string;
+  plan?: string;
   /** Маскированная подсказка аккаунта из control API; полный ChatGPT email не покидает runtime. */
   email?: string;
   auth_ok?: boolean;
@@ -166,7 +176,14 @@ export interface GeminiQuota {
 
 export interface GeminiProfileWindow {
   window_kind?: string;
+  window_minutes?: number;
   source?: string;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
   remaining_fraction?: number | null;
   remaining_usd?: number | null;
   cap_usd?: number | null;
@@ -181,6 +198,7 @@ export interface GeminiProfileWindow {
 
 export interface GeminiProfile {
   id?: string;
+  plan?: string;
   authenticated?: boolean;
   inflight?: number;
   spend_usd_total?: number;

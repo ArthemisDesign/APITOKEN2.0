@@ -1694,6 +1694,7 @@ fn routable_capacity_summary(caps: &[pool::Cap]) -> ([f64; 4], bool) {
 fn capacity_value(app: &AppState) -> serde_json::Value {
     let caps = app.pool.capacity();
     let round = |x: f64| (x * 100.0).round() / 100.0;
+    let nano = |x: f64| ((x.max(0.0) * 1e9).round() as i64).to_string();
     // Маскируем email подписки: панельному (read-only) ключу не отдаём реальные адреса пула — это
     // операционно чувствительно (реселлимые Claude-аккаунты; полный email помогает корреляции/бану).
     let mask_email = |e: &str| -> String {
@@ -1706,10 +1707,12 @@ fn capacity_value(app: &AppState) -> serde_json::Value {
         .map(|c| {
             json!({
                 "email": mask_email(&c.email),
+                "plan": c.plan,
                 "calibrated": c.calibrated,
                 "routable": c.routable,
                 "util5h": round(c.util5h), "util7d": round(c.util7d),
                 "reset5h_in": c.reset5h_in, "reset7d_in": c.reset7d_in,
+                "cap5h_nano": nano(c.cap5h_usd), "cap7d_nano": nano(c.cap7d_usd),
                 "cap5h_usd": round(c.cap5h_usd), "cap7d_usd": round(c.cap7d_usd),
                 "rem5h_usd": round(c.rem5h_usd), "rem7d_usd": round(c.rem7d_usd),
                 "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
@@ -2487,6 +2490,7 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
             json!({
                 "id": h.id,
                 "email": h.masked_email,
+                "plan": h.plan,
                 "process_live": h.process_live,
                 "auth_ok": h.auth_ok,
                 "account_state": h.account_state,
@@ -2668,6 +2672,7 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
         .map(|profile| {
             json!({
                 "id": profile.id,
+                "plan": profile.plan,
                 "authenticated": profile.authenticated,
                 "cooling_until": profile.cooling_until,
                 "inflight": profile.inflight,
@@ -2686,6 +2691,12 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
                     "used_fraction_units": window.used_fraction_units,
                     "remaining_fraction": window.remaining_fraction_units as f64 / 100_000_000.0,
                     "used_fraction": window.used_fraction_units as f64 / 100_000_000.0,
+                    "capacity_nano": window.capacity_nano.map(|value| value.to_string()),
+                    "remaining_nano": window.remaining_nano.map(|value| value.to_string()),
+                    "low_nano": window.low_nano.map(|value| value.to_string()),
+                    "high_nano": window.high_nano.map(|value| value.to_string()),
+                    "remaining_low_nano": window.remaining_low_nano.map(|value| value.to_string()),
+                    "remaining_high_nano": window.remaining_high_nano.map(|value| value.to_string()),
                     "cap_usd": round_opt(window.cap_usd),
                     "remaining_usd": round_opt(window.remaining_usd),
                     "low_usd": round_opt(window.low_usd),
@@ -2935,6 +2946,7 @@ mod tests {
             homes: vec![forward::codex::CodexHomeStatus {
                 id: "home-1".to_string(),
                 masked_email: "owne…".to_string(),
+                plan: "chatgpt_pro".to_string(),
                 process_live: true,
                 auth_ok: true,
                 account_state: "healthy",
@@ -3001,6 +3013,12 @@ mod tests {
                 data_age_seconds: 5,
                 remaining_fraction_units,
                 used_fraction_units: 100_000_000 - remaining_fraction_units,
+                capacity_nano: None,
+                remaining_nano: None,
+                low_nano: None,
+                high_nano: None,
+                remaining_low_nano: None,
+                remaining_high_nano: None,
                 cap_usd: None,
                 remaining_usd: None,
                 low_usd: None,
@@ -3017,6 +3035,7 @@ mod tests {
         forward::GeminiOperationalStatus {
             profiles: vec![forward::GeminiProfileStatus {
                 id: "profile-opaque".to_string(),
+                plan: "google_ai_pro".to_string(),
                 authenticated: true,
                 cooling_until: 0,
                 inflight: 0,
@@ -3043,6 +3062,7 @@ mod tests {
         let mut status = unknown_codex_status();
         let value = codex_subs_value(&status, 105);
         assert_eq!(value["homes"][0]["email"], "owne…");
+        assert_eq!(value["homes"][0]["plan"], "chatgpt_pro");
         assert_eq!(value["homes"][0]["limit_reached"], false);
 
         // A home the gateway refuses to route to must never read as active on an operator surface.
@@ -3173,6 +3193,7 @@ mod tests {
     fn gemini_subscription_contract_keeps_five_hour_and_weekly_unknown_independently() {
         let mut status = unknown_gemini_status();
         let profiles = gemini_profile_values(&status);
+        assert_eq!(profiles[0]["plan"], "google_ai_pro");
         assert_eq!(profiles[0]["windows"][0]["bucket_id"], "gemini-5h");
         assert_eq!(profiles[0]["windows"][1]["bucket_id"], "gemini-weekly");
         assert!(profiles[0]["windows"][0]["cap_usd"].is_null());
@@ -3193,6 +3214,12 @@ mod tests {
         five_hour.high_usd = Some(81.204166575);
         five_hour.remaining_low_usd = Some(15.000183118);
         five_hour.remaining_high_usd = Some(60.903124931);
+        five_hour.capacity_nano = Some(36_515_628_714);
+        five_hour.remaining_nano = Some(27_386_721_535);
+        five_hour.low_nano = Some(20_000_244_158);
+        five_hour.high_nano = Some(81_204_166_575);
+        five_hour.remaining_low_nano = Some(15_000_183_118);
+        five_hour.remaining_high_nano = Some(60_903_124_931);
         five_hour.observed_spend_nano = 61_448_500;
         five_hour.observed_fraction_units = 168_280;
         five_hour.source = "workload_blend";
@@ -3200,6 +3227,7 @@ mod tests {
         five_hour.samples = 2;
         let profiles = gemini_profile_values(&status);
         assert_eq!(profiles[0]["windows"][0]["cap_usd"], 36.515629);
+        assert_eq!(profiles[0]["windows"][0]["capacity_nano"], "36515628714");
         assert_eq!(profiles[0]["windows"][0]["remaining_usd"], 27.386722);
         assert_eq!(profiles[0]["windows"][0]["low_usd"], 20.000244);
         assert_eq!(profiles[0]["windows"][0]["high_usd"], 81.204167);
@@ -3640,6 +3668,7 @@ mod tests {
     fn capacity(email: &str, available: f64, routable: bool, calibrated: bool) -> pool::Cap {
         pool::Cap {
             email: email.to_string(),
+            plan: "max20".to_string(),
             calibrated,
             util5h: 0.0,
             util7d: 0.0,

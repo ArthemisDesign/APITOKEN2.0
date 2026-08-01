@@ -43,6 +43,8 @@ fn quota_rank(remaining_fraction: Option<f64>) -> i64 {
 #[derive(Clone, Debug)]
 pub struct GeminiProfileStatus {
     pub id: String,
+    /// Reviewed paid-plan identity from the sealed credential; contains no Google identity.
+    pub plan: String,
     pub authenticated: bool,
     pub cooling_until: i64,
     pub inflight: usize,
@@ -66,6 +68,12 @@ pub struct GeminiWindowCapacityReport {
     pub data_age_seconds: i64,
     pub remaining_fraction_units: i64,
     pub used_fraction_units: i64,
+    pub capacity_nano: Option<i64>,
+    pub remaining_nano: Option<i64>,
+    pub low_nano: Option<i64>,
+    pub high_nano: Option<i64>,
+    pub remaining_low_nano: Option<i64>,
+    pub remaining_high_nano: Option<i64>,
     pub cap_usd: Option<f64>,
     pub remaining_usd: Option<f64>,
     pub low_usd: Option<f64>,
@@ -133,6 +141,7 @@ pub(crate) struct GeminiProfile {
     source: GeminiProfileSpec,
     fingerprint: [u8; 32],
     id: String,
+    plan: String,
     oauth_kind: OAuthKind,
     credential: tokio::sync::Mutex<GeminiCredential>,
     transport: ProfileTransport,
@@ -188,6 +197,7 @@ impl GeminiProfile {
     ) -> anyhow::Result<Self> {
         gemini_credential::validate_profile_id(&loaded.source.id)?;
         let oauth_kind = loaded.credential.oauth_kind()?;
+        let plan = loaded.credential.plan.clone();
         if loaded.credential.proxy.trim().is_empty() && cfg.upstream.starts_with("https://") {
             bail!("Gemini production profile requires a dedicated proxy");
         }
@@ -198,6 +208,7 @@ impl GeminiProfile {
             ProfileTransport::new(cfg, proxy).context("build Gemini OAuth HTTP transport")?;
         Ok(Self {
             id: loaded.source.id.clone(),
+            plan,
             source: loaded.source,
             fingerprint: loaded.fingerprint,
             oauth_kind,
@@ -743,6 +754,14 @@ impl GeminiProfile {
                     .unwrap_or(summary.updated_at);
                 let nano_to_usd = |nano: i64| nano as f64 / 1e9;
                 let used = FRACTION_SCALE.saturating_sub(bucket.remaining_fraction_units);
+                let capacity_nano = estimate.map(|value| value.capacity_nano);
+                let remaining_nano = calibration.and_then(|value| value.remaining_nano(used));
+                let low_nano = estimate.and_then(|value| value.low_nano);
+                let high_nano = estimate.and_then(|value| value.high_nano);
+                let remaining_low_nano =
+                    calibration.and_then(|value| value.remaining_low_nano(used));
+                let remaining_high_nano =
+                    calibration.and_then(|value| value.remaining_high_nano(used));
                 GeminiWindowCapacityReport {
                     bucket_id: bucket.contract.id,
                     window_kind: bucket.contract.kind,
@@ -752,18 +771,18 @@ impl GeminiProfile {
                     data_age_seconds: now.saturating_sub(observed_at).max(0),
                     remaining_fraction_units: bucket.remaining_fraction_units,
                     used_fraction_units: used,
-                    cap_usd: estimate.map(|value| nano_to_usd(value.capacity_nano)),
-                    remaining_usd: calibration
-                        .and_then(|value| value.remaining_nano(used))
-                        .map(nano_to_usd),
-                    low_usd: estimate.and_then(|value| value.low_nano).map(nano_to_usd),
-                    high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
-                    remaining_low_usd: calibration
-                        .and_then(|value| value.remaining_low_nano(used))
-                        .map(nano_to_usd),
-                    remaining_high_usd: calibration
-                        .and_then(|value| value.remaining_high_nano(used))
-                        .map(nano_to_usd),
+                    capacity_nano,
+                    remaining_nano,
+                    low_nano,
+                    high_nano,
+                    remaining_low_nano,
+                    remaining_high_nano,
+                    cap_usd: capacity_nano.map(nano_to_usd),
+                    remaining_usd: remaining_nano.map(nano_to_usd),
+                    low_usd: low_nano.map(nano_to_usd),
+                    high_usd: high_nano.map(nano_to_usd),
+                    remaining_low_usd: remaining_low_nano.map(nano_to_usd),
+                    remaining_high_usd: remaining_high_nano.map(nano_to_usd),
                     observed_spend_nano: calibration
                         .map_or(0, |value| value.row().observed_spend_nano),
                     observed_fraction_units: calibration
@@ -805,6 +824,7 @@ impl GeminiProfile {
             .collect();
         GeminiProfileStatus {
             id: self.id.clone(),
+            plan: self.plan.clone(),
             authenticated: self.authenticated.load(Ordering::Acquire),
             cooling_until: self.cooling_until.load(Ordering::Acquire),
             inflight: self.inflight.load(Ordering::Acquire),
