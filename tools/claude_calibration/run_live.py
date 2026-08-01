@@ -142,6 +142,20 @@ def as_int(value: Any, field: str) -> int:
     return parsed
 
 
+def require_healthy_delivery(payload: dict[str, Any], require_empty: bool) -> None:
+    delivery = payload.get("calibration_delivery")
+    if not isinstance(delivery, dict):
+        raise CalibrationError("capacity response has no calibration_delivery authority")
+    pending = as_int(delivery.get("pending_events"), "calibration_delivery.pending_events")
+    dropped = as_int(delivery.get("dropped_events"), "calibration_delivery.dropped_events")
+    if dropped:
+        raise CalibrationError(f"calibration delivery dropped {dropped} events")
+    if delivery.get("persistence_ok") is not True:
+        raise CalibrationError("calibration persistence is degraded")
+    if require_empty and pending:
+        raise CalibrationError(f"calibration delivery still has {pending} pending events")
+
+
 def row_key(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(row.get(field, "")) for field in ROW_ID_FIELDS)
 
@@ -572,6 +586,7 @@ class Runner:
     ) -> tuple[str, dict[str, Any]]:
         self.wait_profile_delay(expected_profile)
         before_payload = self.capacity.read()
+        require_healthy_delivery(before_payload, require_empty=True)
         before_states = profile_state(before_payload)
         before_rows = evidence_rows(before_payload)
         if expected_profile:
@@ -608,6 +623,10 @@ class Runner:
         after_payload = None
         while time.monotonic() < deadline:
             after_payload = self.capacity.read()
+            # The just-finished turn may briefly be pending, but any writer failure or dropped
+            # event is terminal immediately. Do not burn the rest of the evidence timeout while
+            # the durable FIFO already reports that exact attribution cannot advance.
+            require_healthy_delivery(after_payload, require_empty=False)
             match = attribute_exact_turn(
                 before_rows, evidence_rows(after_payload), usage, served_model, leg.tier
             )
@@ -618,6 +637,7 @@ class Runner:
             raise CalibrationError(
                 f"{leg.name}: exact backend evidence did not become attributable within timeout"
             )
+        require_healthy_delivery(after_payload, require_empty=True)
         profile, delta, _ = match
         if expected_profile and profile != expected_profile:
             raise CalibrationError(
@@ -803,12 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             "routable profiles still have no authoritative paid plan: "
             + ", ".join(unknown_plan)
         )
-    if baseline.get("calibration_delivery", {}).get("pending_events") not in (0, "0"):
-        raise CalibrationError("calibration delivery has pending events before the run")
-    if baseline.get("calibration_delivery", {}).get("dropped_events") not in (0, "0"):
-        raise CalibrationError("calibration delivery has dropped events before the run")
-    if baseline.get("calibration_delivery", {}).get("persistence_ok") is not True:
-        raise CalibrationError("calibration persistence is not healthy")
+    require_healthy_delivery(baseline, require_empty=True)
 
     catalog, ceiling = rate_catalog(baseline)
     models = args.models or discover_models(api)

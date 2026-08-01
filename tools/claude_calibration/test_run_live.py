@@ -13,6 +13,7 @@ from tools.claude_calibration.run_live import (
     rate_catalog,
     rates_for_model,
     request_upper_bound_nano,
+    require_healthy_delivery,
     row_deltas,
     usage_from_response,
     usd_to_nano,
@@ -159,6 +160,40 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(usd_to_nano("0.000000001"), 1)
         with self.assertRaises(CalibrationError):
             usd_to_nano("1e2")
+
+    def test_degraded_delivery_stops_before_another_paid_turn(self):
+        require_healthy_delivery(
+            {
+                "calibration_delivery": {
+                    "pending_events": 0,
+                    "dropped_events": 0,
+                    "persistence_ok": True,
+                }
+            },
+            require_empty=True,
+        )
+        with self.assertRaisesRegex(CalibrationError, "persistence is degraded"):
+            require_healthy_delivery(
+                {
+                    "calibration_delivery": {
+                        "pending_events": 2,
+                        "dropped_events": 0,
+                        "persistence_ok": False,
+                    }
+                },
+                require_empty=False,
+            )
+        with self.assertRaisesRegex(CalibrationError, "pending events"):
+            require_healthy_delivery(
+                {
+                    "calibration_delivery": {
+                        "pending_events": 1,
+                        "dropped_events": 0,
+                        "persistence_ok": True,
+                    }
+                },
+                require_empty=True,
+            )
 
 
 class CatalogueAndPlanTests(unittest.TestCase):

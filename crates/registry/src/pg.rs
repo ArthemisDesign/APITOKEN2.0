@@ -83,6 +83,20 @@ fn pg_anthropic_calibration_row(row: &Row) -> AnthropicCalibrationRow {
     }
 }
 
+// Keep the initial version placeholder explicitly typed. PostgreSQL otherwise resolves `$22 + 1`
+// through the untyped integer literal as int4 before assignment to the bigint column, and the
+// postgres crate correctly refuses to serialize the Rust i64 version into that inferred parameter.
+const ANTHROPIC_CALIBRATION_INSERT_SQL: &str = "INSERT INTO anthropic_window_calibrations(\
+       subject_id,plan,window_kind,window_duration_mins,resets_at,\
+       anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
+       used_fraction_units,measurement_resolution_fraction_units,observed_at,\
+       observed_fraction_units,observed_spend_nano,samples,unattributed_fraction_units,\
+       current_capacity_nano,current_low_nano,current_high_nano,\
+       current_confidence_bp,last_measured_at,estimator_version,version,updated_ts) \
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
+            $18,$19,$20,$21,($22::bigint)+1,$23) \
+     ON CONFLICT(subject_id,plan,window_kind) DO NOTHING";
+
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
 const MIGRATION_0003: &str = include_str!("../migrations_pg/0003_subscription_auth_health.sql");
@@ -4050,19 +4064,7 @@ impl PgStore {
             &state.updated_ts,
         ];
         let changed = if state.version == 0 {
-            tx.execute(
-                "INSERT INTO anthropic_window_calibrations(\
-                   subject_id,plan,window_kind,window_duration_mins,resets_at,\
-                   anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
-                   used_fraction_units,measurement_resolution_fraction_units,observed_at,\
-                   observed_fraction_units,observed_spend_nano,samples,unattributed_fraction_units,\
-                   current_capacity_nano,current_low_nano,current_high_nano,\
-                   current_confidence_bp,last_measured_at,estimator_version,version,updated_ts) \
-                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
-                        $18,$19,$20,$21,$22+1,$23) \
-                 ON CONFLICT(subject_id,plan,window_kind) DO NOTHING",
-                values,
-            )?
+            tx.execute(ANTHROPIC_CALIBRATION_INSERT_SQL, values)?
         } else {
             tx.execute(
                 "UPDATE anthropic_window_calibrations SET \
@@ -7329,6 +7331,14 @@ mod tests {
         assert_eq!(versions, (1..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>());
     }
 
+    #[test]
+    fn anthropic_initial_calibration_version_is_bound_as_bigint() {
+        assert!(
+            ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
+            "an untyped `$22 + 1` makes PostgreSQL infer int4 and reject the Rust i64 version",
+        );
+    }
+
     /// Run with an isolated database, for example:
     /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry pg::tests::stage2_fault_matrix`
     #[test]
@@ -7397,6 +7407,58 @@ mod tests {
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )
             .unwrap();
+
+        let anthropic_state = AnthropicCalibrationRow {
+            subject_id: "stage2-anthropic-subject".into(),
+            plan: "max20".into(),
+            window_kind: "5h".into(),
+            window_duration_mins: 300,
+            resets_at: 2_000_000_000,
+            anchor_used_fraction_units: 10_000_000,
+            anchor_resolution_fraction_units: 100_000,
+            anchor_spend_nano: 0,
+            used_fraction_units: 10_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: 100,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 4,
+            version: 0,
+            updated_ts: 100,
+        };
+        let anthropic_observation = AnthropicWindowObservation {
+            subject_id: anthropic_state.subject_id.clone(),
+            plan: anthropic_state.plan.clone(),
+            window_kind: anthropic_state.window_kind.clone(),
+            window_duration_mins: anthropic_state.window_duration_mins,
+            resets_at: anthropic_state.resets_at,
+            observed_at: anthropic_state.observed_at,
+            used_fraction_units: anthropic_state.used_fraction_units,
+            measurement_resolution_fraction_units: anthropic_state
+                .measurement_resolution_fraction_units,
+            gateway_spend_nano: 0,
+            observation_source: "stage2-test".into(),
+            source_request_id: None,
+        };
+        assert_eq!(
+            pg.save_anthropic_calibration(&anthropic_state, &anthropic_observation)
+                .unwrap(),
+            Some(1),
+        );
+        assert_eq!(
+            pg.load_anthropic_calibration("stage2-anthropic-subject", "max20", "5h")
+                .unwrap()
+                .unwrap()
+                .version,
+            1,
+        );
 
         assert_eq!(
             pg.credit_codex_home_spend("stage2-codex-home", 40_000_000_000, 100)

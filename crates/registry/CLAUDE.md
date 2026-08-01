@@ -92,6 +92,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   Observation immutable-keyed по subject/plan/window/reset/time/source; 5h и 7d никогда не делят
   anchor/history. Registry хранит и валидирует только integer evidence/CAS primitives; estimator
   replay, reset jitter, one-snapshot lag, plan pooling и delivery retry принадлежат `forward`/`server`.
+  PostgreSQL initial CAS insert обязан явно типизировать version placeholder как `bigint`: выражение
+  с untyped integer literal иначе выводит параметр как `int4` и блокирует durable FIFO до recovery.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed
