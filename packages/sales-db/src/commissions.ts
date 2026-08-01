@@ -1,5 +1,6 @@
 import type { SalesDatabase } from "./client.js";
 import type { PartnerStatus } from "./auth.js";
+import type { PoolClient } from "pg";
 
 export const MAX_COMMISSION_LEVELS = 10;
 
@@ -47,26 +48,171 @@ export function computeCommissionChain(
 
 export type SpendCommissionOutcome = "recorded" | "duplicate" | "skipped" | "buffered";
 
+export interface ReferredSpendAttribution {
+  providerId: string;
+  accountClass: "b2c";
+  pricingMode: "track";
+  paidFundedNano: bigint;
+  commissionEligible: true;
+  snapshotDigest: string;
+}
+
+export class ReferredSpendAttributionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferredSpendAttributionError";
+  }
+}
+
+export class ReferralEventReplayConflictError extends Error {
+  constructor(kind: "spend" | "deposit", commerceRef: string) {
+    super(`${kind} referral event ${commerceRef} conflicts with its immutable replay`);
+    this.name = "ReferralEventReplayConflictError";
+  }
+}
+
+interface StoredSpendAttribution {
+  provider_id: string | null;
+  account_class: string | null;
+  pricing_mode: string | null;
+  paid_funded_nano: string | null;
+  commission_eligible: boolean | null;
+  snapshot_digest: string | null;
+}
+
+function assertValidSpendAttribution(
+  amountNano: bigint,
+  attribution: ReferredSpendAttribution | null,
+): void {
+  if (attribution === null) return;
+  if (
+    typeof attribution.providerId !== "string"
+    || attribution.providerId.length === 0
+    || attribution.accountClass !== "b2c"
+    || attribution.pricingMode !== "track"
+    || typeof attribution.paidFundedNano !== "bigint"
+    || attribution.paidFundedNano <= 0n
+    || attribution.paidFundedNano !== amountNano
+    || attribution.commissionEligible !== true
+    || typeof attribution.snapshotDigest !== "string"
+    || attribution.snapshotDigest.length === 0
+  ) {
+    throw new ReferredSpendAttributionError(
+      "attributed commission requires complete B2C track identity and exact positive paid funding",
+    );
+  }
+}
+
+function storedAttributionMatches(
+  stored: StoredSpendAttribution,
+  attribution: ReferredSpendAttribution | null,
+): boolean {
+  // An older producer/consumer may replay an event after a newer replay enriched its previously
+  // null attribution. Never downgrade the stored authority, but keep that replay idempotent.
+  if (attribution === null) return true;
+  return stored.provider_id === attribution.providerId
+    && stored.account_class === attribution.accountClass
+    && stored.pricing_mode === attribution.pricingMode
+    && stored.paid_funded_nano === attribution.paidFundedNano.toString()
+    && stored.commission_eligible === attribution.commissionEligible
+    && stored.snapshot_digest === attribution.snapshotDigest;
+}
+
+function storedAttributionIsNull(stored: StoredSpendAttribution): boolean {
+  return stored.provider_id === null
+    && stored.account_class === null
+    && stored.pricing_mode === null
+    && stored.paid_funded_nano === null
+    && stored.commission_eligible === null
+    && stored.snapshot_digest === null;
+}
+
+function attributionSqlValues(attribution: ReferredSpendAttribution | null): Array<string | boolean | null> {
+  return attribution === null
+    ? [null, null, null, null, null, null]
+    : [
+        attribution.providerId,
+        attribution.accountClass,
+        attribution.pricingMode,
+        attribution.paidFundedNano.toString(),
+        attribution.commissionEligible,
+        attribution.snapshotDigest,
+      ];
+}
+
 // Буферизует событие, пришедшее раньше атрибуции пользователя, чтобы reconcile проиграл его позже.
 // Идемпотентно по (kind, commerce_ref). Использует уже открытую транзакцию клиента.
 async function bufferPendingReferralEvent(
-  client: import("pg").PoolClient,
+  client: PoolClient,
   kind: "spend" | "deposit",
   commerceRef: string,
   commerceUserId: string,
   amountNano: bigint,
   occurredAt: Date,
+  attribution: ReferredSpendAttribution | null,
 ): Promise<void> {
-  await client.query(`
-    INSERT INTO pending_referral_events (kind, commerce_ref, commerce_user_id, amount_nano, occurred_at)
-    VALUES ($1, $2, $3, $4, $5)
+  const attributionValues = attributionSqlValues(attribution);
+  const inserted = await client.query<{ id: string }>(`
+    INSERT INTO pending_referral_events (
+      kind, commerce_ref, commerce_user_id, amount_nano, occurred_at,
+      provider_id, account_class, pricing_mode, paid_funded_nano,
+      commission_eligible, snapshot_digest
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT (kind, commerce_ref) DO NOTHING
-  `, [kind, commerceRef, commerceUserId, amountNano.toString(), occurredAt]);
+    RETURNING id
+  `, [kind, commerceRef, commerceUserId, amountNano.toString(), occurredAt, ...attributionValues]);
+  if (inserted.rows[0]) return;
+
+  const existing = await client.query<StoredSpendAttribution & {
+    id: string;
+    commerce_user_id: string;
+    amount_nano: string;
+    occurred_at: Date;
+  }>(`
+    SELECT id, commerce_user_id, amount_nano::text AS amount_nano, occurred_at,
+           provider_id, account_class, pricing_mode, paid_funded_nano::text AS paid_funded_nano,
+           commission_eligible, snapshot_digest
+    FROM pending_referral_events
+    WHERE kind = $1 AND commerce_ref = $2
+    FOR UPDATE
+  `, [kind, commerceRef]);
+  let stored = existing.rows[0];
+  if (!stored) throw new ReferralEventReplayConflictError(kind, commerceRef);
+
+  const sameBase = stored.commerce_user_id === commerceUserId
+    && stored.amount_nano === amountNano.toString()
+    && stored.occurred_at.getTime() === occurredAt.getTime();
+  if (!sameBase) throw new ReferralEventReplayConflictError(kind, commerceRef);
+
+  // Rolling deployment: a retry may be the first copy that carries immutable attribution. Enrich
+  // an all-null legacy buffer exactly once; attributed rows can never be overwritten.
+  if (attribution !== null && storedAttributionIsNull(stored)) {
+    const upgraded = await client.query<StoredSpendAttribution & {
+      id: string;
+      commerce_user_id: string;
+      amount_nano: string;
+      occurred_at: Date;
+    }>(`
+      UPDATE pending_referral_events
+      SET provider_id = $2, account_class = $3, pricing_mode = $4, paid_funded_nano = $5,
+          commission_eligible = $6, snapshot_digest = $7
+      WHERE id = $1 AND provider_id IS NULL
+      RETURNING id, commerce_user_id, amount_nano::text AS amount_nano, occurred_at,
+                provider_id, account_class, pricing_mode,
+                paid_funded_nano::text AS paid_funded_nano,
+                commission_eligible, snapshot_digest
+    `, [stored.id, ...attributionSqlValues(attribution)]);
+    stored = upgraded.rows[0] ?? stored;
+  }
+  if (!storedAttributionMatches(stored, attribution)) {
+    throw new ReferralEventReplayConflictError(kind, commerceRef);
+  }
 }
 
 // Собирает цепочку партнёров (прямой реферер → родитель → …) для расчёта комиссии.
 async function loadCommissionChain(
-  client: import("pg").PoolClient,
+  client: PoolClient,
   directPartnerId: string,
 ): Promise<CommissionChainPartner[]> {
   const chain: CommissionChainPartner[] = [];
@@ -112,7 +258,15 @@ export async function recordReferredDeposit(database: SalesDatabase, input: {
     const directPartnerId = referred.rows[0]?.partner_id;
     if (!directPartnerId) {
       // Депозит пришёл раньше атрибуции юзера — буферизуем, reconcile проиграет после атрибуции.
-      await bufferPendingReferralEvent(client, "deposit", input.commercePaymentId, input.commerceUserId, input.amountNano, input.paidAt);
+      await bufferPendingReferralEvent(
+        client,
+        "deposit",
+        input.commercePaymentId,
+        input.commerceUserId,
+        input.amountNano,
+        input.paidAt,
+        null,
+      );
       await client.query("COMMIT");
       return "buffered";
     }
@@ -140,18 +294,20 @@ export async function recordReferredDeposit(database: SalesDatabase, input: {
 }
 
 /**
- * Списание рефа (spend за API), где `amountNano` — уже РЕАЛЬНО-ОПЛАЧЕННАЯ часть списания
- * (real_funded), посчитанная коммерцией по принципу «бесплатное тратится первым»: часть из
- * $4-бонуса/промо в неё не входит и комиссию не создаёт. Сумма уже учитывает актуальную скидку/тир
- * клиента (charge = прайс × текущий мультипликатор). Награда считается по цепочке. Идемпотентно
- * по commerce_event_id.
+ * Списание рефа (spend за API). Для новых policy_v1 событий `amountNano` обязан точно совпадать
+ * с immutable paid_funded_nano B2C track attribution; это единственная комиссия-authority.
+ * `attribution=null` остаётся временным legacy free-first путём для старых ledger rows.
+ * Награда считается по цепочке и идемпотентна по commerce_event_id.
  */
 export async function recordReferredSpend(database: SalesDatabase, input: {
   commerceEventId: bigint;
   commerceUserId: string;
-  amountNano: bigint; // real_funded: часть списания, покрытая реальными деньгами
+  amountNano: bigint;
+  attribution?: ReferredSpendAttribution | null;
   occurredAt: Date;
 }): Promise<SpendCommissionOutcome> {
+  const attribution = input.attribution ?? null;
+  assertValidSpendAttribution(input.amountNano, attribution);
   if (input.amountNano <= 0n) return "skipped";
   const client = await database.pool.connect();
   try {
@@ -163,22 +319,83 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
     const directPartnerId = referred.rows[0]?.partner_id;
     if (!directPartnerId) {
       // Спенд пришёл раньше атрибуции юзера — буферизуем, reconcile проиграет после атрибуции.
-      await bufferPendingReferralEvent(client, "spend", input.commerceEventId.toString(), input.commerceUserId, input.amountNano, input.occurredAt);
+      await bufferPendingReferralEvent(
+        client,
+        "spend",
+        input.commerceEventId.toString(),
+        input.commerceUserId,
+        input.amountNano,
+        input.occurredAt,
+        attribution,
+      );
       await client.query("COMMIT");
       return "buffered";
     }
+    const attributionValues = attributionSqlValues(attribution);
     const inserted = await client.query<{ id: string }>(`
-      INSERT INTO partner_usage_events (commerce_event_id, commerce_user_id, partner_id, amount_nano, occurred_at)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO partner_usage_events (
+        commerce_event_id, commerce_user_id, partner_id, amount_nano,
+        provider_id, account_class, pricing_mode, paid_funded_nano,
+        commission_eligible, snapshot_digest, occurred_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       ON CONFLICT (commerce_event_id) DO NOTHING
       RETURNING id
     `, [
       input.commerceEventId.toString(), input.commerceUserId, directPartnerId,
-      input.amountNano.toString(), input.occurredAt,
+      input.amountNano.toString(), ...attributionValues, input.occurredAt,
     ]);
-    const usageEventId = inserted.rows[0]?.id;
+    let usageEventId = inserted.rows[0]?.id;
     if (!usageEventId) {
-      await client.query("ROLLBACK");
+      const existing = await client.query<StoredSpendAttribution & {
+        id: string;
+        commerce_user_id: string;
+        partner_id: string;
+        amount_nano: string;
+        occurred_at: Date;
+      }>(`
+        SELECT id, commerce_user_id, partner_id, amount_nano::text AS amount_nano, occurred_at,
+               provider_id, account_class, pricing_mode,
+               paid_funded_nano::text AS paid_funded_nano,
+               commission_eligible, snapshot_digest
+        FROM partner_usage_events
+        WHERE commerce_event_id = $1
+        FOR UPDATE
+      `, [input.commerceEventId.toString()]);
+      let stored = existing.rows[0];
+      const sameBase = stored
+        && stored.commerce_user_id === input.commerceUserId
+        && stored.partner_id === directPartnerId
+        && stored.amount_nano === input.amountNano.toString()
+        && stored.occurred_at.getTime() === input.occurredAt.getTime();
+      if (!stored || !sameBase) {
+        throw new ReferralEventReplayConflictError("spend", input.commerceEventId.toString());
+      }
+
+      // Preserve a stronger replay without allowing attributed evidence to be changed later.
+      if (attribution !== null && storedAttributionIsNull(stored)) {
+        const upgraded = await client.query<StoredSpendAttribution & {
+          id: string;
+          commerce_user_id: string;
+          partner_id: string;
+          amount_nano: string;
+          occurred_at: Date;
+        }>(`
+          UPDATE partner_usage_events
+          SET provider_id = $2, account_class = $3, pricing_mode = $4, paid_funded_nano = $5,
+              commission_eligible = $6, snapshot_digest = $7
+          WHERE id = $1 AND provider_id IS NULL
+          RETURNING id, commerce_user_id, partner_id, amount_nano::text AS amount_nano, occurred_at,
+                    provider_id, account_class, pricing_mode,
+                    paid_funded_nano::text AS paid_funded_nano,
+                    commission_eligible, snapshot_digest
+        `, [stored.id, ...attributionSqlValues(attribution)]);
+        stored = upgraded.rows[0] ?? stored;
+      }
+      if (!storedAttributionMatches(stored, attribution)) {
+        throw new ReferralEventReplayConflictError("spend", input.commerceEventId.toString());
+      }
+      await client.query("COMMIT");
       return "duplicate";
     }
     const chain = await loadCommissionChain(client, directPartnerId);
@@ -206,10 +423,19 @@ export async function recordReferredSpend(database: SalesDatabase, input: {
  * атрибутирован — гонка) оставляется на следующий тик. Возвращает число обработанных строк.
  */
 export async function reconcilePendingReferralEvents(database: SalesDatabase, limit = 200): Promise<number> {
-  const pending = await database.pool.query<{
-    id: string; kind: "spend" | "deposit"; commerce_ref: string; commerce_user_id: string; amount_nano: string; occurred_at: Date;
+  const pending = await database.pool.query<StoredSpendAttribution & {
+    id: string;
+    kind: "spend" | "deposit";
+    commerce_ref: string;
+    commerce_user_id: string;
+    amount_nano: string;
+    occurred_at: Date;
   }>(`
-    SELECT pe.id, pe.kind, pe.commerce_ref, pe.commerce_user_id, pe.amount_nano::text AS amount_nano, pe.occurred_at
+    SELECT pe.id, pe.kind, pe.commerce_ref, pe.commerce_user_id,
+           pe.amount_nano::text AS amount_nano, pe.occurred_at,
+           pe.provider_id, pe.account_class, pe.pricing_mode,
+           pe.paid_funded_nano::text AS paid_funded_nano,
+           pe.commission_eligible, pe.snapshot_digest
     FROM pending_referral_events pe
     JOIN referred_users ru ON ru.commerce_user_id = pe.commerce_user_id
     ORDER BY pe.id
@@ -218,19 +444,43 @@ export async function reconcilePendingReferralEvents(database: SalesDatabase, li
 
   let processed = 0;
   for (const row of pending.rows) {
-    const outcome = row.kind === "spend"
-      ? await recordReferredSpend(database, {
+    let outcome: SpendCommissionOutcome;
+    if (row.kind === "spend") {
+      const amountNano = BigInt(row.amount_nano);
+      let attribution: ReferredSpendAttribution | null = null;
+      if (!storedAttributionIsNull(row)) {
+        if (
+          row.provider_id === null
+          || row.account_class !== "b2c"
+          || row.pricing_mode !== "track"
+          || row.paid_funded_nano === null
+          || row.commission_eligible !== true
+          || row.snapshot_digest === null
+        ) throw new ReferredSpendAttributionError("buffered usage attribution is incomplete");
+        attribution = {
+          providerId: row.provider_id,
+          accountClass: row.account_class,
+          pricingMode: row.pricing_mode,
+          paidFundedNano: BigInt(row.paid_funded_nano),
+          commissionEligible: row.commission_eligible,
+          snapshotDigest: row.snapshot_digest,
+        };
+      }
+      outcome = await recordReferredSpend(database, {
           commerceEventId: BigInt(row.commerce_ref),
           commerceUserId: row.commerce_user_id,
-          amountNano: BigInt(row.amount_nano),
+          amountNano,
+          attribution,
           occurredAt: row.occurred_at,
-        })
-      : await recordReferredDeposit(database, {
+        });
+    } else {
+      outcome = await recordReferredDeposit(database, {
           commercePaymentId: row.commerce_ref,
           commerceUserId: row.commerce_user_id,
           amountNano: BigInt(row.amount_nano),
           paidAt: row.occurred_at,
         });
+    }
     // «buffered» = юзер снова оказался неатрибутирован (крайне редкая гонка) — не удаляем, повторим позже.
     if (outcome !== "buffered") {
       await database.pool.query("DELETE FROM pending_referral_events WHERE id = $1", [row.id]);

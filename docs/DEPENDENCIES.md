@@ -33,7 +33,7 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`) + POST `referral-discount` / `referral-profiles` | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`); usage несёт all-null legacy либо exact B2C track paid-funding authority + POST `referral-discount` / `referral-profiles` | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
 | `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem`, POST `partners/referral-discount`; GET `partners/resolve` жив, но сейчас никем не вызывается (claim через POST `referral-discount` заменил пару resolve+consume) | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
 
 Типы фида продублированы локальными zod-схемами на обеих сторонах; в `packages/contracts`

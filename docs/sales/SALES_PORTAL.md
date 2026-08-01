@@ -54,12 +54,15 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   страницы (строки идут по возрастанию `id`).
 - `GET /v1/internal/sales/usage-events?after_id&limit` (дефолт 1000, макс 2000) — из
   `pricing_usage_events`; курсор — колонка `feed_seq bigserial` (миграция 0012). Ответ
-  `{items:[{id,userId,amountNano,occurredAt}], nextCursor}`. `amountNano` = `real_funded`:
-  реально-оплаченная часть списания (бесплатная вычтена по принципу «бесплатное тратится
-  первым»), комиссия считается только с неё. Фид отдаёт **только атрибутированных** юзеров
-  (join с `referral_attributions` на стороне commerce): расход обычных клиентов не копится в
-  буфере sales, а `nextCursor` движется по watermark страницы, чтобы отфильтрованный хвост не
-  пересканировался вечно.
+  `{items:[{id,userId,amountNano,providerId,accountClass,pricingMode,paidFundedNano,
+  commissionEligible,snapshotDigest,occurredAt}], nextCursor}`. Для новой immutable attribution
+  фид допускает только schema v1 `policy_v1`, `accountClass=b2c`, `pricingMode=track`,
+  `commissionEligible=true` и положительный `paidFundedNano`; `amountNano` точно равен этой paid
+  части. Static, B2B/service, неподдержанная schema, zero-paid и расход неатрибутированного юзера
+  не создают item. Исторические строки без attribution временно остаются all-null и используют
+  legacy `real_funded` free-first projection. Лимит применяется к исходным строкам до фильтрации,
+  поэтому `nextCursor` движется по watermark всей страницы, включая static/service/unreferred
+  хвост, и он не пересканируется бесконечно.
 - `GET /v1/internal/sales/topups?after_id&limit` (дефолт 500, макс 1000) — оплаченные
   `payments`; курсор — микросекунды epoch от `paid_at` (не `feed_seq`: оплата наступает позже
   insert, и просроченный `feed_seq` выпал бы из курсора навсегда). Тоже фильтруется по
@@ -88,8 +91,13 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   скидочной ссылки (победитель получает floor через `POST referral-discount` — либо впервые,
   либо как идемпотентный backfill, если синхронное применение при регистрации упало);
   топапы → `referred_topups` (только история/аналитика, комиссий не создают); usage-события →
-  комиссии (идемпотентны по `commerce_event_id`); события, пришедшие раньше атрибуции их
-  юзера, буферизуются в `pending_referral_events` и догоняются replay. 404 фида (сторона
+  комиссии (идемпотентны по `commerce_event_id`). Новый attributed payload принимается только в
+  полной B2C track форме, а его exact paid basis и immutable поля атомарно сохраняются в
+  `partner_usage_events`; частичный/ineligible payload останавливает страницу до cursor advance.
+  События, пришедшие раньше атрибуции их юзера, буферизуются в `pending_referral_events` вместе с
+  той же authority и догоняются replay без потери полей. Точный повтор идемпотентен, all-null row
+  можно один раз обогатить attribution при rolling retry, а конфликтующий immutable replay
+  отклоняется. 404 фида (сторона
   commerce ещё не задеплоена) — не ошибка, повтор на следующем тике; курсор продвигается
   только по успешно обработанным строкам (at-least-once).
 - `commerce.service.ts` — `referralProfiles` для витрины партнёра (**best-effort**: при
@@ -97,16 +105,13 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   траты/комиссия) и `setReferralDiscount` (шлёт `override=true`; **не** best-effort — ошибки
   транспорта пробрасываются вызывающему, партнёр должен знать результат).
 
-Schema-readiness checkpoint для multi-discount: sales-миграция
-`0014_usage_attribution_buffer.sql` заранее расширяет `pending_referral_events`, чтобы replay не
-терял immutable commission authority, пока атрибуция пользователя ещё не пришла. Legacy spend и
-deposit сохраняют полностью `NULL`-форму новых полей. Атрибутированный buffered spend обязан
-нести непустые `provider_id`/`snapshot_digest`, `account_class=b2c`, `pricing_mode=track`,
+Sales-миграция `0014_usage_attribution_buffer.sql` была доставлена migration-first и расширила
+`pending_referral_events` до включения writer. Legacy spend и deposit сохраняют полностью
+`NULL`-форму новых полей. Атрибутированный buffered spend обязан нести непустые
+`provider_id`/`snapshot_digest`, `account_class=b2c`, `pricing_mode=track`,
 `commission_eligible=true` и положительный `paid_funded_nano`, точно равный `amount_nano`.
 Сопутствующий constraint на `partner_usage_events` запрещает атрибутированную комиссию вне той же
-B2C track authority. На этом expand-only SHA producer/consumer фида ещё используют прежний payload;
-запись новых полей включается отдельным application-коммитом только после зелёных
-`deploy/migration` и `deploy/watchdog` миграционного SHA.
+B2C track authority; application writer и replay теперь соблюдают эту форму.
 
 ### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
 
@@ -165,7 +170,9 @@ OAuth-транзакции (переживает редирект к прова�
 
 ## Комиссионная математика (sales-db)
 
-Для usage-события суммой `A` у пользователя партнёра P0:
+Для нового usage-события `A` — exact `paid_funded_nano` из immutable B2C track attribution;
+static/B2B/service/ineligible строки до расчёта не доходят. Только для исторической all-null формы
+`A` временно остаётся legacy `real_funded` free-first projection. У пользователя партнёра P0:
 - level 0: `A * P0.commission_bps / 10000` (целочисленный floor);
 - level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` вверх по цепочке родителей;
 - стоп: нет родителя, сумма 0, уровень > 10 или родитель suspended.

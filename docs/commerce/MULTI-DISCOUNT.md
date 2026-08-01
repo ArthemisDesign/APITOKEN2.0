@@ -23,6 +23,11 @@ Gemini strict metered traffic остаётся запрещён. Кодовый 
 не выполняет Stage 5/6 data application, не производит assignment matrix по аналогии и не считается
 Stage 8 evidence или strict activation. Production application остаётся заблокированным до reviewed
 фактической B2B/service/OpenKeys assignment matrix.
+Первый Stage 10 checkpoint уже доставил coherent engine account/ledger/funding read surfaces.
+Второй Stage 10 checkpoint подключает их к fail-closed commerce ingestion и сквозной sales
+commission attribution: policy_v1 evidence сохраняется атомарно, retention и commission берутся из
+immutable eligibility/funding, а static/B2B/service usage не проходит в комиссию. Этот checkpoint
+также не активирует production policies и не снимает блокер Stage 5/6/8/9.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -2053,6 +2058,38 @@ production data:
   strings;
 - checkpoint не меняет settlement, не включает strict bindings, не применяет Stage 5/6 data и не
   считается готовностью customer/admin UI, commerce ingestion или sales audit.
+
+Второй application checkpoint Этапа 10 завершает immutable ledger ingestion и sales audit chain,
+но по-прежнему не является customer/admin UI launch:
+
+- commerce принимает только attribution schema version 1. Для `policy_v1` он до cursor advance
+  сверяет local binding/effective version/source policy/rule, admission catalog/switch digests,
+  ordered raw settlement evidence, `reserved = charged + released`, normalized debit allocations и
+  independently recomputed paid/bonus/other totals. Любое расхождение откатывает event, attribution,
+  allocations, free projection, retention aggregates и cursor одной транзакцией;
+- `pricing_usage_attributions` хранит dual-lineage policy/catalog/switch/runtime/tariff identity и
+  исходный funding JSON, а `pricing_usage_funding_allocations` — нормализованную immutable authority.
+  `effective_policy_digest` соответствует effective snapshot, legacy `policy_digest` и новый
+  `source_policy_digest` — source policy;
+- attributed `real_funded_nano` равен exact `paid_funded_nano` только при
+  `commission_eligible=true`; static/ineligible event получает `real_funded_nano=0`, сохраняя paid
+  funding в attribution для аудита. Retention aggregates учитывают только `retention_eligible`;
+  historical row без attribution сохраняет bounded legacy free-first fallback;
+- sales usage feed сканирует и продвигает watermark по каждой source row, но отдаёт только referred
+  schema-v1 `policy_v1` B2C `track`, `commission_eligible=true`, positive-paid events. Static,
+  B2B/service, unknown-schema, zero-paid и unreferred строки не создают item или commission;
+- feed payload несёт `providerId/accountClass/pricingMode/paidFundedNano` и
+  `commissionEligible/snapshotDigest`. Sales parser требует all-null legacy либо полную exact B2C
+  track форму;
+  `partner_usage_events` и pre-attribution `pending_referral_events` сохраняют её атомарно, replay
+  не теряет поля, exact duplicate идемпотентен, а конфликтующий immutable replay fail closed;
+- migration-first sales schema checkpoint `0014_usage_attribution_buffer.sql` доставлен production
+  SHA `6a9e45f0979f82960f9a2074e91702a6d319a1d4`; `deploy/migration`/`deploy/watchdog` зелёные до
+  этого writer. Существующие migrations не переписывались;
+- checkpoint не создаёт reviewed assignment matrix, не выполняет Stage 5/6 backfill/application,
+  не запускает Stage 8 evidence, не включает strict enforcement и не включает пока admin/customer
+  configurators. Поэтому Stage 10 UI/public launch и критерии готовности первой версии ещё не
+  завершены.
 
 ### Этап 11. Поздний contract cleanup
 

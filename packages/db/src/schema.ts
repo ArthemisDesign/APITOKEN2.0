@@ -78,8 +78,8 @@ export const customerProfiles = pgTable("customer_profiles", {
   tierWindowSpentNano: bigint("tier_window_spent_nano", { mode: "bigint" }).notNull().default(sql`0`),
   // Скидка сейлза как «пол»: эффективный mult = min(тир-mult, 10000 - referral_floor_bps). 0 = нет.
   referralFloorBps: integer("referral_floor_bps").notNull().default(0),
-  // Бесплатный баланс (welcome-бонус/промо), ещё не израсходованный списаниями. Бесплатное тратится
-  // первым: комиссия рефа идёт только с части списания, покрытой РЕАЛЬНЫМИ деньгами (см. real_funded).
+  // Локальная проекция welcome/промо. Legacy rows списывают её free-first; attributed policy rows
+  // вычитают exact bonus+other evidence. Комиссия использует immutable eligible paid funding.
   freeBalanceNano: bigint("free_balance_nano", { mode: "bigint" }).notNull().default(sql`0`),
   createdAt,
   updatedAt,
@@ -164,7 +164,8 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   engineAccountId: text("engine_account_id").notNull(),
   ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
-  // Часть списания, покрытая реальными деньгами (free-first). Реф-комиссия идёт только с неё.
+  // Legacy: free-first paid projection. Attributed: exact paid_funded only when commission-eligible;
+  // static/ineligible rows store 0 while true paid evidence remains in pricing_usage_attributions.
   realFundedNano: bigint("real_funded_nano", { mode: "bigint" }).notNull().default(sql`0`),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   // Монотонный курсор для внешних читателей (sales-фид). Порядок ~= порядок вставки; читатели
@@ -1578,9 +1579,8 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   snapshotDigest: text("snapshot_digest").notNull(),
   createdAt,
 }, (table) => [
-  // The later writer contract stores this as immutable raw engine evidence and treats normalized
-  // pricing_usage_funding_allocations rows as query authority. These tables remain empty until
-  // that atomic writer and its reconciliation guards are deployed.
+  // The atomic ledger consumer stores immutable raw engine evidence here and treats normalized
+  // pricing_usage_funding_allocations rows as query authority after exact local reconciliation.
   index("pricing_usage_attributions_policy_idx")
     .on(table.policyId, table.policyVersion)
     .where(sql`${table.policyId} IS NOT NULL`),

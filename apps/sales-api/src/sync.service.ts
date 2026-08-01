@@ -11,6 +11,7 @@ import {
   resolveReferralCode,
   upsertReferredUser,
   getReferredUserPartner,
+  type ReferredSpendAttribution,
   type SalesDatabase,
   type SyncFeed,
 } from "@claude-api/sales-db";
@@ -35,13 +36,56 @@ const topupSchema = z.object({
   paidAt: z.coerce.date(),
 });
 
-// Списание за API. amountNano = real_funded: часть, покрытая реальными деньгами (коммерция уже
-// вычла бесплатную часть по принципу «бесплатное тратится первым»). Может быть 0 → комиссии нет.
-const usageEventSchema = z.object({
+const nullableProviderIdSchema = z.string().min(1).nullable().optional()
+  .transform((value): string | null => value ?? null);
+const nullableAccountClassSchema = z.literal("b2c").nullable().optional()
+  .transform((value): "b2c" | null => value ?? null);
+const nullablePricingModeSchema = z.literal("track").nullable().optional()
+  .transform((value): "track" | null => value ?? null);
+const nullablePaidFundedSchema = nanoStringSchema.nullable().optional()
+  .transform((value): bigint | null => value ?? null);
+const nullableCommissionEligibleSchema = z.literal(true).nullable().optional()
+  .transform((value): true | null => value ?? null);
+const nullableSnapshotDigestSchema = z.string().min(1).nullable().optional()
+  .transform((value): string | null => value ?? null);
+
+// Old producer payloads omit all attribution fields and remain the temporary legacy free-first
+// path. Any attributed payload must be the complete B2C track authority; partial or ineligible
+// shapes fail the page before cursor advancement.
+export const usageEventSchema = z.object({
   id: feedIdSchema,
   userId: z.string().uuid(),
   amountNano: nanoStringSchema,
+  providerId: nullableProviderIdSchema,
+  accountClass: nullableAccountClassSchema,
+  pricingMode: nullablePricingModeSchema,
+  paidFundedNano: nullablePaidFundedSchema,
+  commissionEligible: nullableCommissionEligibleSchema,
+  snapshotDigest: nullableSnapshotDigestSchema,
   occurredAt: z.coerce.date(),
+}).superRefine((row, context) => {
+  const fields = [
+    row.providerId,
+    row.accountClass,
+    row.pricingMode,
+    row.paidFundedNano,
+    row.commissionEligible,
+    row.snapshotDigest,
+  ];
+  if (fields.every((field) => field === null)) return;
+  if (fields.some((field) => field === null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "usage attribution must be entirely null or complete",
+    });
+    return;
+  }
+  if (row.paidFundedNano! <= 0n || row.amountNano !== row.paidFundedNano) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "usage amount must equal positive attributed paid funding",
+    });
+  }
 });
 
 export interface FeedPage<T extends { id: bigint }> {
@@ -179,8 +223,9 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * Списания за API. amountNano здесь = real_funded (коммерция уже вычла бесплатную часть по
-   * принципу «бесплатное тратится первым»), поэтому комиссия капает только с реальных денег.
+   * New rows carry immutable B2C track attribution and use exact paid funding as commission basis.
+   * All-null/omitted attribution is the bounded rolling-compatibility path for old ledger rows,
+   * where amountNano remains the commerce free-first projection.
    */
   private async syncUsageEvents(): Promise<void> {
     const after = await getSyncCursor(this.database, "usage_events");
@@ -192,6 +237,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         commerceEventId: row.id,
         commerceUserId: row.userId,
         amountNano: row.amountNano,
+        attribution: toReferredSpendAttribution(row),
         occurredAt: row.occurredAt,
       });
     }
@@ -225,6 +271,29 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
   private async sleep(milliseconds: number): Promise<void> {
     await Promise.race([new Promise((resolve) => setTimeout(resolve, milliseconds)), this.stopSignal]);
   }
+}
+
+function toReferredSpendAttribution(
+  row: z.infer<typeof usageEventSchema>,
+): ReferredSpendAttribution | null {
+  if (row.providerId === null) return null;
+  // usageEventSchema has already enforced all-or-none and the exact literal authority. Keep this
+  // guard local so future schema edits cannot accidentally turn a partial payload into commission.
+  if (
+    row.accountClass !== "b2c"
+    || row.pricingMode !== "track"
+    || row.paidFundedNano === null
+    || row.commissionEligible !== true
+    || row.snapshotDigest === null
+  ) throw new Error("validated usage attribution became incomplete");
+  return {
+    providerId: row.providerId,
+    accountClass: row.accountClass,
+    pricingMode: row.pricingMode,
+    paidFundedNano: row.paidFundedNano,
+    commissionEligible: row.commissionEligible,
+    snapshotDigest: row.snapshotDigest,
+  };
 }
 
 /** Accepts the canonical page object and the pre-page legacy array during rolling deployments. */

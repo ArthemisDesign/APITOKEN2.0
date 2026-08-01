@@ -299,8 +299,8 @@ export const referredTopups = pgTable("referred_topups", {
 
 export const commissionEntries = pgTable("commission_entries", {
   id: bigserial("id", { mode: "bigint" }).primaryKey(),
-  // Источник комиссии = депозит (topup). usage_event_id — legacy-путь (списания), больше не
-  // пишется; ровно один источник у строки (см. one_source CHECK ниже).
+  // Текущий источник комиссии = eligible paid-funded usage_event. topup_id сохраняется для
+  // исторической совместимости; ровно один источник у строки (см. one_source CHECK ниже).
   usageEventId: bigint("usage_event_id", { mode: "bigint" })
     .references(() => partnerUsageEvents.id, { onDelete: "restrict" }),
   topupId: bigint("topup_id", { mode: "bigint" })

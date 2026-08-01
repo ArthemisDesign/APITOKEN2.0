@@ -1230,10 +1230,11 @@ export async function applyPricingLedgerPage(
   entries: readonly EngineLedgerEntry[],
 ): Promise<void> {
   if (entries.length === 0) return;
-  // Free-first требует ХРОНОЛОГИЧЕСКОГО порядка: топап должен фондировать последующие charge.
+  // Legacy free-first требует ХРОНОЛОГИЧЕСКОГО порядка: топап должен фондировать последующие charge.
   // Леджер-id движка монотонны по времени создания, поэтому сортируем страницу по id по возрастанию —
-  // иначе charge, пришедший в массиве раньше своего фондирующего топапа, завысил бы real_funded (и,
-  // как следствие, реф-комиссию). Это же делает продвижение курсора детерминированным.
+  // иначе pre-attribution charge, пришедший раньше своего фондирующего топапа, завысил бы legacy
+  // real_funded. Для policy rows деньги берутся из immutable funding evidence. Порядок также делает
+  // продвижение курсора детерминированным.
   const ordered = [...entries].sort((a, b) => {
     const da = BigInt(a.id);
     const db = BigInt(b.id);
@@ -1251,7 +1252,7 @@ export async function applyPricingLedgerPage(
       await client.query("ROLLBACK");
       return;
     }
-    // Курсор на старте: применяем эффекты (free-баланс, real_funded) ТОЛЬКО к записям выше него —
+    // Курсор на старте: применяем эффекты (free projection, commission basis) ТОЛЬКО к записям выше него —
     // это делает применение страницы идемпотентным к повторной подаче тех же записей (free-топапы
     // не имеют ON CONFLICT, как у charge). customer_profiles залочена → обработка юзера сериализована.
     const cursorRow = await client.query<{ last_ledger_id: string }>(
@@ -1274,7 +1275,7 @@ export async function applyPricingLedgerPage(
         freeBalanceChanged = true;
         continue;
       }
-      // Только положительные charge создают real_funded/комиссию. Отрицательные `adjust`
+      // Только положительные charge создают commission basis. Отрицательные `adjust`
       // (рефанд/чарджбэк/админ-клобэк) здесь НЕ откатывают уже начисленную комиссию — это
       // осознанный остаток (полный клобэк требует негативного real_funded по всей цепочке фида
       // и завязан на engine-компенсацию рефанда). Игнорирование безопасно по направлению: оно

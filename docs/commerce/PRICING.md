@@ -51,6 +51,27 @@ creates a durable pricing job when the tier changes. A separate job step calls t
 endpoint. Failed synchronization is retried; PostgreSQL and the engine never need a distributed
 transaction.
 
+### Immutable ledger attribution checkpoint
+
+When an engine charge carries attribution schema version 1, commerce validates the complete raw
+settlement evidence before advancing its ledger cursor: local binding/policy/rule identity, source
+and effective digests, admission catalog/switch generations and digests, ordered bucket versions,
+`reserved = charged + released`, normalized debit allocations, and independently recomputed paid,
+welcome-bonus and other funding totals. An unsupported schema or any mismatch rolls back the event,
+retention aggregates, free-balance projection, and cursor together.
+
+`pricing_usage_events.amount_nano` remains the full local charge. For an eligible attributed event,
+`real_funded_nano` is the exact immutable `paid_funded_nano` commission basis; a static or otherwise
+ineligible event stores `real_funded_nano=0` even when its attribution records paid funding for
+audit. Retention totals include only `retention_eligible` attribution. A historical row with no
+attribution retains the temporary legacy free-first calculation. The sales feed accepts only
+referred schema-v1 `policy_v1` B2C `track` rows with `commission_eligible=true` and positive paid
+funding, while preserving the all-null legacy form for pre-attribution history.
+
+This checkpoint consumes evidence emitted by the already policy-capable engine. It does not seed or
+activate production policies, perform Stage 5/6 data application, enable strict bindings, or change
+the current public tier and welcome-offer behavior described above.
+
 ### Atomic legacy snapshot bridge rollout
 
 The engine can durably attach an immutable legacy pricing snapshot to a sampled Anthropic/OpenAI

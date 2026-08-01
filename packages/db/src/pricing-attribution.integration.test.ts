@@ -416,6 +416,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
 
   it("rolls back the event, free projection, month, and cursor on policy graph mismatch", async () => {
     const corruptions: Array<Partial<NonNullable<EngineLedgerEntry["attribution"]>>> = [
+      { attribution_schema_version: "2" },
       { source_policy_digest: "wrong-source-policy" },
       { rule_digest: "wrong-effective-rule" },
       { admission_catalog_digest: "wrong-admission-catalog" },

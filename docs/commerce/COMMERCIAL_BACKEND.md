@@ -139,7 +139,10 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
 - A payment webhook may enqueue at most one credit; an engine credit reference may confirm once.
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.
 - B2C tier progress comes only from authoritative engine `charge` ledger rows and is deduplicated by
-  `(engine_account_id, ledger_entry_id)`.
+  `(engine_account_id, ledger_entry_id)`. Attributed rows are accepted only after exact local
+  policy/admission/funding reconciliation; retention uses immutable `retention_eligible`, and sales
+  receives only exact B2C-track `paid_funded_nano`. Pre-attribution history keeps the bounded legacy
+  free-first fallback.
 - Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
   updated. Once an account has a desired full policy, that scalar lane is audit-drained and only
   the monotonic versioned policy lane may advance its engine pricing state.
