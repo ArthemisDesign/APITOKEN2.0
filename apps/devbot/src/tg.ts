@@ -229,6 +229,10 @@ export class TelegramBot {
       });
       return true;
     } catch (error) {
+      // «message is not modified» — идемпотентный успех: фаза приходит из двух источников
+      // (deploy/* statuses и production-* deployments), повторная правка рендерит тот же
+      // текст. Это не сбой отправки — не тревожим ни метрику, ни error-лог.
+      if (errorMessage(error).includes("message is not modified")) return true;
       this.onSendFailure?.("editMessageText");
       this.logger?.error(this.redact(`telegram editMessageText failed: ${errorMessage(error)}`));
       return false;

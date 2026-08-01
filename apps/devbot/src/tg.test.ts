@@ -142,6 +142,16 @@ describe("TelegramBot", () => {
     expect(bodies[0]).toMatchObject({ chat_id: 100, message_id: 55, text: "edited", parse_mode: "HTML" });
   });
 
+  it("editMessageText treats 'message is not modified' as idempotent success, not a send failure", async () => {
+    const fetchFn: typeof fetch = async () => {
+      throw new Error("editMessageText: Bad Request: message is not modified: specified new message content and reply markup are exactly the same");
+    };
+    const failures: string[] = [];
+    const { bot } = makeBot({ fetchFn, maxAttempts: 1, onSendFailure: (method) => failures.push(method) });
+    expect(await bot.editMessageText(100, 55, "same text")).toBe(true);
+    expect(failures).toHaveLength(0);
+  });
+
   it("deleteWebhook swallows errors", async () => {
     const fetchFn: typeof fetch = async () => {
       throw new Error("down");
