@@ -9,7 +9,9 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
 
 ## Contributor and AI-agent workflow
 
-1. Fetch the current remote state and work on the appropriate `comp/*` or short feature branch.
+1. Fetch the current remote state and work on a short task branch from `origin/master` (the
+   canonical agent lifecycle is the root `AGENTS.md`; `comp/*` owner branches are long-lived and
+   synced separately).
    Several agents and contributors share this repository, and a branch is not an isolation
    boundary: one working tree has one checked-out branch, so switching branches in a shared
    directory rewrites a co-resident worker's files and carries their uncommitted changes onto your
@@ -40,7 +42,12 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    bash deploy/sccache-cargo.sh cargo test --locked --workspace
    bash -n deploy/*.sh deploy/apitoken-db-dump
    git diff --check
+   bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"
    ```
+
+   The always-on static lane of `deploy/agent-merge.sh` is exactly the last three lines plus
+   `deploy/docs-check.sh` (the documentation living-contract check, see `AGENTS.md`); the
+   language lanes above are selected from the diff as described below.
 
    The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks

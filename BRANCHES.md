@@ -8,7 +8,7 @@
 
 | Ветка | Владеет | Назначение | Куда мёржится |
 |---|---|---|---|
-| `master` | — | Интеграция. Всегда зелёная (`cargo build`). Кросс-компонентная проводка, доки, релиз. | — |
+| `master` | — | Интеграция и production trigger. Всегда зелёная (`cargo build`). Изменения попадают только через `deploy/agent-merge.sh`; прямых коммитов нет. | — |
 | `comp/registry` | `crates/registry` | Реестр подписок (БД, схема, CRUD, миграции). | `master` |
 | `comp/pool` | `crates/pool` | Пул и ротация (выбор, cooling, состояние лимитов). | `master` |
 | `comp/forward` | `crates/forward` | Форвардинг /v1/*, инжект identity, поллер, стрим. | `master` |
@@ -20,10 +20,11 @@ Checkout ветки → сразу видно её назначение.
 
 ## Правила
 
-1. **Изменение компонента → на его `comp/*`-ветке.** Крупную работу можно вести в feature-ветке,
-   ответвлённой от нужной `comp/*`, и вливать обратно в неё. Ветку берут в **отдельный worktree**
-   (`git worktree add`), а не переключением текущего каталога: в одном каталоге может работать
-   другой агент.
+1. **Изменение компонента → task-ветка от `origin/master`** в отдельном worktree (канон
+   процесса — корневой `AGENTS.md`). `comp/*` — долгоживущие ветки-владельцы для накопительной
+   работы над компонентом; их синхронизация с `master` — отдельная операция вне типового цикла.
+   Ветку берут в **отдельный worktree** (`git worktree add`), а не переключением текущего
+   каталога: в одном каталоге может работать другой агент.
 2. **Границы крейта соблюдаются** (см. корневой `CLAUDE.md` и `crates/<x>/CLAUDE.md`). Ветка
    `comp/pool` не должна тащить сеть; `comp/forward` — не читать env; и т.д.
 3. **`master` = production trigger.** Мёрж только через `deploy/agent-merge.sh` и только когда
@@ -41,7 +42,9 @@ Checkout ветки → сразу видно её назначение.
    переиспользуется после push в `master`; затем watchdog выполняет migration-before-app и
    blue-green deploy, а итог виден в `deploy/watchdog`.
 4. **Кросс-компонентная задача** (например, поменяли контракт `Sub` в registry и его потребителей):
-   разбей по владельцам последовательными мёржами ИЛИ сделай на `master` с явным описанием в коммите.
+   разбей по владельцам последовательными мёржами ИЛИ веди одной task-веткой от `origin/master`
+   с явным описанием в коммите. Прямые коммиты в `master` запрещены — мёрж только через
+   `deploy/agent-merge.sh`.
 5. **Синхронизация:** перед работой `git fetch`. Ветки синхронизирует человек; агент не вливает
    `master` в свою ветку сам — `deploy/agent-merge.sh` ребейзит его ветку в момент мёржа.
 6. **Миграция сначала:** новый append-only expand migration добавляется до зависящего от неё кода;
@@ -55,23 +58,24 @@ Checkout ветки → сразу видно её назначение.
 
 ```bash
 git fetch origin
-git worktree add ~/wt/forward-<task> -b feat/forward-<task> origin/comp/forward
+git worktree add ~/wt/forward-<task> -b feat/forward-<task> origin/master
 cd ~/wt/forward-<task>              # дальше работаем только здесь
 # … правки строго в crates/forward …
 cargo build                          # зелёно
 git add crates/forward               # только свои пути, никогда git add -A
-git commit -m "forward: …"
+git commit                           # Conventional-заголовок + подробный body (см. AGENTS.md)
 git push -u origin HEAD
 ./deploy/agent-merge.sh              # сериализованный мёрж в master; вручную — нельзя
 ```
 
-Закончил задачу — worktree убирает человек (`git worktree remove`), не агент: в соседнем каталоге
-может идти чужая работа.
+Закончил задачу — агент сам убирает СВОЙ worktree и ветку по правилам «Уборка после мёрджа» из
+`AGENTS.md` (после зелёного `deploy/watchdog` и ff-only синхронизации локального `master`).
+Чужие worktree не трогать: в соседнем каталоге может идти чужая работа.
 
 ## Создание веток (первичная настройка)
 
 ```bash
-for c in registry pool forward server; do
+for c in registry pool forward server authbot; do
   git branch comp/$c master         # ответвить от master
 done
 # затем на каждой добавить свой BRANCH.md (см. историю коммитов)
