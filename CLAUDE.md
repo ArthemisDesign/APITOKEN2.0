@@ -134,9 +134,10 @@ Smoke без живых подписок — мок-апстрим (`CLAUDE_API_
 изменений (`docs/CHANGE_CHECKLISTS.md`), карта связей (`docs/DEPENDENCIES.md`), expand-only
 миграции и контракты, мёрж одной командой, синхронизация master и уборка. Он обязателен
 полностью и здесь не дублируется — две версии процесса неизбежно разъезжаются. Краткая суть:
-работай только в своём worktree от `origin/master`; держи `cargo build` зелёным; документацию
-обновляй в том же коммите; мёрж — только `git push -u origin HEAD` + `./deploy/agent-merge.sh`;
-после зелёного `deploy/watchdog` — `git merge --ff-only origin/master` в основном клоне и
-удаление worktree/ветки. Дисциплину частично страхует хук `.claude/hooks/guard-git.sh` (только
-в Claude Code). Внутреннее устройство gate, lane и кэшей — `deploy/README.md`; workflow
-контрибьютора — `CONTRIBUTING.md`.
+создавай worktree только через `deploy/agent-worktree.sh create`, работай в нём от
+`origin/master`, держи `cargo build` зелёным и обновляй документацию в том же коммите; мёрж —
+только `git push -u origin HEAD` + `./deploy/agent-merge.sh`; после зелёного `deploy/watchdog` —
+`deploy/agent-worktree.sh finish` для своего дерева. `doctor` и dry-run `gc` диагностируют хвосты,
+а глобальный `gc --apply` остаётся операторской maintenance-командой. Дисциплину частично страхует
+хук `.claude/hooks/guard-git.sh` (только в Claude Code). Внутреннее устройство gate, lifecycle и
+кэшей — `deploy/README.md`; workflow контрибьютора — `CONTRIBUTING.md`.

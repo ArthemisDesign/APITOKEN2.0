@@ -17,6 +17,34 @@ host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: 
 with a new commit on a new branch. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
+## Contributor worktree lifecycle and Rust cache
+
+`agent-worktree.sh` is the managed boundary around task worktrees:
+
+- `create <type/task> [name]` fetches `origin`, creates `${AGENT_WORKTREE_ROOT:-$HOME/wt}/<name>`
+  from the exact current `origin/master`, rejects protected/existing branches and paths, and records
+  creation/owner metadata in Git's per-worktree administrative directory;
+- `finish [path]` requires one explicit non-primary, non-protected, unlocked, clean worktree whose
+  branch is an ancestor of fresh `origin/master`; it optionally fast-forwards a clean primary
+  `master`, removes only that worktree, and atomically deletes the branch only if its ref did not
+  change after validation;
+- `doctor` refreshes `origin` and classifies primary/current, missing, locked, detached, protected,
+  dirty, unmerged, recent-merged, and cleanup-eligible worktrees without deleting or rewriting any
+  local worktree or branch;
+- `gc` is dry-run by default. `gc --apply` serializes with create/finish, prunes unlocked missing
+  registrations without deleting unique branches, removes only clean merged worktrees older than
+  the grace period (24 hours by default), and deletes only unchanged, unowned local branch refs
+  already merged into `origin/master`. `master`, `main`, `comp/*`, dirty, unmerged, detached,
+  current, primary, and locked worktrees remain untouched.
+
+The manager deliberately does not delete the retired clone-wide Cargo build directory. Existing
+cache data remains an explicit one-time operator cleanup; deploying this change never removes local
+files. Going forward, `sccache-cargo.sh` shares only the checksum-pinned binary and bounded 10 GiB
+content-addressed compiler cache under the git-common-dir. It always clears an inherited
+`CARGO_BUILD_BUILD_DIR`, while Cargo intermediates and linked artifacts remain in the current
+worktree's `target/` or the caller's explicit `CARGO_TARGET_DIR`. Worktree removal therefore
+reclaims task build output without allowing fingerprints or linked artifacts to mix across paths.
+
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
 processes with exact-systemd-unit readiness gates. The automatic watchdog passes
 `--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a

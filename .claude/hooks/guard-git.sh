@@ -56,7 +56,7 @@ while IFS= read -r segment || [[ -n $segment ]]; do
 'You are working in your own git worktree. Switching branches here rewrites the files of every
 other agent sharing this tree, and carries their uncommitted work onto your branch.
 Need a different base? Create a new worktree:
-  git worktree add ~/wt/<task> -b <type>/<task> origin/master
+  worktree=$(./deploy/agent-worktree.sh create fix/task-slug task-slug) && cd "$worktree"
 Need to discard a file? Ask the human first.' ;;
     *' stash'*|*' reset '*--hard*|*' clean '*-*f*)
       deny 'a destructive tree operation' \
@@ -68,9 +68,16 @@ agent'"'"'s uncommitted edits. Neither git nor the other agent will warn anyone.
   git push -u origin HEAD && ./deploy/agent-merge.sh
 It rebases, re-runs the full gate on the exact SHA it pushes, takes the machine-wide merge lock
 and holds it until deploy/watchdog is green.' ;;
+    *' worktree '*add*)
+      deny 'unmanaged worktree creation' \
+'Raw worktree creation has no lifecycle metadata and cannot be cleaned safely after an interrupted
+agent. Use the managed path:
+  worktree=$(./deploy/agent-worktree.sh create fix/task-slug task-slug) && cd "$worktree"' ;;
     *' worktree '*remove*|*' worktree '*prune*)
-      deny 'removal of a worktree that may belong to another agent' \
-'Another agent is probably still working in it. Ask the human.' ;;
+      deny 'unmanaged worktree cleanup' \
+'A raw removal cannot prove ownership and a global prune cannot preserve lifecycle policy. Finish
+one selected clean merged worktree with deploy/agent-worktree.sh finish, or inspect global residue
+with deploy/agent-worktree.sh doctor / gc (gc is dry-run unless --apply is explicit).' ;;
   esac
 
   case "$arguments" in

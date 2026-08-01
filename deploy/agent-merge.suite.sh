@@ -14,13 +14,16 @@ MERGE=$ROOT/deploy/agent-merge.sh
 GUARD=$ROOT/.claude/hooks/guard-git.sh
 WATCHDOG_LIB=$ROOT/deploy/watchdog-lib.sh
 SCCACHE_WRAPPER=$ROOT/deploy/sccache-cargo.sh
+WORKTREE_MANAGER=$ROOT/deploy/agent-worktree.sh
 
 [[ -x $MERGE ]] || wd_die 'deploy/agent-merge.sh must be executable'
 [[ -x $GUARD ]] || wd_die '.claude/hooks/guard-git.sh must be executable'
 [[ -f $WATCHDOG_LIB ]] || wd_die 'deploy/watchdog-lib.sh is required'
 [[ -x $SCCACHE_WRAPPER ]] || wd_die 'deploy/sccache-cargo.sh must be executable'
+[[ -x $WORKTREE_MANAGER ]] || wd_die 'deploy/agent-worktree.sh must be executable'
 bash -n "$MERGE" || wd_die 'deploy/agent-merge.sh does not parse'
 bash -n "$GUARD" || wd_die '.claude/hooks/guard-git.sh does not parse'
+bash -n "$WORKTREE_MANAGER" || wd_die 'deploy/agent-worktree.sh does not parse'
 
 TEMP=$(mktemp -d)
 trap 'rm -rf -- "$TEMP"' EXIT
@@ -187,6 +190,7 @@ assert_gate_selection infrastructure deploy/path-aware.test.sh 0 0 1 0
 assert_gate_selection workflow AGENTS.md 0 0 1 0
 assert_gate_selection unknown mystery/runtime.xyz 1 1 1 1
 assert_gate_selection gate-machinery deploy/sccache-cargo.sh 1 1 1 1
+assert_gate_selection worktree-manager deploy/agent-worktree.sh 1 1 1 1
 
 # A feature SHA that fails the production host's trusted gate must never reach the merge lock or
 # master, even if its local gate passed.
@@ -368,7 +372,7 @@ grep -Fq -- '--allow-primary-tree' "$MERGE" \
 grep -Fq 'GIT_CONFIG_GLOBAL=/dev/null' "${BASH_SOURCE[0]}" \
   || wd_die 'this suite must never consult a real credential helper'
 # The production gate runs this suite on a host provisioned for node, not python.
-for portable in "$MERGE" "$GUARD" "${BASH_SOURCE[0]}"; do
+for portable in "$MERGE" "$GUARD" "$WORKTREE_MANAGER" "${BASH_SOURCE[0]}"; do
   grep -Eq 'python[0-9]?[[:space:]]+-' "$portable" \
     && wd_die "$(basename "$portable") invokes python, which the deployment host does not provide"
 done
@@ -391,6 +395,7 @@ for blocked in \
   'git add .' \
   'git add --all' \
   'git push origin HEAD:master' \
+  'git worktree add ~/wt/task -b feat/task origin/master' \
   'git worktree remove ../other-agent' \
   'cargo build && git checkout master'; do
   guard "$blocked" && wd_die "the git guard allowed a destructive command: $blocked"
@@ -401,9 +406,12 @@ for allowed in \
   'git commit -m "forward: sanitize upstream errors"' \
   'git diff --stat origin/master...HEAD' \
   'git push -u origin HEAD' \
-  'git worktree add ~/wt/task -b feat/task origin/master' \
+  'git worktree list --porcelain' \
   './deploy/agent-merge.sh' \
-  './deploy/prune-merged.sh' \
+  './deploy/agent-worktree.sh create feat/task' \
+  './deploy/agent-worktree.sh finish ~/wt/task' \
+  './deploy/agent-worktree.sh doctor' \
+  './deploy/agent-worktree.sh gc' \
   'cargo test --locked --workspace' \
   'grep -rn "git merge" BRANCHES.md' \
   'echo "run git checkout to switch branches"'; do
@@ -427,6 +435,8 @@ grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate still runs the removed Codex app-server ownership suite'
 grep -Fq 'deploy/sccache-cargo.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not test serialized sccache startup'
+grep -Fq 'deploy/agent-worktree.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not test managed worktree lifecycle safety'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the persistent Next.js cache suite'
 grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh" \
@@ -447,7 +457,7 @@ for sccache_contract in \
   'continuing uncached' \
   'CARGO_INCREMENTAL=0' \
   'CARGO_BUILD_BUILD_DIR' \
-  'workspace-path-hash' \
+  'worktree-local Cargo artifacts' \
   'SCCACHE_CACHE_SIZE' \
   'SCCACHE_VERSION=0.15.0'; do
   grep -Fq -- "$sccache_contract" "$ROOT/deploy/sccache-cargo.sh" \
@@ -489,6 +499,8 @@ for path_gate_contract in \
 done
 grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
+grep -Fq 'agent-worktree.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the managed worktree lifecycle suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \
@@ -530,6 +542,8 @@ for document in CLAUDE.md AGENTS.md BRANCHES.md CONTRIBUTING.md; do
     || wd_die "$document does not point agents at the serialized merge path"
   grep -Fq 'worktree' "$ROOT/$document" \
     || wd_die "$document does not require an isolated worktree"
+  grep -Fq 'agent-worktree.sh' "$ROOT/$document" \
+    || wd_die "$document does not route agents through the managed worktree lifecycle"
 done
 grep -Fq 'git checkout comp/forward' "$ROOT/BRANCHES.md" \
   && wd_die 'BRANCHES.md still teaches agents to switch branches in a shared tree'

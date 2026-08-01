@@ -23,8 +23,9 @@ Checkout ветки → сразу видно её назначение.
 1. **Изменение компонента → task-ветка от `origin/master`** в отдельном worktree (канон
    процесса — корневой `AGENTS.md`). `comp/*` — долгоживущие ветки-владельцы для накопительной
    работы над компонентом; их синхронизация с `master` — отдельная операция вне типового цикла.
-   Ветку берут в **отдельный worktree** (`git worktree add`), а не переключением текущего
-   каталога: в одном каталоге может работать другой агент.
+   Ветку берут в **отдельный управляемый worktree** (`deploy/agent-worktree.sh create`), а не
+   переключением текущего каталога: в одном каталоге может работать другой агент, а сырой
+   `git worktree add` не оставляет lifecycle-метаданных для безопасной аварийной уборки.
 2. **Границы крейта соблюдаются** (см. корневой `CLAUDE.md` и `crates/<x>/CLAUDE.md`). Ветка
    `comp/pool` не должна тащить сеть; `comp/forward` — не читать env; и т.д.
 3. **`master` = production trigger.** Мёрж только через `deploy/agent-merge.sh` и только когда
@@ -57,9 +58,8 @@ Checkout ветки → сразу видно её назначение.
 переносит его незакоммиченные правки на твою ветку.
 
 ```bash
-git fetch origin
-git worktree add ~/wt/forward-<task> -b feat/forward-<task> origin/master
-cd ~/wt/forward-<task>              # дальше работаем только здесь
+worktree=$(./deploy/agent-worktree.sh create feat/forward-<task> forward-<task>)
+cd "$worktree"                      # дальше работаем только здесь
 # … правки строго в crates/forward …
 cargo build                          # зелёно
 git add crates/forward               # только свои пути, никогда git add -A
@@ -68,9 +68,11 @@ git push -u origin HEAD
 ./deploy/agent-merge.sh              # сериализованный мёрж в master; вручную — нельзя
 ```
 
-Закончил задачу — агент сам убирает СВОЙ worktree и ветку по правилам «Уборка после мёрджа» из
-`AGENTS.md` (после зелёного `deploy/watchdog` и ff-only синхронизации локального `master`).
-Чужие worktree не трогать: в соседнем каталоге может идти чужая работа.
+Закончил задачу — после зелёного `deploy/watchdog` агент из основного клона запускает
+`deploy/agent-worktree.sh finish <путь>`. Скрипт сам проверяет clean+merged, делает допустимый
+ff-only локального `master` и убирает только выбранные worktree/ветку. Чужие worktree не трогать:
+для глобального состояния используются безопасный `doctor` и dry-run `gc`, а `gc --apply` оставлен
+оператору или плановому maintenance-процессу.
 
 ## Создание веток (первичная настройка)
 

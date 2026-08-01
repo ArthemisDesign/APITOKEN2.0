@@ -78,10 +78,14 @@ Worktree нужен для ЛЮБОЙ работы с репозиторием, 
 завершения задачи — по тем же правилам, что и после мёрджа (см. «Уборка после мёрджа»).
 
 ```bash
-git fetch origin
-git worktree add ~/wt/<task> -b <type>/<task> origin/master   # для изучения: любая scratch-ветка
-cd ~/wt/<task>          # дальше не покидаешь этот каталог
+worktree=$(./deploy/agent-worktree.sh create fix/task-slug task-slug)
+cd "$worktree"          # дальше не покидаешь этот каталог
 ```
+
+Lifecycle-скрипт сам делает `git fetch origin`, создаёт ветку от свежего `origin/master` в
+`${AGENT_WORKTREE_ROOT:-$HOME/wt}` и записывает служебную метку владения/возраста. Сырые
+`git worktree add/remove/prune` обходят эти страховки и запрещены. Для изучения используй любую
+scratch-ветку через тот же `create`.
 
 Проверь до первой правки: `git rev-parse --show-toplevel` — твой каталог, `git rev-parse
 --abbrev-ref HEAD` — твоя ветка. Если это не так, не останавливай работу и не перекладывай
@@ -93,12 +97,9 @@ cd ~/wt/<task>          # дальше не покидаешь этот ката
 
 Без явной команды человека НИКОГДА: `git checkout <branch>`, `git switch`, `git stash`,
 `git reset --hard`, `git clean -f`, `git merge`, `git rebase`, `git push` в чужую ветку или в
-`master`, `git worktree remove`. Стейджи только свои пути: `git add crates/forward/...`.
-`git add -A` и `git add .` запрещены.
-
-Единственные санкционированные исключения из этого списка: `git merge --ff-only origin/master`
-при синхронизации локального master после собственного мёрджа (см. «Уборка после мёрджа») и
-`git worktree remove` для своего дерева.
+`master`, сырые `git worktree add/remove/prune`. Стейджи только свои пути:
+`git add crates/forward/...`. `git add -A` и `git add .` запрещены. Создание и уборку делает
+только `deploy/agent-worktree.sh`; синхронизацию локального master при `finish` он выполняет сам.
 
 ## Что считать своей работой
 
@@ -296,21 +297,22 @@ GitHub API, переиспользуя credential из `git credential` (на ma
 ## Уборка после мёрджа
 
 После того как `agent-merge.sh` завершился и `deploy/watchdog` зелёный на твоём SHA, агент обязан
-синхронизировать локальный `master` в основном клоне, затем удалить свой worktree и ветку:
+удалить свой worktree и ветку через lifecycle-скрипт:
 
 ```bash
-cd <основной_каталог_репо>          # выйти из worktree
-git fetch origin
-git merge --ff-only origin/master   # единственный разрешённый merge, только fast-forward
-git worktree remove ~/wt/<task>
-git branch -D <type>/<task>
+cd <основной_каталог_репо>          # выйти из удаляемого worktree
+./deploy/agent-worktree.sh finish ~/wt/<task>
 ```
 
-`--ff-only` означает: локальный `master` либо догоняет origin, либо команда падает. Если упала
-(локальный `master` разошёлся с origin — например, в основном клоне есть чужие локальные
-коммиты) — НЕ чини это сам (никаких rebase/reset/force): сообщи человеку одной строкой и
-завершай задачу; удаление worktree и ветки от этого не зависит, их выполни в любом случае.
+`finish` повторно получает `origin/master`, отказывается трогать primary, detached, locked, dirty,
+unmerged и защищённые `master`/`comp/*`, удаляет ровно переданный worktree и атомарно удаляет
+ветку только если её ref не изменился после проверки. Чистый локальный `master` он догоняет
+`--ff-only`; расхождение или чужая грязь дают warning, но не блокируют безопасную уборку задачи.
 
 То же относится к read-only worktree для изучения кода: задача закрыта — worktree и scratch-ветка
-удаляются сразу, не дожидаясь ничьего мёрджа. `git worktree remove` — единственное разрешённое
-использование этой команды, и только для своего дерева. Чужие worktree не трогать.
+удаляются сразу, не дожидаясь ничьего мёрджа, через тот же `finish`. Чужие worktree агент не
+трогает. Для диагностики есть `deploy/agent-worktree.sh doctor`; глобальный
+`deploy/agent-worktree.sh gc` по умолчанию только показывает план. `gc --apply` — операторская или
+плановая maintenance-команда: она соблюдает grace period (24 часа по умолчанию), никогда не
+удаляет dirty/unmerged/locked/protected деревья и сохраняет ветку исчезнувшего worktree, если в ней
+есть уникальные коммиты.

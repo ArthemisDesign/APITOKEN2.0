@@ -125,6 +125,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/lib.test.sh"
   bash "$ROOT/deploy/codex-homes-migrate.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
+  bash "$ROOT/deploy/agent-worktree.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"
@@ -160,6 +161,7 @@ am_range_changes_local_gate() {
     case "$path" in
       deploy/agent-merge.sh|deploy/agent-merge.suite.sh|deploy/watchdog-lib.sh|\
       deploy/sccache-cargo.sh|deploy/sccache-cargo.test.sh|\
+      deploy/agent-worktree.sh|deploy/agent-worktree.test.sh|\
       deploy/next-cache.sh|deploy/next-cache.test.sh|\
       deploy/typescript-scope.mjs|deploy/typescript-scope.test.sh|\
       deploy/typescript-build-contexts.sh|deploy/typescript-build-contexts.test.sh|\
@@ -551,7 +553,7 @@ common_dir=$(cd -- "$(git -C "$ROOT" rev-parse --path-format=absolute --git-comm
   || git -C "$ROOT" rev-parse --git-common-dir)" && pwd)
 if [[ $git_dir == "$common_dir" && $ALLOW_PRIMARY_TREE -eq 0 ]]; then
   am_die 'refusing to merge from the primary working tree: agents must work in their own
-  worktree (git worktree add ~/wt/<task> -b <type>/<task> origin/master). A human contributor in
+  worktree (deploy/agent-worktree.sh create <type/task>). A human contributor in
   a plain clone may pass --allow-primary-tree.'
 fi
 

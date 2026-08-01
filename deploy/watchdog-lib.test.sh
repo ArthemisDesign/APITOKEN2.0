@@ -803,6 +803,8 @@ for validation_only_path in \
   deploy/agent-merge.suite.sh \
   deploy/test-stage2-e2e.sh \
   deploy/sccache-cargo.sh \
+  deploy/agent-worktree.sh \
+  deploy/prune-merged.sh \
   deploy/next-cache.sh \
   deploy/typescript-scope.mjs \
   deploy/typescript-build-contexts.sh \
@@ -2018,6 +2020,8 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/watchdog-lib.test.sh"'
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
+  'run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"'
+  'run_as_ci bash "$candidate/deploy/agent-worktree.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"'

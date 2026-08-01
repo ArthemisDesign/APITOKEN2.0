@@ -18,9 +18,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    branch. Take the branch in a dedicated worktree instead:
 
    ```bash
-   git worktree add ~/wt/<task> -b <type>/<task> origin/master
-   cd ~/wt/<task>
+   worktree=$(./deploy/agent-worktree.sh create fix/task-slug task-slug)
+   cd "$worktree"
    ```
+
+   The manager fetches `origin`, starts from the current `origin/master`, and records lifecycle
+   metadata under Git's worktree administration directory. Raw `git worktree add/remove/prune`
+   bypass those ownership and retention checks and are not an agent workflow.
 
    AI agents must work this way, must not switch, stash, reset, clean, merge or rebase any branch,
    and must stage explicit paths rather than `git add -A`. An agent reports its work as
@@ -60,12 +64,12 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    validated `.next/cache` archives under the clone's git common directory, so fresh worktrees can
    reuse compiler state; a missing, corrupt, or unsafe archive is simply a cache miss. Rust
    compilation goes through a
-   checksum-pinned `sccache`; its binary and 10 GiB content-addressed object cache are reused by all
-   linked worktrees. Cargo 1.91+ intermediate build directories also live under the clone's git
-   common directory, but are keyed by Cargo's canonical workspace-path hash: fingerprints and
-   linked artifacts from different worktrees must never mix. The wrapper falls back to uncached
-   Cargo if its one-time bootstrap is unavailable; set `SCCACHE_DISABLE=1` for an explicit uncached
-   run.
+   checksum-pinned `sccache`; its binary and bounded 10 GiB content-addressed compiler cache are
+   reused by all linked worktrees. Cargo intermediates and linked artifacts stay in that worktree's
+   local `target/` (or an explicit caller-owned `CARGO_TARGET_DIR`), so task cleanup reclaims them
+   and distinct workspace paths cannot cross-link revisions. The wrapper clears the retired
+   `CARGO_BUILD_BUILD_DIR` override, falls back to uncached Cargo if its one-time bootstrap is
+   unavailable, and accepts `SCCACHE_DISABLE=1` for an explicit uncached run.
 
 5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
    work in a plain clone rather than a worktree). That script is the only supported way to reach
@@ -87,6 +91,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    no reusable credential exists, repair the local Git credential helper and rerun; never merge
    blind. Work is complete only when the script reports the exact pushed SHA's `deploy/watchdog`
    context green, and the agent includes that verdict in its final report.
+
+After that green verdict, leave the task directory and run
+`deploy/agent-worktree.sh finish <worktree-path>` from the primary clone. It removes only an
+explicit clean worktree whose non-protected branch is already contained in fresh `origin/master`,
+then deletes the unchanged local branch ref. `doctor` and `gc` report repository-wide residue; `gc`
+is dry-run unless an operator or scheduled maintenance process explicitly passes `--apply`, and it
+never removes dirty, unmerged, locked, detached, current, primary, `master`, or `comp/*` worktrees.
 
 Do not trigger a second deployment to repair a red one. Fix the failure on a new branch and merge a
 new commit. An operator may retry the same SHA only when the failure was proven transient and the
