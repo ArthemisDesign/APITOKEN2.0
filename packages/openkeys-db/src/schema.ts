@@ -33,8 +33,9 @@ export const openkeysIssuanceStatus = pgEnum("openkeys_issuance_status", [
 
 /**
  * Партия ключей, выпущенная админом под продажу (FunPay и т.п.).
- * face_value_nano — номинал ОДНОГО ключа в эквиваленте официального прайса
- * выбранного API; фактический баланс движка = face_value_nano * mult_bp / 10000.
+ * face_value_nano — номинал ОДНОГО ключа. Для official_1_to_1 он равен
+ * фактическому engine balance; историческая формула с mult_bp применяется
+ * только к immutable legacy-строкам.
  */
 export const openkeysBatches = pgTable(
   "openkeys_batches",
