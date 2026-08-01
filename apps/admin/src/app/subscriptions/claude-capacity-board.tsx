@@ -186,8 +186,9 @@ function ClaudeSubscriptions({ items }: { items: CapacitySub[] }) {
               <th className="left">Почта</th>
               <th className="left">Состояние</th>
               <th>Quota 5ч / reset</th>
+              <th className="provider-five-hour-money">Доступно $ · 5ч</th>
               <th>Quota 7д / reset</th>
-              <th>Доступно 7д</th>
+              <th>Доступно $ · 7д</th>
             </tr>
           </thead>
           <tbody>
@@ -200,8 +201,15 @@ function ClaudeSubscriptions({ items }: { items: CapacitySub[] }) {
                   <td className="left"><b>{item.email || "—"}</b><small>{item.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
                   <td><ProviderQuotaMeter usedPercent={five.value} label={five.label} reset={duration(item.reset5h_in)} /></td>
+                  <td className="provider-usd-ink provider-five-hour-money">
+                    <b>{moneyOrDash(item.rem5h_nano)}</b>
+                    <small>{`из ${moneyOrDash(item.cap5h_nano)}`}</small>
+                  </td>
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={duration(item.reset7d_in)} /></td>
-                  <td className="provider-usd-ink"><b>{moneyOrDash(item.rem7d_nano)}</b></td>
+                  <td className="provider-usd-ink">
+                    <b>{moneyOrDash(item.rem7d_nano)}</b>
+                    <small>{`из ${moneyOrDash(item.cap7d_nano)}`}</small>
+                  </td>
                 </tr>
               );
             })}
@@ -218,7 +226,8 @@ export function ClaudeCapacityBoard({ response }: { response: CapacityResponse }
   const five = windows.find((item) => Number(item.window_minutes) === 300);
   const models = response.conversion_models ?? [];
   const rows = profitabilityRows(models);
-  const used = usedPercentFromNano(weekly?.capacity_nano, weekly?.remaining_nano);
+  const usedFive = usedPercentFromNano(five?.capacity_nano, five?.remaining_nano);
+  const usedWeekly = usedPercentFromNano(weekly?.capacity_nano, weekly?.remaining_nano);
 
   return (
     <div className="provider-capacity-board claude-capacity-board">
@@ -226,28 +235,31 @@ export function ClaudeCapacityBoard({ response }: { response: CapacityResponse }
         ariaLabel="Ёмкость Claude-пула"
         items={[
           {
-            label: "7д · доступно",
-            value: moneyOrDash(weekly?.remaining_nano),
-            caption: "API-$ эквивалент",
-            usd: true,
-          },
-          {
-            label: "Полная ёмкость 7д",
-            value: moneyOrDash(weekly?.capacity_nano),
-            caption: `${weekly?.calibrated_subs ?? 0}/${weekly?.routable_subs ?? 0} откалибровано`,
-            usd: true,
-          },
-          { label: "Использовано", value: used.label, caption: "текущее окно" },
-          {
             label: "5ч · доступно",
             value: moneyOrDash(five?.remaining_nano ?? response.available_nano?.next_5h),
-            caption: "текущее окно",
+            caption: `из ${moneyOrDash(five?.capacity_nano)} · API-$`,
             usd: true,
+          },
+          {
+            label: "7д · доступно",
+            value: moneyOrDash(weekly?.remaining_nano),
+            caption: `из ${moneyOrDash(weekly?.capacity_nano)} · API-$`,
+            usd: true,
+          },
+          {
+            label: "5ч · использовано",
+            value: usedFive.label,
+            caption: "текущее окно",
+          },
+          {
+            label: "7д · использовано",
+            value: usedWeekly.label,
+            caption: "текущее окно",
           },
           {
             label: "В ротации",
             value: `${(response.per_sub ?? []).filter((item) => item.routable).length}/${response.per_sub?.length ?? 0}`,
-            caption: response.calibrated === false ? "есть prior" : "калибровка готова",
+            caption: `${five?.calibrated_subs ?? 0}/${five?.routable_subs ?? 0} откалибровано`,
           },
         ]}
       />

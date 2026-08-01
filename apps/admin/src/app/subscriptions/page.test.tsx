@@ -400,6 +400,9 @@ describe("таблицы флотов (smoke render с данными)", () => {
               util7d: 0.4,
               reset5h_in: 600,
               reset7d_in: 3600,
+              cap5h_nano: "60000000000",
+              cap7d_nano: "200000000000",
+              rem5h_nano: "45000000000",
               rem7d_nano: "120000000000",
             },
           ],
@@ -413,6 +416,9 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).not.toContain("owner@example.com");
     expect(plain(html)).toContain("240M");
     expect(plain(html)).toContain("$50.00");
+    expect(html).toContain("Доступно $ · 5ч");
+    expect(html).toContain('provider-usd-ink provider-five-hour-money"><b>$45.00</b><small>из $60.00</small>');
+    expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));
     expect(plain(html)).toContain("40%");
     expect(plain(html)).toContain("сброс 1ч 0м");
     expect(html).toContain("provider-quota-meter");
@@ -511,12 +517,14 @@ describe("таблицы флотов (smoke render с данными)", () => {
                 {
                   window_kind: "5h",
                   used_fraction_units: 40_000_000,
+                  capacity_nano: "50000000000",
                   remaining_nano: "30000000000",
                   resets_at: nowMs / 1000 + 600,
                 },
                 {
                   window_kind: "weekly",
                   used_fraction_units: 25_000_000,
+                  capacity_nano: "200000000000",
                   remaining_nano: "150000000000",
                   resets_at: nowMs / 1000 + 3600,
                 },
@@ -533,6 +541,9 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html)).toContain("1.3M");
     expect(html).toContain("Google даёт только %");
     expect(plain(html)).toContain("$60.00");
+    expect(html).toContain("Доступно $ · 5ч");
+    expect(html).toContain('provider-usd-ink provider-five-hour-money"><b>$30.00</b><small>из $50.00</small>');
+    expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));
     const ranking = plain(html).slice(plain(html).indexOf("Выгодность по убыванию"));
     expect(ranking.indexOf("gemini-3.1-flash-image")).toBeLessThan(ranking.indexOf("gemini-3.6-flash"));
     expect(plain(html)).toContain("25%");

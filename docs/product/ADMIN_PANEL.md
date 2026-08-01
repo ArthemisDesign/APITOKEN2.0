@@ -143,14 +143,18 @@ Claude строится из `/capacity`:
 - строки profitability сортируются по максимальному официальному `$ / 1M токенов`. Это рейтинг
   выручки на токен при продаже по API-тарифу, а не обещание разной маржи на один и тот же доллар
   откалиброванной ёмкости;
-- per-sub таблица оставляет только masked email/plan, routing state, окна 5ч/7д и текущий 7д
-  API-dollar remaining. Prior явно помечается и не выдаётся за завершённую калибровку.
+- 5ч API-dollar remaining — главный показатель strip и отдельный акцентный столбец каждой
+  подписки рядом с 5ч quota/reset; полная ёмкость окна выводится компактной строкой `из $…`.
+  7д remaining/ёмкость остаются соседним сравнительным столбцом. Таблица также оставляет masked
+  email/plan и routing state. Prior явно помечается и не выдаётся за завершённую калибровку.
 
 Gemini строится из `/gemini-subs` и сохраняет provider-specific семантику:
 
 - workload 5ч/weekly API-$ — realized blend наблюдённой смеси, не фиксированный номинал Google AI
   подписки. Fleet totals имеют canonical `*_nano` strings; float-поля остаются только display
-  compatibility;
+  compatibility. В strip 5ч workload-$ стоит первым, а per-profile таблица показывает отдельные
+  5ч и 7д workload-dollar remaining и полную ёмкость (`из $…`) рядом с соответствующими
+  quota/reset;
 - `conversion_models` публикует paid-tier ставки для uncached/audio/cached input,
   output+thinking, image output, long context и Search. Profitability сортируется по токеновому
   тарифу; Search показывается отдельно, потому что его единица — query или grounded prompt;

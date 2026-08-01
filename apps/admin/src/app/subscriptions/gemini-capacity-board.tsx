@@ -273,9 +273,10 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: Gemin
               <th className="left">Почта</th>
               <th className="left">Состояние</th>
               <th>Quota 5ч / reset</th>
+              <th className="provider-five-hour-money">Доступно $ · 5ч</th>
               <th>Quota 7д / reset</th>
+              <th>Доступно $ · 7д</th>
               <th>Модели</th>
-              <th>Workload $ 7д</th>
             </tr>
           </thead>
           <tbody>
@@ -293,9 +294,16 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: Gemin
                   <td className="left"><b>{profile.email?.trim() || "—"}</b><small>{profile.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
                   <td><ProviderQuotaMeter usedPercent={five.value} label={five.label} reset={fiveWindow?.resets_at ? duration(Math.max(0, fiveWindow.resets_at - nowSec)) : "—"} /></td>
+                  <td className="provider-usd-ink provider-five-hour-money">
+                    <b>{moneyOrDash(fiveWindow?.remaining_nano)}</b>
+                    <small>{`из ${moneyOrDash(fiveWindow?.capacity_nano)}`}</small>
+                  </td>
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={weeklyWindow?.resets_at ? duration(Math.max(0, weeklyWindow.resets_at - nowSec)) : "—"} /></td>
+                  <td className="provider-usd-ink">
+                    <b>{moneyOrDash(weeklyWindow?.remaining_nano)}</b>
+                    <small>{`из ${moneyOrDash(weeklyWindow?.capacity_nano)}`}</small>
+                  </td>
                   <td><b>{availableModels}/{modelCount}</b></td>
-                  <td className="provider-usd-ink"><b>{moneyOrDash(weeklyWindow?.remaining_nano)}</b></td>
                 </tr>
               );
             })}
@@ -313,7 +321,8 @@ export function GeminiCapacityBoard({ response, nowMs }: { response: GeminiSubsR
   const models = response.conversion_models ?? [];
   const profits = profitabilityRows(models);
   const quotas = quotaRows(models, response.profiles ?? []);
-  const used = usedPercentFromNano(weekly?.capacity_nano, weekly?.remaining_nano);
+  const usedFive = usedPercentFromNano(five?.capacity_nano, five?.remaining_nano);
+  const usedWeekly = usedPercentFromNano(weekly?.capacity_nano, weekly?.remaining_nano);
   const nowSec = Number(response.now || Math.floor(nowMs / 1000));
   const exactQuotaRows = quotas.filter((row) => row.amount != null).length;
 
@@ -323,28 +332,31 @@ export function GeminiCapacityBoard({ response, nowMs }: { response: GeminiSubsR
         ariaLabel="Ёмкость Gemini-пула"
         items={[
           {
-            label: "7д · workload $",
-            value: moneyOrDash(weekly?.remaining_nano),
-            caption: "измеренная текущая смесь",
-            usd: true,
-          },
-          {
-            label: "Полная ёмкость 7д",
-            value: moneyOrDash(weekly?.capacity_nano),
-            caption: `${weekly?.measured_profiles ?? 0}/${weekly?.observed_profiles ?? response.profiles?.length ?? 0} измерено`,
-            usd: true,
-          },
-          { label: "Использовано", value: used.label, caption: "workload-equivalent" },
-          {
-            label: "5ч · workload $",
+            label: "5ч · доступно",
             value: moneyOrDash(five?.remaining_nano),
-            caption: "измеренная текущая смесь",
+            caption: `из ${moneyOrDash(five?.capacity_nano)} · текущая смесь`,
             usd: true,
+          },
+          {
+            label: "7д · доступно",
+            value: moneyOrDash(weekly?.remaining_nano),
+            caption: `из ${moneyOrDash(weekly?.capacity_nano)} · текущая смесь`,
+            usd: true,
+          },
+          {
+            label: "5ч · использовано",
+            value: usedFive.label,
+            caption: "workload-equivalent",
+          },
+          {
+            label: "7д · использовано",
+            value: usedWeekly.label,
+            caption: "workload-equivalent",
           },
           {
             label: "Профили в ротации",
             value: `${response.available ?? 0}/${response.profiles?.length ?? 0}`,
-            caption: `exact quota ${exactQuotaRows}/${quotas.length}`,
+            caption: `${five?.measured_profiles ?? 0}/${five?.observed_profiles ?? response.profiles?.length ?? 0} измерено · exact ${exactQuotaRows}/${quotas.length}`,
           },
         ]}
       />
