@@ -783,6 +783,30 @@ fn is_supported_endpoint(method: &Method, path: &str) -> bool {
     }
 }
 
+/// Namespaced catalog id (`anthropic/<native id>`) → native id в теле запроса
+/// native lane. Universal dispatch (этапы 3–5 UNIFIED_ROUTER) проксирует тело
+/// байт-идентично, поэтому префикс доезжает до плоскости как есть; admission/
+/// reserve и upstream Anthropic ждут нативный id (зеркало strip'а
+/// chat-адаптера `anthropic.rs`). Возвращает итоговый id для локального
+/// использования; при снятии префикса поле `model` тела переписывается.
+fn strip_own_namespace(v: &mut Value) -> String {
+    let model = v
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match model.strip_prefix("anthropic/") {
+        Some(stripped) => {
+            let stripped = stripped.to_string();
+            if let Some(slot) = v.get_mut("model") {
+                *slot = Value::String(stripped.clone());
+            }
+            stripped
+        }
+        None => model,
+    }
+}
+
 pub async fn forward(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -876,11 +900,7 @@ pub async fn forward(
     // (=raw) — фолбэк для не-JSON тела. В общем случае (1 попытка) это 1 сериализация, как и раньше.
     let mut web_uses: u64 = 0; // суммарный лимит web-поисков (для резерва их стоимости под баланс)
     if let Some(v) = parsed.as_mut() {
-        model = v
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        model = strip_own_namespace(v);
         max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
         requested_fast = v
             .get("speed")
@@ -2367,6 +2387,39 @@ mod tests {
             reset7d: Some(r7),
             claim: claim.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn strip_own_namespace_rewrites_prefixed_model_in_body() {
+        // Universal dispatch проксирует тело байт-идентично: namespaced id доезжает
+        // до native lane как есть. Strip снимает собственный префикс и в возвращаемом
+        // значении, и в теле, которое уйдёт upstream.
+        let mut body =
+            serde_json::json!({"model": "anthropic/claude-haiku-4-5-20251001", "max_tokens": 16});
+        let model = strip_own_namespace(&mut body);
+        assert_eq!(model, "claude-haiku-4-5-20251001");
+        assert_eq!(body["model"], serde_json::json!("claude-haiku-4-5-20251001"));
+        // Остальное тело не тронуто.
+        assert_eq!(body["max_tokens"], serde_json::json!(16));
+    }
+
+    #[test]
+    fn strip_own_namespace_keeps_native_and_absent_model() {
+        // Native id — без изменений (байт-идентичность native контракта).
+        let mut body = serde_json::json!({"model": "claude-opus-4-8"});
+        let model = strip_own_namespace(&mut body);
+        assert_eq!(model, "claude-opus-4-8");
+        assert_eq!(body["model"], serde_json::json!("claude-opus-4-8"));
+        // Нет поля model / не строка — пустая строка, тело не мутирует.
+        let mut body = serde_json::json!({"max_tokens": 16});
+        let model = strip_own_namespace(&mut body);
+        assert_eq!(model, "");
+        assert!(body.get("model").is_none());
+        // Голый префикс → пустой id (admission отклонит позже, как и пустой model).
+        let mut body = serde_json::json!({"model": "anthropic/"});
+        let model = strip_own_namespace(&mut body);
+        assert_eq!(model, "");
+        assert_eq!(body["model"], serde_json::json!(""));
     }
 
     #[test]

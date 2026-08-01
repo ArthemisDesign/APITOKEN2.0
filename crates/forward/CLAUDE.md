@@ -353,7 +353,10 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    не переписывать тело.
 2. Под капотом: инжект Claude Code identity ПЕРВЫМ system-блоком + `anthropic-beta: oauth-…` +
    `Bearer` подписки. Клиентский `system` сохраняется вторым блоком. Без identity Anthropic не
-   пускает OAuth-токены подписок — но клиент об этом знать не должен.
+   пускает OAuth-токены подписок — но клиент об этом знать не должен. Namespaced catalog id
+   (`anthropic/<native id>`) снимается admission'ом до reserve и upstream (`strip_own_namespace`):
+   universal dispatch router'а проксирует тело байт-идентично, и префикс доезжал бы до upstream
+   как есть (404); зеркало strip'а chat-адаптера `anthropic.rs`. Нативный id не меняется.
 3. **Оборванный SSE закрываем кадром `event: error`** (`SseErrorTail`), а не молчаливым усечением:
    для SDK остановившийся поток неотличим от завершённого, и многие клиенты на нём висят. Кадр
    входит в протокол Anthropic, поэтому это НЕ отход от байт-в-байт прозрачности, а её

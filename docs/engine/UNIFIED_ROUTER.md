@@ -614,7 +614,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `anthropic/` и `google/` уходят на свои плоскости — Gemini Messages skin появится
    поздним этапом 5, до этого plane честно отвечает своей 404),
    остальное — alias через кэшированный каталог; тело проксируется без изменений, ошибки
-   dispatch — в Anthropic-конверте. `POST /v1/messages/count_tokens` в router остаётся
+   dispatch — в Anthropic-конверте. Namespaced `anthropic/<id>` на Anthropic plane
+   снимается admission'ом плоскости до reserve и upstream (`strip_own_namespace` в
+   `crates/forward/src/proxy.rs`, зеркало strip'а chat-адаптера 3.x): до этого исправления
+   префикс доезжал до upstream байт-идентично и тот отвечал 404 (прод-проба 2026-08-01). `POST /v1/messages/count_tokens` в router остаётся
    байт-прокси на Anthropic plane (dispatch — 5.2). На Codex plane
    (`crates/forward/src/codex/skin.rs`, роуты `/v1/messages` и
    `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
