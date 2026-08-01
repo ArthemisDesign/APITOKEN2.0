@@ -51,7 +51,7 @@ context'ов. Правила размещения и обновления — в
 - [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (операторский).
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production-инфраструктура и хосты.
 - [MONITORING.md](ops/MONITORING.md) — мониторинг и runbook-анкоры алертов (`docs/ops/MONITORING.md#<alert>`).
-- [DEVBOT.md](ops/DEVBOT.md) — дизайн dev-бота Telegram (`apps/devbot`): топики, уведомления, источники событий (design, не реализован).
+- [DEVBOT.md](ops/DEVBOT.md) — дизайн dev-бота Telegram (`apps/devbot`): топики, уведомления, источники событий (этапы 1–3 реализованы; этап 4 — бизнес-события — впереди).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — визуальный QA фронтенда.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — продуктовая аналитика Vercel.
 

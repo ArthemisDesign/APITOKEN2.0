@@ -84,7 +84,7 @@ case "$args" in
   *' --filter=@claude-api/openkeys '*) group=openkeys ;;
   *' --filter=@claude-api/content-studio '*|*' --filter=@claude-api/web '*|\
   *' --filter=@claude-api/engine-client '*|*' --filter=@claude-api/payments '*|\
-  *' --filter=@claude-api/admin '*) group=pure ;;
+  *' --filter=@claude-api/admin '*|*' --filter=@claude-api/devbot '*) group=pure ;;
   *) printf 'could not identify test group: %s\n' "$*" >&2; exit 91 ;;
 esac
 if [[ $group != pure && -n ${TYPESCRIPT_TEST_COMPONENTS:-} ]]; then
@@ -111,7 +111,7 @@ chmod +x "$BIN/pnpm"
 full_capture=$TEMP/full
 mkdir -p "$full_capture"
 PNPM_CAPTURE=$full_capture PNPM_EXPECT_BARRIER=4 MIGRATION_EXPECT_BARRIER=3 \
-  TYPESCRIPT_TEST_COMPONENTS=commerce,sales,openkeys,web,admin \
+  TYPESCRIPT_TEST_COMPONENTS=commerce,sales,openkeys,web,admin,devbot \
   TEST_DATABASE_URL=postgresql://commerce-test \
   TEST_SALES_DATABASE_URL=postgresql://sales-test \
   TEST_OPENKEYS_DATABASE_URL=postgresql://openkeys-test PATH="$BIN:$PATH" \
@@ -125,6 +125,12 @@ grep -Fq -- '--filter=@claude-api/admin' "$full_capture/pure.args" \
   || fail 'pure group omitted @claude-api/admin'
 if find "$full_capture" -name 'admin.migration.*' -print -quit | grep -q .; then
   fail 'the database-free admin component launched a migration lane'
+fi
+# The devbot component follows the same database-free contract as admin.
+grep -Fq -- '--filter=@claude-api/devbot' "$full_capture/pure.args" \
+  || fail 'pure group omitted @claude-api/devbot'
+if find "$full_capture" -name 'devbot.migration.*' -print -quit | grep -q .; then
+  fail 'the database-free devbot component launched a migration lane'
 fi
 for group in commerce sales openkeys; do
   [[ -f $full_capture/$group.migration.completed ]] \

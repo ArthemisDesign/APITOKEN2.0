@@ -91,7 +91,7 @@ am_gate_typescript() (
   fi
   context_list=$(wd_typescript_components_for_range "$ROOT" "$base" "$target" "$force_full")
   if [[ $mode != filtered ]]; then
-    context_list=commerce,sales,openkeys,web,admin
+    context_list=commerce,sales,openkeys,web,admin,devbot
   fi
   IFS=, read -r -a build_contexts <<<"$context_list"
   am_log "building complete TypeScript context(s): $context_list"

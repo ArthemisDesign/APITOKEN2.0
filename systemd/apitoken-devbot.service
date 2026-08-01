@@ -1,0 +1,45 @@
+[Unit]
+Description=API Token Sale dev notification bot (Telegram, port 3800)
+After=network-online.target
+Wants=network-online.target
+# Disabled until provisioned: without the operator-placed secret file (and before the first
+# promoted release exists) the unit stays cleanly inactive instead of crash-looping.
+ConditionPathExists=/etc/apitoken/devbot.env
+ConditionPathExists=/opt/apitoken/devbot-releases/current/apps/devbot
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/apitoken/devbot-releases/current/apps/devbot
+Environment=NODE_ENV=production
+Environment=DEVBOT_PORT=3800
+EnvironmentFile=/etc/apitoken/devbot.env
+ExecStart=/usr/bin/node --enable-source-maps dist/main.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StateDirectory=apitoken/devbot
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+UMask=0077
+# State directory plus the node-exporter textfile directory, where the bot atomically
+# publishes devbot.prom (devbot_heartbeat_timestamp_seconds) for the heartbeat alert.
+ReadWritePaths=/var/lib/apitoken/devbot /var/lib/apitoken/monitoring/textfile
+
+[Install]
+WantedBy=multi-user.target

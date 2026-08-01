@@ -312,6 +312,9 @@ wd_typescript_component_artifact_digest() {
     admin)
       artifacts=(apps/admin/.next/BUILD_ID)
       ;;
+    devbot)
+      artifacts=(apps/devbot/dist/main.js)
+      ;;
     *) wd_die "unknown TypeScript artifact component: $component" ;;
   esac
   for relative in "${artifacts[@]}"; do
@@ -346,28 +349,36 @@ wd_typescript_artifact_digest() {
 wd_typescript_component_list_contains() {
   local components=$1 expected=$2 component IFS=,
   [[ $expected == commerce || $expected == sales || $expected == openkeys || $expected == web \
-    || $expected == admin ]] || wd_die "unknown TypeScript component: $expected"
+    || $expected == admin || $expected == devbot ]] || wd_die "unknown TypeScript component: $expected"
   for component in $components; do
     [[ $component == "$expected" ]] && return 0
   done
   return 1
 }
 
+# A canonical component list is non-empty, contains only known components, and orders them by
+# their fixed rank (commerce < sales < openkeys < web < admin < devbot). Checking the rank order
+# programmatically keeps the validator exact for any number of components without enumerating
+# every combination.
 wd_typescript_component_list_is_canonical() {
-  case "$1" in
-    commerce|sales|openkeys|web|admin|\
-    commerce,sales|commerce,openkeys|commerce,web|commerce,admin|\
-    sales,openkeys|sales,web|sales,admin|openkeys,web|openkeys,admin|web,admin|\
-    commerce,sales,openkeys|commerce,sales,web|commerce,sales,admin|\
-    commerce,openkeys,web|commerce,openkeys,admin|commerce,web,admin|\
-    sales,openkeys,web|sales,openkeys,admin|sales,web,admin|openkeys,web,admin|\
-    commerce,sales,openkeys,web|commerce,sales,openkeys,admin|commerce,sales,web,admin|\
-    commerce,openkeys,web,admin|sales,openkeys,web,admin|\
-    commerce,sales,openkeys,web,admin)
-      return 0
-      ;;
-    *) return 1 ;;
-  esac
+  local components=$1 component rank previous_rank=0 IFS=,
+  [[ -n $components ]] || return 1
+  # Word splitting drops a trailing empty field, so reject empty fields explicitly.
+  [[ $components != ,* && $components != *, && $components != *,,* ]] || return 1
+  for component in $components; do
+    case "$component" in
+      commerce) rank=1 ;;
+      sales) rank=2 ;;
+      openkeys) rank=3 ;;
+      web) rank=4 ;;
+      admin) rank=5 ;;
+      devbot) rank=6 ;;
+      *) return 1 ;;
+    esac
+    (( rank > previous_rank )) || return 1
+    previous_rank=$rank
+  done
+  return 0
 }
 
 wd_migration_manifest() {
@@ -680,6 +691,19 @@ wd_path_is_admin() {
   esac
 }
 
+# Devbot bounded context (apps/devbot, dev-уведомления в Telegram). Свой релизный корень
+# (/opt/apitoken/devbot-releases) и свой юнит. Изменения юнита и deploy-скрипта тоже катят
+# lane, чтобы disabled-until-provisioned контур проходился end-to-end; shared build-файлы
+# включены по той же логике, что у admin: бамп зависимостей пере-собирает релиз.
+wd_path_is_devbot() {
+  case "$1" in
+    apps/devbot/*|systemd/apitoken-devbot.service|deploy/devbot-deploy.sh|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 wd_path_is_infrastructure() {
   case "$1" in
     deploy/*|systemd/*|observability/*|compose.yaml)
@@ -914,7 +938,7 @@ wd_typescript_components_for_range() {
   [[ $force_full == 0 || $force_full == 1 ]] \
     || wd_die "TypeScript full-scope flag must be 0 or 1"
   if (( force_full == 1 )); then
-    printf 'commerce,sales,openkeys,web,admin\n'
+    printf 'commerce,sales,openkeys,web,admin,devbot\n'
     return 0
   fi
   wd_range_has_class "$repo" "$base" "$target" wd_path_is_backend \
@@ -927,10 +951,12 @@ wd_typescript_components_for_range() {
     && components+=(web)
   wd_range_has_class "$repo" "$base" "$target" wd_path_is_admin \
     && components+=(admin)
+  wd_range_has_class "$repo" "$base" "$target" wd_path_is_devbot \
+    && components+=(devbot)
   if (( ${#components[@]} == 0 )); then
     # A TypeScript lane with no known owner can be a newly introduced workspace surface. Building
     # everything is the only safe default until its bounded context is explicitly classified.
-    printf 'commerce,sales,openkeys,web,admin\n'
+    printf 'commerce,sales,openkeys,web,admin,devbot\n'
     return 0
   fi
   local joined IFS=,

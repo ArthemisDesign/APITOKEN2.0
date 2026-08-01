@@ -1,7 +1,10 @@
 # DEVBOT.md — дизайн dev-бота Telegram (`apps/devbot`)
 
-Статус: **design, код не реализован**. Документ описывает целевое решение; внедрение идёт по
-плану из раздела 9 отдельными коммитами. Каждый источник событий ниже подтверждён файлом в
+Статус: **этапы 1–3 реализованы** (alert-webhook + команды, деплой-поллер, journald/silence —
+приложение `apps/devbot`; systemd-юнит, watchdog-lane, Alertmanager-рендер и heartbeat-алерт —
+деплой/мониторинг-контур). Остаётся **этап 4** — позитивные бизнес-события commerce; он требует
+нового expand-only контракта от commerce и до его появления не начинается (см. «Открытые
+вопросы»). Каждый источник событий ниже подтверждён файлом в
 репозитории — если при реализации код разойдётся с этой картой, верен код, а документ
 обновляется в том же коммите.
 
@@ -292,21 +295,28 @@ devbot` добавляются в `docs/DEPENDENCIES.md`, а `apps/devbot` — �
 ## 8. Деплой и наблюдаемость самого бота
 
 - Юнит `systemd/apitoken-devbot.service`: `Restart=always`, env из
-  `/etc/apitoken/devbot.env`, `After=network-online.target`. Порт `DEVBOT_PORT` — свободный
-  loopback-порт (существующие заняты: 8790–8799 плоскости движка и router, 3000/3001,
+  `/etc/apitoken/devbot.env`, `After=network-online.target`. Порт `DEVBOT_PORT=3800`
+  (loopback; занятые порты: 8790–8799 плоскости движка и router, 3000/3001,
   3100, 3200, 3300, 3410, 3500, 3600, 3700 приложения, 9090–9187, 9115, 12345 стек
-  мониторинга); конкретный порт выделяется при реализации и фиксируется в
-  `docs/DEPENDENCIES.md`.
+  мониторинга) — зафиксирован в `docs/DEPENDENCIES.md`. До provisioning
+  `/etc/apitoken/devbot.env` юнит остается неактивным через
+  `ConditionPathExists` (без crash-loop), а watchdog-lane завершается зелёным skip'ом, не
+  двигая `devbot.sha` — первый реальный роллаут происходит автоматически после появления
+  секретов.
 - Деплой — отдельная lane host-watchdog по образцу `deploy/admin-deploy.sh`
-  (single-instance, health-gate `GET /health` самого бота с откатом symlink). Добавление
-  lane — изменение `deploy/watchdog.sh`, идёт отдельным коммитом этапа 1 с обновлением
-  `deploy/README.md`.
+  (single-instance, health-gate `GET /health` самого бота с откатом symlink): runner
+  `deploy/devbot-deploy.sh`, релизный корень `/opt/apitoken/devbot-releases`, статус-контекст
+  `deploy/devbot`, deployment-окружение `production-devbot`. Реализовано в
+  `deploy/watchdog.sh` (классификатор `wd_path_is_devbot` — `deploy/watchdog-lib.sh`).
 - Наблюдаемость бота:
   - падение юнита ловит существующий `ProjectSystemdUnitFailed` (паттерн `apitoken-*`);
-  - heartbeat: раз в 5 мин бот пишет метрику/строку состояния; алерт `DevBotHeartbeatMissing`
-    (warning) добавляется в `observability/prometheus/rules/application.yml` с runbook-секцией
-    в `docs/ops/MONITORING.md` и строкой в `deploy/monitoring-config.test.sh` — одним
-    коммитом, как требует gate;
+  - heartbeat: каждые 60 с бот атомарно переписывает
+    `/var/lib/apitoken/monitoring/textfile/devbot.prom`
+    (`devbot_heartbeat_timestamp_seconds`); алерт `DevBotHeartbeatMissing`
+    (warning) в `observability/prometheus/rules/application.yml` срабатывает, когда юнит
+    активен, а heartbeat отсутствует или старше 300 с; runbook-секция —
+    `docs/ops/MONITORING.md#devbotheartbeatmissing`, согласованность гейтит
+    `deploy/monitoring-config.test.sh`;
   - деградация Telegram API видна по логу ошибок отправки (journald) — без отдельного
     алерта на этапе 1.
 - Канал-последней-инстанции: если бот мёртв, email-receiver Alertmanager продолжает

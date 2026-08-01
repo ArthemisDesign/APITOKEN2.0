@@ -30,11 +30,13 @@ only after its migration and overall statuses are green may dependent applicatio
 | `deploy/sales` | Exact tested Sales release rollout, or no sales change |
 | `deploy/openkeys` | Exact tested OpenKeys release rollout, or no OpenKeys change |
 | `deploy/admin` | Exact tested admin panel release rollout, or no admin change |
+| `deploy/devbot` | Exact tested devbot release rollout, no devbot change, or devbot disabled (`/etc/apitoken/devbot.env` not yet provisioned) |
 | `deploy/watchdog` | End-to-end result |
 
 Affected stages also appear as GitHub deployment records in the `production-database`,
-`production-engine`, `production-backend`, `production-sales`, `production-openkeys`, and
-`production-admin`
+`production-engine`, `production-backend`, `production-sales`, `production-openkeys`,
+`production-admin`, and
+`production-devbot`
 environments. This is reporting only: builds and deployments run on the existing production host,
 so no paid GitHub runner is used.
 

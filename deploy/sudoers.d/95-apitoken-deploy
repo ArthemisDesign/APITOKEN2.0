@@ -31,7 +31,8 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \
     /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh [0-9a-f]*, \
-    /usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh [0-9a-f]*
+    /usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh [0-9a-f]*
 
 # Candidate workspaces are built as apitoken-ci and finalized root-owned/read-only. The watchdog
 # flips ownership and write bits around the test gate and removes expired trees. Restricted to the

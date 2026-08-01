@@ -50,6 +50,20 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 | `apps/sales-api` (публичный + админ API) | `partners.apitoken.sale/v1/*`; `/v1/admin` через Caddy `admin.apitoken.sale/partner-admin/*`, заголовок `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |
 | `packages/payments` | адаптеры провайдеров: Platega (дефолт) и Cryptomus — боевые; DigiSeller — зарегистрирован, но отключён для клиентов (нет точки входа, статус в документе); вебхуки `POST /v1/payments/{platega,cryptomus}/webhook` в `apps/api`; reconcile-поллинг в `apps/worker` | `apps/api`, `apps/worker` (единственные потребители) | `docs/commerce/PLATEGA_INTEGRATION.md`, `docs/commerce/CRYPTOMUS_INTEGRATION.md`, `docs/commerce/DIGISELLER_INTEGRATION.md` |
 
+### Devbot (`apps/devbot`)
+
+Dev-бот Telegram — потребитель сигналов observability и deploy-контура; ни в одну БД не ходит,
+Control API движка использует только на чтение. Своя release-lane `deploy/devbot`
+(`/opt/apitoken/devbot-releases`), loopback-порт `127.0.0.1:3800`.
+
+| Производитель | Контракт / канал | Потребители | Документ контракта |
+|---|---|---|---|
+| Alertmanager (`observability/alertmanager/alertmanager.yml.template`) | webhook `POST http://127.0.0.1:3800/alerts/{DEVBOT_AM_SECRET}` — receiver `devbot-telegram`, route с `continue: true` рядом с email-деревом (expand-only); блок рендерится только при provisioned `DEVBOT_AM_SECRET` из `/etc/apitoken/devbot.env` | `apps/devbot` | `docs/ops/DEVBOT.md` |
+| GitHub API | commit statuses `deploy/*`, deployments `production-*` / `candidate-validation` (read-only PAT) | `apps/devbot` (поллер, 30–60 с) | `docs/ops/DEVBOT.md` |
+| `crates/server` Control API | readonly/control GET (`/pool`, `/codex-subs`, `/gemini-subs`, `/settlement-health`, слоты `/ready`) | `apps/devbot` (команды бота) | `docs/engine/CONTROL_API.md` |
+| journald | чтение журнала юнитов deploy-контура (префиксы `[watchdog]`, `[admin-deploy]` и т.п.) | `apps/devbot` (этап 3) | `docs/ops/DEVBOT.md` |
+| `apps/devbot` | node-exporter textfile `devbot_heartbeat_timestamp_seconds` (`/var/lib/apitoken/monitoring/textfile/devbot.prom`, атомарно каждые 60 с) | Prometheus → алерт `DevBotHeartbeatMissing` | `docs/ops/MONITORING.md#devbotheartbeatmissing` |
+
 ## 2. Внутри движка (кратко)
 
 Слои и инварианты — `CLAUDE.md` (таблица слоёв) и `docs/engine/ARCHITECTURE.md`. Здесь только
@@ -121,14 +135,14 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 `claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
 `apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·
-`apitoken-sales-api` → 3100 · `apitoken-sales-web` → 3200 · `apitoken-crm-{api,web}` → внешняя
+`apitoken-devbot` → `apps/devbot` 3800 · `apitoken-sales-api` → 3100 · `apitoken-sales-web` → 3200 · `apitoken-crm-{api,web}` → внешняя
 CRM (3400/3300, НЕ удалять) · плюс infra-юниты: postgres, affinity-redis, deploy-watchdog,
 monitoring-collector, candidate-validator, backup, fingerprint · host-bootstrap:
 `apitoken-{sudoers,sysctl,tmpfiles}-install`.
 
 ### Мониторинг — петля «метрика → алерт → runbook»
 
-`observability/prometheus/rules/{application,operations}.yml` (~58 алертов) — у каждого
+`observability/prometheus/rules/{application,operations}.yml` (~59 алертов) — у каждого
 аннотация `runbook: 'docs/ops/MONITORING.md#<alert>'`, и секция `## <Alert>` обязана
 существовать в `docs/ops/MONITORING.md`. Согласованность механически проверяет
 `deploy/monitoring-config.test.sh`, который host прогоняет при валидации каждого

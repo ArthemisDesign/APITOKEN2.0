@@ -217,25 +217,26 @@ publish_pipeline_start_statuses
   || wd_die "pipeline start statuses were not both published"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=6
-publish_unchanged_component_statuses 0 0 0 0 0
+STATUS_BARRIER_EXPECTED=7
+publish_unchanged_component_statuses 0 0 0 0 0 0
 [[ $(sort -u "$status_barrier_log" | tr '\n' ',') \
-    == 'deploy/admin,deploy/backend,deploy/engine,deploy/migration,deploy/openkeys,deploy/sales,' ]] \
+    == 'deploy/admin,deploy/backend,deploy/devbot,deploy/engine,deploy/migration,deploy/openkeys,deploy/sales,' ]] \
   || wd_die "unchanged status publication lost a component context"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=3
-publish_unchanged_component_statuses 1 1 0 0 0
-[[ $(sort -u "$status_barrier_log" | tr '\n' ',') == 'deploy/admin,deploy/openkeys,deploy/sales,' ]] \
+STATUS_BARRIER_EXPECTED=4
+publish_unchanged_component_statuses 1 1 0 0 0 0
+[[ $(sort -u "$status_barrier_log" | tr '\n' ',') \
+    == 'deploy/admin,deploy/devbot,deploy/openkeys,deploy/sales,' ]] \
   || wd_die "changed components received a false no-change status"
 
 : >"$status_barrier_log"
-STATUS_BARRIER_EXPECTED=6
+STATUS_BARRIER_EXPECTED=7
 STATUS_FAIL_CONTEXT=deploy/engine
-if ( publish_unchanged_component_statuses 0 0 0 0 0 ) >/dev/null 2>&1; then
+if ( publish_unchanged_component_statuses 0 0 0 0 0 0 ) >/dev/null 2>&1; then
   wd_die "a failed status worker did not fail the parent publication batch"
 fi
-(( $(wc -l <"$status_barrier_log") == 6 )) \
+(( $(wc -l <"$status_barrier_log") == 7 )) \
   || wd_die "a failed status worker abandoned sibling publication requests"
 STATUS_FAIL_CONTEXT=
 
@@ -681,6 +682,16 @@ wd_path_is_backend packages/openkeys-db/src/schema.ts \
 wd_path_is_admin apps/admin/src/app/page.tsx || wd_die "admin app not classified as admin"
 wd_path_is_admin apps/api/src/main.ts && wd_die "commerce api wrongly classified as admin"
 wd_path_is_admin crates/server/src/http.rs && wd_die "engine wrongly classified as admin"
+wd_path_is_devbot apps/devbot/src/main.ts || wd_die "devbot app not classified as devbot"
+wd_path_is_devbot systemd/apitoken-devbot.service \
+  || wd_die "devbot unit not classified as devbot"
+wd_path_is_devbot deploy/devbot-deploy.sh || wd_die "devbot deploy script not classified as devbot"
+wd_path_is_devbot apps/api/src/main.ts && wd_die "commerce api wrongly classified as devbot"
+wd_path_is_devbot crates/server/src/http.rs && wd_die "engine wrongly classified as devbot"
+wd_path_is_devbot apps/admin/src/app/page.tsx && wd_die "admin app wrongly classified as devbot"
+wd_path_is_admin apps/devbot/src/main.ts && wd_die "devbot app wrongly classified as admin"
+wd_path_is_backend apps/devbot/src/main.ts \
+  && wd_die "apps/devbot must not trigger the independent commerce backend"
 wd_path_is_backend apps/admin/src/app/page.tsx \
   && wd_die "apps/admin must not trigger the independent commerce backend"
 wd_path_is_sales apps/admin/src/app/page.tsx && wd_die "admin app wrongly classified as sales"
@@ -719,6 +730,19 @@ grep -Fq 'WEB_ROLLBACK_HEALTH=${ADMIN_WEB_ROLLBACK_HEALTH:-http://127.0.0.1:3700
   || wd_die "admin rollback health must remain compatible with the previous release"
 if grep -Fq 'migrate.js' "$ROOT/deploy/admin-deploy.sh"; then
   wd_die "the admin panel has no database and must not run migrations"
+fi
+grep -Fq 'HEALTH=${DEVBOT_HEALTH:-http://127.0.0.1:3800/health}' \
+  "$ROOT/deploy/devbot-deploy.sh" \
+  || wd_die "devbot rollout must gate on the application health endpoint"
+grep -Fq 'ROLLBACK_HEALTH=${DEVBOT_ROLLBACK_HEALTH:-http://127.0.0.1:3800/health}' \
+  "$ROOT/deploy/devbot-deploy.sh" \
+  || wd_die "devbot rollback health must remain compatible with the previous release"
+grep -Fq 'devbot disabled: ' "$ROOT/deploy/devbot-deploy.sh" \
+  || wd_die "devbot rollout must skip cleanly while secrets are not provisioned"
+grep -Fq 'missing — skipping' "$ROOT/deploy/devbot-deploy.sh" \
+  || wd_die "devbot disabled skip must keep its operator-visible log line"
+if grep -Fq 'migrate.js' "$ROOT/deploy/devbot-deploy.sh"; then
+  wd_die "the devbot has no database and must not run migrations"
 fi
 
 wd_engine_topology_is_steady 1 1 1 1 0 0 0 0 0 0
@@ -1110,17 +1134,38 @@ validation_admin_context=$(git -C "$validation_repo" rev-parse HEAD)
 [[ $(wd_typescript_components_for_range "$validation_repo" \
   "$validation_web_context" "$validation_admin_context" 0) == admin ]] \
   || wd_die "an admin-only range selected unrelated runtime contexts"
+mkdir -p "$validation_repo/apps/devbot"
+printf 'devbot\n' >"$validation_repo/apps/devbot/main.ts"
+git -C "$validation_repo" add apps/devbot/main.ts
+git -C "$validation_repo" commit --quiet -m devbot-context
+validation_devbot_context=$(git -C "$validation_repo" rev-parse HEAD)
+[[ $(wd_typescript_components_for_range "$validation_repo" \
+  "$validation_admin_context" "$validation_devbot_context" 0) == devbot ]] \
+  || wd_die "a devbot-only range selected unrelated runtime contexts"
 mkdir -p "$validation_repo/packages/contracts"
 printf 'contracts\n' >"$validation_repo/packages/contracts/index.ts"
 git -C "$validation_repo" add packages/contracts/index.ts
 git -C "$validation_repo" commit --quiet -m shared-context
 validation_shared_context=$(git -C "$validation_repo" rev-parse HEAD)
 [[ $(wd_typescript_components_for_range "$validation_repo" \
-  "$validation_admin_context" "$validation_shared_context" 0) == commerce,sales,openkeys ]] \
+  "$validation_devbot_context" "$validation_shared_context" 0) == commerce,sales,openkeys ]] \
   || wd_die "the contracts package did not select every host consumer context"
 [[ $(wd_typescript_components_for_range "$validation_repo" \
-  "$validation_admin_context" "$validation_shared_context" 1) == commerce,sales,openkeys,web,admin ]] \
+  "$validation_devbot_context" "$validation_shared_context" 1) == commerce,sales,openkeys,web,admin,devbot ]] \
   || wd_die "full TypeScript validation did not select every runtime context"
+
+# The canonical-list validator accepts any strictly rank-ordered subset and rejects duplicates,
+# unknown components, wrong order, and empty fields without enumerating combinations.
+for canonical_list in devbot commerce,devbot web,admin,devbot \
+  commerce,sales,openkeys,web,admin,devbot; do
+  wd_typescript_component_list_is_canonical "$canonical_list" \
+    || wd_die "a canonical TypeScript component list was rejected: $canonical_list"
+done
+for malformed_list in '' devbot,admin admin,devbot,admin devbot, ,devbot commerce,unknown; do
+  if wd_typescript_component_list_is_canonical "$malformed_list"; then
+    wd_die "a malformed TypeScript component list was accepted: $malformed_list"
+  fi
+done
 
 # A deleted component file still requires that component's lane. A rename is deliberately exposed
 # as an old-path deletion plus a new-path addition, so moving code cannot escape its former owner.
@@ -1159,6 +1204,7 @@ artifact_paths=(
   apps/openkeys/.next/BUILD_ID
   apps/web/.next/BUILD_ID
   apps/admin/.next/BUILD_ID
+  apps/devbot/dist/main.js
   packages/db/dist/migrate.js
   packages/sales-db/dist/migrate.js
   packages/openkeys-db/dist/migrate.js
@@ -1172,7 +1218,7 @@ deploy_artifact_digest=$(bash -c \
   'source "$1"; tested_typescript_artifact_digest "$2"' _ "$ROOT/deploy/lib.sh" "$artifact_tree")
 [[ $watchdog_artifact_digest == "$deploy_artifact_digest" ]] \
   || wd_die "watchdog and release promoter disagree on the TypeScript artifact identity"
-for artifact_component in commerce sales openkeys web admin; do
+for artifact_component in commerce sales openkeys web admin devbot; do
   watchdog_component_digest=$(wd_typescript_component_artifact_digest \
     "$artifact_tree" "$artifact_component")
   deploy_component_digest=$(bash -c \
@@ -2006,6 +2052,7 @@ gate_contract=(
   'typescript_artifact_digest_openkeys=%s'
   'typescript_artifact_digest_web=%s'
   'typescript_artifact_digest_admin=%s'
+  'typescript_artifact_digest_devbot=%s'
   'commerce_release_bundle_sha256=%s'
 )
 for required_stage in "${gate_contract[@]}"; do
@@ -2029,6 +2076,7 @@ const required = new Set([
   "apps/admin",
   "apps/api",
   "apps/content-studio",
+  "apps/devbot",
   "apps/openkeys",
   "apps/sales-api",
   "apps/web",
@@ -2117,6 +2165,42 @@ grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' \
 if grep -Fq 'EnvironmentFile' "$ROOT/systemd/apitoken-admin.service"; then
   wd_die 'the admin panel has no secrets and must not load an environment file'
 fi
+
+# The devbot lane is installed exactly like the other independent release lanes: its deploy
+# controller, its systemd unit, and a least-privilege sudo grant for the fixed script path. The
+# unit and the lane stay deliberately inert until the operator provisions /etc/apitoken/devbot.env.
+grep -Fq 'controller/devbot-deploy.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the devbot deploy controller is not installed'
+grep -Fq 'apitoken-devbot.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the devbot unit is not installed'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh [0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'deploy user cannot invoke the fixed devbot deploy controller'
+grep -Fxq 'WorkingDirectory=/opt/apitoken/devbot-releases/current/apps/devbot' \
+  "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit does not run from the immutable devbot release'
+grep -Fxq 'ConditionPathExists=/etc/apitoken/devbot.env' \
+  "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit must stay inactive until secrets are provisioned'
+grep -Fxq 'EnvironmentFile=/etc/apitoken/devbot.env' \
+  "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit does not load its environment file'
+grep -Fxq 'Environment=DEVBOT_PORT=3800' \
+  "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit does not serve the fixed loopback port 3800'
+grep -Fxq 'ProtectSystem=strict' "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit lost its filesystem hardening'
+grep -Fxq 'ReadWritePaths=/var/lib/apitoken/devbot /var/lib/apitoken/monitoring/textfile' \
+  "$ROOT/systemd/apitoken-devbot.service" \
+  || wd_die 'the devbot unit cannot write its state directory or heartbeat textfile'
+grep -Fq 'DEVBOT_FILE=$STATE_ROOT/devbot.sha' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the watchdog has no devbot baseline state file'
+grep -Fq 'run_rollout_lane deploy_devbot' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the devbot rollout lane is not wired into the watchdog'
+grep -Fq 'github_deployment_start devbot production-devbot' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the devbot lane does not publish its deployment environment'
+grep -Fq 'success deploy/devbot' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the devbot lane does not publish its status context'
 
 # A pre-candidate failure must never quarantine a commit: no SHA has been evaluated at that point.
 grep -Fq 'no commit was evaluated' "$ROOT/deploy/watchdog.sh" \

@@ -17,7 +17,7 @@ shift
 CONTEXTS=()
 for requested in "$@"; do
   case "$requested" in
-    commerce|sales|openkeys|web|admin) ;;
+    commerce|sales|openkeys|web|admin|devbot) ;;
     *) die "unknown build context: $requested" ;;
   esac
   for existing in ${CONTEXTS[@]+"${CONTEXTS[@]}"}; do
@@ -37,6 +37,7 @@ const expected = new Set([
   "@claude-api/admin",
   "@claude-api/commercial-api",
   "@claude-api/content-studio",
+  "@claude-api/devbot",
   "@claude-api/openkeys",
   "@claude-api/payment-worker",
   "@claude-api/sales-api",
@@ -138,6 +139,9 @@ cache_input_paths() {
     admin)
       CACHE_INPUT_PATHS+=(apps/admin)
       ;;
+    devbot)
+      CACHE_INPUT_PATHS+=(apps/devbot)
+      ;;
   esac
 }
 
@@ -200,6 +204,7 @@ const names = {
     "SITE_URL",
   ],
   admin: [...common],
+  devbot: [...common],
 }[context];
 for (const name of [...new Set(names)].sort()) {
   const value = Object.hasOwn(process.env, name) ? process.env[name] : "<unset>";
@@ -252,6 +257,7 @@ const rootsByContext = {
   ],
   web: ["apps/web/.next"],
   admin: ["apps/admin/.next"],
+  devbot: ["apps/devbot/dist"],
 };
 const requiredByContext = {
   commerce: [
@@ -271,6 +277,7 @@ const requiredByContext = {
   ],
   web: ["apps/web/.next/BUILD_ID"],
   admin: ["apps/admin/.next/BUILD_ID"],
+  devbot: ["apps/devbot/dist/main.js"],
 };
 const roots = rootsByContext[context];
 const required = requiredByContext[context];
@@ -735,6 +742,9 @@ for context in "${BUILD_CONTEXTS[@]}"; do
       ;;
     admin)
       start_context admin @claude-api/admin
+      ;;
+    devbot)
+      start_context devbot @claude-api/devbot
       ;;
   esac
 done

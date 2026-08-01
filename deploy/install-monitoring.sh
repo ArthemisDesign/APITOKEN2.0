@@ -47,7 +47,10 @@ for fixed_file in "$WORKER_ENV" "$ENGINE_ENV" "$POSTGRES_ENV" "$POSTGRES_COMPOSE
   [[ -f $fixed_file && ! -L $fixed_file ]] || die "required fixed file is missing: $fixed_file"
 done
 
-install -d -o root -g root -m 0755 /etc/apitoken /var/lib/apitoken/monitoring/textfile
+install -d -o root -g root -m 0755 /etc/apitoken /var/lib/apitoken/monitoring
+# Group-deploy writable: apitoken-devbot.service (User=deploy) atomically publishes its
+# devbot.prom heartbeat here alongside the root-owned collector output; node-exporter only reads.
+install -d -o root -g deploy -m 0775 /var/lib/apitoken/monitoring/textfile
 if [[ ! -e $ENV_FILE ]]; then
   umask 077
   {
@@ -106,7 +109,18 @@ cp -a -- "$SOURCE/." "$STAGE/"
 install -d -o root -g root -m 0700 "$STAGE/secrets" "$STAGE/rendered"
 printf '%s\n' "$engine_key" >"$STAGE/secrets/engine_metrics_token"
 chmod 0600 "$STAGE/secrets/engine_metrics_token"
-node "$ROOT/deploy/render-alertmanager.mjs" \
+# Optional devbot webhook: the secret lives only in the operator-provisioned devbot env file,
+# which the bot itself also reads, so both sides of the authenticated path share one source.
+# When the file (or key) is absent the renderer strips the marked devbot block and the
+# email-only configuration is installed unchanged.
+devbot_am_secret=
+if [[ -f /etc/apitoken/devbot.env && ! -L /etc/apitoken/devbot.env ]]; then
+  devbot_am_secret=$(awk -F= '$1 == "DEVBOT_AM_SECRET" { print substr($0, index($0, "=") + 1) }' \
+    /etc/apitoken/devbot.env | tail -n 1)
+  devbot_am_secret=${devbot_am_secret%\"}; devbot_am_secret=${devbot_am_secret#\"}
+  devbot_am_secret=${devbot_am_secret%\'}; devbot_am_secret=${devbot_am_secret#\'}
+fi
+DEVBOT_AM_SECRET=$devbot_am_secret node "$ROOT/deploy/render-alertmanager.mjs" \
   "$STAGE/alertmanager/alertmanager.yml.template" "$WORKER_ENV" "$ENV_FILE" \
   "$STAGE/rendered/alertmanager.yml"
 find "$STAGE" -type d -exec chmod 0755 {} +

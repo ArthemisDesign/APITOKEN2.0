@@ -77,6 +77,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
   install -o root -g root -m 0755 "$ROOT/deploy/admin-deploy.sh" \
     /usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/devbot-deploy.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
 }
 
 install_systemd_definitions() {
@@ -106,6 +108,7 @@ install_systemd_definitions() {
     claude-router.service \
     apitoken-openkeys.service \
     apitoken-admin.service \
+    apitoken-devbot.service \
     apitoken-monitoring-collector.service apitoken-monitoring-collector.timer; do
     if [[ $unit == apitoken-affinity-redis.service ]]; then
       [[ ! -L "/etc/systemd/system/$unit" ]] \

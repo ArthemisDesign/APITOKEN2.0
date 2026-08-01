@@ -22,7 +22,7 @@ if [[ -n $TEST_COMPONENTS ]]; then
   seen_components=()
   for selected_component in "${SELECTED_COMPONENTS[@]}"; do
     case "$selected_component" in
-      commerce|sales|openkeys|web|admin) ;;
+      commerce|sales|openkeys|web|admin|devbot) ;;
       *) die "unknown TypeScript test component: $selected_component" ;;
     esac
     for seen_component in ${seen_components[@]+"${seen_components[@]}"}; do
@@ -32,7 +32,7 @@ if [[ -n $TEST_COMPONENTS ]]; then
     seen_components+=("$selected_component")
   done
   canonical_components=
-  for expected_component in commerce sales openkeys web admin; do
+  for expected_component in commerce sales openkeys web admin devbot; do
     for selected_component in "${SELECTED_COMPONENTS[@]}"; do
       [[ $selected_component != "$expected_component" ]] || {
         if [[ -n $canonical_components ]]; then canonical_components+=,; fi
@@ -51,6 +51,7 @@ PURE_PACKAGES=(
   @claude-api/engine-client
   @claude-api/payments
   @claude-api/admin
+  @claude-api/devbot
 )
 COMMERCE_PACKAGES=(
   @claude-api/db

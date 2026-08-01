@@ -24,12 +24,14 @@ elif [[ $args == *" --filter=@claude-api/web "* ]]; then
   label=web
 elif [[ $args == *" --filter=@claude-api/admin "* ]]; then
   label=admin
+elif [[ $args == *" --filter=@claude-api/devbot "* ]]; then
+  label=devbot
 else
   printf '%s\n' "$*" >"$state/shared.args"
   : >"$state/shared.done"
   exit 0
 fi
-[[ -f $state/shared.done || $label == web || $label == admin ]] \
+[[ -f $state/shared.done || $label == web || $label == admin || $label == devbot ]] \
   || { printf 'context started before shared packages: %s\n' "$label" >&2; exit 71; }
 printf '%s\n' "$*" >"$state/$label.args"
 mkdir "$state/started/$label"
@@ -44,9 +46,9 @@ done
 STUB
 chmod +x "$TEMP/bin/pnpm"
 
-PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=5 \
-  bash "$RUNNER" "$ROOT" commerce sales openkeys web admin
-for context in commerce sales openkeys web admin; do
+PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=6 \
+  bash "$RUNNER" "$ROOT" commerce sales openkeys web admin devbot
+for context in commerce sales openkeys web admin devbot; do
   [[ -f $TEMP/state/$context.args ]] || fail "$context context was not built"
 done
 grep -Fq -- '--filter=@claude-api/contracts' "$TEMP/state/shared.args" \
@@ -71,6 +73,13 @@ PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_J
   bash "$RUNNER" "$ROOT" admin
 [[ -f $TEMP/state/admin.args && ! -e $TEMP/state/shared.args && ! -e $TEMP/state/commerce.args ]] \
   || fail 'admin-only build started shared or unrelated contexts'
+
+rm -rf "$TEMP/state"
+mkdir -p "$TEMP/state/started"
+PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=1 \
+  bash "$RUNNER" "$ROOT" devbot
+[[ -f $TEMP/state/devbot.args && ! -e $TEMP/state/shared.args && ! -e $TEMP/state/commerce.args ]] \
+  || fail 'devbot-only build started shared or unrelated contexts'
 
 rm -rf "$TEMP/state"
 mkdir -p "$TEMP/state/started"

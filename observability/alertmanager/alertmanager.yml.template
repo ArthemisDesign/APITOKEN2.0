@@ -13,6 +13,17 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
+    # DEVBOT-BEGIN
+    # Optional Telegram fan-out: rendered only when DEVBOT_AM_SECRET is provisioned (see
+    # deploy/render-alertmanager.mjs). Matching every alert, then continuing down the tree,
+    # keeps production-email receiving exactly what it receives today (expand-only).
+    - receiver: devbot-telegram
+      continue: true
+      routes:
+        - matchers: [severity="critical"]
+          group_wait: 10s
+          repeat_interval: 1h
+    # DEVBOT-END
     - matchers: [severity="critical"]
       group_wait: 10s
       repeat_interval: 1h
@@ -32,6 +43,14 @@ receivers:
           Component: {{ .Labels.component }}<br>
           Runbook: {{ .Annotations.runbook }}</p>
           {{ end }}
+  # DEVBOT-BEGIN
+  # Loopback-only webhook into apps/devbot (systemd apitoken-devbot.service). The path secret is
+  # substituted from DEVBOT_AM_SECRET by deploy/render-alertmanager.mjs.
+  - name: devbot-telegram
+    webhook_configs:
+      - url: http://127.0.0.1:3800/alerts/__DEVBOT_AM_SECRET__
+        send_resolved: true
+  # DEVBOT-END
 
 inhibit_rules:
   - source_matchers: [alertname="MonitoringTargetDown"]

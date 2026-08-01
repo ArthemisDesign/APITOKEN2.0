@@ -35,6 +35,7 @@ RETENTION_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-retention.sh
 SALES_RUNNER=/usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh
 OPENKEYS_RUNNER=/usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh
 ADMIN_RUNNER=/usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
+DEVBOT_RUNNER=/usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
 GITHUB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-github
 WATCHDOG_LOCK=/run/lock/apitoken-watchdog.lock
 CANDIDATE_VALIDATOR_LOCK=/run/lock/apitoken-candidate-validator.lock
@@ -50,6 +51,9 @@ BACKEND_FILE=$STATE_ROOT/backend.sha
 SALES_FILE=$STATE_ROOT/sales.sha
 OPENKEYS_FILE=$STATE_ROOT/openkeys.sha
 ADMIN_FILE=$STATE_ROOT/admin.sha
+DEVBOT_FILE=$STATE_ROOT/devbot.sha
+# Presence of this operator-provisioned secret file is what enables the devbot lane and unit.
+DEVBOT_ENV_FILE=/etc/apitoken/devbot.env
 REJECTED_FILE=$STATE_ROOT/rejected.sha
 PENDING_MIGRATION_FILE=$STATE_ROOT/pending-migration.sha
 DB_MANIFEST=$STATE_ROOT/database-migrations.manifest
@@ -124,10 +128,12 @@ publish_pipeline_start_statuses() {
 
 publish_unchanged_component_statuses() {
   local engine_changed=$1 backend_changed=$2 sales_changed=$3 openkeys_changed=$4 admin_changed=$5
+  local devbot_changed=$6
   local migration_pid='' engine_pid='' backend_pid='' sales_pid='' openkeys_pid='' admin_pid=''
-  local migration_rc=0 engine_rc=0 backend_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 flag
+  local devbot_pid=''
+  local migration_rc=0 engine_rc=0 backend_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0 flag
   for flag in "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" \
-    "$admin_changed"; do
+    "$admin_changed" "$devbot_changed"; do
     [[ $flag == 0 || $flag == 1 ]] || wd_die "invalid component reporting flag: $flag"
   done
 
@@ -155,6 +161,10 @@ publish_unchanged_component_statuses() {
     run_github_status_lane success deploy/admin "No admin changes" &
     admin_pid=$!
   fi
+  if (( devbot_changed == 0 )); then
+    run_github_status_lane success deploy/devbot "No devbot changes" &
+    devbot_pid=$!
+  fi
 
   if [[ -n $migration_pid ]]; then wait "$migration_pid" || migration_rc=$?; fi
   if [[ -n $engine_pid ]]; then wait "$engine_pid" || engine_rc=$?; fi
@@ -162,9 +172,10 @@ publish_unchanged_component_statuses() {
   if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
   if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
   if [[ -n $admin_pid ]]; then wait "$admin_pid" || admin_rc=$?; fi
+  if [[ -n $devbot_pid ]]; then wait "$devbot_pid" || devbot_rc=$?; fi
   (( migration_rc == 0 && engine_rc == 0 && backend_rc == 0 \
-      && sales_rc == 0 && openkeys_rc == 0 && admin_rc == 0 )) \
-    || wd_die "unchanged-component status publication failed (migration=$migration_rc engine=$engine_rc backend=$backend_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc)"
+      && sales_rc == 0 && openkeys_rc == 0 && admin_rc == 0 && devbot_rc == 0 )) \
+    || wd_die "unchanged-component status publication failed (migration=$migration_rc engine=$engine_rc backend=$backend_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc devbot=$devbot_rc)"
 }
 
 test_db() {
@@ -245,6 +256,7 @@ github_phase_failure() {
     deploying-sales) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/sales "$diagnostic" >/dev/null 2>&1 || true ;;
     deploying-openkeys) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/openkeys "$diagnostic" >/dev/null 2>&1 || true ;;
     deploying-admin) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/admin "$diagnostic" >/dev/null 2>&1 || true ;;
+    deploying-devbot) sudo -n "$GITHUB_HELPER" commit-status "$CANDIDATE_SHA" failure deploy/devbot "$diagnostic" >/dev/null 2>&1 || true ;;
   esac
 }
 
@@ -427,7 +439,7 @@ candidate_is_tested() {
       [[ $actual_hash == "$expected_hash" ]] || return 1
     else
       wd_typescript_component_list_is_canonical "$marker_typescript_components" || return 1
-      for component in commerce sales openkeys web admin; do
+      for component in commerce sales openkeys web admin devbot; do
         wd_typescript_component_list_contains "$required_typescript_components" "$component" \
           || continue
         wd_typescript_component_list_contains "$marker_typescript_components" "$component" \
@@ -615,7 +627,7 @@ test_typescript_lane() {
   if [[ $mode != filtered ]]; then
     # A shared/full/failed package scope needs every clean runtime context. This keeps the fallback
     # fail-closed and aligns full typecheck/tests with the artifacts they exercise.
-    lane_components=commerce,sales,openkeys,web,admin
+    lane_components=commerce,sales,openkeys,web,admin,devbot
   fi
   IFS=, read -r -a build_contexts <<<"$lane_components"
   wd_log "building complete TypeScript context(s): $lane_components"
@@ -705,7 +717,7 @@ prepare_and_test_candidate_unlocked() {
   local typescript_components=none typescript_digest=none component
   local typescript_digest_commerce=none typescript_digest_sales=none
   local typescript_digest_openkeys=none typescript_digest_web=none
-  local typescript_digest_admin=none
+  local typescript_digest_admin=none typescript_digest_devbot=none
   local commerce_release_bundle_hash=none
   local engine_hash=none authbot_hash=none router_hash=none
   candidate=$(candidate_for "$sha")
@@ -788,7 +800,7 @@ prepare_and_test_candidate_unlocked() {
   digest=$(wd_manifest_digest "$manifest")
   tree=$(run_as_ci git -C "$candidate" rev-parse 'HEAD^{tree}')
   if (( typescript_required == 1 )); then
-    for component in commerce sales openkeys web admin; do
+    for component in commerce sales openkeys web admin devbot; do
       wd_typescript_component_list_contains "$typescript_components" "$component" || continue
       case "$component" in
         commerce)
@@ -809,6 +821,10 @@ prepare_and_test_candidate_unlocked() {
           ;;
         admin)
           typescript_digest_admin=$(wd_typescript_component_artifact_digest \
+            "$candidate" "$component")
+          ;;
+        devbot)
+          typescript_digest_devbot=$(wd_typescript_component_artifact_digest \
             "$candidate" "$component")
           ;;
       esac
@@ -848,6 +864,7 @@ prepare_and_test_candidate_unlocked() {
     printf 'typescript_artifact_digest_openkeys=%s\n' "$typescript_digest_openkeys"
     printf 'typescript_artifact_digest_web=%s\n' "$typescript_digest_web"
     printf 'typescript_artifact_digest_admin=%s\n' "$typescript_digest_admin"
+    printf 'typescript_artifact_digest_devbot=%s\n' "$typescript_digest_devbot"
     printf 'commerce_release_bundle_sha256=%s\n' "$commerce_release_bundle_hash"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
@@ -1092,6 +1109,7 @@ load_production_baselines() {
   SALES_SHA=$(wd_read_sha "$SALES_FILE" 2>/dev/null || printf '')
   OPENKEYS_SHA=$(wd_read_sha "$OPENKEYS_FILE" 2>/dev/null || printf '')
   ADMIN_SHA=$(wd_read_sha "$ADMIN_FILE" 2>/dev/null || printf '')
+  DEVBOT_SHA=$(wd_read_sha "$DEVBOT_FILE" 2>/dev/null || printf '')
 }
 
 shadow_validation_exit() {
@@ -1168,6 +1186,8 @@ run_shadow_candidate_validation() (
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" shadow-openkeys
   [[ -z $ADMIN_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" shadow-admin
+  [[ -z $DEVBOT_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$DEVBOT_SHA" "$CANDIDATE_SHA" shadow-devbot
 
   # Validate from the real production component baselines. The committed parent can be red when
   # agent-merge is repairing it; treating that undeployed parent as a production baseline both
@@ -1256,6 +1276,8 @@ candidate_validator_main() {
     || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$master_sha" validator-openkeys
   [[ -z $ADMIN_SHA ]] \
     || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$master_sha" validator-admin
+  [[ -z $DEVBOT_SHA ]] \
+    || wd_require_ancestor "$SOURCE_REPO" "$DEVBOT_SHA" "$master_sha" validator-devbot
 
   for index in "${!validation_ids[@]}"; do
     slot=$((index + 1))
@@ -1962,6 +1984,29 @@ deploy_admin() {
   wd_log "admin $sha promoted and verified (admin.apitoken.sale)"
 }
 
+deploy_devbot() {
+  local sha=$1
+  CURRENT_PHASE=deploying-devbot
+  CURRENT_PHASE_BEFORE_FAILURE=deploying-devbot
+  status "promoting and health-gating the dev notification bot (own release lifecycle)"
+  github_status pending deploy/devbot "Devbot deployment in progress"
+  if [[ ! -f $DEVBOT_ENV_FILE ]]; then
+    # Disabled until the operator provisions secrets: keep the pipeline green, but deliberately
+    # do NOT advance devbot.sha. The lane therefore keeps triggering on later cycles and rolls
+    # the first release as soon as /etc/apitoken/devbot.env exists. devbot-deploy.sh re-checks
+    # the same condition as root, so a standalone invocation skips identically.
+    github_status success deploy/devbot "Devbot disabled until /etc/apitoken/devbot.env is provisioned"
+    wd_log "devbot disabled: $DEVBOT_ENV_FILE missing — skipping (devbot.sha not advanced)"
+    return 0
+  fi
+  github_deployment_start devbot production-devbot http://127.0.0.1:3800/health
+  "$DEVBOT_RUNNER" "$sha"
+  wd_atomic_write "$DEVBOT_FILE" "$sha"
+  github_deployment_success devbot
+  github_status success deploy/devbot "Devbot verified in production"
+  wd_log "devbot $sha promoted and verified (127.0.0.1:3800)"
+}
+
 deploy_core_components() {
   local sha=$1 engine_changed=$2 backend_changed=$3 codex_changed=$4
   # The engine and commerce controllers deliberately share apitoken-deploy.lock. Keep their
@@ -2024,11 +2069,11 @@ main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none delivery_infra_scope=none
   local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 admin_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
+  local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
   local rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
-  local core_pid= sales_pid= openkeys_pid= admin_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0
+  local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
   [[ -d $SOURCE_REPO/.git ]] || wd_die "source repository is missing: $SOURCE_REPO"
@@ -2047,6 +2092,7 @@ main() {
   require_fixed_file "$SALES_RUNNER"
   require_fixed_file "$OPENKEYS_RUNNER"
   require_fixed_file "$ADMIN_RUNNER"
+  require_fixed_file "$DEVBOT_RUNNER"
   require_fixed_file "$VALIDATION_PLANNER"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
@@ -2091,6 +2137,7 @@ main() {
   [[ -z $SALES_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$SALES_SHA" "$CANDIDATE_SHA" sales
   [[ -z $OPENKEYS_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$OPENKEYS_SHA" "$CANDIDATE_SHA" openkeys
   [[ -z $ADMIN_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" admin
+  [[ -z $DEVBOT_SHA ]] || wd_require_ancestor "$SOURCE_REPO" "$DEVBOT_SHA" "$CANDIDATE_SHA" devbot
 
   if rejected=$(wd_read_sha "$REJECTED_FILE" 2>/dev/null) && [[ $rejected == "$CANDIDATE_SHA" ]]; then
     CURRENT_PHASE=quarantined
@@ -2139,6 +2186,16 @@ main() {
     wd_range_has_class "$SOURCE_REPO" "$ADMIN_SHA" "$CANDIDATE_SHA" wd_path_is_admin \
       && admin_changed=1
   fi
+  # Devbot держит собственную релизную базу по той же схеме. Пока devbot.sha не существует,
+  # lane срабатывает безусловно; до provisioning /etc/apitoken/devbot.env deploy_devbot
+  # завершается зелёным skip'ом и базу НЕ двигает, поэтому после появления секретов первый
+  # релиз раскатывается автоматически на ближайшем цикле.
+  if [[ -z ${DEVBOT_SHA:-} ]]; then
+    devbot_changed=1
+  else
+    wd_range_has_class "$SOURCE_REPO" "$DEVBOT_SHA" "$CANDIDATE_SHA" wd_path_is_devbot \
+      && devbot_changed=1
+  fi
 
   select_candidate_validation_requirements "$CANDIDATE_SHA"
   typescript_required=$VALIDATION_TYPESCRIPT_REQUIRED
@@ -2154,7 +2211,7 @@ main() {
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 && $admin_changed == 0 \
-        && $codex_changed == 0 ]]; then
+        && $devbot_changed == 0 && $codex_changed == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -2246,8 +2303,13 @@ main() {
     # First run before admin.sha exists: adopt the current commit as the baseline.
     wd_atomic_write "$ADMIN_FILE" "$CANDIDATE_SHA"
   fi
+  if (( devbot_changed == 0 )) && [[ -z ${DEVBOT_SHA:-} ]]; then
+    # First run before devbot.sha exists: adopt the current commit as the baseline.
+    wd_atomic_write "$DEVBOT_FILE" "$CANDIDATE_SHA"
+  fi
   publish_unchanged_component_statuses \
-    "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" "$admin_changed"
+    "$engine_changed" "$backend_changed" "$sales_changed" "$openkeys_changed" "$admin_changed" \
+    "$devbot_changed"
 
   CURRENT_PHASE=deploying-components
   CURRENT_PHASE_BEFORE_FAILURE=deploying-components
@@ -2269,6 +2331,10 @@ main() {
     run_rollout_lane deploy_admin "$CANDIDATE_SHA" &
     admin_pid=$!
   fi
+  if (( devbot_changed == 1 )); then
+    run_rollout_lane deploy_devbot "$CANDIDATE_SHA" &
+    devbot_pid=$!
+  fi
 
   # Always join every started lane before quarantine/final verification. A failed lane owns its
   # component-specific failure status; this parent owns the single overall verdict.
@@ -2276,15 +2342,19 @@ main() {
   if [[ -n $sales_pid ]]; then wait "$sales_pid" || sales_rc=$?; fi
   if [[ -n $openkeys_pid ]]; then wait "$openkeys_pid" || openkeys_rc=$?; fi
   if [[ -n $admin_pid ]]; then wait "$admin_pid" || admin_rc=$?; fi
-  if (( core_rc != 0 || sales_rc != 0 || openkeys_rc != 0 || admin_rc != 0 )); then
-    wd_die "component rollout lanes failed (core=$core_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc)"
+  if [[ -n $devbot_pid ]]; then wait "$devbot_pid" || devbot_rc=$?; fi
+  if (( core_rc != 0 || sales_rc != 0 || openkeys_rc != 0 || admin_rc != 0 || devbot_rc != 0 )); then
+    wd_die "component rollout lanes failed (core=$core_rc sales=$sales_rc openkeys=$openkeys_rc admin=$admin_rc devbot=$devbot_rc)"
   fi
   if (( engine_changed == 1 )); then ENGINE_SHA=$CANDIDATE_SHA; fi
 
   CURRENT_PHASE=verifying
   CURRENT_PHASE_BEFORE_FAILURE=verifying
+  # The final plan's last flag only drives the monitoring re-probe shared by every application
+  # lane; a devbot rollout needs that same check, so it is folded into the admin argument.
   final_verification_plan=$(wd_final_verification_plan "$delivery_infra_scope" "$engine_changed" \
-    "$backend_changed" "$sales_changed" "$openkeys_changed" "$admin_changed") \
+    "$backend_changed" "$sales_changed" "$openkeys_changed" \
+    "$(( admin_changed || devbot_changed ))") \
     || wd_die "could not derive the final production verification plan"
   status "running selected final production verification ($final_verification_plan)"
   if ! ( run_final_verification_plan "$final_verification_plan" "$ENGINE_SHA" ); then
@@ -2298,7 +2368,7 @@ main() {
   CURRENT_PHASE=idle
   status "candidate tested and all selected components verified in production"
   github_status success deploy/watchdog "All selected production components verified"
-  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed admin=$admin_changed)"
+  wd_log "watchdog completed $CANDIDATE_SHA (engine=$engine_changed codex=$codex_changed backend=$backend_changed sales=$sales_changed openkeys=$openkeys_changed admin=$admin_changed devbot=$devbot_changed)"
 }
 
 case "${1:-}" in

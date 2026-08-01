@@ -434,3 +434,23 @@ groups:
           summary: 'A sales payout batch is failed'
           description: '{{ $value }} payout batches require manual review.'
           runbook: 'docs/ops/MONITORING.md#salespayoutbatchfailed'
+
+  # The devbot service is optional and disabled until the operator provisions
+  # /etc/apitoken/devbot.env: while disabled, ConditionPathExists keeps the unit inactive and
+  # this rule stays silent. Once the unit is active, the bot rewrites its textfile heartbeat
+  # every 60 seconds, so a missing or stale series means the notification path itself is broken.
+  - name: devbot
+    rules:
+      - alert: DevBotHeartbeatMissing
+        expr: |
+          node_systemd_unit_state{name="apitoken-devbot.service",state="active"} == 1
+          unless on(instance)
+          (time() - devbot_heartbeat_timestamp_seconds <= 300)
+        for: 5m
+        labels:
+          severity: warning
+          component: devbot
+        annotations:
+          summary: 'Devbot heartbeat is missing or stale'
+          description: 'apitoken-devbot.service is active but devbot_heartbeat_timestamp_seconds has not refreshed for over five minutes.'
+          runbook: 'docs/ops/MONITORING.md#devbotheartbeatmissing'

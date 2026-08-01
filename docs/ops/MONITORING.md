@@ -529,3 +529,41 @@ durable; fix feed ordering/visibility before replay.
 
 Freeze further sends, inspect chain simulation/broadcast state and nonces, then follow the payout
 service’s idempotent recovery path. Never rebroadcast blindly.
+
+
+## DevBotHeartbeatMissing
+
+The dev Telegram bot (`apitoken-devbot.service`, `apps/devbot`) is active in systemd but its
+textfile heartbeat (`devbot_heartbeat_timestamp_seconds` in
+`/var/lib/apitoken/monitoring/textfile/devbot.prom`, rewritten every 60 seconds) is absent or
+older than five minutes. Alertmanager email keeps flowing regardless — this alert means the
+Telegram notification path specifically is degraded.
+
+First distinguish the two normal states from the broken one:
+
+- **Bot intentionally disabled** — no `/etc/apitoken/devbot.env` on the host. The unit has
+  `ConditionPathExists=/etc/apitoken/devbot.env` and stays cleanly inactive, so this alert does
+  not fire. Nothing to do.
+- **Bot enabled but heartbeat broken** — this alert. Check `systemctl status
+  apitoken-devbot.service` and `journalctl -u apitoken-devbot.service -n 100`: the process may be
+  up (unit reads `active`) while the heartbeat writer is failing — usually a permissions problem
+  on `/var/lib/apitoken/monitoring/textfile` (must be writable by group `deploy`), a full disk,
+  or a crash between restarts. Confirm the unit runs from the expected release:
+  `readlink -f /opt/apitoken/devbot-releases/current`.
+
+To provision or repair the bot from scratch:
+
+1. Place `/etc/apitoken/devbot.env` (mode 0600, owner `deploy`) with at least
+   `DEVBOT_TELEGRAM_TOKEN`, `DEVBOT_CHAT_ID`, `DEVBOT_ADMIN_IDS`, and `DEVBOT_AM_SECRET` — see
+   `docs/ops/DEVBOT.md` §7. Keep `DEVBOT_AM_SECRET` identical to the value the monitoring
+   installer renders into the Alertmanager webhook path.
+2. Roll the release with the watchdog lane (any `apps/devbot/**` change, or wait for the next
+   master commit — until the env file exists the lane deliberately skips without advancing
+   `devbot.sha`, so the first real deploy happens automatically once provisioning lands), or run
+   it directly: `sudo /usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
+   $(git -C /opt/apitoken/repo rev-parse origin/master)`.
+3. `sudo systemctl start apitoken-devbot.service`, then verify
+   `curl -s http://127.0.0.1:3800/health` returns `{"ok":true}` and that
+   `devbot_heartbeat_timestamp_seconds` appears in `http://127.0.0.1:9100/metrics` within two
+   minutes. Reinstall monitoring (`deploy/install-monitoring.sh` runs via the watchdog
+   infrastructure lane) so Alertmanager picks up `DEVBOT_AM_SECRET` for the webhook receiver.

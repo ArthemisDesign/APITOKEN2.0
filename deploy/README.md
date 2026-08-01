@@ -101,6 +101,7 @@ The production queue remains strictly one SHA at a time.
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
 | Admin panel (admin.apitoken.sale) | `/opt/apitoken/admin-releases/<sha>` through `current` | `apitoken-admin.service` | `http://127.0.0.1:3700/api/health` |
+| Devbot (Telegram notifications) | `/opt/apitoken/devbot-releases/<sha>` through `current` | `apitoken-devbot.service` | `http://127.0.0.1:3800/health` |
 | PostgreSQL | `/var/lib/apitoken/postgres` | `apitoken-postgres.service` | forbidden to these scripts |
 
 The engine owns a separate `claude_engine` database and non-superuser login role in this PostgreSQL

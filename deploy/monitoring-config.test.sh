@@ -115,6 +115,37 @@ grep -Fq 'smtp_smarthost: "smtp.example.test:587"' "$TEMP/alertmanager.yml"
 grep -Fq 'to: "alerts@example.test"' "$TEMP/alertmanager.yml"
 ! grep -Eq '__[A-Z0-9_]+__' "$TEMP/alertmanager.yml"
 
+# Without DEVBOT_AM_SECRET the optional Telegram fan-out is stripped entirely, and the email
+# receiver renders exactly as before (expand-only; the monitoring install must not break before
+# the operator provisions the bot).
+! grep -Fq 'devbot-telegram' "$TEMP/alertmanager.yml" \
+  || { printf 'devbot block rendered without DEVBOT_AM_SECRET\n' >&2; exit 1; }
+grep -Fq 'name: production-email' "$TEMP/alertmanager.yml" \
+  || { printf 'email receiver lost while stripping the devbot block\n' >&2; exit 1; }
+! grep -Fq '# DEVBOT-BEGIN' "$TEMP/alertmanager.yml" \
+  || { printf 'devbot marker leaked into the rendered config\n' >&2; exit 1; }
+# With the secret provisioned the webhook receiver renders with the URL-encoded path secret,
+# fans out via continue: true, and keeps the email receiver beside it.
+DEVBOT_AM_SECRET='devbot+secret/with=chars' node "$ROOT/deploy/render-alertmanager.mjs" \
+  "$ROOT/observability/alertmanager/alertmanager.yml.template" \
+  "$TEMP/worker.env" "$TEMP/monitoring.env" "$TEMP/alertmanager-devbot.yml"
+grep -Fq 'name: devbot-telegram' "$TEMP/alertmanager-devbot.yml" \
+  || { printf 'devbot receiver did not render with DEVBOT_AM_SECRET set\n' >&2; exit 1; }
+grep -Fq 'url: http://127.0.0.1:3800/alerts/devbot%2Bsecret%2Fwith%3Dchars' \
+  "$TEMP/alertmanager-devbot.yml" \
+  || { printf 'devbot webhook secret is not URL-encoded into the path\n' >&2; exit 1; }
+grep -Fq 'continue: true' "$TEMP/alertmanager-devbot.yml" \
+  || { printf 'devbot route does not continue to the email tree\n' >&2; exit 1; }
+grep -Fq 'name: production-email' "$TEMP/alertmanager-devbot.yml" \
+  || { printf 'devbot rendering dropped the email receiver\n' >&2; exit 1; }
+! grep -Eq '__[A-Z0-9_]+__' "$TEMP/alertmanager-devbot.yml" \
+  || { printf 'unresolved placeholder in the devbot render\n' >&2; exit 1; }
+# install-monitoring.sh sources the same secret file the bot reads, tolerating its absence.
+grep -Fq '/etc/apitoken/devbot.env' "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring installer does not source the devbot env file\n' >&2; exit 1; }
+grep -Fq 'DEVBOT_AM_SECRET=$devbot_am_secret node' "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring installer does not pass DEVBOT_AM_SECRET to the renderer\n' >&2; exit 1; }
+
 grep -Fq 'apitoken_backup_present{database="%s"}' "$ROOT/deploy/collect-monitoring-metrics.sh"
 
 # Deployment-pipeline visibility. A failed or stalled delivery is otherwise only observable in the
@@ -162,6 +193,30 @@ for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase D
   grep -Fqi "## $watchdog_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
 done
+
+# The devbot heartbeat alert is a closed unit -> alert -> runbook loop, warning-only. It must
+# stay gated on the systemd unit being active (a disabled bot is intentionally silent, see the
+# ConditionPathExists in the unit) and consume the textfile heartbeat the bot publishes.
+grep -Fq 'alert: DevBotHeartbeatMissing' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'missing DevBotHeartbeatMissing alert\n' >&2; exit 1; }
+grep -Fq 'severity: warning' \
+  <(grep -F 'alert: DevBotHeartbeatMissing' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'DevBotHeartbeatMissing must stay a warning\n' >&2; exit 1; }
+grep -Fq 'node_systemd_unit_state{name="apitoken-devbot.service",state="active"} == 1' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'DevBotHeartbeatMissing is not gated on the active devbot unit\n' >&2; exit 1; }
+grep -Fq 'devbot_heartbeat_timestamp_seconds' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'DevBotHeartbeatMissing does not consume the heartbeat metric\n' >&2; exit 1; }
+grep -Fq 'docs/ops/MONITORING.md#devbotheartbeatmissing' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'DevBotHeartbeatMissing has no runbook anchor\n' >&2; exit 1; }
+grep -Fqi '## DevBotHeartbeatMissing' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'docs/ops/MONITORING.md has no runbook section for DevBotHeartbeatMissing\n' >&2; exit 1; }
+# The bot writes its heartbeat next to the collector output, so the textfile directory must be
+# group-writable by deploy from the monitoring installer.
+grep -Fq 'install -d -o root -g deploy -m 0775 /var/lib/apitoken/monitoring/textfile' \
+  "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'textfile directory is not writable by the devbot service user\n' >&2; exit 1; }
 
 # Money conservation must be a closed collector -> alert -> runbook loop. Pin the operands as well
 # as the metric name so a constant-zero replacement cannot satisfy this static contract.

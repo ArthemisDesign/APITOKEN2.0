@@ -210,6 +210,10 @@ Body должен объяснять:
   `docs/product/OPENKEYS.md`.
 - **Админ-панель** (`admin.apitoken.sale`): `apps/admin` — Next.js на `127.0.0.1:3700`, без
   собственной БД и секретов. Описание — `docs/product/ADMIN_PANEL.md`.
+- **Devbot** (dev-уведомления в Telegram): `apps/devbot` — plain Node-сервис на
+  `127.0.0.1:3800` (env `DEVBOT_PORT`), своя watchdog-lane `deploy/devbot` с релизным корнем
+  `/opt/apitoken/devbot-releases`; секреты — `/etc/apitoken/devbot.env`, до его provisioning
+  юнит и lane отключены. Описание — `docs/ops/DEVBOT.md`.
 - **`apps/web`** — фронт клиентов, деплоится на Vercel независимо от host-watchdog.
 - **`apps/content-studio`** (`content-studio.apitoken.sale`) — контент-студия, Next.js;
   выкатывается host-watchdog отдельной lane (`systemd/apitoken-content-studio.service`).
