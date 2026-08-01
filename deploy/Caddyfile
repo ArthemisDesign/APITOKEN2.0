@@ -169,34 +169,15 @@ gemini.api.apitoken.sale {
 	respond 404
 }
 
-# Unified multi-provider entry point — stage 1a of docs/engine/UNIFIED_ROUTER.md. The path
-# shape alone selects the existing provider plane; authentication, billing, retry boundaries
-# and streaming behavior stay inside the planes behind their stable origins, so this vhost
-# adds no code and changes nothing on the per-provider hostnames.
+# Unified multi-provider entry point — stage 1b of docs/engine/UNIFIED_ROUTER.md. TLS terminates
+# here; everything else lives in the router process (claude-router, singleton on loopback 8798):
+# path-shape routing to the three provider planes, the aggregated /v1/models catalog and
+# lane-shaped errors. The planes keep authentication, billing, retry boundaries and streaming
+# behavior behind their stable origins; nothing changes on the per-provider hostnames.
 router.apitoken.sale {
-	@anthropic_lane path /v1/messages*
-	handle @anthropic_lane {
-		import engine_backend
-	}
-	@openai_lane path /v1/responses* /v1/chat/completions
-	handle @openai_lane {
-		import openai_engine_backend
-	}
-	@gemini_lane path /v1beta/*
-	handle @gemini_lane {
-		import gemini_engine_backend
-	}
-	# /balance is identical on every plane (one fenced billing authority); the Anthropic
-	# origin answers it for the unified hostname.
-	handle /balance {
-		import engine_backend
-	}
-	# Router-level liveness is never a conjunction of plane health (UNIFIED_ROUTER invariant 3).
-	# The aggregated /v1/models catalog needs code and arrives with crates/router in stage 1b,
-	# so the colliding native path deliberately stays unclaimed here instead of answering with
-	# one plane's catalog.
-	handle /health {
-		respond `{"ok": true}` 200
+	@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/models* /v1beta/* /health /balance
+	handle @public_core {
+		reverse_proxy 127.0.0.1:8798
 	}
 	# No encode policy on purpose: every lane must keep SSE identity-encoded end to end, and
 	# no client requires compression on the unified hostname.

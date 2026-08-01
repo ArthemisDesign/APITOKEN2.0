@@ -1,13 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этап 1a реализован** (Caddy fan-in: `router.apitoken.sale` обслуживает native lanes
-по форме пути на существующих loopback origins); **этап 1b реализован в коде и деплой-конвейере**
-(`crates/router` с агрегированным каталогом `/v1/models`, systemd-юнит `claude-router.service`,
-продвижение через tested-artifact цепочку) — публичный cutover Caddy с fan-in на router идёт
-отдельным шагом, поэтому до него `GET /v1/models{,/{id}}` на unified hostname всё ещё отвечает
-`404`, а трафик native lanes идёт напрямую в плоскости. Universal lane пока не существует.
-Документ фиксирует целевую картину, публичный контракт, инварианты и этапный план; каждый этап при
-реализации обновляет этот документ и смежные инструкции в том же коммите.
+Статус: **этапы 1a и 1b реализованы и работают в проде.** `router.apitoken.sale` обслуживает
+весь публичный native-контракт через процесс `claude-router` (singleton `127.0.0.1:8798`):
+native lanes трёх плоскостей по форме пути и единый агрегированный каталог `GET /v1/models{,/{id}}`
+с namespaced ID и политикой деградации. Universal lane пока не существует — `/v1/chat/completions`
+обслуживает только OpenAI plane. Документ фиксирует целевую картину, публичный контракт,
+инварианты и этапный план; каждый этап при реализации обновляет этот документ и смежные
+инструкции в том же коммите.
 
 ## Контекст и цель
 
@@ -108,9 +107,8 @@ POST /v1/chat/completions                         universal OpenAI-compatible в
                                                   (этап 1a — только OpenAI plane,
                                                    этап 3 — любая модель каталога)
 
-GET  /v1/models                                   единый агрегированный каталог (этап 1b;
-GET  /v1/models/{id}                               до публичного cutover — 404, коллизия
-                                                   native-путей)
+GET  /v1/models                                   единый агрегированный каталог (этап 1b)
+GET  /v1/models/{id}
 
 GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
@@ -286,9 +284,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
    tested artifact в цепочке watchdog → promote → stage, `restart_router_if_changed` сравнивает
    запущенный бинарь и требует `/ready` до зелёного релиза; юнит ставится watchdog-infrastructure
-   шагом. Без cross-provider translation и fallback. Cutover Caddy (fan-in → router, включая
-   публичный `/v1/models`) идёт отдельным коммитом после зелёного деплоя процесса — иначе на
-   окно между установкой Caddyfile и запуском router'а клиенты получили бы 502.
+   шагом. Без cross-provider translation и fallback. Cutover Caddy выполнен: vhost
+   `router.apitoken.sale` терминирует TLS и проксирует весь публичный контракт (включая
+   `/v1/models*`) в router на `127.0.0.1:8798`; раздельные шаги (процесс, затем переворот)
+   исключили окно 502 между установкой Caddyfile и запуском router'а.
 3. **Universal Chat (2–4 недели).** `/v1/chat/completions` для всех моделей каталога:
    text, images, tools, structured output, streaming через canonical IR.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
