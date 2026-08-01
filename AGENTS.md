@@ -174,8 +174,9 @@ Body должен объяснять:
   `crates/metering` (тарификация, чистая математика, только `serde_json`), `crates/authbot`
   (пополнение пула, стоит ВНЕ слоёв, перед реестром) и credential-крейты `crates/gemini-credential`
   и `crates/codex-credential` (шифрованные OAuth-конверты подписок Gemini/Codex — без сети и HTTP).
-  В API-слоях env читается только в `crates/server/src/config.rs`; `registry`/`pool` — без сети
-  и HTTP. Локальные границы крейта — в его `crates/<name>/CLAUDE.md`; он есть у основных крейтов
+  В API-слоях env читается только в `crates/server/src/config.rs`; `pool` — без сети
+  и HTTP, `registry` — без HTTP и внешней сети, но это единственный владелец
+  PostgreSQL-подключений движка (authority Stage 2), DB-I/O внутри `registry` — норма. Локальные границы крейта — в его `crates/<name>/CLAUDE.md`; он есть у основных крейтов
   (registry, pool, forward, server, metering, authbot) — читай до первой правки крейта. Если
   `CLAUDE.md` у крейта нет — ориентируйся по соседним и по `docs/engine/ARCHITECTURE.md`, а когда
   осмысленно меняешь такой крейт, создай инструкцию по правилам выше.

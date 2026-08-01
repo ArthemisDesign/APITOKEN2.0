@@ -13,7 +13,12 @@ api.apitoken.sale --------------------------> engine balancer 127.0.0.1:8790
                                                 `-> Anthropic slot 127.0.0.1:8788
 
 openai.api.apitoken.sale -------------------> OpenAI origin 127.0.0.1:8792
-                                                `-> Codex singleton 127.0.0.1:8793
+                                                |-> OpenAI slot 127.0.0.1:8793
+                                                `-> OpenAI slot 127.0.0.1:8797
+
+gemini.api.apitoken.sale -------------------> Gemini origin 127.0.0.1:8794
+                                                |-> Gemini slot 127.0.0.1:8795
+                                                `-> Gemini slot 127.0.0.1:8799
 
 future browser at apitoken.sale
         |
@@ -131,7 +136,9 @@ systemd/apitoken-content-studio.service
 systemd/claude-api.service          one-time SQLite-to-PostgreSQL bridge
 systemd/claude-api@.service         disabled-after-cutover combined bridge slots
 systemd/claude-api-anthropic@.service PostgreSQL-fenced Anthropic blue/green slots
-systemd/claude-api-openai.service   PostgreSQL-fenced OpenAI/Codex singleton
+systemd/claude-api-openai.service   legacy pre-bluegreen singleton unit (superseded)
+systemd/claude-api-openai@.service  PostgreSQL-fenced OpenAI/Codex blue/green slots
+systemd/claude-api-gemini@.service  PostgreSQL-fenced Gemini active/passive slots
 systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
 systemd/apitoken-deploy-watchdog.service
@@ -150,9 +157,9 @@ Normal operations:
 
 ```bash
 sudo systemctl status apitoken-postgres apitoken-worker 'apitoken-api@*' \
-  'claude-api-anthropic@*' claude-api-openai
+  'claude-api-anthropic@*' 'claude-api-openai@*' 'claude-api-gemini@*'
 sudo journalctl -u 'apitoken-api@*' -u apitoken-worker \
-  -u 'claude-api-anthropic@*' -u claude-api-openai --since today
+  -u 'claude-api-anthropic@*' -u 'claude-api-openai@*' --since today
 sudo systemctl status caddy
 sudo caddy validate --config /etc/caddy/Caddyfile
 curl -fsS http://127.0.0.1:8790/ready
@@ -163,18 +170,19 @@ The PostgreSQL container publishes only to `127.0.0.1:5433`. API and worker use 
 and authentication-token encryption key. Both use the server-side engine Control key, which must
 never be returned to clients or placed in frontend configuration.
 
-### Current deployment model (verified 2026-07-16)
+### Current deployment model (verified 2026-08-01)
 
 - Stage 2 is complete: the engine authority is the role-isolated `claude_engine` PostgreSQL database;
   SQLite is a retained audit snapshot and must not be reactivated after production writes.
-- Anthropic 8787/8788 and API 3000/3001 are health-gated blue-green slots. Only one slot per pair
-  remains enabled after a normal cutover; OpenAI is an independent singleton on 8793.
+- Anthropic 8787/8788 and API 3000/3001 are health-gated blue-green slots. OpenAI 8793/8797
+  alternates the same way behind stable origin 8792, and Gemini 8795/8799 runs active/passive
+  behind stable origin 8794. Only one slot per pair remains enabled after a normal cutover.
 - API and worker load `ENGINE_BASE_URL=http://127.0.0.1:8790`; Caddy binds that listener explicitly
   to loopback and routes only ready engine slots.
 - Sales and every commerce-facing Caddy route use `COMMERCE_BASE_URL=http://127.0.0.1:8791`;
-  public/admin routes never name API slots. Anthropic public/admin routes use 8790 and OpenAI uses
-  8792; neither public hostname names a runtime port. Only 8790 and 8791 perform blue-green slot
-  selection; 8792 is the stable boundary over singleton 8793.
+  public/admin routes never name API slots. Anthropic public/admin routes use 8790, OpenAI uses
+  8792, and Gemini uses 8794; no public hostname names a runtime port. 8790, 8791, 8792, and 8794
+  all perform health-gated slot selection over their respective slot pairs.
 - Public engine, commerce API, Caddy, worker, and the hourly dual-database backup timer are active.
 - The core public matcher exposes `/v1/*`, `/health`, and `/balance`; Control/admin routes remain
   private. Public liveness/readiness behavior is described in `deploy/CADDY.md`.
