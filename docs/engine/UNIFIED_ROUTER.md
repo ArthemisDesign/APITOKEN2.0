@@ -1,9 +1,11 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **архитектурное решение (design), не реализовано**. Ни `crates/router`, ни
-публичный unified-домен пока не существуют. Документ фиксирует целевую картину, публичный
-контракт, инварианты и этапный план; каждый этап при реализации обновляет этот документ
-и смежные инструкции в том же коммите.
+Статус: **этап 1a реализован** (Caddy fan-in: `router.apitoken.sale` обслуживает native lanes
+по форме пути на существующих loopback origins). `crates/router`, единый агрегированный
+каталог `/v1/models` и universal lane пока не существуют — на этапе 1a `GET /v1/models{,/{id}}`
+на unified hostname осознанно отвечает `404`, а не каталогом одной плоскости. Документ
+фиксирует целевую картину, публичный контракт, инварианты и этапный план; каждый этап при
+реализации обновляет этот документ и смежные инструкции в том же коммите.
 
 ## Контекст и цель
 
@@ -104,8 +106,8 @@ POST /v1/chat/completions                         universal OpenAI-compatible в
                                                   (этап 1a — только OpenAI plane,
                                                    этап 3 — любая модель каталога)
 
-GET  /v1/models                                   единый агрегированный каталог
-GET  /v1/models/{id}
+GET  /v1/models                                   единый агрегированный каталог (этап 1b;
+GET  /v1/models/{id}                               на 1a — 404, коллизия native-путей)
 
 GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
@@ -264,11 +266,12 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 
 ## Этапный план
 
-1. **1a. Caddy fan-in (~1 день).** Новый публичный hostname с path-based маршрутизацией
-   на существующие loopback origins: `/v1/messages*` → 8790, `/v1/responses` +
-   `/v1/chat/completions` → 8792, `/v1beta/*` → 8794. Без нового кода; изоляция,
+1. **1a. Caddy fan-in — РЕАЛИЗОВАН.** `router.apitoken.sale` маршрутизирует по форме пути
+   на существующие loopback origins: `/v1/messages*` и `/balance` → 8790, `/v1/responses*` +
+   `/v1/chat/completions` → 8792, `/v1beta/*` → 8794; `/health` отвечает сам Caddy (не
+   конъюнкция health плоскостей), остальные пути — 404. Без нового кода; изоляция,
    биллинг и auth passthrough — «из коробки». Провайдер определяется путём, не ключом
-   и не моделью.
+   и не моделью. `/v1/models` намеренно не обслуживается до этапа 1b.
 2. **1b. `crates/router` + единый каталог (~1 неделя).** Stateless router: единый
    `/v1/models` (агрегация, кэш, частичный каталог), namespaced ID + aliases,
    auth passthrough без изменений. Без cross-provider translation и fallback.
@@ -292,9 +295,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 
 ## Открытые решения
 
-- ~~Имя публичного домена~~ — решено миграционной политикой: unified endpoint получает
-  новый отдельный hostname, `api.apitoken.sale` не переиспользуется и не меняет
-  поведение. Конкретное имя (`router.` или иное) выбирается на этапе 1a.
+- ~~Имя публичного домена~~ — решено на этапе 1a: `router.apitoken.sale` (новый отдельный
+  hostname, `api.apitoken.sale` не переиспользуется и не меняет поведение).
 - Политика частичного каталога `/v1/models` при падении плоскости (TTL кэша, маркировка).
 - Продуктовый охват Gemini: OpenKeys и commerce-контракты сейчас фиксируют только
   Anthropic/OpenAI (`docs/product/OPENKEYS.md`, `packages/contracts`) — расширение

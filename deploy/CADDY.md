@@ -128,6 +128,18 @@ The retry window applies only while Caddy is selecting and connecting to an upst
 The Claude/OpenAI matchers remain restricted to `/v1/*`, `/health`, and `/balance`; Gemini is
 restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `404`.
 
+`router.apitoken.sale` is the unified multi-provider entry point (stage 1a of
+`docs/engine/UNIFIED_ROUTER.md`). The path shape alone selects the provider plane:
+`/v1/messages*` and `/balance` target the stable Anthropic origin `127.0.0.1:8790`,
+`/v1/responses*` and `/v1/chat/completions` target the stable OpenAI origin `127.0.0.1:8792`,
+and `/v1beta/*` targets the stable Gemini origin `127.0.0.1:8794`. Authentication, billing,
+retry boundaries, and streaming behavior stay inside the planes, so the vhost imports the same
+backend snippets as the per-provider hostnames and changes nothing for existing clients.
+`/health` is answered by Caddy itself: unified liveness is deliberately not a conjunction of
+plane health. The colliding native `/v1/models` stays unclaimed (404) until `crates/router`
+(stage 1b) can answer it aggregated; answering it from a single plane would publish a partial
+catalog. The vhost has no `encode` policy so every lane keeps SSE identity-encoded end to end.
+
 ## References
 
 - Caddy `reverse_proxy` directive: <https://caddyserver.com/docs/caddyfile/directives/reverse_proxy>

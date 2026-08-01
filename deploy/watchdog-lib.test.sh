@@ -1295,6 +1295,7 @@ grep -Fq 'admin.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'openai.api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'gemini.api.apitoken.sale {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'router.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'admin.partners.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'crm.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'content-studio.apitoken.sale {' "$ROOT/deploy/Caddyfile"
@@ -1485,8 +1486,10 @@ grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 ! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
-[[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
-[[ $(grep -Fc 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile") == 1 ]]
+# Each backend snippet is imported twice: by its per-provider vhost and by the unified
+# router.apitoken.sale fan-in lane (stage 1a of docs/engine/UNIFIED_ROUTER.md).
+[[ $(grep -Fc 'import openai_engine_backend' "$ROOT/deploy/Caddyfile") == 2 ]]
+[[ $(grep -Fc 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile") == 2 ]]
 grep -Fq 'reverse_proxy 127.0.0.1:8792' "$ROOT/deploy/Caddyfile"
 grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {' "$ROOT/deploy/Caddyfile"
@@ -1532,6 +1535,33 @@ grep -Fq 'header Content-Type application/json*' <<<"$openai_api_vhost" \
   || wd_die 'OpenAI compression is not restricted to complete JSON documents'
 ! grep -Fq 'text/event-stream' <<<"$openai_api_vhost" \
   || wd_die 'OpenAI compression matcher can buffer SSE lifecycle frames'
+# Unified stage-1a fan-in: the path shape alone selects the provider plane behind its existing
+# stable origin; no lane may gain compression, and the colliding native /v1/models must stay
+# unclaimed until crates/router (stage 1b) can answer it aggregated.
+router_vhost=$(sed -n '/^router\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+grep -Fq '@anthropic_lane path /v1/messages*' <<<"$router_vhost" \
+  || wd_die 'unified router must route Anthropic Messages paths to the Anthropic plane'
+grep -Fq '@openai_lane path /v1/responses* /v1/chat/completions' <<<"$router_vhost" \
+  || wd_die 'unified router must route OpenAI Responses/Chat paths to the OpenAI plane'
+grep -Fq '@gemini_lane path /v1beta/*' <<<"$router_vhost" \
+  || wd_die 'unified router must route Gemini /v1beta paths to the Gemini plane'
+[[ $(grep -Fc 'import engine_backend' <<<"$router_vhost") == 2 ]] \
+  || wd_die 'unified router must fan /v1/messages* and /balance into the Anthropic origin'
+grep -Fq 'import openai_engine_backend' <<<"$router_vhost" \
+  || wd_die 'unified router OpenAI lane does not target the stable OpenAI origin'
+grep -Fq 'import gemini_engine_backend' <<<"$router_vhost" \
+  || wd_die 'unified router Gemini lane does not target the stable Gemini origin'
+grep -Fq 'handle /health {' <<<"$router_vhost" \
+  || wd_die 'unified router liveness must be router-local, not a plane-health conjunction'
+! grep -Eq '(path|handle) /v1/models' <<<"$router_vhost" \
+  || wd_die 'stage 1a must not answer the colliding /v1/models from a single plane'
+! grep -Eq '^[[:space:]]*encode ' <<<"$router_vhost" \
+  || wd_die 'unified router must not compress any lane (SSE buffering risk)'
+grep -Fq 'respond 404' <<<"$router_vhost" \
+  || wd_die 'unified router must 404 every path outside the public contract'
+grep -Fq 'targets: ["https://router.apitoken.sale/health"]' \
+  "$ROOT/observability/prometheus/prometheus.yml" \
+  || wd_die 'unified router public endpoint lost its blackbox probe'
 grep -Fq 'import gemini_engine_backend' "$ROOT/deploy/Caddyfile"
 grep -Fq '@oauth_callback path /oauth/callback' "$ROOT/deploy/Caddyfile"
 grep -Fq 'log_skip @oauth_callback' "$ROOT/deploy/Caddyfile"

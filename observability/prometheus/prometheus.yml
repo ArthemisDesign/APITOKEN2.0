@@ -72,6 +72,8 @@ scrape_configs:
     static_configs:
       - targets: ["https://api.apitoken.sale/health"]
         labels: { component: claude-engine, provider: anthropic }
+      - targets: ["https://router.apitoken.sale/health"]
+        labels: { component: claude-engine, provider: unified }
       - targets: ["https://backend.apitoken.sale/v1/ready"]
         labels: { component: commerce-api }
       - targets: ["https://apitoken.sale/status"]
