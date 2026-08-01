@@ -401,7 +401,7 @@ mod tests {
     type SharedBodies = Arc<StdMutex<Vec<Vec<u8>>>>;
 
     /// Plane с живым каталогом и программируемым ответом universal attempt.
-    /// В body-log попадают только attempts, catalog fetch туда не пишется.
+    /// В body-log попадают только billable POST attempts; catalog/служебные GET туда не пишутся.
     async fn attempt_plane(
         catalog_body: &'static str,
         catalog_path: &'static str,
@@ -421,8 +421,11 @@ mod tests {
                         .body(Body::from(catalog_body))
                         .unwrap();
                 }
+                let is_billable_attempt = req.method() == axum::http::Method::POST;
                 let body = to_bytes(req.into_body(), 64 * 1024 * 1024).await.unwrap();
-                bodies.lock().unwrap().push(body.to_vec());
+                if is_billable_attempt {
+                    bodies.lock().unwrap().push(body.to_vec());
+                }
                 if hang_attempt {
                     return std::future::pending::<AxumResponse<Body>>().await;
                 }
@@ -942,7 +945,9 @@ mod tests {
             false,
         )
         .await;
-        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        // This test exercises validation, not stale-catalog refresh. Keep one stable aggregate so
+        // host-wide parallel test load cannot turn repeated zero-TTL fetches into a timing probe.
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::from_secs(60))).await;
         let client = reqwest::Client::new();
 
         for models in ["[]", "{}", r#"[""]"#, r#"[42]"#, r#"["anthropic/claude-opus-4-8"]"#] {
