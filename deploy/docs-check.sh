@@ -3,12 +3,17 @@
 # документации (AGENTS.md, docs/CHANGE_CHECKLISTS.md, docs/DEPENDENCIES.md).
 #
 # Блокирующе падает, когда diff трогает контрактные поверхности (packages/contracts, миграции,
-# Control API-роуты движка, sales feed / internal-контроллеры) и при этом не изменён ни один
-# markdown-документ. Для любого другого кодового diff без изменений документации печатает
-# warning и проходит — напоминание, а не блок.
+# Control API-роуты движка, sales feed / internal-контроллеры, packages/payments,
+# crates/metering) и при этом не изменён ни один markdown-документ. Для любого другого
+# кодового diff без изменений документации печатает warning и проходит — напоминание, а не блок.
 #
-# Вызывается из am_gate_static() в deploy/agent-merge.sh; самостоятельный запуск:
-#   bash deploy/docs-check.sh origin/master HEAD
+# Известное ограничение эвристики: «документация изменена» засчитывает ЛЮБОЙ *.md в diff, даже
+# несвязанный. Gate — страховка от полного забвения документации, а не доказательство её
+# достаточности; предметную полноту дают чеклисты из docs/CHANGE_CHECKLISTS.md.
+#
+# Вызывается из am_gate_static() в deploy/agent-merge.sh с уже разрешёнными полными SHA.
+# Самостоятельный запуск (оба аргумента — полные 40-символьные SHA):
+#   bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +43,8 @@ for path in ${files[@]+"${files[@]}"}; do
   esac
   case "$path" in
     packages/contracts/*|\
+    packages/payments/*|\
+    crates/metering/*|\
     packages/db/migrations/*|packages/sales-db/migrations/*|\
     packages/openkeys-db/migrations/*|crates/registry/migrations_pg/*|\
     crates/server/src/http.rs|crates/server/src/admin.rs|\

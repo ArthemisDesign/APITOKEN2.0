@@ -233,12 +233,18 @@ docker compose up -d commerce-postgres
 TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce pnpm test:integration
 ```
 
-Полный gate перед мёржем (ровно то, что прогоняет `deploy/agent-merge.sh`):
+Gate перед мёржем прогоняет `deploy/agent-merge.sh` и выбирает lanes по diff (path-aware).
+Статический lane — всегда: `bash -n deploy/*.sh deploy/apitoken-db-dump`, ranged
+`git diff --check`, `deploy/docs-check.sh` (контрактные поверхности без изменений в
+документации не пройдут — см. «Документация — живой контракт»). TypeScript/Rust/deployment
+lanes включаются классификаторами из `deploy/watchdog-lib.sh`; cargo-тесты идут через
+`deploy/sccache-cargo.sh`. Полное описание lane-модели — `CONTRIBUTING.md`. Локальный
+эквивалент полного прогона:
 `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` →
-`cargo test --locked --workspace` → `bash -n deploy/*.sh deploy/apitoken-db-dump` →
-`git diff --check` → `deploy/docs-check.sh` (контрактные поверхности без изменений в
-документации не пройдут — см. «Документация — живой контракт»). Node 24 (`engines` уже задан,
-`.node-version` есть), pnpm 9.
+`bash deploy/sccache-cargo.sh cargo test --locked --workspace` →
+`bash -n deploy/*.sh deploy/apitoken-db-dump` → `git diff --check` →
+`bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"`.
+Node 24 (`engines` уже задан, `.node-version` есть), pnpm 9.
 
 ## Миграции — только expand, двумя коммитами
 
