@@ -46,14 +46,60 @@ export interface LedgerEntry {
   reference: string | null;
   // Модель за списанием (claude-* или gpt-*), когда движок помечает ею запрос (иначе выводим из reference).
   model?: string | null;
+  requestId?: string | null;
+  provider?: string | null;
+  officialNano?: string | null;
+  attribution?: LedgerAttribution | null;
+  fundingAllocations?: LedgerFundingAllocation[];
   balanceAfterNano: string | null;
   timestamp: string;
 }
 
+export interface LedgerFundingAllocation {
+  bucketId: string;
+  sourceType: string;
+  sourceReference: string;
+  bucketVersion: string;
+  direction: "debit" | "credit";
+  amountNano: string;
+  allocationOrder: string | null;
+}
+
+export interface LedgerAttribution {
+  schemaVersion: string;
+  snapshotKind: "policy_v1" | "legacy_scalar" | null;
+  providerId: string | null;
+  productId: string | null;
+  accountClass: "b2c" | "b2b" | "openkeys" | "service" | null;
+  requestedModelId: string | null;
+  canonicalModelId: string | null;
+  servedModelId: string | null;
+  servedCanonicalModelId: string | null;
+  ruleId: string | null;
+  ruleScope: "provider" | "model" | null;
+  pricingMode: "track" | "discount" | "legacy_scalar" | null;
+  ruleOrigin: "managed" | "legacy" | null;
+  discountBps: number | null;
+  payableMultiplierBp: number | null;
+  policyVersion: string | null;
+  effectivePolicyVersion: string | null;
+  catalogGeneration: string | null;
+  switchGeneration: string | null;
+  tariffScheduleId: string | null;
+  tariffPricedTimestamp: string | null;
+  officialNano: string | null;
+  officialCost: Record<string, unknown> | null;
+  paidFundedNano: string | null;
+  bonusFundedNano: string | null;
+  otherFundedNano: string | null;
+  trackEligible: boolean | null;
+  retentionEligible: boolean | null;
+  commissionEligible: boolean | null;
+}
+
 export interface B2CPricing {
   customerType: "b2c";
-  // Плоская модель: единая скидка 50% на каждый запрос, без тиров и порогов пополнения.
-  pricingMode: "flat";
+  pricingMode: "progressive";
   discountPercent: number;
   multiplierBp: number;
   // Фиксированная партнёрская скидка (реф-ссылка сейлза). 0 = нет. Если > 0 — реальная ставка/скидка
@@ -61,6 +107,11 @@ export interface B2CPricing {
   referralFloorBps?: number;
   effectiveMultiplierBp?: number;
   effectiveDiscountPercent?: number;
+  tier?: string;
+  spentNano?: string;
+  retentionSpendNano?: string;
+  windowSpentNano?: string;
+  windowStart?: string | null;
 }
 
 export interface B2BPricing {
@@ -77,13 +128,78 @@ export interface AccountView {
   balanceUsd: string;
   markupBasisPoints: number;
   status: "active" | "disabled";
+  funding?: AccountFundingView | null;
   pricing: B2CPricing | B2BPricing | null;
+  pricingPolicies?: CustomerPricingPolicyView[];
+}
+
+export interface AccountFundingView {
+  accountClass: "b2c" | "b2b" | "openkeys" | "service" | null;
+  fundingEnforcement: "legacy_single" | "shadow" | "strict" | null;
+  reconciliationState: "pending" | "verified" | "exception" | null;
+  bucketCount: string;
+  balances: FundingAmounts;
+  reserved: FundingAmounts;
+  spent: FundingAmounts;
+}
+
+export interface FundingAmounts {
+  paidNano: string;
+  bonusNano: string;
+  otherNano: string;
+  unattributedNano: string;
+}
+
+export interface CustomerPricingRuleView {
+  ruleId: string;
+  scope: "provider" | "model";
+  pricingMode: "track" | "discount";
+  ruleOrigin: "managed" | "legacy";
+  discountBps: number | null;
+  payableMultiplierBp: number;
+  trackEligible: boolean;
+  retentionEligible: boolean;
+  commissionEligible: boolean;
+}
+
+export interface CustomerPricingModelView {
+  modelId: string;
+  available: boolean;
+  unavailableReasons: string[];
+  rule: CustomerPricingRuleView | null;
+}
+
+export interface CustomerPricingProviderView {
+  providerId: string;
+  available: boolean;
+  models: CustomerPricingModelView[];
+}
+
+export interface CustomerPricingVersionView {
+  effectiveVersion: string;
+  policyVersion: string;
+  catalogGeneration: string;
+  switchGeneration: string;
+  providers: CustomerPricingProviderView[];
+}
+
+export interface CustomerPricingPolicyView {
+  accountClass: "b2c" | "b2b";
+  productId: string;
+  policyEnforcement: "legacy_scalar" | "shadow" | "strict";
+  fundingEnforcement: "legacy_single" | "shadow" | "strict";
+  reconciliationState: "pending" | "verified" | "exception";
+  syncState: "legacy" | "pending" | "confirmed" | "failed";
+  inSync: boolean;
+  lastAcknowledgedAt: string | null;
+  desired: CustomerPricingVersionView | null;
+  applied: CustomerPricingVersionView | null;
 }
 
 // Полная разбивка расхода по токенам и моделям (движок считает всё это на каждом запросе).
 // Токены — number (безопасно < 2^53); деньги — nano-строки (bigint-safe). officialNano — по
-// официальным ставкам провайдера модели (Anthropic для claude-*, OpenAI для gpt-*),
-// chargedNano — списано с баланса после скидки. Провайдер строки выводится из префикса ID модели.
+// официальным ставкам фактически обслужившего провайдера, chargedNano — списано с баланса после
+// правила. Provider приходит из immutable engine attribution и никогда не выводится из model ID.
 export interface UsageBucket {
   tokens: number;
   officialNano: string;
@@ -94,6 +210,7 @@ export interface UsageWebSearchBucket {
 }
 export interface UsageModelRow {
   model: string;
+  provider?: string | null;
   requests: number;
   inputTokens: number;
   outputTokens: number;
@@ -109,6 +226,9 @@ export interface UsageDailyRow {
   requests: number;
   officialNano: string;
   chargedNano: string;
+}
+export interface UsageDailyProviderRow extends UsageDailyRow {
+  provider: string;
 }
 export interface UsageKeyRow {
   keyMasked: string | null;
@@ -133,6 +253,7 @@ export interface UsageView {
   };
   models: UsageModelRow[];
   daily: UsageDailyRow[];
+  dailyProviders?: UsageDailyProviderRow[];
   keys: UsageKeyRow[];
 }
 

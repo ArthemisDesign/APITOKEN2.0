@@ -14,6 +14,61 @@ export class BusinessCustomerNotFoundError extends Error {}
 export class CustomerProfileNotFoundError extends Error {}
 export class PricingLedgerAttributionError extends Error {}
 
+export type CustomerPricingUnavailableReason =
+  | "policy_catalog_disabled"
+  | "admission_catalog_disabled"
+  | "policy_master_switch_disabled"
+  | "policy_scoped_switch_disabled"
+  | "admission_master_switch_disabled"
+  | "admission_scoped_switch_disabled"
+  | "missing_pricing_rule";
+
+export interface CustomerPricingRuleView {
+  ruleId: string;
+  scope: "provider" | "model";
+  pricingMode: "track" | "discount";
+  ruleOrigin: "managed" | "legacy";
+  discountBps: number | null;
+  payableMultiplierBp: number;
+  trackEligible: boolean;
+  retentionEligible: boolean;
+  commissionEligible: boolean;
+}
+
+export interface CustomerPricingModelView {
+  modelId: string;
+  available: boolean;
+  unavailableReasons: CustomerPricingUnavailableReason[];
+  rule: CustomerPricingRuleView | null;
+}
+
+export interface CustomerPricingProviderView {
+  providerId: string;
+  available: boolean;
+  models: CustomerPricingModelView[];
+}
+
+export interface CustomerPricingVersionView {
+  effectiveVersion: string;
+  policyVersion: string;
+  catalogGeneration: string;
+  switchGeneration: string;
+  providers: CustomerPricingProviderView[];
+}
+
+export interface CustomerPricingPolicyView {
+  accountClass: "b2c" | "b2b";
+  productId: string;
+  policyEnforcement: "legacy_scalar" | "shadow" | "strict";
+  fundingEnforcement: "legacy_single" | "shadow" | "strict";
+  reconciliationState: "pending" | "verified" | "exception";
+  syncState: "legacy" | "pending" | "confirmed" | "failed";
+  inSync: boolean;
+  lastAcknowledgedAt: string | null;
+  desired: CustomerPricingVersionView | null;
+  applied: CustomerPricingVersionView | null;
+}
+
 export interface PricingSyncTarget {
   userId: string;
   engineAccountId: string;
@@ -753,6 +808,391 @@ export async function getPricingView(database: Database, userId: string): Promis
       visibleOfficialUsageUsd: nextTier.visibleOfficialUsageUsd,
     } : null,
   };
+}
+
+interface CustomerPricingBindingRow {
+  id: string;
+  account_class: "b2c" | "b2b";
+  product_id: string;
+  desired_effective_version: string | null;
+  desired_digest: string | null;
+  applied_effective_version: string | null;
+  applied_digest: string | null;
+  policy_enforcement: CustomerPricingPolicyView["policyEnforcement"];
+  funding_enforcement: CustomerPricingPolicyView["fundingEnforcement"];
+  reconciliation_state: CustomerPricingPolicyView["reconciliationState"];
+  sync_state: CustomerPricingPolicyView["syncState"];
+  last_ack_at: Date | null;
+}
+
+interface CustomerPricingVersionRow {
+  binding_id: string;
+  effective_version: string;
+  policy_version: string;
+  product_id: string;
+  account_class: "b2c" | "b2b";
+  catalog_generation: string;
+  switch_generation: string;
+}
+
+interface CustomerPricingRuleRow {
+  binding_id: string;
+  effective_version: string;
+  rule_id: string;
+  scope_type: "provider" | "model";
+  provider_id: string;
+  canonical_model_id: string | null;
+  pricing_mode: "track" | "discount";
+  rule_origin: "managed" | "legacy";
+  discount_bps: number | null;
+  payable_multiplier_bp: number;
+  track_eligible: boolean;
+  retention_eligible: boolean;
+  commission_eligible: boolean;
+}
+
+interface CustomerCatalogEntryRow {
+  product_id: string;
+  generation: string;
+  provider_id: string;
+  canonical_model_id: string;
+  enabled: boolean;
+}
+
+interface CustomerSwitchEntryRow {
+  generation: string;
+  provider_id: string;
+  scope_type: "master" | "product" | "segment";
+  product_id: string;
+  segment: "" | "b2c" | "b2b";
+  catalog_generation: string | null;
+  enabled: boolean;
+}
+
+function pricingVersionKey(bindingId: string, effectiveVersion: string): string {
+  return `${bindingId}\u0000${effectiveVersion}`;
+}
+
+function catalogEntryKey(productId: string, generation: string): string {
+  return `${productId}\u0000${generation}`;
+}
+
+function customerRuleView(row: CustomerPricingRuleRow): CustomerPricingRuleView {
+  return {
+    ruleId: row.rule_id,
+    scope: row.scope_type,
+    pricingMode: row.pricing_mode,
+    ruleOrigin: row.rule_origin,
+    discountBps: row.discount_bps,
+    payableMultiplierBp: row.payable_multiplier_bp,
+    trackEligible: row.track_eligible,
+    retentionEligible: row.retention_eligible,
+    commissionEligible: row.commission_eligible,
+  };
+}
+
+function customerPricingVersionView(input: {
+  binding: CustomerPricingBindingRow;
+  version: CustomerPricingVersionRow;
+  rules: readonly CustomerPricingRuleRow[];
+  catalogEntries: ReadonlyMap<string, readonly CustomerCatalogEntryRow[]>;
+  admissionCatalogGeneration: string | null;
+  switchEntries: ReadonlyMap<string, readonly CustomerSwitchEntryRow[]>;
+  admissionSwitchGeneration: string | null;
+}): CustomerPricingVersionView {
+  const { binding, version } = input;
+  const policyCatalog = input.catalogEntries.get(
+    catalogEntryKey(version.product_id, version.catalog_generation),
+  ) ?? [];
+  const admissionCatalog = input.admissionCatalogGeneration === null
+    ? []
+    : input.catalogEntries.get(catalogEntryKey(version.product_id, input.admissionCatalogGeneration)) ?? [];
+  const modelIdentities = new Map<string, { providerId: string; modelId: string }>();
+  for (const entry of [...policyCatalog, ...admissionCatalog]) {
+    modelIdentities.set(`${entry.provider_id}\u0000${entry.canonical_model_id}`, {
+      providerId: entry.provider_id,
+      modelId: entry.canonical_model_id,
+    });
+  }
+
+  const policySwitches = input.switchEntries.get(version.switch_generation) ?? [];
+  const admissionSwitches = input.admissionSwitchGeneration === null
+    ? []
+    : input.switchEntries.get(input.admissionSwitchGeneration) ?? [];
+  const scopedType = binding.account_class === "b2c" || binding.account_class === "b2b"
+    ? "segment"
+    : "product";
+  const scopedSegment = scopedType === "segment" ? binding.account_class : "";
+  const findSwitch = (
+    entries: readonly CustomerSwitchEntryRow[],
+    providerId: string,
+    scopeType: "master" | "product" | "segment",
+  ) => entries.find((entry) => (
+    entry.provider_id === providerId
+    && entry.scope_type === scopeType
+    && entry.product_id === (scopeType === "master" ? "" : version.product_id)
+    && entry.segment === (scopeType === "segment" ? scopedSegment : "")
+  ));
+
+  const modelsByProvider = new Map<string, CustomerPricingModelView[]>();
+  const sortedModels = [...modelIdentities.values()].sort((left, right) => (
+    left.providerId.localeCompare(right.providerId, "en")
+    || left.modelId.localeCompare(right.modelId, "en")
+  ));
+  for (const identity of sortedModels) {
+    const policyModel = policyCatalog.find((entry) => (
+      entry.provider_id === identity.providerId && entry.canonical_model_id === identity.modelId
+    ));
+    const admissionModel = admissionCatalog.find((entry) => (
+      entry.provider_id === identity.providerId && entry.canonical_model_id === identity.modelId
+    ));
+    const policyMaster = findSwitch(policySwitches, identity.providerId, "master");
+    const policyScoped = findSwitch(policySwitches, identity.providerId, scopedType);
+    const admissionMaster = findSwitch(admissionSwitches, identity.providerId, "master");
+    const admissionScoped = findSwitch(admissionSwitches, identity.providerId, scopedType);
+    const exactRule = input.rules.find((rule) => (
+      rule.provider_id === identity.providerId
+      && rule.scope_type === "model"
+      && rule.canonical_model_id === identity.modelId
+    ));
+    const providerRule = input.rules.find((rule) => (
+      rule.provider_id === identity.providerId && rule.scope_type === "provider"
+    ));
+    const rule = exactRule ?? providerRule ?? null;
+    const reasons: CustomerPricingUnavailableReason[] = [];
+    if (policyModel?.enabled !== true) reasons.push("policy_catalog_disabled");
+    if (admissionModel?.enabled !== true) reasons.push("admission_catalog_disabled");
+    if (policyMaster?.enabled !== true) reasons.push("policy_master_switch_disabled");
+    if (
+      policyScoped?.enabled !== true
+      || policyScoped.catalog_generation !== version.catalog_generation
+    ) reasons.push("policy_scoped_switch_disabled");
+    if (admissionMaster?.enabled !== true) reasons.push("admission_master_switch_disabled");
+    if (
+      admissionScoped?.enabled !== true
+      || (
+        admissionScoped.catalog_generation !== input.admissionCatalogGeneration
+        && admissionScoped.catalog_generation !== version.catalog_generation
+      )
+    ) reasons.push("admission_scoped_switch_disabled");
+    if (!rule) reasons.push("missing_pricing_rule");
+    const model: CustomerPricingModelView = {
+      modelId: identity.modelId,
+      available: reasons.length === 0,
+      unavailableReasons: reasons,
+      rule: rule ? customerRuleView(rule) : null,
+    };
+    const providerModels = modelsByProvider.get(identity.providerId) ?? [];
+    providerModels.push(model);
+    modelsByProvider.set(identity.providerId, providerModels);
+  }
+
+  return {
+    effectiveVersion: version.effective_version,
+    policyVersion: version.policy_version,
+    catalogGeneration: version.catalog_generation,
+    switchGeneration: version.switch_generation,
+    providers: [...modelsByProvider.entries()].map(([providerId, models]) => ({
+      providerId,
+      available: models.some((model) => model.available),
+      models,
+    })),
+  };
+}
+
+/**
+ * Returns the complete customer-facing policy projection from one coherent PostgreSQL snapshot.
+ * Applied and desired versions remain distinct: callers must never present a desired version as
+ * engine-active while a durable ACK is still pending.
+ */
+export async function getCustomerPricingPolicyView(
+  database: Database,
+  userId: string,
+): Promise<CustomerPricingPolicyView[]> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const bindingResult = await client.query<CustomerPricingBindingRow>(`
+      SELECT binding.id, binding.account_class, binding.product_id,
+             binding.desired_effective_version::text,
+             binding.desired_digest,
+             binding.applied_effective_version::text,
+             binding.applied_digest,
+             binding.policy_enforcement,
+             binding.funding_enforcement,
+             binding.reconciliation_state,
+             binding.sync_state,
+             binding.last_ack_at
+      FROM account_policy_bindings binding
+      JOIN engine_accounts account
+        ON account.id = binding.engine_account_record_id
+       AND account.user_id = binding.user_id
+       AND account.engine_account_id = binding.engine_account_id
+      WHERE binding.user_id = $1
+        AND binding.account_class IN ('b2c', 'b2b')
+      ORDER BY binding.product_id, binding.created_at, binding.id
+    `, [userId]);
+    if (bindingResult.rows.length === 0) {
+      await client.query("COMMIT");
+      return [];
+    }
+    const bindingIds = bindingResult.rows.map((binding) => binding.id);
+    const versionResult = await client.query<CustomerPricingVersionRow>(`
+      SELECT version.binding_id, version.effective_version::text,
+             version.policy_version::text, version.product_id, version.account_class,
+             version.catalog_generation::text, version.switch_generation::text
+      FROM account_policy_versions version
+      JOIN account_policy_bindings binding ON binding.id = version.binding_id
+      WHERE version.binding_id = ANY($1::uuid[])
+        AND version.effective_version IN (
+          binding.desired_effective_version,
+          binding.applied_effective_version
+        )
+      ORDER BY version.binding_id, version.effective_version
+    `, [bindingIds]);
+    const ruleResult = await client.query<CustomerPricingRuleRow>(`
+      SELECT rule.binding_id, rule.effective_version::text, rule.rule_id,
+             rule.scope_type, rule.provider_id, rule.canonical_model_id,
+             rule.pricing_mode, rule.rule_origin, rule.discount_bps,
+             rule.payable_multiplier_bp, rule.track_eligible,
+             rule.retention_eligible, rule.commission_eligible
+      FROM account_policy_rules rule
+      JOIN account_policy_bindings binding ON binding.id = rule.binding_id
+      WHERE rule.binding_id = ANY($1::uuid[])
+        AND rule.effective_version IN (
+          binding.desired_effective_version,
+          binding.applied_effective_version
+        )
+      ORDER BY rule.binding_id, rule.effective_version, rule.provider_id,
+               rule.scope_type, rule.canonical_model_id, rule.rule_id
+    `, [bindingIds]);
+    const catalogResult = await client.query<CustomerCatalogEntryRow>(`
+      SELECT entry.product_id, entry.generation::text, entry.provider_id,
+             entry.canonical_model_id, entry.enabled
+      FROM product_catalog_entries entry
+      WHERE EXISTS (
+        SELECT 1
+        FROM account_policy_versions version
+        JOIN account_policy_bindings binding ON binding.id = version.binding_id
+        WHERE version.binding_id = ANY($1::uuid[])
+          AND version.effective_version IN (
+            binding.desired_effective_version,
+            binding.applied_effective_version
+          )
+          AND version.product_id = entry.product_id
+          AND version.catalog_generation = entry.generation
+      ) OR EXISTS (
+        SELECT 1
+        FROM account_policy_bindings binding
+        JOIN product_catalog_heads head ON head.product_id = binding.product_id
+        WHERE binding.id = ANY($1::uuid[])
+          AND head.product_id = entry.product_id
+          AND head.active_generation = entry.generation
+      )
+      ORDER BY entry.product_id, entry.generation, entry.provider_id,
+               entry.canonical_model_id
+    `, [bindingIds]);
+    const catalogHeadResult = await client.query<{ product_id: string; active_generation: string }>(`
+      SELECT head.product_id, head.active_generation::text
+      FROM product_catalog_heads head
+      WHERE head.product_id IN (
+        SELECT product_id FROM account_policy_bindings WHERE id = ANY($1::uuid[])
+      )
+      ORDER BY head.product_id
+    `, [bindingIds]);
+    const switchResult = await client.query<CustomerSwitchEntryRow>(`
+      SELECT entry.generation::text, entry.provider_id, entry.scope_type,
+             entry.product_id, entry.segment, entry.catalog_generation::text,
+             entry.enabled
+      FROM provider_switch_entries entry
+      WHERE entry.generation IN (
+        SELECT version.switch_generation
+        FROM account_policy_versions version
+        JOIN account_policy_bindings binding ON binding.id = version.binding_id
+        WHERE version.binding_id = ANY($1::uuid[])
+          AND version.effective_version IN (
+            binding.desired_effective_version,
+            binding.applied_effective_version
+          )
+        UNION
+        SELECT head.active_generation FROM provider_switch_head head WHERE head.singleton = 1
+      )
+      ORDER BY entry.generation, entry.provider_id, entry.scope_type,
+               entry.product_id, entry.segment
+    `, [bindingIds]);
+    const switchHeadResult = await client.query<{ active_generation: string }>(`
+      SELECT active_generation::text FROM provider_switch_head WHERE singleton = 1
+    `);
+
+    const versions = new Map(versionResult.rows.map((version) => [
+      pricingVersionKey(version.binding_id, version.effective_version),
+      version,
+    ]));
+    const rules = new Map<string, CustomerPricingRuleRow[]>();
+    for (const rule of ruleResult.rows) {
+      const key = pricingVersionKey(rule.binding_id, rule.effective_version);
+      const rows = rules.get(key) ?? [];
+      rows.push(rule);
+      rules.set(key, rows);
+    }
+    const catalogEntries = new Map<string, CustomerCatalogEntryRow[]>();
+    for (const entry of catalogResult.rows) {
+      const key = catalogEntryKey(entry.product_id, entry.generation);
+      const rows = catalogEntries.get(key) ?? [];
+      rows.push(entry);
+      catalogEntries.set(key, rows);
+    }
+    const catalogHeads = new Map(catalogHeadResult.rows.map((head) => [
+      head.product_id,
+      head.active_generation,
+    ]));
+    const switchEntries = new Map<string, CustomerSwitchEntryRow[]>();
+    for (const entry of switchResult.rows) {
+      const rows = switchEntries.get(entry.generation) ?? [];
+      rows.push(entry);
+      switchEntries.set(entry.generation, rows);
+    }
+    const admissionSwitchGeneration = switchHeadResult.rows[0]?.active_generation ?? null;
+    const view = bindingResult.rows.map((binding): CustomerPricingPolicyView => {
+      const mapVersion = (effectiveVersion: string | null): CustomerPricingVersionView | null => {
+        if (effectiveVersion === null) return null;
+        const key = pricingVersionKey(binding.id, effectiveVersion);
+        const version = versions.get(key);
+        if (!version) return null;
+        return customerPricingVersionView({
+          binding,
+          version,
+          rules: rules.get(key) ?? [],
+          catalogEntries,
+          admissionCatalogGeneration: catalogHeads.get(binding.product_id) ?? null,
+          switchEntries,
+          admissionSwitchGeneration,
+        });
+      };
+      return {
+        accountClass: binding.account_class,
+        productId: binding.product_id,
+        policyEnforcement: binding.policy_enforcement,
+        fundingEnforcement: binding.funding_enforcement,
+        reconciliationState: binding.reconciliation_state,
+        syncState: binding.sync_state,
+        inSync: binding.sync_state === "confirmed"
+          && binding.desired_effective_version !== null
+          && binding.desired_effective_version === binding.applied_effective_version
+          && binding.desired_digest === binding.applied_digest,
+        lastAcknowledgedAt: binding.last_ack_at?.toISOString() ?? null,
+        desired: mapVersion(binding.desired_effective_version),
+        applied: mapVersion(binding.applied_effective_version),
+      };
+    });
+    await client.query("COMMIT");
+    return view;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function setBusinessPricing(database: Database, input: {

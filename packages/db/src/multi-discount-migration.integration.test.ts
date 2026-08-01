@@ -24,6 +24,7 @@ import {
   claimNextPricingJob,
   confirmPricingControlJob,
   createDatabase,
+  getCustomerPricingPolicyView,
   recoverStalePricingControlJobs,
   stageAccountPolicyControlJob,
   stagePricingCatalogControlJob,
@@ -1023,6 +1024,94 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         sync_state: "confirmed",
         applied_version: "1",
         scalar_reason: "drained_to_versioned_policy:legacy_pending",
+      }]);
+    } finally {
+      await database.pool.end();
+      await temporary.close();
+    }
+  }, TEST_TIMEOUT_MS);
+
+  it("projects desired and applied customer policies with catalog, switches, and effective rules", async () => {
+    const temporary = await createTemporaryDatabase("customerview");
+    const database = createDatabase(temporary.connectionString, "multi-discount-customer-view-test");
+    try {
+      await applyMigrations(temporary.client, MIGRATIONS_FOLDER);
+      const graph = await insertValidGraph(temporary.client);
+
+      const b2c = await getCustomerPricingPolicyView(database, graph.b2cUserId);
+      expect(b2c).toHaveLength(1);
+      expect(b2c[0]).toMatchObject({
+        accountClass: "b2c",
+        productId: "main",
+        policyEnforcement: "shadow",
+        fundingEnforcement: "legacy_single",
+        reconciliationState: "pending",
+        syncState: "confirmed",
+        inSync: true,
+        desired: {
+          effectiveVersion: "1",
+          policyVersion: "1",
+          catalogGeneration: "1",
+          switchGeneration: "1",
+        },
+        applied: {
+          effectiveVersion: "1",
+          providers: [
+            {
+              providerId: "anthropic",
+              available: true,
+              models: [{
+                modelId: "claude-sonnet",
+                available: true,
+                unavailableReasons: [],
+                rule: {
+                  ruleId: "b2c-anthropic",
+                  scope: "provider",
+                  pricingMode: "track",
+                  payableMultiplierBp: 4000,
+                  trackEligible: true,
+                },
+              }],
+            },
+            {
+              providerId: "openai",
+              available: true,
+              models: [{
+                modelId: "gpt-5",
+                available: true,
+                unavailableReasons: [],
+                rule: { ruleId: "b2c-openai", scope: "provider" },
+              }],
+            },
+          ],
+        },
+      });
+
+      const b2b = await getCustomerPricingPolicyView(database, graph.b2bUserId);
+      expect(b2b).toMatchObject([{
+        accountClass: "b2b",
+        syncState: "pending",
+        inSync: false,
+        applied: null,
+        desired: {
+          providers: [
+            {
+              providerId: "anthropic",
+              available: true,
+              models: [{ modelId: "claude-sonnet", available: true }],
+            },
+            {
+              providerId: "openai",
+              available: false,
+              models: [{
+                modelId: "gpt-5",
+                available: false,
+                unavailableReasons: ["missing_pricing_rule"],
+                rule: null,
+              }],
+            },
+          ],
+        },
       }]);
     } finally {
       await database.pool.end();

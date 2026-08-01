@@ -13,7 +13,6 @@ import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { modelLabel } from "@/lib/model-label";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 import { DashboardLoading } from "./dashboard-loading";
 import { DashboardScrim, DashboardSidebar, DashboardTopBar } from "./dashboard-shell";
@@ -29,10 +28,35 @@ type Section = DashboardSection;
 type OptionalDataSource = "keys" | "ledger" | "usage";
 
 const NANO_PER_USD = 1_000_000_000n;
-const BASIS_POINTS = 10_000n;
 const localDashboardCopy = {
-  en: { logoutError: "Logout failed. Your server session is still active; please try again.", loggingOut: "Logging out…" },
-  ru: { logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.", loggingOut: "Выходим…" },
+  en: {
+    logoutError: "Logout failed. Your server session is still active; please try again.",
+    loggingOut: "Logging out…",
+    policyActive: "Policy active",
+    policySyncing: "Policy syncing",
+    policyUnavailable: "Policy details unavailable",
+    paidBalance: "Paid balance",
+    bonusBalance: "Track-only bonus",
+    fundingUnavailable: "Funding split is not available until reconciliation completes.",
+    pricingByRule: "Provider and model rules",
+    providers: "Providers",
+    availableModels: "Available models",
+    policyTerms: "Each request uses its provider/model rule; there is no universal balance conversion.",
+  },
+  ru: {
+    logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.",
+    loggingOut: "Выходим…",
+    policyActive: "Политика активна",
+    policySyncing: "Политика синхронизируется",
+    policyUnavailable: "Детали политики недоступны",
+    paidBalance: "Оплаченный баланс",
+    bonusBalance: "Бонус только для прогрессивного тарифа",
+    fundingUnavailable: "Разбивка средств появится после завершения сверки.",
+    pricingByRule: "Правила провайдеров и моделей",
+    providers: "Провайдеры",
+    availableModels: "Доступные модели",
+    policyTerms: "Каждый запрос тарифицируется по правилу провайдера или модели; единого пересчёта баланса нет.",
+  },
 } as const;
 
 function useDashboardCopy(): DashboardCopy {
@@ -414,12 +438,12 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const multiplierBp = paymentBasisPoints(account);
-  const discount = discountOf(account);
-  const officialBalanceNano = useMemo(
-    () => officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp),
-    [account.balanceNano, multiplierBp],
-  );
+  const localCopy = localDashboardCopy[language];
+  const policy = account.pricingPolicies?.[0] ?? null;
+  const appliedPolicy = policy?.applied ?? null;
+  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models) ?? [];
+  const availableModels = policyModels.filter((model) => model.available);
+  const availableProviders = appliedPolicy?.providers.filter((provider) => provider.available) ?? [];
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
   const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
   const accessTone = keysState === "loading" ? "neutral"
@@ -442,7 +466,7 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
       : [],
     [ledger, ledgerState],
   );
-  const pricingTitle = account.pricing?.customerType === "b2b" ? copy.businessAgreement : copy.flatRate;
+  const pricingTitle = appliedPolicy ? localCopy.pricingByRule : localCopy.policyUnavailable;
   const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
 
   let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
@@ -463,13 +487,15 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
       <article className="card overview-balance-card">
         <div className="overview-card-head">
           <span className="overview-card-label">{copy.platformBalance}</span>
-          <span className="overview-rate-chip">{discount}% {copy.discount} · {formatMultiplier(multiplierBp, locale)}</span>
+          <span className="overview-rate-chip">{policy?.inSync ? localCopy.policyActive : localCopy.policySyncing}</span>
         </div>
         <div className="overview-balance-main">
           <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
           <div className="overview-balance-detail">
-            <p className="overview-balance-value">{copy.worthApproximately} <b>≈ {formatNanoUsd(officialBalanceNano, locale)}</b> {copy.inClaudeApiUsage}</p>
-            <p className="overview-balance-rate">{interpolate(copy.payPerOfficialDollar, { rate: formatPaymentRate(multiplierBp) })}</p>
+            {account.funding ? <>
+              <p className="overview-balance-value">{localCopy.paidBalance}: <b>{formatNanoUsd(account.funding.balances.paidNano, locale)}</b></p>
+              <p className="overview-balance-rate">{localCopy.bonusBalance}: <b>{formatNanoUsd(account.funding.balances.bonusNano, locale)}</b></p>
+            </> : <p className="overview-balance-rate">{localCopy.fundingUnavailable}</p>}
             <div className="overview-card-actions">
               <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
               <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
@@ -522,15 +548,15 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
         <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
         <strong>{pricingTitle}</strong>
         <div className="overview-pricing-facts">
-          <span><small>{copy.discount}</small><b>{discount}%</b></span>
-          <span><small>{copy.valueMultiplier}</small><b>{formatMultiplier(multiplierBp, locale)}</b></span>
+          <span><small>{localCopy.providers}</small><b>{availableProviders.length}</b></span>
+          <span><small>{localCopy.availableModels}</small><b>{availableModels.length}</b></span>
         </div>
       </article>
 
       <article className="card overview-metric-card overview-milestone-card">
         <div className="overview-card-head"><span className="overview-card-label">{copy.pricingTerms}</span><span className="overview-metric-mark" aria-hidden="true">✓</span></div>
-        <strong>{copy.flatTermsTitle}</strong>
-        <p>{copy.flatTermsSummary}</p>
+        <strong>{localCopy.pricingByRule}</strong>
+        <p>{localCopy.policyTerms}</p>
         <Link className="link overview-card-link" href={`${DOCS_URL}#pricing`}>{copy.howPricingWorks} →</Link>
       </article>
     </div>
@@ -548,7 +574,9 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
               const isCharge = entry.kind === "charge";
               const isTopup = entry.kind === "topup";
               const activityLabel = isCharge ? copy.apiUsageActivity : isTopup ? copy.topupType : copy.adjustType;
-              const activityDetail = entry.model ? modelLabel(entry.model) : entry.keyMasked ?? entry.reference ?? copy.accountAdjustment;
+              const activityDetail = entry.model
+                ? `${modelLabel(entry.model)}${entry.provider ? ` · ${entry.provider}` : ""}`
+                : entry.keyMasked ?? entry.reference ?? copy.accountAdjustment;
               const amountPrefix = isCharge ? "−" : amount > 0n ? "+" : "";
               return <div className="overview-activity-row" key={entry.id}>
                 <span className={`overview-activity-icon ${entry.kind}`} aria-hidden="true">{isCharge ? "↗" : isTopup ? "+" : "±"}</span>
@@ -599,28 +627,6 @@ function interpolate(template: string, values: Record<string, string | number>):
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
-// B2C платит 50% официальной цены (5000 bp, ×2 ценности); B2B сохраняет договорную ставку.
-const FLAT_PAYMENT_BP = BigInt((100 - FLAT_DISCOUNT_PERCENT) * 100);
-function paymentBasisPoints(account: AccountView): bigint {
-  const pricing = account.pricing;
-  if (pricing?.customerType === "b2b" && pricing.multiplierBp > 0) return BigInt(pricing.multiplierBp);
-  return FLAT_PAYMENT_BP;
-}
-function discountOf(account: AccountView): number {
-  const pricing = account.pricing;
-  if (pricing?.customerType === "b2b") return pricing.discountPercent;
-  return FLAT_DISCOUNT_PERCENT;
-}
-function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {
-  return multiplierBp > 0n ? roundDivide(chargedNano * BASIS_POINTS, multiplierBp) : chargedNano;
-}
-function roundDivide(numerator: bigint, denominator: bigint): bigint {
-  if (denominator <= 0n) throw new Error("denominator must be positive");
-  const negative = numerator < 0n;
-  const absolute = negative ? -numerator : numerator;
-  const rounded = (absolute + denominator / 2n) / denominator;
-  return negative ? -rounded : rounded;
-}
 function formatNanoUsd(value: string | bigint, locale: string, minimumFractionDigits = 0, maximumFractionDigits = 2): string {
   const nano = typeof value === "bigint" ? value : BigInt(value);
   const negative = nano < 0n;
@@ -634,20 +640,5 @@ function formatNanoUsd(value: string | bigint, locale: string, minimumFractionDi
   let fraction = digits > 0 ? (scaled % units).toString().padStart(digits, "0") : "";
   while (fraction.length > minimum && fraction.endsWith("0")) fraction = fraction.slice(0, -1);
   return `${negative ? "-" : ""}$${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
-}
-function formatMultiplier(multiplierBp: bigint, locale: string): string {
-  return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2, locale)}`;
-}
-function formatPaymentRate(multiplierBp: bigint): string {
-  const cents = roundDivide(multiplierBp * 100n, BASIS_POINTS);
-  return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
-}
-function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits: number, locale: string): string {
-  if (denominator <= 0n) return "1";
-  const scale = 10n ** BigInt(fractionDigits);
-  const scaled = roundDivide(numerator * scale, denominator);
-  const whole = scaled / scale;
-  const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
 }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }

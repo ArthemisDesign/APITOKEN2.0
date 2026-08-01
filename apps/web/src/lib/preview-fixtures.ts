@@ -95,12 +95,82 @@ function account(): AccountView {
     balanceUsd: (Number(balanceNano) / 1e9).toFixed(2),
     markupBasisPoints: 5000,
     status: "active",
+    funding: {
+      accountClass: "b2c",
+      fundingEnforcement: "strict",
+      reconciliationState: "verified",
+      bucketCount: "2",
+      balances: {
+        paidNano: (balanceNano - 4n * NANO).toString(),
+        bonusNano: (4n * NANO).toString(),
+        otherNano: "0",
+        unattributedNano: "0",
+      },
+      reserved: { paidNano: "0", bonusNano: "0", otherNano: "0", unattributedNano: "0" },
+      spent: { paidNano: "250000000000", bonusNano: "12752000000", otherNano: "0", unattributedNano: "0" },
+    },
     pricing: {
       customerType: "b2c",
-      pricingMode: "flat",
-      discountPercent: 50,
-      multiplierBp: 5000,
+      pricingMode: "progressive",
+      discountPercent: 60,
+      multiplierBp: 4000,
     },
+    pricingPolicies: [{
+      accountClass: "b2c",
+      productId: "main",
+      policyEnforcement: "strict",
+      fundingEnforcement: "strict",
+      reconciliationState: "verified",
+      syncState: "confirmed",
+      inSync: true,
+      lastAcknowledgedAt: new Date().toISOString(),
+      desired: policyVersion(),
+      applied: policyVersion(),
+    }],
+  };
+}
+
+function policyVersion() {
+  const trackRule = (ruleId: string) => ({
+    ruleId,
+    scope: "provider" as const,
+    pricingMode: "track" as const,
+    ruleOrigin: "managed" as const,
+    discountBps: null,
+    payableMultiplierBp: 4000,
+    trackEligible: true,
+    retentionEligible: true,
+    commissionEligible: true,
+  });
+  const staticRule = (ruleId: string) => ({
+    ruleId,
+    scope: "provider" as const,
+    pricingMode: "discount" as const,
+    ruleOrigin: "managed" as const,
+    discountBps: 5000,
+    payableMultiplierBp: 5000,
+    trackEligible: false,
+    retentionEligible: false,
+    commissionEligible: false,
+  });
+  return {
+    effectiveVersion: "3",
+    policyVersion: "2",
+    catalogGeneration: "1",
+    switchGeneration: "1",
+    providers: [{
+      providerId: "anthropic",
+      available: true,
+      models: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"].map((modelId) => ({
+        modelId, available: true, unavailableReasons: [], rule: trackRule("anthropic-track"),
+      })),
+    }, {
+      providerId: "openai",
+      available: true,
+      models: ["gpt-5.6-sol", "gpt-5.6-luna"].map((modelId) => ({
+        modelId, available: true, unavailableReasons: [], rule: staticRule("openai-static"),
+      })),
+    }],
   };
 }
 
@@ -124,6 +194,11 @@ const ledger: LedgerEntry[] = charges.map(([daysAgo, amountNano, model], i) => (
   keyMasked: "sk-pool-a5b5••••••••eeb",
   reference: `req_0${i}`,
   model,
+  requestId: `request-preview-${i}`,
+  provider: model.startsWith("gpt-") ? "openai" : "anthropic",
+  officialNano: (BigInt(amountNano) * 2n).toString(),
+  attribution: null,
+  fundingAllocations: [],
   balanceAfterNano: null,
   timestamp: String(nowS - daysAgo * DAY_S - i * 137),
 }));
@@ -134,6 +209,11 @@ ledger.push({
   amountUsd: "$12.000000",
   keyMasked: null,
   reference: "platega_9f2c1a",
+  requestId: null,
+  provider: null,
+  officialNano: null,
+  attribution: null,
+  fundingAllocations: [],
   balanceAfterNano: null,
   timestamp: String(nowS - 3 * DAY_S),
 });
@@ -156,17 +236,21 @@ function usage(window: string): UsageView {
       unattributedLegacy: { officialNano: "2750000000" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 27, inputTokens: 1_890_211, outputTokens: 5_100, cacheReadTokens: 2_256_400, cacheWrite5mTokens: 282_050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
-      { model: "claude-sonnet-5", requests: 27, inputTokens: 1_890_954, outputTokens: 5_072, cacheReadTokens: 2_256_400, cacheWrite5mTokens: 282_050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
-      { model: "gpt-5.6-sol", requests: 8, inputTokens: 420_000, outputTokens: 60_000, cacheReadTokens: 150_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 40_000, webSearchRequests: 0, officialNano: "3475000000", chargedNano: "1390000000" },
-      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4_996, cacheReadTokens: 354_058, cacheWrite5mTokens: 177_029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
-      { model: "gpt-5.6-luna", requests: 4, inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
+      { model: "claude-opus-4-8", provider: "anthropic", requests: 27, inputTokens: 1_890_211, outputTokens: 5_100, cacheReadTokens: 2_256_400, cacheWrite5mTokens: 282_050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
+      { model: "claude-sonnet-5", provider: "anthropic", requests: 27, inputTokens: 1_890_954, outputTokens: 5_072, cacheReadTokens: 2_256_400, cacheWrite5mTokens: 282_050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "gpt-5.6-sol", provider: "openai", requests: 8, inputTokens: 420_000, outputTokens: 60_000, cacheReadTokens: 150_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 40_000, webSearchRequests: 0, officialNano: "3475000000", chargedNano: "1390000000" },
+      { model: "claude-haiku-4-5-20251001", provider: "anthropic", requests: 5, inputTokens: 104, outputTokens: 4_996, cacheReadTokens: 354_058, cacheWrite5mTokens: 177_029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
+      { model: "gpt-5.6-luna", provider: "openai", requests: 4, inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
     ],
     daily: [
       { dayTs: todayUtc - 3 * DAY_S, requests: 20, officialNano: "8000000000", chargedNano: "3200000000" },
       { dayTs: todayUtc - 2 * DAY_S, requests: 16, officialNano: "6000000000", chargedNano: "2400000000" },
       { dayTs: todayUtc - DAY_S, requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
       { dayTs: todayUtc, requests: 22, officialNano: "7679893050", chargedNano: "3071957220" },
+    ],
+    dailyProviders: [
+      { dayTs: todayUtc, provider: "anthropic", requests: 18, officialNano: "6000000000", chargedNano: "2400000000" },
+      { dayTs: todayUtc, provider: "openai", requests: 4, officialNano: "1679893050", chargedNano: "671957220" },
     ],
     keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
@@ -322,6 +406,11 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
         amountUsd: `$${Number(checkout.amountUsd).toFixed(6)}`,
         keyMasked: null,
         reference: `platega_${checkout.id.slice(0, 6)}`,
+        requestId: null,
+        provider: null,
+        officialNano: null,
+        attribution: null,
+        fundingAllocations: [],
         balanceAfterNano: balanceNano.toString(),
         timestamp: String(Math.floor(Date.now() / 1000)),
       });

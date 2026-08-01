@@ -28,6 +28,10 @@ Stage 8 evidence или strict activation. Production application остаётс
 commission attribution: policy_v1 evidence сохраняется атомарно, retention и commission берутся из
 immutable eligibility/funding, а static/B2B/service usage не проходит в комиссию. Этот checkpoint
 также не активирует production policies и не снимает блокер Stage 5/6/8/9.
+Третий Stage 10 checkpoint выводит exact funding, desired/applied policy, provider/model access и
+immutable ledger attribution в customer API/dashboard без угадывания провайдера или денежной
+эквивалентности. Он остаётся additive для rolling deploy и не включает admin configurators,
+production backfill либо strict activation.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -2090,6 +2094,27 @@ production data:
   не запускает Stage 8 evidence, не включает strict enforcement и не включает пока admin/customer
   configurators. Поэтому Stage 10 UI/public launch и критерии готовности первой версии ещё не
   завершены.
+
+Третий application checkpoint Этапа 10 включает customer read/API и dashboard, но ещё не включает
+admin configurators или публичный launch:
+
+- commerce строит desired и applied policy views в одной `REPEATABLE READ READ ONLY` транзакции.
+  Каждый view использует свой pinned catalog/switch lineage, applied view дополнительно показывает
+  active admission lineage; exact-model rule имеет приоритет над provider rule, а модель считается
+  доступной только при согласованных catalog, master/product switches и rule;
+- `GET /account` возвращает additive `funding` и `pricingPolicies` с enforcement, reconciliation,
+  sync/ACK и provider/model availability. Старый engine без funding surface остаётся совместимым:
+  поле имеет значение `null`, а исторический баланс не объявляется paid либо bonus;
+- customer ledger возвращает request/provider/official cost, immutable attribution и нормализованные
+  funding allocations. Usage сохраняет фактический provider из ledger и отдаёт provider-aware daily
+  series; provider никогда не выводится из model prefix;
+- dashboard показывает paid и track-only welcome bonus раздельно, actual charged amount рядом с
+  official request cost и источник списания. Provider cards возникают только из applied policy или
+  фактически attributed usage; статический Gemini card и универсальная проекция balance в
+  «official API value» удалены;
+- новые browser/API поля остаются optional/additive, поэтому порядок rolling deploy web/API не
+  требует contract lockstep. Checkpoint не меняет settlement, policy jobs, bindings, key issuance
+  или production data и не снимает блокер reviewed B2B/service/OpenKeys assignment matrix.
 
 ### Этап 11. Поздний contract cleanup
 

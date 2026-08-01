@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AccountView, ApiKeyView, AuthUser, CheckoutView, UsageView } from "./api";
+import type { AccountView, ApiKeyView, AuthUser, CheckoutView, LedgerEntry, UsageView } from "./api";
 import { previewRequest } from "./preview-fixtures";
 
 describe("web/v2 preview fixtures", () => {
@@ -12,13 +12,22 @@ describe("web/v2 preview fixtures", () => {
   it("serves account, ledger and usage shaped like the real backend", async () => {
     const account = await previewRequest<AccountView>("/account");
     expect(account.pricing?.customerType).toBe("b2c");
+    expect(account.funding?.balances).toMatchObject({ bonusNano: "4000000000" });
+    expect(account.pricingPolicies?.[0]).toMatchObject({ inSync: true });
+    expect(
+      account.pricingPolicies?.[0]?.applied?.providers.find(
+        (provider) => provider.providerId === "anthropic",
+      ),
+    ).toMatchObject({ available: true });
     expect(BigInt(account.balanceNano)).toBeGreaterThan(0n);
-    const { entries } = await previewRequest<{ entries: Array<{ kind: string; amountUsd: string }> }>("/account/ledger?limit=50");
+    const { entries } = await previewRequest<{ entries: LedgerEntry[] }>("/account/ledger?limit=50");
     expect(entries.some((entry) => entry.kind === "topup")).toBe(true);
     expect(entries[0]!.amountUsd.startsWith("$")).toBe(true);
     const usage = await previewRequest<UsageView>("/account/usage?window=7d");
     expect(usage.window).toBe("7d");
     expect(usage.models.length).toBeGreaterThan(0);
+    expect(usage.models.every((model) => typeof model.provider === "string")).toBe(true);
+    expect(usage.dailyProviders?.length).toBeGreaterThan(0);
   });
 
   it("keeps API-key mutations stateful: create → rename → revoke", async () => {

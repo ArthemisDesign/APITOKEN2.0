@@ -2,31 +2,79 @@
 
 import Link from "next/link";
 import { useState, type CSSProperties } from "react";
-import type { AccountView, ApiKeyView, LedgerEntry, UsageView } from "@/lib/api";
-import { normalizeUsd } from "@/lib/money";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
+import type {
+  AccountView,
+  ApiKeyView,
+  CustomerPricingModelView,
+  CustomerPricingRuleView,
+  LedgerEntry,
+  UsageView,
+} from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
-import { modelLabel, modelProvider } from "@/lib/model-label";
+import { modelLabel } from "@/lib/model-label";
 import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
   NANO_PER_USD, PageHeading, Stat,
-  bpFromDiscount, compareBigInt, discountOf, formatMultiplier, formatNanoUsd,
-  interpolate, localDashboardCopy, officialNanoFromCharged, roundDivide, useDashboardCopy,
+  compareBigInt, formatNanoUsd, interpolate, localDashboardCopy, roundDivide, useDashboardCopy,
 } from "./shared";
+
+const policyCopy = {
+  en: {
+    availableModels: "Available models",
+    paidBalance: "Paid balance",
+    fundingPending: "Funding split pending",
+    unavailable: "Unavailable",
+    access: "Access",
+    pricingRule: "Pricing rule",
+    progressive: "Progressive",
+    legacy: "Legacy account rule",
+    mixed: "Mixed rules",
+    noRule: "No pricing rule",
+    policyPending: "Desired policy is waiting for an engine ACK.",
+    policyUnavailable: "No applied provider/model policy is available yet.",
+    providerUnattributed: "Unattributed",
+    actualProvider: "Actual provider",
+    officialVsCharged: "Official → charged",
+    paidFunding: "paid",
+    bonusFunding: "bonus",
+  },
+  ru: {
+    availableModels: "Доступные модели",
+    paidBalance: "Оплаченный баланс",
+    fundingPending: "Разбивка средств ожидает сверки",
+    unavailable: "Недоступно",
+    access: "Доступ",
+    pricingRule: "Правило тарификации",
+    progressive: "Прогрессивный тариф",
+    legacy: "Legacy-правило аккаунта",
+    mixed: "Разные правила",
+    noRule: "Правило отсутствует",
+    policyPending: "Desired policy ожидает подтверждения движка.",
+    policyUnavailable: "Применённая provider/model policy пока недоступна.",
+    providerUnattributed: "Без attribution",
+    actualProvider: "Фактический провайдер",
+    officialVsCharged: "Официальная стоимость → списано",
+    paidFunding: "оплачено",
+    bonusFunding: "бонус",
+  },
+} as const;
 
 export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { account: AccountView; keys: ApiKeyView[]; ledger: LedgerEntry[]; usage: UsageView; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
+  const localPolicyCopy = policyCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
-
-  // The current rate is only used for current pricing and remaining-balance projections.
-  // Historical usage amounts below come directly from the engine's settled usage rows.
-  const multiplierBp = paymentBasisPoints(account);
-  const discount = discountOf(account);
+  const policy = account.pricingPolicies?.[0] ?? null;
+  const appliedPolicy = policy?.applied ?? null;
+  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models.map((model) => ({
+    ...model,
+    providerId: provider.providerId,
+  }))) ?? [];
+  const availablePolicyModels = policyModels.filter((model) => model.available);
 
   // Stable model colours are shared by the distribution bar and model table.
   const modelColor = new Map<string, string>();
@@ -35,14 +83,14 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
 
   // Provider badges appear only when the window actually mixes providers — a single-provider
   // table would render the same tag on every row, which is noise.
-  const providersPresent = new Set(models.map((model) => modelProvider(model.model)));
+  const providersPresent = new Set(models.map((model) => model.provider ?? "unattributed"));
   const showProviderBadge = providersPresent.size > 1;
 
   // Агрегаты по провайдерам для карточек «Connected providers»: реестр даёт метаданные
   // (логотип, цвет, имя), провайдеры вне реестра получают авто-карточку.
   const providerAgg = new Map<string, { requests: number; tokens: number; officialNano: bigint; chargedNano: bigint }>();
   for (const model of models) {
-    const id = modelProvider(model.model);
+    const id = model.provider ?? "unattributed";
     const agg = providerAgg.get(id) ?? { requests: 0, tokens: 0, officialNano: 0n, chargedNano: 0n };
     agg.requests += model.requests;
     agg.tokens += model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWrite5mTokens + model.cacheWrite1hTokens;
@@ -50,12 +98,22 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     agg.chargedNano += BigInt(model.chargedNano);
     providerAgg.set(id, agg);
   }
-  const providerCards = [
-    ...DASHBOARD_PROVIDERS.map((provider) => ({ ...provider, agg: providerAgg.get(provider.id) })),
-    ...[...providerAgg.keys()]
-      .filter((id) => !DASHBOARD_PROVIDERS.some((provider) => provider.id === id))
-      .map((id) => ({ ...fallbackProvider(id, id === "other" ? copy.providerOther : id), agg: providerAgg.get(id) })),
-  ];
+  const providerIds = new Set([
+    ...(appliedPolicy?.providers.map((provider) => provider.providerId) ?? []),
+    ...providerAgg.keys(),
+  ]);
+  const providerCards = [...providerIds].sort().map((id) => {
+    const registered = DASHBOARD_PROVIDERS.find((provider) => provider.id === id);
+    const metadata = registered ?? fallbackProvider(
+      id,
+      id === "unattributed" ? localPolicyCopy.providerUnattributed : id,
+    );
+    return {
+      ...metadata,
+      agg: providerAgg.get(id),
+      policy: appliedPolicy?.providers.find((provider) => provider.providerId === id) ?? null,
+    };
+  });
   const [copiedProvider, setCopiedProvider] = useState<string | null>(null);
 
   async function copyProviderEndpoint(id: string, endpoint: string) {
@@ -111,8 +169,8 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     <div className="ov-stats bill4">
       <div className="ovstat"><span className="dlabel">{copy.officialValue30d}</span><b className="num accent">{formatNanoUsd(summaryOfficialNano, locale)}</b><span className="dtrend">{copy.listPriceEquivalent}</span></div>
       <Stat label={copy.charged30d} value={formatNanoUsd(summaryChargedNano, locale)} detail={copy.settledCredits} />
-      <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{formatMultiplier(multiplierBp, locale)} {copy.currentValue}</span></div>
-      <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp), locale) }) : copy.available}</span></div>
+      <div className="ovstat"><span className="dlabel">{localPolicyCopy.availableModels}</span><b className="num">{availablePolicyModels.length}</b><span className="dtrend">{policy?.inSync ? copy.ready : localPolicyCopy.policyPending}</span></div>
+      <div className="ovstat"><span className="dlabel">{localPolicyCopy.paidBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.paidNano, locale) : "—"}</b><span className="dtrend">{account.funding ? copy.available : localPolicyCopy.fundingPending}</span></div>
     </div>
 
     <section className="dsec uproviders">
@@ -120,6 +178,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       <div className="uprovider-grid">
         {providerCards.map((card) => {
           const isActive = (card.agg?.requests ?? 0) > 0;
+          const ruleSummary = providerRuleSummary(card.policy?.models ?? [], localPolicyCopy);
           return <article
             className="uprovider-card"
             key={card.id}
@@ -133,8 +192,8 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                 <strong>{card.name}</strong>
                 <span>{card.api}</span>
               </div>
-              <span className={`uprovider-status${isActive ? " is-active" : ""}`}>{isActive ? copy.providerActive : copy.ready}</span>
-              <span className="uprovider-discount" title={copy.activeDiscount}>−{discount}%</span>
+              <span className={`uprovider-status${card.policy?.available ? " is-active" : ""}`}>{card.policy?.available ? copy.ready : localPolicyCopy.unavailable}</span>
+              <span className="uprovider-discount" title={localPolicyCopy.pricingRule}>{ruleSummary}</span>
             </div>
             {card.endpoint && (
               <div className="uprovider-endpoint">
@@ -163,6 +222,20 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
           </article>;
         })}
       </div>
+      {!appliedPolicy && <div className="banner">{localPolicyCopy.policyUnavailable}</div>}
+      {appliedPolicy && <>
+        <p className="table-scroll-hint">{copy.tableScrollHint}</p>
+        <div className="table-scroll" role="region" tabIndex={0} aria-label={localPolicyCopy.availableModels}>
+          <table className="mtable"><thead><tr><th>{localPolicyCopy.actualProvider}</th><th>{copy.model}</th><th>{localPolicyCopy.access}</th><th>{localPolicyCopy.pricingRule}</th></tr></thead>
+            <tbody>{policyModels.map((model) => <tr key={`${model.providerId}:${model.modelId}`}>
+              <td>{providerDisplayName(model.providerId, localPolicyCopy.providerUnattributed)}</td>
+              <td>{modelLabel(model.modelId)}</td>
+              <td><span className={`pill ${model.available ? "pill-good" : "pill-soft"}`}>{model.available ? copy.ready : localPolicyCopy.unavailable}</span></td>
+              <td>{pricingRuleLabel(model.rule, localPolicyCopy)}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>}
     </section>
 
     <div className="usage-graph">
@@ -234,7 +307,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
-            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{modelProvider(model.model) === "openai" ? copy.providerOpenAi : modelProvider(model.model) === "anthropic" ? copy.providerAnthropic : modelProvider(model.model) === "gemini" ? copy.providerGemini : "—"}</span>}</span></td>
+            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{providerDisplayName(model.provider, localPolicyCopy.providerUnattributed)}</span>}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens, locale)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens, locale)}</td>
@@ -279,6 +352,7 @@ function LedgerHistory({ ledger, mayBePartial = false }: { ledger: LedgerEntry[]
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
+  const attributionCopy = policyCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   if (ledger.length === 0) return <section className="dsec"><h2>{copy.transactions}</h2><div className="empty-box">{copy.noLedger}</div></section>;
 
@@ -307,12 +381,15 @@ function LedgerHistory({ ledger, mayBePartial = false }: { ledger: LedgerEntry[]
           {group.charges.length > 0 && <details className="txh-charges">
             <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{formatBilledEventCount(group.charges.length, locale, copy)}</span><span className="txh-sum-amt">−{formatNanoUsdSmart(chargeNano, locale)}</span></summary>
             <div className="txh-list">
-              {group.charges.slice(0, CAP).map((entry) => <div className="txh-row" key={entry.id}>
-                <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-                <code className="txh-key">{entry.keyMasked ?? "—"}</code>
-                <span className="txh-ref">{entry.reference ?? "—"}</span>
-                <span className="txh-amt">{formatNanoUsdSmart(BigInt(entry.amountNano), locale)}</span>
-              </div>)}
+              {group.charges.slice(0, CAP).map((entry) => {
+                const funding = fundingSummary(entry, attributionCopy);
+                return <div className="txh-row" key={entry.id}>
+                  <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                  <code className="txh-key">{entry.keyMasked ?? "—"}</code>
+                  <span className="txh-ref">{entry.model ? modelLabel(entry.model) : entry.reference ?? "—"}{entry.provider ? ` · ${providerDisplayName(entry.provider, attributionCopy.providerUnattributed)}` : ""}{funding ? ` · ${funding}` : ""}</span>
+                  <span className="txh-amt" title={attributionCopy.officialVsCharged}>{entry.officialNano != null ? `${formatNanoUsdSmart(BigInt(entry.officialNano), locale)} → ` : ""}{formatNanoUsdSmart(BigInt(entry.amountNano), locale)}</span>
+                </div>;
+              })}
               {group.charges.length > CAP && <div className="txh-more">{interpolate(copy.moreRows, { n: group.charges.length - CAP })}</div>}
             </div>
           </details>}
@@ -368,11 +445,46 @@ function fmtNanoUsd(nano: string, locale: string): string {
   return formatNanoUsd(value, locale, 2, 2);
 }
 
-// B2C платит 50% официальной цены (5000 bp, ×2 ценности); B2B сохраняет договорную ставку.
-function paymentBasisPoints(account: AccountView): bigint {
-  const pricing = account.pricing;
-  if (pricing?.customerType === "b2b" && pricing.multiplierBp > 0) return BigInt(pricing.multiplierBp);
-  return bpFromDiscount(FLAT_DISCOUNT_PERCENT);
+function pricingRuleLabel(
+  rule: CustomerPricingRuleView | null,
+  copy: typeof policyCopy.en | typeof policyCopy.ru,
+): string {
+  if (!rule) return copy.noRule;
+  if (rule.pricingMode === "track") {
+    return `${copy.progressive} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
+  }
+  if (rule.discountBps !== null) return `−${rule.discountBps / 100}%`;
+  return `${copy.legacy} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
+}
+
+function providerRuleSummary(
+  models: readonly CustomerPricingModelView[],
+  copy: typeof policyCopy.en | typeof policyCopy.ru,
+): string {
+  const labels = new Set(models.filter((model) => model.available)
+    .map((model) => pricingRuleLabel(model.rule, copy)));
+  if (labels.size === 0) return copy.noRule;
+  if (labels.size > 1) return copy.mixed;
+  return [...labels][0]!;
+}
+
+function providerDisplayName(providerId: string | null | undefined, unattributed: string): string {
+  if (!providerId || providerId === "unattributed") return unattributed;
+  return DASHBOARD_PROVIDERS.find((provider) => provider.id === providerId)?.name ?? providerId;
+}
+
+function fundingSummary(
+  entry: LedgerEntry,
+  copy: typeof policyCopy.en | typeof policyCopy.ru,
+): string {
+  const sources = new Set((entry.fundingAllocations ?? []).map((allocation) => (
+    allocation.sourceType === "paid"
+      ? copy.paidFunding
+      : allocation.sourceType === "welcome_track_bonus"
+        ? copy.bonusFunding
+        : allocation.sourceType
+  )));
+  return [...sources].join(" + ");
 }
 function boundedRatio(numerator: bigint, denominator: bigint): number {
   if (denominator <= 0n || numerator <= 0n) return 0;

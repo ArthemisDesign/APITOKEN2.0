@@ -1,10 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { AccountView } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 
 export const NANO_PER_USD = 1_000_000_000n;
 export const BASIS_POINTS = 10_000n;
@@ -108,14 +106,6 @@ export function interpolate(template: string, values: Record<string, string | nu
   return Object.entries(values).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), template);
 }
 
-export function discountOf(account: AccountView): number {
-  const pricing = account.pricing;
-  if (pricing?.customerType === "b2b") return pricing.discountPercent;
-  return FLAT_DISCOUNT_PERCENT;
-}
-export function officialNanoFromCharged(chargedNano: bigint, multiplierBp: bigint): bigint {
-  return multiplierBp > 0n ? roundDivide(chargedNano * BASIS_POINTS, multiplierBp) : chargedNano;
-}
 export function roundDivide(numerator: bigint, denominator: bigint): bigint {
   if (denominator <= 0n) throw new Error("denominator must be positive");
   const negative = numerator < 0n;
@@ -136,20 +126,5 @@ export function formatNanoUsd(value: string | bigint, locale: string, minimumFra
   let fraction = digits > 0 ? (scaled % units).toString().padStart(digits, "0") : "";
   while (fraction.length > minimum && fraction.endsWith("0")) fraction = fraction.slice(0, -1);
   return `${negative ? "-" : ""}$${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
-}
-export function formatMultiplier(multiplierBp: bigint, locale: string): string {
-  return `×${formatFixedRatio(BASIS_POINTS, multiplierBp, 2, locale)}`;
-}
-export function formatFixedRatio(numerator: bigint, denominator: bigint, fractionDigits: number, locale: string): string {
-  if (denominator <= 0n) return "1";
-  const scale = 10n ** BigInt(fractionDigits);
-  const scaled = roundDivide(numerator * scale, denominator);
-  const whole = scaled / scale;
-  const fraction = (scaled % scale).toString().padStart(fractionDigits, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString(locale)}${fraction ? `.${fraction}` : ""}`;
-}
-// B2B discountPercent может быть дробным, поэтому сначала переводим его в целые basis points.
-export function bpFromDiscount(discountPercent: number): bigint {
-  return BigInt(Math.round((100 - discountPercent) * 100));
 }
 export function compareBigInt(left: bigint, right: bigint): number { return left < right ? -1 : left > right ? 1 : 0; }

@@ -195,19 +195,20 @@ describe("completed Next.js migration", () => {
     expect(messages).not.toContain("$2.50");
   });
 
-  it("renders dashboard pricing as the flat 50% banner", () => {
+  it("renders dashboard pricing from the applied provider/model policy", () => {
     const dashboard = dashboardSource();
-    const dashboardCopy = readFileSync(join(root, "lib", "dashboard-copy.ts"), "utf8");
     const styles = [
       readFileSync(join(appRoot, "globals.css"), "utf8"),
       readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
     ].join("\n");
-    expect(dashboardCopy).toContain('flatRate: "Flat rate −50%"');
-    expect(dashboardCopy).not.toMatch(/monthlyTierProgress|spendMore|tierStarter/);
-    expect(dashboard).toContain("FLAT_DISCOUNT_PERCENT");
+    expect(dashboard).toContain("account.pricingPolicies");
+    expect(dashboard).toContain("account.funding.balances.paidNano");
+    expect(dashboard).toContain("account.funding.balances.bonusNano");
+    expect(dashboard).toContain("provider/model rule");
+    expect(dashboard).not.toContain("FLAT_DISCOUNT_PERCENT");
     expect(dashboard).not.toContain("B2C_PRICING_MILESTONES");
-    expect(dashboard).toContain("const d = discount");
-    expect(dashboard).not.toContain("entry.discountPercent ?? discountOf(account)");
+    expect(dashboard).not.toContain("officialNanoFromCharged");
+    expect(dashboard).not.toContain("modelProvider(model.model)");
     expect(styles).toContain(".app section.pricing-banner{border:1px solid var(--accent-line)}");
   });
 
@@ -236,7 +237,7 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="card overview-activity"');
     expect(dashboard).toContain('className="app-top-in"');
     expect(dashboard).toContain('className="overview-pricing-facts"');
-    expect(dashboard.match(/copy\.payPerOfficialDollar/g)).toHaveLength(1);
+    expect(dashboard).not.toContain("copy.payPerOfficialDollar");
     expect(dashboard).toContain('<main className="app-main">');
     expect(dashboard).not.toContain("app-main-overview");
     expect(dashboard).not.toContain("app-top-up");
@@ -245,7 +246,8 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".overview-panel{display:grid;gap:20px}");
     expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
     expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
-    expect(dashboard).toContain("officialBalance");
+    expect(dashboard).toContain('paidBalance: "Paid balance"');
+    expect(dashboard).toContain('bonusBalance: "Track-only bonus"');
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
     expect(dashboardCopy).toContain('platformBalance: "Доступный баланс"');
     expect(dashboardCopy).toContain('usageLast30Days: "Usage · 30 days"');

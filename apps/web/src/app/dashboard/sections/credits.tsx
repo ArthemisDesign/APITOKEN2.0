@@ -1,17 +1,12 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { api, type AccountView, type CheckoutView, type LedgerEntry } from "@/lib/api";
-import { normalizeUsd } from "@/lib/money";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { useI18n } from "@/components/i18n-provider";
-import { DOCS_URL } from "@/lib/site-links";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import {
-  NANO_PER_USD, BASIS_POINTS, PageHeading, Stat,
-  bpFromDiscount, discountOf, formatFixedRatio, formatLedgerTime, formatMultiplier, formatNanoUsd,
-  interpolate, localDashboardCopy, officialNanoFromCharged, useDashboardCopy,
+  NANO_PER_USD, PageHeading, Stat,
+  formatLedgerTime, formatNanoUsd, interpolate, localDashboardCopy, useDashboardCopy,
 } from "./shared";
 
 const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = {
@@ -43,19 +38,64 @@ const PLATEGA_METHODS = [
 function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
-  const locale = language === "ru" ? "ru-RU" : "en-US";
-  const pricing = account.pricing;
-  if (pricing?.customerType === "b2b") return <section className="pricing-banner pricing-banner-business"><div className="pricing-summary"><div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.businessAgreement}</strong></div><div className="pricing-discount"><b>{pricing.discountPercent}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(pricing.discountPercent, locale)} {copy.valueMultiplier}</em></div></div><p>{copy.negotiatedRate}</p></section>;
-  // B2C: одна скидка −50%, без порогов и условий удержания.
+  const local = pricingCopy[language];
+  const policy = account.pricingPolicies?.[0] ?? null;
+  const applied = policy?.applied ?? null;
+  const availableModels = applied?.providers.flatMap((provider) => provider.models)
+    .filter((model) => model.available).length ?? 0;
   return <section className="pricing-banner pricing-banner-business">
     <div className="pricing-summary">
-      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{copy.flatRate}</strong></div>
-      <div className="pricing-discount"><b>{FLAT_DISCOUNT_PERCENT}%</b><span>{copy.discount}</span><em className="pricing-mult">{multFromDiscount(FLAT_DISCOUNT_PERCENT, locale)} {copy.valueMultiplier}</em></div>
+      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{local.providerModelRules}</strong></div>
+      <div className="pricing-discount"><b>{availableModels}</b><span>{local.availableModels}</span><em className="pricing-mult">{policy?.inSync ? local.active : local.syncing}</em></div>
     </div>
-    <p>{copy.flatExplainer}</p>
-    <div className="pricing-howto-row"><p className="pricing-howto-text">{copy.flatEveryModel}</p><Link className="link pricing-howto-link" href={`${DOCS_URL}#pricing`}>{copy.howPricingWorks} →</Link></div>
+    <p>{local.policyExplainer}</p>
   </section>;
 }
+
+const pricingCopy = {
+  en: {
+    providerModelRules: "Provider and model rules",
+    availableModels: "available models",
+    active: "Applied by engine",
+    syncing: "Update pending",
+    policyExplainer: "A request is charged by its applied provider/model rule. Progressive and fixed-discount rules can coexist.",
+    paidBalance: "Paid balance",
+    bonusBalance: "Track-only bonus",
+    bonusDetail: "The $4 welcome bonus can fund progressive-price requests only.",
+    splitUnavailable: "Funding split pending reconciliation",
+    rulePricing: "Provider/model pricing",
+    ruleDetail: "The exact rule is shown in Usage; no universal API-value projection applies.",
+    addPaid: "Added to paid balance",
+    paidExactly: "Your paid balance increases by exactly this amount.",
+    creditAmount: "Amount",
+    fundingSource: "Funding source",
+    paidSource: "Paid",
+    bonusSource: "Track-only bonus",
+    otherSource: "Other credit",
+    unknownSource: "Unattributed legacy credit",
+  },
+  ru: {
+    providerModelRules: "Правила провайдеров и моделей",
+    availableModels: "доступных моделей",
+    active: "Применено движком",
+    syncing: "Ожидает применения",
+    policyExplainer: "Запрос списывается по применённому правилу провайдера или модели. Прогрессивные и фиксированные правила могут сочетаться.",
+    paidBalance: "Оплаченный баланс",
+    bonusBalance: "Бонус только для прогрессивного тарифа",
+    bonusDetail: "$4 welcome-бонуса можно использовать только для запросов с прогрессивным тарифом.",
+    splitUnavailable: "Разбивка средств ожидает сверки",
+    rulePricing: "Тарифы по провайдеру и модели",
+    ruleDetail: "Точное правило показано в Usage; единого пересчёта баланса в API value нет.",
+    addPaid: "Будет зачислено на оплаченный баланс",
+    paidExactly: "Оплаченный баланс увеличится ровно на эту сумму.",
+    creditAmount: "Сумма",
+    fundingSource: "Источник средств",
+    paidSource: "Оплачено",
+    bonusSource: "Бонус прогрессивного тарифа",
+    otherSource: "Другой кредит",
+    unknownSource: "Legacy-кредит без attribution",
+  },
+} as const;
 
 const TOPUP_PRESETS = [100, 250, 500, 1000] as const;
 const WHOLE_USD_AMOUNT = /^[1-9]\d*$/;
@@ -64,6 +104,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const localCopy = localDashboardCopy[language];
+  const policyCopy = pricingCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const [amount, setAmount] = useState("100");
   const [method, setMethod] = useState<number>(PLATEGA_METHODS[0]!.id);
@@ -89,24 +130,17 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
     finally { setBusy(false); }
   }
 
-  // B2C получает фиксированные −50%; для B2B сохраняется согласованная ставка аккаунта.
-  const isBusiness = account.pricing?.customerType === "b2b";
-  const discount = discountOf(account);
-  const flatPaymentBp = bpFromDiscount(discount);
-  const rateName = isBusiness ? copy.businessRate : copy.flatRate;
   const amountNano = amountValid ? BigInt(amount) * NANO_PER_USD : 0n;
-  const apiValueNano = officialNanoFromCharged(amountNano, flatPaymentBp);
-  const balanceApiNano = officialNanoFromCharged(BigInt(account.balanceNano), flatPaymentBp);
-  const apiValueForPreset = (preset: number) => officialNanoFromCharged(BigInt(preset) * NANO_PER_USD, flatPaymentBp);
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
 
   return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-stack">
-      <div className="ov-stats bill3 tc-stats">
-        <div className="ovstat"><span className="dlabel">{copy.currentBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(balanceApiNano, locale) }) : copy.available}</span></div>
+      <div className="ov-stats bill4 tc-stats">
+        <div className="ovstat"><span className="dlabel">{policyCopy.paidBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.paidNano, locale) : "—"}</b><span className="dtrend">{account.funding ? copy.available : policyCopy.splitUnavailable}</span></div>
+        <div className="ovstat"><span className="dlabel">{policyCopy.bonusBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.bonusNano, locale) : "—"}</b><span className="dtrend">{policyCopy.bonusDetail}</span></div>
         <Stat label={copy.used} value={formatNanoUsd(account.spentNano, locale)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{copy.currentPricing}</span><b className="num tc-tier-name">{rateName}</b><span className="dtrend">{discount}% {copy.discount} · {formatMultiplier(flatPaymentBp, locale)} {copy.valueMultiplier}</span></div>
+        <div className="ovstat"><span className="dlabel">{copy.currentPricing}</span><b className="num tc-tier-name">{policyCopy.rulePricing}</b><span className="dtrend">{policyCopy.ruleDetail}</span></div>
       </div>
 
       <div className="card topup-convert">
@@ -114,17 +148,16 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
         <div className="tc-body">
           <div className="tc-input">
             <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{formatNanoUsd(apiValueForPreset(preset), locale)}</span></button>)}</div>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{policyCopy.paidBalance}</span></button>)}</div>
           </div>
           <div className="tc-arrow" aria-hidden="true">→</div>
           <div className="tc-receive tc-receive-up">
-            <span className="tc-recv-label">{copy.youReceive}</span>
-            <b className="tc-recv-value">{amountNano > 0n ? `≈ ${formatNanoUsd(apiValueNano, locale)}` : "—"}</b>
-            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : `${copy.inClaudeApi} · −${discount}%`}</span>
-            <div className="tc-recv-meta"><span className="tc-badge">−{discount}%</span><span className="tc-badge tc-badge-soft">{formatMultiplier(flatPaymentBp, locale)} {copy.valueMultiplier}</span></div>
+            <span className="tc-recv-label">{policyCopy.addPaid}</span>
+            <b className="tc-recv-value">{amountNano > 0n ? formatNanoUsd(amountNano, locale) : "—"}</b>
+            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : policyCopy.paidExactly}</span>
           </div>
         </div>
-        <p className="tc-explain">{interpolate(copy.perDollar, { mult: formatPerDollar(flatPaymentBp, locale) })}</p>
+        <p className="tc-explain">{policyCopy.ruleDetail}</p>
         <div className="tc-pay">
           <span className="tc-pay-label">{localCopy.payWith}</span>
           <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
@@ -145,16 +178,12 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
       {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
       {ledgerAvailable && <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
         <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title">
-          <thead><tr><th scope="col">{copy.date}</th><th scope="col" className="tnum">{copy.histPaid}</th><th scope="col">{copy.histDiscount}</th><th scope="col" className="tnum">{copy.histApiValue}</th><th scope="col">{copy.reference}</th></tr></thead>
-          <tbody>{topups.length === 0 ? <tr><td colSpan={5} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
-            const d = discount;
-            const paidNano = BigInt(entry.amountNano);
-            const officialValueNano = officialNanoFromCharged(paidNano, bpFromDiscount(d));
+          <thead><tr><th scope="col">{copy.date}</th><th scope="col" className="tnum">{policyCopy.creditAmount}</th><th scope="col">{policyCopy.fundingSource}</th><th scope="col">{copy.reference}</th></tr></thead>
+          <tbody>{topups.length === 0 ? <tr><td colSpan={4} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
             return <tr key={entry.id}>
               <td data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
-              <td className="tnum" data-label={copy.histPaid}>{formatNanoUsd(paidNano, locale)}</td>
-              <td data-label={copy.histDiscount}><span className="pill pill-soft">−{d}%</span></td>
-              <td className="tnum" data-label={copy.histApiValue}>≈ {formatNanoUsd(officialValueNano, locale)}</td>
+              <td className="tnum" data-label={policyCopy.creditAmount}>{formatNanoUsd(entry.amountNano, locale)}</td>
+              <td data-label={policyCopy.fundingSource}>{topupFundingLabel(entry, policyCopy)}</td>
               <td data-label={copy.reference}>{entry.reference ?? "—"}</td>
             </tr>;
           })}</tbody>
@@ -164,12 +193,6 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   </section>;
 }
 
-function formatPerDollar(multiplierBp: bigint, locale: string): string {
-  return `$${formatFixedRatio(BASIS_POINTS, multiplierBp, 2, locale)}`;
-}
-function multFromDiscount(discountPercent: number, locale: string): string {
-  return formatMultiplier(bpFromDiscount(discountPercent), locale);
-}
 function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): string | null {
   try {
     const parsed = new URL(rawUrl);
@@ -177,4 +200,15 @@ function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): st
     if (parsed.protocol !== "https:" || parsed.username || parsed.password || !allowedOrigins?.has(parsed.origin)) return null;
     return parsed.href;
   } catch { return null; }
+}
+
+function topupFundingLabel(
+  entry: LedgerEntry,
+  copy: typeof pricingCopy.en | typeof pricingCopy.ru,
+): string {
+  const sourceTypes = new Set((entry.fundingAllocations ?? []).map((allocation) => allocation.sourceType));
+  if (sourceTypes.has("paid")) return copy.paidSource;
+  if (sourceTypes.has("welcome_track_bonus")) return copy.bonusSource;
+  if (sourceTypes.size > 0) return copy.otherSource;
+  return copy.unknownSource;
 }
