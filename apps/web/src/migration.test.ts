@@ -161,7 +161,11 @@ describe("completed Next.js migration", () => {
     expect(routes).toContain('value === "security"');
     expect(dashboard).not.toMatch(/href=[{\"]+\/dashboard\//);
     expect(routes).toContain('language === "ru" ? "/ru/dashboard" : "/dashboard"');
-    expect(dashboard).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get(\"view\")))");
+    // Подписка useSearchParams заставляет Next перерендеривать маршрут на каждом
+    // pushState, поэтому начальный ?view читается одноразово из window.location.
+    const dashboardMain = readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8");
+    expect(dashboardMain).toContain("const [section, setSection] = useState<Section>(() => parseDashboardSection(");
+    expect(dashboardMain).not.toContain("useSearchParams()");
     expect(dashboard).toContain("setSection(next)");
     expect(dashboard).toContain('window.history.pushState(null, "", dashboardHref(next, language))');
     expect(dashboard).toContain('window.addEventListener("popstate", syncSectionFromHistory)');

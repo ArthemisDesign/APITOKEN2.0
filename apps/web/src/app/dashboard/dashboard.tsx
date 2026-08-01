@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Activity, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Activity, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type LedgerEntry, type UsageView,
 } from "@/lib/api";
@@ -42,12 +42,17 @@ function useDashboardCopy(): DashboardCopy {
 
 export function Dashboard() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { language, setLanguage } = useI18n();
   const copy = dashboardCopy[language];
   const localCopy = localDashboardCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const [section, setSection] = useState<Section>(() => parseDashboardSection(searchParams.get("view")));
+  // Одноразовое чтение ?view из window.location (паттерн PromoPanel): подписка
+  // useSearchParams заставляет Next перерендеривать маршрут на каждый pushState,
+  // хотя активный раздел дальше живёт в состоянии компонента. Расхождения SSR/клиент
+  // нет: пока loading=true, рендер (DashboardLoading) от section не зависит.
+  const [section, setSection] = useState<Section>(() => parseDashboardSection(
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("view"),
+  ));
   // Посещённые разделы не размонтируем (Activity hidden): поиск, фильтры и скролл переживают
   // переключение вкладок. Ленивые dynamic()-импорты по-прежнему грузятся только при первом визите.
   const [visitedSections, setVisitedSections] = useState<ReadonlySet<Section>>(() => new Set([section]));
@@ -179,10 +184,12 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (searchParams.get("view") === "security") {
+    // Удалённый раздел Security: состояние уже смаплено parseDashboardSection,
+    // здесь только нормализуем адресную строку (одноразовое чтение, без подписки).
+    if (new URLSearchParams(window.location.search).get("view") === "security") {
       window.history.replaceState(null, "", dashboardHref("profile", language));
     }
-  }, [language, searchParams]);
+  }, [language]);
 
   const logout = useCallback(async () => {
     if (loggingOut) return;
@@ -330,30 +337,52 @@ function DashboardContent({
       />
     </Activity>}
     {visitedSections.has("keys") && <Activity mode={section === "keys" ? "visible" : "hidden"}>
-      {dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
-      {!dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={onRetryKeys} user={user} />}
+      {/* Локальный Suspense: без него первый визит в lazy-раздел suspend'ит всё до
+          layout-границы и перемонтирует весь дашборд вместе с сайдбаром. */}
+      <Suspense fallback={<KeysSkeleton />}>
+        {dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
+        {!dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={onRetryKeys} user={user} />}
+      </Suspense>
     </Activity>}
     {visitedSections.has("credits") && <Activity mode={section === "credits" ? "visible" : "hidden"}>
-      <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />
+      <Suspense fallback={<SectionSkeleton />}>
+        <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />
+      </Suspense>
     </Activity>}
     {visitedSections.has("usage") && <Activity mode={section === "usage" ? "visible" : "hidden"}>
-      {!usage && dataPending.usage && <UsageSkeleton />}
-      {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+      <Suspense fallback={<UsageSkeleton />}>
+        {!usage && dataPending.usage && <UsageSkeleton />}
+        {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+      </Suspense>
     </Activity>}
     {visitedSections.has("support") && <Activity mode={section === "support" ? "visible" : "hidden"}>
-      <SupportPanel />
+      <Suspense fallback={<SectionSkeleton />}>
+        <SupportPanel />
+      </Suspense>
     </Activity>}
     {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>
-      <Profile user={user} onUpdated={onUserUpdated} />
+      <Suspense fallback={<SectionSkeleton />}>
+        <Profile user={user} onUpdated={onUserUpdated} />
+      </Suspense>
     </Activity>}
     {visitedSections.has("promos") && <Activity mode={section === "promos" ? "visible" : "hidden"}>
-      <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
+      <Suspense fallback={<SectionSkeleton />}>
+        <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
+      </Suspense>
     </Activity>}
   </div>;
 }
 
 function KeysSkeleton() {
   return <section className="panel keys-skel" aria-hidden="true">
+    <div className="skl skl-page-title" /><div className="skl skl-page-sub" />
+    <div className="skl skl-toolbar" />
+    <div>{[0, 1, 2, 3].map((row) => <div className="skl skl-row" key={row} />)}</div>
+  </section>;
+}
+
+function SectionSkeleton() {
+  return <section className="panel" aria-hidden="true">
     <div className="skl skl-page-title" /><div className="skl skl-page-sub" />
     <div className="skl skl-toolbar" />
     <div>{[0, 1, 2, 3].map((row) => <div className="skl skl-row" key={row} />)}</div>

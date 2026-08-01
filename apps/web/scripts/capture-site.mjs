@@ -196,6 +196,8 @@ const shouldVerifyPricing = process.env.AUDIT_VERIFY_PRICING === "1" ||
   (process.env.AUDIT_VERIFY_PRICING !== "0" && captures.some(([name]) => name.startsWith("pricing-cards-")));
 const shouldVerifyHero = process.env.AUDIT_VERIFY_HERO === "1" ||
   (process.env.AUDIT_VERIFY_HERO !== "0" && captures.some(([name]) => name.startsWith("home-")));
+const shouldVerifyNavIsolation = process.env.AUDIT_VERIFY_NAV_ISOLATION === "1" ||
+  (process.env.AUDIT_VERIFY_NAV_ISOLATION !== "0" && captures.some(([name]) => name.startsWith("dashboard-")));
 
 if (captures.length === 0) throw new Error("No screenshots matched AUDIT_SCOPE/AUDIT_FILTER.");
 
@@ -1502,7 +1504,7 @@ async function verifyDashboardRouting(client) {
     await removedLoaded;
     await waitForCondition(
       client,
-      `document.querySelector('[data-dashboard-section="overview"]')?.getAttribute('aria-current') === 'page' && Boolean(document.querySelector('.overview-core'))`,
+      `document.querySelector('[data-dashboard-section="overview"]')?.getAttribute('aria-current') === 'page' && Boolean(document.querySelector('.overview-panel'))`,
       `the removed ${removedView} route to fall back to Overview`,
     );
   }
@@ -1520,7 +1522,7 @@ async function verifyDashboardRouting(client) {
   try {
     await waitForCondition(
       client,
-      `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-core'))`,
+      `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-panel'))`,
       "direct navigation from a reloaded subview to Overview",
     );
   } catch (error) {
@@ -1541,7 +1543,7 @@ async function verifyDashboardRouting(client) {
   await client.send("Runtime.evaluate", { expression: "history.back()" });
   await waitForCondition(
     client,
-    `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-core'))`,
+    `location.pathname === '/dashboard' && location.search === '' && document.querySelector('.app-title')?.textContent?.trim() === 'Overview' && Boolean(document.querySelector('.overview-panel'))`,
     "Back navigation to Overview",
   );
   await client.send("Runtime.evaluate", { expression: "history.forward()" });
@@ -1551,6 +1553,79 @@ async function verifyDashboardRouting(client) {
     "Forward navigation to API keys",
   );
   process.stdout.write("Verified removed-view fallbacks, reload, direct Overview, and Back/Forward dashboard routing\n");
+}
+
+async function verifyDashboardNavIsolation(client) {
+  // Sidebar clicks must stay client-side: no document reload, no shell remount,
+  // no identity/account refetch. The audit object lives on `window`, so any full
+  // reload wipes it; DOM node identity catches a React remount of the shell.
+  // Both localized dashboard routes get the same pass.
+  const passes = [
+    { language: "en", base: "/dashboard", overviewTitle: "Overview" },
+    { language: "ru", base: "/ru/dashboard", overviewTitle: "Обзор" },
+  ];
+  const sections = ["keys", "credits", "promos", "usage", "support", "profile", "overview"];
+  for (const { language, base, overviewTitle } of passes) {
+    await client.send("Runtime.evaluate", { expression: `localStorage.setItem('lang', ${JSON.stringify(language)});` });
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: new URL(base, baseUrl).href });
+    await loaded;
+    await waitForCondition(
+      client,
+      `document.querySelector('.app-title')?.textContent?.trim() === ${JSON.stringify(overviewTitle)} && Boolean(document.querySelector('aside.side'))`,
+      `the ${language} dashboard shell`,
+    );
+    await client.send("Runtime.evaluate", {
+      expression: `(() => {
+        window.__navIsolationAudit = {
+          sidebar: document.querySelector('aside.side'),
+          topbar: document.querySelector('header.app-top'),
+          accountFetches: 0,
+          urls: [],
+        };
+        const originalFetch = window.fetch;
+        window.fetch = (...args) => {
+          const input = args[0];
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          const path = new URL(url, location.origin).pathname;
+          if (path === '/v1/auth/me' || path === '/v1/account') window.__navIsolationAudit.accountFetches += 1;
+          window.__navIsolationAudit.urls.push(new URL(url, location.origin).pathname + new URL(url, location.origin).search);
+          return originalFetch(...args);
+        };
+      })()`,
+    });
+    for (const section of sections) {
+      await client.send("Runtime.evaluate", {
+        expression: `document.querySelector('[data-dashboard-section="${section}"]')?.click()`,
+      });
+      const expectedUrl = section === "overview"
+        ? `location.pathname + location.search === '${base}'`
+        : `location.search === '?view=${section}'`;
+      await waitForCondition(
+        client,
+        `${expectedUrl} && document.querySelector('[data-dashboard-section="${section}"]')?.getAttribute('aria-current') === 'page'`,
+        `sidebar navigation to ${section} (${language})`,
+      );
+      const result = await client.send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          alive: Boolean(window.__navIsolationAudit),
+          sameSidebar: window.__navIsolationAudit?.sidebar === document.querySelector('aside.side'),
+          sameTopbar: window.__navIsolationAudit?.topbar === document.querySelector('header.app-top'),
+          accountFetches: window.__navIsolationAudit?.accountFetches ?? -1,
+        })`,
+        returnByValue: true,
+      });
+      const state = JSON.parse(result.result.value);
+      if (!state.alive || !state.sameSidebar || !state.sameTopbar || state.accountFetches !== 0) {
+        const urls = await client.send("Runtime.evaluate", {
+          expression: `JSON.stringify(window.__navIsolationAudit?.urls ?? [])`,
+          returnByValue: true,
+        });
+        throw new Error(`Dashboard shell was not isolated while navigating to ${section} (${language}): ${JSON.stringify(state)} fetches: ${urls.result.value}`);
+      }
+    }
+  }
+  process.stdout.write("Verified dashboard sidebar navigation stays client-side with a persistent shell (en, ru)\n");
 }
 
 async function verifyProfileBehavior(client) {
@@ -1824,6 +1899,7 @@ try {
     process.stdout.write(`Captured ${capture[0]}\n`);
   }
   if (process.env.AUDIT_VERIFY_ROUTING === "1") await verifyDashboardRouting(client);
+  if (shouldVerifyNavIsolation) await verifyDashboardNavIsolation(client);
   if (process.env.AUDIT_VERIFY_PROFILE === "1") await verifyProfileBehavior(client);
   if (shouldVerifyHero) await verifyHeroOfferLayout(client);
   if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
