@@ -333,10 +333,15 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    продолжает drain до финального usageMetadata. Shutdown deadline обязан abort-ить upstream read,
    settle-ить последний snapshot и только потом отпустить background semaphore permit для
    последующего billing flush.
-   Per-profile inflight атомарно ограничен (default 6). Fresh per-model quota fraction участвует в
-   routing с deterministic soft reserve/jitter; если все eligible profiles ниже резерва, service
-   floor fail-open до explicit zero. `/gemini-subs` отделяет quota presence от generation health
-   через failure streak и last success/failure evidence.
+   Per-profile inflight атомарно ограничен (default 6). Resolved conversation affinity — hard first
+   choice до этого потолка; насыщенный home временно spill-ит без потери binding. Новая shared
+   system/tools cache-root сначала прогревает два конкурентных profile, затем предпочитает warm
+   copy. Unbound routing ставит fresh quota evidence перед stale, затем inflight, coarse quota
+   steering только выше 50% used и rotating cursor: exact fractions не herd-ят бёрст на один
+   аккаунт. Deterministic soft reserve/jitter сохраняется; если все eligible profiles ниже резерва,
+   service floor fail-open до explicit zero. Локальное saturation отдаёт короткий native RetryInfo.
+   `/gemini-subs` отделяет quota presence от generation health через failure streak и last
+   success/failure evidence.
 6. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future

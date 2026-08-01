@@ -184,6 +184,48 @@ export const pricingCatalogEntrySchema = z.object({
   enabled: z.boolean(),
 }).strict();
 
+/**
+ * Canonical first-generation product catalog shared by commerce backfill and
+ * OpenKeys issuance. Keeping this identity at the transport-contract boundary
+ * prevents a second application-local list from silently gaining or losing a
+ * model. New models still require an explicit generation/code change.
+ */
+export const MULTI_DISCOUNT_SCHEMA_VERSION = 1;
+export const MULTI_DISCOUNT_CAPABILITY_GENERATION = 1;
+export const MULTI_DISCOUNT_CAPABILITY_DIGEST =
+  "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd";
+export const MAIN_PRICING_PRODUCT_ID = "main";
+export const OPENKEYS_PRICING_PRODUCT_ID = "openkeys";
+
+export const CURRENT_ANTHROPIC_CANONICAL_MODELS = [
+  "claude-haiku-4-5",
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-sonnet-4-6",
+  "claude-sonnet-5",
+] as const;
+
+export const CURRENT_OPENAI_CANONICAL_MODELS = [
+  "gpt-5.4",
+  "gpt-5.5",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+] as const;
+
+export const CURRENT_PRODUCT_CATALOG_ENTRIES = Object.freeze([
+  ...CURRENT_ANTHROPIC_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "anthropic" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+  ...CURRENT_OPENAI_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "openai" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+]);
+
 export const pricingCatalogSpecSchema = z.object({
   product_id: pricingIdentifierSchema,
   generation: pricingVersionSchema,

@@ -14,7 +14,6 @@ const config: OpenkeysConfig = {
   ],
   sessionSecret: "0123456789abcdef0123456789abcdef",
   sessionTtlSeconds: 3600,
-  defaultMultBp: 4000,
   publicBaseUrl: "https://openkeys.apitoken.sale",
 };
 

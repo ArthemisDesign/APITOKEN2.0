@@ -18,9 +18,16 @@ import {
   balanceToOfficialNano,
   formatUsd,
   officialBalanceBreakdown,
-  officialNanoToBalance,
   officialRemainingNano,
 } from "./money";
+import {
+  assertNoOpenKeysPricingOverride,
+  assertOfficialEngineAccount,
+  OFFICIAL_ONE_TO_ONE_CONTRACT,
+  OFFICIAL_ONE_TO_ONE_MULT_BP,
+  provisionOfficialOpenKeysCredential,
+  resolveOpenKeysPricingAuthority,
+} from "./openkeys-pricing";
 import { openSecret, sealSecret } from "./secret-box";
 
 export const MAX_BATCH_QUANTITY = 100;
@@ -28,7 +35,6 @@ export const MAX_BATCH_QUANTITY = 100;
 export interface IssueBatchInput {
   faceValueNano: bigint;
   quantity: number;
-  multBp: number;
   label: string | null;
   note: string | null;
   apiType: ApiType;
@@ -129,27 +135,28 @@ export function keyDigest(secret: string): string {
  * страница расхода может показывать остаток без всякой авторизации.
  */
 export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: string; keys: IssuedKey[] }> {
+  assertNoOpenKeysPricingOverride(input);
   if (!Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > MAX_BATCH_QUANTITY) {
     throw new Error(`Количество ключей должно быть от 1 до ${MAX_BATCH_QUANTITY}`);
   }
-  if (!Number.isInteger(input.multBp) || input.multBp < 1 || input.multBp > 10_000) {
-    throw new Error("Множитель должен быть от 1 до 10000 basis points");
-  }
+  if (input.faceValueNano <= 0n) throw new Error("Номинал должен быть положительным");
 
   await reconcileIssuanceJobs();
 
   const config = loadConfig();
   const { db } = getDatabase();
   const engine = getEngineClient();
-  const balanceNano = officialNanoToBalance(input.faceValueNano, input.multBp);
-  if (balanceNano <= 0n) throw new Error("Номинал слишком мал для выбранного множителя");
+  // Read and validate the already-reviewed product authority before creating a batch or account.
+  // OpenKeys never mutates global catalogs/switches and cannot issue while they are absent/drifted.
+  const pricingAuthority = await resolveOpenKeysPricingAuthority(engine);
 
   const [batch] = await db
     .insert(openkeysBatches)
     .values({
       label: input.label,
       faceValueNano: input.faceValueNano,
-      multBp: input.multBp,
+      multBp: OFFICIAL_ONE_TO_ONE_MULT_BP,
+      pricingContract: OFFICIAL_ONE_TO_ONE_CONTRACT,
       quantity: input.quantity,
       note: input.note,
       apiType: input.apiType,
@@ -161,6 +168,7 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
 
   const issued: IssuedKey[] = [];
   for (let index = 0; index < input.quantity; index += 1) {
+    const id = randomUUID();
     const viewToken = randomBytes(16).toString("base64url");
     let accountId: string | null = null;
     const [job] = await db
@@ -173,26 +181,32 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
         handle: input.apiType === "anthropic"
           ? `openkeys-${viewToken.slice(0, 16)}`
           : `openkeys-openai-${viewToken.slice(0, 16)}`,
-        multBp: input.multBp,
+        multBp: OFFICIAL_ONE_TO_ONE_MULT_BP,
       });
       accountId = account.account;
+      assertOfficialEngineAccount(account);
       await db.update(openkeysIssuanceJobs).set({
         status: "account_created", engineAccountId: account.account, updatedAt: new Date(),
       }).where(eq(openkeysIssuanceJobs.id, job.id));
 
-      // ref идемпотентен на стороне движка: повторная попытка не задвоит зачисление.
-      await engine.creditAccount(account.account, balanceNano, `openkeys:${batch.id}:${index}`);
-      await db.update(openkeysIssuanceJobs).set({ status: "credited", updatedAt: new Date() })
-        .where(eq(openkeysIssuanceJobs.id, job.id));
-      const key = await engine.issueKey(account.account, {
-        label: input.apiType === "anthropic"
+      // Exact policy prepare/activation/readback ACK happens before this helper credits the exact
+      // face value, and the usable secret is issued only after both durable steps succeed.
+      const key = await provisionOfficialOpenKeysCredential(engine, {
+        accountId: account.account,
+        authority: pricingAuthority,
+        faceValueNano: input.faceValueNano,
+        creditReference: `openkeys:${batch.id}:${index}`,
+        keyLabel: input.apiType === "anthropic"
           ? `openkeys ${viewToken.slice(0, 8)}`
           : `openkeys openai ${viewToken.slice(0, 8)}`,
+        onCredited: async () => {
+          await db.update(openkeysIssuanceJobs).set({ status: "credited", updatedAt: new Date() })
+            .where(eq(openkeysIssuanceJobs.id, job.id));
+        },
       });
       await db.update(openkeysIssuanceJobs).set({
         status: "key_issued", engineKeyId: key.key_id, updatedAt: new Date(),
       }).where(eq(openkeysIssuanceJobs.id, job.id));
-      const id = randomUUID();
       const sealed = sealSecret(
         key.key,
         secretContext({ id, batchId: batch.id, viewToken, engineAccountId: account.account }),
@@ -211,7 +225,8 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
         secretVersion: 2,
         secretKeyId: sealed.keyId,
         faceValueNano: input.faceValueNano,
-        multBp: input.multBp,
+        multBp: OFFICIAL_ONE_TO_ONE_MULT_BP,
+        pricingContract: OFFICIAL_ONE_TO_ONE_CONTRACT,
       });
       issued.push({
         secret: key.key,
@@ -263,6 +278,7 @@ export interface KeyUsageView {
   createdAt: string;
   faceValueNano: string;
   multBp: number;
+  pricingContract: "legacy" | "official_1_to_1";
   apiType: ApiType;
   balanceNano: string;
   reservedNano: string;
@@ -337,6 +353,7 @@ async function loadUsageUncached(viewToken: string, window: string): Promise<Key
     createdAt: row.createdAt.toISOString(),
     faceValueNano: row.faceValueNano.toString(),
     multBp: row.multBp,
+    pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
     apiType: apiTypeOf(result.apiType),
     balanceNano: balanceNano.toString(),
     reservedNano: reservedNano.toString(),
@@ -402,6 +419,7 @@ export interface StockKey {
   /** Номинал строкой нанодолларов для точного отображения и расчётов. */
   faceValueNano: string;
   apiType: ApiType;
+  pricingContract: "legacy" | "official_1_to_1";
   label: string | null;
   enabled: boolean;
   createdAt: string;
@@ -429,6 +447,7 @@ export async function listKeys(createdBy: string, batchId: string, limit = MAX_B
       viewToken: openkeysKeys.viewToken,
       engineAccountId: openkeysKeys.engineAccountId,
       faceValueNano: openkeysKeys.faceValueNano,
+      pricingContract: openkeysKeys.pricingContract,
       createdAt: openkeysKeys.createdAt,
       deliveredAt: openkeysKeys.deliveredAt,
       enabled: openkeysKeys.status,
@@ -470,6 +489,7 @@ export async function listKeys(createdBy: string, batchId: string, limit = MAX_B
       faceValue: formatUsd(row.faceValueNano, 0),
       faceValueNano: row.faceValueNano.toString(),
       apiType: apiTypeOf(row.apiType),
+      pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
       label: row.label,
       enabled: row.enabled !== "disabled",
       createdAt: row.createdAt.toISOString(),
@@ -727,6 +747,7 @@ export interface BatchSummary {
   faceValue: string;
   quantity: number;
   apiType: ApiType;
+  pricingContract: "legacy" | "official_1_to_1";
   stockCount: number;
   deliveredCount: number;
   disabledCount: number;
@@ -773,6 +794,7 @@ export async function listBatches(
         faceValueNano: openkeysBatches.faceValueNano,
         quantity: openkeysBatches.quantity,
         apiType: openkeysBatches.apiType,
+        pricingContract: openkeysBatches.pricingContract,
         createdAt: openkeysBatches.createdAt,
         stockCount: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is null)`.mapWith(Number),
         deliveredCount: sql<number>`count(${openkeysKeys.id}) filter (where ${openkeysKeys.removedAt} is null and ${openkeysKeys.deliveredAt} is not null)`.mapWith(Number),
@@ -808,6 +830,7 @@ export async function listBatches(
       faceValue: formatUsd(row.faceValueNano, 0),
       quantity: row.quantity,
       apiType: apiTypeOf(row.apiType),
+      pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
       stockCount: row.stockCount,
       deliveredCount: row.deliveredCount,
       disabledCount: row.disabledCount,

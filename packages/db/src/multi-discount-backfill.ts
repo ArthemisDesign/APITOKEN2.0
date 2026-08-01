@@ -6,46 +6,26 @@ import type {
   PricingCatalogSpec,
   ProviderSwitchSpec,
 } from "@claude-api/contracts";
+import {
+  CURRENT_PRODUCT_CATALOG_ENTRIES,
+  MAIN_PRICING_PRODUCT_ID,
+  MULTI_DISCOUNT_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_SCHEMA_VERSION,
+  OPENKEYS_PRICING_PRODUCT_ID,
+} from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Database } from "./client.js";
 
 type AccountPolicyRule = AccountPolicySpec["rules"][number];
 
-export const STAGE5_SCHEMA_VERSION = 1;
-export const STAGE5_CAPABILITY_GENERATION = 1;
-export const STAGE5_CAPABILITY_DIGEST =
-  "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd";
-export const STAGE5_MAIN_PRODUCT_ID = "main";
-export const STAGE5_OPENKEYS_PRODUCT_ID = "openkeys";
-
-const anthropicModels = [
-  "claude-haiku-4-5",
-  "claude-opus-4-7",
-  "claude-opus-4-8",
-  "claude-sonnet-4-6",
-  "claude-sonnet-5",
-] as const;
-const openAiModels = [
-  "gpt-5.4",
-  "gpt-5.5",
-  "gpt-5.6-luna",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-] as const;
-
-export const STAGE5_CATALOG_MODELS = Object.freeze([
-  ...anthropicModels.map((canonicalModelId) => ({
-    provider_id: "anthropic",
-    canonical_model_id: canonicalModelId,
-    enabled: true,
-  })),
-  ...openAiModels.map((canonicalModelId) => ({
-    provider_id: "openai",
-    canonical_model_id: canonicalModelId,
-    enabled: true,
-  })),
-]);
+export const STAGE5_SCHEMA_VERSION = MULTI_DISCOUNT_SCHEMA_VERSION;
+export const STAGE5_CAPABILITY_GENERATION = MULTI_DISCOUNT_CAPABILITY_GENERATION;
+export const STAGE5_CAPABILITY_DIGEST = MULTI_DISCOUNT_CAPABILITY_DIGEST;
+export const STAGE5_MAIN_PRODUCT_ID = MAIN_PRICING_PRODUCT_ID;
+export const STAGE5_OPENKEYS_PRODUCT_ID = OPENKEYS_PRICING_PRODUCT_ID;
+export const STAGE5_CATALOG_MODELS = CURRENT_PRODUCT_CATALOG_ENTRIES;
 
 const inventoryAccountSchema = z.object({
   account_id: z.string().startsWith("acct_").max(200),

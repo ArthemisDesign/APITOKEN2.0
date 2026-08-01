@@ -49,7 +49,6 @@ export interface OpenkeysConfig {
   adminAccounts: AdminAccount[];
   sessionSecret: string;
   sessionTtlSeconds: number;
-  defaultMultBp: number;
   publicBaseUrl: string;
 }
 
@@ -87,13 +86,6 @@ function parseAdminAccounts(): AdminAccount[] {
 }
 
 export function loadConfig(): OpenkeysConfig {
-  // 10000 = ключ несёт баланс выбранного API один к одному: $50 номинала — это
-  // ровно $50 работы по его прайсу. Никаких скидочных тиров здесь нет.
-  const defaultMultBp = optionalInt("OPENKEYS_DEFAULT_MULT_BP", 10_000);
-  if (defaultMultBp < 1 || defaultMultBp > 10_000) {
-    throw new Error("OPENKEYS_DEFAULT_MULT_BP must be between 1 and 10000");
-  }
-
   const sessionSecret = required("OPENKEYS_SESSION_SECRET");
   if (sessionSecret.length < 32) throw new Error("OPENKEYS_SESSION_SECRET must be at least 32 chars");
 
@@ -111,7 +103,6 @@ export function loadConfig(): OpenkeysConfig {
     adminAccounts: parseAdminAccounts(),
     sessionSecret,
     sessionTtlSeconds,
-    defaultMultBp,
     publicBaseUrl: baseUrl("OPENKEYS_PUBLIC_BASE_URL", "https://openkeys.apitoken.sale"),
   };
 }

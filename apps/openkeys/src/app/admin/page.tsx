@@ -19,6 +19,7 @@ interface StockKey {
   viewUrl: string;
   faceValue: string;
   faceValueNano: string;
+  pricingContract: "legacy" | "official_1_to_1";
   label: string | null;
   enabled: boolean;
   createdAt: string;
@@ -29,6 +30,7 @@ interface BatchRow {
   id: string;
   label: string | null;
   faceValue: string;
+  pricingContract: "legacy" | "official_1_to_1";
   quantity: number;
   stockCount: number;
   deliveredCount: number;
@@ -43,6 +45,7 @@ interface BatchPayload {
   limit: number;
   offset: number;
   totals: { stock: number; delivered: number; disabled: number };
+  issuanceAuthority: { ready: boolean; supportedModels: string[] };
 }
 
 function CopyButton({
@@ -91,6 +94,9 @@ function KeyCard({
           {keyRow.enabled ? "готов к продаже" : "отключён"}
         </span>
         <span className="pill">{keyRow.faceValue}</span>
+        <span className={`pill ${keyRow.pricingContract === "official_1_to_1" ? "pill-good" : "pill-muted"}`}>
+          {keyRow.pricingContract === "official_1_to_1" ? "1:1 official" : "legacy"}
+        </span>
         <span className="chip">{keyRow.label ?? "Без метки"}</span>
       </div>
       <div className="secret-key-field openkeys-key-secret">
@@ -146,6 +152,10 @@ export default function AdminPage() {
   const [batchQuery, setBatchQuery] = useState("");
   const [batchQueryDraft, setBatchQueryDraft] = useState("");
   const [showIssueForm, setShowIssueForm] = useState(false);
+  const [issuanceAuthority, setIssuanceAuthority] = useState({
+    ready: false,
+    supportedModels: [] as string[],
+  });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -201,6 +211,7 @@ export default function AdminPage() {
       setBatchTotal(payload.total);
       setBatches(payload.batches);
       setTotals(payload.totals);
+      setIssuanceAuthority(payload.issuanceAuthority);
       setKeys(nextKeys);
       chooseBatch(selected);
       setAuthorized(true);
@@ -360,7 +371,7 @@ export default function AdminPage() {
     return (
       <section className="openkeys-batch-workspace" aria-label={`Открытая партия ${batch.label ?? batch.id}`}>
         <div className="openkeys-workspace-head">
-          <div><span className="eyebrow">Открытая партия</span><h2>{batch.label ?? "Без метки"}</h2><p>{batch.createdAt.slice(0, 10)} · {batch.faceValue} · {keys.length} ключей в системе</p></div>
+          <div><span className="eyebrow">Открытая партия</span><h2>{batch.label ?? "Без метки"}</h2><p>{batch.createdAt.slice(0, 10)} · {batch.faceValue} · {batch.pricingContract === "official_1_to_1" ? "1:1 official" : "legacy"} · {keys.length} ключей в системе</p></div>
           <button className="btn btn-ghost btn-sm" type="button" onClick={() => chooseBatch(null)}>Скрыть партию</button>
         </div>
 
@@ -419,13 +430,22 @@ export default function AdminPage() {
 
         {showIssueForm ? (
           <form className="card openkeys-issue-card" onSubmit={issue}>
-            <div className="overview-card-head"><div><span className="overview-card-label">Новая партия</span><p className="field-hint">Метка обязательна в интерфейсе: по ней продавец находит выпуск среди сотен других.</p></div><span className="chip">Claude + GPT</span></div>
+            <div className="overview-card-head"><div><span className="overview-card-label">Новая партия</span><p className="field-hint">Метка обязательна в интерфейсе: по ней продавец находит выпуск среди сотен других.</p></div><span className="chip">1:1 official · Claude + GPT</span></div>
+            <div className="banner openkeys-universal-banner">
+              <b>Фиксированная экономика: 1:1 по официальной цене</b>
+              <span>Номинал равен фактическому engine balance. Скидка и множитель не настраиваются.</span>
+              <span>
+                {issuanceAuthority.ready
+                  ? `Активный каталог: ${issuanceAuthority.supportedModels.join(", ")}`
+                  : "Выпуск недоступен: активный OpenKeys catalog/provider authority ещё не подтверждён."}
+              </span>
+            </div>
             <div className="openkeys-form-grid">
               <div className="field"><label htmlFor="faceValueUsd">Номинал ключа, $</label><input id="faceValueUsd" name="faceValueUsd" defaultValue="50" inputMode="numeric" required /></div>
               <div className="field"><label htmlFor="quantity">Количество</label><input id="quantity" name="quantity" defaultValue="1" inputMode="numeric" required /><span className="field-hint">до 100 за раз</span></div>
               <div className="field"><label htmlFor="label">Метка партии</label><input id="label" name="label" placeholder="funpay-30-07-evening" maxLength={200} required /><span className="field-hint">площадка, дата или смена</span></div>
             </div>
-            <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "Выпускаем…" : "Создать партию"}</button>
+            <button className="btn btn-primary" type="submit" disabled={busy || !issuanceAuthority.ready}>{busy ? "Выпускаем…" : "Создать партию"}</button>
           </form>
         ) : null}
 
@@ -445,18 +465,18 @@ export default function AdminPage() {
           </form>
           <div className="table-scroll" role="region" tabIndex={0} aria-label="Партии ключей">
             <table className="mtable openkeys-batch-table">
-              <thead><tr><th>Партия</th><th>Дата</th><th className="tnum">Номинал</th><th className="tnum">Всего</th><th className="tnum">Склад</th><th className="tnum">Выдано</th><th className="tnum">Отключено</th><th /></tr></thead>
+              <thead><tr><th>Партия</th><th>Контракт</th><th>Дата</th><th className="tnum">Номинал</th><th className="tnum">Всего</th><th className="tnum">Склад</th><th className="tnum">Выдано</th><th className="tnum">Отключено</th><th /></tr></thead>
               <tbody>
-                {batches.length === 0 ? <tr><td colSpan={8} className="empty-cell">{batchQuery ? "По этому фильтру партий нет" : "Пока ничего не выпускали"}</td></tr> : batches.map((batch) => {
+                {batches.length === 0 ? <tr><td colSpan={9} className="empty-cell">{batchQuery ? "По этому фильтру партий нет" : "Пока ничего не выпускали"}</td></tr> : batches.map((batch) => {
                   const expanded = openBatch === batch.id;
                   return (
                     <Fragment key={batch.id}>
                       <tr className={expanded ? "is-selected" : ""}>
                         <td><b>{batch.label ?? "Без метки"}</b><code className="openkeys-batch-id">{batch.id.slice(0, 8)}</code></td>
-                        <td>{batch.createdAt.slice(0, 10)}</td><td className="tnum">{batch.faceValue}</td><td className="tnum">{batch.quantity}</td><td className="tnum"><b>{batch.stockCount}</b></td><td className="tnum">{batch.deliveredCount}</td><td className="tnum">{batch.disabledCount}</td>
+                        <td><span className={`pill ${batch.pricingContract === "official_1_to_1" ? "pill-good" : "pill-muted"}`}>{batch.pricingContract === "official_1_to_1" ? "1:1 official" : "legacy"}</span></td><td>{batch.createdAt.slice(0, 10)}</td><td className="tnum">{batch.faceValue}</td><td className="tnum">{batch.quantity}</td><td className="tnum"><b>{batch.stockCount}</b></td><td className="tnum">{batch.deliveredCount}</td><td className="tnum">{batch.disabledCount}</td>
                         <td><button className={`btn btn-sm ${expanded ? "btn-primary" : "btn-ghost"}`} type="button" aria-expanded={expanded} aria-controls={expanded ? `openkeys-batch-${batch.id}` : undefined} onClick={() => { if (expanded) chooseBatch(null); else { chooseBatch(null); void refresh({ batchId: batch.id }); } }}>{expanded ? "Скрыть" : "Открыть"}</button></td>
                       </tr>
-                      {expanded ? <tr className="openkeys-batch-detail-row"><td id={`openkeys-batch-${batch.id}`} className="openkeys-batch-detail-cell" colSpan={8}>{batchWorkspace(batch)}</td></tr> : null}
+                      {expanded ? <tr className="openkeys-batch-detail-row"><td id={`openkeys-batch-${batch.id}`} className="openkeys-batch-detail-cell" colSpan={9}>{batchWorkspace(batch)}</td></tr> : null}
                     </Fragment>
                   );
                 })}

@@ -8,6 +8,7 @@ const appRoot = join(root, "app");
 function dashboardSource(): string {
   return [
     readFileSync(join(appRoot, "dashboard", "dashboard.tsx"), "utf8"),
+    readFileSync(join(appRoot, "dashboard", "dashboard-shell.tsx"), "utf8"),
     ...sourceFiles(join(appRoot, "dashboard", "sections")).map((path) => readFileSync(path, "utf8")),
   ].join("\n");
 }
@@ -146,6 +147,7 @@ describe("completed Next.js migration", () => {
 
   it("keeps reloadable dashboard views in the localized canonical dashboard routes", () => {
     const dashboard = dashboardSource();
+    const dashboardShell = readFileSync(join(appRoot, "dashboard", "dashboard-shell.tsx"), "utf8");
     const routes = readFileSync(join(appRoot, "dashboard", "dashboard-route.ts"), "utf8");
     for (const section of ["overview", "keys", "credits", "promos", "usage", "support", "profile"]) {
       expect(dashboard).toContain(`section === \"${section}\"`);
@@ -165,6 +167,12 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('window.addEventListener("popstate", syncSectionFromHistory)');
     expect(dashboard).toContain("data-dashboard-section={item.section}");
     expect(dashboard).not.toContain("router.refresh()");
+    expect(dashboard).toContain("<DashboardSidebar");
+    expect(dashboard).toContain("<DashboardTopBar");
+    expect(dashboard).toContain("<DashboardContent");
+    expect(dashboardShell).toContain("memo(function DashboardSidebar");
+    expect(dashboardShell).toContain("memo(function DashboardScrim");
+    expect(dashboardShell).toContain("memo(function DashboardTopBar");
   });
 
   it("uses flexible whole-USD top-ups and one flat 50% B2C discount", () => {

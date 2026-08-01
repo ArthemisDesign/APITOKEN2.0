@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { loadConfig } from "@/lib/config";
+import { getEngineClient } from "@/lib/engine";
 import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
+import {
+  assertNoOpenKeysPricingOverride,
+  OFFICIAL_ONE_TO_ONE_CONTRACT,
+  OpenKeysPricingError,
+  resolveOpenKeysPricingAuthority,
+} from "@/lib/openkeys-pricing";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
 import { parseApiType } from "@/lib/api-product";
@@ -30,7 +36,25 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (limit === null || offset === null || q.length > 80) {
     return NextResponse.json({ error: "invalid_query" }, { status: 400 });
   }
-  return NextResponse.json({ admin, ...(await listBatches(admin, { limit, offset, q })) });
+  const batches = await listBatches(admin, { limit, offset, q });
+  try {
+    const authority = await resolveOpenKeysPricingAuthority(getEngineClient());
+    return NextResponse.json({
+      admin,
+      ...batches,
+      issuanceAuthority: {
+        ready: true,
+        supportedModels: authority.catalog.entries.map((entry) => entry.canonical_model_id),
+      },
+    });
+  } catch {
+    // Catalog/switch unavailability must not hide or mutate legacy inventory.
+    return NextResponse.json({
+      admin,
+      ...batches,
+      issuanceAuthority: { ready: false, supportedModels: [] },
+    });
+  }
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -42,7 +66,6 @@ export async function POST(request: Request): Promise<NextResponse> {
   let body: {
     faceValueUsd?: unknown;
     quantity?: unknown;
-    multBp?: unknown;
     label?: unknown;
     note?: unknown;
     apiType?: unknown;
@@ -53,12 +76,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }
 
-  const config = loadConfig();
   const quantity = Number(body.quantity ?? 1);
-  const multBp = body.multBp === undefined || body.multBp === "" ? config.defaultMultBp : Number(body.multBp);
   const apiType = body.apiType === undefined ? "anthropic" : parseApiType(body.apiType);
 
   try {
+    assertNoOpenKeysPricingOverride(body);
     if (!apiType) throw new Error("Тип API должен быть anthropic или openai");
     const faceValueNano = usdStringToNano(String(body.faceValueUsd ?? "").trim());
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_BATCH_QUANTITY) {
@@ -68,7 +90,6 @@ export async function POST(request: Request): Promise<NextResponse> {
     const result = await issueBatch({
       faceValueNano,
       quantity,
-      multBp,
       label: typeof body.label === "string" && body.label.trim() !== "" && body.label.length <= 200 ? body.label.trim() : null,
       note: typeof body.note === "string" && body.note.trim() !== "" && body.note.length <= 2000 ? body.note.trim() : null,
       apiType,
@@ -78,7 +99,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({
       batchId: result.batchId,
       faceValue: formatUsd(faceValueNano, 0),
-      multBp,
+      pricingContract: OFFICIAL_ONE_TO_ONE_CONTRACT,
       apiType,
       keys: result.keys,
     });
@@ -88,6 +109,9 @@ export async function POST(request: Request): Promise<NextResponse> {
         { error: error.message, issuedCount: error.issuedCount },
         { status: 502 },
       );
+    }
+    if (error instanceof OpenKeysPricingError && error.code !== "pricing_override_forbidden") {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 503 });
     }
     const message = error instanceof Error ? error.message : "Не удалось выпустить ключи";
     return NextResponse.json({ error: message }, { status: 400 });

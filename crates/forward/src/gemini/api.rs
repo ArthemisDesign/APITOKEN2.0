@@ -1914,15 +1914,19 @@ async fn record_affinity_success(
     store: &Arc<crate::AffinityStore>,
     input: Option<&AffinityInput>,
     resolution: &mut Option<AffinityResolution>,
+    warm_homes: &[String],
+    preserve_affinity_home: bool,
     profile_id: &str,
 ) {
     let Some(input) = input else {
         return;
     };
+    let new_cache_root_placement = resolution.is_none() && input.has_cache_root();
     let served_home = store.home_id(profile_id);
+    let reused_warm_root = warm_homes.iter().any(|home| home == &served_home);
     match resolution {
         Some(resolution) => {
-            if resolution.home != served_home {
+            if resolution.home != served_home && !preserve_affinity_home {
                 store.rebind(resolution, &served_home).await;
             }
             store.remember(input, resolution).await;
@@ -1932,6 +1936,9 @@ async fn record_affinity_success(
             store.remember(input, &claimed).await;
             *resolution = Some(claimed);
         }
+    }
+    if new_cache_root_placement {
+        store.record_cache_root_placement(input, reused_warm_root);
     }
     store.mark_cache_warm(input, &served_home);
 }
@@ -2089,6 +2096,18 @@ async fn api_inner(
         Some(input) => app.affinity.resolve(input).await,
         None => None,
     };
+    // Shared system/tools warmth is a soft first-placement hint only. A resolved conversation is
+    // stronger and does not consult the root set; a new conversation seeds two profiles before it
+    // starts preferring warm copies, matching the Claude and Codex pools.
+    let affinity_warm_homes = match (affinity_input.as_ref(), affinity_resolution.as_ref()) {
+        (Some(input), None) if input.has_cache_root() => app.affinity.warm_homes(input).await,
+        _ => Vec::new(),
+    };
+    let warm_profile_ids = gateway.profile_ids_for_homes(&app.affinity, &affinity_warm_homes);
+    let place_cache_root = affinity_input
+        .as_ref()
+        .is_some_and(|input| input.has_cache_root())
+        && affinity_resolution.is_none();
     let generation = matches!(
         route.operation,
         Operation::Generate | Operation::StreamGenerate
@@ -2159,10 +2178,12 @@ async fn api_inner(
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway.select(
+        let Some(lease) = gateway.select_routed(
             &wire_model_id,
             &excluded,
             preferred_id.as_deref(),
+            &warm_profile_ids,
+            place_cache_root,
             generation,
         ) else {
             Metrics::inc(&app.metrics.exhausted);
@@ -2180,6 +2201,7 @@ async fn api_inner(
             };
         };
         let profile = lease.profile().clone();
+        let preserve_affinity_home = lease.preserves_affinity_home();
         let oauth_kind = profile.oauth_kind();
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
         let mut url = format!(
@@ -2405,6 +2427,8 @@ async fn api_inner(
                 &app.affinity,
                 affinity_input.as_ref(),
                 &mut affinity_resolution,
+                &affinity_warm_homes,
+                preserve_affinity_home,
                 profile.id(),
             )
             .await;
@@ -2516,6 +2540,8 @@ async fn api_inner(
                     &app.affinity,
                     affinity_input.as_ref(),
                     &mut affinity_resolution,
+                    &affinity_warm_homes,
+                    preserve_affinity_home,
                     profile.id(),
                 )
                 .await;
@@ -3841,6 +3867,44 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn local_profile_saturation_returns_a_short_native_retry_hint() {
+        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
+        let mut leases = Vec::new();
+        for _ in 0..fixture.gateway.config().max_inflight_per_profile {
+            leases.push(
+                fixture
+                    .gateway
+                    .select("gemini-integration-model", &HashSet::new(), None, true)
+                    .unwrap(),
+            );
+        }
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"parts": [{"text": "queued turn"}]}]}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+        let body = response_json(response).await;
+        assert!(body["error"]["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |detail| detail["@type"] == "type.googleapis.com/google.rpc.RetryInfo"
+                    && detail["retryDelay"] == "1s"
+            ));
+        drop(leases);
+    }
+
     #[test]
     fn provider_rejected_never_emits_an_impossible_status_pair() {
         // A 413 upstream rejection must collapse to the native INVALID_ARGUMENT/400 pair, never
@@ -4441,6 +4505,132 @@ mod tests {
         assert_eq!(prompts[0], format!("{}########1", sessions[0]));
         assert_eq!(prompts[1], format!("{}########2", sessions[1]));
         assert!(!sessions[0].contains("turn one"));
+    }
+
+    #[tokio::test]
+    async fn saturated_affinity_spill_does_not_move_the_conversation_binding() {
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let server = start_mock(MockState::with_replies([
+            (PROFILE_A_KEY, vec![success.clone(), success.clone()]),
+            (PROFILE_B_KEY, vec![success]),
+        ]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+        let app = app_state(fixture.gateway.clone(), None);
+        let affinity = app.affinity.clone();
+        let body = json!({
+            "contents": [{"role": "user", "parts": [{"text": "sticky turn"}]}]
+        });
+
+        assert_eq!(
+            invoke_with_identity(
+                app.clone(),
+                body.clone(),
+                false,
+                CUSTOMER_KEY,
+                Some("sticky-session"),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        // Occupy every slot on the bound home without touching the shared affinity store. The
+        // public request must spill to profile_b, but that transient load condition must not move
+        // the conversation's durable preference away from profile_a.
+        let mut occupied = Vec::new();
+        for _ in 0..fixture.gateway.config().max_inflight_per_profile {
+            let lease = fixture
+                .gateway
+                .select(
+                    "gemini-integration-model",
+                    &HashSet::new(),
+                    Some("profile_a"),
+                    true,
+                )
+                .unwrap();
+            assert_eq!(lease.profile().id(), "profile_a");
+            occupied.push(lease);
+        }
+        assert_eq!(
+            invoke_with_identity(
+                app.clone(),
+                body.clone(),
+                false,
+                CUSTOMER_KEY,
+                Some("sticky-session"),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        drop(occupied);
+        assert_eq!(
+            invoke_with_identity(app, body, false, CUSTOMER_KEY, Some("sticky-session"),)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let credentials = server
+            .state
+            .seen()
+            .into_iter()
+            .map(|request| request.credential)
+            .collect::<Vec<_>>();
+        assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_B_KEY, PROFILE_A_KEY]);
+        assert_eq!(affinity.stats().rebinds, 0);
+    }
+
+    #[tokio::test]
+    async fn shared_cache_root_warms_two_subscriptions_then_prefers_a_warm_copy() {
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let server = start_mock(MockState::with_replies([
+            (PROFILE_A_KEY, vec![success.clone(), success.clone()]),
+            (PROFILE_B_KEY, vec![success]),
+        ]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+        let app = app_state(fixture.gateway.clone(), None);
+        let affinity = app.affinity.clone();
+        let shared_instruction = "shared-system-root-".repeat(300);
+        let body = json!({
+            "systemInstruction": {"parts": [{"text": shared_instruction}]},
+            "contents": [{"role": "user", "parts": [{"text": "same first turn"}]}]
+        });
+
+        for session in ["independent-one", "independent-two", "independent-three"] {
+            assert_eq!(
+                invoke_with_identity(
+                    app.clone(),
+                    body.clone(),
+                    false,
+                    CUSTOMER_KEY,
+                    Some(session),
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+        }
+
+        let credentials = server
+            .state
+            .seen()
+            .into_iter()
+            .map(|request| request.credential)
+            .collect::<Vec<_>>();
+        assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_B_KEY, PROFILE_A_KEY]);
+        let stats = affinity.stats();
+        assert_eq!(stats.cache_root_cold_placements, 2);
+        assert_eq!(stats.cache_root_warm_placements, 1);
+        assert_eq!(stats.cache_root_hits, 2);
     }
 
     #[tokio::test]
