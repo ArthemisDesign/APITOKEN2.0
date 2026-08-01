@@ -2,7 +2,8 @@ export type UsageProvider = "claude" | "openai" | "gemini";
 
 export interface UsageModelRow {
   model: string;
-  provider?: "anthropic" | "openai" | "gemini";
+  /** Engine provider id: anthropic/openai/google (Gemini traffic), free-form. */
+  provider?: string;
   requests: number;
   input_tokens: number;
   output_tokens: number;
@@ -22,9 +23,11 @@ export interface UsageProviderSummary {
   chargedNano: bigint;
 }
 
-export function usageProviderOf(model: string, provider?: "anthropic" | "openai" | "gemini"): UsageProvider {
-  if (provider === "gemini") return "gemini";
-  if (provider) return provider === "openai" ? "openai" : "claude";
+export function usageProviderOf(model: string, provider?: string): UsageProvider {
+  if (provider === "openai") return "openai";
+  // The engine tags Gemini traffic with its registry id "google".
+  if (provider === "google" || provider === "gemini") return "gemini";
+  if (provider === "anthropic") return "claude";
   const name = model.toLowerCase();
   if (name.startsWith("gemini")) return "gemini";
   return name.startsWith("gpt-") ? "openai" : "claude";

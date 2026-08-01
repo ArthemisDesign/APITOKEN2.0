@@ -218,7 +218,10 @@ const usageMoneyOnlyBucketSchema = z.object({
 });
 export const engineUsageModelSchema = z.object({
   model: z.string(),
-  provider: z.enum(["anthropic", "openai", "gemini"]).optional(),
+  // Free-form on purpose: the engine tags rows with its own provider ids
+  // ("anthropic", "openai", "google" for Gemini traffic, more later) and an
+  // exact enum here already took the usage endpoint down twice.
+  provider: z.string().optional(),
   requests: z.coerce.number().int().nonnegative(),
   input_tokens: z.coerce.number().int().nonnegative(),
   output_tokens: z.coerce.number().int().nonnegative(),
@@ -254,7 +257,8 @@ export const engineUsageSchema = z.object({
   })),
   daily_providers: z.array(z.object({
     day_ts: z.coerce.number().int().nonnegative(),
-    provider: z.enum(["anthropic", "openai", "gemini"]),
+    // Free-form, same rationale as engineUsageModelSchema.provider.
+    provider: z.string(),
     requests: z.coerce.number().int().nonnegative(),
     official_nano: decimalIntegerSchema,
     charged_nano: decimalIntegerSchema,

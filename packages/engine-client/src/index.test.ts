@@ -373,6 +373,11 @@ describe("EngineClient", () => {
         }, {
           day_ts: 1_701_993_600, provider: "anthropic", requests: 1,
           official_nano: 10_000_000, charged_nano: 4_000_000,
+        }, {
+          // The engine tags Gemini traffic with its registry id "google" — a
+          // strict enum here 500'd the whole usage endpoint once already.
+          day_ts: 1_701_993_600, provider: "google", requests: 1,
+          official_nano: 5_000_000, charged_nano: 2_000_000,
         }],
         keys: [{
           key_masked: "sk-pool-test…test", requests: 2,
@@ -392,6 +397,7 @@ describe("EngineClient", () => {
     expect(usage.daily_providers).toEqual([
       expect.objectContaining({ provider: "openai", official_nano: "15000000" }),
       expect.objectContaining({ provider: "anthropic", official_nano: "10000000" }),
+      expect.objectContaining({ provider: "google", official_nano: "5000000" }),
     ]);
     expect(usage.keys[0]).toMatchObject({
       key_masked: "sk-pool-test…test",

@@ -189,7 +189,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
     if (row.provider === "openai") {
       current.openai += BigInt(row.official_nano);
       current.openaiRequests += row.requests;
-    } else if (row.provider === "gemini") {
+    } else if (row.provider === "google" || row.provider === "gemini") {
       current.gemini += BigInt(row.official_nano);
       current.geminiRequests += row.requests;
     } else {
