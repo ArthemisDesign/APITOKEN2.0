@@ -235,12 +235,24 @@ pub(crate) fn new_id(prefix: &str) -> String {
     format!("{prefix}_{hex}")
 }
 
+/// Operator-facing account hint for the control plane. Keep only the first four local-part
+/// characters: this is enough to match a purchased account to its opaque home while the full
+/// ChatGPT identity stays inside the sealed credential and never reaches logs, metrics or JSON.
+fn mask_codex_email(email: &str) -> String {
+    let local = email.split_once('@').map_or(email, |(local, _)| local);
+    let head: String = local.chars().take(4).collect();
+    format!("{head}…")
+}
+
 /// Per-home operational state. Homes are identified by their configured profile id, never by
 /// path or account identity: metrics and logs must not carry customer or subscription identity.
 #[derive(Clone, Debug)]
 pub struct CodexHomeStatus {
     /// Stable, non-identifying id. Never a path and never an account identity.
     pub id: String,
+    /// Privacy-safe operator hint derived from the credential email. The full address never leaves
+    /// the sealed credential; this value contains at most four local-part characters.
+    pub masked_email: String,
     /// The profile's credential opened and its transport was built.
     pub process_live: bool,
     /// This generation has proved the profile works (token plus one usage read or served turn).
@@ -365,6 +377,9 @@ pub struct CodexOperationalStatus {
 /// One sealed ChatGPT profile and the native client that serves it.
 pub(crate) struct CodexHome {
     spec: CodexProfileSpec,
+    /// Bounded operator hint, never the full credential identity. It is refreshed whenever a
+    /// republished credential replaces the in-memory identity.
+    masked_email: std::sync::RwLock<String>,
     /// Position in the discovered pool: roster order. Only a tie-break for selection, so it may be
     /// renumbered freely as the pool changes; the stable identity used for labels is `spec.id`.
     order: AtomicUsize,
@@ -416,12 +431,14 @@ impl CodexHome {
         billing: Option<Arc<AsyncBilling>>,
     ) -> Result<Self, ProcessError> {
         let (key_id, credential, mtime) = open_credential(&cfg, &spec)?;
+        let masked_email = mask_codex_email(&credential.email);
         let transport = std::sync::Mutex::new(ProfileTransport::new(
             cfg.clone(),
             Some(credential.proxy.as_str()),
         )?);
         Ok(Self {
             spec,
+            masked_email: std::sync::RwLock::new(masked_email),
             order: AtomicUsize::new(order),
             cfg,
             key_id,
@@ -636,7 +653,9 @@ impl CodexHome {
                 if fresh.refresh_token == credential.refresh_token {
                     return Err(ProcessError::AuthenticationRequired);
                 }
+                let masked_email = mask_codex_email(&fresh.email);
                 *credential = fresh;
+                *self.masked_email.write().expect("Codex masked email lock") = masked_email;
                 *self
                     .credential_mtime
                     .lock()
@@ -743,8 +762,13 @@ impl CodexHome {
         let mut credential = self.credential.lock().await;
         // Never move backwards in the rotation: our in-memory material may be newer than the file
         // if a persist raced this reload. The reload exists for *other* writers' updates.
-        if fresh.refresh_token != credential.refresh_token || fresh.proxy != credential.proxy {
+        if fresh.refresh_token != credential.refresh_token
+            || fresh.proxy != credential.proxy
+            || fresh.email != credential.email
+        {
+            let masked_email = mask_codex_email(&fresh.email);
             *credential = fresh;
+            *self.masked_email.write().expect("Codex masked email lock") = masked_email;
             *self
                 .credential_mtime
                 .lock()
@@ -1137,6 +1161,11 @@ impl CodexHome {
         );
         CodexHomeStatus {
             id: self.spec.id.clone(),
+            masked_email: self
+                .masked_email
+                .read()
+                .expect("Codex masked email lock")
+                .clone(),
             process_live: true,
             ready_published: self.ready.load(Ordering::Acquire),
             auth_ok: health.account != health::AccountState::Dead,
@@ -1338,6 +1367,14 @@ fn open_credential(
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+
+    #[test]
+    fn operator_email_hint_never_exposes_the_full_identity() {
+        let masked = mask_codex_email("owner.account@example.com");
+        assert_eq!(masked, "owne…");
+        assert!(!masked.contains('@'));
+        assert!(!masked.contains("example.com"));
+    }
 
     #[test]
     fn fast_routing_uses_catalog_capability_without_false_response_demotion() {

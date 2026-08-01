@@ -63,7 +63,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   лаг pricing-консьюмера ledger'а (max(ledger.id) против ledger_consumer_checkpoints + возраст
   старейшей неподтверждённой строки). Растущий backlog/failed/unacked — сигнал «тихо застрявших»
   денег, раньше видимый только в stderr.
-  `/codex-subs` (per-home статус GPT/Codex-флота) отдаёт только OpenAI-runtime — на Anthropic-
+  `/codex-subs` (per-home статус GPT/Codex-флота) отдаёт только OpenAI-runtime; строка содержит
+  opaque home id и маску почты из первых четырёх символов без домена, но не полный ChatGPT email,
+  account id, OAuth или proxy. На Anthropic-
   процессе codex не настроен и endpoint вернул бы `enabled:false`, поэтому Caddy шлёт этот путь
   в стабильный OpenAI origin, а не в engine balancer. `/gemini-subs` аналогично читается только со
   стабильного Gemini origin `127.0.0.1:8794`; ответ содержит opaque profile/model quota/cooling,
@@ -152,7 +154,8 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   клиенты — pending/retry/failed/confirmed синхронизацию цены с engine.
 - Подписки: отдельная страница по трём флотам. Claude — lifecycle (added/peaks/дни до замены),
   live util/reset/cooling по окнам 5h/7d и прокси; GPT (OpenAI Codex) — per-home статус, decimal
-  primary/secondary utilisation, exact nanoUSD official-price spend, realized workload-blend
+  primary/secondary utilisation, маска почты как основной операторский label с opaque home id ниже,
+  exact nanoUSD official-price spend, realized workload-blend
   capacity/remaining, envelope/evidence/confidence; Gemini — per-profile auth/inflight,
   per-model availability/cooling, официальный quota remaining/reset/type, probe freshness,
   missing-usage settlement counter и точные gaxios/Undici transport attestations.

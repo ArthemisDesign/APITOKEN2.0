@@ -197,7 +197,10 @@ token on every refresh with strict family reuse detection. The pool therefore:
   `tools/codex-app-server/` no longer exists.
 - **Status** stays at `GET /codex-subs` (control plane) and the Prometheus
   `claude_api_codex_*` series; `process_live` now means "credential opened and transport built",
-  `ready_published` means this generation proved the profile works. Each home's `fast_tiers`
+  `ready_published` means this generation proved the profile works. The control-authenticated JSON
+  includes a bounded email hint (the first four local-part characters, without the domain) beside
+  the opaque home id so an operator can identify the purchased account; the full email, account id,
+  OAuth and proxy remain sealed and never enter responses, logs or metrics. Each home's `fast_tiers`
   separates catalogue availability/support and effective `served_tier` from diagnostic
   `provider_reported_tier`/`observed_at`; a misleading completed `default` therefore remains
   visible without being mistaken for a Fast downgrade. Capacity windows expose canonical

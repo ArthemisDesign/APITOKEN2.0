@@ -162,7 +162,7 @@ function gptWindowCell(w: CodexHomeWindow | undefined): ReactNode {
       <div className="sub">
         {windowLabel(w.window_minutes)}
         {w.source === "unknown"
-          ? " · ждём полный fraction-интервал"
+          ? " · калибровка накапливает данные"
           : ` · ${Number(w.samples || 0)} интервала · confidence ${Math.round(Number(w.confidence || 0) * 100)}%`}
       </div>
     </>
@@ -199,7 +199,7 @@ function gptBudgetCell(w: CodexHomeWindow | undefined): ReactNode {
       : "—";
   const fractionDelta = (Number(w.observed_fraction_units || 0) / 1_000_000).toFixed(6) + "%";
   const evidence = !known
-    ? "ждём полный fraction-интервал"
+    ? "Оценка появится после подтверждённого изменения квоты с соответствующим расходом."
     : `доверительный интервал capacity ${capacityRange} · remaining ${remainingRange} · evidence ${nanoMoney(
         w.observed_spend_nano,
       )} / Δquota ${fractionDelta} · ${Number(w.samples || 0)} интервала · confidence ${Math.round(
@@ -209,7 +209,9 @@ function gptBudgetCell(w: CodexHomeWindow | undefined): ReactNode {
     <div title={evidence}>
       <b>{remaining}</b>
       <div className="sub">
-        остаток из {capacity} · {windowLabel(w.window_minutes)}
+        {known
+          ? `остаток из ${capacity} · ${windowLabel(w.window_minutes)}`
+          : `накапливаем расход и изменение квоты · ${windowLabel(w.window_minutes)}`}
       </div>
     </div>
   );
@@ -225,10 +227,12 @@ function GptRow({ home, nowSec }: { home: CodexHome; nowSec: number }): ReactEle
   const secondary = bySlot("secondary");
   const status = homeStatus(home, nowSec);
   const rateLimits = home.rate_limits ?? {};
+  const email = home.email?.trim();
   return (
     <tr>
       <td className="left">
-        <b className="mono">{home.id}</b>
+        <b className={email ? undefined : "mono"}>{email || home.id || "—"}</b>
+        {email && home.id ? <div className="sub mono">{home.id}</div> : null}
       </td>
       <td>
         <Pill kind={status.kind}>{status.label}</Pill>
@@ -275,7 +279,7 @@ export const GptTable = memo(function GptTable({
       <table>
         <thead>
           <tr>
-            <th className="left">home</th>
+            <th className="left">аккаунт / home</th>
             <th>статус</th>
             <th>в работе</th>
             <th>primary (факт. окно)</th>

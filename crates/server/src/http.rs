@@ -2486,6 +2486,7 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
         .map(|h| {
             json!({
                 "id": h.id,
+                "email": h.masked_email,
                 "process_live": h.process_live,
                 "auth_ok": h.auth_ok,
                 "account_state": h.account_state,
@@ -2933,6 +2934,7 @@ mod tests {
             rate_limits: None,
             homes: vec![forward::codex::CodexHomeStatus {
                 id: "home-1".to_string(),
+                masked_email: "owne…".to_string(),
                 process_live: true,
                 auth_ok: true,
                 account_state: "healthy",
@@ -3040,6 +3042,7 @@ mod tests {
     fn codex_subscription_contract_publishes_the_admission_verdict() {
         let mut status = unknown_codex_status();
         let value = codex_subs_value(&status, 105);
+        assert_eq!(value["homes"][0]["email"], "owne…");
         assert_eq!(value["homes"][0]["limit_reached"], false);
 
         // A home the gateway refuses to route to must never read as active on an operator surface.

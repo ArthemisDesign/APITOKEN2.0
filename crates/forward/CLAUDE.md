@@ -224,9 +224,11 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 1. **Только AEAD envelopes и pinned official client identity.** `originator: codex_cli_rs`,
    UA `codex_cli_rs/<CODEX_CLI_VERSION> (…)`, `version`, `ChatGPT-Account-ID` из envelope;
    turn также несёт first-party-shaped session/thread/window/turn metadata в headers и body.
-   Tokens/email/account_id/proxy дешифруются только в память
-   и не попадают в log/metric/response. Homes адресуются opaque id (в логах/метриках нет путей
-   и identity). Версия клиента движется только reviewed-коммитом после live probe
+   Tokens/account_id/proxy и полный email дешифруются только в память и не попадают в
+   log/metric/response. Control-authenticated `/codex-subs` может получить только bounded email hint
+   (первые четыре символа local-part без домена) для операторского сопоставления; homes по-прежнему
+   адресуются opaque id (в логах/метриках нет путей и identity). Версия клиента движется только
+   reviewed-коммитом после live probe
    (`research/CODEX_NATIVE_WIRE.md`).
 2. **Refresh — single-flight с durable ротацией (критично, отличие от Gemini).** OpenAI вращает
    refresh_token на КАЖДОМ refresh со strict reuse detection: credential mutex сериализует

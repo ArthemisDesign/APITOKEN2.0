@@ -75,7 +75,10 @@
   возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/fleet-history` читает историю metrics.db
+  `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/codex-subs`
+  гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
+  символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy.
+  `/fleet-history` читает историю metrics.db
   (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
   per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
   агрегатами. `/settlement-health` — денежная диагностика settlement pipeline: counts

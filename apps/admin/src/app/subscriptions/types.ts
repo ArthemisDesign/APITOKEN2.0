@@ -87,6 +87,8 @@ export interface CodexRateLimit {
 
 export interface CodexHome {
   id?: string;
+  /** Маскированная подсказка аккаунта из control API; полный ChatGPT email не покидает runtime. */
+  email?: string;
   auth_ok?: boolean;
   process_live?: boolean;
   admitted?: boolean;

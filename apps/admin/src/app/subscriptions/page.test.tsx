@@ -87,6 +87,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
         homes={[
           {
             id: "home-1",
+            email: "owne…",
             process_live: true,
             reject_reason: "cooling",
             cooling_until: nowMs / 1000 + 600,
@@ -122,6 +123,8 @@ describe("таблицы флотов (smoke render с данными)", () => {
       />,
     );
     expect(html).toContain("home-1");
+    expect(html).toContain("owne…");
+    expect(html).toContain("аккаунт / home");
     expect(html).toContain("cooling 10м");
     expect(html).toContain("42.125679%");
     expect(html).toContain("доверительный интервал");
