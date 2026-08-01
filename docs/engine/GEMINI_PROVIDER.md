@@ -572,6 +572,17 @@ and a non-default `detail` with `400 unsupported_parameter`. `response_format` i
 application/json`, and `json_schema` additionally sets `responseSchema`, dropping the OpenAI
 `name`/`strict` wrapper.
 
+Stage 3.4b adds reasoning. `reasoning_effort` (`minimal`/`low`/`medium`/`high`; `null` or absent
+turns it off) is translated into `generationConfig.thinkingConfig` — `thinkingLevel` is proxied
+verbatim because the plane itself maps the level into the private wire model id, and
+`includeThoughts: true` opts into thought parts; any other non-null value is rejected with `400
+invalid_request` (`param: reasoning_effort`). In responses, thought parts (`"thought": true`) go
+to the OpenAI `reasoning_content` extension instead of leaking into content: non-stream they are
+concatenated into `message.reasoning_content` (present only when non-empty), in the SSE stream
+each thought part becomes a `{"delta": {"reasoning_content": ...}}` chunk ahead of content
+deltas in upstream order. `thoughtSignature` is always dropped — universal lanes never expose
+signatures (decision 4).
+
 ## Operations
 
 ```bash

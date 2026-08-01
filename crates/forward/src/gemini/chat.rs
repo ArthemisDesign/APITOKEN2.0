@@ -1,5 +1,5 @@
-//! Universal Chat Completions → Gemini generateContent адаптер — этап 3.3
-//! docs/engine/UNIFIED_ROUTER.md (решения 1–3).
+//! Universal Chat Completions → Gemini generateContent адаптер — этапы
+//! 3.3–3.4b docs/engine/UNIFIED_ROUTER.md (решения 1–4).
 //!
 //! `POST /v1/chat/completions` на Gemini-плоскости. Поток запроса: парс
 //! chat-запроса → перевод в GenerateContentRequest JSON → внутренний `Request`
@@ -11,12 +11,18 @@
 //!
 //! Capability matrix (решение 3): параметры, которые generateContent не умеет
 //! или чьё поведение на private wire не подтверждено (n>1, penalties, logprobs,
-//! seed, store, parallel_tool_calls, reasoning до этапа 3.4b, …), с
+//! seed, store, parallel_tool_calls, …), с
 //! не-дефолтным значением отклоняются `400 unsupported_parameter`.
 //! Мультимодальность и structured output (3.4a): image_url-части user-сообщений
 //! с data: URL → inlineData-партам (http(s) ссылки generateContent не принимает —
 //! честный 400), `response_format` json_object/json_schema →
 //! `generationConfig.responseMimeType`/`responseSchema`.
+//! Reasoning (3.4b): `reasoning_effort` minimal|low|medium|high →
+//! `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
+//! плоскость сама мапит уровень в wire model id; `includeThoughts: true`;
+//! невалидное значение → 400 invalid_request); thought-парты ответа →
+//! OpenAI-расширение `reasoning_content` (`thoughtSignature` не выставляется —
+//! решение 4).
 //! В отличие от Anthropic-плоскости, НЕИЗВЕСТНЫЕ top-level поля тоже
 //! отклоняются: Code Assist wrapper (`wrap_code_assist_request`) пропускает
 //! только закрытый список полей GenerateContentRequest, поэтому «проксирование»
@@ -248,6 +254,15 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
             generation_config.insert("responseSchema".to_string(), schema);
         }
     }
+    // Reasoning (этап 3.4b): reasoning_effort → thinkingConfig — соседнее
+    // поле того же generationConfig, responseMimeType/responseSchema не
+    // затираются.
+    if let Some(level) = translate_reasoning_effort(object.get("reasoning_effort"))? {
+        generation_config.insert(
+            "thinkingConfig".to_string(),
+            json!({"thinkingLevel": level, "includeThoughts": true}),
+        );
+    }
 
     let mut body = Map::new();
     body.insert("contents".to_string(), Value::Array(contents));
@@ -308,6 +323,7 @@ const KNOWN_KEYS: &[&str] = &[
     "temperature",
     "top_p",
     "top_k",
+    "reasoning_effort",
     "tools",
     "functions",
     "tool_choice",
@@ -329,16 +345,16 @@ const KNOWN_KEYS: &[&str] = &[
     "prediction",
     "web_search_options",
     "response_format",
-    "reasoning_effort",
     "user",
 ];
 
 /// Capability matrix (решение 3): параметр, который generateContent не умеет
 /// (или чьё поведение на private wire не подтверждено), с не-дефолтным
 /// значением → `400 unsupported_parameter`. Порядок правил определяет, какой
-/// параметр назовёт ошибка.
+/// параметр назовёт ошибка. reasoning_effort с этапа 3.4b переводится в
+/// thinkingConfig (translate_reasoning_effort), а не отклоняется.
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
-    let rules: [(&str, fn(&Value) -> bool); 19] = [
+    let rules: [(&str, fn(&Value) -> bool); 18] = [
         ("parallel_tool_calls", |v| v.as_bool() == Some(true)),
         ("response_format", |v| {
             // text — дефолт; json_object/json_schema переводятся в
@@ -349,7 +365,6 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
                     Some("text") | Some("json_object") | Some("json_schema")
                 )
         }),
-        ("reasoning_effort", |v| v.is_null()),
         ("store", |v| v.is_null() || v.as_bool() == Some(false)),
         ("metadata", |v| v.is_null()),
         ("n", |v| v.as_u64() == Some(1)),
@@ -615,6 +630,24 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Op
         }
         // text — дефолт без перевода; остальные типы отклонены matrix.
         _ => Ok(None),
+    }
+}
+
+/// `reasoning_effort` → `thinkingConfig.thinkingLevel` (этап 3.4b). Уровень
+/// проксируется как есть: плоскость сама мапит minimal|low|medium|high в wire
+/// model id (валидация строк уровня — в gemini/api.rs). Отсутствие/null —
+/// выкл (поле не вставляется); любое другое не-null значение → 400
+/// invalid_request.
+fn translate_reasoning_effort(value: Option<&Value>) -> Result<Option<String>, Response> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some(level @ ("minimal" | "low" | "medium" | "high")) => Ok(Some(level.to_string())),
+        _ => Err(invalid_request(
+            "Invalid value for parameter: reasoning_effort (expected minimal, low, medium or high).",
+            Some("reasoning_effort"),
+        )),
     }
 }
 
@@ -1109,7 +1142,7 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
         .get("candidates")
         .and_then(Value::as_array)
         .and_then(|candidates| candidates.first());
-    let (text, tool_calls) = candidate_content(candidate);
+    let (text, reasoning, tool_calls) = candidate_content(candidate);
     // finishReason кандидата; candidates отсутствуют при блокировке промпта
     // на входе — тогда finish берётся из promptFeedback.blockReason
     // (content_filter с пустым content).
@@ -1134,6 +1167,10 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
         Value::String(text)
     };
     let mut message = json!({"role": "assistant", "content": content});
+    // reasoning_content присутствует, только если thought-парты были.
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = Value::String(reasoning);
+    }
     if !tool_calls.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls);
     }
@@ -1156,12 +1193,15 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
     response
 }
 
-/// text-парты кандидата склеиваются в content; functionCall-парты →
+/// text-парты кандидата склеиваются в content; text thought-партов
+/// (`"thought": true`, этап 3.4b) — в reasoning, а не в content
+/// (`thoughtSignature` всегда выбрасывается — решение 4); functionCall-парты →
 /// `tool_calls` (args сериализуются обратно в JSON-строку arguments —
 /// контракт OpenAI). id синтезируются (`callu_<name>`, `_2`, ... при
 /// повторах имени): на private wire functionCall.id не приезжает.
-fn candidate_content(candidate: Option<&Value>) -> (String, Vec<Value>) {
+fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>) {
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
     let mut name_counts: HashMap<&str, u64> = HashMap::new();
     let Some(parts) = candidate
@@ -1169,9 +1209,17 @@ fn candidate_content(candidate: Option<&Value>) -> (String, Vec<Value>) {
         .and_then(|c| c.get("parts"))
         .and_then(Value::as_array)
     else {
-        return (text, tool_calls);
+        return (text, reasoning, tool_calls);
     };
     for part in parts {
+        // thought-парт: его text — reasoning, а не content. Парт с одним
+        // thoughtSignature (без text/functionCall) игнорируется.
+        if part.get("thought").and_then(Value::as_bool) == Some(true) {
+            if let Some(t) = part.get("text").and_then(Value::as_str) {
+                reasoning.push_str(t);
+            }
+            continue;
+        }
         if let Some(t) = part.get("text").and_then(Value::as_str) {
             text.push_str(t);
             continue;
@@ -1192,7 +1240,7 @@ fn candidate_content(candidate: Option<&Value>) -> (String, Vec<Value>) {
             }));
         }
     }
-    (text, tool_calls)
+    (text, reasoning, tool_calls)
 }
 
 fn synthetic_call_id(name: &str, ordinal: u64) -> String {
@@ -1382,6 +1430,20 @@ impl GeminiChatSseTranslator {
             .and_then(Value::as_array)
         {
             for part in parts {
+                // thought-парт (этап 3.4b): его text — reasoning, а не
+                // content → reasoning_content-дельта. thoughtSignature
+                // выбрасывается (решение 4): парт с одним thoughtSignature
+                // видимого чанка не порождает.
+                if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                    if let Some(text) = part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.is_empty())
+                    {
+                        self.push_chunk(json!({"reasoning_content": text}), Value::Null);
+                    }
+                    continue;
+                }
                 if let Some(text) = part
                     .get("text")
                     .and_then(Value::as_str)
@@ -1887,10 +1949,9 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_default_matrix_parameters() {
-        let cases: [(&str, Value); 19] = [
+        let cases: [(&str, Value); 18] = [
             ("parallel_tool_calls", json!(false)),
             ("response_format", json!({"type": "future_format"})),
-            ("reasoning_effort", json!("low")),
             ("store", json!(true)),
             ("metadata", json!({"a": 1})),
             ("n", json!(2)),
@@ -2083,6 +2144,69 @@ mod tests {
         assert_eq!(body["error"]["param"], "response_format");
     }
 
+    // ---------- reasoning (этап 3.4b) ----------
+
+    #[test]
+    fn translates_reasoning_effort_to_thinking_config() {
+        // Каждый уровень проксируется как есть (маппинг в wire model id —
+        // на плоскости), includeThoughts включает thought-парты ответа.
+        for level in ["minimal", "low", "medium", "high"] {
+            let translated = ok_translated(json!({
+                "model": "gemini-2.5-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": level,
+            }));
+            assert_eq!(
+                translated.body["generationConfig"]["thinkingConfig"],
+                json!({"thinkingLevel": level, "includeThoughts": true}),
+                "{level}"
+            );
+        }
+        // null/отсутствие — выкл: thinkingConfig не появляется.
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": null,
+        }));
+        assert!(
+            translated.body["generationConfig"].get("thinkingConfig").is_none()
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_and_response_format_share_generation_config() {
+        // thinkingConfig — соседнее поле generationConfig: structured output
+        // (3.4a) не затирается.
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "Extract."}],
+            "reasoning_effort": "high",
+            "response_format": {"type": "json_object"}
+        }));
+        let config = &translated.body["generationConfig"];
+        assert_eq!(
+            config["thinkingConfig"],
+            json!({"thinkingLevel": "high", "includeThoughts": true})
+        );
+        assert_eq!(config["responseMimeType"], "application/json");
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_reasoning_effort() {
+        // Любое не-null значение вне minimal|low|medium|high → 400
+        // invalid_request (не unsupported_parameter — параметр поддержан).
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "extreme"
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["param"], "reasoning_effort");
+        assert!(body["error"]["code"].is_null());
+    }
+
     // ---------- ответ: unit-маппинги ----------
 
     #[test]
@@ -2187,6 +2311,44 @@ mod tests {
         let choice = &body["choices"][0];
         assert_eq!(choice["finish_reason"], "content_filter");
         assert_eq!(choice["message"]["content"], "");
+    }
+
+    #[tokio::test]
+    async fn json_response_thought_parts_map_to_reasoning_content() {
+        // thought-парты (3.4b) склеиваются в reasoning_content и не смешиваются
+        // с content; thoughtSignature выбрасывается, парт с одним
+        // thoughtSignature игнорируется.
+        let upstream = upstream_json(json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "Thinking. ", "thought": true},
+                    {"text": "More.", "thought": true, "thoughtSignature": "sig"},
+                    {"thoughtSignature": "sig-only"},
+                    {"text": "Answer."}
+                ]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "thoughtsTokenCount": 4, "totalTokenCount": 9}
+        }));
+        let response = json_chat_response(upstream, "gemini-2.5-flash".to_string()).await;
+        let (_, body) = err_parts(response).await;
+        let message = &body["choices"][0]["message"];
+        assert_eq!(message["content"], "Answer.");
+        assert_eq!(message["reasoning_content"], "Thinking. More.");
+        // thoughts-токены по-прежнему в completion (как тарифицирует metering).
+        assert_eq!(body["usage"]["completion_tokens"], 6);
+    }
+
+    #[tokio::test]
+    async fn json_response_without_thoughts_has_no_reasoning_content() {
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [{"text": "Plain."}]}, "finishReason": "STOP"}]
+        }));
+        let response = json_chat_response(upstream, "gemini-2.5-flash".to_string()).await;
+        let (_, body) = err_parts(response).await;
+        let message = &body["choices"][0]["message"];
+        assert_eq!(message["content"], "Plain.");
+        assert!(message.get("reasoning_content").is_none(), "{message}");
     }
 
     #[tokio::test]
@@ -2320,6 +2482,40 @@ mod tests {
         let frames = data_frames(&output);
         assert_eq!(frames.len(), 3);
         assert!(frames.iter().all(|f| f.get("usage").is_none()));
+    }
+
+    #[tokio::test]
+    async fn stream_thought_parts_become_reasoning_content_deltas() {
+        // thought-парты (3.4b): role → reasoning_content-дельты →
+        // content-дельта → finish → DONE. Парт с одним thoughtSignature
+        // видимого чанка не порождает, thought-текст в content не протекает.
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Thinking. \",\"thought\":true}]}}],\"modelVersion\":\"gemini-2.5-flash-001\"}\n",
+            "\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thoughtSignature\":\"sig\"},{\"text\":\"more \",\"thought\":true},{\"text\":\"Answer.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":4,\"totalTokenCount\":9}}\n",
+        );
+        let output = collect_stream(translate_events(events, true)).await;
+        assert!(output.ends_with("data: [DONE]\n\n"));
+        let frames = data_frames(&output);
+        // role → 2 reasoning-дельты → content → finish → usage-чанк.
+        assert_eq!(frames.len(), 6, "{output}");
+        assert_eq!(
+            frames[0]["choices"][0]["delta"],
+            json!({"role": "assistant", "content": ""})
+        );
+        assert_eq!(
+            frames[1]["choices"][0]["delta"],
+            json!({"reasoning_content": "Thinking. "})
+        );
+        assert_eq!(
+            frames[2]["choices"][0]["delta"],
+            json!({"reasoning_content": "more "})
+        );
+        assert_eq!(frames[3]["choices"][0]["delta"], json!({"content": "Answer."}));
+        assert_eq!(frames[4]["choices"][0]["delta"], json!({}));
+        assert_eq!(frames[4]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(frames[5]["choices"], json!([]));
+        assert_eq!(frames[5]["usage"]["completion_tokens"], 6);
     }
 
     #[tokio::test]

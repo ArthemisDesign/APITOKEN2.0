@@ -1,4 +1,4 @@
-//! Universal Chat Completions → Anthropic Messages адаптер — этапы 3.1–3.4a
+//! Universal Chat Completions → Anthropic Messages адаптер — этапы 3.1–3.4b
 //! docs/engine/UNIFIED_ROUTER.md (решения 1–4).
 //!
 //! `POST /v1/chat/completions` на Anthropic-плоскости. Поток запроса:
@@ -14,9 +14,14 @@
 //! user-сообщений → Messages image-блоки (data: URL → base64 source,
 //! http(s) → url source; `detail` != auto отклоняется), `response_format`
 //! json_schema → GA `output_config.format` (json_object у Messages нет).
+//! Reasoning (3.4b): `reasoning_effort` minimal|low|medium|high → GA
+//! `output_config.effort` (minimal клампится в low; невалидное значение →
+//! 400 invalid_request); thinking-блоки ответа склеиваются в OpenAI-расширение
+//! `reasoning_content` (signature/redacted_thinking не выставляются —
+//! решение 4).
 //!
 //! Capability matrix (решение 3): параметры, которые Messages не умеет
-//! (n>1, penalties, logprobs, seed, store, reasoning до этапа 3.4b, …), с
+//! (n>1, penalties, logprobs, seed, store, …), с
 //! не-дефолтным значением отклоняются
 //! `400 unsupported_parameter`; с дефолтным — принимаются (stock SDK шлют
 //! дефолты пачками). Неизвестные адаптеру поля проксируются в Messages тело
@@ -269,10 +274,17 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(choice) = translate_tool_choice(&object)? {
         body.insert("tool_choice".to_string(), choice);
     }
-    // Structured output (этап 3.4a): response_format json_schema →
-    // GA output_config.format.
-    if let Some(output_config) = translate_response_format(object.get("response_format"))? {
-        body.insert("output_config".to_string(), output_config);
+    // Structured output (этап 3.4a) и reasoning (этап 3.4b) живут в одном
+    // GA output_config: format и effort не затирают друг друга.
+    let mut output_config = Map::new();
+    if let Some(format) = translate_response_format(object.get("response_format"))? {
+        output_config.insert("format".to_string(), format);
+    }
+    if let Some(effort) = translate_reasoning_effort(object.get("reasoning_effort"))? {
+        output_config.insert("effort".to_string(), Value::String(effort));
+    }
+    if !output_config.is_empty() {
+        body.insert("output_config".to_string(), Value::Object(output_config));
     }
     // Открытый список (решение 3): неизвестные адаптеру поля проксируются в
     // Messages тело. Известные consumed/matrix-ключи сюда не попадают.
@@ -332,9 +344,10 @@ const CONSUMED_KEYS: &[&str] = &[
 /// определяет, какой параметр назовёт ошибка. Tools-поверхность
 /// (tools/functions/tool_choice/function_call/parallel_tool_calls) с этапа
 /// 3.2 переводится, а не отклоняется — см. translate_chat_tools /
-/// translate_tool_choice.
+/// translate_tool_choice; reasoning_effort с этапа 3.4b переводится в
+/// output_config.effort (translate_reasoning_effort).
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
-    let rules: [(&str, fn(&Value) -> bool); 17] = [
+    let rules: [(&str, fn(&Value) -> bool); 16] = [
         ("response_format", |v| {
             // text — дефолт; json_schema переводится в output_config.format
             // (этап 3.4a). json_object у Messages нет — отклоняется.
@@ -344,7 +357,6 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
                     Some("text") | Some("json_schema")
                 )
         }),
-        ("reasoning_effort", |v| v.is_null()),
         ("store", |v| v.is_null() || v.as_bool() == Some(false)),
         ("metadata", |v| v.is_null()),
         ("n", |v| v.as_u64() == Some(1)),
@@ -753,10 +765,10 @@ fn translate_stop(value: Option<&Value>) -> Result<Option<Value>, Response> {
     Ok(Some(Value::Array(sequences)))
 }
 
-/// `response_format` → `output_config.format` (GA structured outputs, этап
-/// 3.4a). text — дефолт без перевода; json_object у Messages нет (отклонён
-/// matrix). Обёрточные name/strict/description GA-формат не имеет —
-/// проксируется сама схема, constrained decoding всегда строгий.
+/// `response_format` → значение `output_config.format` (GA structured
+/// outputs, этап 3.4a). text — дефолт без перевода; json_object у Messages
+/// нет (отклонён matrix). Обёрточные name/strict/description GA-формат не
+/// имеет — проксируется сама схема, constrained decoding всегда строгий.
 fn translate_response_format(value: Option<&Value>) -> Result<Option<Value>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -774,7 +786,25 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<Value>, Res
                 Some("response_format"),
             )
         })?;
-    Ok(Some(json!({"format": {"type": "json_schema", "schema": schema}})))
+    Ok(Some(json!({"type": "json_schema", "schema": schema})))
+}
+
+/// `reasoning_effort` → `output_config.effort` (GA-поле Messages, этап 3.4b;
+/// beta-заголовок не нужен). Отсутствие/null — выкл (поле не вставляется);
+/// minimal у Messages нет — клампится в low. Любое другое не-null значение →
+/// 400 invalid_request.
+fn translate_reasoning_effort(value: Option<&Value>) -> Result<Option<String>, Response> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some("minimal") | Some("low") => Ok(Some("low".to_string())),
+        Some(effort @ ("medium" | "high")) => Ok(Some(effort.to_string())),
+        _ => Err(invalid_request(
+            "Invalid value for parameter: reasoning_effort (expected minimal, low, medium or high).",
+            Some("reasoning_effort"),
+        )),
+    }
 }
 
 /// Chat `tools[]` / legacy `functions[]` → Messages `tools[]`. Legacy
@@ -1090,10 +1120,13 @@ async fn json_chat_response(upstream: Response) -> Response {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    // text-блоки склеиваются в content; tool_use блоки → message.tool_calls
-    // (input сериализуется обратно в JSON-строку arguments — контракт OpenAI).
-    // thinking/redacted блоки — этап 3.4; здесь пропускаются.
+    // text-блоки склеиваются в content; thinking-блоки — в reasoning_content
+    // (этап 3.4b, конвенция DeepSeek/OpenRouter; redacted_thinking читаемого
+    // текста не имеет — пропускается, подписи не выставляются — решение 4);
+    // tool_use блоки → message.tool_calls (input сериализуется обратно в
+    // JSON-строку arguments — контракт OpenAI).
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
     if let Some(blocks) = value.get("content").and_then(Value::as_array) {
         for block in blocks {
@@ -1101,6 +1134,11 @@ async fn json_chat_response(upstream: Response) -> Response {
                 Some("text") => {
                     if let Some(t) = block.get("text").and_then(Value::as_str) {
                         text.push_str(t);
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(t) = block.get("thinking").and_then(Value::as_str) {
+                        reasoning.push_str(t);
                     }
                 }
                 Some("tool_use") => {
@@ -1132,6 +1170,10 @@ async fn json_chat_response(upstream: Response) -> Response {
         Value::String(text)
     };
     let mut message = json!({"role": "assistant", "content": content});
+    // reasoning_content присутствует, только если thinking-блоки были.
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = Value::String(reasoning);
+    }
     if !tool_calls.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls);
     }
@@ -1363,8 +1405,18 @@ impl ChatSseTranslator {
                             );
                         }
                     }
-                    // thinking/redacted deltas — этап 3.4; здесь их быть не
-                    // может (адаптер не запрашивает), пропускаем.
+                    // thinking_delta (этап 3.4b) → reasoning_content-дельта;
+                    // signature_delta выбрасывается — подписи в universal
+                    // lane не выставляются (решение 4).
+                    Some("thinking_delta") => {
+                        if let Some(thinking) = delta
+                            .and_then(|d| d.get("thinking"))
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.is_empty())
+                        {
+                            self.push_chunk(json!({"reasoning_content": thinking}), Value::Null);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1999,7 +2051,6 @@ mod tests {
     async fn unsupported_non_default_parameters_are_400() {
         for (field, value) in [
             ("response_format", serde_json::json!({"type": "json_object"})),
-            ("reasoning_effort", serde_json::json!("low")),
             ("store", serde_json::json!(true)),
             ("metadata", serde_json::json!({"k": "v"})),
             ("n", serde_json::json!(2)),
@@ -2050,7 +2101,16 @@ mod tests {
             "modalities": ["text"]
         }));
         // Дефолтные matrix-ключи в Messages тело не проксируются.
-        for key in ["tools", "tool_choice", "n", "store", "service_tier", "response_format"] {
+        for key in [
+            "tools",
+            "tool_choice",
+            "n",
+            "store",
+            "service_tier",
+            "response_format",
+            "reasoning_effort",
+            "output_config",
+        ] {
             assert!(translated.body.get(key).is_none(), "{key}");
         }
     }
@@ -2156,6 +2216,76 @@ mod tests {
         }))
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ---------- reasoning (этап 3.4b) ----------
+
+    #[test]
+    fn translates_reasoning_effort_to_output_config_effort() {
+        // minimal у Messages нет — клампится в low; остальные проксируются.
+        for (effort, expected) in [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+        ] {
+            let translated = ok_translated(serde_json::json!({
+                "model": "claude-opus-4-8",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": effort,
+            }));
+            assert_eq!(
+                translated.body["output_config"]["effort"],
+                serde_json::json!(expected),
+                "{effort}"
+            );
+        }
+        // null/отсутствие — выкл: output_config не появляется.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": null,
+        }));
+        assert!(translated.body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_and_response_format_share_output_config() {
+        // effort и format — соседние поля одного output_config (3.4a + 3.4b).
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Extract."}],
+            "reasoning_effort": "high",
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "profile", "strict": true,
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+            }}
+        }));
+        assert_eq!(translated.body["output_config"]["effort"], "high");
+        assert_eq!(
+            translated.body["output_config"]["format"],
+            serde_json::json!({"type": "json_schema", "schema": {
+                "type": "object", "properties": {"name": {"type": "string"}}
+            }})
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_reasoning_effort() {
+        // Любое не-null значение вне minimal|low|medium|high → 400
+        // invalid_request (не unsupported_parameter — параметр поддержан).
+        for value in [serde_json::json!("extreme"), serde_json::json!(2)] {
+            let (status, json) = expect_err(serde_json::json!({
+                "model": "claude-opus-4-8",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": value,
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{value}");
+            assert_eq!(json["error"]["param"], "reasoning_effort", "{value}");
+            assert!(json["error"]["code"].is_null(), "{value}");
+        }
     }
 
     #[tokio::test]
@@ -2415,6 +2545,59 @@ mod tests {
         assert_eq!(message["content"], "Let me check.");
         assert_eq!(message["tool_calls"][0]["function"]["arguments"], "{}");
         assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn non_stream_thinking_maps_to_reasoning_content() {
+        // thinking-блоки (3.4b) склеиваются в reasoning_content и не смешиваются
+        // с content; signature блока и redacted_thinking не выставляются.
+        let upstream = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "model": "claude-opus-4-8-20260101",
+                    "content": [
+                        {"type": "thinking", "thinking": "Let me think. ", "signature": "sig_1"},
+                        {"type": "redacted_thinking", "data": "opaque"},
+                        {"type": "thinking", "thinking": "Done."},
+                        {"type": "text", "text": "Answer."}
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 9}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = json_chat_response(upstream).await;
+        let (_, json) = err_parts(response).await;
+        let message = &json["choices"][0]["message"];
+        assert_eq!(message["content"], "Answer.");
+        assert_eq!(message["reasoning_content"], "Let me think. Done.");
+    }
+
+    #[tokio::test]
+    async fn non_stream_without_thinking_has_no_reasoning_content() {
+        let upstream = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "model": "claude-opus-4-8-20260101",
+                    "content": [{"type": "text", "text": "Plain."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 2}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = json_chat_response(upstream).await;
+        let (_, json) = err_parts(response).await;
+        let message = &json["choices"][0]["message"];
+        assert_eq!(message["content"], "Plain.");
+        assert!(message.get("reasoning_content").is_none(), "{message}");
     }
 
     // ---------- SSE-транслятор ----------
@@ -2697,6 +2880,50 @@ data: {"type":"message_stop"}"#;
                 (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "f", "arguments": ""}}]}), Value::Null),
                 (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), Value::Null),
                 (serde_json::json!({}), serde_json::json!("tool_calls")),
+            ]
+        );
+        assert!(output.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[tokio::test]
+    async fn contract_thinking_event_dictionary() {
+        // thinking (3.4b): role → reasoning_content-дельты → content-дельты →
+        // finish → DONE. thinking block start видимого чанка не порождает,
+        // signature_delta выбрасывается (решение 4).
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me \"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think.\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer.\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
+        let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
+        let output = collect_stream(translator).await;
+        assert_eq!(
+            delta_frames(&output),
+            vec![
+                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (serde_json::json!({"reasoning_content": "Let me "}), Value::Null),
+                (serde_json::json!({"reasoning_content": "think."}), Value::Null),
+                (serde_json::json!({"content": "Answer."}), Value::Null),
+                (serde_json::json!({}), serde_json::json!("stop")),
             ]
         );
         assert!(output.ends_with("data: [DONE]\n\n"));

@@ -429,7 +429,22 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `generationConfig.responseMimeType: application/json`, json_schema →
    +`responseSchema` (обёртка аналогично снимается); **3.4b** —
    `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
-   (следующий пакет, решение 4).
+   (решение 4) — **РЕАЛИЗОВАН** (обе плоскости): вход `reasoning_effort`
+   minimal|low|medium|high (null/отсутствие — выкл; любое другое не-null
+   значение → `400 invalid_request` с `param: reasoning_effort`) мапится на
+   Anthropic GA `output_config.effort` (minimal клампится в low,
+   beta-заголовок не нужен; `effort` соседствует с `format` из 3.4a в одном
+   `output_config`, не затирая его) и на Gemini
+   `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
+   плоскость сама мапит уровень в wire model id; `includeThoughts: true`).
+   Ответ — конвенция `reasoning_content`: Anthropic thinking-блоки и Gemini
+   thought-парты склеиваются в `message.reasoning_content` (non-stream, поле
+   присутствует только при непустом reasoning), thinking_delta/thought-парты
+   стрима → чанки `{"delta":{"reasoning_content": ...}}` в естественном
+   порядке апстрима (reasoning перед content, role-чанк первый). Подписи не
+   выставляются (решение 4): signature_delta/thoughtSignature выбрасываются,
+   redacted_thinking игнорируется. Правило `reasoning_effort` удалено из
+   capability matrix обеих плоскостей (Anthropic 17→16, Gemini 19→18).
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
    reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
    явный `400 documented_limitation`).
