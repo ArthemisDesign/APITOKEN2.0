@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { claudeModels, formatUsd, openaiModels, priceHere, type CatalogModel, type ClaudeModel, type OpenAiModel } from "@/lib/models";
+import { claudeModels, formatUsd, geminiModels, openaiModels, priceHere, type CatalogModel, type ClaudeModel, type GeminiModel, type OpenAiModel } from "@/lib/models";
 import { Prose } from "./prose";
 
 type Language = "en" | "ru";
@@ -36,6 +36,18 @@ export function ModelsPricing({ language }: { language: Language }) {
         "Кеширование автоматическое — повторяющиеся префиксы тарифицируются по ставке кешированного ввода, ничего включать не нужно. `gpt-5.6` — алиас `gpt-5.6-sol`.")}
     />
 
+    <ProviderPanel
+      language={language}
+      provider="gemini"
+      title={tr(language, "Gemini · Google Gemini API", "Gemini · Google Gemini API")}
+      host="gemini.api.apitoken.sale"
+      auth="x-goog-api-key"
+      models={geminiModels}
+      cacheNote={tr(language,
+        "Cached input bills at the cached-input rate (10% of input). `gemini-3.1-pro-preview` switches to long-context rates above 200K input tokens: 2× input and 1.5× output on the whole request. `gemini-3.1-flash-image` bills image output at $60 per 1M image tokens.",
+        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). `gemini-3.1-pro-preview` переключается на ставки длинного контекста свыше 200K входных токенов: 2× ввод и 1,5× вывод на весь запрос. `gemini-3.1-flash-image` тарифицирует вывод изображений по $60 за 1M токенов изображения.")}
+    />
+
     <MathCard language={language} />
 
     <ul className="mp-notes">
@@ -48,6 +60,9 @@ export function ModelsPricing({ language }: { language: Language }) {
       <li>{tr(language,
         "GPT requests above 272K input tokens bill at official long-context rates: 2× input and 1.5× output on the whole request.",
         "GPT-запросы свыше 272K входных токенов тарифицируются по официальным ставкам длинного контекста: 2× ввод и 1,5× вывод на весь запрос.")}</li>
+      <li>{tr(language,
+        "Gemini rates follow the official Google standard paid tier; image output on Nano Banana models bills per image-output token.",
+        "Ставки Gemini соответствуют официальному стандартному платному тарифу Google; вывод изображений на моделях Nano Banana тарифицируется за токен вывода изображения.")}</li>
       <li><Prose text={tr(language,
         "The live enabled set is always available at `GET /v1/models` on either surface.",
         "Актуальный список доступных моделей — всегда в `GET /v1/models` на любой из поверхностей.")} /></li>
@@ -57,7 +72,7 @@ export function ModelsPricing({ language }: { language: Language }) {
 
 function ProviderPanel({ language, provider, title, host, auth, models, cacheNote }: {
   language: Language;
-  provider: "anthropic" | "openai";
+  provider: "anthropic" | "openai" | "gemini";
   title: string;
   host: string;
   auth: string;
@@ -91,8 +106,8 @@ function ProviderPanel({ language, provider, title, host, auth, models, cacheNot
 }
 
 function ModelRow({ language, model, latest }: { language: Language; model: CatalogModel; latest: boolean }) {
-  const cached = model.provider === "anthropic" ? (model as ClaudeModel).cacheReadPerM : (model as OpenAiModel).cachedInputPerM;
-  const cacheWrite = model.provider === "anthropic" ? (model as ClaudeModel).cacheWrite5mPerM : (model as OpenAiModel).cacheWritePerM;
+  const cached = model.provider === "anthropic" ? (model as ClaudeModel).cacheReadPerM : (model as OpenAiModel | GeminiModel).cachedInputPerM;
+  const cacheWrite = model.provider === "anthropic" ? (model as ClaudeModel).cacheWrite5mPerM : model.provider === "openai" ? (model as OpenAiModel).cacheWritePerM : null;
   return <tr>
     <td className="mp-model">
       <Link href={`/models/${model.slug}`}>
@@ -109,7 +124,8 @@ function ModelRow({ language, model, latest }: { language: Language; model: Cata
   </tr>;
 }
 
-function Price({ official }: { official: number }) {
+function Price({ official }: { official: number | null }) {
+  if (official === null) return <td className="mp-price">—</td>;
   return <td className="mp-price"><b>{priceHere(official)}</b><s>{formatUsd(official)}</s></td>;
 }
 

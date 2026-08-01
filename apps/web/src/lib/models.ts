@@ -1,11 +1,12 @@
-// Model catalog for the /models programmatic SEO pages — two providers, one key and balance.
+// Model catalog for the /models programmatic SEO pages — three providers, one key and balance.
 // Claude prices are official Anthropic per-million-token rates; GPT prices are official OpenAI
-// per-million-token rates from the pinned engine catalog (crates/metering/src/codex.rs). The
+// per-million-token rates from the pinned engine catalog (crates/metering/src/codex.rs); Gemini
+// prices are official Google per-million-token rates from crates/metering/src/gemini.rs. The
 // discounted price shown to users derives from the flat B2C pricing model (50% off official
-// spend on every request) and applies to both providers through the same account multiplier.
+// spend on every request) and applies to all providers through the same account multiplier.
 // Keep numbers in sync with the providers' price lists and the engine catalog.
 
-export type ModelProvider = "anthropic" | "openai";
+export type ModelProvider = "anthropic" | "openai" | "gemini";
 
 export type ClaudeModel = {
   provider: "anthropic";
@@ -63,7 +64,37 @@ export type OpenAiModel = {
   related: string[];
 };
 
-export type CatalogModel = ClaudeModel | OpenAiModel;
+export type GeminiModel = {
+  provider: "gemini";
+  /** URL slug under /models/. */
+  slug: string;
+  /** Exact API model ID on the native Gemini endpoint. */
+  id: string;
+  name: string;
+  tier: "Pro" | "Flash" | "Flash-Lite" | "Image";
+  /** <title> without brand suffix. */
+  title: string;
+  description: string;
+  keywords: string[];
+  dek: string;
+  /** Official Google $ per 1M tokens. */
+  inputPerM: number;
+  cachedInputPerM: number;
+  outputPerM: number;
+  /** Long-context rates (whole request) above the input threshold — 3.1 Pro Preview only. */
+  longContext?: { threshold: string; inputPerM: number; cachedInputPerM: number; outputPerM: number };
+  /** Official $ per 1M image-output tokens — image models only. */
+  imageOutputPerM?: number;
+  context: string;
+  maxOutput: string;
+  bestFor: string[];
+  notes: string[];
+  faq: Array<{ q: string; a: string }>;
+  /** Related learn-article slugs. */
+  related: string[];
+};
+
+export type CatalogModel = ClaudeModel | OpenAiModel | GeminiModel;
 
 export const DISCOUNT_FLAT = 0.5;
 
@@ -80,6 +111,7 @@ export function formatUsd(value: number): string {
 
 export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
+export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
 
 export const claudeModels: ClaudeModel[] = [
   {
@@ -488,6 +520,234 @@ export const openaiModels: OpenAiModel[] = [
   },
 ];
 
+// Gemini rates mirror the pinned engine catalog (crates/metering/src/gemini.rs): official
+// Google standard paid-tier token pricing, cached input at 10% of input, no cache-write
+// billing, and long-context pricing (2× input, 1.5× output on the whole request) above 200K
+// input tokens on gemini-3.1-pro-preview. gemini-3.1-flash-image (Nano Banana 2) bills image
+// output separately per image-output token. The native /v1beta generateContent surface is
+// served as-is, authenticated with x-goog-api-key.
+export const geminiModels: GeminiModel[] = [
+  {
+    provider: "gemini",
+    slug: "gemini-3-6-flash",
+    id: "gemini-3.6-flash",
+    name: "Gemini 3.6 Flash",
+    tier: "Flash",
+    title: "Gemini 3.6 Flash API — Price per Token & Access",
+    description: "Gemini 3.6 Flash API pricing: official $1.50/$7.50 per 1M tokens, $0.75/$3.75 with the flat 50% apiToken.sale discount. The newest Gemini on the native Google API.",
+    keywords: ["gemini 3.6 flash api", "gemini 3.6 flash price", "gemini 3.6 api cost", "gemini-3.6-flash", "gemini flash token pricing", "google gemini api"],
+    dek: "Gemini 3.6 Flash is the newest Gemini model — Google's frontier-class Flash for agentic coding, multimodal work and long-context tasks, at Flash-tier pricing.",
+    inputPerM: 1.5,
+    cachedInputPerM: 0.15,
+    outputPerM: 7.5,
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "Agentic coding and tool use at Flash speed.",
+      "Multimodal workloads across text, image and audio input.",
+      "Long-context analysis in the full 1M-token window.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
+      "1M-token context window with 64K max output at standard pricing — no long-context premium.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 3.6 Flash API cost?", a: "Officially $1.50 per 1M input tokens and $7.50 per 1M output tokens, with cached input at $0.15. On apiToken.sale the same requests cost 50% less — $0.75/$3.75 at the flat discount applied to every call." },
+      { q: "What is the model ID for Gemini 3.6 Flash?", a: "gemini-3.6-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "Gemini 3.6 Flash or 3.5 Flash?", a: "3.6 Flash is newer and cheaper on output — $7.50 vs $9.00 per 1M at the same input price — so new projects should default to it. Keep 3.5 Flash only where prompts and evals are pinned to it." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-3-5-flash",
+    id: "gemini-3.5-flash",
+    name: "Gemini 3.5 Flash",
+    tier: "Flash",
+    title: "Gemini 3.5 Flash API — Price per Token & Access",
+    description: "Gemini 3.5 Flash API pricing: official $1.50/$9.00 per 1M tokens, $0.75/$4.50 with the flat 50% apiToken.sale discount. Proven Flash tier on the native Google API.",
+    keywords: ["gemini 3.5 flash api", "gemini 3.5 flash price", "gemini 3.5 api cost", "gemini-3.5-flash", "gemini flash token pricing"],
+    dek: "Gemini 3.5 Flash is the previous-generation Flash — a proven high-throughput model for coding and multimodal workloads, at the same input rate as 3.6 Flash.",
+    inputPerM: 1.5,
+    cachedInputPerM: 0.15,
+    outputPerM: 9,
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "Workloads pinned to Gemini 3.5 Flash for reproducibility.",
+      "High-volume production API traffic.",
+      "Multimodal pipelines migrating gradually to 3.6 Flash.",
+    ],
+    notes: [
+      "Same input price as Gemini 3.6 Flash, but output is $9.00 vs $7.50 — new work should default to gemini-3.6-flash.",
+      "Cached input bills at 10% of input; caching is automatic on repeated prefixes.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 3.5 Flash API cost?", a: "Officially $1.50 per 1M input tokens and $9.00 per 1M output tokens, with cached input at $0.15. With the flat 50% apiToken.sale discount that is $0.75/$4.50." },
+      { q: "Gemini 3.5 Flash or 3.6 Flash?", a: "They share an input price, and 3.6 Flash is newer with cheaper output ($7.50 vs $9.00) — prefer it for new projects. Stay on 3.5 Flash when your prompts and evals are pinned to it." },
+      { q: "What is the model ID?", a: "gemini-3.5-flash. It works on the same apiToken.sale key and balance as every other Claude, GPT and Gemini model — send it as the model on the native Gemini endpoint with x-goog-api-key." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-3-1-pro-preview",
+    id: "gemini-3.1-pro-preview",
+    name: "Gemini 3.1 Pro Preview",
+    tier: "Pro",
+    title: "Gemini 3.1 Pro Preview API — Price per Token & Access",
+    description: "Gemini 3.1 Pro Preview API pricing: official $2/$12 per 1M tokens, $1/$6 with the flat 50% apiToken.sale discount. Pro-tier reasoning on the native Google API.",
+    keywords: ["gemini 3.1 pro api", "gemini 3.1 pro preview price", "gemini 3.1 pro api cost", "gemini-3.1-pro-preview", "gemini pro token pricing"],
+    dek: "Gemini 3.1 Pro Preview is Google's Pro-tier reasoning model — the strongest Gemini for hard reasoning and long-horizon agentic work, with long-context rates above 200K input tokens.",
+    inputPerM: 2,
+    cachedInputPerM: 0.2,
+    outputPerM: 12,
+    longContext: { threshold: "200K", inputPerM: 4, cachedInputPerM: 0.4, outputPerM: 18 },
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "The hardest reasoning, planning and review work.",
+      "Long-horizon agentic tasks with tool use.",
+      "Deep document and codebase analysis in the 1M-token window.",
+    ],
+    notes: [
+      "Requests above 200K input tokens bill at long-context rates — $4/$18 per 1M (2× input, 1.5× output) on the whole request.",
+      "Cached input bills at 10% of input; caching is automatic on repeated prefixes.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 3.1 Pro Preview API cost?", a: "Officially $2 per 1M input tokens and $12 per 1M output tokens, with cached input at $0.20; above 200K input tokens the whole request bills at $4/$18. On apiToken.sale the flat 50% discount applies to every call — $1/$6, or $2/$9 at long-context rates." },
+      { q: "What is the model ID for Gemini 3.1 Pro Preview?", a: "gemini-3.1-pro-preview. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "Gemini 3.1 Pro Preview or 3.6 Flash?", a: "3.6 Flash covers most workloads at a lower token price; route the hardest reasoning and longest-horizon runs to 3.1 Pro Preview. Both run on the same key, balance and endpoint." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-3-1-flash-lite",
+    id: "gemini-3.1-flash-lite",
+    name: "Gemini 3.1 Flash-Lite",
+    tier: "Flash-Lite",
+    title: "Gemini 3.1 Flash-Lite API — Price per Token & Access",
+    description: "Gemini 3.1 Flash-Lite API pricing: official $0.25/$1.50 per 1M tokens, $0.125/$0.75 with the flat 50% apiToken.sale discount. The economical Gemini 3 tier.",
+    keywords: ["gemini 3.1 flash-lite api", "gemini 3.1 flash lite price", "gemini-3.1-flash-lite", "cheap gemini api", "gemini flash lite token pricing"],
+    dek: "Gemini 3.1 Flash-Lite is the economical tier of the Gemini 3 line — built for high-volume, latency-sensitive work at a fraction of Flash pricing.",
+    inputPerM: 0.25,
+    cachedInputPerM: 0.025,
+    outputPerM: 1.5,
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "Classification, extraction and summarization at scale.",
+      "Latency-sensitive chat and routing layers.",
+      "Cheap pre-processing before a Flash or Pro call.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input ($0.025 per 1M); caching is automatic on repeated prefixes.",
+      "Full 1M-token context and 64K max output — the same window as the Flash line.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 3.1 Flash-Lite API cost?", a: "Officially $0.25 per 1M input tokens and $1.50 per 1M output tokens, with cached input at $0.025. With the flat 50% apiToken.sale discount that is $0.125/$0.75." },
+      { q: "What is the model ID?", a: "gemini-3.1-flash-lite. Point any Gemini-compatible client at https://gemini.api.apitoken.sale and send it as the model, with the key in x-goog-api-key." },
+      { q: "Flash-Lite or Flash?", a: "Flash-Lite handles bulk, latency-sensitive work at a fraction of the price; step up to gemini-3.6-flash for agentic coding and harder reasoning. Many teams route by task on the same key." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-2-5-flash",
+    id: "gemini-2.5-flash",
+    name: "Gemini 2.5 Flash",
+    tier: "Flash",
+    title: "Gemini 2.5 Flash API — Price per Token & Access",
+    description: "Gemini 2.5 Flash API pricing: official $0.30/$2.50 per 1M tokens, $0.15/$1.25 with the flat 50% apiToken.sale discount. Proven previous-generation Flash.",
+    keywords: ["gemini 2.5 flash api", "gemini 2.5 flash price", "gemini 2.5 api cost", "gemini-2.5-flash", "gemini flash token pricing"],
+    dek: "Gemini 2.5 Flash is the proven previous-generation Flash — a stable workhorse for production pipelines evaluated against the 2.5 line.",
+    inputPerM: 0.3,
+    cachedInputPerM: 0.03,
+    outputPerM: 2.5,
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "Pipelines tuned and evaluated against Gemini 2.5 Flash.",
+      "Balanced coding and content workloads.",
+      "Teams migrating gradually to the Gemini 3 line.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input; caching is automatic on repeated prefixes.",
+      "Same 1M-token context and 64K max output as the newer Flash models.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 2.5 Flash API cost?", a: "Officially $0.30 per 1M input tokens and $2.50 per 1M output tokens, with cached input at $0.03. With the flat 50% apiToken.sale discount that is $0.15/$1.25." },
+      { q: "What is the model ID for Gemini 2.5 Flash?", a: "gemini-2.5-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "Gemini 2.5 Flash or 3.5 Flash?", a: "2.5 Flash is far cheaper per token and proven in production; 3.5 Flash is the stronger current model. Keep 2.5 Flash where prompts and evals are pinned to it, default to the 3.x line for new work." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-2-5-flash-lite",
+    id: "gemini-2.5-flash-lite",
+    name: "Gemini 2.5 Flash-Lite",
+    tier: "Flash-Lite",
+    title: "Gemini 2.5 Flash-Lite API — Price per Token & Access",
+    description: "Gemini 2.5 Flash-Lite API pricing: official $0.10/$0.40 per 1M tokens, $0.05/$0.20 with the flat 50% apiToken.sale discount. The cheapest Gemini model.",
+    keywords: ["gemini 2.5 flash-lite api", "gemini 2.5 flash lite price", "gemini-2.5-flash-lite", "cheapest gemini model", "gemini flash lite token pricing"],
+    dek: "Gemini 2.5 Flash-Lite is the cheapest Gemini model — built for massive-volume, latency-sensitive work like classification, extraction and routing.",
+    inputPerM: 0.1,
+    cachedInputPerM: 0.01,
+    outputPerM: 0.4,
+    context: "1M tokens",
+    maxOutput: "64K tokens",
+    bestFor: [
+      "Classification, extraction and summarization at massive scale.",
+      "Latency-sensitive chat and routing layers.",
+      "Cheap pre-processing before a Flash or Pro call.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input ($0.01 per 1M); caching is automatic on repeated prefixes.",
+      "Pairs well with model routing: send bulk work to Flash-Lite, hard reasoning to 3.1 Pro Preview.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 2.5 Flash-Lite API cost?", a: "Officially $0.10 per 1M input tokens and $0.40 per 1M output tokens, with cached input at $0.01. With the flat 50% apiToken.sale discount that is $0.05/$0.20 — the cheapest way to run Gemini." },
+      { q: "What is Flash-Lite good for?", a: "High-volume, low-latency work: classification, extraction, summarization, routing and simple chat. For complex reasoning, step up to 2.5 Flash or the Gemini 3 line." },
+      { q: "What is the model ID?", a: "gemini-2.5-flash-lite. It works on the same apiToken.sale key and balance as every other supported Claude, GPT and Gemini model." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "gemini",
+    slug: "gemini-3-1-flash-image",
+    id: "gemini-3.1-flash-image",
+    name: "Gemini 3.1 Flash Image (Nano Banana 2)",
+    tier: "Image",
+    title: "Gemini 3.1 Flash Image (Nano Banana 2) API — Price per Token & Access",
+    description: "Gemini 3.1 Flash Image (Nano Banana 2) API pricing: official $0.50/$3.00 per 1M text tokens, $0.25/$1.50 with the flat 50% apiToken.sale discount. Image output at $60 per 1M image tokens.",
+    keywords: ["gemini 3.1 flash image api", "nano banana 2 api", "gemini image model price", "gemini-3.1-flash-image", "gemini image generation cost", "google gemini image api"],
+    dek: "Gemini 3.1 Flash Image — Nano Banana 2 — is Google's image-generation Flash model: text and image in, rendered images out, billed per image-output token.",
+    inputPerM: 0.5,
+    cachedInputPerM: 0.05,
+    outputPerM: 3,
+    imageOutputPerM: 60,
+    context: "128K tokens",
+    maxOutput: "32K tokens",
+    bestFor: [
+      "Image generation and editing inside production apps.",
+      "Multimodal pipelines that mix text and rendered output.",
+      "High-volume creative and asset workflows.",
+    ],
+    notes: [
+      "Image output bills separately at $60 per 1M image-output tokens ($30 here); text output bills at the standard $3.00 rate.",
+      "128K context window and 32K max output — smaller than the text Flash line.",
+    ],
+    faq: [
+      { q: "How much does the Gemini 3.1 Flash Image API cost?", a: "Officially $0.50 per 1M input tokens and $3.00 per 1M text output tokens, plus $60 per 1M image-output tokens. On apiToken.sale the flat 50% discount applies to every call — $0.25/$1.50, and $30 per 1M image-output tokens." },
+      { q: "What is the model ID for Nano Banana 2?", a: "gemini-3.1-flash-image. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "Flash Image or a text Flash model?", a: "Flash Image is the image-generation model — use it when the response must include rendered images. For text-only work, gemini-3.6-flash gives you a larger context window and lower output cost." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+];
+
 export const claudeModelBySlug: Record<string, ClaudeModel> = Object.fromEntries(
   claudeModels.map((model) => [model.slug, model]),
 );
@@ -496,7 +756,11 @@ export const openaiModelBySlug: Record<string, OpenAiModel> = Object.fromEntries
   openaiModels.map((model) => [model.slug, model]),
 );
 
-export const catalogModelBySlug: Record<string, CatalogModel> = { ...claudeModelBySlug, ...openaiModelBySlug };
+export const geminiModelBySlug: Record<string, GeminiModel> = Object.fromEntries(
+  geminiModels.map((model) => [model.slug, model]),
+);
+
+export const catalogModelBySlug: Record<string, CatalogModel> = { ...claudeModelBySlug, ...openaiModelBySlug, ...geminiModelBySlug };
 
 export function modelPath(slug: string): string {
   return `/models/${slug}`;

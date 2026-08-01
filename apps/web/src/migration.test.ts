@@ -272,14 +272,15 @@ describe("completed Next.js migration", () => {
     expect(dynamicRoute).not.toContain("DocsPage");
   });
 
-  it("advertises both supported API surfaces", () => {
+  it("advertises all supported API surfaces", () => {
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
     const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
     expect(messages).toContain("openai.api.apitoken.sale/v1");
-    expect(messages).toContain('"f2_h": "Two native API surfaces"');
-    expect(messages).toContain('"f2_h": "Два нативных формата API"');
-    expect(home).toContain('<Stat value="2" label="stat2" />');
+    expect(messages).toContain("gemini.api.apitoken.sale");
+    expect(messages).toContain('"f2_h": "Three native API surfaces"');
+    expect(messages).toContain('"f2_h": "Три нативных формата API"');
+    expect(home).toContain('<Stat value="3" label="stat2" />');
     expect(home).not.toContain('className="announce"');
     expect(styles).not.toContain(".announce-");
   });
@@ -295,6 +296,13 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6"');
     expect(marketing).toContain('["GPT-5.5","gpt-5.5","272K","$5","$30"');
     expect(marketing).toContain('["GPT-5.4","gpt-5.4","272K","$2.50","$15"');
+    expect(marketing).toContain('["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50"');
+    expect(marketing).toContain('["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00"');
+    expect(marketing).toContain('["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*"');
+    expect(marketing).toContain('["Gemini 3.1 Flash-Lite","gemini-3.1-flash-lite","1M","$0.25","$1.50"');
+    expect(marketing).toContain('["Gemini 2.5 Flash","gemini-2.5-flash","1M","$0.30","$2.50"');
+    expect(marketing).toContain('["Gemini 2.5 Flash-Lite","gemini-2.5-flash-lite","1M","$0.10","$0.40"');
+    expect(marketing).toContain('["Gemini 3.1 Flash Image (Nano Banana 2)","gemini-3.1-flash-image","128K","$0.50","$3.00"');
   });
 
   it("keeps the header, terminal, workflow hover, and wave loop regression-safe", () => {

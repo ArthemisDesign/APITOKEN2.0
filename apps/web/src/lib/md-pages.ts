@@ -3,11 +3,13 @@
 // section as clean text. Add a model to the data and its Markdown updates on the next build.
 import {
   ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL,
   OPENAI_BASE_URL,
   catalogModelBySlug,
   claudeModels,
   formatUsd,
   DISCOUNT_FLAT,
+  geminiModels,
   modelPath,
   openaiModels,
   type CatalogModel,
@@ -110,6 +112,7 @@ function pct(discount: number): string {
 export function buildAgentSetupMarkdown(): string {
   const anthropicModelIds = claudeModels.map((model) => `- \`${model.id}\` — ${model.name}`).join("\n");
   const openAiModelIds = openaiModels.map((model) => `- \`${model.id}\` — ${model.name}`).join("\n");
+  const geminiModelIds = geminiModels.map((model) => `- \`${model.id}\` — ${model.name}`).join("\n");
 
   return (
     frontmatter({
@@ -153,7 +156,7 @@ Determine, without guessing:
 - Target: IDE, coding agent, CLI, application, framework, raw HTTP client, or SDK and its exact version.
 - Runtime and package manager when relevant: Node.js/npm/pnpm/yarn, Python/pip/uv/poetry, Go, Rust, Java, .NET, Docker, or CI.
 - Existing model provider, base URL, environment-variable names, proxy settings, and configuration scope (user, workspace, project, CI, or production).
-- Whether the client supports Anthropic Messages, OpenAI Responses, OpenAI Chat Completions, or more than one of them.
+- Whether the client supports Anthropic Messages, OpenAI Responses, OpenAI Chat Completions, the native Gemini API, or more than one of them.
 
 Use the remote/container OS that actually runs the client, not merely the desktop OS hosting the editor.
 
@@ -181,7 +184,17 @@ Choose by the client's wire protocol, not by brand preference.
 - Use this surface for Codex, OpenAI SDKs, and tools with an OpenAI-compatible custom provider.
 - Responses and Chat Completions support SSE streaming and text or image input with text output. This endpoint does not provide the unrelated OpenAI Platform services such as audio, realtime, assistants, batches, files, or fine-tuning.
 
-The same \`sk-pool-…\` key and account balance work on both surfaces. If a client supports both protocols, preserve the protocol it already uses unless the user requests a change. If it supports neither custom base URLs nor custom providers, explain the incompatibility and recommend a supported integration rather than pretending the setup succeeded.
+### Gemini surface (native Google API)
+
+- Base URL: \`${GEMINI_BASE_URL}\`.
+- Generate: \`POST ${GEMINI_BASE_URL}/v1beta/models/{model}:generateContent\`.
+- Streaming: \`POST ${GEMINI_BASE_URL}/v1beta/models/{model}:streamGenerateContent\`.
+- Token counting: \`POST ${GEMINI_BASE_URL}/v1beta/models/{model}:countTokens\`.
+- Model discovery: \`GET ${GEMINI_BASE_URL}/v1beta/models\`.
+- Auth: \`x-goog-api-key: sk-pool-…\`; do not use \`x-api-key\` or \`Authorization: Bearer\` on this surface.
+- Use this surface for Google GenAI SDKs and tools with a Gemini-compatible custom provider.
+
+The same \`sk-pool-…\` key and account balance work on all three surfaces. If a client supports both protocols, preserve the protocol it already uses unless the user requests a change. If it supports neither custom base URLs nor custom providers, explain the incompatibility and recommend a supported integration rather than pretending the setup succeeded.
 
 ## Current model catalog
 
@@ -195,7 +208,11 @@ OpenAI-compatible models:
 
 ${openAiModelIds}
 
-For the OpenAI-compatible surface, call \`GET /v1/models\` when the key is available so the runtime result wins over cached documentation. For the Anthropic surface, use the canonical model catalog above. If the user did not request a model, keep the project's existing model family when possible; otherwise choose a sensible current model for the stated workload and explain the choice.
+Gemini models (native Google API):
+
+${geminiModelIds}
+
+For the OpenAI-compatible surface, call \`GET /v1/models\` when the key is available so the runtime result wins over cached documentation; on the Gemini surface the equivalent is \`GET /v1beta/models\`. For the Anthropic surface, use the canonical model catalog above. If the user did not request a model, keep the project's existing model family when possible; otherwise choose a sensible current model for the stated workload and explain the choice.
 
 ## Step 3 — store the key for the actual OS and tool
 
@@ -298,7 +315,7 @@ After the direct request succeeds, run the target client itself. If the integrat
 
 1. **DNS, TLS, connection refused, or timeout before HTTP:** verify the exact hostname, system clock, proxy, VPN, firewall, container DNS, and remote-host network. Test from the target runtime.
 2. **HTML, a website page, or 404 route output:** the base URL is wrong. Check for a missing endpoint or duplicated \`/v1/v1\`.
-3. **401:** confirm the key is active and not surrounded by quotes or whitespace in the stored value. Anthropic uses \`x-api-key\`; OpenAI-compatible uses \`Authorization: Bearer\`. A revoked key must be replaced, not retried.
+3. **401:** confirm the key is active and not surrounded by quotes or whitespace in the stored value. Anthropic uses \`x-api-key\`; OpenAI-compatible uses \`Authorization: Bearer\`; Gemini uses \`x-goog-api-key\`. A revoked key must be replaced, not retried.
 4. **402:** the account's available balance is insufficient. Top up in the dashboard; backoff cannot fix it.
 5. **404 model_not_found:** list OpenAI-compatible models with \`GET /v1/models\` or check ${SITE_ORIGIN}/md/models, then use the exact ID on the matching surface.
 6. **413 or context-length failure:** reduce prompt, image, tool-schema, or output size; confirm the selected model's limits.
@@ -353,18 +370,21 @@ export function buildApiReferenceMarkdown(): string {
   const gptRows = openaiModels
     .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
     .join("\n");
+  const geminiRows = geminiModels
+    .map((m) => `| \`${m.id}\` | ${m.tier} | ${m.context} | ${m.maxOutput} | $${m.inputPerM} / $${m.outputPerM} |`)
+    .join("\n");
 
   return (
     frontmatter({
-      title: "apiToken.sale — API reference (Claude & GPT)",
+      title: "apiToken.sale — API reference (Claude, GPT & Gemini)",
       description:
-        "Connect any Anthropic-compatible or OpenAI-compatible client to apiToken.sale: base URLs, exact model IDs, headers, streaming, tool use, prompt caching and error codes for both API surfaces.",
+        "Connect any Anthropic-compatible, OpenAI-compatible or Gemini-compatible client to apiToken.sale: base URLs, exact model IDs, headers, streaming, tool use, prompt caching and error codes for all three API surfaces.",
       url: `${SITE_ORIGIN}/docs`,
       language: "en",
     }) +
     `# API reference — apiToken.sale
 
-apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
+apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line, an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line, and the **native Google Gemini API** with the Gemini line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
 
 ## Surface 1 — Anthropic Messages API (Claude models)
 
@@ -393,7 +413,21 @@ Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same fl
 |---|---|---|---|---|
 ${gptRows}
 
-Per-model detail pages: ${[...claudeModels, ...openaiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
+## Surface 3 — Gemini API (Gemini models)
+
+- **Base URL:** \`${GEMINI_BASE_URL}\`
+- **Endpoints:** \`POST /v1beta/models/{model}:generateContent\` and \`POST /v1beta/models/{model}:streamGenerateContent\` (SSE streaming), \`POST /v1beta/models/{model}:countTokens\`
+- **Models:** \`GET /v1beta/models\` lists the currently enabled set
+- **Auth:** the same \`sk-pool-…\` key sent as \`x-goog-api-key: sk-pool-…\` (x-api-key and Authorization: Bearer are not accepted on this surface).
+- **Surface:** the native /v1beta generateContent API is served unchanged — request bodies, responses and streaming match the official Google Gemini API.
+
+Exact Gemini model IDs. Prices are official Google $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. gemini-3.1-pro-preview requests above 200K input tokens bill at long-context rates (2× input, 1.5× output on the whole request). gemini-3.1-flash-image bills image output at $60 per 1M image-output tokens.
+
+| model ID | Tier | Context | Max output | Official in / out (per 1M) |
+|---|---|---|---|---|
+${geminiRows}
+
+Per-model detail pages: ${[...claudeModels, ...openaiModels, ...geminiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
 
 ## First request (curl, Claude)
 
@@ -418,6 +452,17 @@ curl ${OPENAI_BASE_URL}/responses \\
   -d '{
     "model": "gpt-5.6-sol",
     "input": "Reply with exactly: connected"
+  }'
+\`\`\`
+
+## First request (curl, Gemini)
+
+\`\`\`bash
+curl ${GEMINI_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent \\
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{"parts": [{"text": "Reply with exactly: connected"}]}]
   }'
 \`\`\`
 
@@ -455,7 +500,7 @@ print(response.output_text)
 
 ## Coding tools
 
-Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`. Codex CLI and opencode run on the OpenAI-compatible surface — see the integration guides: ${SITE_ORIGIN}/md/int.
+Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`. Codex CLI and opencode run on the OpenAI-compatible surface — see the integration guides: ${SITE_ORIGIN}/md/int. Google GenAI SDKs and Gemini-compatible tools run on the native Gemini surface at \`${GEMINI_BASE_URL}\` with the key sent as \`x-goog-api-key\`.
 
 ## Capability parity (Anthropic surface)
 
@@ -490,7 +535,7 @@ Envelope: \`{"error":{"message","type","param","code"}}\`.
 
 ## Pricing
 
-Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by both surfaces. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
+Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by all three surfaces. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
 
 ## Get started
 
@@ -510,10 +555,14 @@ export function buildModelsMarkdown(): string {
     const outHere = formatUsd(m.outputPerM * (1 - DISCOUNT_FLAT));
     const surface = m.provider === "anthropic"
       ? `- **Surface:** Anthropic Messages API at \`${API_BASE_URL}\``
-      : `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`;
+      : m.provider === "openai"
+        ? `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`
+        : `- **Surface:** Gemini API at \`${GEMINI_BASE_URL}\` (x-goog-api-key)`;
     const cached = m.provider === "openai"
       ? `\n- **Cached input (per 1M):** $${m.cachedInputPerM} · **Cache write:** $${m.cacheWritePerM}`
-      : "";
+      : m.provider === "gemini"
+        ? `\n- **Cached input (per 1M):** $${m.cachedInputPerM}`
+        : "";
     return [
       `## ${m.name}`,
       "",
@@ -531,15 +580,15 @@ export function buildModelsMarkdown(): string {
 
   return (
     frontmatter({
-      title: "apiToken.sale — model catalog (Claude & GPT)",
+      title: "apiToken.sale — model catalog (Claude, GPT & Gemini)",
       description:
-        "Every Claude and GPT model available through apiToken.sale with exact API IDs, context windows, max output and discounted per-token pricing.",
+        "Every Claude, GPT and Gemini model available through apiToken.sale with exact API IDs, context windows, max output and discounted per-token pricing.",
       url: `${SITE_ORIGIN}/models`,
       language: "en",
     }) +
     `# Model catalog
 
-All models run on one \`sk-pool-…\` key and one prepaid balance — Claude models via \`${API_BASE_URL}\`, GPT models via \`${OPENAI_BASE_URL}\`. Use the model ID unchanged in the \`model\` field.
+All models run on one \`sk-pool-…\` key and one prepaid balance — Claude models via \`${API_BASE_URL}\`, GPT models via \`${OPENAI_BASE_URL}\`, Gemini models via \`${GEMINI_BASE_URL}\`. Use the model ID unchanged in the \`model\` field.
 
 # Claude models (Anthropic Messages API)
 
@@ -548,6 +597,10 @@ ${claudeModels.map(sectionFor).join("\n\n")}
 # GPT models (OpenAI-compatible API)
 
 ${openaiModels.map(sectionFor).join("\n\n")}
+
+# Gemini models (Google Gemini API)
+
+${geminiModels.map(sectionFor).join("\n\n")}
 
 ---
 API reference: ${SITE_ORIGIN}/md/docs · Pricing: ${SITE_ORIGIN}/md/plans
@@ -559,15 +612,15 @@ API reference: ${SITE_ORIGIN}/md/docs · Pricing: ${SITE_ORIGIN}/md/plans
 export function buildPlansMarkdown(): string {
   return (
     frontmatter({
-      title: "apiToken.sale — API pricing (Claude & GPT)",
+      title: "apiToken.sale — API pricing (Claude, GPT & Gemini)",
       description:
-        "apiToken.sale flat pricing: 50% off official provider rates on every request, for every account and any top-up amount. Prepaid per-token billing at official Anthropic and OpenAI rates.",
+        "apiToken.sale flat pricing: 50% off official provider rates on every request, for every account and any top-up amount. Prepaid per-token billing at official Anthropic, OpenAI and Google rates.",
       url: `${SITE_ORIGIN}/plans`,
       language: "en",
     }) +
     `# Pricing — flat ${B2C_DISCOUNT_PERCENT}% off
 
-Top up any whole-dollar amount. Each request is billed at the official provider token price, then the flat ${B2C_DISCOUNT_PERCENT}% discount is applied and deducted from balance. One balance and one rate cover Claude and GPT models alike. No fixed packages, no subscriptions, no tiers, balance never expires.
+Top up any whole-dollar amount. Each request is billed at the official provider token price, then the flat ${B2C_DISCOUNT_PERCENT}% discount is applied and deducted from balance. One balance and one rate cover Claude, GPT and Gemini models alike. No fixed packages, no subscriptions, no tiers, balance never expires.
 
 | Top up | Discount (value multiplier) | Official API value |
 |---|---|---|
@@ -589,7 +642,9 @@ export function buildModelMarkdown(model: CatalogModel): string {
   const outHere = formatUsd(model.outputPerM * (1 - DISCOUNT_FLAT));
   const surfaceLine = model.provider === "anthropic"
     ? `- **Base URL:** \`${API_BASE_URL}\` · **Endpoint:** \`POST /v1/messages\``
-    : `- **Base URL:** \`${OPENAI_BASE_URL}\` · **Endpoints:** \`POST /v1/responses\`, \`POST /v1/chat/completions\` (Authorization: Bearer)`;
+    : model.provider === "openai"
+      ? `- **Base URL:** \`${OPENAI_BASE_URL}\` · **Endpoints:** \`POST /v1/responses\`, \`POST /v1/chat/completions\` (Authorization: Bearer)`
+      : `- **Base URL:** \`${GEMINI_BASE_URL}\` · **Endpoint:** \`POST /v1beta/models/${model.id}:generateContent\` (x-goog-api-key)`;
   const callSnippet = model.provider === "anthropic"
     ? `\`\`\`bash
 curl ${API_BASE_URL}/v1/messages \\
@@ -598,11 +653,18 @@ curl ${API_BASE_URL}/v1/messages \\
   -H "content-type: application/json" \\
   -d '{"model": "${model.id}", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
 \`\`\``
-    : `\`\`\`bash
+    : model.provider === "openai"
+      ? `\`\`\`bash
 curl ${OPENAI_BASE_URL}/responses \\
   -H "Authorization: Bearer $APITOKEN_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"model": "${model.id}", "input": "Reply with exactly: connected"}'
+\`\`\``
+      : `\`\`\`bash
+curl ${GEMINI_BASE_URL}/v1beta/models/${model.id}:generateContent \\
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"contents": [{"parts": [{"text": "Reply with exactly: connected"}]}]}'
 \`\`\``;
   return (
     frontmatter({
@@ -833,7 +895,7 @@ Every public section of apiToken.sale is available as clean Markdown. Private da
 - API reference (connection, models, streaming, tools, errors): ${SITE_ORIGIN}/md/docs
 - Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors
 - Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models
-- Per-model spec: append the model slug to ${SITE_ORIGIN}/md/models/<slug> (${[...claudeModels, ...openaiModels].map((m) => m.slug).join(", ")})
+- Per-model spec: append the model slug to ${SITE_ORIGIN}/md/models/<slug> (${[...claudeModels, ...openaiModels, ...geminiModels].map((m) => m.slug).join(", ")})
 - Pricing & flat 50% discount: ${SITE_ORIGIN}/md/plans
 - Integrations (all tools): ${SITE_ORIGIN}/md/int
 - Per-tool setup: append the slug to ${SITE_ORIGIN}/md/int/<slug> (${integrationSlugs.join(", ")})

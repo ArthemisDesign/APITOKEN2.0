@@ -41,14 +41,26 @@ const gptModelRows = [
   ["GPT-5.4","gpt-5.4","272K","$2.50","$15","m_gpt54"],
 ] as const;
 
-const modelPageCopy: Record<Language, { sonnet5Footnote: string; gptFootnote: string }> = {
+const geminiModelRows = [
+  ["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50","m_gem36flash"],
+  ["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00","m_gem35flash"],
+  ["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*","m_gem31pro"],
+  ["Gemini 3.1 Flash-Lite","gemini-3.1-flash-lite","1M","$0.25","$1.50","m_gem31lite"],
+  ["Gemini 2.5 Flash","gemini-2.5-flash","1M","$0.30","$2.50","m_gem25flash"],
+  ["Gemini 2.5 Flash-Lite","gemini-2.5-flash-lite","1M","$0.10","$0.40","m_gem25lite"],
+  ["Gemini 3.1 Flash Image (Nano Banana 2)","gemini-3.1-flash-image","128K","$0.50","$3.00","m_gemimage"],
+] as const;
+
+const modelPageCopy: Record<Language, { sonnet5Footnote: string; gptFootnote: string; geminiFootnote: string }> = {
   en: {
     sonnet5Footnote: "* Claude Sonnet 5 introductory official pricing is $2 / $10 per 1M through 2026-08-31 and returns to $3 / $15 on 2026-09-01. The engine already charges the current effective rate.",
     gptFootnote: "GPT rows are official OpenAI standard rates. gpt-5.6 is a convenience alias of gpt-5.6-sol. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request).",
+    geminiFootnote: "* Gemini 3.1 Pro Preview bills $4 / $18 per 1M above 200K input tokens (long-context rate on the whole request). Gemini 3.1 Flash Image (Nano Banana 2) bills image output at $60 per 1M image-output tokens.",
   },
   ru: {
     sonnet5Footnote: "* Для Claude Sonnet 5 официальная вводная цена $2 / $10 за 1 млн действует до 2026-08-31 включительно; с 2026-09-01 возвращается ставка $3 / $15. Движок уже применяет актуальную ставку.",
     gptFootnote: "Строки GPT — официальные стандартные ставки OpenAI. gpt-5.6 — удобный псевдоним gpt-5.6-sol. Запросы свыше 272K входных токенов тарифицируются по ставкам OpenAI для длинного контекста (×2 вход, ×1,5 выход за весь запрос).",
+    geminiFootnote: "* Gemini 3.1 Pro Preview тарифицируется по $4 / $18 за 1 млн свыше 200K входных токенов (ставка длинного контекста на весь запрос). Gemini 3.1 Flash Image (Nano Banana 2) тарифицирует вывод изображений по $60 за 1 млн токенов изображения.",
   },
 };
 
@@ -58,7 +70,7 @@ function ModelTable({ rows, footnote }: { rows: readonly (readonly [string, stri
 
 export function ModelsPage() {
   const { language } = useI18n();
-  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These official Anthropic and OpenAI list rates calculate official API spend. B2C accounts pay 50% of that spend on every request; B2B rates are negotiated.</T></div><T k="m_provider_claude" as="h3" className="docs-h3">Claude · Anthropic Messages API</T><ModelTable rows={claudeModelRows} footnote={modelPageCopy[language].sonnet5Footnote} /><T k="m_provider_gpt" as="h3" className="docs-h3">GPT · OpenAI-compatible API</T><ModelTable rows={gptModelRows} footnote={modelPageCopy[language].gptFootnote} /><PageActions /></div></section></MarketingFrame>;
+  return <MarketingFrame><PageHero eyebrow="nav_models" title="models_h" subtitle="models_sub" /><section className="borderless"><div className="wrap"><div className="model-rate-note"><div><T k="model_rate_tag" as="span" className="tag">Official list rates</T><T k="model_rate_h" as="h3">Official rates behind every spend calculation</T></div><T k="model_rate_p" as="p">These official Anthropic and OpenAI list rates calculate official API spend. B2C accounts pay 50% of that spend on every request; B2B rates are negotiated.</T></div><T k="m_provider_claude" as="h3" className="docs-h3">Claude · Anthropic Messages API</T><ModelTable rows={claudeModelRows} footnote={modelPageCopy[language].sonnet5Footnote} /><T k="m_provider_gpt" as="h3" className="docs-h3">GPT · OpenAI-compatible API</T><ModelTable rows={gptModelRows} footnote={modelPageCopy[language].gptFootnote} /><T k="m_provider_gemini" as="h3" className="docs-h3">Gemini · Google Gemini API</T><ModelTable rows={geminiModelRows} footnote={modelPageCopy[language].geminiFootnote} /><PageActions /></div></section></MarketingFrame>;
 }
 
 const integrations = [

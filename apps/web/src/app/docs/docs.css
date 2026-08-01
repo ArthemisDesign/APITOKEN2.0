@@ -83,6 +83,7 @@
 .ib-row.active .ib-icon{background:var(--txt)}
 .ib-icon.p-anthropic{-webkit-mask-image:url("/assets/providers/anthropic.svg");mask-image:url("/assets/providers/anthropic.svg")}
 .ib-icon.p-openai{-webkit-mask-image:url("/assets/providers/openai.svg");mask-image:url("/assets/providers/openai.svg")}
+.ib-icon.p-gemini{-webkit-mask-image:url("/assets/providers/gemini.svg");mask-image:url("/assets/providers/gemini.svg")}
 .ib-icon.t-claude-code{-webkit-mask-image:url("/assets/tools/claude-code.svg");mask-image:url("/assets/tools/claude-code.svg")}
 .ib-icon.t-codex{-webkit-mask-image:url("/assets/tools/codex.svg");mask-image:url("/assets/tools/codex.svg")}
 .ib-icon.t-opencode{-webkit-mask-image:url("/assets/tools/opencode.svg");mask-image:url("/assets/tools/opencode.svg")}

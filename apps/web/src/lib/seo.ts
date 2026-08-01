@@ -29,7 +29,7 @@ export const seoPages = {
   home: {
     path: "/",
     title: "Buy Claude & GPT API Access — Discounted, One Key",
-    description: "Buy discounted Claude and GPT API access — one key and prepaid balance for Claude Opus, Sonnet, Haiku and the GPT-5 line. Official Anthropic and OpenAI-compatible APIs at a flat 50% off, ready for Claude Code, Codex and Cursor.",
+    description: "Buy discounted Claude, GPT and Gemini API access — one key and prepaid balance for Claude Opus, Sonnet, Haiku, the GPT-5 line and the Gemini line. Official Anthropic, OpenAI-compatible and Google Gemini APIs at a flat 50% off, ready for Claude Code, Codex and Cursor.",
     priority: 1,
     changeFrequency: "weekly",
   },
@@ -50,7 +50,7 @@ export const seoPages = {
   plans: {
     path: "/plans",
     title: "API Pricing, Discounts & Prepaid Plans — Claude & GPT",
-    description: "Review flexible USD top-ups, a flat 50% B2C discount on every request, estimated official API value, and negotiated B2B pricing across Claude and GPT models.",
+    description: "Review flexible USD top-ups, a flat 50% B2C discount on every request, estimated official API value, and negotiated B2B pricing across Claude, GPT and Gemini models.",
     priority: 0.9,
     changeFrequency: "weekly",
   },

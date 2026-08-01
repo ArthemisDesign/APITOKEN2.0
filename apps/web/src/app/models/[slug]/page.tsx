@@ -6,10 +6,12 @@ import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_ORIGIN } from "@/
 import { learnPath, resolveArticle } from "@/lib/learn";
 import {
   ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL,
   OPENAI_BASE_URL,
   catalogModelBySlug,
   claudeModels,
   formatUsd,
+  geminiModels,
   modelPath,
   MODELS_HUB_PATH,
   openaiModels,
@@ -20,7 +22,7 @@ import {
 type Params = { slug: string };
 
 export function generateStaticParams(): Params[] {
-  return [...claudeModels, ...openaiModels].map((model) => ({ slug: model.slug }));
+  return [...claudeModels, ...openaiModels, ...geminiModels].map((model) => ({ slug: model.slug }));
 }
 
 export async function generateMetadata({ params }: { params: Promise<Params> }): Promise<Metadata> {
@@ -41,6 +43,23 @@ function priceRowsFor(model: CatalogModel) {
       { rate: "Cache read", official: formatUsd(model.cacheReadPerM), here: priceHere(model.cacheReadPerM) },
       { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), here: priceHere(model.cacheWrite5mPerM) },
     ];
+  }
+  if (model.provider === "gemini") {
+    const rows = [
+      { rate: "Input", official: formatUsd(model.inputPerM), here: priceHere(model.inputPerM) },
+      { rate: "Cached input", official: formatUsd(model.cachedInputPerM), here: priceHere(model.cachedInputPerM) },
+      { rate: "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
+    ];
+    if (model.longContext) {
+      rows.push(
+        { rate: `Long-context input (>${model.longContext.threshold})`, official: formatUsd(model.longContext.inputPerM), here: priceHere(model.longContext.inputPerM) },
+        { rate: `Long-context output (>${model.longContext.threshold})`, official: formatUsd(model.longContext.outputPerM), here: priceHere(model.longContext.outputPerM) },
+      );
+    }
+    if (model.imageOutputPerM !== undefined) {
+      rows.push({ rate: "Image output", official: formatUsd(model.imageOutputPerM), here: priceHere(model.imageOutputPerM) });
+    }
+    return rows;
   }
   return [
     { rate: "Input", official: formatUsd(model.inputPerM), here: priceHere(model.inputPerM) },
@@ -63,6 +82,12 @@ const providerCopy = {
     howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
     cta: (name: string) => `Run ${name} on the OpenAI-compatible API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
+  gemini: {
+    officialCol: "Official Google",
+    othersHeading: "Other Gemini models",
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Gemini-compatible tool at {GEMINI_BASE_URL} with model ID <code>{id}</code> — the native <code>{`/v1beta/models/${id}:generateContent`}</code> surface works, authenticated with <code>x-goog-api-key</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    cta: (name: string) => `Run ${name} on the native Gemini API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
+  },
 } as const;
 
 export default async function ModelPage({ params }: { params: Promise<Params> }) {
@@ -75,7 +100,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
   const related = model.related
     .map((relatedSlug) => resolveArticle(relatedSlug, "en"))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-  const siblings = model.provider === "anthropic" ? claudeModels : openaiModels;
+  const siblings = model.provider === "anthropic" ? claudeModels : model.provider === "openai" ? openaiModels : geminiModels;
   const others = siblings.filter((entry) => entry.slug !== slug);
   const priceRows = priceRowsFor(model);
 
