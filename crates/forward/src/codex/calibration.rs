@@ -19,7 +19,7 @@ use registry::{CodexCalibrationRow, CodexWindowObservation};
 
 pub const FRACTION_SCALE: i64 = 100_000_000;
 const PERCENT_SCALE: i64 = FRACTION_SCALE / 100;
-pub const ESTIMATOR_VERSION: i64 = 7;
+pub const ESTIMATOR_VERSION: i64 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -62,7 +62,7 @@ impl WindowCalibration {
                 anchor_spend_nano: observation.gateway_spend_nano,
                 used_percent: observation.used_percent,
                 observed_at: observation.observed_at,
-                // Legacy WLS fields stay zero in estimator v7. They remain in storage so the
+                // Legacy WLS fields stay zero in estimator v8. They remain in storage so the
                 // migration-first rollout is expand-only for the previous binary.
                 sum_used_sq: 0,
                 sum_used_spend_nano: 0,
@@ -153,10 +153,17 @@ impl WindowCalibration {
 
         let reset_delta = i128::from(observation.resets_at) - i128::from(self.row.resets_at);
         // The provider computes reset_at independently for every snapshot, so one concrete reset
-        // can jitter. Adjacent windows are one full duration apart; half the duration is a stable
-        // identity boundary in either direction.
-        let boundary = (i128::from(self.row.window_duration_mins) * 60 / 2).max(1);
-        if reset_delta >= boundary {
+        // can jitter. A half-window jump is independently sufficient evidence. Live weekly
+        // windows can also roll over after a smaller forward reset-at move, however, because the
+        // subscription window is rolling rather than calendar-aligned. In that case a material
+        // reset-at advance plus utilisation dropping below the high-water is the joint signal.
+        let duration_secs = i128::from(self.row.window_duration_mins) * 60;
+        let boundary = (duration_secs / 2).max(1);
+        let jitter_tolerance = (duration_secs / 200).clamp(1, 3_600);
+        let usage_rolled_over = observation.used_fraction_units
+            < self.row.anchor_used_fraction_units
+            && reset_delta >= jitter_tolerance;
+        if reset_delta >= boundary || usage_rolled_over {
             self.begin_window(observation);
             return Ok(());
         }
@@ -604,6 +611,54 @@ mod tests {
         );
         assert_eq!(row.samples, 3);
         assert_eq!(row.current_capacity_nano, Some(13_333_333_333));
+    }
+
+    #[test]
+    fn small_reset_jitter_does_not_turn_a_usage_rollback_into_a_new_window() {
+        let row = next(None, observation(10_000_000, 0, 100));
+        let row = next(
+            Some(row),
+            observation_at(RESET + 3, DURATION, 9_999_900, 5_000, 101),
+        );
+        assert_eq!(row.resets_at, RESET);
+        assert_eq!(row.anchor_used_fraction_units, 10_000_000);
+        assert_eq!(row.samples, 0);
+        let row = next(
+            Some(row),
+            observation_at(RESET + 4, DURATION, 10_000_100, 20_000, 102),
+        );
+        assert_eq!(row.samples, 1);
+        assert_eq!(row.current_capacity_nano, Some(20_000_000_000));
+    }
+
+    #[test]
+    fn estimator_upgrade_recovers_a_weekly_rollover_below_half_the_window() {
+        const WEEKLY: i64 = 10_080;
+        const LIVE_RESET_SHIFT: i64 = 247_336;
+        assert!(LIVE_RESET_SHIFT < WEEKLY * 60 / 2);
+        let new_reset = RESET + LIVE_RESET_SHIFT;
+        let history = vec![
+            observation_at(RESET, WEEKLY, FRACTION_SCALE, 0, 100),
+            observation_at(new_reset, WEEKLY, 0, 0, 101),
+            observation_at(new_reset, WEEKLY, 9_000_000, 219_960_000_000, 102),
+            observation_at(new_reset, WEEKLY, 12_000_000, 277_840_000_000, 103),
+        ];
+        let mut poisoned = WindowCalibration::anchor(&history[0]).unwrap().into_row();
+        poisoned.version = 9;
+        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
+        poisoned.observed_at = history.last().unwrap().observed_at;
+        poisoned.used_percent = history.last().unwrap().used_percent;
+        poisoned.used_fraction_units = history.last().unwrap().used_fraction_units;
+
+        let rebuilt =
+            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap())
+                .unwrap();
+        assert_eq!(rebuilt.version, 9);
+        assert_eq!(rebuilt.resets_at, new_reset);
+        assert_eq!(rebuilt.samples, 2);
+        assert_eq!(rebuilt.observed_fraction_units, 12_000_000);
+        assert_eq!(rebuilt.observed_spend_nano, 277_840_000_000);
+        assert_eq!(rebuilt.current_capacity_nano, Some(2_315_333_333_333));
     }
 
     #[test]

@@ -4129,7 +4129,7 @@ pub struct CodexCalibrationRow {
     pub last_high_nano: Option<i64>,
     pub last_confidence_bp: i64,
     pub last_measured_at: Option<i64>,
-    /// Compatibility bit; canonical estimator v7 rows are ready to measure from the cold anchor.
+    /// Compatibility bit; canonical estimator v8 rows are ready to measure from the cold anchor.
     pub anchor_ready: bool,
     /// Provider utilisation in 10^-8 fraction units. The legacy percent fields remain an integer
     /// compatibility projection for binaries predating engine migration 0015.

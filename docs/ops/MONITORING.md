@@ -282,7 +282,9 @@ positive gateway settlement; it should appear as soon as settlement catches up, 
 another percentage point. A cold anchor is unknown by itself; its first complete positive movement
 with settled gateway spend publishes the first estimate immediately. A persistent unknown after
 such a movement indicates a calibration writer or authority problem rather than a reason to impose
-an admission limit.
+an admission limit. For rolling weekly windows, a material forward reset-at shift together with a
+utilisation rollback starts the new calibration window even when the shift is below half of seven
+days; small timestamp jitter without that joint rollover signal remains in the current window.
 
 ## CodexHomeUnauthenticated
 
