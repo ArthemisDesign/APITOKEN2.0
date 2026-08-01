@@ -13,6 +13,7 @@ context'ов. Правила размещения и обновления — в
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — модель PostgreSQL authority и fencing Stage 2.
+- [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — целевая архитектура единого endpoint для всех провайдеров (design).
 
 ## commerce/ — коммерция (`apps/api`, `apps/worker`, `packages/*`)
 
