@@ -4,6 +4,7 @@
 //! Сессия живёт МЕЖДУ сообщениями (email → URL, потом code#state → токен), поэтому держим
 //! её в памяти (живой процесс — в SQLite не положишь). Ключ — chat_id.
 
+use crate::db::SellerJobRef;
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ struct Session {
     buf: Arc<Mutex<Vec<u8>>>,
     pub email: String,
     pub proxy: String,
+    pub job: Option<SellerJobRef>,
     // локальный http→socks5 мост (gost), если прокси SOCKS — claude CLI умеет только CONNECT
     bridge: Option<std::process::Child>,
     // держим master живым, пока сессия открыта
@@ -138,7 +140,14 @@ pub fn has(chat: i64) -> bool {
 }
 
 /// Старт: запустить setup-token, вернуть OAuth-URL для входа продавца.
-pub fn start(chat: i64, email: &str, proxy: &str, claude_bin: &str, config_root: &str) -> Result<String> {
+pub fn start(
+    chat: i64,
+    email: &str,
+    proxy: &str,
+    claude_bin: &str,
+    config_root: &str,
+    job: Option<SellerJobRef>,
+) -> Result<String> {
     kill(chat);
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize { rows: 50, cols: 1000, pixel_width: 0, pixel_height: 0 })?;
@@ -184,7 +193,7 @@ pub fn start(chat: i64, email: &str, proxy: &str, claude_bin: &str, config_root:
 
     sessions().lock().unwrap().insert(chat, Session {
         writer, child, buf: buf.clone(), email: email.to_string(),
-        proxy: proxy.to_string(), bridge, _master: pair.master,
+        proxy: proxy.to_string(), job, bridge, _master: pair.master,
     });
 
     // ждём URL до 25с
@@ -212,14 +221,14 @@ mod tests {
 }
 
 pub enum Outcome {
-    Token(String, String, String), // token, email, proxy
-    BadCode,
-    NoToken,
+    Token(String, String, String, Option<SellerJobRef>), // token, email, proxy, exact job
+    BadCode(Option<SellerJobRef>),
+    NoToken(Option<SellerJobRef>),
 }
 
 /// Докормить code#state, извлечь токен.
 pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
-    let (email, proxy, buf) = {
+    let (email, proxy, job, buf) = {
         let mut g = sessions().lock().unwrap();
         let s = g.get_mut(&chat).ok_or_else(|| anyhow!("нет активной сессии — начни с email"))?;
         // Ink-TUI claude сабмитит ТОЛЬКО отдельным CR ПОСЛЕ того, как поле отрисовало
@@ -227,7 +236,7 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
         // Поэтому: пишем код → пауза (даём TUI отрисоваться) → отдельный \r (см. Python-бот).
         s.writer.write_all(codestate.trim().as_bytes())?;
         s.writer.flush()?;
-        (s.email.clone(), s.proxy.clone(), s.buf.clone())
+        (s.email.clone(), s.proxy.clone(), s.job.clone(), s.buf.clone())
     };
     std::thread::sleep(Duration::from_millis(1200));
     {
@@ -242,19 +251,19 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
         let out = buf_string(&buf);
         if let Some(tok) = scan_token(&out) {
             kill(chat);
-            return Ok(Outcome::Token(tok, email, proxy));
+            return Ok(Outcome::Token(tok, email, proxy, job));
         }
         if has_error(&out) {
             let tail: String = out.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
             eprintln!("setup-token BAD CODE, хвост вывода claude: {:?}", tail);   // диагностика отказа
             kill(chat);
-            return Ok(Outcome::BadCode);
+            return Ok(Outcome::BadCode(job));
         }
         if Instant::now() > deadline {
             let tail: String = out.chars().rev().take(700).collect::<Vec<_>>().into_iter().rev().collect();
             eprintln!("setup-token NO TOKEN, хвост вывода claude: {:?}", tail);   // для дебага
             kill(chat);
-            return Ok(Outcome::NoToken);
+            return Ok(Outcome::NoToken(job));
         }
         std::thread::sleep(Duration::from_millis(400));
     }

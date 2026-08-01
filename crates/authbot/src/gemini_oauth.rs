@@ -5,7 +5,7 @@
 //! authenticated proxy and PKCE material never enter the roster, Telegram messages, filenames or
 //! logs. The installed-app client metadata is Google's public Antigravity application identity.
 
-use crate::db::{GeminiOAuthSession, Store};
+use crate::db::{GeminiOAuthSession, SellerJobRef, Store};
 use crate::gemini_transport::{Client as GeminiHttpClient, Method as GeminiHttpMethod};
 use crate::tg::Bot;
 use crate::Config as BotConfig;
@@ -259,6 +259,7 @@ impl StartError {
 pub struct AuthorizationLinks {
     pub authorize_url: String,
     pub submit_url: String,
+    pub job: Option<SellerJobRef>,
 }
 
 /// Create a restart-safe, one-use PKCE transaction using the public Antigravity installed-app
@@ -298,13 +299,6 @@ pub fn begin(
             serde_json::to_string(&envelope).context("encode pending Gemini OAuth payload")
         })
         .map_err(|_| StartError::State)?;
-    store
-        .start_gemini_oauth(chat_id, &state, &sealed_payload, now() + OAUTH_SESSION_SECS)
-        .map_err(|_| StartError::State)?;
-    eprintln!(
-        "[gemini-oauth] chat={} proxy_order={} started OAuth session (awaiting Google consent callback)",
-        chat_id, proxy_order_id
-    );
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).map_err(|_| StartError::Url)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -318,9 +312,23 @@ pub fn begin(
         .append_pair("code_challenge", &challenge);
     let mut submit_url = reqwest::Url::parse(&config.redirect_uri).map_err(|_| StartError::Url)?;
     submit_url.query_pairs_mut().append_pair("state", &state);
+    let job = store
+        .start_gemini_oauth(
+            chat_id,
+            &state,
+            &sealed_payload,
+            now() + OAUTH_SESSION_SECS,
+            proxy_order_id,
+        )
+        .map_err(|_| StartError::State)?;
+    eprintln!(
+        "[gemini-oauth] chat={} proxy_order={} started OAuth session (awaiting Google consent callback)",
+        chat_id, proxy_order_id
+    );
     Ok(AuthorizationLinks {
         authorize_url: url.into(),
         submit_url: submit_url.into(),
+        job,
     })
 }
 
@@ -536,49 +544,56 @@ async fn finish_oauth(
     {
         Ok(profile) => {
             let _ = state.store.finish_gemini_oauth(&session.state);
-            let _ = state.store.set_want(session.chat_id, "");
-            let _ = state.store.set_hproxy(session.chat_id, "");
-            let _ = state.store.set_hproxy_order(session.chat_id, 0);
-            let seller_outcome = if profile.migrated {
-                "переведена на Antigravity"
-            } else {
-                "подключена"
-            };
-            let _ = state
-                .bot
-                .send(
-                    session.chat_id,
-                    &format!(
-                        "✅ <b>Gemini-подписка {seller_outcome}.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
-                        plan_label(&profile.plan),
-                        profile.id
-                    ),
-                )
-                .await;
-            for admin in &state.config.admins_id {
-                let admin_outcome = if profile.migrated {
-                    "переведён на Antigravity; профиль обновлён атомарно"
+            let current = crate::bot::seller_handoff_is_current(
+                &state.store,
+                session.chat_id,
+                session.job.as_ref(),
+                crate::bot::HandoffKind::Gemini,
+            );
+            if current {
+                let seller_outcome = if profile.migrated {
+                    "переведена на Antigravity"
                 } else {
-                    "получен; аккаунт добавлен в пул"
+                    "подключена"
                 };
                 let _ = state
                     .bot
                     .send(
-                        *admin,
+                        session.chat_id,
                         &format!(
-                            "✅ <b>Gemini-доступ {admin_outcome}</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}.",
-                            profile.id,
+                            "✅ <b>Gemini-подписка {seller_outcome}.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
                             plan_label(&profile.plan),
-                            if profile.has_proxy { "да" } else { "нет" }
+                            profile.id
                         ),
                     )
                     .await;
+                for admin in &state.config.admins_id {
+                    let admin_outcome = if profile.migrated {
+                        "переведён на Antigravity; профиль обновлён атомарно"
+                    } else {
+                        "получен; аккаунт добавлен в пул"
+                    };
+                    let _ = state
+                        .bot
+                        .send(
+                            *admin,
+                            &format!(
+                                "✅ <b>Gemini-доступ {admin_outcome}</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}.",
+                                profile.id,
+                                plan_label(&profile.plan),
+                                if profile.has_proxy { "да" } else { "нет" }
+                            ),
+                        )
+                        .await;
+                }
             }
-            crate::bot::complete_batch_item_after_handoff(
+            crate::bot::complete_seller_job_after_handoff(
                 &state.bot,
                 &state.store,
                 &state.config,
                 session.chat_id,
+                session.job.clone(),
+                crate::bot::HandoffKind::Gemini,
             )
             .await;
             callback_html(StatusCode::OK, true)
@@ -655,19 +670,47 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    // The authorization code and its encrypted PKCE transaction cannot be retried. Restore only
-    // the already state-bound proxy so a failed callback can restart the same product flow. The
-    // seller can still use /cancel to discard it and provide a replacement when the selected
-    // source is the seller.
-    if let Some(oauth) = state.config.gemini_oauth.as_ref() {
-        if let Some((proxy, proxy_order_id)) = pending_proxy(oauth, session) {
-            let _ = state.store.set_hproxy(session.chat_id, &proxy);
+    let (proxy, proxy_order_id) = state
+        .config
+        .gemini_oauth
+        .as_ref()
+        .and_then(|oauth| pending_proxy(oauth, session))
+        .unwrap_or_default();
+    let retry_applied = session.job.as_ref().is_some_and(|expected| {
+        state
+            .store
+            .set_handoff_state_for_seller_job(
+                session.chat_id,
+                expected,
+                "gm_gproxy",
+                &proxy,
+                proxy_order_id,
+            )
+            .unwrap_or(false)
+    });
+    if !retry_applied {
+        for admin in &state.config.admins_id {
             let _ = state
-                .store
-                .set_hproxy_order(session.chat_id, proxy_order_id);
+                .bot
+                .send(
+                    *admin,
+                    &format!(
+                        "⚠️ Устаревший Gemini OAuth callback продавца {} завершился ошибкой ({}) и был проигнорирован: активная работа и её прокси не изменены.",
+                        session.chat_id,
+                        failure.code()
+                    ),
+                )
+                .await;
         }
+        eprintln!(
+            "[gemini-oauth] chat={} stale callback failed: {} (seller state unchanged)",
+            session.chat_id,
+            failure.code()
+        );
+        return;
     }
-    let _ = state.store.set_want(session.chat_id, "gm_gproxy");
+    // The authorization code and its encrypted PKCE transaction cannot be retried. The exact
+    // generation-bound proxy was restored atomically above; /cancel can still replace it.
     let _ = state
         .bot
         .send(session.chat_id, failure.public_message())

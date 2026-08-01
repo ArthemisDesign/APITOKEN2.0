@@ -84,12 +84,37 @@ pub struct BatchCompletion {
     pub completed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SellerJobRef {
+    pub kind: String, // offer | batch
+    pub offer_id: i64,
+    pub batch_id: i64,
+    pub item_no: i64,
+    pub token: String, // unique activation generation; prevents stale-callback ABA
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SellerJob {
+    pub seller_chat: i64,
+    pub reference: SellerJobRef,
+    pub product: String,
+    pub phase: String, // accepted | paying | processing
+    pub total: i64,
+}
+
+impl SellerJob {
+    pub fn job_ref(&self) -> SellerJobRef {
+        self.reference.clone()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GeminiOAuthSession {
     pub state: String,
     pub chat_id: i64,
     pub sealed_payload: String,
     pub expires_ts: i64,
+    pub job: Option<SellerJobRef>,
 }
 
 fn now() -> i64 {
@@ -98,6 +123,22 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn seller_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SellerJob> {
+    Ok(SellerJob {
+        seller_chat: row.get(0)?,
+        reference: SellerJobRef {
+            kind: row.get(1)?,
+            offer_id: row.get(2)?,
+            batch_id: row.get(3)?,
+            item_no: row.get(4)?,
+            token: row.get(5)?,
+        },
+        product: row.get(6)?,
+        phase: row.get(7)?,
+        total: row.get(8)?,
+    })
 }
 
 impl Store {
@@ -154,6 +195,11 @@ impl Store {
                 sealed_payload TEXT NOT NULL,
                 expires_ts INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
+                job_kind TEXT NOT NULL DEFAULT '',
+                job_offer_id INTEGER NOT NULL DEFAULT 0,
+                job_batch_id INTEGER NOT NULL DEFAULT 0,
+                job_item_no INTEGER NOT NULL DEFAULT 0,
+                job_token TEXT NOT NULL DEFAULT '',
                 ts INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE IF NOT EXISTS purchase_batches(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +214,14 @@ impl Store {
                 batch_id INTEGER NOT NULL, item_no INTEGER NOT NULL,
                 product TEXT NOT NULL, price TEXT NOT NULL,
                 proxy TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
-                UNIQUE(batch_id, item_no));",
+                UNIQUE(batch_id, item_no));
+             CREATE TABLE IF NOT EXISTS seller_jobs(
+                seller_chat INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL, offer_id INTEGER NOT NULL DEFAULT 0,
+                batch_id INTEGER NOT NULL DEFAULT 0, item_no INTEGER NOT NULL DEFAULT 0,
+                job_token TEXT NOT NULL DEFAULT '',
+                product TEXT NOT NULL, phase TEXT NOT NULL,
+                ts INTEGER NOT NULL DEFAULT 0);",
         )?;
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproxy TEXT DEFAULT ''", []); // мягкая миграция
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
@@ -224,6 +277,34 @@ impl Store {
             "ALTER TABLE admin_state ADD COLUMN draft_proxies TEXT DEFAULT ''",
             [],
         );
+        let _ = c.execute(
+            "ALTER TABLE gemini_oauth_sessions ADD COLUMN job_kind TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_oauth_sessions ADD COLUMN job_offer_id INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_oauth_sessions ADD COLUMN job_batch_id INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_oauth_sessions ADD COLUMN job_item_no INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_oauth_sessions ADD COLUMN job_token TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE seller_jobs ADD COLUMN job_token TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        c.execute(
+            "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))) WHERE job_token=''",
+            [],
+        )?;
         Ok(Store { c: Mutex::new(c) })
     }
 
@@ -303,20 +384,96 @@ impl Store {
         state: &str,
         sealed_payload: &str,
         expires_ts: i64,
-    ) -> Result<()> {
+        proxy_order_id: i64,
+    ) -> Result<Option<SellerJobRef>> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
         tx.execute(
             "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1 OR expires_ts<?2",
             rusqlite::params![chat_id, now()],
         )?;
+        let mut job = tx
+            .query_row(
+                "SELECT kind,offer_id,batch_id,item_no,job_token
+                 FROM seller_jobs WHERE seller_chat=?1 AND phase='processing'",
+                rusqlite::params![chat_id],
+                |row| {
+                    Ok(SellerJobRef {
+                        kind: row.get(0)?,
+                        offer_id: row.get(1)?,
+                        batch_id: row.get(2)?,
+                        item_no: row.get(3)?,
+                        token: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(current) = job.as_mut() {
+            let changed = tx.execute(
+                "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?3
+                 WHERE seller_chat=?1 AND job_token=?2 AND phase='processing'",
+                rusqlite::params![chat_id, current.token, now()],
+            )?;
+            if changed != 1 {
+                tx.rollback()?;
+                bail!("active seller job changed while starting Gemini OAuth");
+            }
+            current.token = tx.query_row(
+                "SELECT job_token FROM seller_jobs WHERE seller_chat=?1",
+                rusqlite::params![chat_id],
+                |row| row.get(0),
+            )?;
+        }
+        let job = job.unwrap_or(SellerJobRef {
+            kind: String::new(),
+            offer_id: 0,
+            batch_id: 0,
+            item_no: 0,
+            token: String::new(),
+        });
+        let bound_job = (!job.kind.is_empty()).then(|| job.clone());
+        if let Some(expected) = bound_job.as_ref() {
+            let changed = tx.execute(
+                "UPDATE users SET want='gm_wait',hproxy='',hproxy_order=?1 WHERE chat_id=?2
+                   AND EXISTS (
+                       SELECT 1 FROM seller_jobs
+                       WHERE seller_chat=?2 AND kind=?3 AND offer_id=?4 AND batch_id=?5
+                         AND item_no=?6 AND job_token=?7 AND phase='processing')",
+                rusqlite::params![
+                    proxy_order_id,
+                    chat_id,
+                    expected.kind,
+                    expected.offer_id,
+                    expected.batch_id,
+                    expected.item_no,
+                    expected.token
+                ],
+            )?;
+            if changed != 1 {
+                tx.rollback()?;
+                bail!("active seller job changed while persisting Gemini OAuth");
+            }
+        }
         tx.execute(
-            "INSERT INTO gemini_oauth_sessions(state,chat_id,sealed_payload,expires_ts,status,ts)
-             VALUES(?1,?2,?3,?4,'pending',?5)",
-            rusqlite::params![state, chat_id, sealed_payload, expires_ts, now()],
+            "INSERT INTO gemini_oauth_sessions(
+                state,chat_id,sealed_payload,expires_ts,status,ts,
+                job_kind,job_offer_id,job_batch_id,job_item_no,job_token)
+             VALUES(?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![
+                state,
+                chat_id,
+                sealed_payload,
+                expires_ts,
+                now(),
+                job.kind,
+                job.offer_id,
+                job.batch_id,
+                job.item_no,
+                job.token
+            ],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(bound_job)
     }
 
     /// Claim an OAuth callback exactly once. A repeated callback cannot exchange the same code or
@@ -326,15 +483,29 @@ impl Store {
         let tx = c.transaction()?;
         let session = tx
             .query_row(
-                "SELECT state,chat_id,sealed_payload,expires_ts FROM gemini_oauth_sessions
+                "SELECT state,chat_id,sealed_payload,expires_ts,
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_oauth_sessions
                  WHERE state=?1 AND status='pending' AND expires_ts>=?2",
                 rusqlite::params![state, now()],
                 |row| {
+                    let kind: String = row.get(4)?;
+                    let offer_id: i64 = row.get(5)?;
+                    let batch_id: i64 = row.get(6)?;
+                    let item_no: i64 = row.get(7)?;
+                    let token: String = row.get(8)?;
                     Ok(GeminiOAuthSession {
                         state: row.get(0)?,
                         chat_id: row.get(1)?,
                         sealed_payload: row.get(2)?,
                         expires_ts: row.get(3)?,
+                        job: (!kind.is_empty()).then(|| SellerJobRef {
+                            kind,
+                            offer_id,
+                            batch_id,
+                            item_no,
+                            token,
+                        }),
                     })
                 },
             )
@@ -367,9 +538,41 @@ impl Store {
 
     /// Cancel every outstanding OAuth capability for this chat before allowing a fresh flow. The
     /// non-secret IPRoyal order id stays attached so retrying the issued proxy preserves renewal.
-    pub fn cancel_gemini_oauth(&self, chat_id: i64) -> Result<()> {
+    pub fn cancel_gemini_oauth(
+        &self,
+        chat_id: i64,
+        expected: Option<&SellerJobRef>,
+    ) -> Result<bool> {
         let mut connection = self.c.lock().unwrap();
         let transaction = connection.transaction()?;
+        let current = if let Some(expected) = expected {
+            transaction.execute(
+                "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?7
+                 WHERE seller_chat=?1 AND kind=?2 AND offer_id=?3 AND batch_id=?4
+                   AND item_no=?5 AND job_token=?6 AND phase='processing'",
+                rusqlite::params![
+                    chat_id,
+                    expected.kind,
+                    expected.offer_id,
+                    expected.batch_id,
+                    expected.item_no,
+                    expected.token,
+                    now()
+                ],
+            )? == 1
+        } else {
+            // Legacy unbound OAuth sessions can still be cancelled, but never let that path
+            // mutate a seller who now owns an exact single/batch job.
+            !transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM seller_jobs WHERE seller_chat=?1)",
+                rusqlite::params![chat_id],
+                |row| row.get::<_, bool>(0),
+            )?
+        };
+        if !current {
+            transaction.rollback()?;
+            return Ok(false);
+        }
         transaction.execute(
             "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
             rusqlite::params![chat_id],
@@ -379,7 +582,7 @@ impl Store {
             rusqlite::params![chat_id],
         )?;
         transaction.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     /// A Claude OAuth child cannot survive a bot restart. Keep the proxy, but ask for email again
@@ -506,6 +709,74 @@ impl Store {
         Ok(())
     }
 
+    pub fn decide_offer(&self, offer_id: i64, uid: i64, status: &str) -> Result<bool> {
+        if !matches!(status, "accepted" | "rejected") {
+            bail!("offer decision must be accepted or rejected");
+        }
+        let changed = self.c.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO responses(offer_id,uid,status,ts) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![offer_id, uid, status, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Accept and reserve this seller in one transaction. Waiting for an address/payment is part
+    /// of the deal lifecycle, so a second single or batch cannot be accepted in the meantime.
+    pub fn accept_offer(&self, offer_id: i64, seller_chat: i64, seller_uid: i64) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let product = tx
+            .query_row(
+                "SELECT product FROM offers
+                 WHERE id=?1 AND (COALESCE(seller_chat,0)=0 OR seller_chat=?2)",
+                rusqlite::params![offer_id, seller_chat],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(product) = product else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let job_changed = tx.execute(
+            "INSERT INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT ?1,'offer',?2,0,0,lower(hex(randomblob(16))),?3,'accepted',?4
+             WHERE NOT EXISTS (SELECT 1 FROM seller_jobs WHERE seller_chat=?1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM purchase_batches
+                   WHERE seller_chat=?1 AND status IN ('accepted','paying','paid','processing'))
+               AND NOT EXISTS (
+                   SELECT 1 FROM responses r
+                   JOIN offers o ON o.id=r.offer_id
+                   JOIN users u ON u.uid=r.uid
+                   WHERE u.chat_id=?1 AND r.status IN ('accepted','paying'))",
+            rusqlite::params![seller_chat, offer_id, product, now()],
+        )?;
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let response_changed = tx.execute(
+            "INSERT OR IGNORE INTO responses(offer_id,uid,status,ts)
+             VALUES(?1,?2,'accepted',?3)",
+            rusqlite::params![offer_id, seller_uid, now()],
+        )?;
+        if response_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Правило «1 оффер = 1 прокси»: пометить, что по офферу прокси уже выпущен.
     pub fn mark_offer_proxy_issued(&self, offer_id: i64) -> Result<()> {
         self.c.lock().unwrap().execute(
@@ -561,6 +832,370 @@ impl Store {
             })
         })?;
         Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    // ── единая активная работа продавца ─────────────────────────────────────
+
+    /// Single-offer и batch используют один persisted lock. Поэтому глобальные seller fields
+    /// (`want`/`hproxy`) всегда относятся ровно к одной явно названной работе.
+    pub fn active_seller_job(&self, seller_chat: i64) -> Result<Option<SellerJob>> {
+        let c = self.c.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT j.seller_chat,j.kind,j.offer_id,j.batch_id,j.item_no,j.job_token,
+                    j.product,j.phase,
+                    CASE WHEN j.kind='batch' THEN COALESCE(b.quantity,0) ELSE 1 END
+             FROM seller_jobs j
+             LEFT JOIN purchase_batches b ON b.id=j.batch_id
+             WHERE j.seller_chat=?1",
+            rusqlite::params![seller_chat],
+            seller_job_from_row,
+        )
+        .optional()?)
+    }
+
+    pub fn active_seller_jobs(&self) -> Result<Vec<SellerJob>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT j.seller_chat,j.kind,j.offer_id,j.batch_id,j.item_no,j.job_token,
+                    j.product,j.phase,
+                    CASE WHEN j.kind='batch' THEN COALESCE(b.quantity,0) ELSE 1 END
+             FROM seller_jobs j
+             LEFT JOIN purchase_batches b ON b.id=j.batch_id
+             ORDER BY j.ts,j.seller_chat",
+        )?;
+        let rows = statement.query_map([], seller_job_from_row)?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    /// Start a new authorization attempt for the same work. Rotating the generation makes every
+    /// callback from an earlier retry stale even though source/id/item are otherwise unchanged.
+    pub fn rotate_seller_job_token(
+        &self,
+        seller_chat: i64,
+        expected: &SellerJobRef,
+    ) -> Result<Option<SellerJobRef>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let changed = tx.execute(
+            "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?6
+             WHERE seller_chat=?1 AND kind=?2 AND offer_id=?3 AND batch_id=?4
+               AND item_no=?5 AND job_token=?7 AND phase='processing'",
+            rusqlite::params![
+                seller_chat,
+                expected.kind,
+                expected.offer_id,
+                expected.batch_id,
+                expected.item_no,
+                now(),
+                expected.token
+            ],
+        )?;
+        if changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        let updated = tx.query_row(
+            "SELECT kind,offer_id,batch_id,item_no,job_token
+             FROM seller_jobs WHERE seller_chat=?1",
+            rusqlite::params![seller_chat],
+            |row| {
+                Ok(SellerJobRef {
+                    kind: row.get(0)?,
+                    offer_id: row.get(1)?,
+                    batch_id: row.get(2)?,
+                    item_no: row.get(3)?,
+                    token: row.get(4)?,
+                })
+            },
+        )?;
+        tx.commit()?;
+        Ok(Some(updated))
+    }
+
+    pub fn set_want_for_seller_job(
+        &self,
+        seller_chat: i64,
+        expected: &SellerJobRef,
+        want: &str,
+    ) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE users SET want=?1 WHERE chat_id=?2
+               AND EXISTS (
+                   SELECT 1 FROM seller_jobs
+                   WHERE seller_chat=?2 AND kind=?3 AND offer_id=?4 AND batch_id=?5
+                     AND item_no=?6 AND job_token=?7 AND phase='processing')",
+            rusqlite::params![
+                want,
+                seller_chat,
+                expected.kind,
+                expected.offer_id,
+                expected.batch_id,
+                expected.item_no,
+                expected.token
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn set_handoff_state_for_seller_job(
+        &self,
+        seller_chat: i64,
+        expected: &SellerJobRef,
+        want: &str,
+        proxy: &str,
+        proxy_order_id: i64,
+    ) -> Result<bool> {
+        let changed = self.c.lock().unwrap().execute(
+            "UPDATE users SET want=?1,hproxy=?2,hproxy_order=?3 WHERE chat_id=?4
+               AND EXISTS (
+                   SELECT 1 FROM seller_jobs
+                   WHERE seller_chat=?4 AND kind=?5 AND offer_id=?6 AND batch_id=?7
+                     AND item_no=?8 AND job_token=?9 AND phase='processing')",
+            rusqlite::params![
+                want,
+                proxy,
+                proxy_order_id,
+                seller_chat,
+                expected.kind,
+                expected.offer_id,
+                expected.batch_id,
+                expected.item_no,
+                expected.token
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Expand-only rollout compatibility: active batches win, then one already accepted deal per
+    /// otherwise idle seller is restored. Existing locks are never overwritten.
+    pub fn recover_seller_jobs(&self) -> Result<usize> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let processing = tx.execute(
+            "INSERT OR IGNORE INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT b.seller_chat,'batch',0,b.id,b.current_item,
+                    lower(hex(randomblob(16))),i.product,'processing',?1
+             FROM purchase_batches b
+             JOIN batch_items i ON i.batch_id=b.id AND i.item_no=b.current_item
+             WHERE b.status='processing' AND i.status='processing'",
+            rusqlite::params![now()],
+        )?;
+        let payments = tx.execute(
+            "INSERT OR IGNORE INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT seller_chat,'batch',0,id,0,lower(hex(randomblob(16))),product,'paying',?1
+             FROM purchase_batches
+             WHERE status IN ('paying','paid')",
+            rusqlite::params![now()],
+        )?;
+        let accepted_batches = tx.execute(
+            "INSERT OR IGNORE INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT seller_chat,'batch',0,id,0,lower(hex(randomblob(16))),product,'accepted',ts
+             FROM purchase_batches
+             WHERE status='accepted'
+             ORDER BY ts,id",
+            [],
+        )?;
+        let accepted_offers = tx.execute(
+            "INSERT OR IGNORE INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT u.chat_id,'offer',o.id,0,0,lower(hex(randomblob(16))),
+                    o.product,'accepted',r.ts
+             FROM responses r
+             JOIN users u ON u.uid=r.uid
+             JOIN offers o ON o.id=r.offer_id
+             WHERE r.status='accepted'
+             ORDER BY r.ts,o.id",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(processing + payments + accepted_batches + accepted_offers)
+    }
+
+    /// Reserve the seller before the blockchain call. The response and seller lock move together,
+    /// so two callbacks cannot pay/start a single offer concurrently with a batch.
+    pub fn claim_offer_payment(&self, offer_id: i64, seller_chat: i64) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let offer = tx
+            .query_row(
+                "SELECT o.product,u.uid
+                 FROM offers o JOIN users u ON u.chat_id=?2
+                 WHERE o.id=?1 AND (COALESCE(o.seller_chat,0)=0 OR o.seller_chat=?2)",
+                rusqlite::params![offer_id, seller_chat],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((product, seller_uid)) = offer else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let response_changed = tx.execute(
+            "UPDATE responses SET status='paying',ts=?3
+             WHERE offer_id=?1 AND uid=?2 AND status='accepted'",
+            rusqlite::params![offer_id, seller_uid, now()],
+        )?;
+        if response_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let mut job_changed = tx.execute(
+            "UPDATE seller_jobs SET phase='paying',ts=?3
+             WHERE seller_chat=?1 AND kind='offer' AND offer_id=?2 AND phase='accepted'",
+            rusqlite::params![seller_chat, offer_id, now()],
+        )?;
+        if job_changed == 0 {
+            // Compatibility for an offer accepted before seller_jobs existed.
+            job_changed = tx.execute(
+                "INSERT INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT ?1,'offer',?2,0,0,lower(hex(randomblob(16))),?3,'paying',?4
+             WHERE NOT EXISTS (SELECT 1 FROM seller_jobs WHERE seller_chat=?1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM purchase_batches
+                   WHERE seller_chat=?1
+                     AND status IN ('accepted','paying','paid','processing'))",
+                rusqlite::params![seller_chat, offer_id, product, now()],
+            )?;
+        }
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn mark_offer_paid(&self, offer_id: i64, seller_chat: i64) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let seller_uid = tx
+            .query_row(
+                "SELECT uid FROM users WHERE chat_id=?1",
+                rusqlite::params![seller_chat],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(seller_uid) = seller_uid else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let response_changed = tx.execute(
+            "UPDATE responses SET status='paid',ts=?3
+             WHERE offer_id=?1 AND uid=?2 AND status='paying'",
+            rusqlite::params![offer_id, seller_uid, now()],
+        )?;
+        let job_changed = tx.execute(
+            "UPDATE seller_jobs SET phase='processing',ts=?3
+             WHERE seller_chat=?1 AND kind='offer' AND offer_id=?2 AND phase='paying'",
+            rusqlite::params![seller_chat, offer_id, now()],
+        )?;
+        if response_changed != 1 || job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Manual retry is allowed only after an admin has checked that the uncertain transaction did
+    /// not land. The accepted deal keeps reserving the seller while retry is prepared.
+    pub fn reset_offer_payment(&self, offer_id: i64, seller_chat: i64) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let seller_uid = tx
+            .query_row(
+                "SELECT uid FROM users WHERE chat_id=?1",
+                rusqlite::params![seller_chat],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(seller_uid) = seller_uid else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let response_changed = tx.execute(
+            "UPDATE responses SET status='accepted',ts=?3
+             WHERE offer_id=?1 AND uid=?2 AND status='paying'",
+            rusqlite::params![offer_id, seller_uid, now()],
+        )?;
+        let job_changed = tx.execute(
+            "UPDATE seller_jobs SET phase='accepted',ts=?3
+             WHERE seller_chat=?1 AND kind='offer' AND offer_id=?2 AND phase='paying'",
+            rusqlite::params![seller_chat, offer_id, now()],
+        )?;
+        if response_changed != 1 || job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Complete only the exact offer captured when its handoff started. A delayed callback from a
+    /// different flow cannot clear or advance the seller's current work.
+    pub fn finish_offer_job(
+        &self,
+        seller_chat: i64,
+        offer_id: i64,
+        job_token: &str,
+    ) -> Result<bool> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let seller_uid = tx
+            .query_row(
+                "SELECT uid FROM users WHERE chat_id=?1",
+                rusqlite::params![seller_chat],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(seller_uid) = seller_uid else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let response_changed = tx.execute(
+            "UPDATE responses SET status='completed',ts=?3
+             WHERE offer_id=?1 AND uid=?2 AND status='paid'
+               AND EXISTS (
+                   SELECT 1 FROM seller_jobs
+                   WHERE seller_chat=?4 AND kind='offer' AND offer_id=?1
+                     AND job_token=?5 AND phase='processing')",
+            rusqlite::params![offer_id, seller_uid, now(), seller_chat, job_token],
+        )?;
+        if response_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let job_changed = tx.execute(
+            "DELETE FROM seller_jobs
+             WHERE seller_chat=?1 AND kind='offer' AND offer_id=?2
+               AND job_token=?3 AND phase='processing'",
+            rusqlite::params![seller_chat, offer_id, job_token],
+        )?;
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     // ── машина создания оффера (persisted) ────────────────────────────────────
@@ -775,12 +1410,58 @@ impl Store {
     }
 
     pub fn accept_batch(&self, batch_id: i64, seller_chat: i64) -> Result<bool> {
-        let changed = self.c.lock().unwrap().execute(
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let product = tx
+            .query_row(
+                "SELECT product FROM purchase_batches
+                 WHERE id=?1 AND seller_chat=?2 AND status='offered'",
+                rusqlite::params![batch_id, seller_chat],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(product) = product else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let job_changed = tx.execute(
+            "INSERT INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT ?1,'batch',0,?2,0,lower(hex(randomblob(16))),?3,'accepted',?4
+             WHERE NOT EXISTS (SELECT 1 FROM seller_jobs WHERE seller_chat=?1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM purchase_batches
+                   WHERE seller_chat=?1 AND id<>?2
+                     AND status IN ('accepted','paying','paid','processing'))
+               AND NOT EXISTS (
+                   SELECT 1 FROM responses r
+                   JOIN users u ON u.uid=r.uid
+                   WHERE u.chat_id=?1 AND r.status IN ('accepted','paying'))",
+            rusqlite::params![seller_chat, batch_id, product, now()],
+        )?;
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let batch_changed = tx.execute(
             "UPDATE purchase_batches SET status='accepted',ts=?3
              WHERE id=?1 AND seller_chat=?2 AND status='offered'",
             rusqlite::params![batch_id, seller_chat, now()],
         )?;
-        Ok(changed == 1)
+        if batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn reject_batch(&self, batch_id: i64, seller_chat: i64) -> Result<bool> {
@@ -793,19 +1474,69 @@ impl Store {
     }
 
     /// Claim payment before calling the blockchain. Double-clicks and concurrent callbacks can
-    /// therefore never send two payments for one batch.
+    /// therefore never send two payments or overlap this batch with a single offer.
     pub fn claim_batch_payment(&self, batch_id: i64) -> Result<bool> {
-        let changed = self.c.lock().unwrap().execute(
-            "UPDATE purchase_batches AS target SET status='paying',ts=?2
-             WHERE target.id=?1 AND target.status='accepted'
-               AND NOT EXISTS (
-                   SELECT 1 FROM purchase_batches AS active
-                   WHERE active.seller_chat=target.seller_chat
-                     AND active.status IN ('paying','paid','processing')
-               )",
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let batch = tx
+            .query_row(
+                "SELECT seller_chat,product FROM purchase_batches
+                 WHERE id=?1 AND status='accepted'",
+                rusqlite::params![batch_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((seller_chat, product)) = batch else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let mut job_changed = tx.execute(
+            "UPDATE seller_jobs SET phase='paying',ts=?3
+             WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+               AND item_no=0 AND phase='accepted'",
+            rusqlite::params![seller_chat, batch_id, now()],
+        )?;
+        if job_changed == 0 {
+            // Compatibility for a batch accepted before seller_jobs existed.
+            job_changed = tx.execute(
+                "INSERT INTO seller_jobs(
+                    seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+                 SELECT ?1,'batch',0,?2,0,lower(hex(randomblob(16))),?3,'paying',?4
+                 WHERE NOT EXISTS (SELECT 1 FROM seller_jobs WHERE seller_chat=?1)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM purchase_batches
+                       WHERE seller_chat=?1 AND id<>?2
+                         AND status IN ('accepted','paying','paid','processing'))
+                   AND NOT EXISTS (
+                       SELECT 1 FROM responses r
+                       JOIN users u ON u.uid=r.uid
+                       WHERE u.chat_id=?1 AND r.status IN ('accepted','paying'))",
+                rusqlite::params![seller_chat, batch_id, product, now()],
+            )?;
+        }
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        let batch_changed = tx.execute(
+            "UPDATE purchase_batches SET status='paying',ts=?2
+             WHERE id=?1 AND status='accepted'",
             rusqlite::params![batch_id, now()],
         )?;
-        Ok(changed == 1)
+        if batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn mark_batch_paid(&self, batch_id: i64, tx_hash: &str) -> Result<bool> {
@@ -818,12 +1549,36 @@ impl Store {
     }
 
     pub fn reset_batch_payment(&self, batch_id: i64) -> Result<bool> {
-        let changed = self.c.lock().unwrap().execute(
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let seller_chat = tx
+            .query_row(
+                "SELECT seller_chat FROM purchase_batches WHERE id=?1 AND status='paying'",
+                rusqlite::params![batch_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(seller_chat) = seller_chat else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let changed = tx.execute(
             "UPDATE purchase_batches SET status='accepted',ts=?2
              WHERE id=?1 AND status='paying'",
             rusqlite::params![batch_id, now()],
         )?;
-        Ok(changed == 1)
+        let job_changed = tx.execute(
+            "UPDATE seller_jobs SET phase='accepted',ts=?3
+             WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+               AND item_no=0 AND phase='paying'",
+            rusqlite::params![seller_chat, batch_id, now()],
+        )?;
+        if changed != 1 || job_changed != 1 {
+            tx.rollback()?;
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// A process can stop after claiming a payment but before the subprocess returns. Keep the
@@ -857,32 +1612,109 @@ impl Store {
     pub fn start_batch_item(&self, batch_id: i64, item_no: i64) -> Result<bool> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
-        let batch_changed = tx.execute(
-            "UPDATE purchase_batches AS target
-             SET status='processing',current_item=?2,ts=?3
-             WHERE target.id=?1
-               AND (
-                   (target.status='paid' AND target.current_item=0 AND ?2=1)
-                   OR (target.status='processing' AND target.current_item=?2)
-               )
-               AND EXISTS (
-                   SELECT 1 FROM batch_items
-                   WHERE batch_id=target.id AND item_no=?2 AND status='pending'
-               )",
-            rusqlite::params![batch_id, item_no, now()],
-        )?;
-        if batch_changed != 1 {
+        let batch = tx
+            .query_row(
+                "SELECT seller_chat,product,status,current_item
+                 FROM purchase_batches WHERE id=?1",
+                rusqlite::params![batch_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((seller_chat, product, batch_status, current_item)) = batch else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+        let item_status = tx
+            .query_row(
+                "SELECT status FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+                rusqlite::params![batch_id, item_no],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let initial = batch_status == "paid"
+            && current_item == 0
+            && item_no == 1
+            && item_status.as_deref() == Some("pending");
+        let resumed = batch_status == "processing"
+            && current_item == item_no
+            && matches!(item_status.as_deref(), Some("pending" | "processing"));
+        if !initial && !resumed {
             tx.rollback()?;
             return Ok(false);
         }
-        let item_changed = tx.execute(
-            "UPDATE batch_items SET status='processing'
-             WHERE batch_id=?1 AND item_no=?2 AND status='pending'",
-            rusqlite::params![batch_id, item_no],
-        )?;
-        if item_changed != 1 {
-            tx.rollback()?;
-            return Ok(false);
+        let existing_job = tx
+            .query_row(
+                "SELECT kind,batch_id,item_no,job_token
+                 FROM seller_jobs WHERE seller_chat=?1",
+                rusqlite::params![seller_chat],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((kind, active_batch, active_item, _)) = existing_job.as_ref() {
+            if kind != "batch"
+                || *active_batch != batch_id
+                || (*active_item != 0 && *active_item != item_no)
+            {
+                tx.rollback()?;
+                return Ok(false);
+            }
+        }
+        if initial || item_status.as_deref() == Some("pending") {
+            let batch_changed = tx.execute(
+                "UPDATE purchase_batches
+                 SET status='processing',current_item=?2,ts=?3
+                 WHERE id=?1 AND (
+                    (status='paid' AND current_item=0 AND ?2=1)
+                    OR (status='processing' AND current_item=?2))",
+                rusqlite::params![batch_id, item_no, now()],
+            )?;
+            let item_changed = tx.execute(
+                "UPDATE batch_items SET status='processing'
+                 WHERE batch_id=?1 AND item_no=?2 AND status='pending'",
+                rusqlite::params![batch_id, item_no],
+            )?;
+            if batch_changed != 1 || item_changed != 1 {
+                tx.rollback()?;
+                return Ok(false);
+            }
+        }
+        if existing_job.is_some() {
+            let changed = tx.execute(
+                "UPDATE seller_jobs
+                 SET job_token=CASE
+                        WHEN item_no=?3 AND job_token<>'' THEN job_token
+                        ELSE lower(hex(randomblob(16)))
+                     END,
+                     item_no=?3,product=?4,phase='processing',ts=?5
+                 WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+                   AND item_no IN (0,?3)",
+                rusqlite::params![seller_chat, batch_id, item_no, product, now()],
+            )?;
+            if changed != 1 {
+                tx.rollback()?;
+                return Ok(false);
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO seller_jobs(
+                    seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+                 VALUES(?1,'batch',0,?2,?3,lower(hex(randomblob(16))),?4,'processing',?5)",
+                rusqlite::params![seller_chat, batch_id, item_no, product, now()],
+            )?;
         }
         tx.commit()?;
         Ok(true)
@@ -894,22 +1726,47 @@ impl Store {
         &self,
         batch_id: i64,
         item_no: i64,
+        job_token: &str,
     ) -> Result<Option<BatchCompletion>> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
+        let seller_chat = tx
+            .query_row(
+                "SELECT seller_chat FROM purchase_batches WHERE id=?1",
+                rusqlite::params![batch_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(seller_chat) = seller_chat else {
+            tx.rollback()?;
+            return Ok(None);
+        };
         let changed = tx.execute(
             "UPDATE batch_items SET status='completed'
              WHERE batch_id=?1 AND item_no=?2 AND status='processing'
                AND EXISTS (
                    SELECT 1 FROM purchase_batches
                    WHERE id=?1 AND status='processing' AND current_item=?2
+               )
+               AND EXISTS (
+                   SELECT 1 FROM seller_jobs
+                   WHERE seller_chat=?3 AND kind='batch' AND batch_id=?1
+                     AND item_no=?2 AND job_token=?4 AND phase='processing'
                )",
-            rusqlite::params![batch_id, item_no],
+            rusqlite::params![batch_id, item_no, seller_chat, job_token],
         )?;
         if changed != 1 {
             tx.commit()?;
             return Ok(None);
         }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
         let (total, current): (i64, i64) = tx.query_row(
             "SELECT quantity,current_item FROM purchase_batches WHERE id=?1",
             rusqlite::params![batch_id],
@@ -926,6 +1783,16 @@ impl Store {
                 tx.rollback()?;
                 return Ok(None);
             }
+            let job_changed = tx.execute(
+                "DELETE FROM seller_jobs
+                 WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+                   AND item_no=?3 AND job_token=?4 AND phase='processing'",
+                rusqlite::params![seller_chat, batch_id, item_no, job_token],
+            )?;
+            if job_changed != 1 {
+                tx.rollback()?;
+                return Ok(None);
+            }
             tx.commit()?;
             return Ok(Some(BatchCompletion {
                 batch_id,
@@ -934,12 +1801,41 @@ impl Store {
                 completed: true,
             }));
         }
+        let next_item = current + 1;
+        let next_product = tx.query_row(
+            "SELECT product FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+            rusqlite::params![batch_id, next_item],
+            |row| row.get::<_, String>(0),
+        )?;
         let batch_changed = tx.execute(
             "UPDATE purchase_batches SET current_item=?2,ts=?3
              WHERE id=?1 AND status='processing' AND current_item=?4",
-            rusqlite::params![batch_id, current + 1, now(), item_no],
+            rusqlite::params![batch_id, next_item, now(), item_no],
         )?;
         if batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        // Keep the seller reserved continuously between positions. The old implementation
+        // deleted this row and recreated it when the next Telegram prompt was sent, leaving a
+        // small window where another single/batch callback could occupy the seller.
+        let job_changed = tx.execute(
+            "UPDATE seller_jobs
+             SET item_no=?5,job_token=lower(hex(randomblob(16))),product=?6,
+                 phase='processing',ts=?7
+             WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+               AND item_no=?3 AND job_token=?4 AND phase='processing'",
+            rusqlite::params![
+                seller_chat,
+                batch_id,
+                item_no,
+                job_token,
+                next_item,
+                next_product,
+                now()
+            ],
+        )?;
+        if job_changed != 1 {
             tx.rollback()?;
             return Ok(None);
         }
@@ -950,6 +1846,100 @@ impl Store {
             total,
             completed: false,
         }))
+    }
+
+    /// Admin-only recovery primitive for a position that an older bot version marked complete
+    /// from an unrelated single-offer callback. It rewinds exactly one step and invalidates every
+    /// in-flight input/OAuth capability for the later item. The paid batch itself stays paid.
+    pub fn rewind_batch_to_previous(&self, batch_id: i64, seller_chat: i64) -> Result<Option<i64>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT current_item FROM purchase_batches
+                 WHERE id=?1 AND seller_chat=?2 AND status='processing' AND current_item>1",
+                rusqlite::params![batch_id, seller_chat],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            tx.rollback()?;
+            return Ok(None);
+        };
+        let active_job = tx
+            .query_row(
+                "SELECT kind,batch_id,item_no FROM seller_jobs WHERE seller_chat=?1",
+                rusqlite::params![seller_chat],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((kind, active_batch, active_item)) = active_job.as_ref() {
+            if kind != "batch" || *active_batch != batch_id || *active_item != current {
+                tx.rollback()?;
+                return Ok(None);
+            }
+        }
+        let previous = current - 1;
+        let current_changed = tx.execute(
+            "UPDATE batch_items SET status='pending'
+             WHERE batch_id=?1 AND item_no=?2 AND status='processing'",
+            rusqlite::params![batch_id, current],
+        )?;
+        let previous_changed = tx.execute(
+            "UPDATE batch_items SET status='pending'
+             WHERE batch_id=?1 AND item_no=?2 AND status='completed'",
+            rusqlite::params![batch_id, previous],
+        )?;
+        let batch_changed = tx.execute(
+            "UPDATE purchase_batches SET current_item=?2,ts=?3
+             WHERE id=?1 AND seller_chat=?4 AND status='processing' AND current_item=?5",
+            rusqlite::params![batch_id, previous, now(), seller_chat, current],
+        )?;
+        if current_changed != 1 || previous_changed != 1 || batch_changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        let product = tx.query_row(
+            "SELECT product FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+            rusqlite::params![batch_id, previous],
+            |row| row.get::<_, String>(0),
+        )?;
+        let job_changed = if active_job.is_some() {
+            tx.execute(
+                "UPDATE seller_jobs
+                 SET item_no=?4,job_token=lower(hex(randomblob(16))),product=?5,
+                     phase='processing',ts=?6
+                 WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2 AND item_no=?3",
+                rusqlite::params![seller_chat, batch_id, current, previous, product, now()],
+            )?
+        } else {
+            tx.execute(
+                "INSERT INTO seller_jobs(
+                    seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+                 VALUES(?1,'batch',0,?2,?3,lower(hex(randomblob(16))),?4,'processing',?5)",
+                rusqlite::params![seller_chat, batch_id, previous, product, now()],
+            )?
+        };
+        if job_changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        tx.commit()?;
+        Ok(Some(previous))
     }
 
     pub fn active_batch_for_seller(&self, seller_chat: i64) -> Result<Option<PurchaseBatch>> {
@@ -1106,9 +2096,9 @@ mod tests {
         assert_eq!(s.get_user(222).unwrap().unwrap().want, "gm_gproxy");
         assert_eq!(s.get_user(333).unwrap().unwrap().want, "gm_gproxy");
         s.set_hproxy_order(222, 42).unwrap();
-        s.start_gemini_oauth(222, "pending-state", "sealed", now() + 60)
+        s.start_gemini_oauth(222, "pending-state", "sealed", now() + 60, 0)
             .unwrap();
-        s.cancel_gemini_oauth(222).unwrap();
+        assert!(s.cancel_gemini_oauth(222, None).unwrap());
         assert!(s.claim_gemini_oauth("pending-state").unwrap().is_none());
         assert_eq!(s.get_user(222).unwrap().unwrap().hproxy_order, 42);
         assert_eq!(s.approved_sellers().unwrap(), vec![111]);
@@ -1156,7 +2146,8 @@ mod tests {
             1
         );
 
-        let first = s.finish_batch_item(id, 1).unwrap().unwrap();
+        let first_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+        let first = s.finish_batch_item(id, 1, &first_token).unwrap().unwrap();
         assert_eq!(
             first,
             BatchCompletion {
@@ -1171,11 +2162,23 @@ mod tests {
             s.get_batch_item(id, 2).unwrap().unwrap().status,
             "processing"
         );
-        assert!(s.finish_batch_item(id, 2).unwrap().unwrap().completed == false);
+        let second_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+        assert!(
+            !s.finish_batch_item(id, 2, &second_token)
+                .unwrap()
+                .unwrap()
+                .completed
+        );
         assert!(s.start_batch_item(id, 3).unwrap());
-        assert!(s.finish_batch_item(id, 3).unwrap().unwrap().completed);
+        let third_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+        assert!(
+            s.finish_batch_item(id, 3, &third_token)
+                .unwrap()
+                .unwrap()
+                .completed
+        );
         assert!(s.active_batch_for_seller(111).unwrap().is_none());
-        assert!(s.finish_batch_item(id, 3).unwrap().is_none());
+        assert!(s.finish_batch_item(id, 3, &third_token).unwrap().is_none());
 
         let queued = s
             .create_batch("ChatGPT Plus", "$20", 2, "$40", 999, 111, "seller", &[])
@@ -1186,7 +2189,7 @@ mod tests {
     }
 
     #[test]
-    fn seller_cannot_claim_two_batch_payments_at_once() {
+    fn seller_cannot_accept_two_batches_at_once() {
         let p = tmp();
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
         let s = Store::open(&p).unwrap();
@@ -1197,17 +2200,286 @@ mod tests {
             .create_batch("Claude Pro", "$20", 2, "$40", 999, 111, "seller", &[])
             .unwrap();
         assert!(s.accept_batch(first, 111).unwrap());
-        assert!(s.accept_batch(second, 111).unwrap());
+        assert!(!s.accept_batch(second, 111).unwrap());
+        let accepted = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(accepted.reference.batch_id, first);
+        assert_eq!(accepted.phase, "accepted");
         assert!(s.claim_batch_payment(first).unwrap());
         assert_eq!(s.batches_needing_payment_review().unwrap().len(), 1);
         assert!(!s.claim_batch_payment(second).unwrap());
         assert!(s.reset_batch_payment(first).unwrap());
         assert_eq!(s.get_batch(first).unwrap().unwrap().status, "accepted");
+        assert_eq!(s.active_seller_job(111).unwrap().unwrap().phase, "accepted");
         assert!(s.claim_batch_payment(first).unwrap());
         s.mark_batch_paid(first, "0xfirst").unwrap();
         assert!(!s.claim_batch_payment(second).unwrap());
         assert!(s.start_batch_item(first, 1).unwrap());
         assert!(!s.claim_batch_payment(second).unwrap());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn seller_reservation_starts_at_acceptance_across_single_and_batch() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller-one").unwrap();
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_offer(offer, 111, 111).unwrap());
+        assert!(!s.accept_batch(batch, 111).unwrap());
+        let job = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(job.reference.kind, "offer");
+        assert_eq!(job.reference.offer_id, offer);
+        assert_eq!(job.phase, "accepted");
+
+        s.register_user(222, 222, "seller-two").unwrap();
+        let batch = s
+            .create_batch("Claude Pro", "$20", 2, "$40", 999, 222, "seller", &[])
+            .unwrap();
+        let offer = s
+            .create_offer_with_proxy("Claude Pro", "$20", 999, 222, "seller", "")
+            .unwrap();
+        assert!(s.accept_batch(batch, 222).unwrap());
+        assert!(!s.accept_offer(offer, 222, 222).unwrap());
+        let job = s.active_seller_job(222).unwrap().unwrap();
+        assert_eq!(job.reference.kind, "batch");
+        assert_eq!(job.reference.batch_id, batch);
+        assert_eq!(job.phase, "accepted");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn single_offer_and_batch_share_one_exact_seller_lock() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        s.set_response(offer, 111, "accepted").unwrap();
+
+        assert!(!s.claim_offer_payment(offer, 111).unwrap());
+        assert_eq!(
+            s.response_status(offer, 111).unwrap().as_deref(),
+            Some("accepted")
+        );
+        let job = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(job.reference.kind, "batch");
+        assert_eq!(job.reference.batch_id, batch);
+        assert_eq!(job.reference.item_no, 1);
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().current_item, 1);
+        assert_eq!(
+            s.get_batch_item(batch, 1).unwrap().unwrap().status,
+            "processing"
+        );
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn unrelated_single_completion_cannot_advance_a_batch() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        s.set_response(offer, 111, "paid").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+
+        assert!(!s.finish_offer_job(111, offer, "stale-offer").unwrap());
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().current_item, 1);
+        assert_eq!(
+            s.get_batch_item(batch, 1).unwrap().unwrap().status,
+            "processing"
+        );
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn admin_can_rewind_only_the_previous_batch_position() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 3, "$60", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let first_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+        assert!(s
+            .finish_batch_item(batch, 2, &first_token)
+            .unwrap()
+            .is_none());
+        assert!(s
+            .finish_batch_item(batch, 1, &first_token)
+            .unwrap()
+            .is_some());
+        let queued = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(queued.reference.kind, "batch");
+        assert_eq!(queued.reference.batch_id, batch);
+        assert_eq!(queued.reference.item_no, 2);
+        assert_ne!(queued.reference.token, first_token);
+        assert!(!s.accept_offer(offer, 111, 111).unwrap());
+        assert!(s.start_batch_item(batch, 2).unwrap());
+
+        assert_eq!(s.rewind_batch_to_previous(batch, 111).unwrap(), Some(1));
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().current_item, 1);
+        assert_eq!(
+            s.get_batch_item(batch, 1).unwrap().unwrap().status,
+            "pending"
+        );
+        assert_eq!(
+            s.get_batch_item(batch, 2).unwrap().unwrap().status,
+            "pending"
+        );
+        let rewound = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(rewound.reference.kind, "batch");
+        assert_eq!(rewound.reference.batch_id, batch);
+        assert_eq!(rewound.reference.item_no, 1);
+        assert_ne!(first_token, rewound.reference.token);
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let rewound_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+        assert_ne!(first_token, rewound_token);
+        let rewound_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert!(s
+            .set_handoff_state_for_seller_job(
+                111,
+                &rewound_job,
+                "gm_ready",
+                "http://new:proxy@1.2.3.4:8080",
+                0,
+            )
+            .unwrap());
+        let mut stale_job = rewound_job.clone();
+        stale_job.token = first_token.clone();
+        assert!(!s
+            .set_want_for_seller_job(111, &stale_job, "cx_email")
+            .unwrap());
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_ready");
+        assert!(s
+            .finish_batch_item(batch, 1, &first_token)
+            .unwrap()
+            .is_none());
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().current_item, 1);
+        assert!(s.rewind_batch_to_previous(batch, 111).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn rollout_recovers_the_exact_inflight_batch_position() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let batch;
+        {
+            let s = Store::open(&p).unwrap();
+            batch = s
+                .create_batch("Google AI Pro", "$20", 5, "$100", 999, 111, "seller", &[])
+                .unwrap();
+            assert!(s.accept_batch(batch, 111).unwrap());
+            assert!(s.claim_batch_payment(batch).unwrap());
+            assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+            assert!(s.start_batch_item(batch, 1).unwrap());
+            let first_token = s.active_seller_job(111).unwrap().unwrap().reference.token;
+            assert!(s
+                .finish_batch_item(batch, 1, &first_token)
+                .unwrap()
+                .is_some());
+            assert!(s.start_batch_item(batch, 2).unwrap());
+            // Simulate the pre-seller_jobs production schema while preserving batch progress.
+            s.c.lock()
+                .unwrap()
+                .execute("DELETE FROM seller_jobs", [])
+                .unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.recover_seller_jobs().unwrap(), 1);
+        let job = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(job.reference.kind, "batch");
+        assert_eq!(job.reference.batch_id, batch);
+        assert_eq!(job.reference.item_no, 2);
+        assert_eq!(job.total, 5);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn uncertain_single_payment_stays_locked_until_admin_review() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        {
+            let s = Store::open(&p).unwrap();
+            s.register_user(111, 111, "seller").unwrap();
+            let offer = s
+                .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+                .unwrap();
+            s.set_response(offer, 111, "accepted").unwrap();
+            assert!(s.claim_offer_payment(offer, 111).unwrap());
+        }
+        let s = Store::open(&p).unwrap();
+        let job = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(job.reference.kind, "offer");
+        assert_eq!(job.phase, "paying");
+        assert!(!s.claim_offer_payment(job.reference.offer_id, 111).unwrap());
+        assert!(s.reset_offer_payment(job.reference.offer_id, 111).unwrap());
+        let accepted = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(accepted.reference.offer_id, job.reference.offer_id);
+        assert_eq!(accepted.phase, "accepted");
+        assert_eq!(
+            s.response_status(job.reference.offer_id, 111)
+                .unwrap()
+                .as_deref(),
+            Some("accepted")
+        );
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn gemini_oauth_session_keeps_the_exact_seller_job() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("Google AI Pro", "$20", 999, 111, "seller", "")
+            .unwrap();
+        s.set_response(offer, 111, "accepted").unwrap();
+        assert!(s.claim_offer_payment(offer, 111).unwrap());
+        assert!(s.mark_offer_paid(offer, 111).unwrap());
+        s.start_gemini_oauth(111, "bound-state", "sealed", now() + 60, 0)
+            .unwrap();
+        let expected_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        let session = s.claim_gemini_oauth("bound-state").unwrap().unwrap();
+        assert_eq!(session.job, Some(expected_job.clone()));
+        assert!(s.cancel_gemini_oauth(111, Some(&expected_job)).unwrap());
+        let retry_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert_ne!(retry_job.token, expected_job.token);
+        assert!(!s.cancel_gemini_oauth(111, Some(&expected_job)).unwrap());
+        assert!(!s.finish_offer_job(111, offer, &expected_job.token).unwrap());
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 

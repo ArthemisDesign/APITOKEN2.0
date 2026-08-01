@@ -1,7 +1,7 @@
 //! Логика бота: команды, машина создания оффера, флоу продавца. Состояние — в SQLite (db).
 //! Выплаты (Фаза 2) и выпуск setup-token (Фаза 3) пока заглушены — помечены TODO.
 
-use crate::db::{AdminState, PurchaseBatch, Store};
+use crate::db::{AdminState, PurchaseBatch, SellerJob, SellerJobRef, Store};
 use crate::gemini_oauth;
 use crate::setup_token::{self, Outcome};
 use crate::tg::{Bot, CallbackQuery, Keyboard};
@@ -73,6 +73,48 @@ fn proxy_source_label(source: &str) -> &'static str {
     }
 }
 
+fn seller_job_label(job: &SellerJob) -> String {
+    let phase = match job.phase.as_str() {
+        "accepted" => "принято, ожидает оплаты",
+        "paying" => "проверяется выплата",
+        _ => "передача доступа",
+    };
+    if job.reference.kind == "batch" {
+        if job.reference.item_no > 0 {
+            format!(
+                "🧺 Batch #{} · позиция {}/{} · {} · {}",
+                job.reference.batch_id,
+                job.reference.item_no,
+                job.total,
+                esc(&job.product),
+                phase
+            )
+        } else {
+            format!(
+                "🧺 Batch #{} · {} подписок · {} · {}",
+                job.reference.batch_id,
+                job.total,
+                esc(&job.product),
+                phase
+            )
+        }
+    } else {
+        format!(
+            "📦 Оффер #{} · {} · {}",
+            job.reference.offer_id,
+            esc(&job.product),
+            phase
+        )
+    }
+}
+
+fn seller_busy_text(job: &SellerJob) -> String {
+    format!(
+        "⛔ <b>Нельзя смешивать две сделки.</b>\n\nСейчас активна:\n<b>{}</b>\n\nСначала заверши её. После этого можно принять и запустить следующую.",
+        seller_job_label(job)
+    )
+}
+
 // ── создание оффера: продукт кнопками (без свободного текста) ────────────────
 const PRODUCT_PICK: &str = "📦 <b>Создание оффера</b>\nВыбери продукт:";
 const PRICE_PROMPT: &str = "Теперь пришли <b>ЦЕНУ в долларах</b> одним сообщением \
@@ -94,7 +136,7 @@ fn product_kb() -> Keyboard {
 /// Gemini OAuth profile.
 /// Явный enum не даёт новому продукту тихо провалиться в Claude setup-token ветку.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HandoffKind {
+pub(crate) enum HandoffKind {
     Claude,
     Codex,
     Gemini,
@@ -154,6 +196,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
         vec!["📦 ChatGPT Plus", "📦 ChatGPT Pro"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
         vec!["🧺 Batch-покупка"],
+        vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
     ]
 }
@@ -167,6 +210,60 @@ async fn show_admin_home(bot: &Bot, store: &Store, chat: i64) {
                 chat,
                 &format!("🔔 Заявка в продавцы: @{} (id {})", esc(&u.username), u.uid),
                 Some(&approve_kb(u.chat_id)),
+            )
+            .await;
+    }
+}
+
+fn active_job_kb(job: &SellerJob) -> Option<Keyboard> {
+    if job.reference.kind != "batch" || job.phase != "processing" || job.reference.item_no <= 1 {
+        return None;
+    }
+    Some(vec![vec![(
+        format!(
+            "↩️ Вернуть позицию {}/{}",
+            job.reference.item_no - 1,
+            job.total
+        ),
+        format!(
+            "batchrewind:{}:{}:ask",
+            job.reference.batch_id,
+            job.reference.item_no - 1
+        ),
+    )]])
+}
+
+async fn show_active_jobs(bot: &Bot, store: &Store, chat: i64) {
+    let jobs = store.active_seller_jobs().unwrap_or_default();
+    if jobs.is_empty() {
+        let _ = bot
+            .send(
+                chat,
+                "📋 <b>Активных сделок нет.</b> Все продавцы свободны.",
+            )
+            .await;
+        return;
+    }
+    let _ = bot
+        .send(
+            chat,
+            &format!(
+                "📋 <b>Активные сделки: {}</b>\nSingle и batch у одного продавца никогда не выполняются одновременно.",
+                jobs.len()
+            ),
+        )
+        .await;
+    for job in jobs {
+        let keyboard = active_job_kb(&job);
+        let _ = bot
+            .send_kb(
+                chat,
+                &format!(
+                    "{}\nПродавец: {}",
+                    seller_job_label(&job),
+                    seller_label(store, job.seller_chat)
+                ),
+                keyboard.as_ref(),
             )
             .await;
     }
@@ -415,15 +512,32 @@ fn seller_label(store: &Store, seller_chat: i64) -> String {
 }
 
 /// Клавиатура выбора продавца-адресата (по одному в строке).
-fn seller_pick_kb(sellers: &[crate::db::UserRow]) -> Keyboard {
+fn seller_pick_kb(store: &Store, sellers: &[crate::db::UserRow]) -> Keyboard {
     sellers
         .iter()
         .map(|s| {
-            let label = if s.username.is_empty() {
+            let mut label = if s.username.is_empty() {
                 format!("id {}", s.uid)
             } else {
                 format!("@{}", s.username)
             };
+            if let Some(job) = store.active_seller_job(s.chat_id).ok().flatten() {
+                let active = if job.reference.kind == "batch" {
+                    if job.reference.item_no > 0 {
+                        format!(
+                            "batch #{} {}/{}",
+                            job.reference.batch_id, job.reference.item_no, job.total
+                        )
+                    } else {
+                        format!("batch #{} — ждёт оплаты", job.reference.batch_id)
+                    }
+                } else {
+                    format!("оффер #{}", job.reference.offer_id)
+                };
+                label = format!("🟠 {label} — занят: {active}");
+            } else {
+                label = format!("🟢 {label} — свободен");
+            }
             vec![(label, format!("oseller:{}", s.chat_id))]
         })
         .collect()
@@ -450,7 +564,7 @@ async fn start_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &str) {
                 "📦 Продукт: <b>{}</b>\n\nКому отправить оффер? Выбери продавца:",
                 esc(product)
             ),
-            Some(&seller_pick_kb(&sellers)),
+            Some(&seller_pick_kb(store, &sellers)),
         )
         .await;
 }
@@ -486,7 +600,7 @@ async fn start_batch_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &
                 "🧺 Продукт: <b>{}</b>\n\nКому отправить batch? Выбери продавца:",
                 esc(product)
             ),
-            Some(&seller_pick_kb(&sellers)),
+            Some(&seller_pick_kb(store, &sellers)),
         )
         .await;
 }
@@ -501,6 +615,18 @@ async fn publish_single_offer(
     proxy_source: &str,
     buyer_proxy: &str,
 ) {
+    if let Some(job) = store.active_seller_job(seller_chat).ok().flatten() {
+        let _ = bot
+            .send(
+                admin_chat,
+                &format!(
+                    "🟠 Оффер не создан: продавец успел занять другую сделку.\n\n<b>{}</b>",
+                    seller_job_label(&job)
+                ),
+            )
+            .await;
+        return;
+    }
     let oid = match store.create_offer_with_proxy(
         product,
         price,
@@ -550,6 +676,18 @@ async fn publish_batch(
     proxy_source: &str,
     proxies: &[String],
 ) {
+    if let Some(job) = store.active_seller_job(seller_chat).ok().flatten() {
+        let _ = bot
+            .send(
+                admin_chat,
+                &format!(
+                    "🟠 Batch не создан: продавец успел занять другую сделку.\n\n<b>{}</b>",
+                    seller_job_label(&job)
+                ),
+            )
+            .await;
+        return;
+    }
     let batch_id = match store.create_batch(
         product,
         unit_price,
@@ -599,6 +737,13 @@ fn batch_payment_review_kb(batch_id: i64) -> Keyboard {
     )]]
 }
 
+fn offer_payment_review_kb(offer_id: i64) -> Keyboard {
+    vec![vec![(
+        "🔁 Проверил: разрешить повторную оплату".into(),
+        format!("offerpayretry:{offer_id}"),
+    )]]
+}
+
 async fn notify_batch_payment_ready(
     bot: &Bot,
     cfg: &Config,
@@ -645,6 +790,10 @@ pub async fn on_message(
         }
         if text == "🧺 Batch-покупка" {
             start_batch_product_pick(bot, chat).await;
+            return;
+        }
+        if text == "📋 Активные сделки" {
+            show_active_jobs(bot, store, chat).await;
             return;
         }
         if text == "🛠 Панель" {
@@ -812,13 +961,31 @@ pub async fn on_message(
                 rec.want.as_str(),
                 "gm_gid" | "gm_gsecret" | "gm_gproxy" | "gm_ready" | "gm_wait"
             ) {
-                let _ = store.cancel_gemini_oauth(chat);
-                let _ = bot
-                    .send(
+                let cancelled = store
+                    .active_seller_job(chat)
+                    .ok()
+                    .flatten()
+                    .filter(|job| {
+                        seller_job_matches_handoff(job, &job.reference, HandoffKind::Gemini)
+                    })
+                    .is_some_and(|job| {
+                        store
+                            .cancel_gemini_oauth(chat, Some(&job.reference))
+                            .unwrap_or(false)
+                    });
+                let _ = if cancelled {
+                    bot.send(
                         chat,
                         &format!("Авторизация отменена.\n\n{GEMINI_PROXY_PROMPT}"),
                     )
-                    .await;
+                    .await
+                } else {
+                    bot.send(
+                        chat,
+                        "Эта авторизация уже не относится к активной сделке. Отправь /start.",
+                    )
+                    .await
+                };
                 return;
             }
         }
@@ -852,6 +1019,23 @@ pub async fn on_message(
                             chat,
                             "👋 <b>Ты в системе как продавец.</b>\n\nПришли свой \
                         <b>BEP-20</b> адрес кошелька (<code>0x…</code>) для выплат.",
+                        )
+                        .await;
+                } else if let Some(job) = store.active_seller_job(chat).ok().flatten() {
+                    let next = match job.phase.as_str() {
+                        "accepted" => "Сделка принята и закреплена за тобой. Ожидай одну выплату; после неё бот сам пришлёт первый шаг.",
+                        "paying" => "Сейчас ничего не отправляй: администратор проверяет выплату. После подтверждения бот сам пришлёт следующий шаг.",
+                        _ => "Продолжай по последней инструкции бота. Новая сделка не запустится, пока эта не завершена.",
+                    };
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "👋 <b>Ты продавец.</b>\n\nСейчас активна:\n<b>{}</b>\n\n{}\n\n💼 Адрес выплат:\n<code>{}</code>",
+                                seller_job_label(&job),
+                                next,
+                                esc(&rec.address)
+                            ),
                         )
                         .await;
                 } else {
@@ -891,6 +1075,10 @@ pub async fn on_message(
     }
     if admin && text == "/batch" {
         start_batch_product_pick(bot, chat).await;
+        return;
+    }
+    if admin && text == "/jobs" {
+        show_active_jobs(bot, store, chat).await;
         return;
     }
 
@@ -936,11 +1124,29 @@ pub async fn on_message(
                 if purl.is_empty() {
                     let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
                 } else {
-                    let _ = store.set_hproxy(chat, &purl);
-                    let _ = store.set_want(chat, "ho_email");
-                    let _ = bot
-                        .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CLAUDE_ACCOUNT_SETUP}"))
-                        .await;
+                    let applied = store
+                        .active_seller_job(chat)
+                        .ok()
+                        .flatten()
+                        .filter(|job| {
+                            seller_job_matches_handoff(job, &job.reference, HandoffKind::Claude)
+                        })
+                        .is_some_and(|job| {
+                            store
+                                .set_handoff_state_for_seller_job(
+                                    chat,
+                                    &job.reference,
+                                    "ho_email",
+                                    &purl,
+                                    0,
+                                )
+                                .unwrap_or(false)
+                        });
+                    if applied {
+                        let _ = bot
+                            .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CLAUDE_ACCOUNT_SETUP}"))
+                            .await;
+                    }
                 }
             }
             "ho_email" => {
@@ -951,8 +1157,8 @@ pub async fn on_message(
                             "Это не похоже на email. Пришли адрес аккаунта ещё раз.",
                         )
                         .await;
-                } else if do_start_token(bot, cfg, chat, text, &rec.hproxy).await {
-                    let _ = store.set_want(chat, "ho_code");
+                } else {
+                    do_start_token(bot, store, cfg, chat, text, &rec.hproxy, false).await;
                 }
             }
             "cx_proxy" => {
@@ -960,11 +1166,29 @@ pub async fn on_message(
                 if purl.is_empty() {
                     let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
                 } else {
-                    let _ = store.set_hproxy(chat, &purl);
-                    let _ = store.set_want(chat, "cx_email");
-                    let _ = bot
-                        .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CODEX_ACCOUNT_SETUP}"))
-                        .await;
+                    let applied = store
+                        .active_seller_job(chat)
+                        .ok()
+                        .flatten()
+                        .filter(|job| {
+                            seller_job_matches_handoff(job, &job.reference, HandoffKind::Codex)
+                        })
+                        .is_some_and(|job| {
+                            store
+                                .set_handoff_state_for_seller_job(
+                                    chat,
+                                    &job.reference,
+                                    "cx_email",
+                                    &purl,
+                                    0,
+                                )
+                                .unwrap_or(false)
+                        });
+                    if applied {
+                        let _ = bot
+                            .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CODEX_ACCOUNT_SETUP}"))
+                            .await;
+                    }
                 }
             }
             "cx_email" => {
@@ -1047,7 +1271,7 @@ pub async fn on_message(
         }
     }
     if looks_like_email(text) {
-        do_start_token(bot, cfg, chat, text, "").await;
+        do_start_token(bot, store, cfg, chat, text, "", true).await;
         return;
     }
     let _ = bot.send(chat, "Используй /start, кнопку «📦 Создать оффер», или пришли <b>email</b> аккаунта для выпуска токена.").await;
@@ -1177,18 +1401,74 @@ fn proxy_url(raw: &str) -> String {
     }
 }
 
-async fn do_start_token(bot: &Bot, cfg: &Arc<Config>, chat: i64, email: &str, proxy: &str) -> bool {
+async fn do_start_token(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    email: &str,
+    proxy: &str,
+    standalone: bool,
+) -> bool {
+    let expected_job = if standalone {
+        None
+    } else {
+        let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Эта инструкция уже не относится к активной сделке. Отправь /start.",
+                )
+                .await;
+            return false;
+        };
+        if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Claude) {
+            let _ = bot
+                .send(
+                    chat,
+                    "Эта Claude-инструкция устарела. Открой актуальную сделку через /start.",
+                )
+                .await;
+            return false;
+        }
+        let Some(rotated) = store
+            .rotate_seller_job_token(chat, &job.reference)
+            .ok()
+            .flatten()
+        else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Активная сделка изменилась. Открой актуальную карточку через /start.",
+                )
+                .await;
+            return false;
+        };
+        Some(rotated)
+    };
     let (cb, config_dir, em, px) = (
         cfg.claude_bin.clone(),
         cfg.claude_config_dir.clone(),
         email.trim().to_string(),
         proxy.to_string(),
     );
+    let session_job = expected_job.clone();
     let _ = bot.send(chat, "⏳ Готовлю авторизацию Claude…").await;
-    match tokio::task::spawn_blocking(move || setup_token::start(chat, &em, &px, &cb, &config_dir))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        setup_token::start(chat, &em, &px, &cb, &config_dir, session_job)
+    })
+    .await
     {
         Ok(Ok(url)) => {
+            if let Some(expected) = expected_job.as_ref() {
+                if !store
+                    .set_want_for_seller_job(chat, expected, "ho_code")
+                    .unwrap_or(false)
+                {
+                    setup_token::kill(chat);
+                    return false;
+                }
+            }
             let _ = bot
                 .send(
                     chat,
@@ -1224,28 +1504,43 @@ async fn do_feed_token(
     let cs = codestate.trim().to_string();
     let _ = bot.send(chat, "⏳ Проверяю авторизацию…").await;
     match tokio::task::spawn_blocking(move || setup_token::feed(chat, &cs)).await {
-        Ok(Ok(Outcome::Token(tok, email, proxy))) => {
+        Ok(Ok(Outcome::Token(tok, email, proxy, expected_job))) => {
             match register_sub(cfg, &email, &tok, &proxy).await {
                 Ok(_) => {
-                    let _ = store.set_want(chat, "");
-                    let _ = store.set_hproxy(chat, "");
-                    let _ = bot.send(chat, &format!(
-                    "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> в системе. Спасибо за сделку! 🤝", esc(&email))).await;
-                    if store.active_batch_for_seller(chat).ok().flatten().is_some() {
+                    let current = expected_job.is_none()
+                        || seller_handoff_is_current(
+                            store,
+                            chat,
+                            expected_job.as_ref(),
+                            HandoffKind::Claude,
+                        );
+                    if current {
+                        let _ = bot.send(chat, &format!(
+                        "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> в системе. Спасибо за сделку! 🤝", esc(&email))).await;
                         notify_admins(bot, cfg, &format!(
-                            "✅ <b>Позиция batch готова</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
-                            esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
-                        complete_batch_item_after_handoff(bot, store, cfg, chat).await;
-                    } else {
-                        notify_admins(bot, cfg, &format!(
-                            "✅ <b>Доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
+                            "✅ <b>Claude-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул (прокси: {}).",
                             esc(&email), if proxy.is_empty() { "нет" } else { "есть" }), None).await;
                     }
+                    complete_seller_job_after_handoff(
+                        bot,
+                        store,
+                        cfg,
+                        chat,
+                        expected_job,
+                        HandoffKind::Claude,
+                    )
+                    .await;
                 }
                 Err(e) => {
-                    let _ = store.set_want(chat, "ho_email");
-                    let _ = bot.send(chat,
-                    "⚠️ Доступ получен, но добавить аккаунт не удалось. Пришли <b>email</b> заново — повторим вход.").await;
+                    let retry_is_current = expected_job.as_ref().map_or(true, |expected| {
+                        store
+                            .set_want_for_seller_job(chat, expected, "ho_email")
+                            .unwrap_or(false)
+                    });
+                    if retry_is_current {
+                        let _ = bot.send(chat,
+                        "⚠️ Доступ получен, но добавить аккаунт не удалось. Пришли <b>email</b> заново — повторим вход.").await;
+                    }
                     notify_admins(
                         bot,
                         cfg,
@@ -1260,19 +1555,31 @@ async fn do_feed_token(
                 }
             }
         }
-        Ok(Ok(Outcome::BadCode)) => {
-            let _ = store.set_want(chat, "ho_email");
-            let _ = bot.send(chat,
-            "❌ Код отклонён (неверный/истёк). Пришли <b>email</b> аккаунта заново — дам свежую ссылку.").await;
+        Ok(Ok(Outcome::BadCode(expected_job))) => {
+            let retry_is_current = expected_job.as_ref().map_or(true, |expected| {
+                store
+                    .set_want_for_seller_job(chat, expected, "ho_email")
+                    .unwrap_or(false)
+            });
+            if retry_is_current {
+                let _ = bot.send(chat,
+                "❌ Код отклонён (неверный/истёк). Пришли <b>email</b> аккаунта заново — дам свежую ссылку.").await;
+            }
         }
-        Ok(Ok(Outcome::NoToken)) => {
-            let _ = store.set_want(chat, "ho_email");
-            let _ = bot
-                .send(
-                    chat,
-                    "❌ Авторизация не завершилась вовремя. Пришли <b>email</b> заново.",
-                )
-                .await;
+        Ok(Ok(Outcome::NoToken(expected_job))) => {
+            let retry_is_current = expected_job.as_ref().map_or(true, |expected| {
+                store
+                    .set_want_for_seller_job(chat, expected, "ho_email")
+                    .unwrap_or(false)
+            });
+            if retry_is_current {
+                let _ = bot
+                    .send(
+                        chat,
+                        "❌ Авторизация не завершилась вовремя. Пришли <b>email</b> заново.",
+                    )
+                    .await;
+            }
         }
         Ok(Err(e)) => {
             let _ = bot.send(chat, &format!("❌ {}", esc(&e.to_string()))).await;
@@ -1293,23 +1600,42 @@ async fn prepare_gemini_account(
     proxy: Option<&str>,
     proxy_order_id: i64,
 ) {
-    if let Some(proxy) = proxy {
-        let _ = store.set_hproxy(chat, proxy);
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Gemini) {
+        return;
     }
-    if proxy_order_id > 0 {
-        let _ = store.set_hproxy_order(chat, proxy_order_id);
-    }
-    let has_proxy = store
-        .get_user(chat)
-        .ok()
-        .flatten()
-        .is_some_and(|user| !user.hproxy.is_empty());
-    if !has_proxy {
-        let _ = store.set_want(chat, "gm_gproxy");
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let effective_proxy = proxy.unwrap_or(&user.hproxy);
+    let effective_order = if proxy_order_id > 0 {
+        proxy_order_id
+    } else {
+        user.hproxy_order
+    };
+    if effective_proxy.is_empty() {
+        if !store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "gm_gproxy", "", effective_order)
+            .unwrap_or(false)
+        {
+            return;
+        }
         let _ = bot.send(chat, GEMINI_PROXY_PROMPT).await;
         return;
     }
-    let _ = store.set_want(chat, "gm_ready");
+    if !store
+        .set_handoff_state_for_seller_job(
+            chat,
+            &expected_job,
+            "gm_ready",
+            effective_proxy,
+            effective_order,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
     let _ = bot
         .send_kb(
             chat,
@@ -1353,8 +1679,24 @@ async fn start_gemini_handoff(
     proxy: Option<&str>,
     proxy_order_id: i64,
 ) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Gemini) {
+        let _ = bot
+            .send(chat, "Текущая сделка не является Gemini-сделкой. Открой актуальную карточку через /start.")
+            .await;
+        return;
+    }
     let Some(oauth) = cfg.gemini_oauth.as_ref() else {
-        let _ = store.set_want(chat, "gm_ready");
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "gm_ready");
         let _ = bot
             .send_kb(
                 chat,
@@ -1376,15 +1718,15 @@ async fn start_gemini_handoff(
         .or_else(|| store.get_user(chat).ok().flatten().map(|user| user.hproxy))
         .unwrap_or_default();
     if proxy.is_empty() {
-        let _ = store.set_want(chat, "gm_gproxy");
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "gm_gproxy");
         let _ = bot.send(chat, GEMINI_PROXY_PROMPT).await;
         return;
     }
     match gemini_oauth::begin(store, oauth, chat, &proxy, proxy_order_id) {
         Ok(links) => {
-            // Delete the legacy/plain handoff slot as soon as the state-bound AEAD row exists.
-            let _ = store.set_hproxy(chat, "");
-            let _ = store.set_want(chat, "gm_wait");
+            if !seller_handoff_is_current(store, chat, links.job.as_ref(), HandoffKind::Gemini) {
+                return;
+            }
             let _ = bot
                 .send_url_button(
                     chat,
@@ -1404,13 +1746,27 @@ async fn start_gemini_handoff(
         }
         Err(error) => {
             if matches!(&error, gemini_oauth::StartError::Proxy) {
-                let _ = store.set_want(chat, "gm_gproxy");
-                let _ = bot.send(chat, error.public_message()).await;
+                if store
+                    .set_handoff_state_for_seller_job(
+                        chat,
+                        &expected_job,
+                        "gm_gproxy",
+                        "",
+                        proxy_order_id,
+                    )
+                    .unwrap_or(false)
+                {
+                    let _ = bot.send(chat, error.public_message()).await;
+                }
             } else {
-                let _ = store.set_want(chat, "gm_ready");
-                let _ = bot
-                    .send_kb(chat, error.public_message(), Some(&gemini_ready_kb()))
-                    .await;
+                if store
+                    .set_want_for_seller_job(chat, &expected_job, "gm_ready")
+                    .unwrap_or(false)
+                {
+                    let _ = bot
+                        .send_kb(chat, error.public_message(), Some(&gemini_ready_kb()))
+                        .await;
+                }
             }
         }
     }
@@ -1448,12 +1804,44 @@ fn active_batch_item(
     store: &Store,
     seller_chat: i64,
 ) -> Option<(PurchaseBatch, crate::db::BatchItem)> {
-    let batch = store.active_batch_for_seller(seller_chat).ok().flatten()?;
+    let job = store.active_seller_job(seller_chat).ok().flatten()?;
+    if job.reference.kind != "batch" || job.phase != "processing" {
+        return None;
+    }
+    let batch = store.get_batch(job.reference.batch_id).ok().flatten()?;
     let item = store
-        .get_batch_item(batch.id, batch.current_item)
+        .get_batch_item(batch.id, job.reference.item_no)
         .ok()
         .flatten()?;
     Some((batch, item))
+}
+
+fn seller_job_matches_handoff(
+    job: &SellerJob,
+    expected: &SellerJobRef,
+    completed_kind: HandoffKind,
+) -> bool {
+    job.phase == "processing"
+        && job.reference == *expected
+        && handoff_kind(&job.product) == completed_kind
+}
+
+/// Seller handoffs always carry a generation-bound job reference and may mutate seller state only
+/// while it is still current. The admin's standalone Claude tool handles its `None` explicitly.
+pub(crate) fn seller_handoff_is_current(
+    store: &Store,
+    seller_chat: i64,
+    expected: Option<&SellerJobRef>,
+    completed_kind: HandoffKind,
+) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    store
+        .active_seller_job(seller_chat)
+        .ok()
+        .flatten()
+        .is_some_and(|job| seller_job_matches_handoff(&job, expected, completed_kind))
 }
 
 /// Start one persisted batch position. Exactly one item is `processing`, so the seller cannot
@@ -1472,13 +1860,21 @@ async fn start_batch_item(
     let Some(item) = store.get_batch_item(batch_id, item_no).ok().flatten() else {
         return;
     };
-    let already_processing = item.status == "processing"
-        && batch.status == "processing"
-        && batch.current_item == item_no;
-    if !store.start_batch_item(batch_id, item_no).unwrap_or(false) && !already_processing {
+    if !store.start_batch_item(batch_id, item_no).unwrap_or(false) {
         return;
     }
     let seller_chat = batch.seller_chat;
+    let Some(job) = store.active_seller_job(seller_chat).ok().flatten() else {
+        return;
+    };
+    if job.reference.kind != "batch"
+        || job.reference.batch_id != batch_id
+        || job.reference.item_no != item_no
+        || job.phase != "processing"
+    {
+        return;
+    }
+    let expected_job = job.job_ref();
     let (proxy_step, next_step) = handoff_steps_for_product(&item.product);
     let payment_line = payment_hash
         .map(|hash| {
@@ -1516,8 +1912,12 @@ async fn start_batch_item(
             .await;
             return;
         }
-        let _ = store.set_hproxy(seller_chat, &item.proxy);
-        let _ = store.set_hproxy_order(seller_chat, 0);
+        if !store
+            .set_handoff_state_for_seller_job(seller_chat, &expected_job, next_step, &item.proxy, 0)
+            .unwrap_or(false)
+        {
+            return;
+        }
         let setup = if next_step == "gm_ready" {
             ""
         } else {
@@ -1534,13 +1934,14 @@ async fn start_batch_item(
             .await;
         if next_step == "gm_ready" {
             prepare_gemini_account(bot, store, seller_chat, None, 0).await;
-        } else {
-            let _ = store.set_want(seller_chat, next_step);
         }
     } else {
-        let _ = store.set_hproxy(seller_chat, "");
-        let _ = store.set_hproxy_order(seller_chat, 0);
-        let _ = store.set_want(seller_chat, proxy_step);
+        if !store
+            .set_handoff_state_for_seller_job(seller_chat, &expected_job, proxy_step, "", 0)
+            .unwrap_or(false)
+        {
+            return;
+        }
         let _ = bot
             .send(
                 seller_chat,
@@ -1553,24 +1954,119 @@ async fn start_batch_item(
     }
 }
 
-/// Called after Claude, ChatGPT or Gemini has been published. It advances only the active batch,
-/// preserving the legacy single-offer behavior when there is no processing batch.
-pub async fn complete_batch_item_after_handoff(
+/// Finalize only the exact work captured when this handoff started. The old implementation looked
+/// up "any active batch for this seller" here; completing an unrelated single ChatGPT offer could
+/// therefore advance a Google AI batch. Exact source + id + item + product-kind matching makes a
+/// delayed callback harmless instead.
+pub(crate) async fn complete_seller_job_after_handoff(
     bot: &Bot,
     store: &Arc<Store>,
     cfg: &Arc<Config>,
     seller_chat: i64,
-) {
-    let Some(batch) = store.active_batch_for_seller(seller_chat).ok().flatten() else {
-        return;
+    expected: Option<SellerJobRef>,
+    completed_kind: HandoffKind,
+) -> bool {
+    let Some(expected) = expected else {
+        if completed_kind == HandoffKind::Claude {
+            return true;
+        }
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Завершившийся {:?} handoff продавца {} не был привязан к сделке. Доступ мог быть опубликован, но состояние продавца и batch не изменены.",
+                completed_kind,
+                seller_label(store, seller_chat)
+            ),
+            None,
+        )
+        .await;
+        return false;
     };
-    let item_no = batch.current_item;
-    let Some(progress) = store.finish_batch_item(batch.id, item_no).ok().flatten() else {
-        return;
+    let Some(job) = store.active_seller_job(seller_chat).ok().flatten() else {
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Завершившийся {:?} handoff продавца {} относится к уже закрытой или заменённой работе. Доступ уже опубликован, но состояние продавца и batch не изменены — нужна ручная сверка.",
+                completed_kind,
+                seller_label(store, seller_chat)
+            ),
+            None,
+        )
+        .await;
+        return false;
     };
-    let _ = store.set_hproxy(seller_chat, "");
-    let _ = store.set_hproxy_order(seller_chat, 0);
-    let _ = store.set_want(seller_chat, "");
+    if !seller_job_matches_handoff(&job, &expected, completed_kind) {
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Завершившийся {:?} handoff продавца {} не совпал с активной работой «{}». Доступ уже опубликован, но работа не закрыта и batch не сдвинут — нужна ручная сверка.",
+                completed_kind,
+                seller_label(store, seller_chat),
+                seller_job_label(&job)
+            ),
+            None,
+        )
+        .await;
+        return false;
+    }
+    if job.reference.kind == "offer" {
+        if store
+            .finish_offer_job(seller_chat, job.reference.offer_id, &job.reference.token)
+            .unwrap_or(false)
+        {
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "✅ <b>Оффер #{} завершён.</b> Продавец {} передал «{}». Он снова свободен.",
+                    job.reference.offer_id,
+                    seller_label(store, seller_chat),
+                    esc(&job.product)
+                ),
+                None,
+            )
+            .await;
+            return true;
+        }
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Оффер #{} изменился одновременно с завершением handoff. Доступ опубликован, но работа не закрыта автоматически; проверь /jobs.",
+                job.reference.offer_id
+            ),
+            None,
+        )
+        .await;
+        return false;
+    }
+    let Some(batch) = store.get_batch(job.reference.batch_id).ok().flatten() else {
+        return false;
+    };
+    let Some(progress) = store
+        .finish_batch_item(
+            job.reference.batch_id,
+            job.reference.item_no,
+            &job.reference.token,
+        )
+        .ok()
+        .flatten()
+    else {
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Batch #{} · позиция {} изменилась одновременно с завершением handoff. Курсор не сдвинут; проверь /jobs.",
+                job.reference.batch_id, job.reference.item_no
+            ),
+            None,
+        )
+        .await;
+        return false;
+    };
     if progress.completed {
         let _ = bot
             .send(
@@ -1605,11 +2101,29 @@ pub async fn complete_batch_item_after_handoff(
             .await;
         start_batch_item(bot, store, cfg, batch.id, progress.item_no + 1, None).await;
     }
+    true
 }
 
 /// Re-open the only states that can be stranded between two Telegram updates. An item that still
 /// has a non-empty seller state is already in progress and must not receive a duplicate prompt.
 pub async fn resume_batches(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>) {
+    for job in store
+        .active_seller_jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|job| job.reference.kind == "offer" && job.phase == "paying")
+    {
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ Оффер #{} остался в состоянии оплаты после перезапуска. Сначала проверь BscScan/кошелёк продавца; повторную выплату разблокируй только если транзакции нет.",
+                job.reference.offer_id
+            ),
+            Some(&offer_payment_review_kb(job.reference.offer_id)),
+        )
+        .await;
+    }
     for batch in store.batches_needing_payment_review().unwrap_or_default() {
         notify_admins(
             bot,
@@ -1654,6 +2168,38 @@ async fn start_codex_handoff(
     email: &str,
     proxy: &str,
 ) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта инструкция уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Codex) {
+        let _ = bot
+            .send(
+                chat,
+                "Эта ChatGPT-инструкция устарела. Открой актуальную сделку через /start.",
+            )
+            .await;
+        return;
+    }
+    let Some(expected_job) = store
+        .rotate_seller_job_token(chat, &job.reference)
+        .ok()
+        .flatten()
+    else {
+        let _ = bot
+            .send(
+                chat,
+                "Активная сделка изменилась. Открой актуальную карточку через /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = Some(expected_job);
     let Some(roster) = cfg.codex_roster.clone() else {
         let _ = bot
             .send(
@@ -1686,7 +2232,24 @@ async fn start_codex_handoff(
             return;
         }
     };
-    let _ = store.set_want(chat, "");
+    if !expected_job.as_ref().is_some_and(|expected| {
+        store
+            .set_want_for_seller_job(chat, expected, "")
+            .unwrap_or(false)
+    }) {
+        crate::codex_login::cancel(chat);
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ ChatGPT handoff продавца {} был отменён: активная работа изменилась во время запуска авторизации.",
+                seller_label(store, chat)
+            ),
+            None,
+        )
+        .await;
+        return;
+    }
     let _ = bot.send(chat, &format!(
         "🔗 <b>Этап 3 из 3 — подтверди доступ ChatGPT</b>\n\n\
          1️⃣ Не закрывая подготовленный антидетект-профиль и не меняя прокси, открой ссылку ниже. <b>Не открывай её в Telegram, обычном браузере или на телефоне.</b>\n\n\
@@ -1700,55 +2263,86 @@ async fn start_codex_handoff(
     let (bot2, store2, cfg2) = (bot.clone(), store.clone(), cfg.clone());
     tokio::spawn(async move {
         let outcome =
-            tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin, &roster)).await;
+            tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin, &roster))
+                .await;
         match outcome {
             Ok(crate::codex_login::Outcome::Authorized { label, has_proxy }) => {
-                let _ = store2.set_hproxy(chat, "");
-                let _ = bot2.send(chat, &format!(
-                    "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> принята. Спасибо за сделку! 🤝",
-                    esc(&label))).await;
-                if store2
-                    .active_batch_for_seller(chat)
-                    .ok()
-                    .flatten()
-                    .is_some()
-                {
-                    notify_admins(&bot2, &cfg2, &format!(
-                        "✅ <b>Позиция batch готова</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). Движок подхватит его ближайшим health-тиком.",
-                        esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
-                    complete_batch_item_after_handoff(&bot2, &store2, &cfg2, chat).await;
-                } else {
+                let current = seller_handoff_is_current(
+                    &store2,
+                    chat,
+                    expected_job.as_ref(),
+                    HandoffKind::Codex,
+                );
+                if current {
+                    let _ = bot2.send(chat, &format!(
+                        "✅ <b>Готово!</b> Доступ передан, подписка <code>{}</code> принята. Спасибо за сделку! 🤝",
+                        esc(&label))).await;
                     notify_admins(&bot2, &cfg2, &format!(
                         "✅ <b>ChatGPT-доступ получен</b>: аккаунт <code>{}</code> добавлен в пул Codex (прокси: {}). \
                          Движок подхватит его ближайшим health-тиком.",
                         esc(&label), if has_proxy { "свой" } else { "общий" }), None).await;
                 }
+                complete_seller_job_after_handoff(
+                    &bot2,
+                    &store2,
+                    &cfg2,
+                    chat,
+                    expected_job,
+                    HandoffKind::Codex,
+                )
+                .await;
             }
             Ok(crate::codex_login::Outcome::Expired) => {
-                let _ = store2.set_want(chat, "cx_email");
-                let _ = bot2.send(chat,
-                    "❌ Вход не подтверждён — код истёк. Пришли <b>email</b> заново, дам свежий код.").await;
+                if expected_job.as_ref().is_some_and(|expected| {
+                    store2
+                        .set_want_for_seller_job(chat, expected, "cx_email")
+                        .unwrap_or(false)
+                }) {
+                    let _ = bot2.send(chat,
+                        "❌ Вход не подтверждён — код истёк. Пришли <b>email</b> заново, дам свежий код.").await;
+                }
             }
             Ok(crate::codex_login::Outcome::NotChatgpt) => {
-                let _ = store2.set_want(chat, "cx_email");
-                let _ = bot2.send(chat,
-                    "❌ Это не подписка ChatGPT (похоже на вход по API-ключу). Нужен аккаунт с активной \
-                     подпиской Plus/Pro. Пришли <b>email</b> заново.").await;
+                if expected_job.as_ref().is_some_and(|expected| {
+                    store2
+                        .set_want_for_seller_job(chat, expected, "cx_email")
+                        .unwrap_or(false)
+                }) {
+                    let _ = bot2.send(chat,
+                        "❌ Это не подписка ChatGPT (похоже на вход по API-ключу). Нужен аккаунт с активной \
+                         подпиской Plus/Pro. Пришли <b>email</b> заново.").await;
+                }
             }
             Ok(crate::codex_login::Outcome::Failed(why)) => {
-                let _ = store2.set_want(chat, "cx_email");
-                let _ = bot2
-                    .send(
-                        chat,
-                        &format!(
-                            "❌ Не получилось: {}. Пришли <b>email</b> заново.",
-                            esc(&why)
-                        ),
-                    )
-                    .await;
+                if expected_job.as_ref().is_some_and(|expected| {
+                    store2
+                        .set_want_for_seller_job(chat, expected, "cx_email")
+                        .unwrap_or(false)
+                }) {
+                    let _ = bot2
+                        .send(
+                            chat,
+                            &format!(
+                                "❌ Не получилось: {}. Пришли <b>email</b> заново.",
+                                esc(&why)
+                            ),
+                        )
+                        .await;
+                }
             }
             Err(_) => {
-                let _ = bot2.send(chat, "❌ Внутренняя ошибка ожидания.").await;
+                if expected_job.as_ref().is_some_and(|expected| {
+                    store2
+                        .set_want_for_seller_job(chat, expected, "cx_email")
+                        .unwrap_or(false)
+                }) {
+                    let _ = bot2
+                        .send(
+                            chat,
+                            "❌ Внутренняя ошибка ожидания. Пришли <b>email</b> заново.",
+                        )
+                        .await;
+                }
             }
         }
     });
@@ -1766,11 +2360,26 @@ async fn deliver_issued_proxy(
     oid: i64,
     hash: &str,
 ) {
+    let Some(job) = store.active_seller_job(seller_chat).ok().flatten() else {
+        return;
+    };
+    if job.reference.kind != "offer" || job.reference.offer_id != oid || job.phase != "processing" {
+        return;
+    }
+    let expected_job = job.job_ref();
+    let product = store
+        .get_offer(oid)
+        .ok()
+        .flatten()
+        .map(|offer| offer.product)
+        .unwrap_or_default();
     let _ = bot
         .send(
             seller_chat,
             &format!(
-                "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n⏳ Выпускаю прокси (UK ISP)…",
+                "📦 <b>Оффер #{} · {}</b>\n\n💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n⏳ Выпускаю прокси (UK ISP)…",
+                oid,
+                esc(&product),
                 esc(hash)
             ),
         )
@@ -1783,15 +2392,28 @@ async fn deliver_issued_proxy(
             let _ = store.mark_offer_proxy_issued(oid);
             let (_, next_step) = handoff_steps(store, oid);
             let issued_proxy = px.url();
-            // Store the handover proxy for every kind. Gemini keeps it until the seller confirms
-            // that registration and plan activation are complete.
-            let _ = store.set_hproxy(seller_chat, &issued_proxy);
             let gemini = next_step == "gm_ready";
-            if gemini {
-                let _ = store.set_hproxy_order(seller_chat, px.order_id);
-            }
-            if !gemini {
-                let _ = store.set_want(seller_chat, next_step);
+            if !store
+                .set_handoff_state_for_seller_job(
+                    seller_chat,
+                    &expected_job,
+                    next_step,
+                    &issued_proxy,
+                    if gemini { px.order_id } else { 0 },
+                )
+                .unwrap_or(false)
+            {
+                notify_admins(
+                    bot,
+                    cfg,
+                    &format!(
+                        "⚠️ Прокси IPRoyal для оффера #{} выпущен (заказ #{}), но активная работа продавца уже изменилась. Прокси не отправлен; нужна ручная проверка.",
+                        oid, px.order_id
+                    ),
+                    None,
+                )
+                .await;
+                return;
             }
             let next_prompt = if gemini {
                 "Сохрани эти данные: аккаунт нужно создать и подключить именно через этот прокси. Подробная инструкция придёт следующим сообщением."
@@ -1820,12 +2442,28 @@ async fn deliver_issued_proxy(
         }
         Err(e) => {
             let (proxy_step, _) = handoff_steps(store, oid);
-            let _ = store.set_want(seller_chat, proxy_step);
-            let prompt = manual_proxy_prompt(proxy_step).to_string();
-            let _ = bot.send(seller_chat, &prompt).await;
-            notify_admins(bot, cfg, &format!(
-                "⚠️ Авто-выпуск прокси для оффера #{oid} не удался: {}\nПродавцу предложен ручной ввод.",
-                esc(&e.to_string())), None).await;
+            let retry_applied = store
+                .set_handoff_state_for_seller_job(seller_chat, &expected_job, proxy_step, "", 0)
+                .unwrap_or(false);
+            if retry_applied {
+                let prompt = manual_proxy_prompt(proxy_step).to_string();
+                let _ = bot.send(seller_chat, &prompt).await;
+            }
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Авто-выпуск прокси для оффера #{oid} не удался: {}\n{}",
+                    esc(&e.to_string()),
+                    if retry_applied {
+                        "Продавцу предложен ручной ввод."
+                    } else {
+                        "Работа продавца уже изменилась; состояние не тронуто."
+                    }
+                ),
+                None,
+            )
+            .await;
         }
     }
 }
@@ -1841,6 +2479,13 @@ async fn start_buyer_offer_handoff(
     let Some(offer) = store.get_offer(oid).ok().flatten() else {
         return;
     };
+    let Some(job) = store.active_seller_job(seller_chat).ok().flatten() else {
+        return;
+    };
+    if job.reference.kind != "offer" || job.reference.offer_id != oid || job.phase != "processing" {
+        return;
+    }
+    let expected_job = job.job_ref();
     if offer.buyer_proxy.is_empty() {
         let _ = bot
             .send(
@@ -1858,21 +2503,29 @@ async fn start_buyer_offer_handoff(
         return;
     }
     let (_, next_step) = handoff_steps(store, oid);
-    let _ = store.set_hproxy(seller_chat, &offer.buyer_proxy);
-    let _ = store.set_hproxy_order(seller_chat, 0);
+    if !store
+        .set_handoff_state_for_seller_job(
+            seller_chat,
+            &expected_job,
+            next_step,
+            &offer.buyer_proxy,
+            0,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
     let setup = if next_step == "gm_ready" {
         ""
     } else {
         account_setup_prompt(next_step)
     };
     let _ = bot.send(seller_chat, &format!(
-        "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n✅ <b>Прокси покупателя для аккаунта:</b>\n<code>{}</code>\n\n{}",
-        esc(hash), esc(&offer.buyer_proxy), setup
+        "📦 <b>Оффер #{} · {}</b>\n\n💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n✅ <b>Прокси покупателя для аккаунта:</b>\n<code>{}</code>\n\n{}",
+        oid, esc(&offer.product), esc(hash), esc(&offer.buyer_proxy), setup
     )).await;
     if next_step == "gm_ready" {
         prepare_gemini_account(bot, store, seller_chat, None, 0).await;
-    } else {
-        let _ = store.set_want(seller_chat, next_step);
     }
 }
 
@@ -1884,11 +2537,28 @@ async fn start_seller_offer_handoff(
     hash: &str,
 ) {
     let (proxy_step, _) = handoff_steps(store, oid);
-    let _ = store.set_hproxy(seller_chat, "");
-    let _ = store.set_hproxy_order(seller_chat, 0);
-    let _ = store.set_want(seller_chat, proxy_step);
+    let product = store
+        .get_offer(oid)
+        .ok()
+        .flatten()
+        .map(|offer| offer.product)
+        .unwrap_or_default();
+    let Some(job) = store.active_seller_job(seller_chat).ok().flatten() else {
+        return;
+    };
+    if job.reference.kind != "offer"
+        || job.reference.offer_id != oid
+        || job.phase != "processing"
+        || !store
+            .set_handoff_state_for_seller_job(seller_chat, &job.reference, proxy_step, "", 0)
+            .unwrap_or(false)
+    {
+        return;
+    }
     let seller_prompt = format!(
-        "💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
+        "📦 <b>Оффер #{} · {}</b>\n\n💸 <b>Оплата отправлена!</b> tx: <code>{}</code>\n\n{}",
+        oid,
+        esc(&product),
         esc(hash),
         manual_proxy_prompt(proxy_step)
     );
@@ -2021,6 +2691,18 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
             if flow.step != expected_step {
                 return;
             }
+            if let Some(job) = store.active_seller_job(seller_chat).ok().flatten() {
+                let _ = bot
+                    .send(
+                        chat,
+                        &format!(
+                            "🟠 Этот продавец уже занят. Выбери свободного продавца или дождись завершения текущей сделки.\n\n<b>{}</b>",
+                            seller_job_label(&job)
+                        ),
+                    )
+                    .await;
+                return;
+            }
             let who = seller_label(store, seller_chat);
             flow.seller_chat = seller_chat;
             if flow.mode == "batch" {
@@ -2136,6 +2818,95 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         return;
     }
 
+    // Админское восстановление: откат ровно на предыдущую позицию требует отдельного подтверждения.
+    // Это исправляет данные, которые старая логика могла сдвинуть чужим single-handoff.
+    if let Some(rest) = data.strip_prefix("batchrewind:") {
+        if !admin {
+            return;
+        }
+        let parts: Vec<&str> = rest.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return;
+        }
+        let batch_id = parts[0].parse::<i64>().unwrap_or(0);
+        let target_item = parts[1].parse::<i64>().unwrap_or(0);
+        let action = parts[2];
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        let valid_current = batch.status == "processing"
+            && target_item > 0
+            && batch.current_item == target_item + 1;
+        if !valid_current {
+            let _ = bot
+                .send(chat, "Batch уже изменился; старая кнопка отката неактивна.")
+                .await;
+            return;
+        }
+        if action == "ask" {
+            let confirm: Keyboard = vec![vec![(
+                format!("⚠️ Да, вернуть к {}/{}", target_item, batch.quantity),
+                format!("batchrewind:{batch_id}:{target_item}:confirm"),
+            )]];
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "⚠️ <b>Подтверди откат batch #{}</b>\n\nСейчас: позиция <b>{}/{}</b>.\nСтанет: позиция <b>{}/{}</b>.\n\nТекущий ввод продавца будет сброшен, а предыдущая позиция снова станет незавершённой. Используй только если она была засчитана ошибочно.",
+                        batch_id,
+                        batch.current_item,
+                        batch.quantity,
+                        target_item,
+                        batch.quantity
+                    ),
+                    Some(&confirm),
+                )
+                .await;
+            return;
+        }
+        if action == "confirm" {
+            let Some(rewound_to) = store
+                .rewind_batch_to_previous(batch_id, batch.seller_chat)
+                .ok()
+                .flatten()
+            else {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Не удалось откатить batch: его состояние уже изменилось.",
+                    )
+                    .await;
+                return;
+            };
+            // Stop process-local capabilities as well as the persisted Gemini session removed by
+            // the DB transaction. Their eventual error callbacks are generation-guarded, but
+            // cancelling eagerly avoids needless work and stale seller messages.
+            setup_token::kill(batch.seller_chat);
+            crate::codex_login::cancel(batch.seller_chat);
+            let _ = bot
+                .send(
+                    chat,
+                    &format!(
+                        "✅ Batch #{} возвращён к позиции {}/{}. Продавцу отправлена новая точная карточка работы.",
+                        batch_id, rewound_to, batch.quantity
+                    ),
+                )
+                .await;
+            let _ = bot
+                .send(
+                    batch.seller_chat,
+                    &format!(
+                        "↩️ <b>Администратор исправил очередь.</b> Batch #{} возвращён к позиции <b>{}/{}</b>. Предыдущая отметка отменена; выполняй только новую карточку ниже.",
+                        batch_id, rewound_to, batch.quantity
+                    ),
+                )
+                .await;
+            start_batch_item(bot, store, cfg, batch_id, rewound_to, None).await;
+            return;
+        }
+        return;
+    }
+
     // Продавец: принять/отклонить batch целиком. Позиции продавцу будут открываться только после
     // одной общей выплаты и строго по одной.
     if let Some(rest) = data.strip_prefix("batch:") {
@@ -2167,13 +2938,16 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
             return;
         }
         if action == "accept" {
-            if store.active_batch_for_seller(chat).ok().flatten().is_some() {
-                let _ = bot.send(chat, "Сначала заверши уже обрабатываемый batch — новые позиции запускаются только последовательно.").await;
+            if let Some(job) = store.active_seller_job(chat).ok().flatten() {
+                let _ = bot.send(chat, &seller_busy_text(&job)).await;
                 return;
             }
             if !store.accept_batch(batch_id, chat).unwrap_or(false) {
                 let _ = bot
-                    .send(chat, "Этот batch уже обработан или больше недоступен.")
+                    .send(
+                        chat,
+                        "Этот batch уже обработан либо у тебя уже есть принятая/активная сделка. Сначала заверши её.",
+                    )
                     .await;
                 return;
             }
@@ -2259,6 +3033,49 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         return;
     }
 
+    // Админ: single-выплата тоже остаётся заблокированной после неопределённой ошибки. Retry
+    // разрешается только явным подтверждением после проверки BscScan/кошелька.
+    if let Some(rest) = data.strip_prefix("offerpayretry:") {
+        if !admin {
+            return;
+        }
+        let offer_id = rest.parse::<i64>().unwrap_or(0);
+        let Some(offer) = store.get_offer(offer_id).ok().flatten() else {
+            return;
+        };
+        let seller_chat = store
+            .active_seller_jobs()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|job| job.reference.kind == "offer" && job.reference.offer_id == offer_id)
+            .map(|job| job.seller_chat)
+            .unwrap_or(offer.seller_chat);
+        if !store
+            .reset_offer_payment(offer_id, seller_chat)
+            .unwrap_or(false)
+        {
+            let _ = bot
+                .send(chat, "Для этого оффера уже нет зависшей выплаты.")
+                .await;
+            return;
+        }
+        let pay_keyboard: Keyboard = vec![vec![(
+            "💸 Оплатить".into(),
+            format!("pay:{}:{}", offer_id, seller_chat),
+        )]];
+        let _ = bot
+            .send_kb(
+                chat,
+                &format!(
+                    "✅ Выплата оффера #{} разблокирована. Повторяй только если транзакции действительно нет.",
+                    offer_id
+                ),
+                Some(&pay_keyboard),
+            )
+            .await;
+        return;
+    }
+
     // Админ: одна выплата за весь batch. Статус paying делает callback идемпотентным.
     if let Some(rest) = data.strip_prefix("batchpay:") {
         if !admin {
@@ -2277,14 +3094,24 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
             let _ = bot.send(chat, "У продавца нет BEP-20 адреса.").await;
             return;
         }
-        if store
-            .active_batch_for_seller(batch.seller_chat)
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            let _ = bot.send(chat, "У этого продавца уже обрабатывается другой batch. Дождись его завершения перед следующей выплатой.").await;
-            return;
+        if let Some(job) = store.active_seller_job(batch.seller_chat).ok().flatten() {
+            let this_batch_waits_for_payment = job.reference.kind == "batch"
+                && job.reference.batch_id == batch_id
+                && job.reference.item_no == 0
+                && job.phase == "accepted";
+            if !this_batch_waits_for_payment {
+                let _ = bot
+                    .send(
+                        chat,
+                        &format!(
+                            "⛔ Выплата batch #{} не запущена: у продавца уже активна другая работа.\n\n<b>{}</b>",
+                            batch_id,
+                            seller_job_label(&job)
+                        ),
+                    )
+                    .await;
+                return;
+            }
         }
         let amount = match parse_amount(&batch.total_price) {
             Some(amount) if amount.is_finite() && amount > 0.0 => amount,
@@ -2420,6 +3247,28 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     return;
                 }
             };
+            if !store.claim_offer_payment(oid, seller_chat).unwrap_or(false) {
+                if let Some(job) = store.active_seller_job(seller_chat).ok().flatten() {
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "⛔ Выплата оффера #{} не запущена: у продавца уже активна работа.\n\n<b>{}</b>",
+                                oid,
+                                seller_job_label(&job)
+                            ),
+                        )
+                        .await;
+                } else {
+                    let _ = bot
+                        .send(
+                            chat,
+                            "Этот оффер уже оплачивается, оплачен или больше не ожидает выплату.",
+                        )
+                        .await;
+                }
+                return;
+            }
             let _ = bot
                 .send(
                     chat,
@@ -2432,7 +3281,29 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 .await;
             match pay(cfg, &seller.address, amount).await {
                 Ok(hash) => {
-                    let _ = store.set_response(oid, seller.uid, "paid");
+                    if !store.mark_offer_paid(oid, seller_chat).unwrap_or(false) {
+                        let _ = bot
+                            .send(
+                                chat,
+                                &format!(
+                                    "⚠️ Транзакция отправлена, но состояние оффера не обновилось. tx: <code>{}</code>. Не оплачивай повторно — сначала проверь BscScan и сообщи администратору.",
+                                    esc(&hash)
+                                ),
+                            )
+                            .await;
+                        notify_admins(
+                            bot,
+                            cfg,
+                            &format!(
+                                "⚠️ Оффер #{}: выплата отправлена, но handoff не запущен. tx: <code>{}</code>",
+                                oid,
+                                esc(&hash)
+                            ),
+                            Some(&offer_payment_review_kb(oid)),
+                        )
+                        .await;
+                        return;
+                    }
                     let _ = bot
                         .send(
                             chat,
@@ -2475,8 +3346,25 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 }
                 Err(e) => {
                     let _ = bot
-                        .send(chat, &format!("❌ Оплата не прошла: {}", esc(&e)))
+                        .send(
+                            chat,
+                            &format!(
+                                "❌ Оплата не подтверждена: {}\nСначала проверь BscScan/кошелёк продавца. Повтор разрешай только если транзакции действительно нет.",
+                                esc(&e)
+                            ),
+                        )
                         .await;
+                    notify_admins(
+                        bot,
+                        cfg,
+                        &format!(
+                            "⚠️ Оффер #{} остался заблокирован в статусе оплаты после ошибки: {}",
+                            oid,
+                            esc(&e)
+                        ),
+                        Some(&offer_payment_review_kb(oid)),
+                    )
+                    .await;
                 }
             }
         }
@@ -2496,12 +3384,33 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 }
             }
             if action == "reject" {
-                let _ = store.set_response(oid, uid, "rejected");
-                let _ = bot.send(chat, "Оффер отклонён.").await;
+                let decided = store.decide_offer(oid, uid, "rejected").unwrap_or(false);
+                let _ = bot
+                    .send(
+                        chat,
+                        if decided {
+                            "Оффер отклонён."
+                        } else {
+                            "Этот оффер уже был обработан; старая кнопка неактивна."
+                        },
+                    )
+                    .await;
                 return;
             }
             if action == "accept" {
-                let _ = store.set_response(oid, uid, "accepted");
+                if let Some(job) = store.active_seller_job(chat).ok().flatten() {
+                    let _ = bot.send(chat, &seller_busy_text(&job)).await;
+                    return;
+                }
+                if !store.accept_offer(oid, chat, uid).unwrap_or(false) {
+                    let _ = bot
+                        .send(
+                            chat,
+                            "Этот оффер уже обработан либо у тебя уже есть принятая/активная сделка. Сначала заверши её.",
+                        )
+                        .await;
+                    return;
+                }
                 let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
                 let o = store.get_offer(oid).ok().flatten();
                 let prod = o.as_ref().map(|x| x.product.clone()).unwrap_or_default();
@@ -2878,6 +3787,51 @@ mod tests {
         assert_eq!(handoff_steps(&store, chatgpt), ("cx_proxy", "cx_email"));
         assert_eq!(handoff_steps(&store, gemini), ("gm_gproxy", "gm_ready"));
         assert_eq!(handoff_steps(&store, 9_999), ("ho_proxy", "ho_email"));
+    }
+
+    #[test]
+    fn handoff_completion_requires_exact_source_item_and_product_kind() {
+        let job = SellerJob {
+            seller_chat: 42,
+            reference: SellerJobRef {
+                kind: "batch".into(),
+                offer_id: 0,
+                batch_id: 7,
+                item_no: 2,
+                token: "generation-a".into(),
+            },
+            product: "Google AI Pro".into(),
+            phase: "processing".into(),
+            total: 5,
+        };
+        assert!(seller_job_matches_handoff(
+            &job,
+            &job.reference,
+            HandoffKind::Gemini
+        ));
+        assert!(!seller_job_matches_handoff(
+            &job,
+            &SellerJobRef {
+                kind: "offer".into(),
+                offer_id: 7,
+                batch_id: 0,
+                item_no: 0,
+                token: "generation-a".into(),
+            },
+            HandoffKind::Gemini
+        ));
+        assert!(!seller_job_matches_handoff(
+            &job,
+            &job.reference,
+            HandoffKind::Codex
+        ));
+        let mut stale_generation = job.reference.clone();
+        stale_generation.token = "generation-before-rewind".into();
+        assert!(!seller_job_matches_handoff(
+            &job,
+            &stale_generation,
+            HandoffKind::Gemini
+        ));
     }
 
     /// Шаги трёх веток не должны пересекаться: одно и то же состояние в обеих отправило бы
