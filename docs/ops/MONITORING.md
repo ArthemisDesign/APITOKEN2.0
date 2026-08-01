@@ -13,8 +13,9 @@ database state only. Grafana users are auto-provisioned as viewers.
 
 - Host: CPU, memory, disk, inodes, clock, processes, systemd units, timers, and restart loops.
 - Ingress: Caddy per-host request metrics plus TLS and HTTP synthetic probes.
-- Engine: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work, Claude/Codex/
-  Gemini pool health, settlement backlog, and expired leases.
+- Engine: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work, cancellation-
+  safe admission queue depth/waits/cancellations/time, Claude/Codex/Gemini pool health, settlement
+  backlog, and expired leases.
 - Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state.
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.

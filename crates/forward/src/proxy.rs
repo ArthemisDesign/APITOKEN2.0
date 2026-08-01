@@ -136,51 +136,31 @@ impl Drop for HoldGuard {
     }
 }
 
-/// Гард fair-share-слота аккаунта: на ошибке/отмене освобождается при выходе из `forward`, а на
-/// успешном ответе переносится в body-stream и живёт до EOF/ошибки/Drop.
-pub(crate) struct KeyGuard {
-    limiter: Arc<crate::keylimiter::KeyLimiter>,
-    key: String,
-}
-impl KeyGuard {
-    pub(crate) fn new(limiter: Arc<crate::keylimiter::KeyLimiter>, key: String) -> Self {
-        Self { limiter, key }
-    }
-}
-impl Drop for KeyGuard {
-    fn drop(&mut self) {
-        self.limiter.release(&self.key);
-    }
-}
-
 type ResponseByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
 
-/// Держит fair-share и глобальный слоты до EOF/ошибки/Drop response body, а не только до возврата
-/// HTTP-заголовков. Поэтому длинные SSE и максимальные JSON-ответы входят в общий memory envelope.
-struct KeyGuardStream {
+/// Держит слот тяжёлой обработки до EOF/ошибки/Drop response body, а не только до возврата
+/// HTTP-заголовков. Поэтому длинные SSE и максимальные JSON-ответы входят в общий memory envelope,
+/// а дополнительные принятые запросы остаются лёгкими отменяемыми waiters.
+struct ProcessingPermitStream {
     inner: ResponseByteStream,
-    key_guard: Option<KeyGuard>,
     request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
-impl KeyGuardStream {
+impl ProcessingPermitStream {
     fn new(
         inner: ResponseByteStream,
-        key_guard: Option<KeyGuard>,
         request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Self {
         Self {
             inner,
-            key_guard,
             request_permit,
         }
     }
 
     fn release(&mut self) {
-        self.key_guard.take();
         self.request_permit.take();
     }
 }
-impl Stream for KeyGuardStream {
+impl Stream for ProcessingPermitStream {
     type Item = Result<bytes::Bytes, std::io::Error>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.get_mut();
@@ -855,14 +835,13 @@ pub async fn forward(
             Some(2),
         );
     }
-    // ГЛОБАЛЬНЫЙ анти-DoS потолок: занимаем слот ДО авторизации (иначе флуд неверными ключами насытил
-    // бы пул DB-читателей мимо fair-share). Для streaming response permit передаётся body-guard и живёт
-    // до EOF/drop клиента. Переполнение → 503 с Retry-After (клиент откатится).
-    let mut request_permit = Some(match app.concurrency.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            Metrics::inc(&app.metrics.breaker_rejects);
-            return local_err_for(LocalErr::Overloaded, "global_concurrency_limit", Some(2));
+    // Занимаем тяжёлый слот ДО авторизации и чтения тела. Когда envelope заполнен, запрос остаётся
+    // лёгким отменяемым waiter и продолжает сам после освобождения — локального concurrency 429/503
+    // больше нет. Permit передаётся response body и живёт до EOF/drop клиента.
+    let mut request_permit = Some(match crate::state::acquire_processing_permit(&app).await {
+        Ok(permit) => permit,
+        Err(()) => {
+            return local_err_for(LocalErr::Overloaded, "request_admission_closed", Some(2));
         }
     });
     let (parts, body) = req.into_parts();
@@ -893,25 +872,6 @@ pub async fn forward(
         return local_err(LocalErr::LowBalance, None);
     }
     Metrics::inc(&app.metrics.requests);
-    // fair-share ПО АККАУНТУ: не даём одному клиенту (профилю) набить флот бёрстом одновременных
-    // запросов — лимитим по account_id, а НЕ по ключу, иначе юзер с N ключами обошёл бы конверт в N раз.
-    // На ошибках слот держится до выхода handler; на успешном ответе переносится в body-stream и
-    // освобождается только на EOF/stream error/Drop. Админ — без лимита.
-    let mut key_guard = if let Authz::Metered { account_id, .. } = &authz {
-        if !app
-            .key_limiter
-            .try_acquire(account_id, app.cfg.max_inflight_per_key)
-        {
-            Metrics::inc(&app.metrics.key_throttled);
-            return local_err_for(LocalErr::RateLimited, "account_concurrency_limit", Some(1));
-        }
-        Some(KeyGuard {
-            limiter: app.key_limiter.clone(),
-            key: account_id.clone(),
-        })
-    } else {
-        None
-    };
     let method: Method = parts.method.clone();
     let pq = parts
         .uri
@@ -1938,7 +1898,7 @@ pub async fn forward(
                 }
                 // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
                 // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
-                return stream_back(st, resp, None, None, request_permit.take());
+                return stream_back(st, resp, None, request_permit.take());
             }
             if st.is_server_error() || code == 408 || code == 409 || code == 425 {
                 // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -2048,12 +2008,7 @@ pub async fn forward(
                 app.pool.mark_healthy(&sub.email);
                 None
             };
-            let stream_key_guard = if st.is_success() {
-                key_guard.take()
-            } else {
-                None
-            };
-            return stream_back(st, resp, meter, stream_key_guard, request_permit.take());
+            return stream_back(st, resp, meter, request_permit.take());
         }
         // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
         // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
@@ -2083,7 +2038,7 @@ pub async fn forward(
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
         if let Some((st, resp)) = last_upstream {
-            return stream_back(st, resp, None, None, request_permit.take());
+            return stream_back(st, resp, None, request_permit.take());
         }
         if backend_exhausted || tried.is_empty() {
             return last_local;
@@ -2250,7 +2205,6 @@ fn stream_back(
     st: StatusCode,
     resp: wreq::Response,
     meter: Option<MeterCtx>,
-    key_guard: Option<KeyGuard>,
     request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Response {
     let mut builder = Response::builder().status(st);
@@ -2264,8 +2218,8 @@ fn stream_back(
         .bytes_stream()
         .map(|chunk| chunk.map_err(std::io::Error::other));
     let mut stream: ResponseByteStream = Box::pin(stream);
-    if key_guard.is_some() || request_permit.is_some() {
-        stream = Box::pin(KeyGuardStream::new(stream, key_guard, request_permit));
+    if request_permit.is_some() {
+        stream = Box::pin(ProcessingPermitStream::new(stream, request_permit));
     }
     let mut stream: ResponseByteStream = match meter {
         Some(ctx) => Box::pin(TeeMeter::new(stream, ctx)),
@@ -2351,7 +2305,6 @@ mod tests {
     use crate::billing::AsyncBilling;
     use crate::breaker::Breaker;
     use crate::config::ProxyConfig;
-    use crate::keylimiter::KeyLimiter;
     use crate::upstream::Clients;
     use crate::{PricingBridgeConfig, PricingBridgeFallbackReason, ProviderMode};
     use axum::body::Body;
@@ -2372,7 +2325,6 @@ mod tests {
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 1,
-            max_inflight_per_key: 10,
             util_cap: 1.0,
             cool_secs: 1,
             smooth_wait_ms: 0,
@@ -2423,7 +2375,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            key_limiter: Arc::new(KeyLimiter::new()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,

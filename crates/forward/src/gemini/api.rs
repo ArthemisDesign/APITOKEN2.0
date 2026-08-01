@@ -424,7 +424,6 @@ impl From<AdmissionError> for ApiError {
                 error_info_reason: Some("API_KEY_INVALID"),
             },
             AdmissionError::Unavailable => Self::unavailable("gemini_admission_unavailable"),
-            AdmissionError::Busy => Self::rate_limited(Some(1)),
             // Reseller balance is a documented account state the customer must be able to detect and
             // act on (top up), kept as the cross-provider 402 contract. The envelope stays native.
             AdmissionError::LowBalance => Self {
@@ -1725,6 +1724,7 @@ async fn stream_response(
     // this narrow await window. No downstream byte is exposed until both steps have succeeded.
     let background = gateway
         .track_background_task()
+        .await
         .map_err(|_| ApiError::unavailable("gemini_shutdown"))?;
     admission.mark_delivering().await?;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
@@ -2136,32 +2136,13 @@ async fn api_inner(
     // multiple logical agent turns. Generate it once before selecting the first subscription.
     let upstream_request_id =
         generation.then(|| fresh_antigravity_request_id(model.is_image_generation()));
-    let admission = if matches!(
-        route.operation,
-        Operation::Generate | Operation::StreamGenerate
-    ) {
-        let (input, output, _, grounding) =
-            generation_controls(&value, &model, gateway.config().reserve_overhead_tokens);
-        let (admission, effective_output) = pending
-            .reserve(
-                &app,
-                &model,
-                input,
-                output,
-                requested_image_output_tokens,
-                grounding,
-                !model.is_image_generation(),
-            )
-            .await?;
-        // Always write the validated ceiling: this also clamps a hostile value above the model
-        // limit (and normalizes zero) even when the account can afford the complete request.
-        if !model.is_image_generation() {
-            cap_generation_output(&mut value, effective_output)?;
-        }
-        admission
-    } else {
-        pending.without_reserve()
-    };
+    // Capacity is selected before reserving customer money. If every healthy profile is busy the
+    // request waits without holding a balance reservation; the first real upstream attempt starts
+    // the normal reserve/delivery/settlement lifecycle exactly once across all profile retries.
+    let generation_budget = generation
+        .then(|| generation_controls(&value, &model, gateway.config().reserve_overhead_tokens));
+    let mut pending = Some(pending);
+    let mut admission: Option<GeminiAdmission> = None;
 
     let suffix = match route.operation {
         Operation::Generate => "generateContent",
@@ -2178,14 +2159,18 @@ async fn api_inner(
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway.select_routed(
-            &wire_model_id,
-            &excluded,
-            preferred_id.as_deref(),
-            &warm_profile_ids,
-            place_cache_root,
-            generation,
-        ) else {
+        let Some(lease) = gateway
+            .select_routed_wait(
+                &wire_model_id,
+                &excluded,
+                preferred_id.as_deref(),
+                &warm_profile_ids,
+                place_cache_root,
+                generation,
+                &app.metrics,
+            )
+            .await
+        else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
@@ -2200,6 +2185,33 @@ async fn api_inner(
                 Err(ApiError::rate_limited(retry))
             };
         };
+        if admission.is_none() {
+            let pending = pending
+                .take()
+                .expect("Gemini admission is initialized before the first upstream attempt");
+            let ready = if let Some((input, output, _, grounding)) = generation_budget {
+                let (admission, effective_output) = pending
+                    .reserve(
+                        &app,
+                        &model,
+                        input,
+                        output,
+                        requested_image_output_tokens,
+                        grounding,
+                        !model.is_image_generation(),
+                    )
+                    .await?;
+                // Always write the validated ceiling: this also clamps a hostile value above the
+                // model limit even when the account can afford the complete request.
+                if !model.is_image_generation() {
+                    cap_generation_output(&mut value, effective_output)?;
+                }
+                admission
+            } else {
+                pending.without_reserve()
+            };
+            admission = Some(ready);
+        }
         let profile = lease.profile().clone();
         let preserve_affinity_home = lease.preserves_affinity_home();
         let oauth_kind = profile.oauth_kind();
@@ -2432,6 +2444,9 @@ async fn api_inner(
                 profile.id(),
             )
             .await;
+            let admission = admission
+                .take()
+                .expect("Gemini admission exists after upstream selection");
             return stream_response(
                 gateway,
                 app.metrics.clone(),
@@ -2556,7 +2571,10 @@ async fn api_inner(
                     None
                 };
                 if route.operation == Operation::Generate
-                    && admission.requires_usage()
+                    && admission
+                        .as_ref()
+                        .expect("Gemini admission exists after upstream selection")
+                        .requires_usage()
                     && usage.is_none()
                 {
                     Metrics::inc(&app.metrics.gemini_usage_missing);
@@ -2564,6 +2582,9 @@ async fn api_inner(
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
                     return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
                 }
+                let admission = admission
+                    .take()
+                    .expect("Gemini admission exists after upstream selection");
                 admission.mark_delivering().await?;
                 let real_nano = admission.settle(&model, usage.as_ref());
                 profile.record_spend(real_nano).await;
@@ -2596,7 +2617,7 @@ async fn api_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AffinityStore, AsyncBilling, Breaker, Clients, KeyLimiter, ProxyConfig};
+    use crate::{AffinityStore, AsyncBilling, Breaker, Clients, ProxyConfig};
     use axum::http::Uri;
     use axum::routing::any;
     use futures_util::stream;
@@ -3094,7 +3115,6 @@ mod tests {
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 2,
-            max_inflight_per_key: 10,
             util_cap: 1.0,
             cool_secs: 60,
             smooth_wait_ms: 0,
@@ -3142,7 +3162,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            key_limiter: Arc::new(KeyLimiter::new()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(100)),
             probe_poke: None,
             cfg,
@@ -3869,8 +3888,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_profile_saturation_returns_a_short_native_retry_hint() {
-        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
+    async fn local_profile_saturation_waits_and_resumes_without_a_local_429() {
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![success])])).await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
         let mut leases = Vec::new();
         for _ in 0..fixture.gateway.config().max_inflight_per_profile {
             leases.push(
@@ -3880,30 +3904,120 @@ mod tests {
                     .unwrap(),
             );
         }
-        let response = invoke(
-            app_state(fixture.gateway.clone(), None),
+        let app = app_state(fixture.gateway.clone(), None);
+        let metrics = app.metrics.clone();
+        let request = tokio::spawn(invoke(
+            app,
             json!({"contents": [{"parts": [{"text": "queued turn"}]}]}),
             false,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        ));
+        tokio::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(
-            response
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok()),
-            Some("1")
+            Metrics::get(&metrics.admission_waiters),
+            1,
+            "the accepted request must wait without reaching upstream"
         );
-        let body = response_json(response).await;
-        assert!(body["error"]["details"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(
-                |detail| detail["@type"] == "type.googleapis.com/google.rpc.RetryInfo"
-                    && detail["retryDelay"] == "1s"
-            ));
+        assert!(!request.is_finished());
+        assert!(server.state.seen().is_empty());
         drop(leases);
+        let response = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .expect("capacity release wakes the waiter")
+            .expect("request task");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
+        assert_eq!(Metrics::get(&metrics.admission_waits), 1);
+        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_wait_is_canceled_with_the_client_future() {
+        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
+        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
+            .map(|_| {
+                fixture
+                    .gateway
+                    .select("gemini-integration-model", &HashSet::new(), None, true)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let metrics = Arc::new(Metrics::new());
+        let gateway = fixture.gateway.clone();
+        let waiter_metrics = metrics.clone();
+        let waiter = tokio::spawn(async move {
+            gateway
+                .select_routed_wait(
+                    "gemini-integration-model",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true,
+                    &waiter_metrics,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 1);
+        waiter.abort();
+        let canceled = waiter.await;
+        assert!(matches!(canceled, Err(error) if error.is_cancelled()));
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
+        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 1);
+        drop(leases);
+        assert!(fixture
+            .gateway
+            .select("gemini-integration-model", &HashSet::new(), None, true)
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn large_saturated_fanout_queues_every_request_without_local_rejection() {
+        const FANOUT: usize = 32;
+        let success = MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        );
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![success; FANOUT],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
+            .map(|_| {
+                fixture
+                    .gateway
+                    .select("gemini-integration-model", &HashSet::new(), None, true)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let app = app_state(fixture.gateway.clone(), None);
+        let metrics = app.metrics.clone();
+        let requests = (0..FANOUT)
+            .map(|index| {
+                tokio::spawn(invoke(
+                    app.clone(),
+                    json!({"contents": [{"parts": [{"text": format!("turn {index}")}]}]}),
+                    false,
+                ))
+            })
+            .collect::<Vec<_>>();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(Metrics::get(&metrics.admission_waiters), FANOUT as u64);
+        assert!(server.state.seen().is_empty());
+        drop(leases);
+
+        for request in requests {
+            let response = tokio::time::timeout(Duration::from_secs(5), request)
+                .await
+                .expect("fanout drains after capacity release")
+                .expect("request task");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(server.state.seen().len(), FANOUT);
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
+        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 0);
     }
 
     #[test]
@@ -3952,6 +4066,40 @@ mod tests {
 
     async fn billed_app(gateway: Arc<GeminiGateway>) -> (AppState, Arc<AsyncBilling>, PathBuf) {
         billed_app_with_balance(gateway, 1_000_000_000).await
+    }
+
+    #[tokio::test]
+    async fn capacity_wait_does_not_reserve_customer_balance() {
+        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
+        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
+            .map(|_| {
+                fixture
+                    .gateway
+                    .select("gemini-integration-model", &HashSet::new(), None, true)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (app, billing, path) = billed_app(fixture.gateway.clone()).await;
+        let metrics = app.metrics.clone();
+        let request = tokio::spawn(invoke_with_identity(
+            app,
+            json!({"contents": [{"parts": [{"text": "wait without money"}]}]}),
+            false,
+            CUSTOMER_KEY,
+            None,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 1);
+        assert_eq!(billing.totals().await.unwrap().reserved_nano, 0);
+        request.abort();
+        let canceled = request.await;
+        assert!(matches!(canceled, Err(error) if error.is_cancelled()));
+        drop(leases);
+        billing.flush().await.unwrap();
+        assert_eq!(billing.totals().await.unwrap().reserved_nano, 0);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

@@ -281,8 +281,13 @@ pub struct Metrics {
     pub upstream_5xx: AtomicU64, // backend-fault (5xx/408/409/425)
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,    // исчерпание пула (все за лимитом) → 429+Retry-After
-    pub key_throttled: AtomicU64, // отбито fair-share (кит превысил потолок одновременных)
     pub auth_failures: AtomicU64, // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
+    /// Lightweight requests waiting for the bounded heavy-processing envelope. Waiting is
+    /// cancellation-safe and never becomes a client-visible local concurrency rejection.
+    pub admission_waiters: AtomicU64,
+    pub admission_waits: AtomicU64,
+    pub admission_wait_canceled: AtomicU64,
+    pub admission_wait_micros: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,
@@ -295,6 +300,42 @@ pub struct Metrics {
     pricing_bridge: PricingBridgeMetrics,
     pricing_shadow: PricingShadowMetrics,
     strict_pricing: StrictPricingMetrics,
+}
+
+pub struct AdmissionWaitGuard<'a> {
+    metrics: &'a Metrics,
+    started: Instant,
+    active: bool,
+}
+
+impl AdmissionWaitGuard<'_> {
+    pub fn complete(mut self) {
+        self.metrics.admission_wait_micros.fetch_add(
+            self.started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        self.metrics
+            .admission_waiters
+            .fetch_sub(1, Ordering::Relaxed);
+        self.active = false;
+    }
+}
+
+impl Drop for AdmissionWaitGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.metrics
+                .admission_waiters
+                .fetch_sub(1, Ordering::Relaxed);
+            Self::inc_canceled(self.metrics);
+        }
+    }
+}
+
+impl AdmissionWaitGuard<'_> {
+    fn inc_canceled(metrics: &Metrics) {
+        Metrics::inc(&metrics.admission_wait_canceled);
+    }
 }
 
 pub struct PricingBridgeLatencyGuard<'a> {
@@ -321,6 +362,16 @@ impl Metrics {
     #[inline]
     pub fn get(c: &AtomicU64) -> u64 {
         c.load(Ordering::Relaxed)
+    }
+
+    pub fn admission_wait(&self) -> AdmissionWaitGuard<'_> {
+        Self::inc(&self.admission_waits);
+        Self::inc(&self.admission_waiters);
+        AdmissionWaitGuard {
+            metrics: self,
+            started: Instant::now(),
+            active: true,
+        }
     }
 
     pub fn pricing_bridge_selected(&self, provider: SnapshotProvider) {

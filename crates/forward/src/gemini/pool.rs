@@ -4,6 +4,7 @@ use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
 use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
 use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
 use crate::billing::AsyncBilling;
+use crate::metrics::Metrics;
 use anyhow::{bail, Context};
 use futures_util::StreamExt;
 use gemini_credential::{decode_envelope, GeminiCredential, OAuthKind, SecretString};
@@ -1438,6 +1439,7 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
 pub(crate) struct GeminiLease {
     profile: Arc<GeminiProfile>,
     preserve_affinity_home: bool,
+    capacity_notify: Arc<tokio::sync::Notify>,
 }
 
 impl GeminiLease {
@@ -1453,6 +1455,7 @@ impl GeminiLease {
 impl Drop for GeminiLease {
     fn drop(&mut self) {
         self.profile.inflight.fetch_sub(1, Ordering::AcqRel);
+        self.capacity_notify.notify_one();
     }
 }
 
@@ -1468,6 +1471,7 @@ pub struct GeminiGateway {
     shutting_down: AtomicBool,
     abort_streams: AtomicBool,
     abort_notify: tokio::sync::Notify,
+    capacity_notify: Arc<tokio::sync::Notify>,
     background_tasks: Arc<tokio::sync::Semaphore>,
 }
 
@@ -1525,12 +1529,22 @@ impl GeminiGateway {
             shutting_down: AtomicBool::new(false),
             abort_streams: AtomicBool::new(false),
             abort_notify: tokio::sync::Notify::new(),
+            capacity_notify: Arc::new(tokio::sync::Notify::new()),
             background_tasks: Arc::new(tokio::sync::Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
         })
     }
 
     pub fn config(&self) -> &GeminiConfig {
         &self.cfg
+    }
+
+    /// Aggregate protected upstream parallelism. Client admission may exceed this number: excess
+    /// requests remain lightweight waiters and resume when a lease is released.
+    pub fn admission_capacity(&self) -> usize {
+        self.profiles_snapshot()
+            .len()
+            .saturating_mul(self.cfg.max_inflight_per_profile)
+            .max(1)
     }
 
     fn profiles_snapshot(&self) -> Vec<Arc<GeminiProfile>> {
@@ -1577,6 +1591,7 @@ impl GeminiGateway {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.capacity_notify.notify_waiters();
         Ok(true)
     }
 
@@ -1777,6 +1792,7 @@ impl GeminiGateway {
                 return Some(GeminiLease {
                     profile,
                     preserve_affinity_home: preserve_preferred && !is_preferred,
+                    capacity_notify: self.capacity_notify.clone(),
                 });
             }
             if is_preferred {
@@ -1786,6 +1802,70 @@ impl GeminiGateway {
             }
         }
         None
+    }
+
+    fn locally_saturated(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        generation: bool,
+    ) -> bool {
+        let now = pool::now();
+        self.profiles_snapshot().iter().any(|profile| {
+            !excluded.contains(profile.id())
+                && profile.authenticated.load(Ordering::Acquire)
+                && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
+                && profile.inflight.load(Ordering::Acquire) >= self.cfg.max_inflight_per_profile
+        })
+    }
+
+    /// Wait only for process-local saturation. Provider quota/auth/cooling remains a terminal
+    /// selection result so callers can return the honest native 429/503 with its reset evidence.
+    /// Registering the notification before rechecking selection closes the release-before-wait race.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn select_routed_wait(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        preferred_id: Option<&str>,
+        warm_profile_ids: &HashSet<String>,
+        place_cache_root: bool,
+        generation: bool,
+        metrics: &Metrics,
+    ) -> Option<GeminiLease> {
+        let mut wait: Option<crate::metrics::AdmissionWaitGuard<'_>> = None;
+        loop {
+            let notified = self.capacity_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if let Some(lease) = self.select_routed(
+                model_id,
+                excluded,
+                preferred_id,
+                warm_profile_ids,
+                place_cache_root,
+                generation,
+            ) {
+                if let Some(guard) = wait.take() {
+                    guard.complete();
+                }
+                return Some(lease);
+            }
+            if self.shutting_down.load(Ordering::Acquire) {
+                return None;
+            }
+            if !self.locally_saturated(model_id, excluded, generation) {
+                if let Some(guard) = wait.take() {
+                    guard.complete();
+                }
+                return None;
+            }
+            if wait.is_none() {
+                wait = Some(metrics.admission_wait());
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn profile_id_for_home(
@@ -1827,12 +1907,6 @@ impl GeminiGateway {
                 let until = profile.cooling_until_for(model_id, &self.cfg, now, generation);
                 if until > now {
                     Some(until)
-                } else if profile.inflight.load(Ordering::Acquire)
-                    >= self.cfg.max_inflight_per_profile
-                {
-                    // No provider reset applies to a transient local concurrency envelope. Give
-                    // SDKs a short native RetryInfo instead of a headerless synthetic 429.
-                    Some(now.saturating_add(1))
                 } else {
                     None
                 }
@@ -1846,7 +1920,7 @@ impl GeminiGateway {
             .any(|profile| profile.authenticated.load(Ordering::Acquire))
     }
 
-    pub(crate) fn track_background_task(
+    pub(crate) async fn track_background_task(
         &self,
     ) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
         if self.shutting_down.load(Ordering::Acquire) {
@@ -1855,8 +1929,9 @@ impl GeminiGateway {
         let permit = self
             .background_tasks
             .clone()
-            .try_acquire_owned()
-            .context("Gemini background task limit reached")?;
+            .acquire_owned()
+            .await
+            .context("Gemini background task barrier closed")?;
         if self.shutting_down.load(Ordering::Acquire) {
             bail!("Gemini provider is shutting down");
         }
@@ -2035,11 +2110,13 @@ impl GeminiGateway {
                 }
             }
         }
+        self.capacity_notify.notify_waiters();
         healthy
     }
 
     pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
         self.shutting_down.store(true, Ordering::Release);
+        self.capacity_notify.notify_waiters();
         let barrier = self
             .background_tasks
             .clone()
@@ -2750,7 +2827,7 @@ mod tests {
     }
 
     #[test]
-    fn saturated_profile_publishes_a_short_retry_hint() {
+    fn saturated_profile_does_not_publish_a_fake_provider_reset() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
         let roster = dir.join("profiles.json");
@@ -2761,11 +2838,9 @@ mod tests {
         let _lease = gateway
             .select("gemini-test", &HashSet::new(), None, true)
             .unwrap();
-        let now = pool::now();
-        let ready = gateway
+        assert!(gateway
             .soonest_ready("gemini-test", &HashSet::new(), true)
-            .unwrap();
-        assert!((1..=2).contains(&ready.saturating_sub(now)));
+            .is_none());
         let _ = fs::remove_dir_all(dir);
     }
 

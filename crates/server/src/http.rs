@@ -732,7 +732,10 @@ async fn metrics(
          # TYPE claude_api_upstream_5xx_total counter\nclaude_api_upstream_5xx_total {}\n\
          # TYPE claude_api_breaker_rejects_total counter\nclaude_api_breaker_rejects_total {}\n\
          # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
-         # TYPE claude_api_key_throttled_total counter\nclaude_api_key_throttled_total {}\n\
+         # TYPE claude_api_admission_waiters gauge\nclaude_api_admission_waiters {}\n\
+         # TYPE claude_api_admission_waits_total counter\nclaude_api_admission_waits_total {}\n\
+         # TYPE claude_api_admission_wait_canceled_total counter\nclaude_api_admission_wait_canceled_total {}\n\
+         # TYPE claude_api_admission_wait_seconds_total counter\nclaude_api_admission_wait_seconds_total {:.6}\n\
          # TYPE claude_api_auth_failures_total counter\nclaude_api_auth_failures_total {}\n\
          # TYPE claude_api_route_rebind_total counter\nclaude_api_route_rebind_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
@@ -760,7 +763,10 @@ async fn metrics(
         g(&m.upstream_5xx),
         g(&m.breaker_rejects),
         g(&m.exhausted),
-        g(&m.key_throttled),
+        g(&m.admission_waiters),
+        g(&m.admission_waits),
+        g(&m.admission_wait_canceled),
+        g(&m.admission_wait_micros) as f64 / 1_000_000.0,
         g(&m.auth_failures),
         rs.rebind,
         rs.pin,
@@ -3622,7 +3628,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(forward::Breaker::new(0)),
             metrics: Arc::new(Metrics::new()),
-            key_limiter: Arc::new(forward::KeyLimiter::new()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(16)),
             probe_poke: None,
         }

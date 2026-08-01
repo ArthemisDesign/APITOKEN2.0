@@ -2055,14 +2055,15 @@ impl CodexGateway {
 
     /// Reserve one detached stream task in the shutdown barrier. The second shutdown check closes
     /// the race where shutdown starts after the first check but before the permit is acquired.
-    pub(crate) fn track_background_task(&self) -> Result<OwnedSemaphorePermit, ProcessError> {
+    pub(crate) async fn track_background_task(&self) -> Result<OwnedSemaphorePermit, ProcessError> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(ProcessError::Closed);
         }
         let permit = self
             .background_tasks
             .clone()
-            .try_acquire_owned()
+            .acquire_owned()
+            .await
             .map_err(|_| ProcessError::Closed)?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(ProcessError::Closed);

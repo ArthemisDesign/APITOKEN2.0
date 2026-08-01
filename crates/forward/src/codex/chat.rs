@@ -1025,7 +1025,7 @@ async fn stream_chat(
     max_output_chars: Option<usize>,
     routing: Option<super::TurnRouting>,
 ) -> Response {
-    let task_permit = match gateway.track_background_task() {
+    let task_permit = match gateway.track_background_task().await {
         Ok(permit) => permit,
         Err(error) => return ApiError::from(error).into_response(),
     };

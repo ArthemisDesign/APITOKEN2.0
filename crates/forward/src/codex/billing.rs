@@ -857,7 +857,6 @@ mod tests {
     use crate::breaker::Breaker;
     use crate::codex::CodexPrices;
     use crate::config::ProxyConfig;
-    use crate::keylimiter::KeyLimiter;
     use crate::upstream::Clients;
     use crate::{PricingBridgeConfig, PricingBridgeFallbackReason, ProviderMode};
     use pool::{Pool, Reserve};
@@ -910,7 +909,6 @@ mod tests {
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 1,
-            max_inflight_per_key: 10,
             util_cap: 1.0,
             cool_secs: 60,
             smooth_wait_ms: 0,
@@ -958,7 +956,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            key_limiter: Arc::new(KeyLimiter::new()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,

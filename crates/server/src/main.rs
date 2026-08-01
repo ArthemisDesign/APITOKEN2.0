@@ -25,10 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// Fail-closed bounded defaults until these knobs are represented by validated Settings fields.
-// AUDIT-TODO(C60/C89): add typed, range-checked fields in config.rs before restoring env overrides.
-// A non-SSE response may require a 32 MiB usage document copy. Keep the aggregate buffer envelope
-// comfortably below systemd MemoryMax=2G, leaving room for request JSON, TLS and runtime overhead.
+// A non-SSE response may require a 32 MiB usage document copy. Keep the aggregate heavy-processing
+// envelope comfortably below systemd MemoryMax=2G. This is not a client admission cap: additional
+// requests wait asynchronously before auth/body/reservation and are resumed as permits are released.
 const MAX_CONCURRENT: usize = 24;
 const LEDGER_RETENTION_DAYS: i64 = 30;
 /// Terminal reservations and their actual/shadow children outlive the maximum supported replay
@@ -1372,6 +1371,18 @@ async fn serve() -> Result<()> {
     } else {
         eprintln!("pricing shadow: disabled (default-off)");
     }
+    let provider_parallelism = match s.provider {
+        forward::ProviderMode::Anthropic | forward::ProviderMode::Combined => {
+            fleet_size.saturating_mul(s.max_inflight.max(1) as usize)
+        }
+        forward::ProviderMode::Gemini => gemini
+            .as_ref()
+            .map(|gateway| gateway.admission_capacity())
+            .unwrap_or(1),
+        // Codex does not enter this semaphore; per-home parallelism is intentionally unbounded.
+        forward::ProviderMode::OpenAi => MAX_CONCURRENT,
+    };
+    let active_processing_slots = provider_parallelism.clamp(1, MAX_CONCURRENT);
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1393,10 +1404,9 @@ async fn serve() -> Result<()> {
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
         metrics,
-        key_limiter: Arc::new(forward::KeyLimiter::new()),
-        // Глобальный потолок одновременной обработки (анти-DoS). Permit живёт до EOF/drop response;
-        // 24 максимальных 32 MiB JSON-ответа держат accumulator-envelope не выше 768 MiB.
-        concurrency: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT)),
+        // The active envelope follows protected provider capacity up to the memory-safe ceiling.
+        // Requests beyond it queue instead of receiving a synthetic concurrency error.
+        concurrency: Arc::new(tokio::sync::Semaphore::new(active_processing_slots)),
         probe_poke: if s.proxy.poll {
             Some(poke.clone())
         } else {

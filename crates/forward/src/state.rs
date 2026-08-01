@@ -6,7 +6,6 @@ use crate::breaker::Breaker;
 use crate::codex::CodexGateway;
 use crate::config::ProxyConfig;
 use crate::gemini::GeminiGateway;
-use crate::keylimiter::KeyLimiter;
 use crate::metrics::Metrics;
 use crate::pricing::PricingShadowRuntime;
 use crate::upstream::Clients;
@@ -80,11 +79,9 @@ pub struct AppState {
     pub breaker: Arc<Breaker>,
     /// Счётчики форвардинга для `/metrics`.
     pub metrics: Arc<Metrics>,
-    /// Fair-share: счётчик одновременных запросов на клиентский ключ (кит не набивает флот).
-    pub key_limiter: Arc<KeyLimiter>,
-    /// ГЛОБАЛЬНЫЙ потолок одновременной обработки запросов (анти-DoS): флуд неверными ключами или
-    /// тяжёлыми телами не должен насытить пул DB-читателей/память сверх лимита. Разрешение держится
-    /// до EOF/ошибки/Drop response body, включая длинный SSE-стрим. Переполнение → 503.
+    /// Bounded heavy-processing envelope: request admission itself is unbounded and waits
+    /// asynchronously when every permit is busy. The permit lives through EOF/error/Drop,
+    /// including a long SSE stream, so accepted waiters do not multiply large response buffers.
     /// Connection-level slowloris/idle-таймауты —
     /// это reverse-proxy (Caddy/nginx/CF, Фаза 3 вместе с TLS), здесь бьём по стоимости обработки.
     pub concurrency: Arc<tokio::sync::Semaphore>,
@@ -92,4 +89,80 @@ pub struct AppState {
     /// подписка отдала 401/403 → надо СРАЗУ рассудить чистым probe, мёртв ли токен). `None` → поллер
     /// выключен (`CLAUDE_API_POLL=0`), тогда probe-по-требованию просто не нужен.
     pub probe_poke: Option<Arc<tokio::sync::Notify>>,
+}
+
+/// Enter the bounded expensive-processing envelope without rejecting a concurrent request. The
+/// semaphore wait owns no customer reservation, reads no request body and is canceled automatically
+/// when Axum drops a disconnected request future.
+pub(crate) async fn acquire_processing_permit(
+    app: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ()> {
+    acquire_processing_permit_from(app.concurrency.clone(), &app.metrics).await
+}
+
+async fn acquire_processing_permit_from(
+    semaphore: Arc<tokio::sync::Semaphore>,
+    metrics: &Metrics,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ()> {
+    match semaphore.clone().try_acquire_owned() {
+        Ok(permit) => Ok(permit),
+        Err(tokio::sync::TryAcquireError::NoPermits) => {
+            let wait = metrics.admission_wait();
+            let permit = semaphore.acquire_owned().await.map_err(|_| ())?;
+            wait.complete();
+            Ok(permit)
+        }
+        Err(tokio::sync::TryAcquireError::Closed) => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn processing_envelope_queues_and_resumes_instead_of_rejecting() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let occupied = semaphore.clone().acquire_owned().await.unwrap();
+        let metrics = Arc::new(Metrics::new());
+        let waiter_semaphore = semaphore.clone();
+        let waiter_metrics = metrics.clone();
+        let waiter = tokio::spawn(async move {
+            acquire_processing_permit_from(waiter_semaphore, &waiter_metrics).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished());
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 1);
+        drop(occupied);
+        let permit = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("released envelope wakes one waiter")
+            .expect("wait task")
+            .expect("processing permit");
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
+        assert_eq!(Metrics::get(&metrics.admission_waits), 1);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn processing_wait_cancellation_does_not_leak_a_waiter_or_permit() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let occupied = semaphore.clone().acquire_owned().await.unwrap();
+        let metrics = Arc::new(Metrics::new());
+        let waiter_semaphore = semaphore.clone();
+        let waiter_metrics = metrics.clone();
+        let waiter = tokio::spawn(async move {
+            acquire_processing_permit_from(waiter_semaphore, &waiter_metrics).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
+        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 1);
+        drop(occupied);
+        assert!(semaphore.try_acquire().is_ok());
+    }
 }

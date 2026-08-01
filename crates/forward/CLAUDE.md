@@ -216,11 +216,16 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 что и бой). Identity/beta/anthropic-version НЕ варьируем — они корректностные (нет ground-truth на
 правдоподобные альтернативы). Env: `CLAUDE_API_UA` (один или список), `CLAUDE_API_UA_SPREAD`.
 
-**Fair-share (`keylimiter.rs`):** `KeyLimiter` кап-ирует ОДНОВРЕМЕННЫЕ запросы на метерный ключ
-(`max_inflight_per_key`, деф 20; 0=выкл) — баланс ограничивает суммарный расход, но не одновременность,
-и без этого один «кит» бёрстом залил бы флот, оставив остальных на 429. Слот держит `KeyGuard` всю
-обработку запроса (освобождает на любом исходе/отмене). Превышение → `429 slow down` + метрика
-`key_throttled`. Админ (env-ключ/localhost) — без лимита.
+**Неограниченный client admission:** Claude и Gemini больше не возвращают локальный `429/503` из-за
+числа одновременных запросов, а per-account fair-share gate удалён. Memory-safe process envelope
+ограничивает только число тяжёлых обработчиков/response buffers: лишний запрос остаётся лёгким async
+waiter ДО auth, чтения body и денежного reserve, затем автоматически продолжает по освобождению.
+Wait future отменяется при disconnect/shutdown; метрики `admission_waiters`, `admission_waits_total`,
+`admission_wait_canceled_total`, `admission_wait_seconds_total` показывают очередь без client/account
+labels. Защитный per-subscription/profile upstream envelope сохраняется: throughput растёт вместе с
+флотом, а не ценой бан-сигнала одной подписки. Codex не имеет process/per-home/per-account request
+cap; его bounded background semaphore — только shutdown barrier и при заполнении тоже ждёт, не
+отказывает. Provider quota/cooling по-прежнему честно дают native `429 + Retry-After`.
 
 **RAII-гарды на отмену запроса (критично):** клиент рвёт соединение → future хендлера дропается на
 `await`; без гардов `mark_used(+1)` и `reserve(hold)` НЕ откатывались бы (утечка ёмкости персоны +
@@ -417,12 +422,15 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    settle-ить последний snapshot и только потом отпустить background semaphore permit для
    последующего billing flush.
    Per-profile inflight атомарно ограничен (default 6). Resolved conversation affinity — hard first
-   choice до этого потолка; насыщенный home временно spill-ит без потери binding. Новая shared
+   choice до этого потолка; насыщенный home временно spill-ит без потери binding. Если весь eligible
+   fleet занят, запрос событийно ждёт release/reload/probe без polling и без денежного reserve;
+   disconnect отменяет waiter, shutdown будит его. Новая shared
    system/tools cache-root сначала прогревает два конкурентных profile, затем предпочитает warm
    copy. Unbound routing ставит fresh quota evidence перед stale, затем inflight, coarse quota
    steering только выше 50% used и rotating cursor: exact fractions не herd-ят бёрст на один
    аккаунт. Deterministic soft reserve/jitter сохраняется; если все eligible profiles ниже резерва,
-   service floor fail-open до explicit zero. Локальное saturation отдаёт короткий native RetryInfo.
+   service floor fail-open до explicit zero. Локальное saturation никогда не становится public
+   ошибкой; native RetryInfo остаётся только для реальной provider quota/cooling.
    `/gemini-subs` отделяет quota presence от generation health через failure streak и last
    success/failure evidence и отдаёт reviewed paid-plan identity без Google subject/email/project
    или private tier.

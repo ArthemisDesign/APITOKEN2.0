@@ -2,7 +2,7 @@
 
 use super::config::GeminiModel;
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
-use crate::proxy::{authorize, Authz, HoldGuard, KeyGuard};
+use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
 use std::net::SocketAddr;
@@ -12,7 +12,6 @@ use std::sync::atomic::Ordering;
 pub(crate) enum AdmissionError {
     Unauthorized,
     Unavailable,
-    Busy,
     LowBalance,
 }
 
@@ -28,13 +27,11 @@ struct Reservation {
 
 pub(crate) struct GeminiAdmission {
     _request_permit: tokio::sync::OwnedSemaphorePermit,
-    _key_guard: Option<KeyGuard>,
     reservation: Option<Reservation>,
 }
 
 pub(crate) struct PendingGeminiAdmission {
     request_permit: tokio::sync::OwnedSemaphorePermit,
-    key_guard: Option<KeyGuard>,
     authz: Authz,
 }
 
@@ -46,7 +43,6 @@ impl PendingGeminiAdmission {
     pub(crate) fn without_reserve(self) -> GeminiAdmission {
         GeminiAdmission {
             _request_permit: self.request_permit,
-            _key_guard: self.key_guard,
             reservation: None,
         }
     }
@@ -118,7 +114,6 @@ impl PendingGeminiAdmission {
         Ok((
             GeminiAdmission {
                 _request_permit: self.request_permit,
-                _key_guard: self.key_guard,
                 reservation,
             },
             effective_output_tokens,
@@ -211,10 +206,9 @@ pub(crate) async fn begin_admission(
     if !app.authority_ready.load(Ordering::Acquire) {
         return Err(AdmissionError::Unavailable);
     }
-    let request_permit = app.concurrency.clone().try_acquire_owned().map_err(|_| {
-        Metrics::inc(&app.metrics.breaker_rejects);
-        AdmissionError::Busy
-    })?;
+    let request_permit = crate::state::acquire_processing_permit(app)
+        .await
+        .map_err(|()| AdmissionError::Unavailable)?;
     let authz = authorize(app, headers, peer).await;
     match &authz {
         Authz::Admin { .. } => {}
@@ -238,21 +232,8 @@ pub(crate) async fn begin_admission(
     }
     Metrics::inc(&app.metrics.requests);
 
-    let key_guard = if let Authz::Metered { account_id, .. } = &authz {
-        if !app
-            .key_limiter
-            .try_acquire(account_id, app.cfg.max_inflight_per_key)
-        {
-            Metrics::inc(&app.metrics.key_throttled);
-            return Err(AdmissionError::Busy);
-        }
-        Some(KeyGuard::new(app.key_limiter.clone(), account_id.clone()))
-    } else {
-        None
-    };
     Ok(PendingGeminiAdmission {
         request_permit,
-        key_guard,
         authz,
     })
 }
@@ -452,8 +433,8 @@ fn settled_charge(
 mod tests {
     use super::*;
     use crate::{
-        AffinityStore, Breaker, Clients, KeyLimiter, PricingBridgeConfig, PricingShadowConfig,
-        ProviderMode, ProxyConfig,
+        AffinityStore, Breaker, Clients, PricingBridgeConfig, PricingShadowConfig, ProviderMode,
+        ProxyConfig,
     };
     use pool::{Pool, Reserve};
     use registry::pricing::{FundingEnforcement, PolicyEnforcement, PricingMode};
@@ -472,7 +453,6 @@ mod tests {
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             max_tries: 1,
-            max_inflight_per_key: 10,
             util_cap: 1.0,
             cool_secs: 1,
             smooth_wait_ms: 0,
@@ -520,7 +500,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            key_limiter: Arc::new(KeyLimiter::new()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,

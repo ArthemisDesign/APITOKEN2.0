@@ -108,6 +108,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
   rotation on an explicit provider `reached` verdict or
   an explicit provider `limit_reached`/`allowed: false` verdict, and returns a single
   OpenAI-shaped `429 + Retry-After` at the soonest window reset.
+- **Concurrency.** User turns have no process, per-home or per-account request ceiling. In-flight is
+  only a load-balancing signal. The bounded detached-task semaphore exists solely as the shutdown
+  drain barrier; if it is ever full, admission waits instead of returning a local concurrency error.
 - **Blame classification.** 429/usage-limit → account fault (cooling until reset, rotation does
   not spend the transport budget); first 401 → one forced refresh + one retry on the same
   profile, second → auth quarantine; timeout/5xx/EOF → transport axis

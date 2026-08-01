@@ -15,7 +15,6 @@ mod breaker;
 pub mod codex;
 mod config;
 pub mod gemini;
-mod keylimiter;
 mod meter;
 mod metrics;
 pub mod nodetls;
@@ -44,7 +43,6 @@ pub use gemini::{
     GEMINI_NODE_EXPECTED_JA4, GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
-pub use keylimiter::KeyLimiter;
 pub use metrics::{
     Metrics, StrictPricingProvider, StrictPricingRejectionReason,
     PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,

@@ -275,7 +275,9 @@ For every request the runtime:
 
 - resolves opaque tenant-bound prompt affinity and prefers the same subscription while its
   concurrency slot is available. Saturation spills only the current request; the binding remains,
-  so the next turn returns to the warm home. Independent sessions with the same large
+  so the next turn returns to the warm home. If every eligible profile is busy, the accepted request
+  waits on release/reload/probe events without polling, reading another large body or reserving
+  customer balance; disconnect cancels the waiter and shutdown wakes it. Independent sessions with the same large
   system/tools cache root deliberately seed two competitive subscriptions before a warm copy is
   preferred, preventing one common prefix from collapsing the fleet onto its first home;
 - for text generation, derives a UUID-shaped upstream `request.sessionId` from the keyed affinity
@@ -319,7 +321,9 @@ For every request the runtime:
   sample until the next complete interval; a later reset preserves the already measured blend and
   envelope while rearming the safe anchor. Cumulative spend, CAS state and raw replay evidence live
   in the engine authority and survive blue-green deploys and estimator rebuilds;
-- limits each paid profile to a bounded number of concurrent requests. For unbound work, fresh
+- limits each paid profile to a bounded number of upstream requests while client admission itself
+  is unbounded: excess fan-out queues instead of receiving a synthetic local concurrency error.
+  For unbound work, fresh
   quota evidence wins over stale evidence, then current in-flight load spreads the burst, and only
   coarse 10-point quota buckets above 50% used steer near the wall; an atomic cursor rotates equal
   candidates. Never-arrived quota evidence is neutral, while stale evidence remains fail-open but
@@ -515,7 +519,7 @@ Official evidence reviewed on 2026-07-31:
 | network/token refresh, `408`, `409`, `425` | short profile cooldown | bounded rotation |
 | generation `5xx` or malformed wrapper/stream | exponential model cooldown | bounded rotation without disabling other models |
 | other deterministic `4xx` | keep profile healthy | return a synthetic native-shaped error |
-| all eligible profiles at local concurrency cap | keep bindings and profiles healthy | native `429` with a short `RetryInfo` |
+| all eligible profiles at local concurrency cap | keep bindings and profiles healthy | wait for a release/reload/probe event; no local `429`, no balance reservation while waiting |
 
 Private error bodies are never returned verbatim. They may contain account, project, tier or private
 endpoint details. Public errors retain only a generic Google-shaped status.
@@ -603,5 +607,6 @@ Expected safety properties are covered by tests for envelope AAD/key rotation, d
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster
 reload, query/header credential stripping, Code Assist wrapper/credit removal, bounded response
 parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh, sticky/spill affinity,
-two-copy shared-root warming, stale-quota ordering, concurrent admission caps, split SSE translation,
+two-copy shared-root warming, stale-quota ordering, queued concurrent admission and cancellation,
+large saturated fan-out without local rejection, split SSE translation,
 no post-event retry, disconnect drain and shutdown settlement.

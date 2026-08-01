@@ -879,10 +879,6 @@ impl Settings {
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
                 upstream: ev_upstream(),
                 max_tries: bounded_usize("CLAUDE_API_MAX_TRIES", 3, 1, 10),
-                // Fair-share: потолок одновременных запросов на клиентский ключ (кит не набивает флот).
-                max_inflight_per_key: bounded_usize(
-                    "CLAUDE_API_MAX_INFLIGHT_PER_KEY", 20, 1, 1_024,
-                ) as u32,
                 util_cap: ev_frac("CLAUDE_API_UTIL_CAP", 0.95),
                 cool_secs: bounded_i64("CLAUDE_API_COOL_SECS", 300, 1, 8 * 24 * 3600),
                 // Гладкий UX: тихий wait+retry ротации при транзиентной нехватке (деф 8с). 0 = выкл.
