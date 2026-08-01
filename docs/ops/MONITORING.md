@@ -279,10 +279,10 @@ between exact observed fraction and gateway spend; confidence cannot turn foreig
 gateway cost.
 An estimate intentionally remains unknown when a new percentage snapshot arrives before its
 positive gateway settlement; it should appear as soon as settlement catches up, without waiting for
-another percentage point. A cold anchor and its first positive transition are also intentionally
-censored; the next complete interval publishes the first estimate. A persistent unknown after
-multiple settled fraction movements indicates a calibration writer or authority problem rather
-than a reason to impose an admission limit.
+another percentage point. A cold anchor is unknown by itself; its first complete positive movement
+with settled gateway spend publishes the first estimate immediately. A persistent unknown after
+such a movement indicates a calibration writer or authority problem rather than a reason to impose
+an admission limit.
 
 ## CodexHomeUnauthenticated
 

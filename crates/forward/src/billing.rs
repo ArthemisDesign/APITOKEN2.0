@@ -3157,7 +3157,8 @@ mod tests {
             .observe_codex_window("home-a", 300, 2_000_000_000, 12, 12_000_000, 101)
             .await
             .unwrap();
-        assert!(measured.current_capacity_nano.is_none());
+        assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(measured.samples, 1);
         assert!(measured.anchor_ready);
         first
             .credit_codex_spend("home-a", 40_000_000_000, 102)
@@ -3168,6 +3169,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(measured.samples, 2);
         let (_, duplicate) = first
             .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 102)
             .await

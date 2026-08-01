@@ -2,9 +2,9 @@
 //!
 //! The provider reports decimal utilisation and an explicit duration/reset. The gateway pairs
 //! that fixed-point snapshot with cumulative exact official-API-price spend for the same opaque
-//! profile. A cold snapshot is only an anchor, and the first movement is censored because that
-//! anchor may have arrived part-way through one quantisation cell. Every later positive movement
-//! with settled positive spend contributes to the realized workload blend:
+//! profile. A cold snapshot is only an anchor and does not publish a nominal. The first positive
+//! movement with settled positive spend is already a complete interval between two fixed-point
+//! snapshots, so it and every later positive movement contribute to the realized workload blend:
 //!
 //! `capacity_nano = FRACTION_SCALE * ΣΔspend_nano / ΣΔused_fraction_units`.
 //!
@@ -19,7 +19,7 @@ use registry::{CodexCalibrationRow, CodexWindowObservation};
 
 pub const FRACTION_SCALE: i64 = 100_000_000;
 const PERCENT_SCALE: i64 = FRACTION_SCALE / 100;
-pub const ESTIMATOR_VERSION: i64 = 6;
+pub const ESTIMATOR_VERSION: i64 = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -62,7 +62,7 @@ impl WindowCalibration {
                 anchor_spend_nano: observation.gateway_spend_nano,
                 used_percent: observation.used_percent,
                 observed_at: observation.observed_at,
-                // Legacy WLS fields stay zero in estimator v6. They remain in storage so the
+                // Legacy WLS fields stay zero in estimator v7. They remain in storage so the
                 // migration-first rollout is expand-only for the previous binary.
                 sum_used_sq: 0,
                 sum_used_spend_nano: 0,
@@ -77,7 +77,7 @@ impl WindowCalibration {
                 last_high_nano: None,
                 last_confidence_bp: 0,
                 last_measured_at: None,
-                anchor_ready: false,
+                anchor_ready: true,
                 anchor_used_fraction_units: observation.used_fraction_units,
                 used_fraction_units: observation.used_fraction_units,
                 observed_fraction_units: 0,
@@ -182,12 +182,6 @@ impl WindowCalibration {
             return Ok(());
         }
 
-        if !self.row.anchor_ready {
-            self.advance_anchor(observation);
-            self.row.anchor_ready = true;
-            return Ok(());
-        }
-
         self.update_workload_envelope(delta_used, delta_spend)?;
         self.row.observed_fraction_units = self
             .row
@@ -219,7 +213,7 @@ impl WindowCalibration {
     fn begin_window(&mut self, observation: &CodexWindowObservation) {
         self.row.resets_at = observation.resets_at;
         self.advance_anchor(observation);
-        self.row.anchor_ready = false;
+        self.row.anchor_ready = true;
         self.row.used_fraction_units = observation.used_fraction_units;
         self.row.used_percent = observation.used_percent;
         self.row.observed_at = observation.observed_at;
@@ -397,6 +391,7 @@ fn validate_row(row: &CodexCalibrationRow) -> anyhow::Result<()> {
         || !(0..=10_000).contains(&row.current_confidence_bp)
         || row.last_measured_at.is_some_and(|value| value <= 0)
         || row.estimator_version != ESTIMATOR_VERSION
+        || !row.anchor_ready
         || row.version < 0
         || row.samples == 0
             && (row.observed_fraction_units != 0
@@ -506,20 +501,21 @@ mod tests {
     }
 
     #[test]
-    fn cold_anchor_and_first_movement_publish_no_prior() {
+    fn cold_anchor_stays_unknown_but_first_complete_movement_publishes() {
         let row = next(None, observation(12_125_000, 0, 100));
+        assert!(row.anchor_ready);
         assert!(WindowCalibration::from_row(row.clone())
             .unwrap()
             .estimate()
             .is_none());
         let row = next(Some(row), observation(12_125_100, 10_000, 101));
         assert!(row.anchor_ready);
-        assert_eq!(row.samples, 0);
-        assert!(row.current_capacity_nano.is_none());
+        assert_eq!(row.samples, 1);
+        assert_eq!(row.current_capacity_nano, Some(10_000_000_000));
     }
 
     #[test]
-    fn second_complete_interval_uses_exact_fractional_evidence() {
+    fn complete_intervals_use_all_exact_fractional_evidence() {
         let row = next(None, observation(12_125_000, 0, 100));
         let row = next(Some(row), observation(12_125_100, 10_000, 101));
         let row = next(Some(row), observation(12_125_300, 50_000, 102));
@@ -527,9 +523,10 @@ mod tests {
             .unwrap()
             .estimate()
             .unwrap();
-        assert_eq!(estimate.capacity_nano, 20_000_000_000);
-        assert_eq!(row.observed_fraction_units, 200);
-        assert_eq!(row.observed_spend_nano, 40_000);
+        assert_eq!(estimate.capacity_nano, 16_666_666_667);
+        assert_eq!(row.observed_fraction_units, 300);
+        assert_eq!(row.observed_spend_nano, 50_000);
+        assert_eq!(row.samples, 2);
         assert_eq!(row.sum_used_sq, 0);
         assert_eq!(row.sum_used_spend_nano, 0);
         assert_eq!(estimate.source, CapacitySource::WorkloadBlend);
@@ -538,19 +535,19 @@ mod tests {
     #[test]
     fn mixed_models_publish_the_realized_api_dollar_blend_and_envelope() {
         let row = next(None, observation(1_000, 0, 100));
-        let row = next(Some(row), observation(2_000, 100_000, 101)); // censored
+        let row = next(Some(row), observation(2_000, 100_000, 101)); // $10 regime
         let row = next(Some(row), observation(3_000, 300_000, 102)); // $20 regime
         let row = next(Some(row), observation(3_500, 700_000, 103)); // $80 regime
         let estimate = WindowCalibration::from_row(row.clone())
             .unwrap()
             .estimate()
             .unwrap();
-        assert_eq!(estimate.capacity_nano, 40_000_000_000);
-        assert!(estimate.low_nano.unwrap() < 20_100_000_000);
+        assert_eq!(estimate.capacity_nano, 28_000_000_000);
+        assert!(estimate.low_nano.unwrap() < 10_100_000_000);
         assert!(estimate.high_nano.unwrap() > 79_800_000_000);
-        assert_eq!(row.observed_fraction_units, 1_500);
-        assert_eq!(row.observed_spend_nano, 600_000);
-        assert_eq!(row.samples, 2);
+        assert_eq!(row.observed_fraction_units, 2_500);
+        assert_eq!(row.observed_spend_nano, 700_000);
+        assert_eq!(row.samples, 3);
         assert!(estimate.confidence_bp > 0);
     }
 
@@ -562,7 +559,10 @@ mod tests {
         let row = next(Some(row), observation(17_000_100, 131_000, 102));
         assert!(row.anchor_ready);
         assert_eq!(row.anchor_spend_nano, 131_000);
+        assert_eq!(row.samples, 1);
+        assert_eq!(row.current_capacity_nano, Some(5_000_000_000));
         let row = next(Some(row), observation(17_000_200, 136_000, 103));
+        assert_eq!(row.samples, 2);
         assert_eq!(row.current_capacity_nano, Some(5_000_000_000));
     }
 
@@ -574,13 +574,13 @@ mod tests {
         let row = next(Some(row), observation(10_000_150, 35_000, 103));
         let row = next(Some(row), observation(10_000_200, 40_000, 104));
         let row = next(Some(row), observation(10_000_300, 50_000, 105));
-        assert_eq!(row.samples, 2);
-        assert_eq!(row.observed_fraction_units, 200);
-        assert_eq!(row.observed_spend_nano, 40_000);
+        assert_eq!(row.samples, 3);
+        assert_eq!(row.observed_fraction_units, 300);
+        assert_eq!(row.observed_spend_nano, 50_000);
     }
 
     #[test]
-    fn reset_jitter_stays_in_one_window_but_real_reset_rearms_censoring() {
+    fn reset_jitter_stays_in_one_window_and_first_new_window_movement_counts() {
         let row = next(None, observation(10_000_000, 0, 100));
         let row = next(
             Some(row),
@@ -590,23 +590,27 @@ mod tests {
             Some(row),
             observation_at(RESET - 2, DURATION, 10_000_200, 30_000, 102),
         );
-        assert_eq!(row.samples, 1);
+        assert_eq!(row.samples, 2);
         let row = next(
             Some(row),
             observation_at(RESET + DURATION * 60, DURATION, 100, 40_000, 103),
         );
-        assert!(!row.anchor_ready);
-        assert_eq!(row.samples, 1);
-        assert_eq!(row.current_capacity_nano, Some(20_000_000_000));
+        assert!(row.anchor_ready);
+        assert_eq!(row.samples, 2);
+        assert_eq!(row.current_capacity_nano, Some(15_000_000_000));
+        let row = next(
+            Some(row),
+            observation_at(RESET + DURATION * 60, DURATION, 200, 50_000, 104),
+        );
+        assert_eq!(row.samples, 3);
+        assert_eq!(row.current_capacity_nano, Some(13_333_333_333));
     }
 
     #[test]
-    fn obsolete_estimator_replays_raw_fractional_history() {
+    fn estimator_upgrade_replays_active_home_nine_to_twelve_percent() {
         let history = vec![
-            observation(10_000_000, 0, 100),
-            observation(10_000_100, 10_000, 101),
-            observation(10_000_200, 30_000, 102),
-            observation(10_000_300, 50_000, 103),
+            observation(9_000_000, 219_960_000_000, 100),
+            observation(12_000_000, 277_840_000_000, 101),
         ];
         let mut poisoned = replay_observations(&history[..1], 9).unwrap().unwrap();
         poisoned.estimator_version = ESTIMATOR_VERSION - 1;
@@ -615,15 +619,22 @@ mod tests {
             apply_observation_with_history(Some(poisoned), &history, history.last().unwrap())
                 .unwrap();
         assert_eq!(rebuilt.version, 9);
-        assert_eq!(rebuilt.samples, 2);
-        assert_eq!(rebuilt.current_capacity_nano, Some(20_000_000_000));
+        assert_eq!(rebuilt.samples, 1);
+        assert_eq!(rebuilt.observed_fraction_units, 3_000_000);
+        assert_eq!(rebuilt.observed_spend_nano, 57_880_000_000);
+        assert_eq!(rebuilt.current_capacity_nano, Some(1_929_333_333_333));
+        let calibration = WindowCalibration::from_row(rebuilt).unwrap();
+        assert_eq!(
+            calibration.remaining_nano(12_000_000),
+            Some(1_697_813_333_333)
+        );
     }
 
     #[test]
     fn remaining_and_its_bounds_use_the_exact_current_fraction() {
         let row = next(None, observation(10_000_000, 0, 100));
-        let row = next(Some(row), observation(10_000_100, 10_000, 101));
-        let row = next(Some(row), observation(10_000_300, 50_000, 102));
+        let row = next(Some(row), observation(10_000_100, 20_000, 101));
+        let row = next(Some(row), observation(10_000_300, 60_000, 102));
         let calibration = WindowCalibration::from_row(row).unwrap();
         assert_eq!(calibration.remaining_nano(50_000_000), Some(10_000_000_000));
         assert!(calibration.remaining_low_nano(50_000_000).is_some());
@@ -641,6 +652,10 @@ mod tests {
         let mut row = next(Some(row), observation(3, 3, 102));
         row.observed_spend_nano = i64::MAX;
         assert!(apply_observation(Some(row), &observation(4, 4, 103)).is_err());
+
+        let mut noncanonical = next(None, observation(1, 1, 100));
+        noncanonical.anchor_ready = false;
+        assert!(apply_observation(Some(noncanonical), &observation(2, 2, 101)).is_err());
     }
 
     #[test]

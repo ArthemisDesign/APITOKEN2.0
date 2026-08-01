@@ -135,7 +135,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
   headers and SSE report decimal percentage utilisation. The gateway parses it without binary
   floating point into `10^-8` fraction units (one unit is `10^-6` percentage point), and every
   served turn credits the profile's exact audited API-catalog cost in integer nanoUSD. Estimator
-  v6 calculates
+  v7 calculates
   `capacity_nano = 100_000_000 × ΣΔspend_nano / ΣΔused_fraction_units`. This is the API-dollar
   equivalent of the workload actually served — not the subscription purchase price and not a
   permanent nominal for a plan. That distinction is required by the
@@ -145,9 +145,11 @@ token on every refresh with strict family reuse detection. The pool therefore:
   envelope. `confidence` is deterministic evidence quality
   (`sample maturity × workload stability × quantisation resolution`), not a probability. There
   is no configured prior, EMA, WLS, float-money arithmetic or hidden fallback nominal.
-  A cold snapshot and the first utilisation transition are censored; a movement without positive
-  settled spend waits for settlement catch-up. Real resets re-arm censoring but retain accumulated
-  evidence, reset timestamp jitter cannot fork a window, and rollback snapshots cannot erase or
+  A cold snapshot alone remains an unpublished anchor, while the first confirmed positive
+  utilisation movement is already counted as a complete interval with its quantisation envelope.
+  A movement without positive settled spend waits for settlement catch-up. Real resets retain
+  accumulated evidence and make the first complete movement of the new window immediately
+  eligible; reset timestamp jitter cannot fork a window, and rollback snapshots cannot erase or
   duplicate a high-water interval. Raw observations, exact cumulative legs and CAS state live in
   the engine authority, survive restart/blue-green and are replayed on estimator upgrades.
   Calibration is fed only by wire events — reads never write — and each provider-reported duration

@@ -264,12 +264,14 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    authority.
 6. **Калибровка ёмкости окна — fixed-point workload blend по фактическим данным.** Decimal
    `used_percent` из `/wham/usage`/headers парсится без `f64` в `10^-8` fraction units; каждый
-   успешный turn durable-кредитует home exact official-price cost в integer nanoUSD. Estimator v6
+   успешный turn durable-кредитует home exact official-price cost в integer nanoUSD. Estimator v7
    считает `cap=100_000_000*ΣΔspend_nano/ΣΔused_fraction_units`: это API-USD-equivalent реально
    обслуженного mix моделей/context/reasoning/tools, а не выдуманный номинал подписки. Per-interval
    ±1-unit envelope даёт low/high, confidence = maturity × workload stability × quantisation.
-   Нет prior/EMA/WLS/float-money. Cold anchor и первый transition censored; движение ждёт
-   положительный settlement catch-up. Raw observations, exact cumulative legs и CAS-state в
+   Нет prior/EMA/WLS/float-money. Cold snapshot сам по себе остаётся только anchor, но первое
+   подтверждённое движение с положительным settlement сразу считается complete interval с
+   quantisation envelope; если settlement запаздывает, движение ждёт его catch-up. Raw
+   observations, exact cumulative legs и CAS-state в
    engine authority переживают restart/blue-green/reset и позволяют replay при смене estimator;
    каждое provider-reported duration калибруется независимо.
 7. **Цены — только из `metering::codex`** (audited, effective-dated). Для успешного ChatGPT-auth
