@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition, type CSSProperties } from "react";
@@ -163,7 +162,6 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
     {
       id: "claude" as const,
       connection: UNIVERSAL_CONNECTIONS.claude,
-      logo: "/assets/providers/anthropic.svg",
       name: "Claude",
       api: "Anthropic Messages API",
       color: PROVIDER_COLORS.anthropic,
@@ -171,7 +169,6 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
     {
       id: "openai" as const,
       connection: UNIVERSAL_CONNECTIONS.openai,
-      logo: "/assets/providers/openai.svg",
       name: "GPT",
       api: "OpenAI-compatible API",
       color: PROVIDER_COLORS.openai,
@@ -401,7 +398,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             </div>
           </div>
           <div className="key-providers-grid">
-            {providerCards.map(({ id, connection, logo, name, api, color, summary }) => {
+            {providerCards.map(({ id, connection, name, api, color, summary }) => {
               const isActive = summary.requests > 0;
               return (
                 <article
@@ -410,9 +407,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                   style={{ "--provider-color": color } as CSSProperties}
                 >
                   <div className="key-provider-head">
-                    <span className="key-provider-logo">
-                      <Image src={logo} alt="" width={22} height={22} />
-                    </span>
+                    <span className={`key-provider-logo key-provider-logo-${id}`} aria-hidden="true" />
                     <div className="key-provider-name">
                       <strong>{name}</strong>
                       <span>{api}</span>

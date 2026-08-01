@@ -2546,7 +2546,9 @@ body.app-body .bg-decor{display:none!important}
 .key-provider-card{position:relative;overflow:hidden;display:flex;min-width:0;flex-direction:column;gap:18px;padding:24px}
 .key-provider-card::before{content:"";position:absolute;inset:0 0 auto;height:2px;background:var(--provider-color);opacity:.85}
 .key-provider-head{display:flex;align-items:center;gap:14px}
-.key-provider-logo{display:grid;place-items:center;width:44px;height:44px;flex:none;border:1px solid color-mix(in srgb,var(--provider-color) 32%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--provider-color) 10%,var(--bg-card));color:var(--provider-color)}
+.key-provider-logo{flex:none;width:26px;height:26px;background:var(--txt-2);-webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;mask-position:center;mask-repeat:no-repeat;mask-size:contain}
+.key-provider-logo-claude{-webkit-mask-image:url("/assets/providers/anthropic.svg");mask-image:url("/assets/providers/anthropic.svg")}
+.key-provider-logo-openai{-webkit-mask-image:url("/assets/providers/openai.svg");mask-image:url("/assets/providers/openai.svg")}
 .key-provider-name{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px}
 .key-provider-name strong{font-size:16px;line-height:1.2;color:var(--txt)}
 .key-provider-name>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 10px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--txt-4)}
