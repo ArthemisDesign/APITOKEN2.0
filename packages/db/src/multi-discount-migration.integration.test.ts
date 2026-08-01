@@ -774,12 +774,12 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(25);
+        expect(await migrationCount(client)).toBe(26);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(25);
+        expect(await migrationCount(client)).toBe(26);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
