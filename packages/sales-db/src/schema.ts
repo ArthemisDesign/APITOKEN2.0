@@ -273,6 +273,15 @@ export const partnerUsageEvents = pgTable("partner_usage_events", {
       AND ${table.snapshotDigest} <> ''
     )
   `),
+  check("partner_usage_events_commission_authority_check", sql`
+    ${table.providerId} IS NULL
+    OR (
+      ${table.accountClass} = 'b2c'
+      AND ${table.pricingMode} = 'track'
+      AND ${table.commissionEligible} IS TRUE
+      AND ${table.paidFundedNano} = ${table.amountNano}
+    )
+  `),
 ]);
 
 export const referredTopups = pgTable("referred_topups", {
@@ -382,8 +391,37 @@ export const pendingReferralEvents = pgTable("pending_referral_events", {
   commerceUserId: uuid("commerce_user_id").notNull(),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  providerId: text("provider_id"),
+  accountClass: text("account_class"),
+  pricingMode: text("pricing_mode"),
+  paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }),
+  commissionEligible: boolean("commission_eligible"),
+  snapshotDigest: text("snapshot_digest"),
   createdAt,
 }, (table) => [
   uniqueIndex("pending_referral_events_kind_ref_uidx").on(table.kind, table.commerceRef),
   index("pending_referral_events_user_idx").on(table.commerceUserId),
+  check("pending_referral_events_attribution_check", sql`
+    (
+      ${table.providerId} IS NULL
+      AND ${table.accountClass} IS NULL
+      AND ${table.pricingMode} IS NULL
+      AND ${table.paidFundedNano} IS NULL
+      AND ${table.commissionEligible} IS NULL
+      AND ${table.snapshotDigest} IS NULL
+    )
+    OR (
+      ${table.kind} = 'spend'
+      AND ${table.providerId} IS NOT NULL
+      AND ${table.providerId} <> ''
+      AND ${table.accountClass} = 'b2c'
+      AND ${table.pricingMode} = 'track'
+      AND ${table.paidFundedNano} IS NOT NULL
+      AND ${table.paidFundedNano} > 0
+      AND ${table.amountNano} = ${table.paidFundedNano}
+      AND ${table.commissionEligible} IS TRUE
+      AND ${table.snapshotDigest} IS NOT NULL
+      AND ${table.snapshotDigest} <> ''
+    )
+  `),
 ]);

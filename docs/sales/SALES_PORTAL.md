@@ -97,6 +97,17 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   траты/комиссия) и `setReferralDiscount` (шлёт `override=true`; **не** best-effort — ошибки
   транспорта пробрасываются вызывающему, партнёр должен знать результат).
 
+Schema-readiness checkpoint для multi-discount: sales-миграция
+`0014_usage_attribution_buffer.sql` заранее расширяет `pending_referral_events`, чтобы replay не
+терял immutable commission authority, пока атрибуция пользователя ещё не пришла. Legacy spend и
+deposit сохраняют полностью `NULL`-форму новых полей. Атрибутированный buffered spend обязан
+нести непустые `provider_id`/`snapshot_digest`, `account_class=b2c`, `pricing_mode=track`,
+`commission_eligible=true` и положительный `paid_funded_nano`, точно равный `amount_nano`.
+Сопутствующий constraint на `partner_usage_events` запрещает атрибутированную комиссию вне той же
+B2C track authority. На этом expand-only SHA producer/consumer фида ещё используют прежний payload;
+запись новых полей включается отдельным application-коммитом только после зелёных
+`deploy/migration` и `deploy/watchdog` миграционного SHA.
+
 ### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce ходит в sales-api по `SALES_API_URL` тем же `SALES_CONTROL_KEY`.
