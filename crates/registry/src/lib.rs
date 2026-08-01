@@ -1089,6 +1089,145 @@ pub fn open(path: &str) -> Result<Connection> {
          reset5 INTEGER, reset7 INTEGER, calib_n INTEGER, updated_ts INTEGER)",
         [],
     )?;
+    // Provider turn evidence is shared by Claude and Gemini. It preserves exact disjoint token and
+    // API nanoUSD legs while the subject ledger supplies the cumulative spend paired with quota
+    // snapshots. The Claude window authority is plan-scoped and has no nominal/prior/EMA state.
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS provider_turn_calibration_events( \
+           provider TEXT NOT NULL CHECK(provider IN ('anthropic','google')), \
+           request_id TEXT NOT NULL CHECK(request_id <> ''), \
+           subject_id TEXT NOT NULL CHECK(subject_id <> ''), \
+           model_id TEXT NOT NULL CHECK(model_id <> ''), \
+           service_tier TEXT NOT NULL CHECK(service_tier IN ('standard','fast')), \
+           inference_geo TEXT NOT NULL CHECK(inference_geo IN ('global','us')), \
+           tariff_schedule_id TEXT NOT NULL CHECK(tariff_schedule_id <> ''), \
+           priced_ts INTEGER NOT NULL CHECK(priced_ts > 0), \
+           completed_at INTEGER NOT NULL CHECK(completed_at > 0), \
+           input_tokens INTEGER NOT NULL CHECK(input_tokens >= 0), \
+           audio_input_tokens INTEGER NOT NULL CHECK(audio_input_tokens >= 0), \
+           cache_read_tokens INTEGER NOT NULL CHECK(cache_read_tokens >= 0), \
+           cached_audio_input_tokens INTEGER NOT NULL CHECK(cached_audio_input_tokens >= 0), \
+           cache_write_5m_tokens INTEGER NOT NULL CHECK(cache_write_5m_tokens >= 0), \
+           cache_write_1h_tokens INTEGER NOT NULL CHECK(cache_write_1h_tokens >= 0), \
+           output_tokens INTEGER NOT NULL CHECK(output_tokens >= 0), \
+           thinking_output_tokens INTEGER NOT NULL CHECK(thinking_output_tokens >= 0), \
+           image_output_tokens INTEGER NOT NULL CHECK(image_output_tokens >= 0), \
+           tool_prompt_tokens INTEGER NOT NULL CHECK(tool_prompt_tokens >= 0), \
+           search_queries INTEGER NOT NULL CHECK(search_queries >= 0), \
+           grounded_search_prompts INTEGER NOT NULL CHECK(grounded_search_prompts >= 0), \
+           api_input_nanousd INTEGER NOT NULL CHECK(api_input_nanousd >= 0), \
+           api_audio_input_nanousd INTEGER NOT NULL CHECK(api_audio_input_nanousd >= 0), \
+           api_cache_read_nanousd INTEGER NOT NULL CHECK(api_cache_read_nanousd >= 0), \
+           api_cached_audio_input_nanousd INTEGER NOT NULL \
+             CHECK(api_cached_audio_input_nanousd >= 0), \
+           api_cache_write_5m_nanousd INTEGER NOT NULL CHECK(api_cache_write_5m_nanousd >= 0), \
+           api_cache_write_1h_nanousd INTEGER NOT NULL CHECK(api_cache_write_1h_nanousd >= 0), \
+           api_output_nanousd INTEGER NOT NULL CHECK(api_output_nanousd >= 0), \
+           api_image_output_nanousd INTEGER NOT NULL CHECK(api_image_output_nanousd >= 0), \
+           api_search_nanousd INTEGER NOT NULL CHECK(api_search_nanousd >= 0), \
+           api_total_nanousd INTEGER NOT NULL CHECK(api_total_nanousd > 0), \
+           PRIMARY KEY(provider,request_id), \
+           CHECK(cached_audio_input_tokens <= cache_read_tokens), \
+           CHECK(thinking_output_tokens <= output_tokens), \
+           CHECK(tool_prompt_tokens <= input_tokens), \
+           CHECK(input_tokens > 0 OR audio_input_tokens > 0 OR cache_read_tokens > 0 \
+             OR cache_write_5m_tokens > 0 OR cache_write_1h_tokens > 0 OR output_tokens > 0 \
+             OR image_output_tokens > 0 OR search_queries > 0 \
+             OR grounded_search_prompts > 0), \
+           CHECK(api_total_nanousd = api_input_nanousd + api_audio_input_nanousd \
+             + api_cache_read_nanousd + api_cached_audio_input_nanousd \
+             + api_cache_write_5m_nanousd + api_cache_write_1h_nanousd \
+             + api_output_nanousd + api_image_output_nanousd + api_search_nanousd)); \
+         CREATE INDEX IF NOT EXISTS provider_turn_calibration_subject_time \
+           ON provider_turn_calibration_events(provider,subject_id,completed_at DESC); \
+         CREATE INDEX IF NOT EXISTS provider_turn_calibration_model_time \
+           ON provider_turn_calibration_events(provider,model_id,completed_at DESC); \
+         CREATE INDEX IF NOT EXISTS provider_turn_calibration_time \
+           ON provider_turn_calibration_events(provider,completed_at DESC); \
+         CREATE TABLE IF NOT EXISTS provider_calibration_subject_spend( \
+           provider TEXT NOT NULL CHECK(provider IN ('anthropic','google')), \
+           subject_id TEXT NOT NULL CHECK(subject_id <> ''), \
+           spent_nano INTEGER NOT NULL DEFAULT 0 CHECK(spent_nano >= 0), \
+           tracking_started_ts INTEGER NOT NULL CHECK(tracking_started_ts > 0), \
+           updated_ts INTEGER NOT NULL CHECK(updated_ts > 0), \
+           PRIMARY KEY(provider,subject_id)); \
+         CREATE TABLE IF NOT EXISTS anthropic_window_calibrations( \
+           subject_id TEXT NOT NULL CHECK(subject_id <> ''), \
+           plan TEXT NOT NULL CHECK(plan <> ''), \
+           window_kind TEXT NOT NULL CHECK(window_kind IN ('5h','7d')), \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           anchor_used_fraction_units INTEGER NOT NULL \
+             CHECK(anchor_used_fraction_units BETWEEN 0 AND 100000000), \
+           anchor_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(anchor_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           anchor_spend_nano INTEGER NOT NULL CHECK(anchor_spend_nano >= 0), \
+           used_fraction_units INTEGER NOT NULL \
+             CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
+           measurement_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(measurement_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           observed_fraction_units INTEGER NOT NULL DEFAULT 0 \
+             CHECK(observed_fraction_units >= 0), \
+           observed_spend_nano INTEGER NOT NULL DEFAULT 0 CHECK(observed_spend_nano >= 0), \
+           samples INTEGER NOT NULL DEFAULT 0 CHECK(samples >= 0), \
+           unattributed_fraction_units INTEGER NOT NULL DEFAULT 0 \
+             CHECK(unattributed_fraction_units >= 0), \
+           current_capacity_nano INTEGER \
+             CHECK(current_capacity_nano IS NULL OR current_capacity_nano >= 0), \
+           current_low_nano INTEGER CHECK(current_low_nano IS NULL OR current_low_nano >= 0), \
+           current_high_nano INTEGER CHECK(current_high_nano IS NULL OR current_high_nano >= 0), \
+           current_confidence_bp INTEGER NOT NULL DEFAULT 0 \
+             CHECK(current_confidence_bp BETWEEN 0 AND 10000), \
+           last_measured_at INTEGER CHECK(last_measured_at IS NULL OR last_measured_at > 0), \
+           estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
+           version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
+           updated_ts INTEGER NOT NULL CHECK(updated_ts > 0), \
+           PRIMARY KEY(subject_id,plan,window_kind), \
+           CHECK((window_kind='5h' AND window_duration_mins=300) \
+             OR (window_kind='7d' AND window_duration_mins=10080)), \
+           CHECK(current_low_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(current_high_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(current_low_nano IS NULL OR current_capacity_nano >= current_low_nano), \
+           CHECK(current_high_nano IS NULL OR current_capacity_nano <= current_high_nano), \
+           CHECK(current_low_nano IS NULL OR current_high_nano IS NULL \
+             OR current_low_nano <= current_high_nano), \
+           CHECK((samples=0 AND observed_fraction_units=0 AND observed_spend_nano=0 \
+               AND current_capacity_nano IS NULL AND current_low_nano IS NULL \
+               AND current_high_nano IS NULL AND current_confidence_bp=0 \
+               AND last_measured_at IS NULL) \
+             OR (samples>0 AND observed_fraction_units>0 AND observed_spend_nano>0 \
+               AND current_capacity_nano IS NOT NULL AND current_low_nano IS NOT NULL \
+               AND last_measured_at IS NOT NULL))); \
+         CREATE INDEX IF NOT EXISTS anthropic_window_calibrations_cohort \
+           ON anthropic_window_calibrations(plan,window_kind,window_duration_mins); \
+         CREATE TABLE IF NOT EXISTS anthropic_window_observations( \
+           id INTEGER PRIMARY KEY AUTOINCREMENT, \
+           subject_id TEXT NOT NULL CHECK(subject_id <> ''), \
+           plan TEXT NOT NULL CHECK(plan <> ''), \
+           window_kind TEXT NOT NULL CHECK(window_kind IN ('5h','7d')), \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           used_fraction_units INTEGER NOT NULL \
+             CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
+           measurement_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(measurement_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           gateway_spend_nano INTEGER NOT NULL CHECK(gateway_spend_nano >= 0), \
+           observation_source TEXT NOT NULL CHECK(observation_source IN ('response','poll')), \
+           source_request_id TEXT, \
+           CHECK((window_kind='5h' AND window_duration_mins=300) \
+             OR (window_kind='7d' AND window_duration_mins=10080)), \
+           CHECK((observation_source='response' AND source_request_id IS NOT NULL \
+               AND source_request_id <> '') \
+             OR (observation_source='poll' AND source_request_id IS NULL)), \
+           UNIQUE(subject_id,plan,window_kind,source_request_id), \
+           UNIQUE(subject_id,plan,window_kind,resets_at,observed_at,used_fraction_units, \
+             measurement_resolution_fraction_units,gateway_spend_nano,observation_source)); \
+         CREATE INDEX IF NOT EXISTS anthropic_window_observations_window \
+           ON anthropic_window_observations( \
+             subject_id,plan,window_kind,resets_at,observed_at);",
+    )?;
     // OpenAI/Codex calibration is based exclusively on durable, real gateway spend paired with
     // provider-reported window duration/reset snapshots. These tables intentionally contain no
     // configured capacity prior or fixed 5-hour/7-day slots.
@@ -8186,6 +8325,151 @@ mod tests {
         assert_eq!(got[0].cooling_until, 222222);
         assert!((got[0].cap5h_usd - 50.0).abs() < 1e-9);
         assert_eq!(got[0].calib_n, 4);
+    }
+
+    #[test]
+    fn anthropic_calibration_schema_is_exact_plan_scoped_and_prior_free() {
+        let c = db();
+        let tables: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ( \
+                   'provider_turn_calibration_events','provider_calibration_subject_spend', \
+                   'anthropic_window_calibrations','anthropic_window_observations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 4);
+
+        let columns = c
+            .prepare("SELECT name FROM pragma_table_info('anthropic_window_calibrations')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            name.contains("prior") || name.contains("ema") || name.contains("nominal")
+        }));
+        for name in [
+            "plan",
+            "window_kind",
+            "anchor_used_fraction_units",
+            "anchor_resolution_fraction_units",
+            "observed_fraction_units",
+            "observed_spend_nano",
+            "unattributed_fraction_units",
+            "current_capacity_nano",
+            "current_low_nano",
+            "current_high_nano",
+            "current_confidence_bp",
+        ] {
+            assert!(columns.contains(&name.to_owned()), "missing {name}");
+        }
+
+        let turn_columns = c
+            .prepare("SELECT name FROM pragma_table_info('provider_turn_calibration_events')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for name in [
+            "subject_id",
+            "model_id",
+            "service_tier",
+            "inference_geo",
+            "cache_read_tokens",
+            "cache_write_5m_tokens",
+            "cache_write_1h_tokens",
+            "thinking_output_tokens",
+            "search_queries",
+            "api_total_nanousd",
+        ] {
+            assert!(turn_columns.contains(&name.to_owned()), "missing {name}");
+        }
+
+        let insert_state = "INSERT INTO anthropic_window_calibrations( \
+            subject_id,plan,window_kind,window_duration_mins,resets_at, \
+            anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano, \
+            used_fraction_units,measurement_resolution_fraction_units,observed_at,updated_ts) \
+            VALUES(?1,?2,?3,?4,2000000000,?5,?6,0,?5,?6,100,100)";
+        c.execute(
+            insert_state,
+            rusqlite::params!["sub-a", "max20", "5h", 300, 12_345_000, 1_000],
+        )
+        .unwrap();
+        c.execute(
+            insert_state,
+            rusqlite::params!["sub-a", "max20", "7d", 10_080, 40_000_000, 1_000_000],
+        )
+        .unwrap();
+        // Correcting the durable plan creates a separate cold identity instead of mutating the
+        // Max cohort's evidence.
+        c.execute(
+            insert_state,
+            rusqlite::params!["sub-a", "pro", "5h", 300, 12_345_000, 1_000],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                insert_state,
+                rusqlite::params!["sub-b", "max20", "7d", 300, 1, 1],
+            )
+            .is_err());
+
+        let insert_observation = "INSERT INTO anthropic_window_observations( \
+            subject_id,plan,window_kind,window_duration_mins,resets_at,observed_at, \
+            used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano, \
+            observation_source,source_request_id) \
+            VALUES(?1,'max20','5h',300,2000000000,?2,?3,?4,?5,?6,?7)";
+        c.execute(
+            insert_observation,
+            rusqlite::params![
+                "sub-a",
+                101,
+                12_345_000,
+                1_000,
+                42_000_000,
+                "response",
+                "cal-request-a"
+            ],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                insert_observation,
+                rusqlite::params![
+                    "sub-a",
+                    102,
+                    13_000_000,
+                    1_000_000,
+                    43_000_000,
+                    "response",
+                    "cal-request-a"
+                ],
+            )
+            .is_err());
+        c.execute(
+            insert_observation,
+            rusqlite::params![
+                "sub-a",
+                103,
+                13_000_000,
+                1_000_000,
+                43_000_000,
+                "poll",
+                Option::<String>::None
+            ],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                insert_observation,
+                rusqlite::params!["sub-b", 104, 1, 1, 0, "response", Option::<String>::None],
+            )
+            .is_err());
     }
 
     #[test]

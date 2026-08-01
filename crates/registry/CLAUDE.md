@@ -81,6 +81,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   legs; native quota snapshots остаются в своих существующих Claude/Gemini authorities. Старый
   runtime таблицы не читает и не пишет, поэтому migration SHA безопасно выкатывается до dependent
   application commit.
+- Claude calibration migration 0020 expand-only создаёт отдельные fixed-point authority для 5h/7d
+  окон: plan входит в identity, raw observation хранит реальное разрешение quota fraction, источник
+  и optional request ID, а CAS-state — exact observed spend/fraction, low/high/confidence и
+  unattributed movement. Номинала подписки, prior/EMA и float money в таблицах нет. Старый runtime
+  их не читает и не пишет; dependent release должен сначала durable записать turn из migration 0019,
+  затем связать quota snapshot с полученным cumulative subject spend.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

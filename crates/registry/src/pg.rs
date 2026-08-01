@@ -38,9 +38,10 @@ const MIGRATION_0016: &str =
 const MIGRATION_0017: &str = include_str!("../migrations_pg/0017_policy_runtime_floor.sql");
 const MIGRATION_0018: &str = include_str!("../migrations_pg/0018_codex_credit_calibration.sql");
 const MIGRATION_0019: &str = include_str!("../migrations_pg/0019_provider_turn_calibration.sql");
+const MIGRATION_0020: &str = include_str!("../migrations_pg/0020_anthropic_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -63,6 +64,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (17, MIGRATION_0017),
     (18, MIGRATION_0018),
     (19, MIGRATION_0019),
+    (20, MIGRATION_0020),
 ];
 
 #[cfg(test)]
@@ -6961,6 +6963,8 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions, \
              provider_switch_head,provider_switch_entries,provider_switch_versions, \
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
+             anthropic_window_observations,anthropic_window_calibrations, \
+             provider_turn_calibration_events,provider_calibration_subject_spend, \
              gemini_window_observations,gemini_window_calibrations,gemini_profile_spend, \
              codex_turn_calibration_events,codex_window_observations,\
              codex_window_calibrations,codex_home_spend, \
