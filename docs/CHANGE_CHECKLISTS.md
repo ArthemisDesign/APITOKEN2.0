@@ -48,12 +48,22 @@
 
 ## Новый провайдер подписки
 
+Полный порядок research → credential/Auth Bot → runtime → money/calibration → admin → blue-green →
+live GA: `docs/engine/PROVIDER_ONBOARDING.md`. Чеклист ниже — индекс обязательного радиуса, а не
+замена phase gates и Definition of GA из playbook.
+
 - [ ] Credential-крейт `crates/<provider>-credential` (шифрованные OAuth-конверты, без сети)
       + `crates/<name>/CLAUDE.md` по правилам «живого контракта».
 - [ ] `crates/metering/src/<provider>.rs` — тарифная таблица.
 - [ ] Runtime движка: транспорт/пул/биллинг провайдера в `crates/forward` (основной объём кода),
       режим в `crates/server`, слоты/порты в `deploy/Caddyfile`, systemd-юниты.
 - [ ] Пополнение пула: OAuth-provisioning в `crates/authbot` (если провайдер подписочный).
+- [ ] Sticky/unlimited-parallel runtime: нет локальной очереди/semaphore/reject; retry только до
+      первого public byte; disconnect drain сохраняет terminal usage и settlement.
+- [ ] Durable reserve/delivering/settlement + exact immutable turn evidence; official API nanoUSD и
+      native subscription credits ведутся раздельно.
+- [ ] Калибровка каждого native window по Codex fixed-point/raw-evidence контракту; exact plan +
+      duration cohorts, null до evidence, без nominal/prior/EMA.
 - [ ] Доставка: `config.env.example`, deploy-скрипты (`watchdog.sh`, `watchdog-lib*.sh`,
       `engine-bluegreen.sh`, `sudoers.d`) — новые порты, юниты и секреты провайдера.
 - [ ] Observability: метрики и алерты в `observability/prometheus/rules/*`, дашборды Grafana,
@@ -62,6 +72,11 @@
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` — каталоги, рубильник провайдера (§8), политики.
 - [ ] `packages/contracts` — canonical models, продуктовые каталоги.
 - [ ] `apps/web` (витрина), `apps/openkeys`, `apps/admin` — отображение и продажа.
+- [ ] `apps/admin` повторяет актуальную семантику GPT capacity board (credits/capacity/used,
+      token-capacity, два API-$ сценария, profitability, consumed-quota bar, masked identity),
+      адаптируя units/tiers/windows провайдера.
+- [ ] Controlled live matrix каждого опубликованного plan/model/tier + public post-deploy smoke;
+      exact landed SHA имеет `deploy/watchdog` GREEN.
 - [ ] Строка в `docs/DEPENDENCIES.md`.
 
 ## Изменение Control API (движок ↔ коммерция/OpenKeys)
