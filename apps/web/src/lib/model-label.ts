@@ -41,9 +41,10 @@ export function modelLabel(id: string): string {
 }
 
 /** Billing provider behind a public model ID — display grouping only, never pricing input. */
-export function modelProvider(id: string): "anthropic" | "openai" | "other" {
+export function modelProvider(id: string): "anthropic" | "openai" | "gemini" | "other" {
   const family = id.split("-", 1)[0]?.toLowerCase();
   if (family === "claude") return "anthropic";
   if (family === "gpt") return "openai";
+  if (family === "gemini") return "gemini";
   return "other";
 }

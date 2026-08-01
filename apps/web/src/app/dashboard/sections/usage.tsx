@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { AccountView, ApiKeyView, LedgerEntry, UsageView } from "@/lib/api";
 import { normalizeUsd } from "@/lib/money";
 import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
@@ -8,6 +8,7 @@ import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { modelLabel, modelProvider } from "@/lib/model-label";
+import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
   NANO_PER_USD, PageHeading, Stat,
   bpFromDiscount, compareBigInt, discountOf, formatMultiplier, formatNanoUsd,
@@ -35,6 +36,25 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   // table would render the same tag on every row, which is noise.
   const providersPresent = new Set(models.map((model) => modelProvider(model.model)));
   const showProviderBadge = providersPresent.size > 1;
+
+  // Агрегаты по провайдерам для карточек «Connected providers»: реестр даёт метаданные
+  // (логотип, цвет, имя), провайдеры вне реестра получают авто-карточку.
+  const providerAgg = new Map<string, { requests: number; tokens: number; officialNano: bigint; chargedNano: bigint }>();
+  for (const model of models) {
+    const id = modelProvider(model.model);
+    const agg = providerAgg.get(id) ?? { requests: 0, tokens: 0, officialNano: 0n, chargedNano: 0n };
+    agg.requests += model.requests;
+    agg.tokens += model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWrite5mTokens + model.cacheWrite1hTokens;
+    agg.officialNano += BigInt(model.officialNano);
+    agg.chargedNano += BigInt(model.chargedNano);
+    providerAgg.set(id, agg);
+  }
+  const providerCards = [
+    ...DASHBOARD_PROVIDERS.map((provider) => ({ ...provider, agg: providerAgg.get(provider.id) })),
+    ...[...providerAgg.keys()]
+      .filter((id) => !DASHBOARD_PROVIDERS.some((provider) => provider.id === id))
+      .map((id) => ({ ...fallbackProvider(id, id === "other" ? copy.providerOther : id), agg: providerAgg.get(id) })),
+  ];
 
   const series = buildUtcUsageSeries(usage.sinceTs, usage.untilTs, usage.daily).map((point) => ({
     day: point.dayTs * 1_000,
@@ -86,6 +106,42 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       <div className="ovstat"><span className="dlabel">{copy.activeDiscount}</span><b className="num">{discount}%</b><span className="dtrend">{formatMultiplier(multiplierBp, locale)} {copy.currentValue}</span></div>
       <div className="ovstat"><span className="dlabel">{copy.availableBalance}</span><b className="num">{normalizeUsd(account.balanceUsd)}</b><span className="dtrend">{BigInt(account.balanceNano) > 0n ? interpolate(copy.valueOfBalance, { value: formatNanoUsd(officialNanoFromCharged(BigInt(account.balanceNano), multiplierBp), locale) }) : copy.available}</span></div>
     </div>
+
+    <section className="dsec uproviders">
+      <div className="dsec-head analytics-heading"><div><h2>{copy.usageProviders}</h2><p>{copy.usageProvidersSub}</p></div></div>
+      <div className="uprovider-grid">
+        {providerCards.map((card) => {
+          const isActive = (card.agg?.requests ?? 0) > 0;
+          return <article
+            className="uprovider-card"
+            key={card.id}
+            style={{ "--provider-color": card.color, ...(card.logo ? { "--provider-logo": `url("${card.logo}")` } : {}) } as CSSProperties}
+          >
+            <div className="uprovider-head">
+              {card.logo
+                ? <span className="uprovider-logo" aria-hidden="true" />
+                : <span className="uprovider-logo uprovider-letter" aria-hidden="true">{card.name.slice(0, 1)}</span>}
+              <div className="uprovider-name">
+                <strong>{card.name}</strong>
+                <span>{card.api}</span>
+              </div>
+              <span className={`uprovider-status${isActive ? " is-active" : ""}`}>{isActive ? copy.providerActive : copy.ready}</span>
+              <span className="uprovider-discount" title={copy.activeDiscount}>−{discount}%</span>
+            </div>
+            <div className="uprovider-stats">
+              <strong>{formatNanoUsd(card.agg?.officialNano ?? 0n, locale)}</strong>
+              <span>{isActive && card.agg
+                ? interpolate(copy.usageProviderMeta, {
+                    charged: formatNanoUsd(card.agg.chargedNano, locale),
+                    requests: card.agg.requests.toLocaleString(locale),
+                    tokens: fmtTokens(card.agg.tokens, locale),
+                  })
+                : copy.usageProviderEmpty}</span>
+            </div>
+          </article>;
+        })}
+      </div>
+    </section>
 
     <div className="usage-graph">
       <div className="uchart">
@@ -156,7 +212,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model, index) => <tr key={model.model}>
-            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{modelProvider(model.model) === "openai" ? copy.providerOpenAi : modelProvider(model.model) === "anthropic" ? copy.providerAnthropic : "—"}</span>}</span></td>
+            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{modelProvider(model.model) === "openai" ? copy.providerOpenAi : modelProvider(model.model) === "anthropic" ? copy.providerAnthropic : modelProvider(model.model) === "gemini" ? copy.providerGemini : "—"}</span>}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens, locale)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens, locale)}</td>
