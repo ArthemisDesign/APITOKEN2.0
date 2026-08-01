@@ -420,7 +420,14 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    Code Assist wrapper иначе выбросил бы его молча). Ошибки: Google-конверт
    `{error:{code,message,status}}` → OpenAI-конверт с сохранением статуса (402
    LowBalance тоже) и `Retry-After`; особый маппинг нативного
-   `400 API_KEY_INVALID` → `401 authentication_error`. Contract-тесты — табличные
+   `400 API_KEY_INVALID` → `401 authentication_error`. Прод-проверенное
+   upstream-ограничение (2026-08-01): replayed tool-история (functionCall в
+   model-turn + functionResponse в user-turn) отклоняется Code Assist с
+   `400 INVALID_ARGUMENT` при любом thinking-уровне — thinking-модели Gemini
+   требуют `thoughtSignature` на functionCall-парте при replay, а подписи в
+   universal lanes не выставляются и на реплее не восстанавливаются
+   (решение 4); прямой tool calling (модель отвечает functionCall) работает,
+   ограничение общее с Responses-адаптером 4.3 (см. п. 4). Contract-тесты — табличные
    в `crates/forward/src/gemini/chat.rs` (запрос, matrix, ответ, SSE); e2e-харнесс
    для Gemini-ноги не добавлялся: native-путь плоскости покрыт своими тестами, а
    мок-харнесс не умеет AEAD-конверты профилей — шов адаптера покрыт
@@ -584,7 +591,11 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`
    сохраняются). Временные ограничения — как после 4.2: reasoning items входа
    выбрасываются, `store:true`/`previous_response_id`/`item_reference` →
-   `400 documented_limitation` (решение 5). Общие хелперы (`chat_error`,
+   `400 documented_limitation` (решение 5). Плюс прод-проверенное
+   upstream-ограничение плоскости (2026-08-01): replay tool-истории
+   отклоняется Code Assist с `400 INVALID_ARGUMENT` — `thoughtSignature`
+   functionCall-партов не сохраняется (решение 4), а thinking-модели Gemini
+   требуют его при replay; то же у chat-адаптера 3.3 (см. п. 3). Общие хелперы (`chat_error`,
    `invalid_request`, `unsupported_parameter`, `convert_error_response`,
    `merge_or_push`, `gemini_image_part`/`translate_reasoning_effort`/
    `parse_tool_arguments` с именем параметра, `function_declaration`,

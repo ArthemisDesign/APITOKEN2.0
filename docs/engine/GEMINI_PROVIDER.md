@@ -554,6 +554,15 @@ settlement are identical to the native route. Responses are translated outside t
 SSE stream becomes `chat.completion.chunk` frames with a final usage chunk on EOF when
 `stream_options.include_usage` is set.
 
+Upstream limitation (prod-verified 2026-08-01, both universal lanes of this plane — chat stage
+3.3 and responses stage 4.3): the Code Assist endpoint rejects a replayed tool history
+(a `functionCall` part in a model turn followed by a `functionResponse` part in a user turn) with
+`400 INVALID_ARGUMENT` at any thinking level. Gemini thinking models require the `thoughtSignature`
+on replayed `functionCall` parts, and universal lanes neither expose signatures nor restore them
+on replay (UNIFIED_ROUTER decision 4). Direct tool calling — the model answering with a
+`functionCall` — works. Lifting the limitation means an opaque signature passthrough, which is a
+separate amendment of decision 4.
+
 Two deliberate differences from the Anthropic-plane adapter: the capability matrix is closed at the
 top level — an unknown request field is rejected with `400 unsupported_parameter` instead of being
 proxied, because the Code Assist wrapper would silently drop it; and the native `400

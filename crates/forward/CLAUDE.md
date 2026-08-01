@@ -236,6 +236,13 @@ Reasoning (3.4b): `reasoning_effort` → `generationConfig.thinkingConfig`
 плоскость; `includeThoughts: true`; невалидное значение → `400 invalid_request`),
 thought-парты ответа → `message.reasoning_content`/reasoning_content-дельты
 (`thoughtSignature` не выставляется).
+Прод-проверенное upstream-ограничение (2026-08-01, обе universal lanes плоскости — chat 3.3 и
+responses 4.3): Code Assist отклоняет replayed tool-историю (functionCall в model-turn +
+functionResponse в user-turn) с `400 INVALID_ARGUMENT` при любом thinking-уровне — thinking-модели
+Gemini требуют `thoughtSignature` на functionCall-парте при replay, а подписи по решению 4
+docs/engine/UNIFIED_ROUTER.md не выставляются и на реплее не восстанавливаются. Прямой tool
+calling (модель отвечает functionCall) работает. Снятие ограничения — opaque-passthrough
+подписей, отдельное изменение решения 4.
 `gemini/responses.rs` — universal Responses→generateContent адаптер (этап 4.3
 docs/engine/UNIFIED_ROUTER.md, роут `POST /v1/responses` в `ProviderMode::Gemini`) —
 Gemini-зеркало `anthropic_responses.rs`: Responses-сторона словаря 4.1+4.2 (item-формы,
