@@ -440,7 +440,41 @@ def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
 
 def count_body(body: dict[str, Any]) -> dict[str, Any]:
     allowed = {"model", "messages", "system", "tools", "tool_choice", "thinking"}
-    return {key: value for key, value in body.items() if key in allowed}
+    counted = {key: value for key, value in body.items() if key in allowed}
+    tools = counted.get("tools")
+    if isinstance(tools, list):
+        local_tools = [
+            tool
+            for tool in tools
+            if not (
+                isinstance(tool, dict)
+                and "web_search" in str(tool.get("type", ""))
+            )
+        ]
+        if local_tools:
+            counted["tools"] = local_tools
+        else:
+            counted.pop("tools", None)
+            counted.pop("tool_choice", None)
+    return counted
+
+
+def guarded_input_tokens(body: dict[str, Any], counted_input_tokens: int) -> int:
+    """Cover server-tool schema overhead that Anthropic refuses to count for us.
+
+    UTF-8 bytes are a conservative token upper bound, so adding the complete compact JSON payload
+    cannot under-reserve even if the provider injects the server tool into its effective prompt.
+    """
+
+    server_tools = [
+        tool
+        for tool in body.get("tools", [])
+        if isinstance(tool, dict) and "web_search" in str(tool.get("type", ""))
+    ]
+    if not server_tools:
+        return counted_input_tokens
+    schema_bytes = len(json.dumps(server_tools, separators=(",", ":")).encode())
+    return counted_input_tokens + schema_bytes
 
 
 def supported_tiers(
@@ -744,6 +778,7 @@ class Runner:
             target_profile=expected_profile if self.exact_profile_routing else None,
         )
         input_tokens = as_int(count.get("input_tokens"), "count_tokens.input_tokens")
+        guarded_tokens = guarded_input_tokens(body, input_tokens)
         rates = rates_for_model(self.catalog, self.ceiling, leg.model, leg.tier)
         web_uses = sum(
             as_int(tool.get("max_uses", 0), "tool.max_uses")
@@ -751,7 +786,7 @@ class Runner:
             if isinstance(tool, dict) and "web_search" in str(tool.get("type", ""))
         )
         upper = request_upper_bound_nano(
-            input_tokens, leg.max_tokens, web_uses, rates, leg.cache_ttl
+            guarded_tokens, leg.max_tokens, web_uses, rates, leg.cache_ttl
         )
         if self.exact_profile_routing:
             if not expected_profile:
@@ -824,6 +859,7 @@ class Runner:
             "profile": profile,
             "session_hash": hashlib.sha256(session_id.encode()).hexdigest()[:12],
             "counted_input_tokens": input_tokens,
+            "guarded_input_tokens": guarded_tokens,
             "upper_bound_nano": str(upper),
             "actual_nano": str(delta["api_total_nanousd"]),
             "profile_test_spend_nano": str(self.budget.spent_nano[profile]),

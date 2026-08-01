@@ -16,7 +16,10 @@ immutable `calibration_evidence` и provider quota snapshots.
 
 - Без явного `--execute` скрипт завершится до любого live-запроса.
 - `--budget-usd` принимает не больше `40`; деньги переводятся в integer nanoUSD без float.
-- Перед каждым generation выполняется бесплатный `/v1/messages/count_tokens`. Worst-case включает
+- Перед каждым generation выполняется бесплатный `/v1/messages/count_tokens`. Anthropic отклоняет
+  server-side Web Search в этом endpoint, поэтому runner убирает только эту tool-схему из preflight,
+  а затем консервативно добавляет к возвращённому input полную длину её compact JSON в UTF-8 байтах
+  (число непустых токенов не может превышать число байт). Worst-case по-прежнему отдельно включает
   полный cache miss нужного TTL, весь `max_tokens` output и все разрешённые Web Search calls.
 - Guard проверяет свободный бюджет **каждой** healthy-подписки, а не только ожидаемого sticky home:
   неожиданный affinity rebind не может перелить запрос на уже исчерпавший тестовый лимит аккаунт.

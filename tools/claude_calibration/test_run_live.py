@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -9,8 +10,10 @@ from tools.claude_calibration.run_live import (
     attribute_exact_turn,
     build_coverage_legs,
     canonical_rate_id,
+    count_body,
     coverage_failure,
     evidence_rows,
+    guarded_input_tokens,
     model_profitability,
     rate_catalog,
     rates_for_model,
@@ -169,6 +172,61 @@ class BudgetTests(unittest.TestCase):
             request_upper_bound_nano(100, 5, 1, rates, "1h"),
             100 * 20 + 5 * 30 + 1_000,
         )
+
+    def test_count_body_omits_server_web_search_rejected_by_count_tokens(self):
+        body = {
+            "model": "claude-fable-5",
+            "messages": [{"role": "user", "content": "search"}],
+            "tools": [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}
+            ],
+            "tool_choice": {"type": "auto"},
+            "max_tokens": 128,
+        }
+        counted = count_body(body)
+        self.assertNotIn("tools", counted)
+        self.assertNotIn("tool_choice", counted)
+        self.assertNotIn("max_tokens", counted)
+
+    def test_count_body_preserves_ordinary_client_tools(self):
+        ordinary = {
+            "name": "get_weather",
+            "description": "Get the weather",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        body = {
+            "model": "claude-fable-5",
+            "messages": [{"role": "user", "content": "weather"}],
+            "tools": [
+                ordinary,
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 1},
+            ],
+            "tool_choice": {"type": "auto"},
+        }
+        counted = count_body(body)
+        self.assertEqual(counted["tools"], [ordinary])
+        self.assertEqual(counted["tool_choice"], {"type": "auto"})
+
+    def test_guarded_tokens_add_full_server_tool_json_byte_bound(self):
+        server_tools = [
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}
+        ]
+        body = {"tools": server_tools}
+        expected_bound = len(
+            json.dumps(server_tools, separators=(",", ":")).encode("utf-8")
+        )
+        self.assertEqual(guarded_input_tokens(body, 17), 17 + expected_bound)
+
+    def test_guarded_tokens_are_unchanged_without_server_tools(self):
+        body = {
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+        self.assertEqual(guarded_input_tokens(body, 17), 17)
 
     def test_usd_parser_is_integer_only_and_caps_are_exact(self):
         self.assertEqual(usd_to_nano("40"), 40_000_000_000)
