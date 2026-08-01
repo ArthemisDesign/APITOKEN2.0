@@ -6,7 +6,7 @@ export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
 
 export type IntegrationProvider = "anthropic" | "openai" | "gemini";
-export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "antigravity" | "opencode" | "pi" | "hermes";
+export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "opencode" | "pi" | "hermes";
 export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
 
@@ -63,9 +63,6 @@ export const TOOL_COMPATIBILITY: Record<IntegrationTool, readonly IntegrationPro
   "claude-code": ["anthropic"],
   codex: ["openai"],
   "gemini-cli": ["gemini"],
-  // Antigravity has no bring-your-own-key/endpoint (Google account only),
-  // so it stays listed but deliberately incompatible with every provider.
-  antigravity: [],
   opencode: ["anthropic", "openai", "gemini"],
   pi: ["anthropic", "openai", "gemini"],
   hermes: ["openai"],
@@ -75,7 +72,6 @@ const TOOL_NAMES: Record<IntegrationTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   "gemini-cli": "Gemini CLI",
-  antigravity: "Antigravity",
   opencode: "OpenCode",
   pi: "Pi",
   hermes: "Hermes",

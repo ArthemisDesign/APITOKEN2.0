@@ -2541,17 +2541,17 @@ body.app-body .bg-decor{display:none!important}
 .openkeys-universal-banner{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:14px 0 20px}
 .openkeys-universal-banner b{color:var(--txt)}
 .openkeys-universal-banner span{color:var(--txt-3)}
-.key-providers-section{margin-top:34px}
-.key-providers-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:16px}
+.key-providers-section{margin:34px 0 26px}
+.key-providers-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:18px}
 .key-provider-card{position:relative;overflow:hidden;container-type:inline-size;display:flex;min-width:0;flex-direction:column;gap:18px;padding:24px}
 @container (max-width:380px){.key-provider-endpoint>span{display:none}}
-.key-provider-card::before{content:"";position:absolute;inset:0 0 auto;height:2px;background:var(--provider-color);opacity:.85}
+.key-provider-card::before{content:"";position:absolute;inset:1px 1px auto;height:2px;border-radius:9px 9px 0 0;background:var(--provider-color);opacity:.85}
 .key-provider-head{display:flex;align-items:center;gap:14px}
 .key-provider-logo{flex:none;width:26px;height:26px;background:var(--txt-2);-webkit-mask-image:var(--provider-logo);mask-image:var(--provider-logo);-webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;mask-position:center;mask-repeat:no-repeat;mask-size:contain}
 .key-provider-logo-letter{display:grid;place-items:center;background:none;-webkit-mask-image:none;mask-image:none;font:800 20px/1 var(--font-mono);color:var(--provider-color)}
 .key-provider-name{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px}
 .key-provider-name strong{font-size:16px;line-height:1.2;color:var(--txt)}
-.key-provider-name>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 10px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--txt-4)}
+.key-provider-name>span{font:500 10px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--txt-4)}
 .key-provider-status{display:inline-flex;align-items:center;gap:6px;flex:none;padding:4px 10px;border:1px solid var(--line);border-radius:99px;font:700 9px/1.2 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--txt-4)}
 .key-provider-status::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--txt-4)}
 .key-provider-status.is-active{border-color:color-mix(in srgb,var(--ok) 30%,var(--line));background:color-mix(in srgb,var(--ok) 8%,var(--bg-card));color:var(--ok)}

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, type CSSProperties } from "react";
 import type { AccountView, ApiKeyView, LedgerEntry, UsageView } from "@/lib/api";
 import { normalizeUsd } from "@/lib/money";
@@ -55,6 +56,13 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       .filter((id) => !DASHBOARD_PROVIDERS.some((provider) => provider.id === id))
       .map((id) => ({ ...fallbackProvider(id, id === "other" ? copy.providerOther : id), agg: providerAgg.get(id) })),
   ];
+  const [copiedProvider, setCopiedProvider] = useState<string | null>(null);
+
+  async function copyProviderEndpoint(id: string, endpoint: string) {
+    await navigator.clipboard.writeText(endpoint);
+    setCopiedProvider(id);
+    window.setTimeout(() => setCopiedProvider((current) => (current === id ? null : current)), 1_200);
+  }
 
   const series = buildUtcUsageSeries(usage.sinceTs, usage.untilTs, usage.daily).map((point) => ({
     day: point.dayTs * 1_000,
@@ -128,6 +136,15 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
               <span className={`uprovider-status${isActive ? " is-active" : ""}`}>{isActive ? copy.providerActive : copy.ready}</span>
               <span className="uprovider-discount" title={copy.activeDiscount}>−{discount}%</span>
             </div>
+            {card.endpoint && (
+              <div className="uprovider-endpoint">
+                <code>{card.endpoint}</code>
+                {card.auth && <span>{card.auth}</span>}
+                <button type="button" onClick={() => copyProviderEndpoint(card.id, card.endpoint!)}>
+                  {copiedProvider === card.id ? copy.copiedEndpoint : copy.copyEndpoint}
+                </button>
+              </div>
+            )}
             <div className="uprovider-stats">
               <strong>{formatNanoUsd(card.agg?.officialNano ?? 0n, locale)}</strong>
               <span>{isActive && card.agg
@@ -138,6 +155,11 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                   })
                 : copy.usageProviderEmpty}</span>
             </div>
+            {card.docsPath && (
+              <Link className="uprovider-guide" href={card.docsPath}>
+                {copy.providerGuide} →
+              </Link>
+            )}
           </article>;
         })}
       </div>

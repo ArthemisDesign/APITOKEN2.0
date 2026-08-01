@@ -26,7 +26,6 @@ const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }
   { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },
   { id: "codex", name: "Codex", en: "Responses API agent", ru: "Агент Responses API" },
   { id: "gemini-cli", name: "Gemini CLI", en: "Native Gemini agent", ru: "Нативный агент Gemini" },
-  { id: "antigravity", name: "Antigravity", en: "Google login only", ru: "Только Google-логин" },
   { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал" },
   { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness" },
   { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced" },

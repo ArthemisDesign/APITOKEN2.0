@@ -78,15 +78,6 @@ describe("integration builder guide", () => {
       modelId: "not-a-real-model",
       language: "en",
     })).toThrow("Unknown openai model");
-
-    // Antigravity has no bring-your-own-endpoint, so it can never build a guide.
-    expect(() => buildIntegrationGuide({
-      provider: "gemini",
-      tool: "antigravity",
-      os: "unix",
-      modelId: INTEGRATION_MODELS.gemini[0].id,
-      language: "en",
-    })).toThrow("Antigravity does not support gemini");
   });
 
   it("emits parseable OpenCode and Pi configs without embedding a secret", () => {

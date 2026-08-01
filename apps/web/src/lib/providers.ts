@@ -11,6 +11,12 @@ export interface DashboardProvider {
   color: string;
   /** SVG-глиф из public/assets. Если не задан, рисуется первая буква имени. */
   logo?: string;
+  /** Публичный endpoint провайдера для строки подключения в карточке. */
+  endpoint?: string;
+  /** Схема авторизации рядом с endpoint (короткий ярлык). */
+  auth?: string;
+  /** Куда ведёт ссылка «Setup guide». */
+  docsPath?: string;
 }
 
 export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
@@ -20,6 +26,9 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     api: "Anthropic Messages API",
     color: "#d97757",
     logo: "/assets/providers/anthropic.svg",
+    endpoint: "api.apitoken.sale",
+    auth: "x-api-key",
+    docsPath: "/docs",
   },
   {
     id: "openai",
@@ -27,6 +36,9 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     api: "OpenAI-compatible API",
     color: "#10a37f",
     logo: "/assets/providers/openai.svg",
+    endpoint: "openai.api.apitoken.sale/v1",
+    auth: "Authorization: Bearer",
+    docsPath: "/docs",
   },
   {
     id: "gemini",
@@ -34,6 +46,9 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     api: "Google Gemini API",
     color: "#4b8bf5",
     logo: "/assets/providers/gemini.svg",
+    endpoint: "gemini.api.apitoken.sale",
+    auth: "x-goog-api-key",
+    docsPath: "/docs",
   },
 ];
 
