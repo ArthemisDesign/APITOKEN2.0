@@ -530,7 +530,64 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    (решение 5), `reasoning` items во входе принимаются и выбрасываются. В router
    продублированный `namespace_lane` chat/responses dispatch'ей вынесен в общий
    `pub(crate)` в `crates/router/src/catalog.rs`; **4.3** — Gemini-зеркало
-   (Responses→generateContent в Gemini plane по образцу 3.3).
+   (Responses→generateContent в Gemini plane по образцу 3.3) — **РЕАЛИЗОВАН**:
+   адаптер `crates/forward/src/gemini/responses.rs`, роут `POST /v1/responses` в
+   `ProviderMode::Gemini` (router не менялся — dispatch `google/*` и gemini-alias'ов
+   работает с 4.1). Поток — паттерн chat-адаптера 3.3: перевод в GenerateContentRequest
+   → внутренний запрос на `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse`
+   → общий `gemini_api()` без изменений → перевод ответа СНАРУЖИ. Responses-сторона
+   словаря 4.1+4.2 (item-формы, события SSE, usage, status/incomplete_details)
+   идентична Anthropic-адаптеру и закреплена contract-тестами модуля на тех же
+   табличных ожиданиях. Запрос: `instructions` и system/developer items →
+   `systemInstruction` (text-парт на каждый, instructions первым), `input` строка/items
+   → contents со склейкой одноролевых, `input_image` → inlineData общим переводом
+   (только data: URL — http(s) generateContent не принимает → `400 invalid_request`;
+   `detail` != auto → `400 unsupported_parameter`), replay
+   function_call/function_call_output → functionCall/functionResponse парты
+   (`arguments` JSON-строка → `args`; functionResponse ссылается на вызов по ИМЕНИ —
+   карта call_id→name по function_call items истории, output без пары →
+   `400 invalid_request` — отличие от Anthropic-зеркала, где pairing не валидируется),
+   `tools` → `[{"functionDeclarations": …}]` (плоский дескриптор, `strict` снимается),
+   `tool_choice` → `toolConfig.functionCallingConfig`, `max_output_tokens` →
+   `generationConfig.maxOutputTokens` (дефолт 4096), `reasoning.effort` →
+   `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть — minimal
+   НЕ клампится, отличие от Anthropic-зеркала; `includeThoughts: true`), `text.format`
+   json_schema → `responseMimeType: application/json` + `responseSchema` (обёртка
+   снимается), json_object → `responseMimeType` (у generateContent есть — отличие от
+   Messages, где json_object → 400). Capability matrix — те же 9 правил, что у
+   Anthropic-зеркала, плюс `parallel_tool_calls` (у generateContent нет
+   disable_parallel_tool_use — только дефолт true); НЕИЗВЕСТНЫЕ top-level поля →
+   `400 unsupported_parameter` (закрытый список, как chat-адаптер 3.3 — Code Assist
+   wrapper выбросил бы их молча). Ответ: thought-парты → reasoning items `rs_*` и
+   reasoning_summary события словаря 4.2 (парт с одним thoughtSignature событий не
+   порождает — решение 4), functionCall → function_call items `fc_*` с
+   синтезированными call_id `callu_<name>[_N]` (functionCall.id на private wire нет —
+   схема chat-адаптера) и ровно одной arguments-дельтой (functionCall приходит
+   целиком); usage — input = `promptTokenCount`, output =
+   `candidatesTokenCount`+`thoughtsTokenCount` (та же сумма, что тарифицирует
+   metering), `cachedContentTokenCount` → `input_tokens_details.cached_tokens`,
+   `thoughtsTokenCount` → `output_tokens_details.reasoning_tokens`;
+   finishReason/blockReason → status через общий `map_finish_reason`: MAX_TOKENS →
+   incomplete `max_output_tokens`, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII
+   → incomplete `content_filter`. Stream: data-only SSE → Responses SSE; нормальное
+   завершение Gemini-стрима — чистый EOF (message_stop на wire нет): открытый item
+   закрывается done-событиями и эмитится `response.completed` (отличие от
+   Anthropic-зеркала, где EOF без message_stop → `response.failed`); mid-stream
+   error-кадр `{error:{code,message,status}}` и транспортный сбой → `response.failed`
+   (error.code — google.rpc status). Ошибки — общий с chat-адаптером
+   `convert_error_response` (Google-конверт → OpenAI-конверт, нативный
+   `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`
+   сохраняются). Временные ограничения — как после 4.2: reasoning items входа
+   выбрасываются, `store:true`/`previous_response_id`/`item_reference` →
+   `400 documented_limitation` (решение 5). Общие хелперы (`chat_error`,
+   `invalid_request`, `unsupported_parameter`, `convert_error_response`,
+   `merge_or_push`, `gemini_image_part`/`translate_reasoning_effort`/
+   `parse_tool_arguments` с именем параметра, `function_declaration`,
+   `function_response_value`, `synthetic_call_id`, `map_finish_reason`, константы
+   лимитов) вынесены в `pub(crate)` в `gemini/chat.rs` (по образцу выноса 4.1 в
+   `anthropic.rs`). e2e-smoke Gemini-цепочки не добавлялся (плоскость требует
+   encrypted OAuth-пул, как в 3.3); e2e-покрытие universal lane — Anthropic-цепочка
+   в `tests/universal_chat_smoke.sh`.
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
    beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
    (зеркало решений 3–4, thinking без подписей).

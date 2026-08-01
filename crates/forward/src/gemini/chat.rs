@@ -56,17 +56,18 @@ use crate::proxy::{read_body_limited, BodyReadError, TerminalErrorReason};
 use crate::state::AppState;
 
 /// Лимит тела chat-запроса — как у нативного text-пути плоскости
-/// (`GEMINI_TEXT_REQUEST_BODY_LIMIT`).
-const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// (`GEMINI_TEXT_REQUEST_BODY_LIMIT`). Общий с Responses-адаптером этапа 4.3
+/// (`responses.rs`).
+pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Верхняя граница буферизации error/non-stream тел ответа `gemini_api()`.
-const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Дефолт `maxOutputTokens`, когда chat-запрос его не задал. Без него
 /// нативный путь резервирует под полный output_token_limit модели (65k) —
 /// для chat-клиента это неоправданный hold; 4096 — конвенция universal lane
 /// (так же, как в Anthropic-адаптере).
-const DEFAULT_MAX_TOKENS: u64 = 4096;
+pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`).
@@ -257,7 +258,7 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     // Reasoning (этап 3.4b): reasoning_effort → thinkingConfig — соседнее
     // поле того же generationConfig, responseMimeType/responseSchema не
     // затираются.
-    if let Some(level) = translate_reasoning_effort(object.get("reasoning_effort"))? {
+    if let Some(level) = translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")? {
         generation_config.insert(
             "thinkingConfig".to_string(),
             json!({"thinkingLevel": level, "includeThoughts": true}),
@@ -468,7 +469,8 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Option<Value>, Vec<Value>
 }
 
 /// Добавить parts в contents, склеивая с последним content той же роли.
-fn merge_or_push(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
+/// Общая с Responses-адаптером этапа 4.3 (`responses.rs`).
+pub(crate) fn merge_or_push(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
     if let Some(last) = contents.last_mut() {
         if last.get("role").and_then(Value::as_str) == Some(role) {
             let merged = last
@@ -547,7 +549,7 @@ fn user_message_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
                 if !text.is_empty() {
                     out.push(json!({"text": std::mem::take(&mut text)}));
                 }
-                out.push(gemini_image_part(part)?);
+                out.push(gemini_image_part(part, "messages")?);
             }
             _ => return Err(unsupported_parameter("messages")),
         }
@@ -566,40 +568,42 @@ fn user_message_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
 
 /// Chat image_url-часть → inlineData-парт. Только data: URL (см.
 /// user_message_parts); `detail` != auto — `400 unsupported_parameter`.
-fn gemini_image_part(part: &Value) -> Result<Value, Response> {
+/// Общая с Responses-адаптером этапа 4.3 (`responses.rs`); `param` — имя
+/// параметра в ошибках (`messages` у chat, `input` у Responses).
+pub(crate) fn gemini_image_part(part: &Value, param: &str) -> Result<Value, Response> {
     let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
         invalid_request(
             "Invalid image_url part: expected an object with a url string.",
-            Some("messages"),
+            Some(param),
         )
     })?;
     if let Some(detail) = image.get("detail").and_then(Value::as_str) {
         if detail != "auto" {
-            return Err(unsupported_parameter("messages"));
+            return Err(unsupported_parameter(param));
         }
     }
     let url = image.get("url").and_then(Value::as_str).ok_or_else(|| {
         invalid_request(
             "Invalid image_url part: expected an object with a url string.",
-            Some("messages"),
+            Some(param),
         )
     })?;
     let Some(data_url) = url.strip_prefix("data:") else {
         return Err(invalid_request(
-            "Gemini chat lane supports only data: image URLs (external image fetch is not supported).",
-            Some("messages"),
+            "Gemini lane supports only data: image URLs (external image fetch is not supported).",
+            Some(param),
         ));
     };
     let (mime_type, data) = data_url.split_once(";base64,").ok_or_else(|| {
         invalid_request(
             "Invalid image_url data URL: expected data:<mime>;base64,<data>.",
-            Some("messages"),
+            Some(param),
         )
     })?;
     if !mime_type.starts_with("image/") || data.is_empty() {
         return Err(invalid_request(
             "Invalid image_url data URL: expected an image MIME type and base64 data.",
-            Some("messages"),
+            Some(param),
         ));
     }
     Ok(json!({"inlineData": {"mimeType": mime_type, "data": data}}))
@@ -637,16 +641,23 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Op
 /// проксируется как есть: плоскость сама мапит minimal|low|medium|high в wire
 /// model id (валидация строк уровня — в gemini/api.rs). Отсутствие/null —
 /// выкл (поле не вставляется); любое другое не-null значение → 400
-/// invalid_request.
-fn translate_reasoning_effort(value: Option<&Value>) -> Result<Option<String>, Response> {
+/// invalid_request. Общая с Responses-адаптером этапа 4.3 (`responses.rs`);
+/// `param` — имя параметра в ошибке (`reasoning_effort` у chat, `reasoning`
+/// у Responses).
+pub(crate) fn translate_reasoning_effort(
+    value: Option<&Value>,
+    param: &str,
+) -> Result<Option<String>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
     match value.as_str() {
         Some(level @ ("minimal" | "low" | "medium" | "high")) => Ok(Some(level.to_string())),
         _ => Err(invalid_request(
-            "Invalid value for parameter: reasoning_effort (expected minimal, low, medium or high).",
-            Some("reasoning_effort"),
+            &format!(
+                "Invalid value for parameter: {param} (expected minimal, low, medium or high)."
+            ),
+            Some(param),
         )),
     }
 }
@@ -694,7 +705,7 @@ fn assistant_parts(
                         Some("messages"),
                     )
                 })?;
-            let args = parse_tool_arguments(function.get("arguments"))?;
+            let args = parse_tool_arguments(function.get("arguments"), "messages")?;
             call_names.insert(id.to_string(), name.to_string());
             parts.push(json!({"functionCall": {"name": name, "args": args}}));
         }
@@ -709,7 +720,7 @@ fn assistant_parts(
                     Some("messages"),
                 )
             })?;
-        let args = parse_tool_arguments(function_call.get("arguments"))?;
+        let args = parse_tool_arguments(function_call.get("arguments"), "messages")?;
         // Legacy function-ответы ссылаются по имени напрямую — карта не нужна.
         parts.push(json!({"functionCall": {"name": name, "args": args}}));
     }
@@ -723,14 +734,16 @@ fn assistant_parts(
 }
 
 /// `arguments` tool call'а: JSON-строка → object. Пустая строка — `{}`.
-fn parse_tool_arguments(value: Option<&Value>) -> Result<Value, Response> {
+/// Общая с Responses-адаптером этапа 4.3 (`responses.rs`); `param` — имя
+/// параметра в ошибках (`messages` у chat, `input` у Responses).
+pub(crate) fn parse_tool_arguments(value: Option<&Value>, param: &str) -> Result<Value, Response> {
     let raw = match value {
         None | Some(Value::Null) => return Ok(json!({})),
         Some(Value::String(raw)) => raw,
         Some(_) => {
             return Err(invalid_request(
                 "Invalid tool call arguments: expected a JSON string.",
-                Some("messages"),
+                Some(param),
             ))
         }
     };
@@ -741,15 +754,15 @@ fn parse_tool_arguments(value: Option<&Value>) -> Result<Value, Response> {
         Ok(Value::Object(arguments)) => Ok(Value::Object(arguments)),
         _ => Err(invalid_request(
             "Invalid tool call arguments: expected a JSON object string.",
-            Some("messages"),
+            Some(param),
         )),
     }
 }
 
 /// functionResponse.response — всегда JSON-object. Типичный tool output —
 /// JSON-строка: разбираем и заворачиваем в `{"result": ...}`; не-JSON текст
-/// заворачивается строкой.
-fn function_response_value(text: &str) -> Value {
+/// заворачивается строкой. Общая с Responses-адаптером этапа 4.3.
+pub(crate) fn function_response_value(text: &str) -> Value {
     match serde_json::from_str::<Value>(text) {
         Ok(parsed) => json!({"result": parsed}),
         Err(_) => json!({"result": text}),
@@ -818,42 +831,55 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
                 Some(param),
             )
         })?;
-        let name = function
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                invalid_request(
-                    &format!("Invalid entry in parameter: {param} entries require a function name."),
-                    Some(param),
-                )
-            })?;
-        let mut declaration = json!({"name": name});
-        match function.get("description") {
-            None | Some(Value::Null) => {}
-            Some(Value::String(description)) => {
-                declaration["description"] = Value::String(description.clone())
-            }
-            Some(_) => {
-                return Err(invalid_request(
-                    &format!("Invalid type for parameter: {param} description must be a string."),
-                    Some(param),
-                ))
-            }
-        }
-        match function.get("parameters") {
-            None | Some(Value::Null) => {}
-            Some(schema) if schema.is_object() => declaration["parameters"] = schema.clone(),
-            Some(_) => {
-                return Err(invalid_request(
-                    &format!("Invalid type for parameter: {param} parameters must be an object."),
-                    Some(param),
-                ))
-            }
-        }
-        declarations.push(declaration);
+        declarations.push(function_declaration(function, param)?);
     }
     Ok(declarations)
+}
+
+/// Function-дескриптор (`{name, description?, parameters?}`) →
+/// functionDeclaration: `parameters` проксируются как есть (OpenAPI Schema —
+/// тот же JSON Schema), отсутствующие поля опускаются; `strict` и прочие
+/// обёрточные поля снимаются (constrained decoding generateContent всегда
+/// строгий). Общее ядро chat `tools[]`/`functions[]` и Responses `tools[]`
+/// (этап 4.3, `responses.rs`).
+pub(crate) fn function_declaration(
+    function: &Map<String, Value>,
+    param: &str,
+) -> Result<Value, Response> {
+    let name = function
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            invalid_request(
+                &format!("Invalid entry in parameter: {param} entries require a function name."),
+                Some(param),
+            )
+        })?;
+    let mut declaration = json!({"name": name});
+    match function.get("description") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(description)) => {
+            declaration["description"] = Value::String(description.clone())
+        }
+        Some(_) => {
+            return Err(invalid_request(
+                &format!("Invalid type for parameter: {param} description must be a string."),
+                Some(param),
+            ))
+        }
+    }
+    match function.get("parameters") {
+        None | Some(Value::Null) => {}
+        Some(schema) if schema.is_object() => declaration["parameters"] = schema.clone(),
+        Some(_) => {
+            return Err(invalid_request(
+                &format!("Invalid type for parameter: {param} parameters must be an object."),
+                Some(param),
+            ))
+        }
+    }
+    Ok(declaration)
 }
 
 /// `tool_choice` / legacy `function_call` → `toolConfig.functionCallingConfig`.
@@ -968,8 +994,9 @@ fn parse_stream_options(value: Option<&Value>) -> Result<bool, Response> {
     }
 }
 
-/// OpenAI `finish_reason` из Gemini `finishReason`/`blockReason`.
-fn map_finish_reason(finish_reason: Option<&str>) -> &'static str {
+/// OpenAI `finish_reason` из Gemini `finishReason`/`blockReason`. Общая с
+/// Responses-адаптером этапа 4.3 (`responses.rs`).
+pub(crate) fn map_finish_reason(finish_reason: Option<&str>) -> &'static str {
     match finish_reason {
         Some("MAX_TOKENS") => "length",
         Some("SAFETY")
@@ -1022,7 +1049,8 @@ fn openai_error_type(status: StatusCode) -> &'static str {
 
 /// Единая точка синтетических OpenAI-ошибок адаптера. `reason` — статический
 /// код для audit-middleware (TerminalErrorReason), как у ошибок плоскости.
-fn chat_error(
+/// Общая с Responses-адаптером этапа 4.3 (`responses.rs`).
+pub(crate) fn chat_error(
     status: StatusCode,
     message: &str,
     param: Option<&str>,
@@ -1045,7 +1073,7 @@ fn chat_error(
     response
 }
 
-fn invalid_request(message: &str, param: Option<&str>) -> Response {
+pub(crate) fn invalid_request(message: &str, param: Option<&str>) -> Response {
     chat_error(
         StatusCode::BAD_REQUEST,
         message,
@@ -1055,7 +1083,7 @@ fn invalid_request(message: &str, param: Option<&str>) -> Response {
     )
 }
 
-fn unsupported_parameter(param: &str) -> Response {
+pub(crate) fn unsupported_parameter(param: &str) -> Response {
     chat_error(
         StatusCode::BAD_REQUEST,
         &format!("Unsupported parameter: '{param}' is not supported with this endpoint."),
@@ -1069,8 +1097,9 @@ fn unsupported_parameter(param: &str) -> Response {
 /// Статус и `Retry-After` сохраняются; audit-reason пробрасывается в
 /// extension. Особый случай: нативный `400 API_KEY_INVALID` (reason
 /// `invalid_key`) → `401 authentication_error` — поведение, которого
-/// OpenAI-клиент ждёт на невалидный ключ.
-async fn convert_error_response(upstream: Response) -> Response {
+/// OpenAI-клиент ждёт на невалидный ключ. Общий с Responses-адаптером
+/// этапа 4.3 (`responses.rs`).
+pub(crate) async fn convert_error_response(upstream: Response) -> Response {
     let status = upstream.status();
     let reason = upstream
         .extensions()
@@ -1243,7 +1272,10 @@ fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>) 
     (text, reasoning, tool_calls)
 }
 
-fn synthetic_call_id(name: &str, ordinal: u64) -> String {
+/// Синтезируемый id tool call'а: на private wire functionCall.id не
+/// приезжает, поэтому id детерминированные `callu_<name>[_N]`. Общая схема
+/// non-stream/stream перевода и Responses-адаптера этапа 4.3.
+pub(crate) fn synthetic_call_id(name: &str, ordinal: u64) -> String {
     if ordinal == 1 {
         format!("callu_{name}")
     } else {

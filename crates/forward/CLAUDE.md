@@ -209,6 +209,39 @@ Reasoning (3.4b): `reasoning_effort` → `generationConfig.thinkingConfig`
 плоскость; `includeThoughts: true`; невалидное значение → `400 invalid_request`),
 thought-парты ответа → `message.reasoning_content`/reasoning_content-дельты
 (`thoughtSignature` не выставляется).
+`gemini/responses.rs` — universal Responses→generateContent адаптер (этап 4.3
+docs/engine/UNIFIED_ROUTER.md, роут `POST /v1/responses` в `ProviderMode::Gemini`) —
+Gemini-зеркало `anthropic_responses.rs`: Responses-сторона словаря 4.1+4.2 (item-формы,
+события SSE, usage, status/incomplete_details) идентична Anthropic-адаптеру (contract-
+тесты модуля на тех же табличных ожиданиях), перевод запроса и разбор ответа — по
+правилам `gemini/chat.rs`: `instructions`/system/developer items → `systemInstruction`,
+input items → contents со склейкой одноролевых, `input_image` → inlineData общим
+переводом (только data: URL, http(s) → 400), replay tool-истории: function_call items →
+functionCall-парты model-content'а (`arguments` JSON-строка → `args`), function_call_output
+items → functionResponse-парты user-content'а (имя восстанавливается по карте
+call_id→name — functionResponse ссылается по имени, output без пары →
+`400 invalid_request`, в отличие от Anthropic-зеркала pairing валидируется), `tools` →
+functionDeclarations (плоский дескриптор, `strict` снимается), `tool_choice` →
+`functionCallingConfig`, `max_output_tokens` → `maxOutputTokens` дефолт 4096,
+`reasoning.effort` → `thinkingConfig` (minimal НЕ клампится — отличие от Anthropic),
+`text.format` → `responseMimeType`/`responseSchema` (json_object у generateContent есть),
+capability matrix — те же 9 правил, что у Anthropic-зеркала, плюс `parallel_tool_calls`
+(только дефолт true), ПЛЮС закрытый список top-level полей (неизвестное →
+`400 unsupported_parameter`); `store:true`/`previous_response_id`/`item_reference` →
+`400 documented_limitation` (решение 5). Ответ: thought-парты → reasoning items `rs_*` и
+reasoning_summary события словаря 4.2 (thoughtSignature не выставляется), functionCall →
+function_call items `fc_*` с синтезированными call_id `callu_<name>[_N]` и ровно одной
+arguments-дельтой (functionCall приходит целиком), usage input=`promptTokenCount` /
+output=`candidatesTokenCount`+`thoughtsTokenCount` (thoughts → `reasoning_tokens`),
+finishReason/blockReason → status через общий `map_finish_reason` (MAX_TOKENS →
+incomplete `max_output_tokens`, SAFETY и др. → incomplete `content_filter`); stream —
+data-only SSE → Responses SSE, чистый EOF — норма протокола (`response.completed`, не
+failed), mid-stream error-кадр → `response.failed`; ошибки — общий с chat-адаптером
+`convert_error_response` (400 API_KEY_INVALID → 401). Общие хелперы (`chat_error`,
+`invalid_request`, `unsupported_parameter`, `convert_error_response`, `merge_or_push`,
+`gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` с именем
+параметра, `function_declaration`, `function_response_value`, `synthetic_call_id`,
+`map_finish_reason`, константы лимитов) — `pub(crate)` в `gemini/chat.rs`.
 Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
