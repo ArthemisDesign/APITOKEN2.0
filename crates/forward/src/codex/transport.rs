@@ -253,6 +253,11 @@ impl ProfileTransport {
             ("chatgpt-account-id", auth.account_id.as_str()),
             ("originator", codex_credential::CODEX_ORIGINATOR),
             ("user-agent", self.cfg.user_agent().as_str()),
+            // The official OpenAI provider sends the package version as a standalone provider
+            // header in addition to the version embedded in User-Agent. Keep both pinned to the
+            // same reviewed value: backend feature rollout (including service tiers) must see the
+            // exact client version identity rather than only the catalogue query parameter.
+            ("version", self.cfg.cli_version.as_str()),
             ("session_id", session_id),
             ("OpenAI-Beta", "responses=experimental"),
             ("accept", "text/event-stream"),
@@ -1188,6 +1193,22 @@ mod tests {
             access_token: codex_credential::SecretString::new("test-access".to_string()),
             account_id: "acct_test_1".to_string(),
         }
+    }
+
+    #[test]
+    fn wire_identity_includes_standalone_pinned_client_version() {
+        let cfg = test_config("http://127.0.0.1:1");
+        let transport = ProfileTransport::new(cfg.clone(), None).unwrap();
+        let headers = transport.wire_headers(&test_auth(), "session-test");
+
+        assert_eq!(
+            headers.get("version").and_then(|value| value.to_str().ok()),
+            Some(cfg.cli_version.as_str())
+        );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains(cfg.cli_version.as_str())));
     }
 
     fn sse_body(events: &[(&str, &str)]) -> String {

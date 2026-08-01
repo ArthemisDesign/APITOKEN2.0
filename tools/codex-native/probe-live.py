@@ -142,6 +142,7 @@ def auth_headers(tokens, client_version, identity=None):
         "ChatGPT-Account-ID": account_id_of(tokens),
         "originator": ORIGINATOR,
         "User-Agent": f"{ORIGINATOR}/{client_version} (Linux; x86_64) {ORIGINATOR}",
+        "version": client_version,
         "OpenAI-Beta": "responses=experimental",
     }
     if identity:
