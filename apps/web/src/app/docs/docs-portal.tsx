@@ -239,6 +239,7 @@ export function DocsPortal() {
                 <a className="btn btn-ghost docs-guide-link" href={AGENT_GUIDE_URL} target="_blank" rel="noreferrer"><GuideIcon />{t.openAgentGuide}</a>
               </div>
             </div>
+            <p className="docs-agent-prompt">{t.agentPrompt}</p>
             <div className="docs-agent-bottom">
               <ul className="docs-agent-points">{t.agentSteps.map((step) => <li key={step}><CheckIcon />{step}</li>)}</ul>
               <Link href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}<ArrowIcon /></Link>
@@ -278,8 +279,8 @@ export function DocsPortal() {
         <section className="docs-section" id="caching">
           <div className="docs-section-heading"><span>05</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
           <div className="docs-two-col">
-            <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} copyLabel={t.copy} copiedLabel={t.copied} />
-            <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} copyLabel={t.copy} copiedLabel={t.copied} />
+            <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
+            <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
           </div>
         </section>
 
@@ -318,10 +319,21 @@ function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: st
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
 }
 
-function CacheCard({ title, text, code, copyLabel, copiedLabel }: { title: string; text: string; code: string; copyLabel: string; copiedLabel: string }) {
-  return <article className="docs-code-card cache-card ym-hide-content">
-    <header><div><h3>{title}</h3><p><Prose text={text} /></p></div><CopyControl value={code} label={copyLabel} copiedLabel={copiedLabel} /></header>
-    <pre><code><HighlightedCode code={code} /></code></pre>
+function CacheCard({ title, text, code, codeLabel, copyLabel, copiedLabel }: { title: string; text: string; code: string; codeLabel: string; copyLabel: string; copiedLabel: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_200);
+  }
+
+  return <article className="cache-card ym-hide-content">
+    <header><h3>{title}</h3><p><Prose text={text} /></p></header>
+    <div className="ib-code">
+      <div className="ib-code-bar"><i className="ib-dots" aria-hidden="true" /><span>{codeLabel}</span><button type="button" onClick={handleCopy}><CopyIcon copied={copied} />{copied ? copiedLabel : copyLabel}</button></div>
+      <pre><code><HighlightedCode code={code} /></code></pre>
+    </div>
   </article>;
 }
 

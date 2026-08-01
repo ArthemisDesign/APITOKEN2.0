@@ -240,7 +240,7 @@ describe("completed Next.js migration", () => {
     expect(docs).toContain("navigator.clipboard.writeText");
     expect(docs).toContain('agentEyebrow: "For Your Agent"');
     expect(docs).toContain('copyAgent: "Скопировать"');
-    expect(docs).not.toContain("{t.agentPrompt}</p>");
+    expect(docs).toContain('className="docs-agent-prompt"');
     expect(docs).toContain("https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md");
     expect(docs).not.toContain("Connection details");
     expect(docs).not.toContain("Параметры подключения");

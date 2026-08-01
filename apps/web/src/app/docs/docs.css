@@ -6,7 +6,7 @@
 .docs-site h1,.docs-site h2,.docs-site h3,.docs-site h4,.docs-site h5,.docs-site th,.docs-site td,
 .docs-site .docs-sidebar,.docs-site .docs-sidebar a,.docs-site .docs-sidebar>span,
 .docs-site .docs-notice,.docs-site .docs-checklist,.docs-site .docs-checklist h3,
-.docs-site .docs-checklist li,.docs-site .docs-code-card h3,.docs-site .docs-code-card header p,
+.docs-site .docs-checklist li,.docs-site .cache-card h3,.docs-site .cache-card header p,
 .docs-site .docs-errors,.docs-site .docs-h3,.docs-site .docs-para,.docs-site .docs-footer{
   font-family:var(--font-ui)
 }
@@ -49,6 +49,8 @@
 .docs-agent-copy.btn{border-color:var(--accent);background:var(--accent);color:#fff}
 .docs-agent-copy.btn:hover{background:#3767f0;color:#fff;box-shadow:0 0 0 4px var(--accent-soft)}
 .docs-guide-link svg{flex:none}
+.docs-agent-prompt{margin:18px 0 0;padding:13px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg-soft);
+  color:var(--txt-2);font-family:var(--font-mono);font-size:12.5px;line-height:1.65;overflow-wrap:anywhere}
 .docs-agent-bottom{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
 .docs-agent-points{display:flex;align-items:center;gap:22px;margin:0;padding:0;list-style:none}
 .docs-agent-points li{display:flex;align-items:center;gap:7px;color:var(--txt-2);font-size:13px;font-weight:600;line-height:1.35;white-space:nowrap}
@@ -145,11 +147,10 @@
 .ib-code .tk-line::before{content:counter(tk-line);counter-increment:tk-line;position:absolute;top:0;left:0;width:20px;color:var(--term-comment);font-size:.85em;text-align:right;opacity:.6;user-select:none}
 .tk-line{display:block}
 
-/* Prompt-caching cards: prose in the header, code below. */
+/* Prompt-caching cards: prose header above the shared terminal window. */
 .cache-card h3{font-family:var(--font-ui);font-size:15px;font-weight:650;letter-spacing:-.01em}
 .cache-card header p{font-family:var(--font-ui);font-size:13px;line-height:1.55}
 .cache-card header p code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
-.cache-card pre code{white-space:pre-wrap;overflow-wrap:anywhere}
 .ib-code .tk-c{color:var(--term-comment)}
 .ib-code .tk-s{color:var(--term-green)}
 .ib-code .tk-k{color:var(--term-key)}
@@ -202,14 +203,10 @@
 .docs-copy{align-self:flex-start;min-width:92px;justify-content:center}
 .docs-notice{margin-top:14px;padding:16px 18px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);
   color:var(--txt-2);font-family:var(--font-mono);font-size:12px;line-height:1.65}
-.docs-code-card{min-width:0;margin-bottom:18px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);overflow:hidden;box-shadow:var(--shadow)}
-.docs-code-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:18px 20px;border-bottom:1px solid var(--line)}
-.docs-code-card h3{margin:0;font-family:var(--font-mono);font-size:15px}
-.docs-code-card header p{margin:5px 0 0;color:var(--txt-3);font-family:var(--font-mono);font-size:11px;line-height:1.55}
-.docs-code-card pre{margin:0;padding:22px;overflow:auto;background:var(--term-bg);color:var(--term-text);font-size:12px;line-height:1.7}
-.docs-code-card pre code{font-family:var(--font-mono);white-space:pre}
+.cache-card{min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--bg-card);overflow:hidden;box-shadow:var(--shadow)}
+.cache-card>header{padding:18px 20px}
+.cache-card .ib-code{margin:0;border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none}
 .docs-two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
-.docs-two-col .docs-code-card{margin:0}
 .docs-auth-flow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);gap:14px;align-items:center;
   padding:22px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card)}
 .docs-auth-flow>div{display:flex;align-items:center;gap:12px;min-width:0;padding:15px;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft)}
@@ -289,7 +286,6 @@
   .docs-auth-flow{grid-template-columns:1fr}
   .docs-auth-flow>span{transform:rotate(90deg);text-align:center}
   .docs-checklist ul{grid-template-columns:1fr}
-  .docs-code-card>header{flex-direction:column}
   .docs-copy{width:100%}
   .table-scroll .docs-errors{min-width:0}
   .docs-errors,.docs-errors tbody,.docs-errors tr,.docs-errors td{display:block;width:100%}
@@ -380,7 +376,7 @@
 /* Documentation portal: every layout child can shrink; only code owns horizontal scrolling. */
 .docs-layout,.docs-main,.docs-main>*,.docs-main section,.docs-hero,.docs-section,
 .docs-section-heading>div,.docs-essential-grid>*,.docs-two-col>*,.docs-auth-flow>*,
-.docs-code-card,.docs-code-card>header>div,.docs-checklist,.docs-errors,
+.cache-card,.docs-checklist,.docs-errors,
 .docs-integration-builder,.ib-layout,.ib-controls,.ib-guide,.ib-rows,.ib-row,.ib-steps>li,.ib-code{
   min-width:0;max-width:100%
 }
@@ -389,15 +385,13 @@
 .docs-hero h1,.docs-section-heading h2,.docs-section-heading p,.docs-notice,.docs-checklist li{
   max-width:100%;overflow-wrap:anywhere
 }
-.docs-code-card pre{width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
-.docs-code-card pre code{display:block;width:max-content;min-width:100%}
 /* Scroll affordance: wide model tables, code blocks and the mobile docs TOC are horizontally swipeable
    (verified: no page-level overflow). A thin persistent scrollbar signals that they scroll instead of
    looking clipped at the right edge on narrow screens. */
-.table-scroll,.docs-code-card pre,.docs-sidebar{scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
-.table-scroll::-webkit-scrollbar,.docs-code-card pre::-webkit-scrollbar,.docs-sidebar::-webkit-scrollbar{height:7px}
-.table-scroll::-webkit-scrollbar-thumb,.docs-code-card pre::-webkit-scrollbar-thumb,.docs-sidebar::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:99px}
-.table-scroll::-webkit-scrollbar-track,.docs-code-card pre::-webkit-scrollbar-track,.docs-sidebar::-webkit-scrollbar-track{background:transparent}
+.table-scroll,.docs-sidebar{scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+.table-scroll::-webkit-scrollbar,.docs-sidebar::-webkit-scrollbar{height:7px}
+.table-scroll::-webkit-scrollbar-thumb,.docs-sidebar::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:99px}
+.table-scroll::-webkit-scrollbar-track,.docs-sidebar::-webkit-scrollbar-track{background:transparent}
 .docs-auth-flow>div{width:100%}
 #docs-api-key{max-width:100%}
 
@@ -426,7 +420,6 @@
   .docs-hero h1{font-size:clamp(32px,10vw,38px)}
   .docs-section-heading h2{font-size:25px}
   .docs-section-heading{grid-template-columns:34px minmax(0,1fr);gap:12px}
-  .docs-code-card>header{padding:16px}
-  .docs-code-card pre{padding:18px 16px}
+  .cache-card>header{padding:16px}
   .docs-notice form>*{min-width:0;max-width:100%}
 }
