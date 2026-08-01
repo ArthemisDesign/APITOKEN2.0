@@ -234,6 +234,10 @@ token on every refresh with strict family reuse detection. The pool therefore:
 ## Failure and stream safety
 
 - Retry is permitted only before the first translated native SSE event reaches the client.
+- Native Responses events are deduplicated only by their monotonic `sequence_number`. The first
+  identity observed for an `output_index` is canonical through delta and completion; a missing or
+  drifted upstream `item_id` is normalized to that identity. Content is never compared or removed,
+  so intentionally repeated text with distinct event sequence numbers remains byte-for-byte intact.
 - Client disconnect detaches the upstream read; the turn drains to its authoritative final
   usage before settlement, and the shutdown deadline aborts the read, settles the last snapshot
   and only then releases the background task guard.

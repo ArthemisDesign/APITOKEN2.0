@@ -14,7 +14,7 @@ use super::runner::bounded_cache_key;
 use super::CodexConfig;
 use codex_credential::SecretString;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 
@@ -219,6 +219,105 @@ struct WireIdentity {
     turn_id: String,
     window_id: String,
     turn_metadata: String,
+}
+
+/// Request-local identity for the ordered Responses SSE protocol.
+///
+/// The upstream contract numbers every event and every output item. Keep those protocol keys at
+/// the transport boundary so a replayed event cannot become a second public delta and a transient
+/// item-id omission/drift cannot split one logical output into two downstream messages.
+#[derive(Debug, Default)]
+struct SseProtocolState {
+    last_sequence_number: Option<u64>,
+    output_item_ids: HashMap<u64, String>,
+    duplicate_sequence_reported: bool,
+    identity_drift_reported: bool,
+}
+
+impl SseProtocolState {
+    fn accept_sequence(&mut self, payload: &Value) -> bool {
+        let Some(sequence_number) = payload.get("sequence_number").and_then(Value::as_u64) else {
+            // Older private-backend events did not always carry the public sequence field. Keep
+            // them compatible; only events with an authoritative protocol identity are deduped.
+            return true;
+        };
+        if self
+            .last_sequence_number
+            .is_some_and(|last| sequence_number <= last)
+        {
+            if !self.duplicate_sequence_reported {
+                eprintln!("Codex duplicate SSE sequence suppressed");
+                self.duplicate_sequence_reported = true;
+            }
+            return false;
+        }
+        self.last_sequence_number = Some(sequence_number);
+        true
+    }
+
+    fn canonical_item_id(
+        &mut self,
+        output_index: Option<u64>,
+        incoming_item_id: Option<&str>,
+        prefix: &str,
+    ) -> String {
+        let incoming_item_id = incoming_item_id.filter(|value| !value.is_empty());
+        let Some(output_index) = output_index else {
+            return incoming_item_id
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{prefix}_unknown"));
+        };
+        if let Some(canonical) = self.output_item_ids.get(&output_index).cloned() {
+            if incoming_item_id != Some(canonical.as_str()) {
+                self.report_identity_drift();
+            }
+            return canonical;
+        }
+
+        let canonical = incoming_item_id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{prefix}_stream_{output_index}"));
+        if incoming_item_id.is_none() {
+            self.report_identity_drift();
+        }
+        self.output_item_ids.insert(output_index, canonical.clone());
+        canonical
+    }
+
+    fn event_item_id(&mut self, payload: &Value, prefix: &str) -> String {
+        self.canonical_item_id(
+            payload.get("output_index").and_then(Value::as_u64),
+            payload.get("item_id").and_then(Value::as_str),
+            prefix,
+        )
+    }
+
+    fn normalize_output_item(&mut self, payload: &Value) -> Option<Value> {
+        let mut item = payload.get("item")?.clone();
+        let prefix = match item.get("type").and_then(Value::as_str) {
+            Some("message") => "msg",
+            Some("reasoning") => "rs",
+            Some("function_call") => "fc",
+            Some("custom_tool_call") => "ctc",
+            _ => "item",
+        };
+        let canonical = self.canonical_item_id(
+            payload.get("output_index").and_then(Value::as_u64),
+            item.get("id").and_then(Value::as_str),
+            prefix,
+        );
+        if let Some(object) = item.as_object_mut() {
+            object.insert("id".to_string(), Value::String(canonical));
+        }
+        Some(item)
+    }
+
+    fn report_identity_drift(&mut self) {
+        if !self.identity_drift_reported {
+            eprintln!("Codex output item identity drift normalized");
+            self.identity_drift_reported = true;
+        }
+    }
 }
 
 /// Per-profile native client. Owns the connection pool and the pinned wire identity; it has no
@@ -936,6 +1035,7 @@ async fn drive_sse_stream(
     let mut buffer: Vec<u8> = Vec::with_capacity(16_384);
     let mut event_name = String::new();
     let mut data_lines: Vec<String> = Vec::new();
+    let mut protocol = SseProtocolState::default();
     loop {
         let chunk = match stream.next().await {
             Some(Ok(chunk)) => chunk,
@@ -953,7 +1053,7 @@ async fn drive_sse_stream(
                     let data = data_lines.join("\n");
                     data_lines.clear();
                     let name = std::mem::take(&mut event_name);
-                    if dispatch_sse_event(&name, &data, sender, rate_limits).await? {
+                    if dispatch_sse_event(&name, &data, sender, rate_limits, &mut protocol).await? {
                         return Ok(());
                     }
                 }
@@ -976,7 +1076,7 @@ async fn drive_sse_stream(
                     let data = data_lines.join("\n");
                     data_lines.clear();
                     let name = std::mem::take(&mut event_name);
-                    if dispatch_sse_event(&name, &data, sender, rate_limits).await? {
+                    if dispatch_sse_event(&name, &data, sender, rate_limits, &mut protocol).await? {
                         // A completed turn's stream is done: the official backend closes after
                         // the terminal event, and waiting out an idle keep-alive would only
                         // delay settlement.
@@ -1004,11 +1104,15 @@ async fn dispatch_sse_event(
     data: &str,
     sender: &mpsc::Sender<AppServerEvent>,
     rate_limits: &Arc<Mutex<Option<CodexRateLimits>>>,
+    protocol: &mut SseProtocolState,
 ) -> Result<bool, ProcessError> {
     let payload: Value = match serde_json::from_str(data) {
         Ok(payload) => payload,
         Err(_) => return Ok(false),
     };
+    if !protocol.accept_sequence(&payload) {
+        return Ok(false);
+    }
     let kind = payload.get("type").and_then(Value::as_str).unwrap_or(event);
     macro_rules! notify {
         ($method:expr, $params:expr $(,)?) => {
@@ -1022,10 +1126,7 @@ async fn dispatch_sse_event(
     }
     match kind {
         "response.output_text.delta" => {
-            let item_id = payload
-                .get("item_id")
-                .and_then(Value::as_str)
-                .unwrap_or("msg_unknown");
+            let item_id = protocol.event_item_id(&payload, "msg");
             let delta = payload.get("delta").and_then(Value::as_str).unwrap_or("");
             notify!(
                 "item/agentMessage/delta",
@@ -1033,19 +1134,21 @@ async fn dispatch_sse_event(
             );
         }
         "response.reasoning_summary_part.added" => {
+            let item_id = protocol.event_item_id(&payload, "rs");
             notify!(
                 "item/reasoning/summaryPartAdded",
                 json!({
-                    "itemId": payload.get("item_id").and_then(Value::as_str).unwrap_or("rs_unknown"),
+                    "itemId": item_id,
                     "summaryIndex": payload.get("summary_index").and_then(Value::as_u64).unwrap_or(0),
                 }),
             );
         }
         "response.reasoning_summary_text.delta" => {
+            let item_id = protocol.event_item_id(&payload, "rs");
             notify!(
                 "item/reasoning/summaryTextDelta",
                 json!({
-                    "itemId": payload.get("item_id").and_then(Value::as_str).unwrap_or("rs_unknown"),
+                    "itemId": item_id,
                     "summaryIndex": payload.get("summary_index").and_then(Value::as_u64).unwrap_or(0),
                     "delta": payload.get("delta").and_then(Value::as_str).unwrap_or(""),
                 }),
@@ -1053,16 +1156,22 @@ async fn dispatch_sse_event(
         }
         "response.reasoning_text.delta" => {
             // Raw reasoning text is hidden chain-of-thought; the runner ignores this method.
+            let item_id = protocol.event_item_id(&payload, "rs");
             notify!(
                 "item/reasoning/textDelta",
                 json!({
-                    "itemId": payload.get("item_id").and_then(Value::as_str).unwrap_or("rs_unknown"),
+                    "itemId": item_id,
                     "delta": payload.get("delta").and_then(Value::as_str).unwrap_or(""),
                 }),
             );
         }
+        "response.output_item.added" => {
+            // The public event precedes content deltas and therefore owns the first canonical
+            // output-index identity even though the runner does not otherwise consume it.
+            let _ = protocol.normalize_output_item(&payload);
+        }
         "response.output_item.done" => {
-            if let Some(item) = payload.get("item").cloned() {
+            if let Some(item) = protocol.normalize_output_item(&payload) {
                 notify!("rawResponseItem/completed", json!({"item": item}));
             }
         }
@@ -1593,6 +1702,115 @@ mod tests {
         assert_eq!(usage["inputTokens"], 11);
         assert_eq!(usage["cachedInputTokens"], 3);
         assert_eq!(usage["reasoningOutputTokens"], 2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_sequence_and_item_id_drift_produce_one_logical_message() {
+        let base = mock_upstream(|_, _| {
+            let body = sse_body(&[
+                (
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","sequence_number":10,"output_index":0,"delta":"only "}"#,
+                ),
+                (
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","sequence_number":11,"output_index":0,"item_id":"msg_changed","delta":"once"}"#,
+                ),
+                // A transport replay keeps the protocol sequence number. It must not become a
+                // second public delta.
+                (
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","sequence_number":11,"output_index":0,"item_id":"msg_changed","delta":"once"}"#,
+                ),
+                (
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","sequence_number":12,"output_index":0,"item":{"type":"message","id":"msg_final","role":"assistant","content":[{"type":"output_text","text":"only once"}]}}"#,
+                ),
+                (
+                    "response.completed",
+                    r#"{"type":"response.completed","sequence_number":13,"response":{"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#,
+                ),
+            ]);
+            (200, body, vec![("content-type", "text/event-stream".to_string())])
+        })
+        .await;
+        let transport = ProfileTransport::new(test_config(&base), None).unwrap();
+        let mut events = transport
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                Arc::new(Mutex::new(None)),
+            )
+            .await
+            .unwrap();
+        let seen = collect(&mut events).await;
+        let deltas = seen
+            .iter()
+            .filter(|(method, _)| method == "item/agentMessage/delta")
+            .map(|(_, params)| {
+                (
+                    params["itemId"].as_str().unwrap(),
+                    params["delta"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deltas,
+            vec![("msg_stream_0", "only "), ("msg_stream_0", "once")]
+        );
+        assert_eq!(
+            deltas.iter().map(|(_, delta)| *delta).collect::<String>(),
+            "only once"
+        );
+        let completed_item = seen
+            .iter()
+            .find(|(method, _)| method == "rawResponseItem/completed")
+            .unwrap();
+        assert_eq!(completed_item.1["item"]["id"], "msg_stream_0");
+    }
+
+    #[tokio::test]
+    async fn equal_text_with_distinct_sequences_is_preserved() {
+        let base = mock_upstream(|_, _| {
+            let body = sse_body(&[
+                (
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","sequence_number":1,"output_index":0,"item_id":"msg_1","delta":"ha"}"#,
+                ),
+                (
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","sequence_number":2,"output_index":0,"item_id":"msg_1","delta":"ha"}"#,
+                ),
+                (
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"haha"}]}}"#,
+                ),
+                (
+                    "response.completed",
+                    r#"{"type":"response.completed","sequence_number":4,"response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+                ),
+            ]);
+            (200, body, vec![("content-type", "text/event-stream".to_string())])
+        })
+        .await;
+        let transport = ProfileTransport::new(test_config(&base), None).unwrap();
+        let mut events = transport
+            .run_turn(
+                &test_auth(),
+                json!({"model": "gpt-5.5"}),
+                None,
+                Arc::new(Mutex::new(None)),
+            )
+            .await
+            .unwrap();
+        let seen = collect(&mut events).await;
+        let text = seen
+            .iter()
+            .filter(|(method, _)| method == "item/agentMessage/delta")
+            .filter_map(|(_, params)| params["delta"].as_str())
+            .collect::<String>();
+        assert_eq!(text, "haha");
     }
 
     #[tokio::test]

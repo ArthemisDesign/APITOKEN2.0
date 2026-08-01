@@ -8,6 +8,7 @@ use super::{
     ProcessError, TurnEvents, TurnRouting, TurnSlot,
 };
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -463,6 +464,7 @@ impl CodexHome {
             std::time::Duration::from_millis(self.config().turn_silence_timeout_ms.max(1));
         let event_loop = async {
             let mut output = Vec::<Value>::new();
+            let mut completed_output_items = HashSet::<(String, String)>::new();
             let mut usage = CodexUsage::default();
             let mut saw_raw_usage = false;
             let provider_reported_service_tier = loop {
@@ -537,24 +539,11 @@ impl CodexHome {
                     "rawResponseItem/completed" => {
                         if let Some(mut item) = params.get("item").cloned() {
                             ensure_output_item_id(&mut item);
-                            let is_tool_call = matches!(
-                                item.get("type").and_then(Value::as_str),
-                                Some("function_call" | "custom_tool_call")
-                            );
-                            // Never emit a second item for a call the stream already delivered.
-                            let duplicate_tool_call = is_tool_call
-                                && item.get("call_id").and_then(Value::as_str).is_some_and(
-                                    |call_id| {
-                                        output.iter().any(|candidate| {
-                                            matches!(
-                                                candidate.get("type").and_then(Value::as_str),
-                                                Some("function_call" | "custom_tool_call")
-                                            ) && candidate.get("call_id").and_then(Value::as_str)
-                                                == Some(call_id)
-                                        })
-                                    },
-                                );
-                            if !duplicate_tool_call {
+                            // Completed items are protocol entities, not text blobs. Suppress a
+                            // repeated completion by its native identity for messages/reasoning
+                            // and by call identity for tools; legitimate equal text under another
+                            // item id remains untouched.
+                            if claim_completed_output(&item, &mut completed_output_items) {
                                 send_update(&updates, emitted, TurnUpdate::RawItem(item.clone()))
                                     .await;
                                 output.push(item);
@@ -682,6 +671,26 @@ fn ensure_output_item_id(item: &mut Value) {
         _ => return,
     };
     item["id"] = Value::String(new_id(prefix));
+}
+
+fn claim_completed_output(item: &Value, completed: &mut HashSet<(String, String)>) -> bool {
+    let Some(kind) = item.get("type").and_then(Value::as_str) else {
+        return true;
+    };
+    let identity = match kind {
+        "function_call" | "custom_tool_call" => item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("id").and_then(Value::as_str)),
+        _ => item
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("call_id").and_then(Value::as_str)),
+    };
+    let Some(identity) = identity.filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    completed.insert((kind.to_string(), identity.to_string()))
 }
 
 /// Deliver one streaming update and record that model output has left this attempt.
@@ -857,5 +866,41 @@ mod tests {
         // A Standard request remains Standard even if the non-authoritative diagnostic field
         // changes in a future backend rollout.
         assert_eq!(effective_service_tier(false, Some("priority")), "default");
+    }
+
+    #[test]
+    fn completed_items_are_deduplicated_by_protocol_identity_not_content() {
+        let mut completed = HashSet::new();
+        let message = json!({"type": "message", "id": "msg_1", "content": []});
+        assert!(claim_completed_output(&message, &mut completed));
+        assert!(!claim_completed_output(&message, &mut completed));
+
+        // Equal text in a distinct output item remains a distinct model result.
+        let equal_text_new_item = json!({"type": "message", "id": "msg_2", "content": []});
+        assert!(claim_completed_output(&equal_text_new_item, &mut completed));
+
+        let reasoning = json!({"type": "reasoning", "id": "rs_1", "summary": []});
+        assert!(claim_completed_output(&reasoning, &mut completed));
+        assert!(!claim_completed_output(&reasoning, &mut completed));
+
+        let tool = json!({
+            "type": "function_call",
+            "id": "fc_first",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": "{}"
+        });
+        let replay_with_drifted_item_id = json!({
+            "type": "function_call",
+            "id": "fc_second",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": "{}"
+        });
+        assert!(claim_completed_output(&tool, &mut completed));
+        assert!(!claim_completed_output(
+            &replay_with_drifted_item_id,
+            &mut completed
+        ));
     }
 }
