@@ -28,7 +28,7 @@ The initial runtime pins are deliberately constants in the executable planner:
 - provider-switch generation `1`.
 
 Both product catalogs contain only the reviewed Anthropic and OpenAI canonical models from
-`MULTI-DISCOUNT.md`. `gpt-5.6` is stored only as an alias of `gpt-5.6-sol`. Gemini has no
+`docs/commerce/MULTI-DISCOUNT.md`. `gpt-5.6` is stored only as an alias of `gpt-5.6-sol`. Gemini has no
 capability projection entry, catalog entry, switch, rule, or job.
 
 ## Dry run and assignment approval

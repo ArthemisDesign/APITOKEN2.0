@@ -6,7 +6,7 @@ set -euo pipefail
 # migrate the sales DB, atomically repoint the sales-current symlink, restart both units,
 # health-gate, and roll the symlink back on failure. Invoked by watchdog.sh as root.
 #
-# Isolation guarantees (see SALES_PORTAL.md): the sales tier has its OWN release root, decoupled
+# Isolation guarantees (see docs/sales/SALES_PORTAL.md): the sales tier has its OWN release root, decoupled
 # from the shared commerce /opt/apitoken/releases/current (which governs the commerce blue-green
 # API and must not be disturbed by a sales-only change).
 

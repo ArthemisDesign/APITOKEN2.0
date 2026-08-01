@@ -32,4 +32,4 @@ For a schema-dependent change, merge a migration-only expand commit first and wa
 after production has the expanded schema, and keep the old release compatible throughout. Never
 edit, rename, reorder, or delete a committed migration. Destructive contract changes require a
 later release after backfill and after all old processes no longer depend on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
-[`DEPLOYMENT.md`](../../DEPLOYMENT.md).
+[`docs/ops/DEPLOYMENT.md`](../../docs/ops/DEPLOYMENT.md).

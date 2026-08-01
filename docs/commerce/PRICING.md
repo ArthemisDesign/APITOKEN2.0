@@ -55,7 +55,7 @@ transaction.
 
 The engine can durably attach an immutable legacy pricing snapshot to a sampled Anthropic/OpenAI
 reservation without changing the scalar price or settlement formula. This is rollout plumbing for
-`MULTI-DISCOUNT.md`, not policy enforcement: it does not read policy state, enable Gemini, change
+`docs/commerce/MULTI-DISCOUNT.md`, not policy enforcement: it does not read policy state, enable Gemini, change
 `/ready`, or make a shadow result affect a customer response.
 
 The only valid configuration pairs are:

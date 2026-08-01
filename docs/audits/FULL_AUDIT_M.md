@@ -3,8 +3,8 @@
 > **Historical finding set:** Stage 2 PostgreSQL authority and blue-green rollout were implemented
 > after this snapshot. Request-keyed reservations, durable settlement outbox, unique charge identity,
 > owner epochs, capacity leases, CAS pool state, and PostgreSQL leader leases supersede the SQLite
-> mechanisms discussed below. Current behavior is in `docs/STAGE2_POSTGRES_AUTHORITY.md` and
-> `DEPLOYMENT.md`.
+> mechanisms discussed below. Current behavior is in `docs/engine/STAGE2_POSTGRES_AUTHORITY.md` and
+> `docs/ops/DEPLOYMENT.md`.
 
 **Date:** 2026-07-16  **Audited at:** `master` @ `59ae42c`  **Auditor:** Claude (Opus 4.8, 1M) with a
 parallel multi-agent workflow harness.
@@ -82,9 +82,9 @@ connections 10 · secrets+config 14.
 
 1. **Reconcile the B2C tier model to one source of truth** (T1). Today: the *worker* consumes the
    authoritative engine charge-ledger, but tier *advancement* uses `tierForTopups(cumulative_topup_nano)`
-   (top-ups), the frontend uses thresholds **$100/$250/$500/$1000**, and **PRICING.md** says advancement
+   (top-ups), the frontend uses thresholds **$100/$250/$500/$1000**, and **docs/commerce/PRICING.md** says advancement
    is *spend*-based at **$25/$75/$200/$500**. These disagree. Pick spend-or-topup, one threshold set, and
-   make worker + db + frontend + PRICING.md agree. *(C15, C16, C22, C28, C70, C74; verified in §4.)*
+   make worker + db + frontend + docs/commerce/PRICING.md agree. *(C15, C16, C22, C28, C70, C74; verified in §4.)*
 2. **Make credit application and refunds exactly-once against the engine** (T2). Duplicate/replayed
    webhooks, stale worker leases, and refunded/disputed payments can double-credit or fail to reverse the
    engine balance. *(C13, C14, C17, C21, C23, C24, C29, C66, C80.)*
@@ -129,7 +129,7 @@ These I confirmed (or corrected) against source myself:
   **22.4%**, painting the fill almost onto Builder; at **$0 spent it already shows 20%**. Correct formula
   for this layout: `(index + within)/(segments−1)*100` → 3% for $12, 0% for $0. Misrepresents progress to
   the next discount tier. **Medium.** (Corresponds to visual V7.)
-- **✅ CONFIRMED — Tier model inconsistency (T1).** PRICING.md §top says advancement is spend-based at
+- **✅ CONFIRMED — Tier model inconsistency (T1).** docs/commerce/PRICING.md §top says advancement is spend-based at
   $25/$75/$200/$500 and "never estimates spend from browser data"; but `packages/db/src/pricing.ts`
   advances via `tierForTopups(cumulative_topup_nano)` and the frontend thresholds are $100/$250/$500/$1000.
   The worker *does* read the ledger (`getLedgerAfter` cursor) for the retention window — so the model is a
@@ -364,7 +364,7 @@ Before the final cumulative `message_delta`, the parser substitutes `Unicode sca
 
 **C10. [HIGH · CONFIRMED] Claude Sonnet 5 usage is overcharged by 50% during the active introductory-pricing period**  
 `crates/metering/src/lib.rs:110` — _pricing-correctness_  
-All Sonnet model IDs are priced at the standard $3 input / $15 output rates. As of 2026-07-16, Claude Sonnet 5 officially costs $2 input, $0.20 cache read, $2.50 5-minute cache write, $4 1-hour cache write, and $10 output per million tokens through 2026-08-31. Every Sonnet 5 charge and ledger row is therefore inflated by 50%, and the overly large hold also truncates outputs earlier than the customer's real balance requires. Official source: https://platform.claude.com/docs/en/about-claude/pricing  
+All Sonnet model IDs are priced at the standard $3 input / $15 output rates. As of 2026-07-16, Claude Sonnet 5 officially costs $2 input, $0.20 cache read, $2.50 5-minute cache write, $4 1-hour cache write, and $10 output per million tokens through 2026-08-31. Every Sonnet 5 charge and ledger row is therefore inflated by 50%, and the overly large hold also truncates outputs earlier than the customer's real balance requires. Official source: https://platform.claude.com/docs/en/about-claude/pricing
 - **Failure:** A Sonnet 5 response reports 1,000,000 output tokens and the account multiplier is 4000. The official real cost is $10, so the customer charge should be $4. The code assigns the generic Sonnet output price of $15 and writes a $6 charge ledger entry. Cache and input-heavy requests are inflated by the same 50%.  
 - **Fix:** Give Sonnet 5 its own effective-dated price schedule: use 2000/200/2500/4000/10000 through 2026-08-31 and switch to 3000/300/3750/6000/15000 starting 2026-09-01. Keep historical model rates separate and add boundary-date tests so a deployment date cannot silently change customer charges.  
 
@@ -382,7 +382,7 @@ The writer refunds a committed reservation only when `oneshot::Sender::send` rep
 
 **C55. [MEDIUM · CONFIRMED] The 1.1x US inference-residency premium is omitted from both spend and customer charges**  
 `crates/forward/src/meter.rs:75` — _pricing-modifier_  
-Pricing is selected solely from the served model. Claude Opus 4.6, Sonnet 4.6, and later models charge a 1.1x multiplier on all token categories when `inference_geo: "us"` is requested, and the response usage reports the inference geography. The metering `Usage` type discards that field, so clients can select US-only inference while being billed at global rates. Official source: https://platform.claude.com/docs/en/about-claude/pricing#data-residency-pricing  
+Pricing is selected solely from the served model. Claude Opus 4.6, Sonnet 4.6, and later models charge a 1.1x multiplier on all token categories when `inference_geo: "us"` is requested, and the response usage reports the inference geography. The metering `Usage` type discards that field, so clients can select US-only inference while being billed at global rates. Official source: https://platform.claude.com/docs/en/about-claude/pricing#data-residency-pricing
 - **Failure:** A client sends an Opus 4.8 request with `inference_geo: "us"` and consumes 1,000,000 output tokens. The provider-equivalent cost is $27.50, but `model_prices(price_model)` returns $25 and both `pool.record_spend` and the account ledger use that lower amount. At multiplier 4000, the customer pays $10 instead of $11 on every such request.  
 - **Fix:** Parse the response's authoritative inference geography into `Usage` or a separate pricing context and apply 1.1x to input, output, and all cache categories. Apply the same modifier during reservation so the hold remains an upper bound. Add tests for global versus US pricing on every supported model generation.  
 
@@ -508,15 +508,15 @@ Both DigiSeller response schemas permit provider monetary fields as `z.number()`
 
 **C15. [HIGH · CONFIRMED] B2C tier upgrades are derived from credits instead of authoritative charge-ledger spend**  
 `packages/db/src/pricing.ts:225` — _pricing-correctness_  
-The ledger consumer records charge rows but never promotes tiers from them; promotions instead happen in applyTopupTier from credited balance. This violates the invariant that B2C pricing derives only from idempotently consumed engine charge-ledger rows and contradicts PRICING.md's UTC-month local-spend model.  
-- **Failure:** A Starter customer makes no new topups but incurs exactly $25 of local engine charges in July. The worker inserts those charge events and updates pricing_months/tier_window_spent_nano, but current_tier remains Starter at multiplier 4000; PRICING.md requires immediate Builder pricing at multiplier 3500. Conversely, a customer who tops up $100 and spends $0 is promoted to Builder even though the authoritative usage ledger shows no qualifying spend.  
-- **Fix:** Implement the PRICING.md state machine inside the idempotent ledger-page transaction: update the correct UTC pricing month from newly inserted charge events, compute promotions from exact bigint monthly spend, and enqueue multiplier changes atomically with the event/cursor update. Remove topup-driven tier promotion.  
+The ledger consumer records charge rows but never promotes tiers from them; promotions instead happen in applyTopupTier from credited balance. This violates the invariant that B2C pricing derives only from idempotently consumed engine charge-ledger rows and contradicts docs/commerce/PRICING.md's UTC-month local-spend model.
+- **Failure:** A Starter customer makes no new topups but incurs exactly $25 of local engine charges in July. The worker inserts those charge events and updates pricing_months/tier_window_spent_nano, but current_tier remains Starter at multiplier 4000; docs/commerce/PRICING.md requires immediate Builder pricing at multiplier 3500. Conversely, a customer who tops up $100 and spends $0 is promoted to Builder even though the authoritative usage ledger shows no qualifying spend.
+- **Fix:** Implement the docs/commerce/PRICING.md state machine inside the idempotent ledger-page transaction: update the correct UTC pricing month from newly inserted charge events, compute promotions from exact bigint monthly spend, and enqueue multiplier changes atomically with the event/cursor update. Remove topup-driven tier promotion.
 
-**C16. [HIGH · CONFIRMED] The implemented B2C thresholds do not match PRICING.md**  
+**C16. [HIGH · CONFIRMED] The implemented B2C thresholds do not match docs/commerce/PRICING.md**
 `apps/web/src/lib/pricing-tiers.ts:7` — _pricing-math_  
-The shared/UI thresholds are $100/$250/$500/$1,000, while PRICING.md specifies local monthly-spend thresholds of $25/$75/$200/$500 for Builder through Scale. The contracts table used by the database contains the same incorrect larger thresholds.  
+The shared/UI thresholds are $100/$250/$500/$1,000, while docs/commerce/PRICING.md specifies local monthly-spend thresholds of $25/$75/$200/$500 for Builder through Scale. The contracts table used by the database contains the same incorrect larger thresholds.
 - **Failure:** A customer reaches $75 of qualifying local spend. The documented contract says the customer is Pro at a 70% discount, but the implemented table does not reach Pro until $250, so the customer remains on a more expensive multiplier.  
-- **Fix:** Use one authoritative shared bigint tier table matching PRICING.md: 25_000_000_000n, 75_000_000_000n, 200_000_000_000n, and 500_000_000_000n, and derive the web presentation from that contract rather than duplicating values.  
+- **Fix:** Use one authoritative shared bigint tier table matching docs/commerce/PRICING.md: 25_000_000_000n, 75_000_000_000n, 200_000_000_000n, and 500_000_000_000n, and derive the web presentation from that contract rather than duplicating values.
 
 **C17. [HIGH · CONFIRMED] A confirmed paid credit can permanently miss tier accounting**  
 `apps/worker/src/credit-worker.service.ts:55` — _atomicity_  
@@ -691,7 +691,7 @@ Required identity/account calls and auxiliary key/ledger calls are combined in o
 
 **C28. [HIGH · CONFIRMED] B2C discounts are promoted from top-ups instead of authoritative engine charge-ledger rows**  
 `packages/db/src/pricing.ts:273` — _pricing-integrity_  
-The current pricing state machine raises a B2C tier from commerce-side confirmed top-up amounts. This violates the stated invariant that B2C pricing derives only from idempotently consumed engine charge-ledger rows, and contradicts COMMERCIAL_BACKEND.md:102-103.  
+The current pricing state machine raises a B2C tier from commerce-side confirmed top-up amounts. This violates the stated invariant that B2C pricing derives only from idempotently consumed engine charge-ledger rows, and contradicts docs/commerce/COMMERCIAL_BACKEND.md:102-103.
 - **Failure:** A new B2C customer makes a $100 top-up but has made zero API requests. applyTopupTier adds 100,000,000,000 nano to cumulative_topup_nano, selects the Builder tier, and enqueues the lower 3500-bp multiplier. The customer's very first request is therefore charged at the promoted discount even though no authoritative engine charge usage exists.  
 - **Fix:** Remove top-up-driven tier promotion. Compute tier/month state solely from deduplicated engine `charge` ledger rows keyed by `(engine_account_id, ledger_entry_id)`, and keep payment/top-up data separate from usage-derived pricing.  
 
@@ -738,7 +738,7 @@ Although the API contract correctly transports engine money as decimal strings, 
 - **Fix:** Keep monetary arithmetic in bigint nanodollars or a decimal/fixed-point library. Extend the existing bigint-safe money helpers for rounding, ratios, and chart scaling; only convert normalized dimensionless values to Number after proving they are within a safe range.  
 
 **C108. [LOW · CONFIRMED] The canonical Control API contract still advertises a floating-point credit path**  
-`CONTROL_API.md:101` — _money-contract_  
+`docs/engine/CONTROL_API.md:101` — _money-contract_
 The guide says all money is exact integer nanodollars, but documents `{"usd"?...}` and its canonical example sends `{"usd":25}`. The implemented engine deserializes usd as f64 and converts with multiplication and rounding. Current EngineClient correctly uses amount_nano, but another backend following the stated integration contract can lose precision.  
 - **Failure:** An integrator follows the guide and credits the valid whole-USD amount 8,000,000,001 via `{"usd":8000000001,"ref":"payment-1"}`. IEEE-754 conversion produces 8,000,000,000,999,999,488 nano instead of the exact 8,000,000,001,000,000,000 nano, short-crediting by 512 nano despite the documented nanodollar-exact invariant.  
 - **Fix:** Remove or deprecate the f64 `usd` field from the Control API. Accept only integer `amount_nano`, or an exact decimal/whole-USD string parsed without floating point. Update every example to use amount_nano or a string field.  

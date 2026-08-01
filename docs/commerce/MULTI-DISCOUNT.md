@@ -61,8 +61,8 @@ foundation — commit `c55a86d1271667ae4d1669aab1c0e08df8a91643`. Этот prefl
 
 Этот документ описывает целевое поведение, которое заменит текущий единый множитель цены на аккаунт.
 Он не утверждает, что описанное поведение уже работает в production. До завершения перехода
-фактические live-контракты описаны в `PRICING.md`, `CONTROL_API.md`,
-`COMMERCIAL_BACKEND.md` и документации конкретных приложений.
+фактические live-контракты описаны в `docs/commerce/PRICING.md`, `docs/engine/CONTROL_API.md`,
+`docs/commerce/COMMERCIAL_BACKEND.md` и документации конкретных приложений.
 
 ## 0. Статус авторизации и обязательный порядок продолжения
 
@@ -525,7 +525,7 @@ settlement и фактического допуска.
 - точные model-rules не создаются без реальной необходимости;
 - текущий тир и referral floor каждого аккаунта сохраняются.
 
-Числа лестницы, пороги и rolling window остаются в `PRICING.md` и
+Числа лестницы, пороги и rolling window остаются в `docs/commerce/PRICING.md` и
 `B2C_PRICING_TIERS`. Новый слой политики выбирает режим, но не дублирует и не переизобретает
 лестницу.
 
@@ -1267,7 +1267,7 @@ min(tier multiplier, referral multiplier)
 | `apps/sales-api`, `packages/sales-db`, `apps/sales-web` | Принимать immutable track/paid-funded eligibility и не комиссионировать static/OpenKeys/service. |
 | `deploy`, `systemd`, readiness | Совместимость schema generations, fencing старых runtime, provider readiness; не добавлять pricing logic в Caddy. |
 | `observability` | Метрики поколений, sync lag, rejection reasons, funding buckets, margin и alerts. |
-| Документация | `PRICING.md`, `CONTROL_API.md`, `COMMERCIAL_BACKEND.md`, `PANEL.md`, OpenKeys docs, публичные onboarding/pricing тексты. |
+| Документация | `docs/commerce/PRICING.md`, `docs/engine/CONTROL_API.md`, `docs/commerce/COMMERCIAL_BACKEND.md`, `docs/product/PANEL.md`, OpenKeys docs, публичные onboarding/pricing тексты. |
 
 Не ожидается pricing logic в:
 
@@ -2251,10 +2251,10 @@ commerce integration tests с PostgreSQL, а не только unit snapshots.
 
 ## 31. Основные ссылки реализации
 
-- `PRICING.md`
-- `CONTROL_API.md`
-- `COMMERCIAL_BACKEND.md`
-- `PANEL.md`
+- `docs/commerce/PRICING.md`
+- `docs/engine/CONTROL_API.md`
+- `docs/commerce/COMMERCIAL_BACKEND.md`
+- `docs/product/PANEL.md`
 - `packages/db/src/schema.ts`
 - `packages/db/src/pricing.ts`
 - `packages/contracts/src/index.ts`

@@ -147,20 +147,20 @@ for gemini_alert in GeminiProviderDown GeminiNoAvailableProfiles GeminiProfileUn
   grep -Fq "alert: $gemini_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing Gemini alert %s\n' "$gemini_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$gemini_alert" | tr '[:upper:]' '[:lower:]')
-  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'alert %s has no runbook anchor\n' "$gemini_alert" >&2; exit 1; }
-  grep -Fqi "## $gemini_alert" "$ROOT/MONITORING.md" \
-    || { printf 'MONITORING.md has no runbook section for %s\n' "$gemini_alert" >&2; exit 1; }
+  grep -Fqi "## $gemini_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$gemini_alert" >&2; exit 1; }
 done
 for watchdog_alert in DeployQuarantined DeployPipelineStale DeployStuckInPhase DeployMigrationUncommitted; do
   grep -Fq "alert: $watchdog_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing deployment alert %s\n' "$watchdog_alert" >&2; exit 1; }
-  # Every alert must carry a runbook anchor that actually exists in MONITORING.md.
+  # Every alert must carry a runbook anchor that actually exists in docs/ops/MONITORING.md.
   anchor=$(printf '%s' "$watchdog_alert" | tr '[:upper:]' '[:lower:]')
-  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'alert %s has no runbook anchor\n' "$watchdog_alert" >&2; exit 1; }
-  grep -Fqi "## $watchdog_alert" "$ROOT/MONITORING.md" \
-    || { printf 'MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
+  grep -Fqi "## $watchdog_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$watchdog_alert" >&2; exit 1; }
 done
 
 # Money conservation must be a closed collector -> alert -> runbook loop. Pin the operands as well
@@ -182,10 +182,10 @@ grep -Fq 'alert: BalanceDivergenceDetected' "$ROOT/observability/prometheus/rule
 grep -Fq 'severity: critical' \
   <(grep -F 'alert: BalanceDivergenceDetected' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
   || { printf 'balance-divergence alert is not critical\n' >&2; exit 1; }
-grep -Fq 'MONITORING.md#balancedivergencedetected' "$ROOT/observability/prometheus/rules/application.yml" \
+grep -Fq 'docs/ops/MONITORING.md#balancedivergencedetected' "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'balance-divergence alert has no runbook anchor\n' >&2; exit 1; }
-grep -Fqi '## BalanceDivergenceDetected' "$ROOT/MONITORING.md" \
-  || { printf 'MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
+grep -Fqi '## BalanceDivergenceDetected' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'docs/ops/MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
 
 # The journal must be an explicit, bounded, persistent store. Under the default `Storage=auto`
 # journald decided volatile-vs-persistent from whether the Docker-created /var/log/journal existed,
@@ -209,10 +209,10 @@ grep -Fq 'install -d -o root -g systemd-journal -m 2755 /var/log/journal' "$ROOT
 # deliberately stopped. That removed signal must stay covered by an alert on upstream health.
 grep -Fq 'alert: ProxyUpstreamPairDown' "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'the excluded health-check logger has no replacement alert\n' >&2; exit 1; }
-grep -Fq 'MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/rules/operations.yml" \
+grep -Fq 'docs/ops/MONITORING.md#proxyupstreampairdown' "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'alert ProxyUpstreamPairDown has no runbook anchor\n' >&2; exit 1; }
-grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/MONITORING.md" \
-  || { printf 'MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
+grep -Fqi '## ProxyUpstreamPairDown' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'docs/ops/MONITORING.md has no runbook section for ProxyUpstreamPairDown\n' >&2; exit 1; }
 proxy_pair_rule=$(grep -F 'alert: ProxyUpstreamPairDown' -A 12 \
   "$ROOT/observability/prometheus/rules/operations.yml")
 grep -Fq '3000|3001' <<<"$proxy_pair_rule" \
@@ -254,10 +254,10 @@ for codex_alert in CodexProviderDown CodexNoAvailableHomes CodexHomeUnauthentica
   grep -Fq "alert: $codex_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing Codex alert %s\n' "$codex_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$codex_alert" | tr '[:upper:]' '[:lower:]')
-  grep -Fq "MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'alert %s has no runbook anchor\n' "$codex_alert" >&2; exit 1; }
-  grep -Fqi "## $codex_alert" "$ROOT/MONITORING.md" \
-    || { printf 'MONITORING.md has no runbook section for %s\n' "$codex_alert" >&2; exit 1; }
+  grep -Fqi "## $codex_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$codex_alert" >&2; exit 1; }
 done
 # Alerting on a disabled provider would page for a surface nobody is serving.
 for gated_alert in CodexProviderDown CodexNoAvailableHomes; do

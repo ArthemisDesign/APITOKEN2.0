@@ -105,11 +105,11 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
   pool writes, and poller leadership are fenced. SQLite fallback still takes the OS singleton lock.
 
 Полная схема request lifecycle, fencing, cutover и операционные инварианты описаны в
-[`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md). Production runbook —
-[`DEPLOYMENT.md`](DEPLOYMENT.md).
+[`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](STAGE2_POSTGRES_AUTHORITY.md). Production runbook —
+[`docs/ops/DEPLOYMENT.md`](../ops/DEPLOYMENT.md).
 
 Граница совместимости, sealed roster, refresh-дисциплина, авторизация и rollback Codex-провайдера
-описаны отдельно в [`docs/CODEX_PROVIDER.md`](docs/CODEX_PROVIDER.md).
+описаны отдельно в [`docs/engine/CODEX_PROVIDER.md`](CODEX_PROVIDER.md).
 
 Детали конфигурации — `config.env.example` / `server.env.example`. Деплой — единый provider cohort:
 `systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai@.service`,
@@ -128,13 +128,13 @@ engine charge ledger → apps/worker cursor → monthly B2C tier/job ───�
 `apps/api` владеет будущей browser-facing API-границей и приёмом подписанных вебхуков.
 Пользователь вводит произвольное целое число USD строкой; каталог продуктов отсутствует.
 Browser identity определяется только opaque server-side сессией; email/Google identities и
-сессии живут в commerce PostgreSQL, подробности — `AUTHENTICATION.md`.
+сессии живут в commerce PostgreSQL, подробности — `docs/commerce/AUTHENTICATION.md`.
 `apps/worker` забирает durable credit jobs из PostgreSQL через `FOR UPDATE SKIP LOCKED` и
 идемпотентно вызывает `/admin/account/{id}/credit`. Общие схемы/репозитории/клиент движка находятся
 в `packages/contracts`, `packages/db`, `packages/engine-client`. Коммерческие приложения не получают
 engine DSN и не имеют прямого DB-кода; они общаются с движком только через Control API. Полная карта —
-`COMMERCIAL_BACKEND.md`.
+`docs/commerce/COMMERCIAL_BACKEND.md`.
 Dashboard routes read authoritative balances, ledger rows and per-key spend through the Control API.
 Key creation returns the usable secret once; later revocation uses a stable non-secret engine `key_id`.
 B2C/B2B pricing state lives in commerce PostgreSQL; the worker synchronizes its multiplier to the
-engine through durable jobs. Full rules and tier thresholds are in `PRICING.md`.
+engine through durable jobs. Full rules and tier thresholds are in `docs/commerce/PRICING.md`.

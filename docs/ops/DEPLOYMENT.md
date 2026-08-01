@@ -1,16 +1,16 @@
 # Production deployment runbook
 
 This is the operator runbook for `84.32.48.2`. Controller internals live in
-[`deploy/README.md`](deploy/README.md), immutable layout rules in
-[`deploy/RELEASES.md`](deploy/RELEASES.md), and the Stage 2 authority design in
-[`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md).
+[`deploy/README.md`](../../deploy/README.md), immutable layout rules in
+[`deploy/RELEASES.md`](../../deploy/RELEASES.md), and the Stage 2 authority design in
+[`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](../engine/STAGE2_POSTGRES_AUTHORITY.md).
 
 Pushing or merging to `master` triggers the production-host watchdog. It tests an isolated exact
 commit, takes fresh validated database backups, applies commerce migrations, then health-gated
 blue-green deploys only the affected engine and/or backend. Engine migrations run transactionally
 inside the inactive slot and must pass readiness before admission. It reports every stage on the
 GitHub commit without using a paid Actions runner. The manual component controllers below are recovery and
-explicit operator tools, not the normal contributor workflow. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+explicit operator tools, not the normal contributor workflow. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Normal automatic delivery
 
@@ -331,7 +331,7 @@ systemctl status 'claude-api-gemini@*.service'
 All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, or 8795/8799;
 commerce always uses `http://127.0.0.1:8790`. OpenAI and Gemini clients use only their public
 hostnames; stable origins 8792/8794 and every runtime slot remain loopback-only.
-Provision paid Antigravity OAuth profiles first as documented in `docs/GEMINI_PROVIDER.md`.
+Provision paid Antigravity OAuth profiles first as documented in `docs/engine/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API
 

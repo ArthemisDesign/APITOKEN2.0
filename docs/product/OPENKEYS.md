@@ -18,7 +18,7 @@ Base URL, инструкцию и подписи USAGE, не меняя общи
 | `systemd/apitoken-openkeys.service` | Юнит сервиса |
 
 Границы контекста: OpenKeys **не** трогает commerce и sales. С движком общается только через
-Control API из `CONTROL_API.md` — как и весь остальной коммерческий слой.
+Control API из `docs/engine/CONTROL_API.md` — как и весь остальной коммерческий слой.
 
 ## Модель данных
 

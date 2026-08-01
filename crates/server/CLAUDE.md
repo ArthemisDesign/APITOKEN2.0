@@ -18,7 +18,7 @@
   Claude/OpenAI/Gemini router. Production provider выбирает systemd unit, не request; Caddy marker остаётся
   только в одноразовом `Combined` migration bridge и никогда не принимается от клиента. +
   data routes для admin.apitoken.sale (`/overview`, `/capacity`, `/subs` и др.; UI — standalone
-  Next.js `apps/admin`, архитектура — корневой `PANEL.md`) +
+  Next.js `apps/admin`, архитектура — корневой `docs/product/PANEL.md`) +
   `/admin/*` (control-плоскость,
   см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,
   а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.
@@ -26,7 +26,7 @@
   которым БУДУЩАЯ КОММЕРЦИЯ (отдельный сервис) управляет движком. Гейт — `forward::control_authed`
   (control-ключ, ОТДЕЛЬНО от forwarding-admin). Все записи — через single-writer актор `AsyncBilling`
   (та же дисциплина, что reserve/settle). Движок остаётся авторитетом ЖИВОГО баланса; коммерция лишь
-  создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `CONTROL_API.md`.
+  создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `docs/engine/CONTROL_API.md`.
   Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
   the commercial pricing worker.
   Stage 3C adds authenticated `/admin/pricing/*` prepare/read/activate routes for immutable product

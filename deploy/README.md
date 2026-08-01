@@ -1,7 +1,7 @@
 # Production deploy controller
 
 For copy-paste production commands, preflight, worker handling, rollback, backups, and the final
-verification gate, start with [`../DEPLOYMENT.md`](../DEPLOYMENT.md). This file documents controller
+verification gate, start with [`../DEPLOYMENT.md`](../docs/ops/DEPLOYMENT.md). This file documents controller
 internals and first-environment procedures.
 
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
@@ -113,7 +113,7 @@ Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-
 schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a
 time, while the existing slot remains the serving fallback.
 Paid Gemini project/key provisioning is outside release artifacts and is documented in
-[`docs/GEMINI_PROVIDER.md`](../docs/GEMINI_PROVIDER.md).
+[`docs/engine/GEMINI_PROVIDER.md`](../docs/engine/GEMINI_PROVIDER.md).
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and
 private Content Studio from the same immutable commerce release. Any service name containing
 `postgres` is rejected before work begins.
@@ -195,7 +195,7 @@ deploy/engine-bluegreen.sh
 **Production already completed this cutover. Do not run these commands during a normal deploy.**
 They remain for a new environment or disaster reconstruction. The authority design and post-cutover
 rollback boundary are documented in
-[`../docs/STAGE2_POSTGRES_AUTHORITY.md`](../docs/STAGE2_POSTGRES_AUTHORITY.md).
+[`../docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](../docs/engine/STAGE2_POSTGRES_AUTHORITY.md).
 
 Only run this after the exact release passed the workspace suite and the real PostgreSQL fault matrix.
 The first script creates the isolated role/database and stages, but does not activate, its root-only

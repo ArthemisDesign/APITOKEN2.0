@@ -182,8 +182,8 @@ never be returned to clients or placed in frontend configuration.
   polling `master`. The host watchdog automatically tests, migrates, and deploys affected
   engine/backend components. A separate root-only least-privilege GitHub credential posts commit
   statuses; untrusted candidate code and application users cannot read it.
-- The authoritative operator procedure is `DEPLOYMENT.md`; Stage 2 data/fencing details are in
-  `docs/STAGE2_POSTGRES_AUTHORITY.md`.
+- The authoritative operator procedure is `docs/ops/DEPLOYMENT.md`; Stage 2 data/fencing details are in
+  `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`.
 
 ## Backups
 
@@ -217,8 +217,8 @@ copying required archives to independent storage.
 
 ## Deployment procedure
 
-[`DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative operator runbook and
-[`CONTRIBUTING.md`](CONTRIBUTING.md) is the contributor/AI workflow. Normal delivery is automatic
+[`docs/ops/DEPLOYMENT.md`](DEPLOYMENT.md) is the authoritative operator runbook and
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) is the contributor/AI workflow. Normal delivery is automatic
 after `master` changes: isolated tests, validated backups of both databases, migrations before
 traffic admission, affected blue-green component cutovers, and exact-release verification. GitHub displays `deploy/tests`,
 `deploy/migration`, `deploy/engine`, `deploy/backend`, and overall `deploy/watchdog` contexts.

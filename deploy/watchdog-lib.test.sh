@@ -667,7 +667,7 @@ printf '%s\n' "${prunable_dumps[@]}" | grep -Fxq "commerce.pre-deploy-$oldest_du
 wd_path_is_typescript apps/web/src/app/page.tsx || wd_die "web app not classified for TypeScript validation"
 wd_path_is_typescript packages/contracts/src/index.ts || wd_die "workspace package not classified for TypeScript validation"
 wd_path_is_merge_workflow .claude/hooks/guard-git.sh || wd_die "git guard not classified as merge workflow"
-wd_path_is_validation_neutral docs/STAGE2_POSTGRES_AUTHORITY.md \
+wd_path_is_validation_neutral docs/engine/STAGE2_POSTGRES_AUTHORITY.md \
   || wd_die "documentation should be validation-neutral"
 wd_path_is_sales apps/sales-api/src/main.ts || wd_die "sales-api not classified as sales"
 wd_path_is_sales apps/sales-web/src/app/page.tsx || wd_die "sales-web not classified as sales"

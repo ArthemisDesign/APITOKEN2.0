@@ -16,8 +16,8 @@
 Пул обычных Claude-подписок (Max/Pro) отдаётся по сети как **API, неотличимый от
 `api.anthropic.com`**. Клиент наводит любой Anthropic-совместимый инструмент на наш сервер —
 запрос уходит на квоте подписки из пула, с ротацией по лимитам. Полное описание — `README.md`,
-карта модулей — `ARCHITECTURE.md`, модель веток — `BRANCHES.md`, production runbook —
-`DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/STAGE2_POSTGRES_AUTHORITY.md`.
+карта модулей — `docs/engine/ARCHITECTURE.md`, модель веток — `BRANCHES.md`, production runbook —
+`docs/ops/DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`.
 Обязательный workflow для contributor/AI и автоматическая доставка — `CONTRIBUTING.md`.
 
 ## CRM & Parsing — ВЫНЕСЕНО в отдельный репозиторий
@@ -40,7 +40,7 @@ Human credentials и domain grants хранятся в commerce PostgreSQL и п
 Он **не входит** в Rust-цепочку `registry ← pool ← forward ← server` и не импортирует Rust-крейты.
 
 - Коммерческий код не открывает engine PostgreSQL/SQLite и не пишет баланс напрямую.
-- Единственная граница коммерция→движок — HTTP Control API из `CONTROL_API.md`.
+- Единственная граница коммерция→движок — HTTP Control API из `docs/engine/CONTROL_API.md`.
 - `apps/api` и `apps/worker` независимо деплоятся; общую логику кладём в `packages/*`.
 - Коммерческая PostgreSQL хранит людей/платежи/доставку событий, но НЕ авторитетный live-баланс.
 - CONTROL_KEY существует только в server-side env; браузеру, ответам и логам его не отдавать.
@@ -61,7 +61,7 @@ Human credentials и domain grants хранятся в commerce PostgreSQL и п
 - B2C pricing derives only from idempotently consumed engine charge-ledger rows. Tier/month state and
   B2B invite/manual pricing live in commerce PostgreSQL; engine multiplier changes use durable jobs.
 
-Локальная карта и запуск — `COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
+Локальная карта и запуск — `docs/commerce/COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
 
 ## Архитектура — слои (НЕ нарушать направление зависимостей)
 
@@ -170,7 +170,7 @@ git diff --stat origin/master...HEAD    # только это идёт в отч
 
 Меняй код в границах крейта, держи `cargo build` зелёным, коммить по одному логическому
 изменению. Обнови документацию, если поменялись границы/поведение (`crates/<x>/CLAUDE.md`,
-`ARCHITECTURE.md`). Если нужна commerce-миграция — сначала отдельный expand-only коммит, и только
+`docs/engine/ARCHITECTURE.md`). Если нужна commerce-миграция — сначала отдельный expand-only коммит, и только
 после зелёных `deploy/migration` и `deploy/watchdog` зависимый application-код. Существующую
 миграцию не менять и не удалять (`packages/db/MIGRATIONS.md`).
 

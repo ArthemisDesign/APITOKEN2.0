@@ -6,7 +6,7 @@
 # THREAT MODEL
 # ------------
 # The watchdog runs as `deploy` and executes candidate-derived build/test code (as the separate
-# unprivileged `apitoken-ci` user). The design in DEPLOYMENT.md and deploy/README.md assumes
+# unprivileged `apitoken-ci` user). The design in docs/ops/DEPLOYMENT.md and deploy/README.md assumes
 # `deploy` holds only narrowly scoped sudo. An unrestricted NOPASSWD:ALL voids that assumption: it
 # lets the deploy operator read the GitHub reporting credential and every application secret in
 # /etc/apitoken, and rewrite the root-owned controllers that are supposed to be fixed trust anchors.

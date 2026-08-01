@@ -17,7 +17,7 @@ packages/payments        DigiSeller/Cryptomus adapters and normalized payment co
 
 The applications are independently deployable. They share packages at build time, but neither
 imports code from the Rust crates or opens the engine PostgreSQL database/SQLite migration snapshot.
-Production deployment and rollback are documented in [`DEPLOYMENT.md`](DEPLOYMENT.md). The API is
+Production deployment and rollback are documented in [`docs/ops/DEPLOYMENT.md`](../ops/DEPLOYMENT.md). The API is
 immutable blue-green; the worker remains single-instance stop/start but runs from the exact same
 immutable commerce release selected for the API.
 
@@ -50,15 +50,15 @@ TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/comme
 Payment providers sit behind a provider-neutral adapter. Every adapter must verify
 the provider event using its authoritative API and persist the webhook's globally unique event ID.
 Only then may it create a payment and enqueue an engine credit. The worker uses the payment ID as a
-stable, idempotent engine credit reference. Provider specifics are in `DIGISELLER_INTEGRATION.md`
-and `CRYPTOMUS_INTEGRATION.md`.
+stable, idempotent engine credit reference. Provider specifics are in `docs/commerce/DIGISELLER_INTEGRATION.md`
+and `docs/commerce/CRYPTOMUS_INTEGRATION.md`.
 
 Email/password authentication, authorization invariants and the future email/Google provider
-boundaries are documented in `AUTHENTICATION.md`.
-Transactional email and self-hosted SMTP configuration are documented in `EMAIL_INTEGRATION.md`.
+boundaries are documented in `docs/commerce/AUTHENTICATION.md`.
+Transactional email and self-hosted SMTP configuration are documented in `docs/commerce/EMAIL_INTEGRATION.md`.
 
 B2C progressive tiers, B2B invitations/manual pricing, month-close behavior and the engine sync
-pipeline are documented in `PRICING.md`.
+pipeline are documented in `docs/commerce/PRICING.md`.
 
 The multi-discount rollout adds a second, versioned synchronization lane beside the legacy scalar
 multiplier lane. Commerce remains the policy authority: immutable catalog, provider-switch and

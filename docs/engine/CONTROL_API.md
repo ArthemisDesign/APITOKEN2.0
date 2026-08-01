@@ -244,7 +244,7 @@ curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # истори�
 - **Cross-host TLS/private networking** остаётся частью Фазы 3. Текущий HTTP Control origin доступен
   только через loopback на том же host и не публикуется Caddy наружу.
 - Ротация `CONTROL_KEY` требует согласованно обновить engine, API и worker env, затем провести
-  обычный engine/API blue-green и stop/start worker по `DEPLOYMENT.md`; одиночный ручной restart
+  обычный engine/API blue-green и stop/start worker по `docs/ops/DEPLOYMENT.md`; одиночный ручной restart
   создаст окно с несовпадающими ключами.
 
 Вопросы по контракту — они все закрываются этим движком; если чего-то не хватает для сайта,

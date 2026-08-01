@@ -25,7 +25,7 @@ SMTP is available to restore the durable verification job and pre-session verifi
 Without an invitation, registration creates a B2C Starter profile at 60% off. A valid B2B token is
 single-use, bound to the normalized registration email, expires, and is consumed in the same
 transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive the invitation's
-manual price and do not participate in progressive B2C tiers. See `PRICING.md`.
+manual price and do not participate in progressive B2C tiers. See `docs/commerce/PRICING.md`.
 
 On the first successful engine provisioning, a new Google/GitHub B2C account receives an idempotent
 `$4.000000000` engine balance credit. At the Starter rate (60% off), this gives the client **$10 of
@@ -74,7 +74,7 @@ verified through the provider API.
 PostgreSQL `email_outbox` stores durable jobs; `auth_tokens` stores hashed, expiring, single-use
 verification/reset tokens. Raw tokens are AES-256-GCM encrypted in the outbox and decrypted only in
 the worker process. SMTP jobs use leases, exponential retry and provider message IDs. Full setup is
-in `EMAIL_INTEGRATION.md`. Verification jobs are not created while
+in `docs/commerce/EMAIL_INTEGRATION.md`. Verification jobs are not created while
 `EMAIL_VERIFICATION_REQUIRED=false`; password-reset delivery still requires SMTP.
 
 ## Google and GitHub authentication

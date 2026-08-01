@@ -17,7 +17,7 @@ groups:
         annotations:
           summary: '{{ $labels.host }} is returning more than 5% upstream 5xx responses'
           description: 'The per-host reverse-proxy 5xx ratio has remained elevated for ten minutes.'
-          runbook: 'MONITORING.md#publicendpointdown'
+          runbook: 'docs/ops/MONITORING.md#publicendpointdown'
 
   - name: claude-engine
     rules:
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: 'Claude engine circuit breaker is open'
           description: 'The engine is rejecting traffic because upstream failures crossed the safety threshold.'
-          runbook: 'MONITORING.md#enginecircuitbreakeropen'
+          runbook: 'docs/ops/MONITORING.md#enginecircuitbreakeropen'
 
       - alert: EngineHasNoSubscriptions
         expr: claude_api_subs{provider="anthropic"} < 1
@@ -41,7 +41,7 @@ groups:
         annotations:
           summary: 'Claude engine has no available subscriptions'
           description: 'No subscription is currently loaded into the production engine pool.'
-          runbook: 'MONITORING.md#enginehasnosubscriptions'
+          runbook: 'docs/ops/MONITORING.md#enginehasnosubscriptions'
 
       - alert: EngineAllSubscriptionsCooling
         expr: claude_api_subs{provider="anthropic"} > 0 and claude_api_cooling{provider="anthropic"} >= claude_api_subs{provider="anthropic"}
@@ -52,7 +52,7 @@ groups:
         annotations:
           summary: 'Every Claude subscription is cooling'
           description: 'The pool has no immediately usable subscription capacity.'
-          runbook: 'MONITORING.md#engineallsubscriptionscooling'
+          runbook: 'docs/ops/MONITORING.md#engineallsubscriptionscooling'
 
       - alert: EngineUpstreamRateLimited
         expr: increase(claude_api_upstream_429_total{provider="anthropic"}[10m]) > 10
@@ -63,7 +63,7 @@ groups:
         annotations:
           summary: 'Claude upstream rate limiting is elevated'
           description: 'More than ten upstream 429 responses were recorded in ten minutes.'
-          runbook: 'MONITORING.md#engineupstreamratelimited'
+          runbook: 'docs/ops/MONITORING.md#engineupstreamratelimited'
 
       - alert: EngineUpstreamAuthFailures
         expr: increase(claude_api_upstream_auth_total{provider="anthropic"}[5m]) > 0
@@ -73,7 +73,7 @@ groups:
         annotations:
           summary: 'Claude upstream rejected subscription authentication'
           description: 'At least one new upstream authentication failure was observed.'
-          runbook: 'MONITORING.md#engineupstreamauthfailures'
+          runbook: 'docs/ops/MONITORING.md#engineupstreamauthfailures'
 
       - alert: EngineUpstreamServerErrors
         expr: increase(claude_api_upstream_5xx_total{provider="anthropic"}[10m]) > 10
@@ -84,7 +84,7 @@ groups:
         annotations:
           summary: 'Claude upstream 5xx responses are elevated'
           description: 'More than ten upstream server failures were recorded in ten minutes.'
-          runbook: 'MONITORING.md#engineupstreamservererrors'
+          runbook: 'docs/ops/MONITORING.md#engineupstreamservererrors'
 
       - alert: EngineAffinityRedisErrors
         expr: increase(claude_api_affinity_redis_errors_total{provider="anthropic"}[10m]) > 5
@@ -95,7 +95,7 @@ groups:
         annotations:
           summary: 'Claude cache-affinity Redis is degraded'
           description: 'Shared affinity operations are failing; requests remain available on local fail-open affinity.'
-          runbook: 'MONITORING.md#engineaffinityrediserrors'
+          runbook: 'docs/ops/MONITORING.md#engineaffinityrediserrors'
 
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
   # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
@@ -110,7 +110,7 @@ groups:
         annotations:
           summary: 'Codex provider has no working sealed profile'
           description: 'The OpenAI-compatible surface cannot serve any request: no configured home has a live child.'
-          runbook: 'MONITORING.md#codexproviderdown'
+          runbook: 'docs/ops/MONITORING.md#codexproviderdown'
 
       - alert: CodexNoAvailableHomes
         expr: claude_api_codex_enabled{provider="openai"} == 1 and claude_api_codex_homes_available{provider="openai"} < 1
@@ -121,7 +121,7 @@ groups:
         annotations:
           summary: 'Every Codex home is cooling or rate limited'
           description: 'The Codex pool has no home that can accept a request; clients are receiving retryable 429/503 responses.'
-          runbook: 'MONITORING.md#codexnoavailablehomes'
+          runbook: 'docs/ops/MONITORING.md#codexnoavailablehomes'
 
       - alert: CodexHomeUnauthenticated
         expr: claude_api_codex_home_authenticated{provider="openai"} == 0
@@ -132,7 +132,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} is not authenticated'
           description: 'Its ChatGPT device login no longer passes account/read. Pool capacity is degraded until an operator re-runs the device flow.'
-          runbook: 'MONITORING.md#codexhomeunauthenticated'
+          runbook: 'docs/ops/MONITORING.md#codexhomeunauthenticated'
 
       - alert: CodexHomeNearRateLimit
         expr: claude_api_codex_home_rate_limit_used_percent{provider="openai"} > 90
@@ -143,7 +143,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} is close to its subscription window limit'
           description: 'This is a capacity-planning warning only. Traffic continues until a reported window reaches 100 percent or the provider reports its real limit, provided the home stays responsive.'
-          runbook: 'MONITORING.md#codexhomenearratelimit'
+          runbook: 'docs/ops/MONITORING.md#codexhomenearratelimit'
 
       - alert: CodexHomeRateLimited
         expr: claude_api_codex_home_limit_reached{provider="openai"} == 1
@@ -154,7 +154,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} left rotation on a full subscription window'
           description: 'The subscription window is reported full, so the gateway routes around this home until the window resets. Confirm the remaining homes absorb the load.'
-          runbook: 'MONITORING.md#codexhomeratelimited'
+          runbook: 'docs/ops/MONITORING.md#codexhomeratelimited'
 
       - alert: ConversationsForcedOffTheirHome
         expr: rate(claude_api_route_rebind_total[15m]) > 0 and rate(claude_api_route_rebind_total[15m]) / clamp_min(rate(claude_api_route_place_total[15m]), 0.001) > 0.3
@@ -165,7 +165,7 @@ groups:
         annotations:
           summary: 'Conversations are being moved off their subscription'
           description: 'More than a third of placements are migrations of existing conversations rather than new ones. Each migration throws away a warm prompt prefix the customer already paid to build and pays to build it again elsewhere, so this shows up as higher latency and higher cost before it shows up as an error. Usually it means subscriptions are hitting their windows or cooling for long enough to cross the rebind threshold; check pool capacity first.'
-          runbook: 'MONITORING.md#conversationsforcedofftheirhome'
+          runbook: 'docs/ops/MONITORING.md#conversationsforcedofftheirhome'
 
       - alert: CodexHomeUnresponsive
         expr: claude_api_codex_home_transport_wedged{provider="openai"} == 1 or claude_api_codex_home_transport_degraded{provider="openai"} == 1
@@ -176,7 +176,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} has stopped answering'
           description: 'Its app-server generation is missing RPC deadlines, so the gateway no longer admits new turns to it. In-flight turns are left to finish. A wedged transport is recycled automatically; if this persists, the daemon for this home is not recovering and needs an operator.'
-          runbook: 'MONITORING.md#codexhomeunresponsive'
+          runbook: 'docs/ops/MONITORING.md#codexhomeunresponsive'
 
       - alert: CodexHomeSnapshotStale
         expr: claude_api_codex_home_snapshot_age_seconds{provider="openai"} > 600
@@ -187,7 +187,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} quota evidence has stopped refreshing'
           description: 'The rate-limit snapshot is no longer being updated, so every quota gauge for this home reports a frozen value. The numbers can look perfectly healthy while the refresh path is broken — this alert is the only signal that distinguishes the two.'
-          runbook: 'MONITORING.md#codexhomesnapshotstale'
+          runbook: 'docs/ops/MONITORING.md#codexhomesnapshotstale'
 
       - alert: CodexAccountDead
         expr: claude_api_codex_home_account_dead{provider="openai"} == 1
@@ -198,7 +198,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} subscription is corroborated dead'
           description: 'Authentication failed on repeated clean probes spread over time, so this is a revoked, banned or expired subscription rather than a transient blip. Pool capacity is permanently reduced until an operator re-authenticates or replaces it.'
-          runbook: 'MONITORING.md#codexaccountdead'
+          runbook: 'docs/ops/MONITORING.md#codexaccountdead'
 
       - alert: CodexCalibrationPersistenceFailed
         expr: claude_api_codex_home_calibration_persistence_ok{provider="openai"} == 0
@@ -209,7 +209,7 @@ groups:
         annotations:
           summary: 'Codex home {{ $labels.home }} cannot persist calibration evidence'
           description: 'Traffic remains available, but cumulative spend or window evidence is pending and the capacity estimate may not survive restart.'
-          runbook: 'MONITORING.md#codexcalibrationpersistencefailed'
+          runbook: 'docs/ops/MONITORING.md#codexcalibrationpersistencefailed'
 
   - name: gemini-provider
     rules:
@@ -222,7 +222,7 @@ groups:
         annotations:
           summary: 'Gemini provider has no authenticated paid project'
           description: 'Every configured Gemini credential failed health validation; the native API surface cannot serve generations.'
-          runbook: 'MONITORING.md#geminiproviderdown'
+          runbook: 'docs/ops/MONITORING.md#geminiproviderdown'
 
       - alert: GeminiNoAvailableProfiles
         expr: claude_api_gemini_enabled{provider="gemini"} == 1 and claude_api_gemini_profiles_available{provider="gemini"} < 1
@@ -233,7 +233,7 @@ groups:
         annotations:
           summary: 'Every Gemini project is cooling or exhausted'
           description: 'The Gemini pool has no project that can accept a request; clients receive a native retryable 429.'
-          runbook: 'MONITORING.md#gemininoavailableprofiles'
+          runbook: 'docs/ops/MONITORING.md#gemininoavailableprofiles'
 
       - alert: GeminiProfileUnauthenticated
         expr: claude_api_gemini_profile_authenticated{provider="gemini"} == 0
@@ -244,7 +244,7 @@ groups:
         annotations:
           summary: 'Gemini profile {{ $labels.profile }} is unauthenticated'
           description: 'The paid API credential no longer validates. Replace its key file and restart or wait for the health probe after repair.'
-          runbook: 'MONITORING.md#geminiprofileunauthenticated'
+          runbook: 'docs/ops/MONITORING.md#geminiprofileunauthenticated'
 
       - alert: GeminiUpstreamRateLimited
         expr: increase(claude_api_upstream_429_total{provider="gemini"}[10m]) > 10
@@ -255,7 +255,7 @@ groups:
         annotations:
           summary: 'Gemini project rate limiting is elevated'
           description: 'More than ten project-scoped RESOURCE_EXHAUSTED responses were observed in ten minutes.'
-          runbook: 'MONITORING.md#geminiupstreamratelimited'
+          runbook: 'docs/ops/MONITORING.md#geminiupstreamratelimited'
 
   - name: durable-business-state
     rules:
@@ -268,7 +268,7 @@ groups:
         annotations:
           summary: '{{ $labels.queue }} has a sustained backlog'
           description: '{{ $value }} durable jobs are ready or retrying.'
-          runbook: 'MONITORING.md#durablequeuebacklog'
+          runbook: 'docs/ops/MONITORING.md#durablequeuebacklog'
 
       - alert: DurableQueueOldestItemStale
         expr: apitoken_queue_oldest_ready_seconds > 900
@@ -279,7 +279,7 @@ groups:
         annotations:
           summary: 'Oldest {{ $labels.queue }} job is over fifteen minutes old'
           description: 'A ready/retry job has not completed for {{ $value | humanizeDuration }}.'
-          runbook: 'MONITORING.md#durablequeueoldestitemstale'
+          runbook: 'docs/ops/MONITORING.md#durablequeueoldestitemstale'
 
       - alert: DurableQueueDeadItems
         expr: apitoken_queue_dead > 0
@@ -290,7 +290,7 @@ groups:
         annotations:
           summary: '{{ $labels.queue }} contains terminally failed items'
           description: '{{ $value }} durable jobs require operator investigation.'
-          runbook: 'MONITORING.md#durablequeuedeaditems'
+          runbook: 'docs/ops/MONITORING.md#durablequeuedeaditems'
 
       - alert: FailedWebhooksPresent
         expr: apitoken_webhook_failed > 0
@@ -301,7 +301,7 @@ groups:
         annotations:
           summary: 'Payment webhooks are in failed state'
           description: '{{ $value }} verified webhook events have failed processing.'
-          runbook: 'MONITORING.md#failedwebhookspresent'
+          runbook: 'docs/ops/MONITORING.md#failedwebhookspresent'
 
       - alert: StaleCheckoutSessions
         expr: apitoken_checkout_stale > 0
@@ -312,7 +312,7 @@ groups:
         annotations:
           summary: 'Checkout sessions have remained incomplete for over one hour'
           description: '{{ $value }} checkout sessions are stale.'
-          runbook: 'MONITORING.md#stalecheckoutsessions'
+          runbook: 'docs/ops/MONITORING.md#stalecheckoutsessions'
 
       - alert: EngineSettlementBacklog
         expr: apitoken_engine_settlement_pending > 0
@@ -323,7 +323,7 @@ groups:
         annotations:
           summary: 'Engine settlement outbox is not draining'
           description: '{{ $value }} request settlements are pending or processing.'
-          runbook: 'MONITORING.md#enginesettlementbacklog'
+          runbook: 'docs/ops/MONITORING.md#enginesettlementbacklog'
 
       - alert: EngineExpiredLeasePresent
         expr: apitoken_engine_expired_active_leases > 0
@@ -334,7 +334,7 @@ groups:
         annotations:
           summary: 'Engine contains expired leases still marked active'
           description: '{{ $value }} capacity or reservation leases require reconciliation.'
-          runbook: 'MONITORING.md#engineexpiredleasepresent'
+          runbook: 'docs/ops/MONITORING.md#engineexpiredleasepresent'
 
       - alert: BalanceDivergenceDetected
         expr: apitoken_balance_divergence_nano > 0
@@ -345,7 +345,7 @@ groups:
         annotations:
           summary: 'Engine account balance conservation failed'
           description: 'At least one account differs from durable funding by {{ $value }} nanodollars after completed charges and active holds.'
-          runbook: 'MONITORING.md#balancedivergencedetected'
+          runbook: 'docs/ops/MONITORING.md#balancedivergencedetected'
 
       - alert: BackupStale
         expr: apitoken_backup_age_seconds > 5400
@@ -356,7 +356,7 @@ groups:
         annotations:
           summary: '{{ $labels.database }} backup is stale'
           description: 'The last validated dump is {{ $value | humanizeDuration }} old.'
-          runbook: 'MONITORING.md#backupstale'
+          runbook: 'docs/ops/MONITORING.md#backupstale'
 
       - alert: BackupMissing
         expr: apitoken_backup_present == 0
@@ -367,7 +367,7 @@ groups:
         annotations:
           summary: '{{ $labels.database }} backup is missing'
           description: 'No current dump exists for this production database.'
-          runbook: 'MONITORING.md#backupmissing'
+          runbook: 'docs/ops/MONITORING.md#backupmissing'
 
       - alert: DeployQuarantined
         expr: apitoken_watchdog_quarantined == 1
@@ -378,7 +378,7 @@ groups:
         annotations:
           summary: 'A commit failed production delivery and is quarantined'
           description: 'The watchdog rejected the current master candidate; no later stage will run until a newer commit or an explicit retry.'
-          runbook: 'MONITORING.md#deployquarantined'
+          runbook: 'docs/ops/MONITORING.md#deployquarantined'
 
       - alert: DeployPipelineStale
         expr: apitoken_watchdog_status_age_seconds > 900
@@ -389,7 +389,7 @@ groups:
         annotations:
           summary: 'The deploy watchdog has not reported for over 15 minutes'
           description: 'The poll loop runs every minute. A status file {{ $value | humanizeDuration }} old means delivery is no longer running.'
-          runbook: 'MONITORING.md#deploypipelinestale'
+          runbook: 'docs/ops/MONITORING.md#deploypipelinestale'
 
       - alert: DeployStuckInPhase
         expr: apitoken_watchdog_phase{phase!~"idle|quarantined"} == 1
@@ -400,7 +400,7 @@ groups:
         annotations:
           summary: 'Deployment has remained in phase {{ $labels.phase }} for 45 minutes'
           description: 'A normal delivery completes in minutes. The unit deadline is 45 minutes, so this indicates a hung build, migration, or cutover.'
-          runbook: 'MONITORING.md#deploystuckinphase'
+          runbook: 'docs/ops/MONITORING.md#deploystuckinphase'
 
       - alert: DeployMigrationUncommitted
         expr: apitoken_watchdog_pending_migration == 1
@@ -411,7 +411,7 @@ groups:
         annotations:
           summary: 'A production migration started but was never committed'
           description: 'The pending-migration marker survived a full cycle. The database may be partially migrated relative to the recorded manifest.'
-          runbook: 'MONITORING.md#deploymigrationuncommitted'
+          runbook: 'docs/ops/MONITORING.md#deploymigrationuncommitted'
 
       - alert: SalesReferralReconciliationBacklog
         expr: apitoken_sales_pending_referral_events > 0
@@ -422,7 +422,7 @@ groups:
         annotations:
           summary: 'Sales referral feed has buffered events'
           description: '{{ $value }} spend/top-up events arrived before their referral attribution and remain buffered.'
-          runbook: 'MONITORING.md#salesreferralreconciliationbacklog'
+          runbook: 'docs/ops/MONITORING.md#salesreferralreconciliationbacklog'
 
       - alert: SalesPayoutBatchFailed
         expr: apitoken_sales_failed_payout_batches > 0
@@ -433,4 +433,4 @@ groups:
         annotations:
           summary: 'A sales payout batch is failed'
           description: '{{ $value }} payout batches require manual review.'
-          runbook: 'MONITORING.md#salespayoutbatchfailed'
+          runbook: 'docs/ops/MONITORING.md#salespayoutbatchfailed'

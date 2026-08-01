@@ -1,6 +1,6 @@
 # Workspace: пул Claude-подписок как прозрачный /v1 API.
 # Слои (снизу вверх): registry ← pool ← forward ← server(bin).
-# Границы зависимостей — в crates/*/CLAUDE.md; архитектура — в ARCHITECTURE.md.
+# Границы зависимостей — в crates/*/CLAUDE.md; архитектура — в docs/engine/ARCHITECTURE.md.
 [workspace]
 resolver = "2"
 members = [

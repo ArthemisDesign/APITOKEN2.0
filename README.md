@@ -34,11 +34,11 @@ Local L1 работает без зависимостей, Redis делится 
 
 ## Из чего состоит (Cargo workspace)
 
-Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`ARCHITECTURE.md`](ARCHITECTURE.md),
+Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`docs/engine/ARCHITECTURE.md`](docs/engine/ARCHITECTURE.md),
 правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md),
-production-хосты и эксплуатация — [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md).
-Операторский deploy/rollback — [`DEPLOYMENT.md`](DEPLOYMENT.md), модель PostgreSQL authority и
-fencing Stage 2 — [`docs/STAGE2_POSTGRES_AUTHORITY.md`](docs/STAGE2_POSTGRES_AUTHORITY.md).
+production-хосты и эксплуатация — [`docs/ops/INFRASTRUCTURE.md`](docs/ops/INFRASTRUCTURE.md).
+Операторский deploy/rollback — [`docs/ops/DEPLOYMENT.md`](docs/ops/DEPLOYMENT.md), модель PostgreSQL authority и
+fencing Stage 2 — [`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](docs/engine/STAGE2_POSTGRES_AUTHORITY.md).
 Contributor/AI workflow и автоматическая доставка `master` — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 | Крейт | Роль | Ветка-владелец |
@@ -138,14 +138,14 @@ Watchdog автоматически создаёт Redis/affinity secrets и у�
 Опциональный native Codex-транспорт для строгого OpenAI-compatible text subset (пул sealed
 ChatGPT OAuth-профилей, как у Gemini) доступен только через
 `https://openai.api.apitoken.sale/v1` и описан в
-[`docs/CODEX_PROVIDER.md`](docs/CODEX_PROVIDER.md). Он выключен по умолчанию и не изменяет
+[`docs/engine/CODEX_PROVIDER.md`](docs/engine/CODEX_PROVIDER.md). Он выключен по умолчанию и не изменяет
 существующий Claude-маршрут на `https://api.apitoken.sale`.
 
 Gemini использует отдельный пул платных Google-подписок, авторизованных через Antigravity OAuth с
 PKCE. Runtime преобразует native `/v1beta` запросы во внутренний Cloud Code protocol, сохраняет
 sticky affinity и вращает аккаунты при исчерпании квоты; Developer API key из подписки не извлекается.
 Provisioning, legacy-миграция, ротация, metering и runbook описаны в
-[`docs/GEMINI_PROVIDER.md`](docs/GEMINI_PROVIDER.md).
+[`docs/engine/GEMINI_PROVIDER.md`](docs/engine/GEMINI_PROVIDER.md).
 
 ## Безопасность
 

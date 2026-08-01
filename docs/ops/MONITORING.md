@@ -237,7 +237,7 @@ Only the OpenAI-compatible surface is affected; Claude routing is independent. C
 `systemctl status claude-api-openai.service` and its journal first, then check
 `claude_api_codex_home_process_live` per profile to see whether every sealed credential failed to
 open or only one. A persistent zero means the roster or the keyring no longer matches
-`docs/CODEX_PROVIDER.md` (profiles unreadable, wrong `CLAUDE_API_CODEX_CREDENTIAL_KEYS`, or an
+`docs/engine/CODEX_PROVIDER.md` (profiles unreadable, wrong `CLAUDE_API_CODEX_CREDENTIAL_KEYS`, or an
 envelope that fails validation). Do not edit envelopes on the host; republish them through the
 authbot or `claude-api codex-seal`, and the gateway picks the roster up on its next health tick.
 `CLAUDE_API_CODEX_ENABLED=0` is the provider-only kill switch if the surface must be withdrawn while
@@ -372,7 +372,7 @@ ready, enabled, and release-selected in steady state; the other must be stopped 
 Verify that both credential keyrings match, the roster is
 readable, every envelope has the exact `credentials/<profile-id>.json` non-symlink 0600 path, and at
 least one profile passes Antigravity `loadCodeAssist` health. Never decrypt or print an envelope while testing. Repair according to
-`docs/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
+`docs/engine/GEMINI_PROVIDER.md` and use the health-gated engine controller to restart the service.
 
 If the surface must be withdrawn during investigation, stop the selected Gemini slot through the
 normal provider rollout. A manual stop is only an immediate temporary action because watchdog

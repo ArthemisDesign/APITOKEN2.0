@@ -1,0 +1,61 @@
+# docs/ — индекс проектной документации
+
+В корне репозитория остаются только точки входа: `AGENTS.md`, `CLAUDE.md`, `README.md`,
+`CONTRIBUTING.md`, `BRANCHES.md`. Вся предметная документация — здесь, по доменам bounded
+context'ов. Правила размещения и обновления — в разделе «Организация документации» и
+«Документация — живой контракт» корневого `AGENTS.md`. При добавлении или переносе документа
+обнови этот индекс.
+
+## engine/ — Rust-движок (`crates/*`)
+
+- [ARCHITECTURE.md](engine/ARCHITECTURE.md) — архитектура claude-api: слои, пул, ротация, affinity.
+- [CONTROL_API.md](engine/CONTROL_API.md) — интеграционный гайд движка для бэкенда сайта и оплаты.
+- [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
+- [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
+- [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — модель PostgreSQL authority и fencing Stage 2.
+
+## commerce/ — коммерция (`apps/api`, `apps/worker`, `packages/*`)
+
+- [COMMERCIAL_BACKEND.md](commerce/COMMERCIAL_BACKEND.md) — карта и локальный запуск коммерческого бэкенда.
+- [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — аутентификация и авторизация.
+- [PRICING.md](commerce/PRICING.md) — клиентский прайсинг и тиры.
+- [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — контракт мультипровайдерных скидок и политик доступа.
+- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5: multi-discount backfill.
+- [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation.
+- [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover.
+- [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — приём платежей через Cryptomus.
+- [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — приём платежей через DigiSeller.
+- [EMAIL_INTEGRATION.md](commerce/EMAIL_INTEGRATION.md) — транзакционная почта и self-hosted SMTP.
+
+## sales/ — партнёрское направление (`apps/sales-*`, `packages/sales-db`)
+
+- [SALES_PORTAL.md](sales/SALES_PORTAL.md) — партнёрское направление (partners.apitoken.sale).
+- [PARTNER_PROGRAM.md](sales/PARTNER_PROGRAM.md) — полное руководство партнёрской программы.
+- [SALES_PAYOUT_PERIODS.md](sales/SALES_PAYOUT_PERIODS.md) — периоды и выплаты партнёрской программы.
+
+## product/ — продуктовые витрины
+
+- [OPENKEYS.md](product/OPENKEYS.md) — OpenKeys: предоплаченные ключи без регистрации (`apps/openkeys`).
+- [PANEL.md](product/PANEL.md) — единая админ-панель admin.apitoken.sale (контракт).
+- [ADMIN_PANEL.md](product/ADMIN_PANEL.md) — внутренняя админка `apps/admin` (Next.js).
+
+## ops/ — эксплуатация
+
+- [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (операторский).
+- [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production-инфраструктура и хосты.
+- [MONITORING.md](ops/MONITORING.md) — мониторинг и runbook-анкоры алертов (`docs/ops/MONITORING.md#<alert>`).
+- [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — визуальный QA фронтенда.
+- [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — продуктовая аналитика Vercel.
+
+## audits/ — аудиты (append-only, не редактируются задним числом)
+
+- [AUDIT.md](audits/AUDIT.md) — архитектурный аудит claude-api.
+- [FULL_AUDIT_M.md](audits/FULL_AUDIT_M.md) — полный аудит: движок, бэкенд, фронтенд, связи.
+- [TESTS_AUDIT.md](audits/TESTS_AUDIT.md) — аудит полноты и достаточности тестов.
+
+## Рядом с кодом (не переносить сюда)
+
+- `crates/<name>/CLAUDE.md` — локальные границы крейтов.
+- `packages/db/MIGRATIONS.md` — правила миграций коммерции.
+- `deploy/README.md`, `deploy/RELEASES.md` — контроллер доставки и релизы.
+- `research/` — исследования и журналы (не инструкции).

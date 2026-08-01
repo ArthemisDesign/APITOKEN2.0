@@ -173,5 +173,5 @@ secrets, validated, and reloaded with an automatic rollback copy; the repository
 placeholders is never copied over production. Changes under `.github/` do not touch the production
 host and therefore need no host-install stage.
 
-The operator and recovery commands are in [`DEPLOYMENT.md`](DEPLOYMENT.md); deployment controller
+The operator and recovery commands are in [`docs/ops/DEPLOYMENT.md`](docs/ops/DEPLOYMENT.md); deployment controller
 internals are in [`deploy/README.md`](deploy/README.md).

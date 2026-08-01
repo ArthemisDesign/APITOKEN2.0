@@ -1,7 +1,7 @@
 "use client";
 
 // Документация партнёрской программы прямо в кабинете. Двуязычная (RU/EN через useI18n),
-// персонализированная (ставка и реф-код партнёра). Полная версия для команды — docs/PARTNER_PROGRAM.md.
+// персонализированная (ставка и реф-код партнёра). Полная версия для команды — docs/sales/PARTNER_PROGRAM.md.
 
 import { formatBps } from "@/lib/api";
 import { usePartner } from "@/components/partner-context";

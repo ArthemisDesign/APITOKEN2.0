@@ -269,7 +269,7 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    `api::tests::public_errors_never_leak_internal_architecture`.
 8. **Shutdown:** detached streaming tasks входят в shutdown-barrier до history+settlement;
    `TurnEvents` Drop abort-ит upstream read, settle последнего snapshot — до освобождения
-   background permit. Полный контракт/provisioning/runbook — `docs/CODEX_PROVIDER.md`.
+   background permit. Полный контракт/provisioning/runbook — `docs/engine/CODEX_PROVIDER.md`.
 
 **Инварианты native Gemini gateway:**
 1. Только AEAD envelopes проверенных paid Code Assist OAuth identities. Roster содержит opaque id и
@@ -366,7 +366,7 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    заново вооружает censor. Raw observations, exact cumulative spend, CAS state и profile spend
    живут в engine authority для replay после estimator upgrade; persistence failure не
    останавливает serving, но явно виден в status.
-8. Полный контракт/provisioning/runbook — `docs/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
+8. Полный контракт/provisioning/runbook — `docs/engine/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement и shutdown deadline barrier.
 
