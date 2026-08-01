@@ -26,6 +26,7 @@ import {
 import { buildUtcUsageSeries } from "@/lib/usage-series";
 import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
 import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
+import { PROVIDER_COLORS, PROVIDER_REGISTRY, type ProviderDescriptor } from "@/lib/providers";
 
 const copy = {
   en: {
@@ -39,7 +40,7 @@ const copy = {
     key: "Key", active: "active", disabled: "disabled", issued: "issued", connectClaude: "Connect Claude",
     connectGpt: "Connect GPT", signOut: "Sign out", connections: "Two connections", oneKey: "one key", yourKey: "Your key",
     providersTitle: "Connected providers", providersDesc: "Both APIs run on this one key — point each tool at its endpoint and every request shows up here.",
-    statusReady: "ready", guide: "Setup guide",
+    statusReady: "ready", guide: "Setup guide", noUsageYet: "No usage yet — connect it to start",
     officialCost: "Official cost", officialPrices: "at official prices of the models used", chargedKey: "Charged to key",
     last30: "last 30 days", requests: "Requests", processing: "Processing now", processingNote: "temporary hold for active requests",
     apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude and GPT/OpenAI usage shown separately for the last 30 days.",
@@ -64,7 +65,7 @@ const copy = {
     key: "Ключ", active: "активен", disabled: "отключён", issued: "выпущен", connectClaude: "Подключить Claude",
     connectGpt: "Подключить GPT", signOut: "Выйти", connections: "Два подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
     providersTitle: "Подключённые провайдеры", providersDesc: "Оба API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
-    statusReady: "готов", guide: "Инструкция",
+    statusReady: "готов", guide: "Инструкция", noUsageYet: "Пока нет расхода — подключите, чтобы начать",
     officialCost: "Официальная стоимость", officialPrices: "по официальным прайсам использованных моделей", chargedKey: "Списано с ключа",
     last30: "за 30 дней", requests: "Запросов", processing: "Сейчас в обработке", processingNote: "временный резерв активных запросов",
     apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude и GPT/OpenAI за последние 30 дней.",
@@ -78,12 +79,6 @@ const copy = {
     cacheWriteShort: "Кэш зап.", official: "Официально", keySummary: "Сводка по ключу", keySummaryDesc: "Итоги за окно наблюдения.",
     remaining: "Остаток",
   },
-} as const;
-
-const PROVIDER_COLORS = {
-  anthropic: "#d97757",
-  openai: "#10a37f",
-  unattributed: "#6f7a8a",
 } as const;
 
 function CopyMiniButton({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {
@@ -104,7 +99,7 @@ function CopyMiniButton({ value, label, copiedLabel }: { value: string; label: s
   );
 }
 
-export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; showSignOut?: boolean }) {
+export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REGISTRY }: { view: KeyUsageView; showSignOut?: boolean; providers?: ProviderDescriptor[] }) {
   const { language } = useLanguage();
   const t = copy[language];
   const locale = language === "en" ? "en-US" : "ru-RU";
@@ -158,24 +153,10 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
 
   const models = usage?.models ?? [];
   const providerSummaries = aggregateUsageProviders(models);
-  const providerCards = ([
-    {
-      id: "claude" as const,
-      connection: UNIVERSAL_CONNECTIONS.claude,
-      name: "Claude",
-      api: "Anthropic Messages API",
-      color: PROVIDER_COLORS.anthropic,
-    },
-    {
-      id: "openai" as const,
-      connection: UNIVERSAL_CONNECTIONS.openai,
-      name: "GPT",
-      api: "OpenAI-compatible API",
-      color: PROVIDER_COLORS.openai,
-    },
-  ]).map((entry) => ({
-    ...entry,
-    summary: providerSummaries.find((summary) => summary.provider === entry.id) ?? {
+  const summaryByProvider = new Map(providerSummaries.map((summary) => [summary.provider as string, summary]));
+  const providerCards = providers.map((provider) => ({
+    ...provider,
+    summary: summaryByProvider.get(provider.id) ?? {
       requests: 0,
       tokens: 0,
       officialNano: 0n,
@@ -398,7 +379,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             </div>
           </div>
           <div className="key-providers-grid">
-            {providerCards.map(({ id, connection, name, api, color, summary }) => {
+            {providerCards.map(({ id, name, api, color, baseUrl, authHeader, docsPath, logo, summary }) => {
               const isActive = summary.requests > 0;
               return (
                 <article
@@ -407,7 +388,9 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                   style={{ "--provider-color": color } as CSSProperties}
                 >
                   <div className="key-provider-head">
-                    <span className={`key-provider-logo key-provider-logo-${id}`} aria-hidden="true" />
+                    {logo
+                      ? <span className="key-provider-logo" style={{ "--provider-logo": `url("${logo}")` } as CSSProperties} aria-hidden="true" />
+                      : <span className="key-provider-logo key-provider-logo-letter" aria-hidden="true">{name.slice(0, 1)}</span>}
                     <div className="key-provider-name">
                       <strong>{name}</strong>
                       <span>{api}</span>
@@ -417,18 +400,19 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
                     </span>
                   </div>
                   <div className="key-provider-endpoint">
-                    <code>{connection.baseUrl.replace("https://", "")}</code>
-                    <span>{connection.authHeader}</span>
-                    <CopyMiniButton value={connection.baseUrl} label={t.copy} copiedLabel={t.copied} />
+                    <code>{baseUrl.replace("https://", "")}</code>
+                    <span>{authHeader}</span>
+                    <CopyMiniButton value={baseUrl} label={t.copy} copiedLabel={t.copied} />
                   </div>
                   <div className="key-provider-stats">
                     <strong>{formatNanoUsd(summary.chargedNano, 2, 2)}</strong>
                     <span>
-                      {summary.requests.toLocaleString(locale)} {t.requestWord} · {fmtTokens(summary.tokens)}{" "}
-                      {t.tokenWord} · {t.last30}
+                      {isActive
+                        ? `${summary.requests.toLocaleString(locale)} ${t.requestWord} · ${fmtTokens(summary.tokens)} ${t.tokenWord} · ${t.last30}`
+                        : t.noUsageYet}
                     </span>
                   </div>
-                  <Link className="key-provider-guide" href={connection.docsPath}>
+                  <Link className="key-provider-guide" href={docsPath}>
                     {t.guide} →
                   </Link>
                 </article>
