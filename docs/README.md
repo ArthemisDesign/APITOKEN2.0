@@ -59,6 +59,7 @@ context'ов. Правила размещения и обновления — в
 - [AUDIT.md](audits/AUDIT.md) — архитектурный аудит claude-api.
 - [FULL_AUDIT_M.md](audits/FULL_AUDIT_M.md) — полный аудит: движок, бэкенд, фронтенд, связи.
 - [TESTS_AUDIT.md](audits/TESTS_AUDIT.md) — аудит полноты и достаточности тестов.
+- [2026-08-01-AGENT_DOCS_AUDIT.md](audits/2026-08-01-AGENT_DOCS_AUDIT.md) — аудит системы координации агентов (AGENTS.md, DEPENDENCIES.md, чеклисты, docs-gate).
 
 ## Рядом с кодом (не переносить сюда)
 
