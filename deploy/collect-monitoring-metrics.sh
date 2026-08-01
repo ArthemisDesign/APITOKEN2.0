@@ -18,7 +18,10 @@ WATCHDOG_STATUS_MISSING_AGE_SECONDS=86400
 [[ -f $COMPOSE_FILE && ! -L $COMPOSE_FILE ]] || { printf 'PostgreSQL compose definition is missing\n' >&2; exit 1; }
 [[ -f $POSTGRES_ENV && ! -L $POSTGRES_ENV ]] || { printf 'PostgreSQL environment file is missing\n' >&2; exit 1; }
 
-install -d -o root -g root -m 0755 "$OUTPUT_DIR"
+# Must stay group-deploy writable, matching install-monitoring.sh: apitoken-devbot.service
+# (User=deploy) publishes its devbot.prom heartbeat next to this collector's output, and this
+# line runs every minute — re-rooting the directory breaks the heartbeat write with EACCES.
+install -d -o root -g deploy -m 0775 "$OUTPUT_DIR"
 temporary=$(mktemp "$OUTPUT_DIR/.apitoken.prom.XXXXXX")
 cleanup() { rm -f -- "$temporary"; }
 trap cleanup EXIT

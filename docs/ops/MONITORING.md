@@ -549,7 +549,14 @@ First distinguish the two normal states from the broken one:
   up (unit reads `active`) while the heartbeat writer is failing — usually a permissions problem
   on `/var/lib/apitoken/monitoring/textfile` (must be writable by group `deploy`), a full disk,
   or a crash between restarts. Confirm the unit runs from the expected release:
-  `readlink -f /opt/apitoken/devbot-releases/current`.
+  `readlink -f /opt/apitoken/devbot-releases/current`. Two concrete signatures and their causes:
+  - bot journal shows `EACCES` on `devbot.prom.tmp-*` → the directory lost its
+    `root:deploy 0775` ownership; both `install-monitoring.sh` and the minutely
+    `collect-monitoring-metrics.sh` must keep it group-deploy writable (a collector regression
+    here re-roots the directory every minute — pinned by `deploy/monitoring-config.test.sh`);
+  - node-exporter logs `permission denied` opening `devbot.prom` → the file itself is not
+    world-readable; the bot must publish it 0644 (its unit runs `UMask=0077`, and node-exporter
+    scrapes as `nobody`).
 
 To provision or repair the bot from scratch:
 

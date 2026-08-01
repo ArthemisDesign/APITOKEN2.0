@@ -126,6 +126,9 @@ export async function writeHeartbeatFile(filePath: string, timestampSec: number,
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const tmp = `${filePath}.tmp-${process.pid}`;
     await fs.writeFile(tmp, content, "utf8");
+    // node-exporter scrapes the textfile as user nobody; the unit's UMask=0077 would otherwise
+    // leave the heartbeat 0600 and unreadable, false-firing DevBotHeartbeatMissing.
+    await fs.chmod(tmp, 0o644);
     await fs.rename(tmp, filePath);
   } catch (error) {
     logger?.warn(`heartbeat: cannot write ${filePath}: ${errorMessage(error)}`);

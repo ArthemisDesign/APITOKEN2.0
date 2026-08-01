@@ -135,11 +135,20 @@ describe("writeHeartbeatFile", () => {
   it("writes the gauge atomically in node-exporter textfile format", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "devbot-hb-"));
     const file = path.join(dir, "nested", "devbot.prom");
-    await writeHeartbeatFile(file, 1_700_000_000);
-    const { readFile } = await import("node:fs/promises");
+    // Юнит работает с UMask=0077: без явного chmod heartbeat останется 0600 и node-exporter
+    // (user nobody) не сможет его прочитать. Воспроизводим umask юнита вокруг записи.
+    const previousUmask = process.umask(0o077);
+    try {
+      await writeHeartbeatFile(file, 1_700_000_000);
+    } finally {
+      process.umask(previousUmask);
+    }
+    const { readFile, stat } = await import("node:fs/promises");
     const content = await readFile(file, "utf8");
     expect(content).toContain("# TYPE devbot_heartbeat_timestamp_seconds gauge");
     expect(content).toContain("devbot_heartbeat_timestamp_seconds 1700000000");
+    const mode = (await stat(file)).mode & 0o777;
+    expect(mode).toBe(0o644);
   });
 
   it("tolerates unwritable locations with a warning, not a crash", async () => {

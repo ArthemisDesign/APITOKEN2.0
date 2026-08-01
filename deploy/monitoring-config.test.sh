@@ -217,6 +217,15 @@ grep -Fqi '## DevBotHeartbeatMissing' "$ROOT/docs/ops/MONITORING.md" \
 grep -Fq 'install -d -o root -g deploy -m 0775 /var/lib/apitoken/monitoring/textfile' \
   "$ROOT/deploy/install-monitoring.sh" \
   || { printf 'textfile directory is not writable by the devbot service user\n' >&2; exit 1; }
+# The root collector re-creates the same directory every minute; it must preserve the
+# group-deploy writability instead of reverting it, or the heartbeat write fails with EACCES.
+grep -Fq 'install -d -o root -g deploy -m 0775 "$OUTPUT_DIR"' \
+  "$ROOT/deploy/collect-monitoring-metrics.sh" \
+  || { printf 'collector reverts textfile directory ownership, breaking the devbot heartbeat\n' >&2; exit 1; }
+# node-exporter reads the textfile as user nobody, so the bot must publish its heartbeat 0644
+# regardless of the unit's UMask=0077.
+grep -Fq 'await fs.chmod(tmp, 0o644);' "$ROOT/apps/devbot/src/am-webhook.ts" \
+  || { printf 'devbot heartbeat is not world-readable for node-exporter\n' >&2; exit 1; }
 
 # Money conservation must be a closed collector -> alert -> runbook loop. Pin the operands as well
 # as the metric name so a constant-zero replacement cannot satisfy this static contract.

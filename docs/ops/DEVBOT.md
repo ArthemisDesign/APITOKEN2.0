@@ -322,7 +322,11 @@ devbot` добавляются в `docs/DEPENDENCIES.md`, а `apps/devbot` — �
     (warning) в `observability/prometheus/rules/application.yml` срабатывает, когда юнит
     активен, а heartbeat отсутствует или старше 300 с; runbook-секция —
     `docs/ops/MONITORING.md#devbotheartbeatmissing`, согласованность гейтит
-    `deploy/monitoring-config.test.sh`;
+    `deploy/monitoring-config.test.sh`. Файл публикуется с режимом 0644 независимо от
+    `UMask=0077` юнита — node-exporter читает textfile от `nobody`; каталог держат
+    group-deploy writable (`root:deploy 0775`) и `install-monitoring.sh`, и рутовый
+    коллектор `collect-monitoring-metrics.sh` (он пересоздаёт каталог каждую минуту —
+    откат ownership ломает heartbeat с EACCES);
   - деградация Telegram API видна по логу ошибок отправки (journald) — без отдельного
     алерта на этапе 1.
 - Канал-последней-инстанции: если бот мёртв, email-receiver Alertmanager продолжает
