@@ -148,6 +148,7 @@ am_gate_static() (
   done < <(find "$ROOT/deploy" -type f -name '*.sh' -print0)
   bash -n "$ROOT/deploy/apitoken-db-dump"
   git -C "$ROOT" diff --check "$1..$2"
+  bash "$ROOT/deploy/docs-check.sh" "$1" "$2"
 )
 
 # Selector and cache changes must prove the complete gate even if a changed classifier would call
@@ -165,7 +166,8 @@ am_range_changes_local_gate() {
       deploy/typescript-artifact-cache.test.sh|\
       deploy/typescript-test-groups.sh|deploy/typescript-test-groups.test.sh|\
       deploy/commerce-release-bundle.sh|deploy/commerce-release-bundle.test.sh|\
-      deploy/release-tree-digest.mjs|deploy/content-studio-start.sh)
+      deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
+      deploy/docs-check.sh)
         return 0
         ;;
     esac

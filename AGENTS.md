@@ -236,7 +236,9 @@ TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/comme
 Полный gate перед мёржем (ровно то, что прогоняет `deploy/agent-merge.sh`):
 `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` →
 `cargo test --locked --workspace` → `bash -n deploy/*.sh deploy/apitoken-db-dump` →
-`git diff --check`. Node 24 (`engines` уже задан, `.node-version` есть), pnpm 9.
+`git diff --check` → `deploy/docs-check.sh` (контрактные поверхности без изменений в
+документации не пройдут — см. «Документация — живой контракт»). Node 24 (`engines` уже задан,
+`.node-version` есть), pnpm 9.
 
 ## Миграции — только expand, двумя коммитами
 
