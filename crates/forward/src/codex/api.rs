@@ -335,7 +335,7 @@ pub async fn responses(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
-        prepared.request.service_tier.is_some(),
+        result.served_service_tier.as_deref() == Some("priority"),
     );
     let mut http_response = json_response(StatusCode::OK, response, &response_id);
     insert_extra_headers(&mut http_response, ratelimit_headers(&gateway).await);
@@ -2007,14 +2007,25 @@ fn build_completed_response(
             normalize_output_item_with_options(item, request.include_encrypted_reasoning)
         })
         .collect::<Vec<_>>();
-    response_object(
+    let mut response = response_object(
         request,
         response_id,
         created_at,
         "completed",
         output,
         Some(&result.usage),
-    )
+    );
+    // The completed response reports the tier the provider actually served (a downgraded Fast
+    // request shows default, an honored one shows priority); fall back to the requested tier
+    // when the provider omitted the field.
+    if let Some(tier) = result
+        .served_service_tier
+        .as_deref()
+        .or(request.service_tier.as_deref())
+    {
+        response["service_tier"] = Value::String(tier.to_string());
+    }
+    response
 }
 
 fn response_object(
@@ -2686,7 +2697,7 @@ async fn stream_responses(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
-            prepared.request.service_tier.is_some(),
+            result.served_service_tier.as_deref() == Some("priority"),
         );
         if downstream_closed || frame_tx.is_closed() {
             return;

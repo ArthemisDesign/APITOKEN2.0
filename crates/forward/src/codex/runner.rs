@@ -97,6 +97,10 @@ pub(crate) enum TurnUpdate {
 pub(crate) struct CodexTurnResult {
     pub output: Vec<Value>,
     pub usage: CodexUsage,
+    /// The tier the provider actually served (`response.service_tier` on the completed turn).
+    /// Settlement uses this, never the requested tier: a silently downgraded Fast request bills
+    /// at the standard rate, and an honored one bills at the Fast multiplier.
+    pub served_service_tier: Option<String>,
 }
 
 /// The native backend caps `prompt_cache_key` at 64 bytes (verified live: 129-byte affinity
@@ -274,7 +278,7 @@ impl CodexGateway {
                         &request.model,
                         &result.usage,
                         pool::now(),
-                        request.service_tier.is_some(),
+                        result.served_service_tier.as_deref() == Some("priority"),
                     ))
                     .await;
                     // The served turn's response headers are the freshest window snapshot this
@@ -383,21 +387,13 @@ impl CodexHome {
                     return Err(error);
                 }
             };
-            return self
-                .run_registered_turn(
-                    &mut events,
-                    request.service_tier.as_deref(),
-                    updates,
-                    emitted,
-                )
-                .await;
+            return self.run_registered_turn(&mut events, updates, emitted).await;
         }
     }
 
     async fn run_registered_turn(
         &self,
         events: &mut TurnEvents,
-        expected_service_tier: Option<&str>,
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
     ) -> Result<CodexTurnResult, ProcessError> {
@@ -411,6 +407,7 @@ impl CodexHome {
             let mut output = Vec::<Value>::new();
             let mut usage = CodexUsage::default();
             let mut saw_raw_usage = false;
+            let mut served_service_tier: Option<String> = None;
             loop {
                 // Bound silence, not just total duration. A home that stopped answering mid-turn
                 // otherwise holds the client for the entire turn deadline before failing, and every
@@ -532,17 +529,14 @@ impl CodexHome {
                             .and_then(Value::as_str)
                             .unwrap_or("failed");
                         if status == "completed" {
-                            // Fast must never degrade silently: reserve and settlement use the
-                            // requested tier's multiplier, so a downgraded turn is rejected
-                            // rather than charged at the wrong rate.
-                            let served_tier = params
+                            // Settlement keys on the tier the provider actually served, captured
+                            // from the completed response: a downgraded Fast request bills
+                            // standard, an honored one bills Fast. Nothing is rejected here —
+                            // the provider's verdict is authoritative for both service and money.
+                            served_service_tier = params
                                 .pointer("/turn/serviceTier")
-                                .and_then(Value::as_str);
-                            if let Some(requested) = expected_service_tier {
-                                if served_tier != Some(requested) {
-                                    return Err(ProcessError::BadRequest);
-                                }
-                            }
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
                             break;
                         }
                         if let Some(error) =
@@ -581,7 +575,11 @@ impl CodexHome {
                     _ => {}
                 }
             }
-            Ok(CodexTurnResult { output, usage })
+            Ok(CodexTurnResult {
+                output,
+                usage,
+                served_service_tier,
+            })
         };
 
         match tokio::time::timeout(timeout, event_loop).await {

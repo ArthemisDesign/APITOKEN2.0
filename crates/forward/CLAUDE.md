@@ -261,7 +261,10 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    capacity/remaining = `null` до следующего complete positive-spend interval; raw
    observations/CAS/spend в engine authority, переживают restart/blue-green.
 7. **Цены — только из `metering::codex`** (audited, effective-dated). Fast множитель применяется
-   одинаково к reserve/settle/ledger/capacity spend. Public synthetic errors только
+   строго по ОБСЛУЖЕННОМУ tier (`response.service_tier` на completed turn): reserve держит
+   консервативный Fast-резерв, settle/ledger/capacity/публичный ответ — по факту обслуживания
+   (downgrade в default → стандартная цена, никогда не reject; honor → множитель). Public
+   synthetic errors только
    OpenAI-shaped и без pool/profile/upstream internals — гейтит
    `api::tests::public_errors_never_leak_internal_architecture`.
 8. **Shutdown:** detached streaming tasks входят в shutdown-barrier до history+settlement;

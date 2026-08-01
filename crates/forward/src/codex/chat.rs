@@ -142,7 +142,7 @@ pub async fn completions(
         &prepared.request.public_model,
         &result.usage,
         prepared.request.max_output_tokens,
-        prepared.request.service_tier.is_some(),
+        result.served_service_tier.as_deref() == Some("priority"),
     );
     let mut http_response = json_response(StatusCode::OK, response, &completion_id);
     super::api::insert_extra_headers(
@@ -954,7 +954,11 @@ fn completed_chat(
             "finish_reason": finish_reason
         }],
         "usage": chat_usage(&result.usage),
-        "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
+        "service_tier": result
+            .served_service_tier
+            .as_deref()
+            .or(prepared.request.service_tier.as_deref())
+            .unwrap_or("default"),
         "system_fingerprint": Value::Null
     })
 }
@@ -1247,7 +1251,7 @@ async fn stream_chat(
             &prepared.request.public_model,
             &result.usage,
             prepared.request.max_output_tokens,
-            prepared.request.service_tier.is_some(),
+            result.served_service_tier.as_deref() == Some("priority"),
         );
         if downstream_closed {
             return;
@@ -1276,7 +1280,11 @@ async fn stream_chat(
                     "model": prepared.request.public_model.id,
                     "choices": [],
                     "usage": chat_usage(&result.usage),
-                    "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
+                    "service_tier": result
+            .served_service_tier
+            .as_deref()
+            .or(prepared.request.service_tier.as_deref())
+            .unwrap_or("default"),
                     "system_fingerprint": Value::Null
                 }),
             )
@@ -1774,6 +1782,7 @@ mod tests {
                 }),
             ],
             usage: CodexUsage::default(),
+            served_service_tier: None,
         };
         assert_eq!(
             reasoning_summary_text(&result).as_deref(),
@@ -1782,6 +1791,7 @@ mod tests {
         let empty = CodexTurnResult {
             output: Vec::new(),
             usage: CodexUsage::default(),
+            served_service_tier: None,
         };
         assert!(reasoning_summary_text(&empty).is_none());
     }

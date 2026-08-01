@@ -139,8 +139,14 @@ token on every refresh with strict family reuse detection. The pool therefore:
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that
   clears a verdict.
 - **Pricing** comes only from `metering::codex` (audited, effective-dated). The Fast service
-  tier (`service_tier: "priority"`) applies its published ChatGPT-credit multiplier identically
-  to reserve, settle, ledger and capacity spend; unknown Fast models reserve conservatively.
+  tier (`service_tier: "priority"`, also accepted as `"fast"`) is requested for Fast-capable
+  catalog models, and money always follows the tier the provider actually served: reservation
+  holds the conservative Fast multiplier, while settlement, ledger, capacity spend and the
+  public `service_tier` response field all use the tier reported on the completed turn. A
+  silently downgraded request bills at the standard rate and is never rejected; an honored
+  priority turn bills at the multiplier. Verified live (2026-07-31): the current backend
+  reports `default` for every tier request, so Fast requests serve normally at standard
+  price today and start billing Fast automatically if the provider enables the tier.
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.
