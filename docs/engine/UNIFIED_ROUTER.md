@@ -663,7 +663,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,
    см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым
-   пакетом этапа идёт детальный дизайн на живой телеметрии этапов 3–5. Отдельно —
+   пакетом этапа идёт детальный дизайн на живой телеметрии этапов 3–5 — он зафиксирован в
+   `docs/engine/ROUTING_FENCING.md` (фактбаза, контракт `execution_state=not_started`,
+   group/attempt identity, фазировка 6.1–6.4). Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).

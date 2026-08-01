@@ -20,6 +20,7 @@ context'ов. Правила размещения и обновления — в
 - [PROVIDER_ONBOARDING.md](engine/PROVIDER_ONBOARDING.md) — полный playbook добавления нового subscription-провайдера до production GA.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — модель PostgreSQL authority и fencing Stage 2.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — целевая архитектура единого endpoint для всех провайдеров (design).
+- [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — детальный дизайн этапа 6 UNIFIED_ROUTER: routing с fallback-списками и attempt fencing (execution group / единственный billable winner).
 
 ## commerce/ — коммерция (`apps/api`, `apps/worker`, `packages/*`)
 
