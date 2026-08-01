@@ -1,8 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition, type CSSProperties } from "react";
 import { AppShell } from "@/components/app-shell";
 import { useLanguage } from "@/components/chrome";
 import type { KeyUsageView } from "@/lib/keys";
@@ -38,6 +39,8 @@ const copy = {
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
     key: "Key", active: "active", disabled: "disabled", issued: "issued", connectClaude: "Connect Claude",
     connectGpt: "Connect GPT", signOut: "Sign out", connections: "Two connections", oneKey: "one key", yourKey: "Your key",
+    providersTitle: "Connected providers", providersDesc: "Both APIs run on this one key — point each tool at its endpoint and every request shows up here.",
+    statusReady: "ready", guide: "Setup guide",
     officialCost: "Official cost", officialPrices: "at official prices of the models used", chargedKey: "Charged to key",
     last30: "last 30 days", requests: "Requests", processing: "Processing now", processingNote: "temporary hold for active requests",
     apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude and GPT/OpenAI usage shown separately for the last 30 days.",
@@ -61,6 +64,8 @@ const copy = {
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
     key: "Ключ", active: "активен", disabled: "отключён", issued: "выпущен", connectClaude: "Подключить Claude",
     connectGpt: "Подключить GPT", signOut: "Выйти", connections: "Два подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
+    providersTitle: "Подключённые провайдеры", providersDesc: "Оба API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
+    statusReady: "готов", guide: "Инструкция",
     officialCost: "Официальная стоимость", officialPrices: "по официальным прайсам использованных моделей", chargedKey: "Списано с ключа",
     last30: "за 30 дней", requests: "Запросов", processing: "Сейчас в обработке", processingNote: "временный резерв активных запросов",
     apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude и GPT/OpenAI за последние 30 дней.",
@@ -82,12 +87,12 @@ const PROVIDER_COLORS = {
   unattributed: "#6f7a8a",
 } as const;
 
-function CopyButton({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {
+function CopyMiniButton({ value, label, copiedLabel }: { value: string; label: string; copiedLabel: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      className="btn btn-ghost btn-sm"
+      className="key-provider-copy"
       onClick={() => {
         void navigator.clipboard.writeText(value).then(() => {
           setCopied(true);
@@ -154,6 +159,32 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
 
   const models = usage?.models ?? [];
   const providerSummaries = aggregateUsageProviders(models);
+  const providerCards = ([
+    {
+      id: "claude" as const,
+      connection: UNIVERSAL_CONNECTIONS.claude,
+      logo: "/assets/providers/anthropic.svg",
+      name: "Claude",
+      api: "Anthropic Messages API",
+      color: PROVIDER_COLORS.anthropic,
+    },
+    {
+      id: "openai" as const,
+      connection: UNIVERSAL_CONNECTIONS.openai,
+      logo: "/assets/providers/openai.svg",
+      name: "GPT",
+      api: "OpenAI-compatible API",
+      color: PROVIDER_COLORS.openai,
+    },
+  ]).map((entry) => ({
+    ...entry,
+    summary: providerSummaries.find((summary) => summary.provider === entry.id) ?? {
+      requests: 0,
+      tokens: 0,
+      officialNano: 0n,
+      chargedNano: 0n,
+    },
+  }));
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.official_nano), 0n);
   const modelColor = new Map<string, string>();
   for (const model of models) {
@@ -296,7 +327,7 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
           </div>
         </div>
 
-        <div className="overview-primary-grid">
+        <div className="overview-primary-grid overview-primary-grid--solo">
           <article className="card overview-balance-card">
             <div className="overview-card-head">
               <span className="overview-card-label">{t.balance}</span>
@@ -360,32 +391,56 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             </div>
           </article>
 
-          <article className="card overview-access-card">
-            <div className="overview-card-head">
-              <span className="overview-card-label">{t.connections}</span>
-              <span className="chip">{t.oneKey}</span>
-            </div>
-            <div className="usage-connections">
-              <div>
-                <span>Claude · ANTHROPIC_BASE_URL</span>
-                <div className="secret-key-field">
-                  <code>{UNIVERSAL_CONNECTIONS.claude.baseUrl}</code>
-                  <CopyButton value={UNIVERSAL_CONNECTIONS.claude.baseUrl} label={t.copy} copiedLabel={t.copied} />
-                </div>
-              </div>
-              <div>
-                <span>GPT · OPENAI_BASE_URL</span>
-                <div className="secret-key-field">
-                  <code>{UNIVERSAL_CONNECTIONS.openai.baseUrl}</code>
-                  <CopyButton value={UNIVERSAL_CONNECTIONS.openai.baseUrl} label={t.copy} copiedLabel={t.copied} />
-                </div>
-              </div>
-            </div>
-            <p className="overview-balance-rate" style={{ marginTop: 10 }}>
-              {t.yourKey}: <code className="key-mask">{view.keyMasked}</code>
-            </p>
-          </article>
         </div>
+
+        <section className="dsec key-providers-section">
+          <div className="dsec-head analytics-heading">
+            <div>
+              <h2>{t.providersTitle}</h2>
+              <p>{t.providersDesc}</p>
+            </div>
+          </div>
+          <div className="key-providers-grid">
+            {providerCards.map(({ id, connection, logo, name, api, color, summary }) => {
+              const isActive = summary.requests > 0;
+              return (
+                <article
+                  className="card key-provider-card"
+                  key={id}
+                  style={{ "--provider-color": color } as CSSProperties}
+                >
+                  <div className="key-provider-head">
+                    <span className="key-provider-logo">
+                      <Image src={logo} alt="" width={22} height={22} />
+                    </span>
+                    <div className="key-provider-name">
+                      <strong>{name}</strong>
+                      <span>{api}</span>
+                    </div>
+                    <span className={`key-provider-status${isActive ? " is-active" : ""}`}>
+                      {isActive ? t.active : t.statusReady}
+                    </span>
+                  </div>
+                  <div className="key-provider-endpoint">
+                    <code>{connection.baseUrl.replace("https://", "")}</code>
+                    <span>{connection.authHeader}</span>
+                    <CopyMiniButton value={connection.baseUrl} label={t.copy} copiedLabel={t.copied} />
+                  </div>
+                  <div className="key-provider-stats">
+                    <strong>{formatNanoUsd(summary.chargedNano, 2, 2)}</strong>
+                    <span>
+                      {summary.requests.toLocaleString(locale)} {t.requestWord} · {fmtTokens(summary.tokens)}{" "}
+                      {t.tokenWord} · {t.last30}
+                    </span>
+                  </div>
+                  <Link className="key-provider-guide" href={connection.docsPath}>
+                    {t.guide} →
+                  </Link>
+                </article>
+              );
+            })}
+          </div>
+        </section>
 
         <div className="ov-stats bill4">
           <div className="ovstat">
@@ -411,31 +466,6 @@ export function KeyProfile({ view, showSignOut = false }: { view: KeyUsageView; 
             <span className="dtrend">{t.processingNote}</span>
           </div>
         </div>
-
-        <section className="dsec usage-provider-section">
-          <div className="dsec-head analytics-heading">
-            <div>
-              <h2>{t.apiSpend}</h2>
-              <p>{t.apiSpendDesc}</p>
-            </div>
-          </div>
-          <div className="usage-provider-grid">
-            {providerSummaries.map((provider) => (
-              <article className="card usage-provider-card" key={provider.provider}>
-                <div className="overview-card-head">
-                  <span className="overview-card-label">{provider.label}</span>
-                  <span className="chip">{provider.provider === "openai" ? "GPT" : "Claude"}</span>
-                </div>
-                <strong>{formatNanoUsd(provider.officialNano, 2, 2)}</strong>
-                <div className="usage-provider-meta">
-                  <span>{provider.requests.toLocaleString(locale)} {t.requestWord}</span>
-                  <span>{fmtTokens(provider.tokens)} {t.tokenWord}</span>
-                  <span>{t.chargedLower} {formatNanoUsd(provider.chargedNano, 2, 2)}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
 
         <div className="usage-graph">
           <div className="uchart">
