@@ -1,16 +1,14 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Activity, memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Activity, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api, ApiError, type AccountView, type ApiKeyView, type AuthUser, type LedgerEntry, type UsageView,
 } from "@/lib/api";
 import { normalizeUsd } from "@/lib/money";
 import { useI18n } from "@/components/i18n-provider";
-import { ThemeToggle } from "@/components/site-chrome";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
@@ -18,6 +16,7 @@ import { modelLabel } from "@/lib/model-label";
 import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 import { DashboardLoading } from "./dashboard-loading";
+import { DashboardScrim, DashboardSidebar, DashboardTopBar } from "./dashboard-shell";
 
 const ApiKeys = dynamic(() => import("./sections/api-keys").then((module) => module.ApiKeys));
 const Credits = dynamic(() => import("./sections/credits").then((module) => module.Credits));
@@ -35,33 +34,6 @@ const localDashboardCopy = {
   en: { logoutError: "Logout failed. Your server session is still active; please try again.", loggingOut: "Logging out…" },
   ru: { logoutError: "Не удалось выйти. Серверная сессия всё ещё активна; повторите попытку.", loggingOut: "Выходим…" },
 } as const;
-
-const NAV_ICONS = {
-  grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
-  key: <><circle cx="8" cy="15" r="4.5" /><path d="m11 12 9-9" /><path d="m16 7 3 3" /></>,
-  external: <><path d="M14 4h6v6" /><path d="M20 4 11 13" /><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /></>,
-  wallet: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /><path d="M7 15h4" /></>,
-  percent: <><path d="M19 5 5 19" /><circle cx="7" cy="7" r="2.5" /><circle cx="17" cy="17" r="2.5" /></>,
-  chart: <><path d="M4 20V11" /><path d="M10 20V4" /><path d="M16 20v-6" /><path d="M2 20h20" /></>,
-  chat: <><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3.1-.4-4.4-1.2L3 21l1.7-5.1A8.5 8.5 0 1 1 21 12z" /></>,
-  user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c1.4-3.7 4.6-6 8-6s6.6 2.3 8 6" /></>,
-} as const;
-type NavIconId = keyof typeof NAV_ICONS;
-
-function NavIcon({ id }: { id: NavIconId }) {
-  return <svg viewBox="0 0 24 24" aria-hidden="true">{NAV_ICONS[id]}</svg>;
-}
-
-const navigation: Array<{ section?: Section; label: keyof DashboardCopy; icon: NavIconId; href?: string; group?: keyof DashboardCopy }> = [
-  { group: "navStart", section: "overview", label: "navOverview", icon: "grid" },
-  { group: "navDevelopers", section: "keys", label: "navKeys", icon: "key" },
-  { href: DOCS_URL, label: "navDocs", icon: "external" },
-  { group: "navBilling", section: "credits", label: "navTopUp", icon: "wallet" },
-  { group: "navGrowth", section: "promos", label: "navPromos", icon: "percent" },
-  { group: "navActivity", section: "usage", label: "navUsage", icon: "chart" },
-  { group: "navSupportGroup", section: "support", label: "navSupport", icon: "chat" },
-  { group: "navAccount", section: "profile", label: "navProfile", icon: "user" },
-];
 
 function useDashboardCopy(): DashboardCopy {
   const { language } = useI18n();
@@ -229,19 +201,102 @@ export function Dashboard() {
     window.scrollTo({ top: 0, behavior: "auto" });
   }, [language]);
 
-  // Клики с модификаторами (Cmd/Ctrl/Shift) и среднюю кнопку отдаём браузеру: у ссылки настоящий
-  // href, поэтому раздел можно открыть в новой вкладке. Обычный клик остаётся shallow-навигацией.
-  function handleSectionNav(event: ReactMouseEvent<HTMLAnchorElement>, next: Section) {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    open(next);
-  }
-
   const usableKeys = useMemo(() => keys.filter((key) => isApiKeyUsable(key, policyNow)), [keys, policyNow]);
+  const closeSide = useCallback(() => setSideOpen(false), []);
+  const openMenu = useCallback(() => setSideOpen(true), []);
+  const openCredits = useCallback(() => open("credits"), [open]);
+  const refreshKeys = useCallback(() => retryOptional("keys", false), [retryOptional]);
 
   if (loading) return <DashboardLoading label={copy.loading} />;
   if (!user || !account) return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
 
+  return <div className="app ym-hide-content">
+    <DashboardSidebar
+      activeSection={section}
+      copy={copy}
+      language={language}
+      sideOpen={sideOpen}
+      user={user}
+      loggingOut={loggingOut}
+      logoutLabel={localCopy.loggingOut}
+      onLanguageChange={setLanguage}
+      onNavigate={open}
+      onLogout={logout}
+    />
+    <DashboardScrim open={sideOpen} label={copy.closeMenu} onClose={closeSide} />
+    <main className="app-main">
+      <DashboardTopBar activeSection={section} account={account} copy={copy} locale={locale} onMenu={openMenu} onOpenCredits={openCredits} />
+      <DashboardContent
+        section={section}
+        copy={copy}
+        account={account}
+        user={user}
+        keys={keys}
+        usableKeys={usableKeys}
+        ledger={ledger}
+        usage={usage}
+        dataErrors={dataErrors}
+        dataPending={dataPending}
+        visitedSections={visitedSections}
+        error={error}
+        logoutError={logoutError}
+        loggingOut={loggingOut}
+        onRetry={retryOptional}
+        onRetryKeys={refreshKeys}
+        onRetryLoad={load}
+        onLogout={logout}
+        onOpen={open}
+        onUserUpdated={setUser}
+      />
+    </main>
+  </div>;
+}
+
+type DashboardContentProps = {
+  section: Section;
+  copy: DashboardCopy;
+  account: AccountView;
+  user: AuthUser;
+  keys: ApiKeyView[];
+  usableKeys: ApiKeyView[];
+  ledger: LedgerEntry[];
+  usage: UsageView | null;
+  dataErrors: Partial<Record<OptionalDataSource, true>>;
+  dataPending: Record<OptionalDataSource, boolean>;
+  visitedSections: ReadonlySet<Section>;
+  error: string | null;
+  logoutError: string | null;
+  loggingOut: boolean;
+  onRetry(source: OptionalDataSource, showPending?: boolean): Promise<void>;
+  onRetryKeys(): Promise<void>;
+  onRetryLoad(): Promise<void>;
+  onLogout(): Promise<void>;
+  onOpen(section: Section): void;
+  onUserUpdated(user: AuthUser): void;
+};
+
+function DashboardContent({
+  section,
+  copy,
+  account,
+  user,
+  keys,
+  usableKeys,
+  ledger,
+  usage,
+  dataErrors,
+  dataPending,
+  visitedSections,
+  error,
+  logoutError,
+  loggingOut,
+  onRetry,
+  onRetryKeys,
+  onRetryLoad,
+  onLogout,
+  onOpen,
+  onUserUpdated,
+}: DashboardContentProps) {
   const sourceNotices: Array<{ source: OptionalDataSource; message: string; pending: boolean }> = [];
   if (section === "keys") {
     if (dataPending.keys) sourceNotices.push({ source: "keys", message: copy.keysDataLoading, pending: true });
@@ -255,88 +310,46 @@ export function Dashboard() {
     if (dataPending.usage) sourceNotices.push({ source: "usage", message: copy.usageDataLoading, pending: true });
     else if (dataErrors.usage) sourceNotices.push({ source: "usage", message: copy.usageDataUnavailable, pending: false });
   }
-  return <div className="app ym-hide-content">
-    <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
-      <Link className="brand side-brand" href="/"><BrandImages />apiToken.sale</Link>
-      <nav className="side-nav">
-        {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
-          {item.group && <span className="side-group">{copy[item.group]}</span>}
-          {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link> :
-            <Link data-dashboard-section={item.section} className={`side-link${section === item.section ? " on" : ""}`} aria-current={section === item.section ? "page" : undefined} href={dashboardHref(item.section!, language)} onClick={(event) => handleSectionNav(event, item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link>}
-        </div>)}
-      </nav>
-      <div className="side-foot">
-        <div className="side-tools"><div className="lang"><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button><button className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} onClick={() => setLanguage("ru")}>RU</button></div><ThemeToggle /></div>
-        <nav className="side-legal" aria-label={language === "ru" ? "Правовая информация" : "Legal information"}>
-          <Link href="/privacy" target="_blank">{language === "ru" ? "Конфиденциальность" : "Privacy"}</Link>
-          <Link href="/terms" target="_blank">{language === "ru" ? "Соглашение" : "Agreement"}</Link>
-          <Link href="/support" target="_blank">{language === "ru" ? "Поддержка" : "Support"}</Link>
-          <Link href="/plans" target="_blank">{language === "ru" ? "Цены" : "Pricing"}</Link>
-        </nav>
-        <div className="side-user"><span className="side-av">{(user.displayName || user.email)[0]?.toUpperCase()}</span><div className="side-uinfo"><b>{user.displayName || user.email.split("@")[0]}</b><span>{user.email}</span></div></div>
-        <button className="btn btn-ghost btn-sm side-logout" disabled={loggingOut} onClick={logout}>{loggingOut ? localCopy.loggingOut : copy.logout}</button>
-      </div>
-    </aside>
-    <button className={`side-scrim ${sideOpen ? "show" : ""}`} onClick={() => setSideOpen(false)} aria-label={copy.closeMenu} />
-    <main className="app-main">
-      <header className="app-top">
-        <div className="app-top-in">
-          <button className="app-burger" onClick={() => setSideOpen(true)} aria-label={copy.menu}>☰</button>
-          <div className="app-top-h"><div className="app-title">{copy[navigation.find((item) => item.section === section)?.label ?? "navOverview"]}</div></div>
-          <div className="app-top-actions">
-            <button className="app-top-bal" onClick={() => open("credits")} title={copy.navTopUp}>
-              <span className="atb-ic" aria-hidden="true" />
-              <span className="atb-label">{copy.creditsLabel}</span>
-              <span className={`atb-val${BigInt(account.balanceNano) < 0n ? " atb-neg" : ""}`}>{formatNanoUsd(account.balanceNano, locale)}</span>
-            </button>
-          </div>
-        </div>
-      </header>
-      <div className="app-body-in">
-        {error && <div className="banner banner-error" role="alert">{error} <button className="btn btn-ghost btn-sm" onClick={load}>{copy.retry}</button></div>}
-        {logoutError && <div className="banner banner-error" role="alert">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={logout}>{copy.retry}</button></div>}
-        {sourceNotices.map((notice) => <div className={`banner dashboard-data-notice${notice.pending ? "" : " banner-error"}`} role="status" key={notice.source}><span>{notice.message}</span>{!notice.pending && <button className="btn btn-ghost btn-sm" onClick={() => void retryOptional(notice.source)}>{copy.retry}</button>}</div>)}
-        {visitedSections.has("overview") && <Activity mode={section === "overview" ? "visible" : "hidden"}>
-          <Overview
-            account={account}
-            user={user}
-            usableKeys={usableKeys}
-            totalKeys={keys.length}
-            keysState={dataPending.keys ? "loading" : dataErrors.keys ? "unavailable" : "ready"}
-            usage={usage}
-            usageState={dataPending.usage ? "loading" : dataErrors.usage ? "unavailable" : "ready"}
-            ledger={ledger}
-            ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
-            open={open}
-          />
-        </Activity>}
-        {visitedSections.has("keys") && <Activity mode={section === "keys" ? "visible" : "hidden"}>
-          {dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
-          {!dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={() => retryOptional("keys", false)} user={user} />}
-        </Activity>}
-        {visitedSections.has("credits") && <Activity mode={section === "credits" ? "visible" : "hidden"}>
-          <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />
-        </Activity>}
-        {visitedSections.has("usage") && <Activity mode={section === "usage" ? "visible" : "hidden"}>
-          {!usage && dataPending.usage && <UsageSkeleton />}
-          {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
-        </Activity>}
-        {visitedSections.has("support") && <Activity mode={section === "support" ? "visible" : "hidden"}>
-          <SupportPanel />
-        </Activity>}
-        {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>
-          <Profile user={user} onUpdated={setUser} />
-        </Activity>}
-        {visitedSections.has("promos") && <Activity mode={section === "promos" ? "visible" : "hidden"}>
-          <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
-        </Activity>}
-      </div>
-    </main>
-  </div>;
-}
 
-function BrandImages() {
-  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
+  return <div className="app-body-in">
+    {error && <div className="banner banner-error" role="alert">{error} <button className="btn btn-ghost btn-sm" onClick={() => void onRetryLoad()}>{copy.retry}</button></div>}
+    {logoutError && <div className="banner banner-error" role="alert">{logoutError} <button className="btn btn-ghost btn-sm" disabled={loggingOut} onClick={() => void onLogout()}>{copy.retry}</button></div>}
+    {sourceNotices.map((notice) => <div className={`banner dashboard-data-notice${notice.pending ? "" : " banner-error"}`} role="status" key={notice.source}><span>{notice.message}</span>{!notice.pending && <button className="btn btn-ghost btn-sm" onClick={() => void onRetry(notice.source)}>{copy.retry}</button>}</div>)}
+    {visitedSections.has("overview") && <Activity mode={section === "overview" ? "visible" : "hidden"}>
+      <Overview
+        account={account}
+        user={user}
+        usableKeys={usableKeys}
+        totalKeys={keys.length}
+        keysState={dataPending.keys ? "loading" : dataErrors.keys ? "unavailable" : "ready"}
+        usage={usage}
+        usageState={dataPending.usage ? "loading" : dataErrors.usage ? "unavailable" : "ready"}
+        ledger={ledger}
+        ledgerState={dataPending.ledger ? "loading" : dataErrors.ledger ? "unavailable" : "ready"}
+        open={onOpen}
+      />
+    </Activity>}
+    {visitedSections.has("keys") && <Activity mode={section === "keys" ? "visible" : "hidden"}>
+      {dataPending.keys && !dataErrors.keys && <KeysSkeleton />}
+      {!dataPending.keys && !dataErrors.keys && <ApiKeys keys={keys} onChanged={onRetryKeys} user={user} />}
+    </Activity>}
+    {visitedSections.has("credits") && <Activity mode={section === "credits" ? "visible" : "hidden"}>
+      <Credits account={account} ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />
+    </Activity>}
+    {visitedSections.has("usage") && <Activity mode={section === "usage" ? "visible" : "hidden"}>
+      {!usage && dataPending.usage && <UsageSkeleton />}
+      {usage && <Usage account={account} keys={keys} ledger={ledger} usage={usage} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} />}
+    </Activity>}
+    {visitedSections.has("support") && <Activity mode={section === "support" ? "visible" : "hidden"}>
+      <SupportPanel />
+    </Activity>}
+    {visitedSections.has("profile") && <Activity mode={section === "profile" ? "visible" : "hidden"}>
+      <Profile user={user} onUpdated={onUserUpdated} />
+    </Activity>}
+    {visitedSections.has("promos") && <Activity mode={section === "promos" ? "visible" : "hidden"}>
+      <PromoPanel ledger={ledger} ledgerAvailable={!dataPending.ledger && !dataErrors.ledger} ledgerMayBePartial={ledger.length >= 100} />
+    </Activity>}
+  </div>;
 }
 
 function KeysSkeleton() {
