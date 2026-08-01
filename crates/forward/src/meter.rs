@@ -42,6 +42,11 @@ pub struct CalibrationCtx {
     pub request_id: String,
     pub plan: String,
     pub quota_snapshots: Vec<AnthropicQuotaSnapshot>,
+    /// Wake the backend quota poller after durable turn evidence has been queued. Response headers
+    /// are captured before the streamed body reaches authoritative usage, so without a post-turn
+    /// probe busy subscriptions can keep refreshing `polled_ts` while never pairing their newly
+    /// completed spend with a later quota fraction.
+    pub probe_poke: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
@@ -449,11 +454,20 @@ impl TeeMeter {
                     _ => None,
                 };
                 if let Some(event) = event {
-                    calibration.billing.record_anthropic_turn_detached(
+                    let queued = calibration.billing.record_anthropic_turn_detached(
                         event,
                         &calibration.plan,
                         calibration.quota_snapshots.clone(),
                     );
+                    if queued {
+                        // Queue the immutable spend evidence before waking the free count-tokens
+                        // probe. `AnthropicObserveWindow` also flushes the pending turn FIFO first,
+                        // so writer backpressure cannot invert spend and quota observations.
+                        ctx.pool.request_probe(&ctx.email);
+                        if let Some(poke) = &calibration.probe_poke {
+                            poke.notify_one();
+                        }
+                    }
                 } else {
                     eprintln!("Anthropic calibration event exceeds durable bigint bounds");
                 }
@@ -702,6 +716,96 @@ mod tests {
                 }
             })
         )
+    }
+
+    #[tokio::test]
+    async fn authoritative_turn_queues_evidence_and_wakes_backend_quota_probe() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-tee-calibration-probe-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start test billing"),
+        );
+        let pool = Arc::new(Pool::new(
+            vec![Sub {
+                email: EMAIL.into(),
+                token: "secret".into(),
+                proxy: String::new(),
+                fleet: "test".into(),
+                plan: "max20".into(),
+            }],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        ));
+        pool.set_util(
+            EMAIL,
+            Some(0.10),
+            Some(0.20),
+            None,
+            Some(2_000_000_000),
+            Some(2_000_500_000),
+        );
+        assert!(pool.snapshot()[0].1.polled_ts > 0);
+        pool.mark_used(EMAIL);
+
+        let probe_poke = Arc::new(tokio::sync::Notify::new());
+        let sse = format!(
+            "{}data: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 2}
+            }),
+        );
+        let inner: ByteStream =
+            Box::pin(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                Bytes::from(sse),
+            )]));
+        let mut meter = TeeMeter::new(
+            inner,
+            MeterCtx {
+                pool: Arc::clone(&pool),
+                email: EMAIL.into(),
+                model: "claude-sonnet-4-6".into(),
+                is_sse: true,
+                bill: None,
+                calibration: Some(CalibrationCtx {
+                    billing: Arc::clone(&billing),
+                    request_id: "calibration-probe-request".into(),
+                    plan: "max20".into(),
+                    quota_snapshots: Vec::new(),
+                    probe_poke: Some(Arc::clone(&probe_poke)),
+                }),
+                capacity: None,
+            },
+        );
+        while meter.next().await.is_some() {}
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), probe_poke.notified())
+            .await
+            .expect("successful turn must wake the backend quota poller");
+        assert_eq!(
+            pool.snapshot()[0].1.polled_ts,
+            0,
+            "post-turn probe must stay due even though response headers were fresh",
+        );
+
+        billing.flush().await.unwrap();
+        let (_, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].turns, 1);
+        assert_eq!(evidence[0].subject_id, EMAIL);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

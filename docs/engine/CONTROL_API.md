@@ -52,7 +52,17 @@ Same-origin админка дополнительно читает `GET /capacit
 Claude capacity — exact realized API-dollar equivalent фактически обслуженной смеси, а не цена
 Max/Pro и не обещание фиксированного числа токенов. Каждый успешный turn (customer или admin)
 сохраняет immutable model/tier/geo/tariff event с отдельными token и API nanoUSD legs; бесплатный
-poll сохраняет только quota observation. Для каждого exact plan и окна независимо:
+poll сохраняет только quota observation. После authoritative usage backend сам ставит spend event
+в durable FIFO и будит бесплатный post-turn count-tokens probe обслужившей подписки; открытие
+админки и следующий пользовательский запрос для накопления evidence не нужны. Forced probe
+дебаунсится до одного раза за 15 секунд на подписку, а poll observation всегда дренирует pending
+turn FIFO раньше чтения cumulative spend. Пустой plan backend probe восстанавливает через официальный
+OAuth profile endpoint; inference-only token с 403 может унаследовать только единогласный известный
+paid plan (`pro|max5|max20`) текущего fleet. Mixed/unknown fleet остаётся fail-closed. Найденный plan
+durable записывается в registry и применяется к live roster до quota observation;
+открывать админку или вручную править cohort не требуется. Если response и post-turn poll попали в
+одну секунду, изменившаяся quota всё равно принимается в FIFO-порядке; только точный endpoint-дубль
+игнорируется. Для каждого exact plan и окна независимо:
 
 ```text
 capacity_per_subscription_nano =
@@ -74,6 +84,9 @@ pending event или degraded integrity. `calibration_delivery` публикуе
 immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
 `calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
 token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
+
+Bounded production-прогон и правила интерпретации model-level quota deltas описаны в
+`docs/ops/CLAUDE_CALIBRATION.md`; runner использует только этот backend contract и не зависит от UI.
 
 `GET /overview` сохраняет прежние округлённые `supply.*_usd` display-поля для панели, но их источник
 теперь тот же exact report. Канонические значения находятся рядом в `supply.avail_nano`,

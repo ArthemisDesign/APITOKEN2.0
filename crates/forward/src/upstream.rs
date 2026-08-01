@@ -401,6 +401,7 @@ pub struct PollResult {
 }
 
 /// Результат детекта тарифа подписки.
+#[derive(Debug, PartialEq, Eq)]
 pub enum PlanDetect {
     Plan(String), // "pro" | "max5" | "max20"
     NoScope,      // 403 — у токена нет scope user:profile (частый случай setup-token)
@@ -433,6 +434,10 @@ pub async fn detect_plan(client: &Client, cfg: &ProxyConfig, token: &str, ua: &s
         Ok(v) => v,
         Err(e) => return PlanDetect::Err(format!("badjson:{e}")),
     };
+    plan_from_profile(&v)
+}
+
+fn plan_from_profile(v: &serde_json::Value) -> PlanDetect {
     let acc = &v["account"];
     let org = &v["organization"];
     let tier = org["rate_limit_tier"].as_str().unwrap_or("");
@@ -618,5 +623,44 @@ mod tests {
         assert!(parse_quota_fraction("1.1e-2").is_none());
         assert!(parse_quota_fraction("101").is_none());
         assert!(parse_quota_fraction("0.123456789").is_none());
+    }
+
+    #[test]
+    fn profile_plan_detection_accepts_only_known_paid_cohorts() {
+        for (profile, expected) in [
+            (
+                serde_json::json!({
+                    "account": {"has_claude_max": true},
+                    "organization": {"rate_limit_tier": "default_claude_max_20x"}
+                }),
+                PlanDetect::Plan("max20".to_owned()),
+            ),
+            (
+                serde_json::json!({
+                    "account": {},
+                    "organization": {
+                        "organization_type": "claude_max",
+                        "rate_limit_tier": "default_claude_max_5x"
+                    }
+                }),
+                PlanDetect::Plan("max5".to_owned()),
+            ),
+            (
+                serde_json::json!({
+                    "account": {"has_claude_pro": true},
+                    "organization": {}
+                }),
+                PlanDetect::Plan("pro".to_owned()),
+            ),
+        ] {
+            assert_eq!(plan_from_profile(&profile), expected);
+        }
+        assert_eq!(
+            plan_from_profile(&serde_json::json!({
+                "account": {},
+                "organization": {"rate_limit_tier": "free"}
+            })),
+            PlanDetect::Err("unknown:free".to_owned()),
+        );
     }
 }

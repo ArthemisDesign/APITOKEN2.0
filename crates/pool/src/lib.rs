@@ -807,6 +807,45 @@ impl Pool {
         g.subs = subs;
     }
 
+    /// Apply a provider-detected paid plan immediately after its durable registry write. The
+    /// regular roster reload remains the restart/blue-green authority, but waiting for its next
+    /// pass would let successful turns keep entering the `unknown` calibration cohort.
+    pub fn set_plan(&self, email: &str, plan: &str) -> bool {
+        if plan.is_empty() {
+            return false;
+        }
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let Some(sub) = g.subs.iter_mut().find(|sub| sub.email == email) else {
+            return false;
+        };
+        sub.plan = plan.to_owned();
+        true
+    }
+
+    /// Conservative fallback for inference-only OAuth tokens whose profile scope is absent. A
+    /// missing plan may inherit a cohort only when every non-empty plan in this active fleet is the
+    /// same known paid Claude plan. Mixed, unknown or entirely unlabelled fleets fail closed.
+    pub fn consensus_paid_plan(&self) -> Option<String> {
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut consensus: Option<&str> = None;
+        for plan in g
+            .subs
+            .iter()
+            .map(|sub| sub.plan.trim())
+            .filter(|plan| !plan.is_empty())
+        {
+            if !matches!(plan, "pro" | "max5" | "max20") {
+                return None;
+            }
+            match consensus {
+                None => consensus = Some(plan),
+                Some(current) if current == plan => {}
+                Some(_) => return None,
+            }
+        }
+        consensus.map(str::to_owned)
+    }
+
     pub fn len(&self) -> usize {
         self.inner
             .read()
@@ -1296,18 +1335,17 @@ impl Pool {
             .unwrap_or(false)
     }
 
-    /// Пометить подписку для НЕМЕДЛЕННОГО liveness-probe поллером (сброс `polled_ts` в 0 → `next_probe_at`
-    /// сразу due). Зовётся из forward, когда подписка отдала 401/403, а запрос успешно ушёл на ДРУГУЮ
-    /// (значит вина не запроса, а токена этой). Чистый probe поллера авторитетно рассудит: мёртвый токен
-    /// → карантин, живой (был crafted-запрос) → без вреда. Так revoked-токен перестаёт быть placement-
-    /// магнитом за ~1 цикл поллера, а НЕ за LIVENESS_INTERVAL — и БЕЗ cooling здесь (иначе crafted-запрос
-    /// студил бы флот = DoS). In-flight/cooling не трогаем.
+    /// Пометить подписку для НЕМЕДЛЕННОГО free count-tokens probe поллером (сброс `polled_ts` в 0 →
+    /// `next_probe_at` сразу due). Forward зовёт это после 401/403 для чистого auth-вердикта и после
+    /// постановки authoritative turn evidence в calibration FIFO, чтобы получить post-turn quota
+    /// fraction независимо от UI/следующего customer request. Дебаунс не даёт crafted auth traffic
+    /// или частым успешным turn разогнать probe чаще одного раза за ~15с. In-flight/cooling не трогаем.
     pub fn request_probe(&self, email: &str) {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if let Some(l) = g.live.get_mut(email) {
             // Дебаунс по ОТДЕЛЬНОМУ last_probe_req (не polled_ts — его пассивный сбор держит свежим на
-            // каждом ответе, включая тот 401/403, что нас позвал → дебаунс по нему заблокировал бы и
-            // легитимный probe). Форсим не чаще раза в ~15с: флуд crafted-401/403 не гонит probe-трафик.
+            // каждом ответе, включая тот 401/403 или успешный turn, что нас позвал). Форсим не чаще
+            // раза в ~15с: ни crafted auth traffic, ни response burst не гонят probe-трафик.
             let now = now();
             if l.last_probe_req >= now - 15 {
                 return;
@@ -2692,6 +2730,97 @@ mod tests {
             p.snapshot()[0].1.polled_ts > 0,
             "второй request_probe в окне дебаунса — no-op"
         );
+    }
+
+    #[test]
+    fn detected_plan_updates_the_live_roster_without_resetting_health() {
+        let p = pool(&["a"]);
+        p.set_util("a", Some(0.2), Some(0.1), None, None, None);
+        let before = p.snapshot()[0].1.clone();
+
+        assert!(p.set_plan("a", "max20"));
+        let (sub, live) = p.snapshot().remove(0);
+        assert_eq!(sub.plan, "max20");
+        assert_eq!(live.polled_ts, before.polled_ts);
+        assert_eq!(live.util5h, before.util5h);
+        assert!(!p.set_plan("missing", "max20"));
+        assert!(!p.set_plan("a", ""));
+    }
+
+    #[test]
+    fn inference_only_plan_fallback_requires_one_unanimous_paid_cohort() {
+        let one = Pool::new(
+            vec![
+                Sub {
+                    email: "known".into(),
+                    token: "t".into(),
+                    proxy: String::new(),
+                    fleet: "f".into(),
+                    plan: "max20".into(),
+                },
+                Sub {
+                    email: "blank".into(),
+                    token: "t".into(),
+                    proxy: String::new(),
+                    fleet: "f".into(),
+                    plan: String::new(),
+                },
+            ],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        );
+        assert_eq!(one.consensus_paid_plan().as_deref(), Some("max20"));
+
+        let mixed = Pool::new(
+            vec![
+                Sub {
+                    email: "max".into(),
+                    token: "t".into(),
+                    proxy: String::new(),
+                    fleet: "f".into(),
+                    plan: "max20".into(),
+                },
+                Sub {
+                    email: "pro".into(),
+                    token: "t".into(),
+                    proxy: String::new(),
+                    fleet: "f".into(),
+                    plan: "pro".into(),
+                },
+            ],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        );
+        assert_eq!(mixed.consensus_paid_plan(), None);
+
+        let unknown = Pool::new(
+            vec![Sub {
+                email: "x".into(),
+                token: "t".into(),
+                proxy: String::new(),
+                fleet: "f".into(),
+                plan: "enterprise".into(),
+            }],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        );
+        assert_eq!(unknown.consensus_paid_plan(), None);
+        let blank = Pool::new(
+            vec![Sub {
+                email: "x".into(),
+                token: "t".into(),
+                proxy: String::new(),
+                fleet: "f".into(),
+                plan: String::new(),
+            }],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        );
+        assert_eq!(blank.consensus_paid_plan(), None);
     }
 
     // ── Durable auth-health: корроборированный dead-детект ──────────────────────────────────

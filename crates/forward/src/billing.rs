@@ -732,7 +732,7 @@ fn observe_anthropic_postgres(
         )?;
         if let Some(existing) = existing.as_ref().filter(|row| {
             row.estimator_version == crate::anthropic_calibration::ESTIMATOR_VERSION
-                && observation.observed_at <= row.observed_at
+                && anthropic_observation_is_stale_or_duplicate(row, observation)
         }) {
             return Ok(existing.clone());
         }
@@ -757,6 +757,18 @@ fn observe_anthropic_postgres(
             return Ok(state);
         }
     }
+}
+
+fn anthropic_observation_is_stale_or_duplicate(
+    row: &AnthropicCalibrationRow,
+    observation: &AnthropicWindowObservation,
+) -> bool {
+    observation.observed_at < row.observed_at
+        || (observation.observed_at == row.observed_at
+            && observation.resets_at == row.resets_at
+            && observation.used_fraction_units == row.used_fraction_units
+            && observation.measurement_resolution_fraction_units
+                == row.measurement_resolution_fraction_units)
 }
 
 fn persist_anthropic_turn_postgres(
@@ -1204,7 +1216,7 @@ impl AsyncBilling {
         event: ProviderTurnCalibrationEvent,
         plan: &str,
         snapshots: Vec<AnthropicQuotaSnapshot>,
-    ) {
+    ) -> bool {
         let delivery_id = match enqueue_anthropic_calibration_turn(
             &self.anthropic_calibration_delivery,
             event,
@@ -1214,7 +1226,7 @@ impl AsyncBilling {
             Ok(delivery_id) => delivery_id,
             Err(error) => {
                 eprintln!("Anthropic calibration evidence dropped: {error:#}");
-                return;
+                return false;
             }
         };
         dispatch_detached(
@@ -1225,6 +1237,7 @@ impl AsyncBilling {
                 reply: None,
             },
         );
+        true
     }
 
     /// Pair a free liveness-poll snapshot with the current durable Claude spend without inventing
@@ -1566,7 +1579,7 @@ impl AsyncBilling {
                         if let Some(existing) = existing.as_ref().filter(|row| {
                             row.estimator_version
                                 == crate::anthropic_calibration::ESTIMATOR_VERSION
-                                && observation.observed_at <= row.observed_at
+                                && anthropic_observation_is_stale_or_duplicate(row, observation)
                         }) {
                             return Ok::<_, anyhow::Error>(existing.clone());
                         }
@@ -4502,6 +4515,108 @@ mod tests {
 
         restarted.flush().await.unwrap();
         drop(restarted);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn backend_post_turn_poll_calibrates_without_a_second_customer_request() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-post-turn-poll-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+
+        for (kind, duration, used, reset) in [
+            ("5h", 300, 10_000_000, 2_000_000_000),
+            ("7d", 10_080, 20_000_000, 2_000_500_000),
+        ] {
+            let (spend, anchor) = billing
+                .observe_anthropic_window(
+                    "operator@example.test",
+                    "max20",
+                    kind,
+                    duration,
+                    reset,
+                    used,
+                    100_000,
+                    100,
+                )
+                .await
+                .unwrap();
+            assert_eq!(spend, 0);
+            assert!(anchor.current_capacity_nano.is_none());
+        }
+
+        // Response headers and the fast post-turn poll can share one wall-clock second. The headers
+        // still carry the old fraction; FIFO ordering plus the later changed fraction must be
+        // sufficient to finish both intervals without waiting for another customer request.
+        let (spend, response_rows) = billing
+            .record_anthropic_turn(
+                anthropic_event("post-turn-only", 2_000_000_000, 101),
+                "max20",
+                vec![
+                    AnthropicQuotaSnapshot {
+                        window_kind: "5h".to_owned(),
+                        window_duration_mins: 300,
+                        resets_at: 2_000_000_000,
+                        used_fraction_units: 10_000_000,
+                        measurement_resolution_fraction_units: 100_000,
+                        observed_at: 101,
+                    },
+                    AnthropicQuotaSnapshot {
+                        window_kind: "7d".to_owned(),
+                        window_duration_mins: 10_080,
+                        resets_at: 2_000_500_000,
+                        used_fraction_units: 20_000_000,
+                        measurement_resolution_fraction_units: 100_000,
+                        observed_at: 101,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(spend.spent_nano, 2_000_000_000);
+        assert_eq!(response_rows.len(), 2);
+
+        let (_, five_hour) = billing
+            .observe_anthropic_window(
+                "operator@example.test",
+                "max20",
+                "5h",
+                300,
+                2_000_000_000,
+                14_000_000,
+                100_000,
+                101,
+            )
+            .await
+            .unwrap();
+        let (_, weekly) = billing
+            .observe_anthropic_window(
+                "operator@example.test",
+                "max20",
+                "7d",
+                10_080,
+                2_000_500_000,
+                21_000_000,
+                100_000,
+                101,
+            )
+            .await
+            .unwrap();
+        assert_eq!(five_hour.current_capacity_nano, Some(50_000_000_000));
+        assert_eq!(weekly.current_capacity_nano, Some(200_000_000_000));
+
+        let (rows, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].turns, 1);
+        billing.flush().await.unwrap();
+        drop(billing);
         let _ = std::fs::remove_file(path);
     }
 

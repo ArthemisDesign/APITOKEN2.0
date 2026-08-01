@@ -70,7 +70,11 @@ impl WindowCalibration {
         {
             anyhow::bail!("Anthropic calibration observation identity mismatch");
         }
-        if observation.observed_at <= self.row.observed_at {
+        // Writer FIFO is authoritative when a response snapshot and the immediate post-turn poll
+        // land in the same wall-clock second. A strictly older observation is stale; an equal-time
+        // observation may still carry the quota movement that the response headers did not yet
+        // expose. Exact equal-time duplicates are filtered by the billing writer before this call.
+        if observation.observed_at < self.row.observed_at {
             return Ok(());
         }
         if self.row.estimator_version != ESTIMATOR_VERSION {
@@ -260,7 +264,7 @@ pub(crate) fn apply_observation(
         _ => WindowCalibration::anchor(observation)?,
     };
     calibration.row.version = version;
-    if calibration.row.observed_at < observation.observed_at {
+    if calibration.row.observed_at <= observation.observed_at {
         calibration.observe(observation)?;
     }
     Ok(calibration.into_row())

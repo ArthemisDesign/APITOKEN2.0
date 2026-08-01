@@ -420,7 +420,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html)).toContain("750 credits");
   });
 
-  it("ClaudeCapacityBoard: показывает токены, тарифный рейтинг, sliders и почту", () => {
+  it("ClaudeCapacityBoard: оставляет только компактные окна по аккаунтам", () => {
     const html = renderToString(
       <ClaudeCapacityBoard
         response={{
@@ -507,21 +507,20 @@ describe("таблицы флотов (smoke render с данными)", () => {
         }}
       />,
     );
-    expect(html).toContain("Сколько токенов доступно");
-    expect(html).toContain("Выгодность по убыванию");
-    expect(html).toContain("Фактическая смесь калибровки");
     expect(html).toContain("Окна по аккаунтам");
     expect(html).toContain("owne…");
     expect(html).not.toContain("owner@example.com");
-    expect(plain(html)).toContain("240M");
-    expect(plain(html)).toContain("$50.00");
-    expect(plain(html)).toContain("$21.39");
     expect(html).toContain("Доступно $ · 5ч");
     expect(html).toContain('provider-usd-ink provider-five-hour-money"><b>$45.00</b><small>из $60.00</small>');
-    expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));
+    expect(plain(html)).toContain("$120.00");
     expect(plain(html)).toContain("40%");
     expect(plain(html)).toContain("сброс 1ч 0м");
     expect(html).toContain("provider-quota-meter");
+    expect(html).not.toContain("Сколько токенов доступно");
+    expect(html).not.toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Фактическая смесь калибровки");
+    expect(html).not.toContain("claude-opus-4-8");
+    expect(html).not.toContain("5ч · доступно");
   });
 
   it("GeminiCapacityBoard: не выдумывает amount, выводит exact quota, тариф и masked email", () => {

@@ -2013,6 +2013,7 @@ pub async fn forward(
                         sub.plan.clone()
                     },
                     quota_snapshots,
+                    probe_poke: app.probe_poke.clone(),
                 });
                 Some(MeterCtx {
                     pool: app.pool.clone(),

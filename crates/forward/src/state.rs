@@ -80,9 +80,9 @@ pub struct AppState {
     pub breaker: Arc<Breaker>,
     /// Счётчики форвардинга для `/metrics`.
     pub metrics: Arc<Metrics>,
-    /// Разбудить liveness-поллер вне расписания (forward зовёт после `pool.request_probe`, когда
-    /// подписка отдала 401/403 → надо СРАЗУ рассудить чистым probe, мёртв ли токен). `None` → поллер
-    /// выключен (`CLAUDE_API_POLL=0`), тогда probe-по-требованию просто не нужен.
+    /// Разбудить backend quota-поллер вне расписания. Forward зовёт после `pool.request_probe` для
+    /// clean auth-вердикта 401/403 и post-turn calibration pairing. `None` → поллер выключен
+    /// (`CLAUDE_API_POLL=0`), тогда probe-по-требованию недоступен.
     pub probe_poke: Option<Arc<tokio::sync::Notify>>,
 }
 

@@ -96,7 +96,14 @@ immutable event с внутренним request ID, subject/email, model, Standa
 tariff schedule, exact input/cache-read/cache-write-5m/cache-write-1h/output/search counters и
 соответствующими API nanoUSD legs. Событие сначала продвигает cumulative subject spend и только
 затем response quota snapshots наблюдают новый total. Poll snapshots бесплатны: они читают durable
-spend, но никогда его не увеличивают. Decimal quota fractions парсятся в `10^-8` units без float;
+spend, но никогда его не увеличивают. После постановки authoritative turn event в FIFO `TeeMeter`
+немедленно помечает обслужившую подписку для backend count-tokens probe и будит server poller:
+боевые response headers больше не могут держать `polled_ts` свежим и откладывать post-turn pairing.
+Дебаунс `Pool::request_probe` ограничивает probe не чаще одного раза за 15 секунд на подписку;
+writer poll-команды перед observation сначала дренирует pending turn FIFO, поэтому backpressure не
+переставляет quota раньше spend. Response snapshot и быстрый post-turn poll могут иметь одинаковую
+секунду: FIFO остаётся порядком истины, равный timestamp с изменившейся quota обрабатывается, а
+точный quota/reset/resolution дубль игнорируется. Decimal quota fractions парсятся в `10^-8` units без float;
 реальное разрешение каждого endpoint хранится отдельно.
 
 Окна 5h и 7d имеют независимые identity/history/reset и оцениваются без номинала подписки,

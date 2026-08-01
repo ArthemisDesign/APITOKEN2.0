@@ -41,10 +41,16 @@
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
   transactions.
 - `poller.rs` — СОБЫТИЙНЫЕ циклы: `reload_loop` (перечитать реестр; будит поллер `Notify` при
-  изменении флота) + `poll_loop` (liveness-only probe созревших подписок конкурентно, затем сон
+  изменении флота) + `poll_loop` (free count-tokens probe созревших подписок конкурентно, затем сон
   РОВНО до ближайшего due-времени или до `poke`). Фиксированного тика нет: reset вычисляется
-  локально, а не поллится; под боевым трафиком `polled_ts` свеж (пассивный сбор в forward) → активный
-  probe не срабатывает. `LIVENESS_INTERVAL` — как редко пинговать простаивающую (проверка живости токена).
+  локально. Под боевым трафиком пассивные headers обычно держат `polled_ts` свежим, но завершение
+  authoritative Claude turn после постановки exact spend в FIFO принудительно помечает подписку due
+  и будит poller для post-turn quota pairing. `LIVENESS_INTERVAL` задаёт редкую фоновую проверку
+  простаивающей, а per-sub 15-секундный debounce ограничивает forced probes. Если у Claude-sub
+  отсутствует plan, тот же backend probe сначала читает официальный OAuth profile. Для inference-only
+  токена с HTTP 403 разрешён только fail-closed fallback: все непустые планы активного fleet должны
+  единогласно совпасть с одним `pro|max5|max20`. Результат durable сохраняется и сразу обновляет
+  in-memory roster; mixed/unknown fleet остаётся без plan, UI в детекте не участвует.
   `persist_loop` — write-through персист состояния пула по событию cooling (`pool.on_change` → `Notify`)
   + редкий safety-flush; на старте `serve` восстанавливает состояние через `pool.import_state`.
   Если import карантинил implausible legacy calibration, `serve` сразу будит persist-loop, чтобы

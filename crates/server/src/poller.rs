@@ -1,15 +1,16 @@
 //! Фоновые задачи — СОБЫТИЙНЫЕ, не фиксированно-периодические:
 //! (1) перечитывание реестра из БД (подхват добавленных/убранных подписок),
-//! (2) liveness-опрос лимитов ТОЛЬКО простаивающих подписок.
+//! (2) free count-tokens quota probe для простаивающих подписок и post-turn калибровки.
 //!
 //! Ключевая идея: источник истины лимитов — заголовки боевых ответов (пассивный сбор в `forward`
 //! обновляет `polled_ts`). Момент сброса окна вычисляется локально (`reset` — абсолютный timestamp),
-//! поэтому его НЕ надо «ловить» опросом. Активный probe нужен лишь чтобы (а) впервые узнать лимиты
-//! новой подписки, (б) редко проверить, что токен простаивающей подписки ещё жив. Никакого
+//! поэтому его НЕ надо «ловить» опросом. Активный probe впервые узнаёт лимиты новой подписки,
+//! редко проверяет liveness простаивающей и после authoritative turn связывает exact spend с
+//! post-turn quota fraction. Никакого
 //! фиксированного скана подписок: спим ровно до ближайшего due-времени или до сигнала об изменении
-//! флота. Billing recovery и retention остаются отдельными короткими maintenance-циклами.
+//! флота/завершении turn. Billing recovery и retention остаются отдельными maintenance-циклами.
 
-use forward::{persona_ua, poll_sub, AppState};
+use forward::{detect_plan, persona_ua, poll_sub, AppState, PlanDetect};
 use registry::Sub;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -292,7 +293,7 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
 }
 
 /// Простаивающую подписку пингуем не чаще этого (сек). Не для «поймать сброс» (он вычисляется), а
-/// лишь для проверки живости токена. Под боевым трафиком `polled_ts` свеж → probe не срабатывает.
+/// лишь для проверки живости токена. Authoritative turn отдельно форсит bounded post-turn probe.
 const LIVENESS_INTERVAL: i64 = 300;
 /// Suspect (auth падает, но ещё не приговор): probe чаще и НЕЗАВИСИМО от cooling — иначе `cool(900)`
 /// после 401/403-probe отложил бы следующий probe. 300с → второй probe приходит на ~5-й минуте, и
@@ -418,6 +419,60 @@ async fn probe(
         }
     };
     let ua = persona_ua(&app.cfg, &sub.email);
+    let mut calibration_plan = sub.plan.trim().to_owned();
+    if calibration_plan.is_empty() {
+        let detected = match detect_plan(&client, &app.cfg, &sub.token, &ua).await {
+            PlanDetect::Plan(plan) => Some(plan),
+            PlanDetect::NoScope => match app.pool.consensus_paid_plan() {
+                Some(plan) => {
+                    eprintln!(
+                        "Anthropic plan inferred from unanimous paid cohort for inference-only token"
+                    );
+                    Some(plan)
+                }
+                None => {
+                    eprintln!(
+                        "Anthropic plan remains unknown for {}: OAuth token has no profile scope and fleet cohort is not unanimous",
+                        sub.email
+                    );
+                    None
+                }
+            },
+            PlanDetect::Err(error) => {
+                eprintln!("Anthropic plan detection failed for {}: {error}", sub.email);
+                None
+            }
+        };
+        if let Some(plan) = detected.filter(|plan| !plan.is_empty()) {
+            let config = authority.clone();
+            let email = sub.email.clone();
+            let stored_plan = plan.clone();
+            let persisted = tokio::task::spawn_blocking(move || {
+                let mut registry = config.connect()?;
+                let updated = registry.set_plan(&email, &stored_plan)?;
+                anyhow::ensure!(
+                    updated == 1,
+                    "subscription disappeared during plan detection"
+                );
+                Ok::<_, anyhow::Error>(())
+            })
+            .await;
+            match persisted {
+                Ok(Ok(())) => {
+                    app.pool.set_plan(&sub.email, &plan);
+                    calibration_plan = plan;
+                }
+                Ok(Err(error)) => eprintln!(
+                    "Anthropic plan persistence failed for {}: {error:#}",
+                    sub.email
+                ),
+                Err(error) => eprintln!(
+                    "Anthropic plan persistence task failed for {}: {error}",
+                    sub.email
+                ),
+            }
+        }
+    }
     match poll_sub(&client, &app.cfg, &sub.token, &ua, &sub.email).await {
         Some(r) => {
             app.pool.set_util(
@@ -430,10 +485,10 @@ async fn probe(
             );
             if let Some(billing) = &app.billing {
                 let observed_at = pool::now();
-                let plan = if sub.plan.trim().is_empty() {
+                let plan = if calibration_plan.is_empty() {
                     "unknown"
                 } else {
-                    &sub.plan
+                    &calibration_plan
                 };
                 for (kind, duration, quota, resets_at) in [
                     ("5h", 300, r.quota5h, r.reset5h),
@@ -614,8 +669,9 @@ pub async fn persist_loop(
     }
 }
 
-/// Событийный liveness-поллер: probe-ит созревшие подписки конкурентно, затем спит РОВНО до
-/// ближайшего due-времени (или до `poke` при изменении флота). Фиксированного тика нет.
+/// Событийный backend-поллер: probe-ит созревшие подписки конкурентно, затем спит РОВНО до
+/// ближайшего due-времени (или до `poke` при изменении флота/post-turn evidence). Фиксированного
+/// тика нет.
 pub async fn poll_loop(
     app: AppState,
     authority: registry::authority::AuthorityConfig,

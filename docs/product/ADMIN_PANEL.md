@@ -133,10 +133,13 @@ GPT-блок `/subscriptions` — компактная операторская 
 
 ## Claude и Gemini capacity boards
 
-Claude- и Gemini-блоки `/subscriptions` используют ту же компактную операторскую композицию:
-одна строка ёмкости, таблицы токенов/тарифов и аккаунты с quota progress-bar и reset. Старые
-StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране не
-выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
+Claude-блок `/subscriptions` намеренно оставляет только одну компактную таблицу аккаунтов: bounded
+email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
+Workload evidence, token-only capacity, model profitability и локальный summary strip в Claude-блоке
+не выводятся: главные fleet totals уже находятся в едином control-room выше, а оператору внутри
+Claude нужны только окна конкретных подписок. Gemini сохраняет собственные quota/token детали.
+Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
+не выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
 символа local-part без домена.
 
 Над деталями расположен единый control-room из трёх карточек Claude/GPT/Gemini. В каждой только
@@ -147,21 +150,15 @@ cache/model/token идут ниже. Claude-карточка вместо лож
 
 Claude строится из `/capacity`:
 
-- `window_totals` и `available_nano` — decimal nanoUSD strings; 5ч/7д strip и token-only capacity
-  считаются через BigInt. `conversion_models` содержит authoritative Standard/Fast ставки metering
-  для input, cache read, cache write 5м/1ч и output плюс отдельный Web Search SKU;
-- строки profitability сортируются по максимальному официальному `$ / 1M токенов`. Это рейтинг
-  выручки на токен при продаже по API-тарифу, а не обещание разной маржи на один и тот же доллар
-  откалиброванной ёмкости;
-- 5ч API-dollar remaining — главный показатель strip и отдельный акцентный столбец каждой
-  подписки рядом с 5ч quota/reset; полная ёмкость окна выводится компактной строкой `из $…`.
+- `window_totals` и `available_nano` — decimal nanoUSD strings для общего control-room;
+  `conversion_models` остаётся backend-каталогом authoritative Standard/Fast ставок metering;
+- 5ч API-dollar remaining — акцентный столбец каждой подписки рядом с 5ч quota/reset; полная
+  ёмкость окна выводится компактной строкой `из $…`.
   7д remaining/ёмкость остаются соседним сравнительным столбцом. Таблица также оставляет masked
   email/plan и routing state. Никакой prior не подставляется: до exact evidence выводится
   `ждём данные`, при stale/missing snapshot или pending/degraded FIFO remaining остаётся `—`;
-- сразу после аккаунтов идёт фактическая workload-таблица Claude: masked email, model/tier/geo,
-  request count, input/cache-read/cache-write/output/search tokens и exact API-$ contribution.
-  Строки сортируются по `api_total_nanousd` убыванию. Затем показываются token-only capacity и
-  profitability, также по убыванию официальной продажной ставки.
+- `calibration_evidence` и `conversion_models` продолжают приходить с backend как audit/calculation
+  contract, но основной Claude UI их не разворачивает в дополнительные таблицы.
 
 Gemini строится из `/gemini-subs` и сохраняет provider-specific семантику:
 

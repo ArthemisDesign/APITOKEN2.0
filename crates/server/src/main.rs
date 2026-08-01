@@ -1475,7 +1475,7 @@ async fn serve() -> Result<()> {
                 owner.clone(),
                 poke.clone(),
             ));
-            eprintln!("поллер лимитов: событийный (liveness-only)");
+            eprintln!("поллер лимитов: событийный (liveness + post-turn calibration)");
         }
         // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
         let mdir = std::path::Path::new(&s.db_path)

@@ -168,12 +168,12 @@ export default function SubsPage() {
         <section className="subscription-provider-group provider-group-claude">
           <header className="subscription-provider-head">
             <div><span>01 · Claude</span><h2>Аккаунты и окна</h2></div>
-            <b>API-$ · модели · cache</b>
+            <b>API-$ · 5ч / 7д</b>
           </header>
           {derived.claudeCapacityDown ? (
             <div className="tcard"><div className="empty">/capacity не отвечает</div></div>
           ) : (
-            <ClaudeCapacityBoard response={derived.capacity!} showSummary={false} />
+            <ClaudeCapacityBoard response={derived.capacity!} />
           )}
         </section>
 
