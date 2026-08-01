@@ -50,19 +50,10 @@ const copy = {
     errors: "Errors",
     title: "Connect any model",
     lead: "One API key for every available model. Your AI agent configures and verifies the connection.",
-    openKeys: "Get an API key",
-    agentEyebrow: "For Your Agent",
-    agentTitle: "Connect models in one instruction",
-    agentLead: "Copy → paste into your agent → provide the API key when asked.",
-    agentPrompt: `Read ${AGENT_GUIDE_URL} and follow the instructions to connect this project to apiToken.sale. Detect my operating system, shell, runtime, and client or SDK; choose the right API surface and an available model; ask for the sk-pool key only if it is not already stored in a secure environment variable; make the smallest required changes; and run the real verification request from the guide. Never print, log, or commit the key, and do not change unrelated files. If anything fails, diagnose it with the guide's error table and explain the result in plain language.`,
+    agentPrompt: `Read ${AGENT_GUIDE_URL} and follow the instructions to connect this project to apiToken.sale.`,
     copyAgent: "Copy instruction",
     agentCopied: "Instruction copied",
-    openAgentGuide: "Guide",
-    agentSteps: [
-      "Detects your setup",
-      "Selects the right model",
-      "Verifies the request",
-    ],
+    openAgentGuide: "Open the guide",
     supportTitle: "Connection help",
     supportLead: "IDE, SDK, endpoint, models, and request errors.",
     openSupport: "Telegram",
@@ -116,19 +107,10 @@ const copy = {
     errors: "Ошибки",
     title: "Подключение моделей",
     lead: "Один API‑ключ — все доступные модели. AI‑агент сам настроит и проверит подключение.",
-    openKeys: "Получить API‑ключ",
-    agentEyebrow: "Для вашего AI‑агента",
-    agentTitle: "Подключите модели одной инструкцией",
-    agentLead: "Скопируйте → вставьте агенту → передайте API‑ключ по запросу.",
-    agentPrompt: `Прочитай ${AGENT_GUIDE_URL} и следуй инструкции, чтобы подключить этот проект к apiToken.sale. Определи мою операционную систему, оболочку, рантайм и клиент или SDK; выбери правильную API‑поверхность и доступную модель; запроси ключ sk-pool-…, только если его нет в безопасной переменной окружения; внеси минимальные изменения и выполни реальную проверочную заявку из гайда. Не показывай ключ в логах, не коммить его и не меняй посторонние файлы. Если что‑то не сработает, разбери причину по таблице ошибок гайда и объясни результат простыми словами.`,
+    agentPrompt: `Прочитай ${AGENT_GUIDE_URL} и следуй инструкциям, чтобы подключить этот проект к apiToken.sale.`,
     copyAgent: "Скопировать",
     agentCopied: "Инструкция скопирована",
-    openAgentGuide: "Инструкция",
-    agentSteps: [
-      "Определит вашу среду",
-      "Выберет нужную модель",
-      "Проверит подключение",
-    ],
+    openAgentGuide: "Открыть инструкцию",
     supportTitle: "Помощь с подключением",
     supportLead: "IDE, SDK, endpoint, модели и ошибки запросов.",
     openSupport: "Telegram",
@@ -228,21 +210,11 @@ export function DocsPortal() {
 
         <section className="docs-section docs-connect-section" id="agent-setup">
           <article className="docs-agent-card ym-hide-content">
-            <div className="docs-agent-top">
-              <div className="docs-agent-heading">
-                <span className="docs-agent-eyebrow">{t.agentEyebrow}</span>
-                <h2>{t.agentTitle}</h2>
-                <p>{t.agentLead}</p>
-              </div>
-              <div className="docs-agent-actions">
-                <CopyControl className="docs-agent-copy" withIcon value={t.agentPrompt} label={t.copyAgent} copiedLabel={t.agentCopied} />
-                <a className="btn btn-ghost docs-guide-link" href={AGENT_GUIDE_URL} target="_blank" rel="noreferrer"><GuideIcon />{t.openAgentGuide}</a>
-              </div>
-            </div>
-            <p className="docs-agent-prompt">{t.agentPrompt}</p>
-            <div className="docs-agent-bottom">
-              <ul className="docs-agent-points">{t.agentSteps.map((step) => <li key={step}><CheckIcon />{step}</li>)}</ul>
-              <Link href={localeHref("/dashboard?view=keys", language)}>{t.openKeys}<ArrowIcon /></Link>
+            <InfoCircleIcon />
+            <div className="docs-agent-chip">
+              <p className="docs-agent-prompt" title={t.agentPrompt}>{t.agentPrompt}</p>
+              <AgentCopyButton prompt={t.agentPrompt} label={t.copyAgent} copiedLabel={t.agentCopied} />
+              <a className="docs-agent-chip-btn" href={AGENT_GUIDE_URL} target="_blank" rel="noreferrer" aria-label={t.openAgentGuide} title={t.openAgentGuide}><GuideIcon /></a>
             </div>
           </article>
         </section>
@@ -278,7 +250,7 @@ export function DocsPortal() {
 
         <section className="docs-section" id="caching">
           <div className="docs-section-heading"><span>05</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
-          <div className="docs-two-col">
+          <div className="docs-cache-stack">
             <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
             <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
           </div>
@@ -303,16 +275,16 @@ function BrandMark() {
   return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
 }
 
-function CopyControl({ value, label, copiedLabel, className = "", withIcon = false }: { value: string; label: string; copiedLabel: string; className?: string; withIcon?: boolean }) {
+function AgentCopyButton({ prompt, label, copiedLabel }: { prompt: string; label: string; copiedLabel: string }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(value);
+    await navigator.clipboard.writeText(prompt);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_200);
   }
 
-  return <button className={`btn btn-ghost btn-sm docs-copy ${className}`.trim()} type="button" onClick={handleCopy}>{withIcon && <CopyIcon copied={copied} />}<span>{copied ? copiedLabel : label}</span></button>;
+  return <button className="docs-agent-chip-btn" type="button" aria-label={copied ? copiedLabel : label} title={copied ? copiedLabel : label} onClick={handleCopy}><CopyIcon copied={copied} /></button>;
 }
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
@@ -363,12 +335,8 @@ function GuideIcon() {
   return <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5v-17Z" /><path d="M5 4.5v17M9 6h7M9 10h7" /></svg>;
 }
 
-function ArrowIcon() {
-  return <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
-}
-
-function CheckIcon() {
-  return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>;
+function InfoCircleIcon() {
+  return <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2" /><path d="M12 11v5" /><circle cx="12" cy="7.8" r=".4" fill="currentColor" /></svg>;
 }
 
 function TelegramIcon() {

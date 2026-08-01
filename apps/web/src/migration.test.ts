@@ -238,7 +238,7 @@ describe("completed Next.js migration", () => {
     const dynamicRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     expect(docs).toContain("docs-layout");
     expect(docs).toContain("navigator.clipboard.writeText");
-    expect(docs).toContain('agentEyebrow: "For Your Agent"');
+    expect(docs).toContain("docs-agent-chip");
     expect(docs).toContain('copyAgent: "Скопировать"');
     expect(docs).toContain('className="docs-agent-prompt"');
     expect(docs).toContain("https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md");
