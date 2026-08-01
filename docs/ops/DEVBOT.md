@@ -167,24 +167,33 @@ resolved идёт отдельным сообщением всегда (важн
 
 ### 4.2 Деплой-веха
 
-Одно редактируемое сообщение на SHA в топике 🚀 Deploys:
+Одно редактируемое сообщение на SHA в топике 🚀 Deploys. Пока деплой идёт:
 
 ```
 🚀 <b>Deploy</b> <code>1bd14c3</code> — feat(registry): expand provider calibration…
-✅ tests · ✅ migration · 🔄 engine · ⏳ backend · ⏳ sales · ⏳ openkeys · ⏳ admin
-Started: 13:44 · 👤 3xcalibur @3xcalibur-tech · <a href="{commit url}">commit</a>
+👤 <b>3xcalibur @3xcalibur-tech</b> · <i>Started 13:44</i> · <a href="{commit url}">commit</a>
+✅ tests · ✅ migration · 🔄 engine · ⏳ backend
+⏳ sales · ⏳ openkeys · ⏳ admin
 ```
 
 👤 — автор коммита: git author name, плюс `@login`, когда email коммита привязан к
 GitHub-аккаунту (для агентских адресов GitHub отдаёт `author: null` — остаётся git-имя).
+Чеклист — две фиксированные строки 4+3, чтобы перенос не рвал фазы посередине.
 
 Каждый фазовый статус — правка этого сообщения (счётчик правок не ограничен). Финал по
-зелёному `deploy/watchdog`: заголовок меняется на `✅ <b>Deployed</b>`, все фазы без явного
-failure становятся ✅ (зелёный watchdog означает, что прошли все лейны, включая те, чей
-последний видимый статус ещё 🔄/⏳), футер получает `done in {длительность}`. Карантин:
-заголовок `❌ <b>Deploy failed</b>` + отдельное сообщение в 🚨 Critical с автором, фазой и
-первыми ~500 символами причины (`wd_die`-строка из journald, этап 3; до этапа 3 — только
-фаза и ссылка на статус).
+зелёному `deploy/watchdog` — компактная сводка без промежуточных фаз:
+
+```
+✅ <b>Deployed</b> <code>1bd14c3</code> — feat(registry): expand provider calibration…
+👤 <b>3xcalibur @3xcalibur-tech</b> · <i>done in 12m</i> · <a href="{commit url}">commit</a>
+```
+
+Состояние при этом остаётся правдивым: все фазы без явного failure помечаются success
+(зелёный watchdog означает, что прошли все лейны, включая те, чей последний видимый статус
+ещё 🔄/⏳). Карантин: заголовок `❌ <b>Deploy failed</b>`, чеклист СОХРАНЯЕТСЯ (это
+диагностика) + строка упавшей фазы + отдельное сообщение в 🚨 Critical с автором и первыми
+~500 символами причины (`wd_die`-строка из journald, этап 3; до этапа 3 — только фаза и
+ссылка на статус).
 
 ### 4.3 Дедупликация и сворачивание
 

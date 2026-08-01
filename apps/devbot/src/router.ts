@@ -229,22 +229,30 @@ export class Router {
 
   private renderDeploy(deploy: DeployState, finished?: { ok: boolean; durationMs: number }): string {
     const short = deploy.sha.slice(0, 7);
-    const checklist = DEPLOY_PHASES
-      .map((phase) => `${phaseIcon(deploy.phases[phase])} ${phase}`)
-      .join(" · ");
+    const title = escapeHtml(truncate(deploy.title, 120));
     // Финальное состояние читается с первого взгляда по заголовку, а не только по футеру.
     const header = finished
-      ? `${finished.ok ? "✅ <b>Deployed</b>" : "❌ <b>Deploy failed</b>"} <code>${escapeHtml(short)}</code> — ${escapeHtml(truncate(deploy.title, 120))}`
-      : `🚀 <b>Deploy</b> <code>${escapeHtml(short)}</code> — ${escapeHtml(truncate(deploy.title, 120))}`;
-    const lines = [header, checklist];
-    let footer = `Started: ${fmtTime(deploy.startedAt)}`;
-    if (deploy.author) footer += ` · 👤 ${escapeHtml(deploy.author)}`;
-    footer += ` · <a href="${this.commitUrl(deploy.sha)}">commit</a>`;
-    if (deploy.failedPhase) lines.push(`❌ failed phase: <b>${escapeHtml(deploy.failedPhase)}</b>`);
-    if (finished) {
-      footer += ` · ${finished.ok ? "done" : "failed"} in ${fmtDuration(finished.durationMs)}`;
+      ? `${finished.ok ? "✅ <b>Deployed</b>" : "❌ <b>Deploy failed</b>"} <code>${escapeHtml(short)}</code> — ${title}`
+      : `🚀 <b>Deploy</b> <code>${escapeHtml(short)}</code> — ${title}`;
+    const author = deploy.author ? `👤 <b>${escapeHtml(deploy.author)}</b>` : undefined;
+    const commitLink = `<a href="${this.commitUrl(deploy.sha)}">commit</a>`;
+    const text = (part: string | undefined): part is string => part !== undefined;
+
+    // Успешный финал: промежуточные фазы не нужны — компактная сводка из двух строк.
+    if (finished?.ok) {
+      const meta = [author, `<i>done in ${fmtDuration(finished.durationMs)}</i>`, commitLink].filter(text);
+      return [header, meta.join(" · ")].join("\n");
     }
-    lines.push(footer);
+
+    const meta = [
+      author,
+      finished ? `<i>failed in ${fmtDuration(finished.durationMs)}</i>` : `<i>Started ${fmtTime(deploy.startedAt)}</i>`,
+      commitLink,
+    ].filter(text);
+    // Чеклист — две фиксированные строки 4+3, чтобы перенос не рвал фазы посередине.
+    const icons = DEPLOY_PHASES.map((phase) => `${phaseIcon(deploy.phases[phase])} ${phase}`);
+    const lines = [header, meta.join(" · "), icons.slice(0, 4).join(" · "), icons.slice(4).join(" · ")];
+    if (deploy.failedPhase) lines.push(`❌ failed phase: <b>${escapeHtml(deploy.failedPhase)}</b>`);
     return lines.join("\n");
   }
 
