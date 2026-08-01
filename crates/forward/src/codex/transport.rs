@@ -78,9 +78,26 @@ impl ProcessError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexRateLimitWindow {
+    /// Canonical provider utilisation in 10^-8 fraction units. This is parsed from the wire
+    /// decimal without binary floating point and is the calibration/routing source of truth.
+    pub used_fraction_units: i64,
+    /// Rounded whole-percent compatibility projection for older status/health consumers.
     pub used_percent: i64,
     pub window_duration_mins: Option<i64>,
     pub resets_at: Option<i64>,
+}
+
+pub const RATE_LIMIT_FRACTION_SCALE: i64 = 100_000_000;
+const RATE_LIMIT_PERCENT_SCALE: i64 = RATE_LIMIT_FRACTION_SCALE / 100;
+
+impl CodexRateLimitWindow {
+    pub fn used_fraction(&self) -> f64 {
+        self.used_fraction_units as f64 / RATE_LIMIT_FRACTION_SCALE as f64
+    }
+
+    pub fn used_percent_value(&self) -> f64 {
+        self.used_fraction_units as f64 / RATE_LIMIT_PERCENT_SCALE as f64
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -656,10 +673,11 @@ async fn note_header_rate_limits(
             .map(str::to_string)
     };
     let window = |prefix: &str| -> Option<CodexRateLimitWindow> {
-        let used = get(&format!("x-codex-{prefix}-used-percent"))
-            .and_then(|value| value.parse::<f64>().ok())?;
+        let used_fraction_units = get(&format!("x-codex-{prefix}-used-percent"))
+            .and_then(|value| parse_used_percent_units(&value))?;
         Some(CodexRateLimitWindow {
-            used_percent: used.round() as i64,
+            used_fraction_units,
+            used_percent: rounded_percent(used_fraction_units),
             window_duration_mins: get(&format!("x-codex-{prefix}-window-minutes"))
                 .and_then(|value| value.parse::<i64>().ok()),
             resets_at: get(&format!("x-codex-{prefix}-reset-at"))
@@ -700,9 +718,13 @@ fn parse_usage_response(value: &Value) -> Option<CodexRateLimits> {
         .get("rate_limit")
         .or_else(|| value.get("rate_limits"))?;
     let window_of = |window: &Value| -> Option<CodexRateLimitWindow> {
-        let used = window.get("used_percent").and_then(Value::as_f64)?;
+        let used_fraction_units = window
+            .get("used_percent")?
+            .as_number()
+            .and_then(|number| parse_used_percent_units(&number.to_string()))?;
         Some(CodexRateLimitWindow {
-            used_percent: used.round() as i64,
+            used_fraction_units,
+            used_percent: rounded_percent(used_fraction_units),
             window_duration_mins: window
                 .get("limit_window_seconds")
                 .and_then(Value::as_i64)
@@ -748,6 +770,82 @@ fn parse_usage_response(value: &Value) -> Option<CodexRateLimits> {
         reached,
         observed_at: pool::now(),
     })
+}
+
+/// Parse a provider percentage into 10^-8 fraction units (10^-6 percentage points) without f64.
+/// More precise decimals are rounded half-up to the durable resolution. Scientific notation is
+/// accepted because serde_json canonically renders small valid JSON numbers that way; hostile
+/// leading signs, malformed digits and values outside 0..=100 fail closed instead of being clamped.
+fn parse_used_percent_units(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.starts_with(['+', '-']) {
+        return None;
+    }
+    let mut exponent_parts = raw.split(['e', 'E']);
+    let mantissa = exponent_parts.next()?;
+    let exponent = exponent_parts
+        .next()
+        .map_or(Some(0), parse_decimal_exponent)?;
+    if exponent_parts.next().is_some() {
+        return None;
+    }
+
+    let mut parts = mantissa.split('.');
+    let whole = parts.next()?;
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let coefficient = format!("{whole}{fraction}").parse::<i128>().ok()?;
+    let fraction_digits = i32::try_from(fraction.len()).ok()?;
+    let shift = exponent.checked_add(6)?.checked_sub(fraction_digits)?;
+    let units = if shift >= 0 {
+        if coefficient == 0 {
+            0
+        } else {
+            coefficient.checked_mul(10i128.checked_pow(shift as u32)?)?
+        }
+    } else {
+        let divisor_power = shift.unsigned_abs();
+        if divisor_power > 38 {
+            0
+        } else {
+            let divisor = 10i128.checked_pow(divisor_power)?;
+            let quotient = coefficient / divisor;
+            let remainder = coefficient % divisor;
+            quotient.checked_add(i128::from(remainder >= divisor / 2))?
+        }
+    };
+    i64::try_from(units)
+        .ok()
+        .filter(|units| (0..=RATE_LIMIT_FRACTION_SCALE).contains(units))
+}
+
+fn parse_decimal_exponent(raw: &str) -> Option<i32> {
+    let (negative, digits) = if let Some(rest) = raw.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = raw.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, raw)
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = digits.parse::<i32>().ok()?;
+    if negative {
+        value.checked_neg()
+    } else {
+        Some(value)
+    }
+}
+
+fn rounded_percent(used_fraction_units: i64) -> i64 {
+    used_fraction_units.saturating_add(RATE_LIMIT_PERCENT_SCALE / 2) / RATE_LIMIT_PERCENT_SCALE
 }
 
 /// Convert upstream snake_case usage into the camelCase shape the runner's `CodexUsage` parser
@@ -1076,6 +1174,41 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_percent_parser_is_exact_bounded_and_fixed_point() {
+        assert_eq!(parse_used_percent_units("0"), Some(0));
+        assert_eq!(parse_used_percent_units("42.1256784"), Some(42_125_678));
+        assert_eq!(parse_used_percent_units("42.1256785"), Some(42_125_679));
+        assert_eq!(parse_used_percent_units("99.9999999"), Some(100_000_000));
+        assert_eq!(parse_used_percent_units("100.000001"), None);
+        assert_eq!(parse_used_percent_units("1e-6"), Some(1));
+        assert_eq!(parse_used_percent_units("5e-7"), Some(1));
+        assert_eq!(parse_used_percent_units("4e-7"), Some(0));
+        assert_eq!(parse_used_percent_units("1e2"), Some(100_000_000));
+        let smallest_durable_json_number = json!(0.000001)
+            .as_number()
+            .expect("JSON number")
+            .to_string();
+        assert_eq!(
+            parse_used_percent_units(&smallest_durable_json_number),
+            Some(1)
+        );
+        for invalid in [
+            "",
+            "-1",
+            "+1",
+            "1e",
+            "e1",
+            "1e999999999999",
+            "NaN",
+            "101",
+            ".5",
+            "1.2.3",
+        ] {
+            assert_eq!(parse_used_percent_units(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
     fn model_catalog_preserves_current_and_legacy_fast_capabilities() {
         let catalog = parse_model_catalog(&json!({
             "models": [
@@ -1114,12 +1247,16 @@ mod tests {
         let value = json!({
             "plan_type": "plus",
             "rate_limit": {
-                "primary": {"used_percent": 42.0, "window_minutes": 300, "resets_in_seconds": 60},
+                "primary": {"used_percent": 42.1256785, "window_minutes": 300, "resets_in_seconds": 60},
                 "secondary": {"used_percent": 6.0, "window_minutes": 10080, "resets_at": 4_102_444_800i64}
             }
         });
         let limits = parse_usage_response(&value).unwrap();
         assert_eq!(limits.primary.as_ref().unwrap().used_percent, 42);
+        assert_eq!(
+            limits.primary.as_ref().unwrap().used_fraction_units,
+            42_125_679
+        );
         assert!(limits.primary.as_ref().unwrap().resets_at.unwrap() > 0);
         assert_eq!(
             limits.secondary.as_ref().unwrap().resets_at,
@@ -1498,7 +1635,7 @@ mod tests {
             if first.starts_with("GET /wham/usage") {
                 (
                     200,
-                    r#"{"plan_type":"plus","rate_limit":{"primary":{"used_percent":42.0,"window_minutes":300,"resets_in_seconds":3600},"secondary":{"used_percent":6.0,"window_minutes":10080,"resets_at":4102444800}}}"#.to_string(),
+                    r#"{"plan_type":"plus","rate_limit":{"primary":{"used_percent":42.1256785,"window_minutes":300,"resets_in_seconds":3600},"secondary":{"used_percent":6.0,"window_minutes":10080,"resets_at":4102444800}}}"#.to_string(),
                     vec![("content-type", "application/json".to_string())],
                 )
             } else {
@@ -1513,6 +1650,10 @@ mod tests {
         let transport = ProfileTransport::new(test_config(&base), None).unwrap();
         let limits = transport.fetch_usage(&test_auth()).await.unwrap();
         assert_eq!(limits.primary.as_ref().unwrap().used_percent, 42);
+        assert_eq!(
+            limits.primary.as_ref().unwrap().used_fraction_units,
+            42_125_679
+        );
         assert_eq!(
             limits.secondary.as_ref().unwrap().resets_at,
             Some(4_102_444_800)
@@ -1545,7 +1686,7 @@ mod tests {
                 body,
                 vec![
                     ("content-type", "text/event-stream".to_string()),
-                    ("x-codex-primary-used-percent", "61".to_string()),
+                    ("x-codex-primary-used-percent", "61.000001".to_string()),
                     ("x-codex-primary-window-minutes", "300".to_string()),
                     ("x-codex-primary-reset-at", "4102444800".to_string()),
                 ],
@@ -1566,6 +1707,10 @@ mod tests {
         let _ = collect(&mut events).await;
         let limits = cell.lock().await.clone().unwrap();
         assert_eq!(limits.primary.as_ref().unwrap().used_percent, 61);
+        assert_eq!(
+            limits.primary.as_ref().unwrap().used_fraction_units,
+            61_000_001
+        );
         assert_eq!(
             limits.primary.as_ref().unwrap().resets_at,
             Some(4_102_444_800)

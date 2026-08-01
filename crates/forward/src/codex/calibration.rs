@@ -1,35 +1,35 @@
 //! Evidence-only calibration of one provider-reported Codex subscription window.
 //!
-//! The provider gives integer utilisation and an explicit duration/reset; the gateway gives exact
-//! official API-price spend in integer nanodollars. One snapshot is only an anchor and therefore
-//! cannot reveal an absolute capacity. The first movement after a cold start or real reset is also
-//! censored because that anchor can have arrived midway through an integer percentage bucket.
-//! Every later high-water movement with settled positive spend contributes to one cumulative
-//! weighted least-squares estimate through the origin:
+//! The provider reports decimal utilisation and an explicit duration/reset. The gateway pairs
+//! that fixed-point snapshot with cumulative exact official-API-price spend for the same opaque
+//! profile. A cold snapshot is only an anchor, and the first movement is censored because that
+//! anchor may have arrived part-way through one quantisation cell. Every later positive movement
+//! with settled positive spend contributes to the realized workload blend:
 //!
-//! `capacity_nano = 100 * Σ(Δused_percent * Δgateway_spend_nano) / Σ(Δused_percent²)`.
+//! `capacity_nano = FRACTION_SCALE * ΣΔspend_nano / ΣΔused_fraction_units`.
 //!
-//! There is deliberately no configured prior, EMA, jump clamp, minimum delta, or foreign-usage
-//! rejection. Evidence survives real resets, restarts and estimator upgrades; lower provider
-//! snapshots stay in the raw log but cannot erase or duplicate accepted intervals.
+//! OpenAI documents that Codex credit consumption varies by model, context, reasoning and tools.
+//! API-dollar capacity is therefore a realized mix, not a fixed subscription nominal. Low/high
+//! retain the observed per-interval workload envelope (including fraction quantisation), while
+//! confidence combines sample maturity, workload stability and resolution. There is no configured
+//! prior, subscription-price assumption, EMA or floating-point money arithmetic.
 
+use anyhow::Context as _;
 use registry::{CodexCalibrationRow, CodexWindowObservation};
 
-pub const ESTIMATOR_VERSION: i64 = 5;
-
-// This is evidence maturity, not a statistical probability. Twenty complete percentage points
-// bound aggregate endpoint quantisation to roughly five percent of covered usage.
-const FULL_EVIDENCE_POINTS: i128 = 20;
+pub const FRACTION_SCALE: i64 = 100_000_000;
+const PERCENT_SCALE: i64 = FRACTION_SCALE / 100;
+pub const ESTIMATOR_VERSION: i64 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
-    MeasuredCumulative,
+    WorkloadBlend,
 }
 
 impl CapacitySource {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::MeasuredCumulative => "measured_cumulative",
+            Self::WorkloadBlend => "workload_blend",
         }
     }
 }
@@ -51,23 +51,19 @@ pub struct WindowCalibration {
 }
 
 impl WindowCalibration {
-    pub fn anchor(
-        home_id: &str,
-        window_duration_mins: i64,
-        resets_at: i64,
-        used_percent: i64,
-        spend_nano: i64,
-        observed_at: i64,
-    ) -> Self {
-        Self {
+    fn anchor(observation: &CodexWindowObservation) -> anyhow::Result<Self> {
+        validate_observation(observation)?;
+        Ok(Self {
             row: CodexCalibrationRow {
-                home_id: home_id.to_owned(),
-                window_duration_mins,
-                resets_at,
-                anchor_used_percent: used_percent.clamp(0, 100),
-                anchor_spend_nano: spend_nano.max(0),
-                used_percent: used_percent.clamp(0, 100),
-                observed_at,
+                home_id: observation.home_id.clone(),
+                window_duration_mins: observation.window_duration_mins,
+                resets_at: observation.resets_at,
+                anchor_used_percent: observation.used_percent,
+                anchor_spend_nano: observation.gateway_spend_nano,
+                used_percent: observation.used_percent,
+                observed_at: observation.observed_at,
+                // Legacy WLS fields stay zero in estimator v6. They remain in storage so the
+                // migration-first rollout is expand-only for the previous binary.
                 sum_used_sq: 0,
                 sum_used_spend_nano: 0,
                 observed_points: 0,
@@ -82,15 +78,20 @@ impl WindowCalibration {
                 last_confidence_bp: 0,
                 last_measured_at: None,
                 anchor_ready: false,
+                anchor_used_fraction_units: observation.used_fraction_units,
+                used_fraction_units: observation.used_fraction_units,
+                observed_fraction_units: 0,
+                observed_spend_nano: 0,
                 estimator_version: ESTIMATOR_VERSION,
                 version: 0,
-                updated_ts: observed_at,
+                updated_ts: observation.observed_at,
             },
-        }
+        })
     }
 
-    pub fn from_row(row: CodexCalibrationRow) -> Self {
-        Self { row }
+    pub fn from_row(row: CodexCalibrationRow) -> anyhow::Result<Self> {
+        validate_row(&row)?;
+        Ok(Self { row })
     }
 
     pub fn into_row(self) -> CodexCalibrationRow {
@@ -110,194 +111,234 @@ impl WindowCalibration {
                 high_nano: self.row.current_high_nano,
                 confidence_bp: self.row.current_confidence_bp,
                 measured_at: self.row.last_measured_at.unwrap_or(self.row.observed_at),
-                source: CapacitySource::MeasuredCumulative,
+                source: CapacitySource::WorkloadBlend,
             })
     }
 
-    pub fn remaining_nano(&self, used_percent: i64) -> Option<i64> {
-        self.estimate().map(|estimate| {
-            let unused = 100i128 - i128::from(used_percent.clamp(0, 100));
-            ((i128::from(estimate.capacity_nano) * unused) / 100).clamp(0, i128::from(i64::MAX))
-                as i64
+    pub fn remaining_nano(&self, used_fraction_units: i64) -> Option<i64> {
+        self.estimate().and_then(|estimate| {
+            remaining_for_capacity(estimate.capacity_nano, used_fraction_units)
         })
     }
 
-    /// Apply a provider snapshot paired with the durable cumulative spend at the same home.
-    pub fn observe(
-        &mut self,
-        resets_at: i64,
-        used_percent: i64,
-        spend_nano: i64,
-        observed_at: i64,
-    ) {
-        let used = used_percent.clamp(0, 100);
-        let spend = spend_nano.max(0);
-        if observed_at <= self.row.observed_at {
-            return;
+    pub fn remaining_low_nano(&self, used_fraction_units: i64) -> Option<i64> {
+        self.estimate().and_then(|estimate| {
+            estimate
+                .low_nano
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
+        })
+    }
+
+    pub fn remaining_high_nano(&self, used_fraction_units: i64) -> Option<i64> {
+        self.estimate().and_then(|estimate| {
+            estimate
+                .high_nano
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
+        })
+    }
+
+    fn observe(&mut self, observation: &CodexWindowObservation) -> anyhow::Result<()> {
+        validate_observation(observation)?;
+        if observation.home_id != self.row.home_id
+            || observation.window_duration_mins != self.row.window_duration_mins
+        {
+            anyhow::bail!("Codex calibration observation identity mismatch");
+        }
+        if observation.observed_at <= self.row.observed_at {
+            return Ok(());
         }
         if self.row.estimator_version != ESTIMATOR_VERSION {
-            return;
-        }
-        let reset_delta = i128::from(resets_at) - i128::from(self.row.resets_at);
-        // The provider derives `resetsAt` independently for every snapshot. It can drift by more
-        // than a minute inside one concrete window, while adjacent windows are one full duration
-        // apart. Half a duration is therefore the stable identity boundary in both directions.
-        let window_identity_boundary_secs =
-            (i128::from(self.row.window_duration_mins.max(1)) * 60 / 2).max(1);
-        if reset_delta >= window_identity_boundary_secs {
-            self.begin_window(resets_at, used, spend, observed_at);
-            return;
-        }
-        // A late snapshot from an older reset is useful raw evidence for diagnosis, but it cannot
-        // move the active window backwards or replace its monotonic high-water anchor.
-        if reset_delta <= -window_identity_boundary_secs {
-            return;
+            anyhow::bail!("Codex calibration estimator version mismatch");
         }
 
-        self.row.observed_at = observed_at;
-        self.row.updated_ts = observed_at;
-        self.row.used_percent = used;
-
-        let delta_used = used - self.row.anchor_used_percent;
-        // Provider snapshots are empirically non-monotonic inside one reset. Only a strictly new
-        // high-water can delimit an interval; a rollback and return to the same high-water must
-        // neither reset cumulative evidence nor count it twice.
-        if delta_used <= 0 || spend < self.row.anchor_spend_nano {
-            return;
+        let reset_delta = i128::from(observation.resets_at) - i128::from(self.row.resets_at);
+        // The provider computes reset_at independently for every snapshot, so one concrete reset
+        // can jitter. Adjacent windows are one full duration apart; half the duration is a stable
+        // identity boundary in either direction.
+        let boundary = (i128::from(self.row.window_duration_mins) * 60 / 2).max(1);
+        if reset_delta >= boundary {
+            self.begin_window(observation);
+            return Ok(());
         }
-        let delta_spend = spend - self.row.anchor_spend_nano;
-        // The provider snapshot and gateway settlement are independent durable streams. A fresh
-        // utilisation percentage can therefore arrive before the requests which caused it have
-        // finished settling. Publishing that transient pair as a real sample creates a false $0
-        // capacity and advances the anchor past the spend. Keep the old anchor until positive
-        // official-price evidence catches up; raw observations are still persisted by the caller.
+        if reset_delta <= -boundary {
+            return Ok(());
+        }
+
+        self.row.observed_at = observation.observed_at;
+        self.row.updated_ts = observation.observed_at;
+        self.row.used_fraction_units = observation.used_fraction_units;
+        self.row.used_percent = observation.used_percent;
+
+        let delta_used = observation.used_fraction_units - self.row.anchor_used_fraction_units;
+        // Same-window snapshots can roll back. Only a new high-water delimits an interval; a
+        // rollback and return to the old high-water cannot erase or duplicate evidence.
+        if delta_used <= 0 || observation.gateway_spend_nano < self.row.anchor_spend_nano {
+            return Ok(());
+        }
+        let delta_spend = observation.gateway_spend_nano - self.row.anchor_spend_nano;
+        // Snapshot and settlement are independent durable streams. Keep the old anchor until
+        // positive spend catches up instead of publishing a transient zero-dollar sample.
         if delta_spend == 0 {
-            return;
+            return Ok(());
         }
 
-        // A cold anchor can be anywhere inside its integer percentage bucket. Advancing once gives
-        // us the first observed bucket boundary, but the preceding spend is right-censored and is
-        // not a complete interval. Persist the new anchor so restarts do not censor repeatedly.
         if !self.row.anchor_ready {
-            self.row.anchor_used_percent = used;
-            self.row.anchor_spend_nano = spend;
+            self.advance_anchor(observation);
             self.row.anchor_ready = true;
-            return;
+            return Ok(());
         }
 
-        let x = i128::from(delta_used);
-        let y = i128::from(delta_spend);
-        self.row.sum_used_sq = saturating_i64(i128::from(self.row.sum_used_sq) + x * x);
-        self.row.sum_used_spend_nano =
-            saturating_i64(i128::from(self.row.sum_used_spend_nano) + x * y);
-        self.row.observed_points = self.row.observed_points.saturating_add(delta_used);
-        self.row.samples = self.row.samples.saturating_add(1);
-        self.row.anchor_used_percent = used;
-        self.row.anchor_spend_nano = spend;
-        self.row.last_measured_at = Some(observed_at);
-        self.recompute();
+        self.update_workload_envelope(delta_used, delta_spend)?;
+        self.row.observed_fraction_units = self
+            .row
+            .observed_fraction_units
+            .checked_add(delta_used)
+            .context("Codex observed fraction overflow")?;
+        self.row.observed_spend_nano = self
+            .row
+            .observed_spend_nano
+            .checked_add(delta_spend)
+            .context("Codex observed spend overflow")?;
+        self.row.observed_points = self.row.observed_fraction_units / PERCENT_SCALE;
+        self.row.samples = self
+            .row
+            .samples
+            .checked_add(1)
+            .context("Codex calibration sample overflow")?;
+        self.advance_anchor(observation);
+        self.row.last_measured_at = Some(observation.observed_at);
+        self.recompute()
     }
 
-    fn begin_window(&mut self, resets_at: i64, used: i64, spend: i64, observed_at: i64) {
-        self.row.resets_at = resets_at;
-        self.row.anchor_used_percent = used;
-        self.row.anchor_spend_nano = spend;
+    fn advance_anchor(&mut self, observation: &CodexWindowObservation) {
+        self.row.anchor_used_fraction_units = observation.used_fraction_units;
+        self.row.anchor_used_percent = observation.used_percent;
+        self.row.anchor_spend_nano = observation.gateway_spend_nano;
+    }
+
+    fn begin_window(&mut self, observation: &CodexWindowObservation) {
+        self.row.resets_at = observation.resets_at;
+        self.advance_anchor(observation);
         self.row.anchor_ready = false;
-        self.row.used_percent = used;
-        self.row.observed_at = observed_at;
-        self.row.updated_ts = observed_at;
+        self.row.used_fraction_units = observation.used_fraction_units;
+        self.row.used_percent = observation.used_percent;
+        self.row.observed_at = observation.observed_at;
+        self.row.updated_ts = observation.observed_at;
     }
 
-    fn recompute(&mut self) {
-        let denominator = i128::from(self.row.sum_used_sq);
-        if denominator <= 0 {
-            return;
-        }
-        let numerator = 100i128 * i128::from(self.row.sum_used_spend_nano);
-        let capacity = round_nonnegative(numerator, denominator);
-        self.row.current_capacity_nano = Some(capacity);
+    fn update_workload_envelope(
+        &mut self,
+        delta_used: i64,
+        delta_spend: i64,
+    ) -> anyhow::Result<()> {
+        let numerator = i128::from(FRACTION_SCALE)
+            .checked_mul(i128::from(delta_spend))
+            .context("Codex workload envelope numerator overflow")?;
+        let low = checked_i64(
+            numerator
+                .checked_div(i128::from(delta_used) + 1)
+                .context("Codex workload low bound overflow")?,
+        )?;
+        self.row.current_low_nano = Some(
+            self.row
+                .current_low_nano
+                .map_or(low, |existing| existing.min(low)),
+        );
 
-        // Internal percentage boundaries telescope across cumulative coverage, leaving roughly
-        // one percentage point of aggregate endpoint quantisation rather than one full point per
-        // sample. A single covered point still has no finite upper bound. `confidence_bp` remains
-        // the wire/storage name for compatibility, but its value is deterministic evidence
-        // maturity: 20 complete percentage points reach 100%, not a probabilistic guarantee.
-        let points = i128::from(self.row.observed_points.max(0));
-        self.row.current_low_nano = Some(saturating_i64(
-            i128::from(capacity) * points / (points + 1).max(1),
-        ));
-        self.row.current_high_nano =
-            (points > 1).then(|| saturating_i64(i128::from(capacity) * points / (points - 1)));
-        self.row.current_confidence_bp =
-            saturating_i64(10_000i128 * points.min(FULL_EVIDENCE_POINTS) / FULL_EVIDENCE_POINTS)
-                .clamp(0, 10_000);
+        let sample_high = if delta_used > 1 {
+            Some(checked_i64(ceil_nonnegative(
+                numerator,
+                i128::from(delta_used) - 1,
+            )?)?)
+        } else {
+            None
+        };
+        self.row.current_high_nano = if self.row.samples == 0 {
+            sample_high
+        } else {
+            match (self.row.current_high_nano, sample_high) {
+                (Some(existing), Some(sample)) => Some(existing.max(sample)),
+                _ => None,
+            }
+        };
+        Ok(())
+    }
+
+    fn recompute(&mut self) -> anyhow::Result<()> {
+        let denominator = i128::from(self.row.observed_fraction_units);
+        if denominator <= 0 {
+            return Ok(());
+        }
+        let numerator = i128::from(FRACTION_SCALE)
+            .checked_mul(i128::from(self.row.observed_spend_nano))
+            .context("Codex capacity numerator overflow")?;
+        self.row.current_capacity_nano =
+            Some(checked_i64(round_nonnegative(numerator, denominator)?)?);
+
+        // Confidence is evidence maturity, not a statistical probability. More samples increase
+        // maturity, diverse workload regimes reduce stability, and fine movement reduces endpoint
+        // quantisation doubt.
+        let movement = i128::from(self.row.observed_fraction_units);
+        let samples = i128::from(self.row.samples);
+        let maturity_bp = ratio_bp(samples, samples + 2)?;
+        let stability_bp = match (self.row.current_low_nano, self.row.current_high_nano) {
+            (Some(low), Some(high)) if high > 0 => ratio_bp(i128::from(low), i128::from(high))?,
+            _ => 0,
+        };
+        let quantisation_bp = ratio_bp(movement, movement + 2 * samples)?;
+        let confidence_bp = maturity_bp
+            .checked_mul(stability_bp)
+            .and_then(|value| value.checked_div(10_000))
+            .and_then(|value| value.checked_mul(quantisation_bp))
+            .and_then(|value| value.checked_div(10_000))
+            .context("Codex confidence overflow")?;
+        self.row.current_confidence_bp = checked_i64(confidence_bp)?.clamp(0, 10_000);
+        Ok(())
     }
 }
 
 pub(crate) fn apply_observation(
     existing: Option<CodexCalibrationRow>,
     observation: &CodexWindowObservation,
-) -> CodexCalibrationRow {
+) -> anyhow::Result<CodexCalibrationRow> {
     let existing_version = existing.as_ref().map_or(0, |row| row.version);
     let mut calibration = match existing {
-        Some(row) if row.estimator_version == ESTIMATOR_VERSION => WindowCalibration::from_row(row),
-        _ => WindowCalibration::anchor(
-            &observation.home_id,
-            observation.window_duration_mins,
-            observation.resets_at,
-            observation.used_percent,
-            observation.gateway_spend_nano,
-            observation.observed_at,
-        ),
+        Some(row) if row.estimator_version == ESTIMATOR_VERSION => {
+            WindowCalibration::from_row(row)?
+        }
+        _ => WindowCalibration::anchor(observation)?,
     };
     calibration.row.version = existing_version;
-    if calibration.row().observed_at < observation.observed_at {
-        calibration.observe(
-            observation.resets_at,
-            observation.used_percent,
-            observation.gateway_spend_nano,
-            observation.observed_at,
-        );
+    if calibration.row.observed_at < observation.observed_at {
+        calibration.observe(observation)?;
     }
-    calibration.into_row()
+    Ok(calibration.into_row())
 }
 
-/// Replay immutable raw evidence when the stored estimator semantics change.
-pub(crate) fn replay_observations(
+fn replay_observations(
     observations: &[CodexWindowObservation],
     version: i64,
-) -> Option<CodexCalibrationRow> {
-    let first = observations.first()?;
-    let mut calibration = WindowCalibration::anchor(
-        &first.home_id,
-        first.window_duration_mins,
-        first.resets_at,
-        first.used_percent,
-        first.gateway_spend_nano,
-        first.observed_at,
-    );
+) -> anyhow::Result<Option<CodexCalibrationRow>> {
+    let Some(first) = observations.first() else {
+        return Ok(None);
+    };
+    let mut calibration = WindowCalibration::anchor(first)?;
     calibration.row.version = version;
     for observation in &observations[1..] {
         if observation.home_id == first.home_id
             && observation.window_duration_mins == first.window_duration_mins
         {
-            calibration.observe(
-                observation.resets_at,
-                observation.used_percent,
-                observation.gateway_spend_nano,
-                observation.observed_at,
-            );
+            calibration.observe(observation)?;
         }
     }
-    Some(calibration.into_row())
+    Ok(Some(calibration.into_row()))
 }
 
-/// Increment normally, or rebuild poisoned/obsolete derived state from its raw source of truth.
 pub(crate) fn apply_observation_with_history(
     existing: Option<CodexCalibrationRow>,
     history: &[CodexWindowObservation],
     observation: &CodexWindowObservation,
-) -> CodexCalibrationRow {
+) -> anyhow::Result<CodexCalibrationRow> {
     if existing
         .as_ref()
         .is_none_or(|row| row.estimator_version == ESTIMATOR_VERSION)
@@ -305,19 +346,124 @@ pub(crate) fn apply_observation_with_history(
         return apply_observation(existing, observation);
     }
     let version = existing.as_ref().map_or(0, |row| row.version);
-    let rebuilt = replay_observations(history, version);
+    let rebuilt = replay_observations(history, version)?;
     apply_observation(rebuilt, observation)
 }
 
-fn round_nonnegative(numerator: i128, denominator: i128) -> i64 {
-    if numerator <= 0 || denominator <= 0 {
-        return 0;
+fn validate_observation(observation: &CodexWindowObservation) -> anyhow::Result<()> {
+    if observation.home_id.is_empty()
+        || observation.window_duration_mins <= 0
+        || observation.resets_at <= 0
+        || observation.observed_at <= 0
+        || !(0..=FRACTION_SCALE).contains(&observation.used_fraction_units)
+        || observation.used_percent != rounded_percent(observation.used_fraction_units)
+        || observation.gateway_spend_nano < 0
+    {
+        anyhow::bail!("invalid Codex calibration observation");
     }
-    saturating_i64((numerator + denominator / 2) / denominator)
+    Ok(())
 }
 
-fn saturating_i64(value: i128) -> i64 {
-    value.clamp(0, i128::from(i64::MAX)) as i64
+fn validate_row(row: &CodexCalibrationRow) -> anyhow::Result<()> {
+    if row.home_id.is_empty()
+        || row.window_duration_mins <= 0
+        || row.resets_at <= 0
+        || row.observed_at <= 0
+        || !(0..=FRACTION_SCALE).contains(&row.anchor_used_fraction_units)
+        || !(0..=FRACTION_SCALE).contains(&row.used_fraction_units)
+        || row.anchor_used_percent != rounded_percent(row.anchor_used_fraction_units)
+        || row.used_percent != rounded_percent(row.used_fraction_units)
+        || row.anchor_spend_nano < 0
+        || row.observed_fraction_units < 0
+        || row.observed_spend_nano < 0
+        || row.samples < 0
+        || row.sum_used_sq != 0
+        || row.sum_used_spend_nano != 0
+        || row.current_capacity_nano.is_some_and(|value| value < 0)
+        || row.current_low_nano.is_some_and(|value| value < 0)
+        || row.current_high_nano.is_some_and(|value| value < 0)
+        || row
+            .current_low_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(low, capacity)| low > capacity)
+        || row
+            .current_high_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(high, capacity)| high < capacity)
+        || row
+            .current_low_nano
+            .zip(row.current_high_nano)
+            .is_some_and(|(low, high)| low > high)
+        || !(0..=10_000).contains(&row.current_confidence_bp)
+        || row.last_measured_at.is_some_and(|value| value <= 0)
+        || row.estimator_version != ESTIMATOR_VERSION
+        || row.version < 0
+        || row.samples == 0
+            && (row.observed_fraction_units != 0
+                || row.observed_spend_nano != 0
+                || row.current_capacity_nano.is_some()
+                || row.current_low_nano.is_some()
+                || row.current_high_nano.is_some()
+                || row.current_confidence_bp != 0
+                || row.last_measured_at.is_some())
+        || row.samples > 0
+            && (row.observed_fraction_units <= 0
+                || row.observed_spend_nano <= 0
+                || row.current_capacity_nano.is_none()
+                || row.current_low_nano.is_none()
+                || row.last_measured_at.is_none()
+                || row.current_high_nano.is_none() && row.current_confidence_bp != 0)
+    {
+        anyhow::bail!("invalid Codex calibration row");
+    }
+    Ok(())
+}
+
+fn round_nonnegative(numerator: i128, denominator: i128) -> anyhow::Result<i128> {
+    if numerator <= 0 || denominator <= 0 {
+        return Ok(0);
+    }
+    numerator
+        .checked_add(denominator / 2)
+        .and_then(|value| value.checked_div(denominator))
+        .context("Codex capacity rounding overflow")
+}
+
+fn ceil_nonnegative(numerator: i128, denominator: i128) -> anyhow::Result<i128> {
+    if numerator <= 0 || denominator <= 0 {
+        return Ok(0);
+    }
+    numerator
+        .checked_add(denominator - 1)
+        .and_then(|value| value.checked_div(denominator))
+        .context("Codex capacity ceiling overflow")
+}
+
+fn ratio_bp(numerator: i128, denominator: i128) -> anyhow::Result<i128> {
+    if numerator <= 0 || denominator <= 0 {
+        return Ok(0);
+    }
+    10_000i128
+        .checked_mul(numerator)
+        .and_then(|value| value.checked_div(denominator))
+        .map(|value| value.clamp(0, 10_000))
+        .context("Codex confidence ratio overflow")
+}
+
+fn remaining_for_capacity(capacity_nano: i64, used_fraction_units: i64) -> Option<i64> {
+    let unused = i128::from(FRACTION_SCALE - used_fraction_units.clamp(0, FRACTION_SCALE));
+    let remaining = i128::from(capacity_nano)
+        .checked_mul(unused)
+        .and_then(|value| value.checked_div(i128::from(FRACTION_SCALE)))?;
+    i64::try_from(remaining).ok()
+}
+
+fn checked_i64(value: i128) -> anyhow::Result<i64> {
+    i64::try_from(value).context("Codex calibration result exceeds bigint")
+}
+
+fn rounded_percent(units: i64) -> i64 {
+    units.saturating_add(PERCENT_SCALE / 2) / PERCENT_SCALE
 }
 
 #[cfg(test)]
@@ -329,330 +475,178 @@ mod tests {
     const RESET: i64 = 2_000_000_000;
 
     fn observation(used: i64, spend_nano: i64, observed_at: i64) -> CodexWindowObservation {
-        observation_at(RESET, used, spend_nano, observed_at)
+        observation_at(RESET, DURATION, used, spend_nano, observed_at)
     }
 
     fn observation_at(
         resets_at: i64,
+        duration: i64,
         used: i64,
         spend_nano: i64,
         observed_at: i64,
     ) -> CodexWindowObservation {
         CodexWindowObservation {
             home_id: HOME.into(),
-            window_duration_mins: DURATION,
+            window_duration_mins: duration,
             resets_at,
             observed_at,
-            used_percent: used,
+            used_percent: rounded_percent(used),
+            used_fraction_units: used,
             gateway_spend_nano: spend_nano,
         }
     }
 
     fn next(
         row: Option<CodexCalibrationRow>,
-        used: i64,
-        spend_nano: i64,
-        observed_at: i64,
+        observation: CodexWindowObservation,
     ) -> CodexCalibrationRow {
-        let mut row = apply_observation(row, &observation(used, spend_nano, observed_at));
-        // Persistence owns version increments; emulate one successful CAS for pure tests.
-        row.version = row.version.saturating_add(1);
+        let mut row = apply_observation(row, &observation).unwrap();
+        row.version += 1;
         row
     }
 
     #[test]
-    fn first_snapshot_is_unknown_instead_of_a_dollar_prior() {
-        let row = next(None, 40, 100_000_000_000, 100);
-        let calibration = WindowCalibration::from_row(row);
-        assert_eq!(calibration.estimate(), None);
-        assert_eq!(calibration.remaining_nano(40), None);
-    }
-
-    #[test]
-    fn first_movement_is_censored_because_the_cold_anchor_is_partial() {
-        let row = next(None, 40, 100_000_000_000, 100);
-        let row = next(Some(row), 41, 120_000_000_000, 101);
-        assert!(row.anchor_ready);
-        assert_eq!(row.anchor_used_percent, 41);
-        assert_eq!(row.samples, 0);
-        assert_eq!(WindowCalibration::from_row(row).estimate(), None);
-    }
-
-    #[test]
-    fn second_movement_is_the_first_complete_interval() {
-        let row = next(None, 40, 100_000_000_000, 100);
-        let row = next(Some(row), 41, 120_000_000_000, 101);
-        let row = next(Some(row), 42, 140_000_000_000, 102);
-        let estimate = WindowCalibration::from_row(row.clone()).estimate().unwrap();
-        assert_eq!(estimate.capacity_nano, 2_000_000_000_000);
-        assert_eq!(estimate.low_nano, Some(1_000_000_000_000));
-        assert_eq!(estimate.high_nano, None);
-        assert_eq!(estimate.confidence_bp, 500);
-        assert_eq!(estimate.source, CapacitySource::MeasuredCumulative);
-        assert_eq!(row.samples, 1);
-    }
-
-    #[test]
-    fn bounds_and_evidence_follow_total_covered_points() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 11, 10_000_000_000, 101); // censored
-        let row = next(Some(row), 12, 30_000_000_000, 102); // one covered point
-        assert_eq!(row.observed_points, 1);
-        assert_eq!(row.current_confidence_bp, 500);
-
-        let row = next(Some(row), 14, 70_000_000_000, 103); // three covered points total
-        assert_eq!(row.samples, 2);
-        assert_eq!(row.observed_points, 3);
-        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
-        assert_eq!(row.current_low_nano, Some(1_500_000_000_000));
-        assert_eq!(row.current_high_nano, Some(3_000_000_000_000));
-        assert_eq!(row.current_confidence_bp, 1_500);
-
-        let row = next(Some(row), 31, 410_000_000_000, 104); // twenty covered points
-        assert_eq!(row.observed_points, 20);
-        assert_eq!(row.current_low_nano, Some(1_904_761_904_761));
-        assert_eq!(row.current_high_nano, Some(2_105_263_157_894));
-        assert_eq!(row.current_confidence_bp, 10_000);
-    }
-
-    #[test]
-    fn percentage_snapshot_waits_for_its_positive_settlement_evidence() {
-        let row = next(None, 17, 126_000_000_000, 100);
-        let row = next(Some(row), 18, 126_000_000_000, 101);
-        assert_eq!(row.anchor_used_percent, 17);
-        assert_eq!(row.anchor_spend_nano, 126_000_000_000);
-        assert_eq!(row.samples, 0);
-        assert_eq!(WindowCalibration::from_row(row.clone()).estimate(), None);
-
-        // The percentage is unchanged, but settlement has now caught up. This crosses only the
-        // censored boundary; a complete interval is still required before publishing capacity.
-        let row = next(Some(row), 18, 131_000_000_000, 102);
-        assert_eq!(row.anchor_used_percent, 18);
-        assert_eq!(row.anchor_spend_nano, 131_000_000_000);
+    fn cold_anchor_and_first_movement_publish_no_prior() {
+        let row = next(None, observation(12_125_000, 0, 100));
+        assert!(WindowCalibration::from_row(row.clone())
+            .unwrap()
+            .estimate()
+            .is_none());
+        let row = next(Some(row), observation(12_125_100, 10_000, 101));
         assert!(row.anchor_ready);
         assert_eq!(row.samples, 0);
-
-        let row = next(Some(row), 19, 136_000_000_000, 103);
-        assert_eq!(
-            WindowCalibration::from_row(row)
-                .estimate()
-                .unwrap()
-                .capacity_nano,
-            500_000_000_000
-        );
+        assert!(row.current_capacity_nano.is_none());
     }
 
     #[test]
-    fn weighted_regression_uses_every_complete_interval_exactly() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 12, 40_000_000_000, 101); // censored
-        let row = next(Some(row), 16, 140_000_000_000, 102); // x=4, y=$100
-        let row = next(Some(row), 18, 190_000_000_000, 103); // x=2, y=$50
-                                                             // 100 * (4*100 + 2*50) / (4² + 2²) = $2500.
-        let estimate = WindowCalibration::from_row(row).estimate().unwrap();
-        assert_eq!(estimate.capacity_nano, 2_500_000_000_000);
+    fn second_complete_interval_uses_exact_fractional_evidence() {
+        let row = next(None, observation(12_125_000, 0, 100));
+        let row = next(Some(row), observation(12_125_100, 10_000, 101));
+        let row = next(Some(row), observation(12_125_300, 50_000, 102));
+        let estimate = WindowCalibration::from_row(row.clone())
+            .unwrap()
+            .estimate()
+            .unwrap();
+        assert_eq!(estimate.capacity_nano, 20_000_000_000);
+        assert_eq!(row.observed_fraction_units, 200);
+        assert_eq!(row.observed_spend_nano, 40_000);
+        assert_eq!(row.sum_used_sq, 0);
+        assert_eq!(row.sum_used_spend_nano, 0);
+        assert_eq!(estimate.source, CapacitySource::WorkloadBlend);
     }
 
     #[test]
-    fn same_reset_rollbacks_neither_erase_nor_duplicate_evidence() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 11, 10_000_000_000, 101); // censored
-        let row = next(Some(row), 12, 30_000_000_000, 102); // first sample
-        let row = next(Some(row), 11, 35_000_000_000, 103); // rollback
-        let row = next(Some(row), 12, 40_000_000_000, 104); // old high-water
-        let row = next(Some(row), 13, 50_000_000_000, 105); // second sample
+    fn mixed_models_publish_the_realized_api_dollar_blend_and_envelope() {
+        let row = next(None, observation(1_000, 0, 100));
+        let row = next(Some(row), observation(2_000, 100_000, 101)); // censored
+        let row = next(Some(row), observation(3_000, 300_000, 102)); // $20 regime
+        let row = next(Some(row), observation(3_500, 700_000, 103)); // $80 regime
+        let estimate = WindowCalibration::from_row(row.clone())
+            .unwrap()
+            .estimate()
+            .unwrap();
+        assert_eq!(estimate.capacity_nano, 40_000_000_000);
+        assert!(estimate.low_nano.unwrap() < 20_100_000_000);
+        assert!(estimate.high_nano.unwrap() > 79_800_000_000);
+        assert_eq!(row.observed_fraction_units, 1_500);
+        assert_eq!(row.observed_spend_nano, 600_000);
         assert_eq!(row.samples, 2);
-        assert_eq!(row.sum_used_spend_nano, 40_000_000_000);
-        assert_eq!(
-            WindowCalibration::from_row(row)
-                .estimate()
-                .unwrap()
-                .capacity_nano,
-            2_000_000_000_000
-        );
+        assert!(estimate.confidence_bp > 0);
     }
 
     #[test]
-    fn real_reset_keeps_cumulative_capacity_and_rearms_censoring() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 11, 10_000_000_000, 101);
-        let row = next(Some(row), 12, 30_000_000_000, 102);
-        let row = apply_observation(
+    fn percentage_waits_for_positive_settlement_evidence() {
+        let row = next(None, observation(17_000_000, 126_000, 100));
+        let row = next(Some(row), observation(17_000_100, 126_000, 101));
+        assert_eq!(row.anchor_used_fraction_units, 17_000_000);
+        let row = next(Some(row), observation(17_000_100, 131_000, 102));
+        assert!(row.anchor_ready);
+        assert_eq!(row.anchor_spend_nano, 131_000);
+        let row = next(Some(row), observation(17_000_200, 136_000, 103));
+        assert_eq!(row.current_capacity_nano, Some(5_000_000_000));
+    }
+
+    #[test]
+    fn rollback_and_old_high_water_neither_erase_nor_duplicate_evidence() {
+        let row = next(None, observation(10_000_000, 0, 100));
+        let row = next(Some(row), observation(10_000_100, 10_000, 101));
+        let row = next(Some(row), observation(10_000_200, 30_000, 102));
+        let row = next(Some(row), observation(10_000_150, 35_000, 103));
+        let row = next(Some(row), observation(10_000_200, 40_000, 104));
+        let row = next(Some(row), observation(10_000_300, 50_000, 105));
+        assert_eq!(row.samples, 2);
+        assert_eq!(row.observed_fraction_units, 200);
+        assert_eq!(row.observed_spend_nano, 40_000);
+    }
+
+    #[test]
+    fn reset_jitter_stays_in_one_window_but_real_reset_rearms_censoring() {
+        let row = next(None, observation(10_000_000, 0, 100));
+        let row = next(
             Some(row),
-            &observation_at(RESET + DURATION * 60, 3, 40_000_000_000, 103),
+            observation_at(RESET + 3, DURATION, 10_000_100, 10_000, 101),
+        );
+        let row = next(
+            Some(row),
+            observation_at(RESET - 2, DURATION, 10_000_200, 30_000, 102),
+        );
+        assert_eq!(row.samples, 1);
+        let row = next(
+            Some(row),
+            observation_at(RESET + DURATION * 60, DURATION, 100, 40_000, 103),
         );
         assert!(!row.anchor_ready);
         assert_eq!(row.samples, 1);
-        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
-
-        let row = apply_observation(
-            Some(row),
-            &observation_at(RESET + DURATION * 60, 4, 50_000_000_000, 104),
-        );
-        assert!(row.anchor_ready);
-        assert_eq!(row.samples, 1);
-
-        let row = apply_observation(
-            Some(row),
-            &observation_at(RESET + DURATION * 60, 5, 70_000_000_000, 105),
-        );
-        assert_eq!(row.samples, 2);
-        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(row.current_capacity_nano, Some(20_000_000_000));
     }
 
     #[test]
-    fn reset_timestamp_jitter_stays_inside_one_concrete_window() {
-        let mut row = next(None, 10, 0, 100);
-        row = apply_observation(
-            Some(row),
-            &observation_at(RESET + 1, 11, 10_000_000_000, 101),
-        );
-        row = apply_observation(
-            Some(row),
-            &observation_at(RESET + 3, 12, 30_000_000_000, 102),
-        );
-        row = apply_observation(
-            Some(row),
-            &observation_at(RESET - 1, 13, 50_000_000_000, 103),
-        );
-        assert_eq!(row.resets_at, RESET);
-        assert_eq!(row.samples, 2);
-        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
-    }
-
-    #[test]
-    fn old_window_snapshot_cannot_move_a_new_window_backwards() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 11, 10_000_000_000, 101);
-        let row = next(Some(row), 12, 30_000_000_000, 102);
-        let new_reset = RESET + DURATION * 60;
-        let row = apply_observation(
-            Some(row),
-            &observation_at(new_reset, 3, 40_000_000_000, 103),
-        );
-        let row = apply_observation(
-            Some(row),
-            &observation_at(RESET + 1, 99, 900_000_000_000, 104),
-        );
-        assert_eq!(row.resets_at, new_reset);
-        assert_eq!(row.used_percent, 3);
-        assert_eq!(row.observed_at, 103);
-        assert_eq!(row.samples, 1);
-    }
-
-    #[test]
-    fn duration_aware_reset_identity_recovers_minute_scale_outlier_history() {
-        let weekly_duration = 10_080;
-        let weekly = |resets_at, used_percent, spend_nano, observed_at| {
-            let mut observation = observation_at(resets_at, used_percent, spend_nano, observed_at);
-            observation.window_duration_mins = weekly_duration;
-            observation
-        };
+    fn obsolete_estimator_replays_raw_fractional_history() {
         let history = vec![
-            weekly(RESET, 0, 0, 100),
-            weekly(RESET + 413, 0, 0, 101),
-            weekly(RESET, 1, 10_000_000_000, 102),
-            weekly(RESET, 2, 30_000_000_000, 103),
-            weekly(RESET, 3, 50_000_000_000, 104),
+            observation(10_000_000, 0, 100),
+            observation(10_000_100, 10_000, 101),
+            observation(10_000_200, 30_000, 102),
+            observation(10_000_300, 50_000, 103),
         ];
-
-        // Estimator v4 accepted the +413-second outlier as a new window, then rejected every
-        // normal timestamp as old. A v5 replay must recover the already stored raw intervals.
-        let mut poisoned =
-            WindowCalibration::anchor(HOME, weekly_duration, RESET + 413, 0, 0, 101).into_row();
+        let mut poisoned = replay_observations(&history[..1], 9).unwrap().unwrap();
         poisoned.estimator_version = ESTIMATOR_VERSION - 1;
-        poisoned.version = 11;
-
+        poisoned.current_capacity_nano = Some(1);
         let rebuilt =
-            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap());
-        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
-        assert_eq!(rebuilt.version, 11);
-        assert_eq!(rebuilt.resets_at, RESET);
-        assert_eq!(rebuilt.used_percent, 3);
-        assert_eq!(rebuilt.samples, 2);
-        assert_eq!(rebuilt.observed_points, 2);
-        assert_eq!(rebuilt.current_capacity_nano, Some(2_000_000_000_000));
-    }
-
-    #[test]
-    fn production_like_raw_history_replays_to_stable_capacity() {
-        let spends = [
-            (12, 0),
-            (13, 5_794_907_000),
-            (14, 29_799_996_000),
-            (15, 53_945_708_000),
-            (16, 77_952_705_000),
-            (17, 101_553_253_000),
-            (18, 125_449_866_000),
-            (19, 152_141_317_000),
-            (20, 178_380_227_000),
-            (21, 201_788_240_000),
-            (22, 225_680_889_000),
-            (23, 250_799_095_000),
-            (24, 273_130_781_000),
-            (25, 296_306_725_000),
-            (26, 320_387_890_000),
-            (27, 345_686_973_000),
-            (28, 369_732_609_500),
-            (29, 400_792_089_000),
-        ];
-        let reset_jitter = [0, 1, 3, -1, 2, 1, 0, -2, 2, 0, 1, 3, -1, 2, 1, 3, 0, -2];
-        let history: Vec<_> = spends
-            .into_iter()
-            .enumerate()
-            .map(|(index, (used, spend))| {
-                observation_at(RESET + reset_jitter[index], used, spend, 100 + index as i64)
-            })
-            .collect();
-        let row = replay_observations(&history, 7).unwrap();
-        assert_eq!(row.version, 7);
-        assert_eq!(row.samples, 16);
-        assert_eq!(row.observed_points, 16);
-        assert_eq!(row.current_confidence_bp, 8_000);
-        assert_eq!(row.current_capacity_nano, Some(2_468_732_387_500));
-    }
-
-    #[test]
-    fn estimator_upgrade_rebuilds_poisoned_state_from_raw_history() {
-        let history = vec![
-            observation(20, 178_380_227_000, 100),
-            observation(21, 201_788_240_000, 101),
-            observation(22, 225_680_889_000, 102),
-            observation(23, 250_799_095_000, 103),
-        ];
-        let mut poisoned = replay_observations(&history[..1], 9).unwrap();
-        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
-        poisoned.current_capacity_nano = Some(187_994_100_000);
-        poisoned.samples = 1;
-
-        let rebuilt =
-            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap());
-        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
+            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap())
+                .unwrap();
         assert_eq!(rebuilt.version, 9);
         assert_eq!(rebuilt.samples, 2);
-        assert_eq!(rebuilt.current_capacity_nano, Some(2_450_542_750_000));
+        assert_eq!(rebuilt.current_capacity_nano, Some(20_000_000_000));
     }
 
     #[test]
-    fn remaining_is_exact_integer_share_of_stable_capacity() {
-        let row = next(None, 10, 0, 100);
-        let row = next(Some(row), 11, 10_000_000_000, 101);
-        let row = next(Some(row), 12, 30_000_000_000, 102);
-        let calibration = WindowCalibration::from_row(row);
-        assert_eq!(calibration.remaining_nano(50), Some(1_000_000_000_000));
-        assert_eq!(calibration.remaining_nano(100), Some(0));
+    fn remaining_and_its_bounds_use_the_exact_current_fraction() {
+        let row = next(None, observation(10_000_000, 0, 100));
+        let row = next(Some(row), observation(10_000_100, 10_000, 101));
+        let row = next(Some(row), observation(10_000_300, 50_000, 102));
+        let calibration = WindowCalibration::from_row(row).unwrap();
+        assert_eq!(calibration.remaining_nano(50_000_000), Some(10_000_000_000));
+        assert!(calibration.remaining_low_nano(50_000_000).is_some());
+        assert!(calibration.remaining_high_nano(50_000_000).is_some());
+    }
+
+    #[test]
+    fn invalid_or_overflowing_state_fails_closed() {
+        let mut hostile = observation(FRACTION_SCALE + 1, 0, 100);
+        hostile.used_percent = 100;
+        assert!(apply_observation(None, &hostile).is_err());
+
+        let row = next(None, observation(1, 1, 100));
+        let row = next(Some(row), observation(2, 2, 101));
+        let mut row = next(Some(row), observation(3, 3, 102));
+        row.observed_spend_nano = i64::MAX;
+        assert!(apply_observation(Some(row), &observation(4, 4, 103)).is_err());
     }
 
     #[test]
     fn independent_durations_do_not_share_state() {
-        let five_hour = next(None, 10, 0, 100);
-        let five_hour = next(Some(five_hour), 11, 10_000_000_000, 101);
-        let five_hour = next(Some(five_hour), 12, 30_000_000_000, 102);
-        let mut weekly_observation = observation(70, 500_000_000_000, 102);
-        weekly_observation.window_duration_mins = 10_080;
-        let weekly = apply_observation(None, &weekly_observation);
-        assert!(five_hour.current_capacity_nano.is_some());
-        assert!(weekly.current_capacity_nano.is_none());
-        assert_ne!(five_hour.window_duration_mins, weekly.window_duration_mins);
+        let five = next(None, observation(1, 1, 100));
+        let weekly = next(None, observation_at(RESET, 10_080, 1, 1, 100));
+        assert_ne!(five.window_duration_mins, weekly.window_duration_mins);
     }
 }

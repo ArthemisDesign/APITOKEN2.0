@@ -4,7 +4,7 @@
 // crates/server/src/admin-panel.js (Claude / GPT / Gemini / transport details).
 // Компоненты мемоизированы: рендер идёт каждый poll-тик (10 с).
 import { memo, type ReactElement, type ReactNode } from "react";
-import { ago, count, duration, formatDate, money, windowLabel } from "@/lib/format";
+import { ago, count, duration, formatDate, money, nanoMoney, windowLabel } from "@/lib/format";
 import { Dot, EmptyRow, Pill, TableCard } from "@/components/ui";
 import {
   barFromPercent,
@@ -152,39 +152,66 @@ export const ClaudeTable = memo(function ClaudeTable({
 // Фактическое окно home: бар процента + доказательная база измерения.
 function gptWindowCell(w: CodexHomeWindow | undefined): ReactNode {
   if (!w) return "—";
+  const usedPercent =
+    w.used_fraction_units == null ? w.used_percent : Number(w.used_fraction_units) / 1_000_000;
   return (
     <>
       <div>
-        <Bar spec={barFromPercent(w.used_percent)} />
+        <Bar spec={barFromPercent(usedPercent)} />
       </div>
       <div className="sub">
         {windowLabel(w.window_minutes)}
         {w.source === "unknown"
-          ? " · ждём завершённый %-интервал"
-          : ` · накоплено интервалов ${Number(w.samples || 0)} · evidence ${Math.round(Number(w.confidence || 0) * 100)}%`}
+          ? " · ждём полный fraction-интервал"
+          : ` · ${Number(w.samples || 0)} интервала · confidence ${Math.round(Number(w.confidence || 0) * 100)}%`}
       </div>
     </>
   );
 }
 
-// Остаток / вместимость окна в API-$; интервал low–high — через title (как в легаси).
+const codexMoney = (
+  nano: string | null | undefined,
+  usd: number | null | undefined,
+): string => (nano != null ? nanoMoney(nano) : usd == null ? "—" : money(usd));
+
+// Остаток / вместимость окна в API-$; exact nanoUSD — источник истины, а workload evidence
+// остаётся в title, чтобы компактная таблица не теряла объяснимость калибровки.
 function gptBudgetCell(w: CodexHomeWindow | undefined): ReactNode {
   if (!w) return "—";
+  const known =
+    w.source === "workload_blend" ||
+    (w.source !== "unknown" && (w.capacity_nano != null || w.cap_usd != null));
+  const capacity = codexMoney(w.capacity_nano, w.cap_usd);
+  const remaining = codexMoney(w.remaining_nano, w.remaining_usd);
+  const capacityRange =
+    w.low_nano != null || w.low_usd != null
+      ? codexMoney(w.low_nano, w.low_usd) +
+        "–" +
+        (w.high_nano == null && w.high_usd == null ? "∞" : codexMoney(w.high_nano, w.high_usd))
+      : "—";
+  const remainingRange =
+    w.remaining_low_nano != null || w.remaining_low_usd != null
+      ? codexMoney(w.remaining_low_nano, w.remaining_low_usd) +
+        "–" +
+        (w.remaining_high_nano == null && w.remaining_high_usd == null
+          ? "∞"
+          : codexMoney(w.remaining_high_nano, w.remaining_high_usd))
+      : "—";
+  const fractionDelta = (Number(w.observed_fraction_units || 0) / 1_000_000).toFixed(6) + "%";
+  const evidence = !known
+    ? "ждём полный fraction-интервал"
+    : `доверительный интервал capacity ${capacityRange} · remaining ${remainingRange} · evidence ${nanoMoney(
+        w.observed_spend_nano,
+      )} / Δquota ${fractionDelta} · ${Number(w.samples || 0)} интервала · confidence ${Math.round(
+        Number(w.confidence || 0) * 100,
+      )}%`;
   return (
-    <>
-      <b>{w.remaining_usd == null ? "—" : money(w.remaining_usd)}</b>
+    <div title={evidence}>
+      <b>{remaining}</b>
       <div className="sub">
-        остаток из{" "}
-        {w.cap_usd == null ? (
-          "—"
-        ) : w.low_usd != null && w.high_usd != null ? (
-          <span title={`доверительный интервал ${money(w.low_usd)} – ${money(w.high_usd)}`}>{money(w.cap_usd)}</span>
-        ) : (
-          money(w.cap_usd)
-        )}{" "}
-        · {windowLabel(w.window_minutes)}
+        остаток из {capacity} · {windowLabel(w.window_minutes)}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -227,7 +254,7 @@ function GptRow({ home, nowSec }: { home: CodexHome; nowSec: number }): ReactEle
         ) : null}
       </td>
       <td>
-        <b>{money(home.spend_usd_total)}</b>
+        <b>{home.spend_nano_total != null ? nanoMoney(home.spend_nano_total) : money(home.spend_usd_total)}</b>
         <div className="sub">official-price</div>
       </td>
     </tr>

@@ -1127,6 +1127,10 @@ pub fn open(path: &str) -> Result<Connection> {
            last_confidence_bp INTEGER NOT NULL DEFAULT 0 CHECK(last_confidence_bp BETWEEN 0 AND 10000), \
            last_measured_at INTEGER CHECK(last_measured_at IS NULL OR last_measured_at > 0), \
            anchor_ready INTEGER NOT NULL DEFAULT 0 CHECK(anchor_ready IN (0,1)), \
+           anchor_used_fraction_units INTEGER CHECK(anchor_used_fraction_units BETWEEN 0 AND 100000000), \
+           used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
+           observed_fraction_units INTEGER CHECK(observed_fraction_units >= 0), \
+           observed_spend_nano INTEGER CHECK(observed_spend_nano >= 0), \
            estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
            version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
            updated_ts INTEGER NOT NULL, \
@@ -1142,6 +1146,7 @@ pub fn open(path: &str) -> Result<Connection> {
            resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
            observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
            used_percent INTEGER NOT NULL CHECK(used_percent BETWEEN 0 AND 100), \
+           used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
            gateway_spend_nano INTEGER NOT NULL CHECK(gateway_spend_nano >= 0), \
            UNIQUE(home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano)); \
          CREATE INDEX IF NOT EXISTS codex_window_observations_window \
@@ -1153,6 +1158,18 @@ pub fn open(path: &str) -> Result<Connection> {
         "ALTER TABLE codex_window_calibrations ADD COLUMN anchor_ready INTEGER NOT NULL DEFAULT 0 CHECK(anchor_ready IN (0,1))",
         [],
     );
+    // SQLite parity for PostgreSQL migration 0015. Nullable columns preserve compatibility with
+    // legacy databases and binaries; the v6 estimator reconstructs a missing fixed-point value
+    // from the immutable whole-percent projection before writing both representations.
+    for statement in [
+        "ALTER TABLE codex_window_calibrations ADD COLUMN anchor_used_fraction_units INTEGER CHECK(anchor_used_fraction_units BETWEEN 0 AND 100000000)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN observed_fraction_units INTEGER CHECK(observed_fraction_units >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN observed_spend_nano INTEGER CHECK(observed_spend_nano >= 0)",
+        "ALTER TABLE codex_window_observations ADD COLUMN used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000)",
+    ] {
+        let _ = c.execute(statement, []);
+    }
     // Native Gemini calibration uses the two explicit Antigravity quota-summary windows. Keep
     // SQLite schema parity for importer/tests even though PostgreSQL remains production authority.
     // Large WLS accumulators are canonical decimal text because SQLite has no exact i128 integer
@@ -4114,6 +4131,13 @@ pub struct CodexCalibrationRow {
     pub last_measured_at: Option<i64>,
     /// True after the first potentially partial transition of the concrete reset was censored.
     pub anchor_ready: bool,
+    /// Provider utilisation in 10^-8 fraction units. The legacy percent fields remain an integer
+    /// compatibility projection for binaries predating engine migration 0015.
+    pub anchor_used_fraction_units: i64,
+    pub used_fraction_units: i64,
+    /// Exact sufficient statistics of the realized workload blend.
+    pub observed_fraction_units: i64,
+    pub observed_spend_nano: i64,
     pub estimator_version: i64,
     pub version: i64,
     pub updated_ts: i64,
@@ -4127,6 +4151,7 @@ pub struct CodexWindowObservation {
     pub resets_at: i64,
     pub observed_at: i64,
     pub used_percent: i64,
+    pub used_fraction_units: i64,
     pub gateway_spend_nano: i64,
 }
 
@@ -4421,6 +4446,10 @@ fn sqlite_codex_calibration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cod
         version: row.get(21)?,
         updated_ts: row.get(22)?,
         anchor_ready: row.get(23)?,
+        anchor_used_fraction_units: row.get(24)?,
+        used_fraction_units: row.get(25)?,
+        observed_fraction_units: row.get(26)?,
+        observed_spend_nano: row.get(27)?,
     })
 }
 
@@ -4428,7 +4457,11 @@ const CODEX_CALIBRATION_COLUMNS: &str = "home_id,window_duration_mins,resets_at,
     anchor_used_percent,anchor_spend_nano,used_percent,observed_at,sum_used_sq,\
     sum_used_spend_nano,observed_points,samples,current_capacity_nano,current_low_nano,\
     current_high_nano,current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
-    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts,anchor_ready";
+    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts,anchor_ready,\
+    COALESCE(anchor_used_fraction_units,anchor_used_percent*1000000),\
+    COALESCE(used_fraction_units,used_percent*1000000),\
+    COALESCE(observed_fraction_units,observed_points*1000000),\
+    COALESCE(observed_spend_nano,0)";
 
 pub fn load_codex_calibration(
     conn: &Connection,
@@ -4457,7 +4490,8 @@ pub fn load_codex_window_observations(
     window_duration_mins: i64,
 ) -> Result<Vec<CodexWindowObservation>> {
     let mut statement = conn.prepare(
-        "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
+        "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,\
+                COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano \
          FROM codex_window_observations WHERE home_id=?1 AND window_duration_mins=?2 \
          ORDER BY observed_at,id",
     )?;
@@ -4469,7 +4503,8 @@ pub fn load_codex_window_observations(
                 resets_at: row.get(2)?,
                 observed_at: row.get(3)?,
                 used_percent: row.get(4)?,
-                gateway_spend_nano: row.get(5)?,
+                used_fraction_units: row.get(5)?,
+                gateway_spend_nano: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -4513,6 +4548,10 @@ pub fn save_codex_calibration(
         state.updated_ts,
         state.version,
         state.anchor_ready,
+        state.anchor_used_fraction_units,
+        state.used_fraction_units,
+        state.observed_fraction_units,
+        state.observed_spend_nano,
     ];
     let changed = if state.version == 0 {
         tx.execute(
@@ -4521,9 +4560,10 @@ pub fn save_codex_calibration(
                used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
                current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
-               estimator_version,updated_ts,version,anchor_ready \
+               estimator_version,updated_ts,version,anchor_ready,anchor_used_fraction_units,\
+               used_fraction_units,observed_fraction_units,observed_spend_nano \
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
-                      ?19,?20,?21,?22,?23+1,?24) \
+                      ?19,?20,?21,?22,?23+1,?24,?25,?26,?27,?28) \
              ON CONFLICT(home_id,window_duration_mins) DO NOTHING",
             values,
         )?
@@ -4535,7 +4575,9 @@ pub fn save_codex_calibration(
                samples=?11,current_capacity_nano=?12,current_low_nano=?13,current_high_nano=?14,\
                current_confidence_bp=?15,last_capacity_nano=?16,last_low_nano=?17,\
                last_high_nano=?18,last_confidence_bp=?19,last_measured_at=?20,\
-               estimator_version=?21,updated_ts=?22,version=version+1,anchor_ready=?24 \
+               estimator_version=?21,updated_ts=?22,version=version+1,anchor_ready=?24,\
+               anchor_used_fraction_units=?25,used_fraction_units=?26,\
+               observed_fraction_units=?27,observed_spend_nano=?28 \
              WHERE home_id=?1 AND window_duration_mins=?2 AND version=?23",
             values,
         )?
@@ -4545,14 +4587,16 @@ pub fn save_codex_calibration(
     }
     tx.execute(
         "INSERT INTO codex_window_observations( \
-           home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
-         ) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
+           home_id,window_duration_mins,resets_at,observed_at,used_percent,used_fraction_units,\
+           gateway_spend_nano \
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT DO NOTHING",
         rusqlite::params![
             observation.home_id,
             observation.window_duration_mins,
             observation.resets_at,
             observation.observed_at,
             observation.used_percent,
+            observation.used_fraction_units,
             observation.gateway_spend_nano,
         ],
     )?;
@@ -6111,12 +6155,16 @@ mod tests {
             window_duration_mins: 300,
             resets_at: 2_000_000_000,
             anchor_used_percent: 10,
+            anchor_used_fraction_units: 10_000_000,
             anchor_spend_nano: 100_000_000_000,
             used_percent: 10,
+            used_fraction_units: 10_000_000,
             observed_at: 101,
             sum_used_sq: 0,
             sum_used_spend_nano: 0,
             observed_points: 0,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -6138,6 +6186,7 @@ mod tests {
             resets_at: 2_000_000_000,
             observed_at: 101,
             used_percent: 10,
+            used_fraction_units: 10_000_000,
             gateway_spend_nano: 100_000_000_000,
         };
         assert_eq!(
@@ -6154,10 +6203,12 @@ mod tests {
         assert_eq!(state.version, 1);
         assert!(!state.anchor_ready);
         state.used_percent = 11;
+        state.used_fraction_units = 11_000_000;
         state.observed_at = 102;
         state.updated_ts = 102;
         let mut second = observation.clone();
         second.used_percent = 11;
+        second.used_fraction_units = 11_000_000;
         second.observed_at = 102;
         assert_eq!(
             save_codex_calibration(&c, &state, &second).unwrap(),

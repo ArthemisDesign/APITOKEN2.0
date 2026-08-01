@@ -28,6 +28,7 @@ pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
+pub use transport::RATE_LIMIT_FRACTION_SCALE;
 pub(crate) use transport::{
     AppServerEvent, AuthContext, CodexModelCatalog, ProfileTransport, TurnEvents,
 };
@@ -267,6 +268,7 @@ pub struct CodexHomeStatus {
     /// operator surfaces can never show `active` for a home the gateway refuses to route to.
     pub limit_reached: bool,
     /// Cumulative official-price spend this home has served through the gateway.
+    pub spend_nano_total: i64,
     pub spend_usd_total: f64,
     /// False after a persistence failure (or in an explicitly in-memory test gateway).
     pub calibration_persistence_ok: bool,
@@ -323,13 +325,24 @@ pub struct CodexWindowCapacityReport {
     pub resets_at: Option<i64>,
     pub observed_at: i64,
     pub data_age_seconds: Option<i64>,
+    pub used_fraction_units: i64,
     pub used_percent: i64,
     /// `None` until a real positive utilisation movement is paired with gateway spend.
+    pub capacity_nano: Option<i64>,
+    pub remaining_nano: Option<i64>,
+    pub low_nano: Option<i64>,
+    pub high_nano: Option<i64>,
+    pub remaining_low_nano: Option<i64>,
+    pub remaining_high_nano: Option<i64>,
     pub cap_usd: Option<f64>,
     pub remaining_usd: Option<f64>,
     pub low_usd: Option<f64>,
     pub high_usd: Option<f64>,
-    /// `measured_cumulative` or `unknown`.
+    pub remaining_low_usd: Option<f64>,
+    pub remaining_high_usd: Option<f64>,
+    pub observed_spend_nano: i64,
+    pub observed_fraction_units: i64,
+    /// `workload_blend` or `unknown`.
     pub source: &'static str,
     pub confidence: f64,
     pub samples: i64,
@@ -919,6 +932,7 @@ impl CodexHome {
                             duration,
                             resets_at,
                             window.used_percent,
+                            window.used_fraction_units,
                             limits.observed_at,
                         )
                         .await
@@ -929,10 +943,21 @@ impl CodexHome {
                 Ok((spend_nano, row)) => {
                     self.spend_nano_total
                         .fetch_max(spend_nano, Ordering::Relaxed);
-                    self.calibrations
-                        .lock()
-                        .expect("Codex calibration map lock")
-                        .insert(duration, WindowCalibration::from_row(row));
+                    match WindowCalibration::from_row(row) {
+                        Ok(calibration) => {
+                            self.calibrations
+                                .lock()
+                                .expect("Codex calibration map lock")
+                                .insert(duration, calibration);
+                        }
+                        Err(error) => {
+                            all_persisted = false;
+                            eprintln!(
+                                "Codex window calibration state invalid [{}]",
+                                error.root_cause()
+                            );
+                        }
+                    }
                 }
                 Err(error) => {
                     all_persisted = false;
@@ -943,6 +968,7 @@ impl CodexHome {
                         resets_at,
                         observed_at: limits.observed_at,
                         used_percent: window.used_percent,
+                        used_fraction_units: window.used_fraction_units,
                         gateway_spend_nano: spend_nano,
                     };
                     let mut calibrations = self
@@ -950,11 +976,26 @@ impl CodexHome {
                         .lock()
                         .expect("Codex calibration map lock");
                     let existing = calibrations.remove(&duration).map(|cal| cal.into_row());
-                    let mut row = calibration::apply_observation(existing, &observation);
-                    if row.version == 0 {
-                        row.version = 1;
+                    match calibration::apply_observation(existing, &observation) {
+                        Ok(mut row) => {
+                            if row.version == 0 {
+                                row.version = 1;
+                            }
+                            match WindowCalibration::from_row(row) {
+                                Ok(calibration) => {
+                                    calibrations.insert(duration, calibration);
+                                }
+                                Err(state_error) => eprintln!(
+                                    "Codex in-memory calibration state invalid [{}]",
+                                    state_error.root_cause()
+                                ),
+                            }
+                        }
+                        Err(state_error) => eprintln!(
+                            "Codex in-memory calibration observation invalid [{}]",
+                            state_error.root_cause()
+                        ),
                     }
-                    calibrations.insert(duration, WindowCalibration::from_row(row));
                     if self.billing.is_some() {
                         eprintln!(
                             "Codex window calibration persistence failed [{}]",
@@ -986,6 +1027,12 @@ impl CodexHome {
             .window_duration_mins
             .and_then(|duration| calibrations.get(&duration));
         let estimate = calibration.and_then(WindowCalibration::estimate);
+        let remaining_nano =
+            calibration.and_then(|cal| cal.remaining_nano(window.used_fraction_units));
+        let remaining_low_nano =
+            calibration.and_then(|cal| cal.remaining_low_nano(window.used_fraction_units));
+        let remaining_high_nano =
+            calibration.and_then(|cal| cal.remaining_high_nano(window.used_fraction_units));
         let nano_to_usd = |nano: i64| nano as f64 / 1e9;
         // Keep the timestamp of the latest accepted complete interval instead of making cumulative
         // evidence look fresh merely because the provider emitted another snapshot.
@@ -999,13 +1046,22 @@ impl CodexHome {
             observed_at,
             data_age_seconds: (observed_at > 0)
                 .then(|| pool::now().saturating_sub(observed_at).max(0)),
+            used_fraction_units: window.used_fraction_units,
             used_percent: window.used_percent,
+            capacity_nano: estimate.map(|value| value.capacity_nano),
+            remaining_nano,
+            low_nano: estimate.and_then(|value| value.low_nano),
+            high_nano: estimate.and_then(|value| value.high_nano),
+            remaining_low_nano,
+            remaining_high_nano,
             cap_usd: estimate.map(|value| nano_to_usd(value.capacity_nano)),
-            remaining_usd: calibration
-                .and_then(|cal| cal.remaining_nano(window.used_percent))
-                .map(nano_to_usd),
+            remaining_usd: remaining_nano.map(nano_to_usd),
             low_usd: estimate.and_then(|value| value.low_nano).map(nano_to_usd),
             high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
+            remaining_low_usd: remaining_low_nano.map(nano_to_usd),
+            remaining_high_usd: remaining_high_nano.map(nano_to_usd),
+            observed_spend_nano: calibration.map_or(0, |cal| cal.row().observed_spend_nano),
+            observed_fraction_units: calibration.map_or(0, |cal| cal.row().observed_fraction_units),
             source: estimate.map_or("unknown", |value| value.source.as_str()),
             confidence: estimate.map_or(0.0, |value| value.confidence_bp as f64 / 10_000.0),
             samples: calibration.map_or(0, |cal| cal.row().samples),
@@ -1100,6 +1156,7 @@ impl CodexHome {
                 .as_ref()
                 .map(|limits| now.saturating_sub(limits.observed_at)),
             rate_limits,
+            spend_nano_total: self.spend_nano_total.load(Ordering::Relaxed),
             spend_usd_total: self.spend_usd_total(),
             calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
             capacities,
@@ -1291,9 +1348,10 @@ mod admission_tests {
     }
 
     #[test]
-    fn admission_rejects_full_windows_and_explicit_provider_limit() {
+    fn admission_trusts_explicit_provider_limit_over_numeric_fullness() {
         let observed_hundred = CodexRateLimits {
             primary: Some(CodexRateLimitWindow {
+                used_fraction_units: 100_000_000,
                 used_percent: 100,
                 window_duration_mins: Some(300),
                 resets_at: Some(4_102_444_800),
@@ -1317,14 +1375,16 @@ mod admission_tests {
     }
 
     #[test]
-    fn secondary_window_at_the_wall_also_blocks_admission() {
+    fn secondary_fullness_only_drives_retry_hint_until_provider_reaches_wall() {
         let limits = CodexRateLimits {
             primary: Some(CodexRateLimitWindow {
+                used_fraction_units: 32_000_000,
                 used_percent: 32,
                 window_duration_mins: Some(300),
                 resets_at: Some(4_102_444_800),
             }),
             secondary: Some(CodexRateLimitWindow {
+                used_fraction_units: 100_000_000,
                 used_percent: 100,
                 window_duration_mins: Some(10_080),
                 resets_at: Some(4_102_444_800),
@@ -1348,11 +1408,13 @@ mod admission_tests {
     fn reserve_limits(five_h: i64, weekly: i64) -> CodexRateLimits {
         CodexRateLimits {
             primary: Some(CodexRateLimitWindow {
+                used_fraction_units: five_h * 1_000_000,
                 used_percent: five_h,
                 window_duration_mins: Some(300),
                 resets_at: Some(4_102_444_800),
             }),
             secondary: Some(CodexRateLimitWindow {
+                used_fraction_units: weekly * 1_000_000,
                 used_percent: weekly,
                 window_duration_mins: Some(10_080),
                 resets_at: Some(4_102_500_000),
@@ -1447,7 +1509,7 @@ fn reserve_blocked(
         .primary
         .iter()
         .chain(limits.secondary.iter())
-        .filter(|window| window.used_percent as f64 > reserve.window_cap(window, home_id) * 100.0)
+        .filter(|window| window.used_fraction() > reserve.window_cap(window, home_id))
         .filter_map(|window| window.resets_at)
         .min()
 }

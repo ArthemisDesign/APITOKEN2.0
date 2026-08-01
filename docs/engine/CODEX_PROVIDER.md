@@ -131,12 +131,27 @@ token on every refresh with strict family reuse detection. The pool therefore:
   percent and does not look like an automaton maxing quota to zero. A home past its cap returns at
   that window's reset; under peak, when every home is past its soft cap, the filter relaxes to the
   provider's own wall (fail open: serving beats a synthetic 429).
-- **Capacity calibration** is unchanged: every served turn credits the profile's exact
-  official-price cost in integer nanoUSD, cumulative integer WLS estimates the window cap, and
-  raw observations plus CAS state live in the engine authority across restarts and blue-green.
-  Calibration is fed only by wire events (usage probes, turn headers) — reads never write, so
-  routing costs no database work. The weekly window calibrates independently of the 5h one
-  (estimates are keyed by provider-reported duration).
+- **Capacity calibration is an evidence-backed workload blend.** `/wham/usage`, live response
+  headers and SSE report decimal percentage utilisation. The gateway parses it without binary
+  floating point into `10^-8` fraction units (one unit is `10^-6` percentage point), and every
+  served turn credits the profile's exact audited API-catalog cost in integer nanoUSD. Estimator
+  v6 calculates
+  `capacity_nano = 100_000_000 × ΣΔspend_nano / ΣΔused_fraction_units`. This is the API-dollar
+  equivalent of the workload actually served — not the subscription purchase price and not a
+  permanent nominal for a plan. That distinction is required by the
+  [official Codex pricing documentation](https://learn.chatgpt.com/docs/pricing): consumption
+  varies by model, context, reasoning and tools.
+  Each complete interval also contributes a conservative ±1-fraction-unit low/high workload
+  envelope. `confidence` is deterministic evidence quality
+  (`sample maturity × workload stability × quantisation resolution`), not a probability. There
+  is no configured prior, EMA, WLS, float-money arithmetic or hidden fallback nominal.
+  A cold snapshot and the first utilisation transition are censored; a movement without positive
+  settled spend waits for settlement catch-up. Real resets re-arm censoring but retain accumulated
+  evidence, reset timestamp jitter cannot fork a window, and rollback snapshots cannot erase or
+  duplicate a high-water interval. Raw observations, exact cumulative legs and CAS state live in
+  the engine authority, survive restart/blue-green and are replayed on estimator upgrades.
+  Calibration is fed only by wire events — reads never write — and each provider-reported duration
+  (normally 5h and weekly) calibrates independently.
 - **Health** is the same pure two-axis policy (`health.rs`): account
   (healthy→suspect→dead, durable in the authority) and transport
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that
@@ -185,7 +200,11 @@ token on every refresh with strict family reuse detection. The pool therefore:
   `ready_published` means this generation proved the profile works. Each home's `fast_tiers`
   separates catalogue availability/support and effective `served_tier` from diagnostic
   `provider_reported_tier`/`observed_at`; a misleading completed `default` therefore remains
-  visible without being mistaken for a Fast downgrade.
+  visible without being mistaken for a Fast downgrade. Capacity windows expose canonical
+  nanoUSD values as decimal strings (`capacity_nano`, remaining and low/high variants), exact
+  fraction/evidence counters, `workload_dependent:true`, source `workload_blend` and rounded USD
+  compatibility fields. Before the first complete interval, capacity/remaining and their dollar
+  metrics stay absent/null rather than publishing a false zero.
 - **Runbook alerts** are unchanged in name (`CodexNoAvailableHomes`, `CodexHomeUnauthenticated`,
   `CodexHomeQuotaSnapshotStale`); their meaning maps to sealed profiles.
 - **Wire verification** before enabling in production and after any `CODEX_CLI_VERSION` bump:

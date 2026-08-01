@@ -488,6 +488,7 @@ enum WriteCmd {
         window_duration_mins: i64,
         resets_at: i64,
         used_percent: i64,
+        used_fraction_units: i64,
         observed_at: i64,
         reply: oneshot::Sender<anyhow::Result<(i64, CodexCalibrationRow)>>,
     },
@@ -881,6 +882,7 @@ impl AsyncBilling {
         window_duration_mins: i64,
         resets_at: i64,
         used_percent: i64,
+        used_fraction_units: i64,
         observed_at: i64,
     ) -> anyhow::Result<(i64, CodexCalibrationRow)> {
         let (reply, result) = oneshot::channel();
@@ -890,6 +892,7 @@ impl AsyncBilling {
                 window_duration_mins,
                 resets_at,
                 used_percent,
+                used_fraction_units,
                 observed_at,
                 reply,
             })
@@ -1084,7 +1087,13 @@ impl AsyncBilling {
                         ));
                     }
                     WriteCmd::CodexObserveWindow {
-                        home_id, window_duration_mins, resets_at, used_percent, observed_at, reply,
+                        home_id,
+                        window_duration_mins,
+                        resets_at,
+                        used_percent,
+                        used_fraction_units,
+                        observed_at,
+                        reply,
                     } => {
                         let result = (|| {
                             let spend_nano = registry::codex_home_spend(&conn, &home_id)?;
@@ -1094,6 +1103,7 @@ impl AsyncBilling {
                                 resets_at,
                                 observed_at,
                                 used_percent,
+                                used_fraction_units,
                                 gateway_spend_nano: spend_nano,
                             };
                             loop {
@@ -1126,7 +1136,7 @@ impl AsyncBilling {
                                     existing,
                                     &history,
                                     &observation,
-                                );
+                                )?;
                                 if let Some(version) = registry::save_codex_calibration(
                                     &conn, &state, &observation,
                                 )? {
@@ -1539,7 +1549,12 @@ impl AsyncBilling {
                             let _ = reply.send(result);
                         }
                         WriteCmd::CodexObserveWindow {
-                            home_id, window_duration_mins, resets_at, used_percent, observed_at,
+                            home_id,
+                            window_duration_mins,
+                            resets_at,
+                            used_percent,
+                            used_fraction_units,
+                            observed_at,
                             reply,
                         } => {
                             let result = run_pg_with_retry(
@@ -1555,6 +1570,7 @@ impl AsyncBilling {
                                         resets_at,
                                         observed_at,
                                         used_percent,
+                                        used_fraction_units,
                                         gateway_spend_nano: spend_nano,
                                     };
                                     loop {
@@ -1587,7 +1603,7 @@ impl AsyncBilling {
                                                 existing,
                                                 &history,
                                                 &observation,
-                                            );
+                                            )?;
                                         if let Some(version) =
                                             pg.save_codex_calibration(&state, &observation)?
                                         {
@@ -3129,7 +3145,7 @@ mod tests {
             100_000_000_000
         );
         let (_, anchor) = first
-            .observe_codex_window("home-a", 300, 2_000_000_000, 10, 100)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 10, 10_000_000, 100)
             .await
             .unwrap();
         assert!(anchor.current_capacity_nano.is_none());
@@ -3138,7 +3154,7 @@ mod tests {
             .await
             .unwrap();
         let (_, measured) = first
-            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 101)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 12, 12_000_000, 101)
             .await
             .unwrap();
         assert!(measured.current_capacity_nano.is_none());
@@ -3148,12 +3164,12 @@ mod tests {
             .await
             .unwrap();
         let (_, measured) = first
-            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 102)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 102)
             .await
             .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
         let (_, duplicate) = first
-            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 102)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 102)
             .await
             .unwrap();
         assert_eq!(duplicate.version, measured.version);
@@ -3177,7 +3193,7 @@ mod tests {
 
         let restarted = AsyncBilling::start(path_string, 1).unwrap();
         let (spend, restored) = restarted
-            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 103)
+            .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 103)
             .await
             .unwrap();
         assert_eq!(spend, 180_000_000_000);

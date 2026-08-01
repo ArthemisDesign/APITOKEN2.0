@@ -91,15 +91,25 @@ describe("таблицы флотов (smoke render с данными)", () => {
             reject_reason: "cooling",
             cooling_until: nowMs / 1000 + 600,
             inflight: 2,
+            spend_nano_total: "33300000000",
             spend_usd_total: 33.3,
             windows: [
               {
                 slot: "primary",
                 used_percent: 42,
+                used_fraction_units: 42_125_679,
                 window_minutes: 300,
-                source: "measured",
+                source: "workload_blend",
                 samples: 3,
                 confidence: 0.8,
+                remaining_nano: "10000000000",
+                capacity_nano: "20000000000",
+                low_nano: "18000000000",
+                high_nano: "22000000000",
+                remaining_low_nano: "9000000000",
+                remaining_high_nano: "11000000000",
+                observed_spend_nano: "8425135800",
+                observed_fraction_units: 42_125_679,
                 remaining_usd: 10,
                 cap_usd: 20,
                 low_usd: 18,
@@ -113,8 +123,9 @@ describe("таблицы флотов (smoke render с данными)", () => {
     );
     expect(html).toContain("home-1");
     expect(html).toContain("cooling 10м");
-    expect(html).toContain("42%");
+    expect(html).toContain("42.125679%");
     expect(html).toContain("доверительный интервал");
+    expect(html).toContain("Δquota 42.125679%");
     expect(html).toContain("official-price");
   });
 

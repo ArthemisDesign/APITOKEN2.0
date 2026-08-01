@@ -151,8 +151,9 @@ engine-аккаунты и ёмкость, партнёрские аккаунт
   заменить новой ссылкой и отправить заново. Список показывает delivery status/error, а B2B-
   клиенты — pending/retry/failed/confirmed синхронизацию цены с engine.
 - Подписки: отдельная страница по трём флотам. Claude — lifecycle (added/peaks/дни до замены),
-  live util/reset/cooling по окнам 5h/7d и прокси; GPT (OpenAI Codex) — per-home статус, окна
-  primary/secondary, лимиты и official-price spend; Gemini — per-profile auth/inflight,
+  live util/reset/cooling по окнам 5h/7d и прокси; GPT (OpenAI Codex) — per-home статус, decimal
+  primary/secondary utilisation, exact nanoUSD official-price spend, realized workload-blend
+  capacity/remaining, envelope/evidence/confidence; Gemini — per-profile auth/inflight,
   per-model availability/cooling, официальный quota remaining/reset/type, probe freshness,
   missing-usage settlement counter и точные gaxios/Undici transport attestations.
 - Система: verdict, 1d/5h/7d supply, headroom, coverage, fleet demand, рекомендации и все

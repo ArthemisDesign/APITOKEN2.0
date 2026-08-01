@@ -2280,7 +2280,11 @@ impl PgStore {
                    observed_points,samples,current_capacity_nano,current_low_nano,current_high_nano,\
                    current_confidence_bp,last_capacity_nano,last_low_nano,last_high_nano,\
                    last_confidence_bp,last_measured_at,estimator_version,version,updated_ts,\
-                   anchor_ready \
+                   anchor_ready,\
+                   COALESCE(anchor_used_fraction_units,anchor_used_percent*1000000),\
+                   COALESCE(used_fraction_units,used_percent*1000000),\
+                   COALESCE(observed_fraction_units,observed_points*1000000),\
+                   COALESCE(observed_spend_nano,0) \
                  FROM codex_window_calibrations WHERE home_id=$1 AND window_duration_mins=$2",
                 &[&home_id, &window_duration_mins],
             )?
@@ -2309,6 +2313,10 @@ impl PgStore {
                 version: row.get(21),
                 updated_ts: row.get(22),
                 anchor_ready: row.get(23),
+                anchor_used_fraction_units: row.get(24),
+                used_fraction_units: row.get(25),
+                observed_fraction_units: row.get(26),
+                observed_spend_nano: row.get(27),
             }))
     }
 
@@ -2322,7 +2330,8 @@ impl PgStore {
             .client
             .query(
                 "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,\
-                   gateway_spend_nano FROM codex_window_observations \
+                   COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano \
+                 FROM codex_window_observations \
                  WHERE home_id=$1 AND window_duration_mins=$2 ORDER BY observed_at,id",
                 &[&home_id, &window_duration_mins],
             )?
@@ -2333,7 +2342,8 @@ impl PgStore {
                 resets_at: row.get(2),
                 observed_at: row.get(3),
                 used_percent: row.get(4),
-                gateway_spend_nano: row.get(5),
+                used_fraction_units: row.get(5),
+                gateway_spend_nano: row.get(6),
             })
             .collect())
     }
@@ -2353,9 +2363,10 @@ impl PgStore {
                    used_percent,observed_at,sum_used_sq,sum_used_spend_nano,observed_points,samples,\
                    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                    last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
-                   estimator_version,updated_ts,version,anchor_ready \
+                   estimator_version,updated_ts,version,anchor_ready,anchor_used_fraction_units,\
+                   used_fraction_units,observed_fraction_units,observed_spend_nano \
                  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
-                          $19,$20,$21,$22,1,$23) \
+                          $19,$20,$21,$22,1,$23,$24,$25,$26,$27) \
                  ON CONFLICT(home_id,window_duration_mins) DO NOTHING RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -2364,7 +2375,9 @@ impl PgStore {
                   &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
                   &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
-                  &state.updated_ts,&state.anchor_ready],
+                  &state.updated_ts,&state.anchor_ready,&state.anchor_used_fraction_units,
+                  &state.used_fraction_units,&state.observed_fraction_units,
+                  &state.observed_spend_nano],
             )?
         } else {
             tx.query_opt(
@@ -2374,7 +2387,9 @@ impl PgStore {
                    samples=$11,current_capacity_nano=$12,current_low_nano=$13,current_high_nano=$14,\
                    current_confidence_bp=$15,last_capacity_nano=$16,last_low_nano=$17,\
                    last_high_nano=$18,last_confidence_bp=$19,last_measured_at=$20,\
-                   estimator_version=$21,updated_ts=$22,version=version+1,anchor_ready=$24 \
+                   estimator_version=$21,updated_ts=$22,version=version+1,anchor_ready=$24,\
+                   anchor_used_fraction_units=$25,used_fraction_units=$26,\
+                   observed_fraction_units=$27,observed_spend_nano=$28 \
                  WHERE home_id=$1 AND window_duration_mins=$2 AND version=$23 RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -2383,7 +2398,9 @@ impl PgStore {
                   &state.current_low_nano,&state.current_high_nano,&state.current_confidence_bp,
                   &state.last_capacity_nano,&state.last_low_nano,&state.last_high_nano,
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
-                  &state.updated_ts,&state.version,&state.anchor_ready],
+                  &state.updated_ts,&state.version,&state.anchor_ready,
+                  &state.anchor_used_fraction_units,&state.used_fraction_units,
+                  &state.observed_fraction_units,&state.observed_spend_nano],
             )?
         };
         let Some(version) = version.map(|row| row.get::<_, i64>(0)) else {
@@ -2391,14 +2408,16 @@ impl PgStore {
         };
         tx.execute(
             "INSERT INTO codex_window_observations( \
-               home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano \
-             ) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+               home_id,window_duration_mins,resets_at,observed_at,used_percent,\
+               used_fraction_units,gateway_spend_nano \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
             &[
                 &observation.home_id,
                 &observation.window_duration_mins,
                 &observation.resets_at,
                 &observation.observed_at,
                 &observation.used_percent,
+                &observation.used_fraction_units,
                 &observation.gateway_spend_nano,
             ],
         )?;
@@ -5211,12 +5230,16 @@ mod tests {
             window_duration_mins: 300,
             resets_at: 2_000_000_000,
             anchor_used_percent: 10,
+            anchor_used_fraction_units: 10_000_000,
             anchor_spend_nano: 100_000_000_000,
             used_percent: 10,
+            used_fraction_units: 10_000_000,
             observed_at: 101,
             sum_used_sq: 0,
             sum_used_spend_nano: 0,
             observed_points: 0,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -5238,6 +5261,7 @@ mod tests {
             resets_at: state.resets_at,
             observed_at: state.observed_at,
             used_percent: state.used_percent,
+            used_fraction_units: state.used_fraction_units,
             gateway_spend_nano: state.anchor_spend_nano,
         };
         assert_eq!(

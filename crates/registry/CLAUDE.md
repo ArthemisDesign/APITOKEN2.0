@@ -59,7 +59,10 @@ side effect. `serve` may only perform the read-only schema verification before c
 - Codex calibration migration 0015 expand-only добавляет nullable fixed-point fraction evidence и
   exact cumulative legs. Nullable — намеренно: предыдущий runtime может безопасно пережить
   migration-first rollout, а следующий estimator восстанавливает отсутствующие значения из
-  legacy whole-percent raw observations и после cutover пишет обе проекции атомарно.
+  legacy whole-percent raw observations. Runtime estimator v6 после cutover атомарно пишет
+  canonical `10^-8` fraction units, legacy whole-percent projection, `ΣΔfraction` и exact
+  `ΣΔspend_nano`; raw observations остаются replay authority. Смысл workload
+  blend/envelope/confidence принадлежит `forward`, registry хранит и CAS-обновляет примитивы.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

@@ -1,6 +1,7 @@
 // Типы payload'ов флотов подписок: GET /subs, /capacity, /codex-subs, /gemini-subs.
 // Все поля опциональны — панель деградирует молча, как admin-panel.js.
-// Деньги на этой странице — легаси-доллары движка (*_usd), только отображение через money().
+// Для Codex canonical money — *_nano строки; legacy *_usd только отображаются. Остальные старые
+// payload'ы страницы пока остаются presentation USD и не участвуют в money arithmetic.
 
 // GET /subs — Claude OAuth lifecycle
 export interface ClaudeSub {
@@ -49,22 +50,39 @@ export interface CapacityResponse {
   };
 }
 
-// GET /codex-subs — GPT/Codex app-server homes (OpenAI-runtime)
+// GET /codex-subs — GPT/Codex native homes (OpenAI-runtime).
+// *_nano strings are canonical money; *_usd numbers are presentation compatibility only.
 export interface CodexHomeWindow {
   slot?: string;
   used_percent?: number;
+  used_fraction_units?: number;
+  used_fraction?: number;
   window_minutes?: number;
   source?: string;
   samples?: number;
   confidence?: number;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
   remaining_usd?: number | null;
   cap_usd?: number | null;
   low_usd?: number | null;
   high_usd?: number | null;
+  remaining_low_usd?: number | null;
+  remaining_high_usd?: number | null;
+  observed_spend_nano?: string;
+  observed_fraction_units?: number;
+  workload_dependent?: boolean;
 }
 
 export interface CodexRateLimit {
   resets_at?: number;
+  used_percent?: number;
+  used_fraction_units?: number;
+  used_fraction?: number;
 }
 
 export interface CodexHome {
@@ -79,14 +97,30 @@ export interface CodexHome {
   /** epoch-секунды, до которых home в cooling. */
   cooling_until?: number;
   inflight?: number;
+  spend_nano_total?: string;
   spend_usd_total?: number;
   windows?: CodexHomeWindow[];
   rate_limits?: { primary?: CodexRateLimit; secondary?: CodexRateLimit };
 }
 
 export interface CodexWindowTotal {
+  window_minutes?: number;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
   cap_usd?: number | null;
   remaining_usd?: number | null;
+  low_usd?: number | null;
+  high_usd?: number | null;
+  remaining_low_usd?: number | null;
+  remaining_high_usd?: number | null;
+  observed_spend_nano?: string;
+  observed_fraction_units?: string;
+  source?: string;
+  workload_dependent?: boolean;
   observed_homes?: number;
   measured_homes?: number;
 }

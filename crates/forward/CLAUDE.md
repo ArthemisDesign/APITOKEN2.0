@@ -260,11 +260,16 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    OpenAI-shaped 429 с ближайшим reset. Health — чистая политика в `health.rs` по двум осям
    (account healthy→suspect→dead; transport responsive→degraded→wedged), durable account axis в
    authority.
-6. **Калибровка ёмкости окна — только по фактическим данным** (без изменений от app-server
-   эпохи): каждый успешный turn durable-кредитует home exact official-price cost в integer
-   nanoUSD; cumulative integer WLS `cap=100*Σ(Δused*Δspend)/Σ(Δused²)` без prior/EMA; cold
-   capacity/remaining = `null` до следующего complete positive-spend interval; raw
-   observations/CAS/spend в engine authority, переживают restart/blue-green.
+6. **Калибровка ёмкости окна — fixed-point workload blend по фактическим данным.** Decimal
+   `used_percent` из `/wham/usage`/headers парсится без `f64` в `10^-8` fraction units; каждый
+   успешный turn durable-кредитует home exact official-price cost в integer nanoUSD. Estimator v6
+   считает `cap=100_000_000*ΣΔspend_nano/ΣΔused_fraction_units`: это API-USD-equivalent реально
+   обслуженного mix моделей/context/reasoning/tools, а не выдуманный номинал подписки. Per-interval
+   ±1-unit envelope даёт low/high, confidence = maturity × workload stability × quantisation.
+   Нет prior/EMA/WLS/float-money. Cold anchor и первый transition censored; движение ждёт
+   положительный settlement catch-up. Raw observations, exact cumulative legs и CAS-state в
+   engine authority переживают restart/blue-green/reset и позволяют replay при смене estimator;
+   каждое provider-reported duration калибруется независимо.
 7. **Цены — только из `metering::codex`** (audited, effective-dated). Для успешного ChatGPT-auth
    turn effective tier определяется принятым запросом: `priority` = Fast, отсутствие tier =
    Standard. Completed `response.service_tier` хранится только как provider-reported диагностика:

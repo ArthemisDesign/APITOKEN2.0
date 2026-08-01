@@ -258,17 +258,31 @@ Capacity planning reads `claude_api_codex_window_remaining_usd{window_minutes}` 
 `claude_api_codex_window_capacity_usd{window_minutes}`. They exist only after real utilisation
 movement has produced an estimate; `claude_api_codex_window_measured_homes` versus
 `..._observed_homes` shows how many homes are still unknown. Per-home
-`claude_api_codex_home_window_estimate_available`, `..._confidence_ratio`, low/high bounds, data
-age and samples explain estimate quality and source. The compatibility metric named
-`..._confidence_ratio` is evidence coverage, not probability: it rises by 0.05 per completed
-percentage point and saturates at 1.0 after 20 points; low/high use aggregate coverage ±1 point.
-There is no configured capacity prior. Because the provider percentage can include usage outside
-this gateway, investigate divergence between raw observations and gateway spend even at 100%
-evidence.
+`claude_api_codex_home_window_used_ratio`/`..._used_fraction_units`,
+`..._observed_spend_usd`/`..._observed_fraction_units`,
+`..._estimate_available`, `..._confidence_ratio`, capacity and remaining low/high bounds, data
+age and samples explain estimate quality and source. The source is `workload_blend`: Codex
+consumption depends on model, context, reasoning and tools, so this is the API-dollar equivalent of
+the workload actually served, not a fixed subscription nominal. The compatibility metric named
+`..._confidence_ratio` is deterministic evidence quality, not probability. It multiplies sample
+maturity, observed workload-envelope stability and fixed-point quantisation resolution. One
+fine-grained but highly variable sample therefore cannot look certain merely because it crossed a
+whole percentage point.
+
+Canonical `/codex-subs` money fields are integer nanoUSD encoded as decimal strings
+(`capacity_nano`, `remaining_nano`, low/high variants, `observed_spend_nano` and
+`spend_nano_total`); rounded `*_usd` numbers remain presentation compatibility only. Provider
+utilisation is canonical `10^-8` fraction units, not the rounded `used_percent` field. There is
+no configured capacity prior, EMA or float-money path. Because provider utilisation can include
+activity outside this gateway, investigate an unexpectedly wide workload envelope or divergence
+between exact observed fraction and gateway spend; confidence cannot turn foreign usage into known
+gateway cost.
 An estimate intentionally remains unknown when a new percentage snapshot arrives before its
 positive gateway settlement; it should appear as soon as settlement catches up, without waiting for
-another percentage point. A persistent unknown with rising spend indicates a calibration writer or
-authority problem rather than a reason to impose an admission limit.
+another percentage point. A cold anchor and its first positive transition are also intentionally
+censored; the next complete interval publishes the first estimate. A persistent unknown after
+multiple settled fraction movements indicates a calibration writer or authority problem rather
+than a reason to impose an admission limit.
 
 ## CodexHomeUnauthenticated
 
@@ -279,13 +293,14 @@ auth store or an unsealed token, and never point two profiles at one account.
 
 ## CodexHomeNearRateLimit
 
-This is an early capacity-planning warning, not the admission threshold. The gateway keeps the home
-in rotation below the wall and drops it as soon as a reported window reaches `usedPercent=100` — or
-OpenAI reports an explicit reached condition or returns a usage-limit response. A home outside
-rotation publishes `claude_api_codex_home_limit_reached=1` and shows «лимит достигнут» in the panel;
-customers get `429 + Retry-After` for the window reset instead of a turn on a spent subscription.
-Confirm other homes can absorb load; add an authenticated home if measured remaining API-dollar
-capacity is insufficient.
+This is an early capacity-planning warning, not the provider's hard admission threshold. The
+gateway normally steers away at its jittered soft reserve. Under peak it may relax that reserve:
+live verification showed that `usedPercent=100` with `allowed:true` can still serve, so a numeric
+100 alone does not hard-exclude the home. Only an explicit provider reached verdict or returned
+usage-limit response does; then `claude_api_codex_home_limit_reached=1`, the panel shows
+«лимит достигнут», and customers receive `429 + Retry-After` for the reset. Confirm other homes
+can absorb load; add an authenticated home if measured remaining API-dollar capacity is
+insufficient.
 
 ## CodexHomeRateLimited
 

@@ -1051,6 +1051,8 @@ async fn metrics(
             "# TYPE claude_api_codex_rate_limit_snapshot_timestamp_seconds gauge\n\
              claude_api_codex_rate_limit_snapshot_timestamp_seconds {}\n\
              # TYPE claude_api_codex_rate_limit_used_percent gauge\n\
+             # TYPE claude_api_codex_rate_limit_used_ratio gauge\n\
+             # TYPE claude_api_codex_rate_limit_used_fraction_units gauge\n\
              # TYPE claude_api_codex_rate_limit_window_minutes gauge\n\
              # TYPE claude_api_codex_rate_limit_resets_at_seconds gauge",
             limits.observed_at
@@ -1064,8 +1066,12 @@ async fn metrics(
             };
             let _ = writeln!(
                 body,
-                "claude_api_codex_rate_limit_used_percent{{window=\"{window_name}\"}} {}",
-                window.used_percent
+                "claude_api_codex_rate_limit_used_percent{{window=\"{window_name}\"}} {}\n\
+                 claude_api_codex_rate_limit_used_ratio{{window=\"{window_name}\"}} {:.8}\n\
+                 claude_api_codex_rate_limit_used_fraction_units{{window=\"{window_name}\"}} {}",
+                window.used_percent,
+                window.used_fraction(),
+                window.used_fraction_units,
             );
             if let Some(duration) = window.window_duration_mins {
                 let _ = writeln!(
@@ -1114,6 +1120,12 @@ async fn metrics(
              # TYPE claude_api_codex_home_window_remaining_usd gauge\n\
              # TYPE claude_api_codex_home_window_capacity_low_usd gauge\n\
              # TYPE claude_api_codex_home_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_codex_home_window_remaining_low_usd gauge\n\
+             # TYPE claude_api_codex_home_window_remaining_high_usd gauge\n\
+             # TYPE claude_api_codex_home_window_used_ratio gauge\n\
+             # TYPE claude_api_codex_home_window_used_fraction_units gauge\n\
+             # TYPE claude_api_codex_home_window_observed_spend_usd gauge\n\
+             # TYPE claude_api_codex_home_window_observed_fraction_units gauge\n\
              # TYPE claude_api_codex_home_window_confidence_ratio gauge\n\
              # TYPE claude_api_codex_home_window_data_age_seconds gauge\n\
              # TYPE claude_api_codex_home_window_estimate_available gauge\n\
@@ -1183,21 +1195,45 @@ async fn metrics(
             body,
             "# TYPE claude_api_codex_window_capacity_usd gauge\n\
              # TYPE claude_api_codex_window_remaining_usd gauge\n\
+             # TYPE claude_api_codex_window_capacity_low_usd gauge\n\
+             # TYPE claude_api_codex_window_capacity_high_usd gauge\n\
+             # TYPE claude_api_codex_window_remaining_low_usd gauge\n\
+             # TYPE claude_api_codex_window_remaining_high_usd gauge\n\
              # TYPE claude_api_codex_window_measured_homes gauge\n\
              # TYPE claude_api_codex_window_observed_homes gauge"
         );
-        for (duration, (cap_sum, remaining_sum, measured, observed)) in codex_window_totals(status)
-        {
+        for (duration, total) in codex_window_totals(status) {
             let _ = writeln!(
                 body,
-                "claude_api_codex_window_measured_homes{{window_minutes=\"{duration}\"}} {measured}\n\
-                 claude_api_codex_window_observed_homes{{window_minutes=\"{duration}\"}} {observed}"
+                "claude_api_codex_window_measured_homes{{window_minutes=\"{duration}\"}} {}\n\
+                 claude_api_codex_window_observed_homes{{window_minutes=\"{duration}\"}} {}",
+                total.measured_homes, total.observed_homes,
             );
-            if measured > 0 {
+            if total.measured_homes > 0 {
                 let _ = writeln!(
                     body,
-                    "claude_api_codex_window_capacity_usd{{window_minutes=\"{duration}\"}} {cap_sum:.4}\n\
-                     claude_api_codex_window_remaining_usd{{window_minutes=\"{duration}\"}} {remaining_sum:.4}"
+                    "claude_api_codex_window_capacity_usd{{window_minutes=\"{duration}\"}} {:.9}\n\
+                     claude_api_codex_window_remaining_usd{{window_minutes=\"{duration}\"}} {:.9}",
+                    total.capacity_nano as f64 / 1e9,
+                    total.remaining_nano as f64 / 1e9,
+                );
+            }
+            if total.low_homes == total.measured_homes && total.measured_homes > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_window_capacity_low_usd{{window_minutes=\"{duration}\"}} {:.9}\n\
+                     claude_api_codex_window_remaining_low_usd{{window_minutes=\"{duration}\"}} {:.9}",
+                    total.low_nano as f64 / 1e9,
+                    total.remaining_low_nano as f64 / 1e9,
+                );
+            }
+            if total.high_homes == total.measured_homes && total.measured_homes > 0 {
+                let _ = writeln!(
+                    body,
+                    "claude_api_codex_window_capacity_high_usd{{window_minutes=\"{duration}\"}} {:.9}\n\
+                     claude_api_codex_window_remaining_high_usd{{window_minutes=\"{duration}\"}} {:.9}",
+                    total.high_nano as f64 / 1e9,
+                    total.remaining_high_nano as f64 / 1e9,
                 );
             }
         }
@@ -1375,13 +1411,21 @@ fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::C
             .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
         let _ = writeln!(
             body,
-            "claude_api_codex_home_window_estimate_available{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {}\n\
+            "claude_api_codex_home_window_used_ratio{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.8}\n\
+             claude_api_codex_home_window_used_fraction_units{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {}\n\
+             claude_api_codex_home_window_estimate_available{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {}\n\
              claude_api_codex_home_window_confidence_ratio{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.4}\n\
-             claude_api_codex_home_window_samples{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {}",
+             claude_api_codex_home_window_samples{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {}\n\
+             claude_api_codex_home_window_observed_spend_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.9}\n\
+             claude_api_codex_home_window_observed_fraction_units{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {}",
+            capacity.used_fraction_units as f64 / 100_000_000.0,
+            capacity.used_fraction_units,
             capacity.source,
-            u8::from(capacity.cap_usd.is_some()),
+            u8::from(capacity.capacity_nano.is_some()),
             capacity.confidence,
             capacity.samples,
+            capacity.observed_spend_nano as f64 / 1e9,
+            capacity.observed_fraction_units,
         );
         if let Some(age) = capacity.data_age_seconds {
             let _ = writeln!(
@@ -1389,25 +1433,45 @@ fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::C
                 "claude_api_codex_home_window_data_age_seconds{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {age}"
             );
         }
-        if let (Some(cap_usd), Some(remaining_usd)) = (capacity.cap_usd, capacity.remaining_usd) {
+        if let (Some(capacity_nano), Some(remaining_nano)) =
+            (capacity.capacity_nano, capacity.remaining_nano)
+        {
             let _ = writeln!(
                 body,
-                "claude_api_codex_home_window_capacity_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {cap_usd:.4}\n\
-                 claude_api_codex_home_window_remaining_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {remaining_usd:.4}",
+                "claude_api_codex_home_window_capacity_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {:.9}\n\
+                 claude_api_codex_home_window_remaining_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\",source=\"{}\"}} {:.9}",
                 capacity.source,
+                capacity_nano as f64 / 1e9,
                 capacity.source,
+                remaining_nano as f64 / 1e9,
             );
         }
-        if let Some(low_usd) = capacity.low_usd {
+        if let Some(low_nano) = capacity.low_nano {
             let _ = writeln!(
                 body,
-                "claude_api_codex_home_window_capacity_low_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {low_usd:.4}"
+                "claude_api_codex_home_window_capacity_low_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.9}",
+                low_nano as f64 / 1e9,
             );
         }
-        if let Some(high_usd) = capacity.high_usd {
+        if let Some(high_nano) = capacity.high_nano {
             let _ = writeln!(
                 body,
-                "claude_api_codex_home_window_capacity_high_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {high_usd:.4}"
+                "claude_api_codex_home_window_capacity_high_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.9}",
+                high_nano as f64 / 1e9,
+            );
+        }
+        if let Some(remaining_low_nano) = capacity.remaining_low_nano {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_remaining_low_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.9}",
+                remaining_low_nano as f64 / 1e9,
+            );
+        }
+        if let Some(remaining_high_nano) = capacity.remaining_high_nano {
+            let _ = writeln!(
+                body,
+                "claude_api_codex_home_window_remaining_high_usd{{home=\"{index}\",slot=\"{slot}\",window_minutes=\"{duration}\"}} {:.9}",
+                remaining_high_nano as f64 / 1e9,
             );
         }
     }
@@ -1483,10 +1547,26 @@ fn write_gemini_profile_capacity_metrics(
 
 /// Sum each real duration once per home. Slot names are presentation metadata, and duplicate slots
 /// must never make one subscription look like two copies of the same dollar capacity.
+#[derive(Default)]
+struct CodexWindowTotal {
+    capacity_nano: i128,
+    remaining_nano: i128,
+    low_nano: i128,
+    high_nano: i128,
+    remaining_low_nano: i128,
+    remaining_high_nano: i128,
+    observed_spend_nano: i128,
+    observed_fraction_units: i128,
+    measured_homes: usize,
+    observed_homes: usize,
+    low_homes: usize,
+    high_homes: usize,
+}
+
 fn codex_window_totals(
     status: &forward::codex::CodexOperationalStatus,
-) -> BTreeMap<i64, (f64, f64, usize, usize)> {
-    let mut totals: BTreeMap<i64, (f64, f64, usize, usize)> = BTreeMap::new();
+) -> BTreeMap<i64, CodexWindowTotal> {
+    let mut totals: BTreeMap<i64, CodexWindowTotal> = BTreeMap::new();
     for home in &status.homes {
         let mut seen = BTreeSet::new();
         for capacity in &home.capacities {
@@ -1497,11 +1577,28 @@ fn codex_window_totals(
                 continue;
             }
             let total = totals.entry(duration).or_default();
-            total.3 += 1;
-            if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
-                total.0 += cap;
-                total.1 += remaining;
-                total.2 += 1;
+            total.observed_homes += 1;
+            total.observed_spend_nano += i128::from(capacity.observed_spend_nano);
+            total.observed_fraction_units += i128::from(capacity.observed_fraction_units);
+            if let (Some(cap), Some(remaining)) = (capacity.capacity_nano, capacity.remaining_nano)
+            {
+                total.capacity_nano += i128::from(cap);
+                total.remaining_nano += i128::from(remaining);
+                total.measured_homes += 1;
+                if let (Some(low), Some(remaining_low)) =
+                    (capacity.low_nano, capacity.remaining_low_nano)
+                {
+                    total.low_nano += i128::from(low);
+                    total.remaining_low_nano += i128::from(remaining_low);
+                    total.low_homes += 1;
+                }
+                if let (Some(high), Some(remaining_high)) =
+                    (capacity.high_nano, capacity.remaining_high_nano)
+                {
+                    total.high_nano += i128::from(high);
+                    total.remaining_high_nano += i128::from(remaining_high);
+                    total.high_homes += 1;
+                }
             }
         }
     }
@@ -2338,12 +2435,47 @@ async fn codex_subs(
     Json(codex_subs_value(&status, pool::now())).into_response()
 }
 
+fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
+    let round = |x: f64| (x * 100.0).round() / 100.0;
+    let round_opt = |x: Option<f64>| x.map(round);
+    let nano_opt = |x: Option<i64>| x.map(|value| value.to_string());
+    json!({
+        "slot": c.slot,
+        "window_minutes": c.window_minutes,
+        "resets_at": c.resets_at,
+        "observed_at": c.observed_at,
+        "data_age_seconds": c.data_age_seconds,
+        "used_percent": c.used_percent,
+        "used_fraction_units": c.used_fraction_units,
+        "used_fraction": c.used_fraction_units as f64 / 100_000_000.0,
+        "capacity_nano": nano_opt(c.capacity_nano),
+        "remaining_nano": nano_opt(c.remaining_nano),
+        "low_nano": nano_opt(c.low_nano),
+        "high_nano": nano_opt(c.high_nano),
+        "remaining_low_nano": nano_opt(c.remaining_low_nano),
+        "remaining_high_nano": nano_opt(c.remaining_high_nano),
+        "cap_usd": round_opt(c.cap_usd),
+        "remaining_usd": round_opt(c.remaining_usd),
+        "low_usd": round_opt(c.low_usd),
+        "high_usd": round_opt(c.high_usd),
+        "remaining_low_usd": round_opt(c.remaining_low_usd),
+        "remaining_high_usd": round_opt(c.remaining_high_usd),
+        "observed_spend_nano": c.observed_spend_nano.to_string(),
+        "observed_fraction_units": c.observed_fraction_units,
+        "workload_dependent": true,
+        "source": c.source,
+        "confidence": c.confidence,
+        "samples": c.samples,
+    })
+}
+
 fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -> Value {
     let round = |x: f64| (x * 100.0).round() / 100.0;
-    let round_opt = |x: Option<f64>| x.map(|value| round(value));
     let window = |w: &forward::codex::CodexRateLimitWindow| {
         json!({
             "used_percent": w.used_percent,
+            "used_fraction_units": w.used_fraction_units,
+            "used_fraction": w.used_fraction(),
             "window_duration_mins": w.window_duration_mins,
             "resets_at": w.resets_at,
         })
@@ -2372,21 +2504,8 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                     "primary": rl.primary.as_ref().map(window),
                     "secondary": rl.secondary.as_ref().map(window),
                 })),
-                "windows": h.capacities.iter().map(|c| json!({
-                    "slot": c.slot,
-                    "window_minutes": c.window_minutes,
-                    "resets_at": c.resets_at,
-                    "observed_at": c.observed_at,
-                    "data_age_seconds": c.data_age_seconds,
-                    "used_percent": c.used_percent,
-                    "cap_usd": round_opt(c.cap_usd),
-                    "remaining_usd": round_opt(c.remaining_usd),
-                    "low_usd": round_opt(c.low_usd),
-                    "high_usd": round_opt(c.high_usd),
-                    "source": c.source,
-                    "confidence": c.confidence,
-                    "samples": c.samples,
-                })).collect::<Vec<_>>(),
+                "spend_nano_total": h.spend_nano_total.to_string(),
+                "windows": h.capacities.iter().map(codex_window_value).collect::<Vec<_>>(),
                 "fast_tiers": h.fast_tiers.iter().map(|tier| json!({
                     "model": tier.model,
                     "catalog_available": tier.catalog_available,
@@ -2402,13 +2521,36 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
     // not silently contribute zero or a configured prior to the measured aggregate.
     let totals: Vec<_> = codex_window_totals(status)
         .into_iter()
-        .map(|(duration, (cap, remaining, measured, observed))| {
+        .map(|(duration, total)| {
+            let measured = total.measured_homes;
+            let low_complete = measured > 0 && total.low_homes == measured;
+            let high_complete = measured > 0 && total.high_homes == measured;
             json!({
                 "window_minutes": duration,
-                "cap_usd": (measured > 0).then(|| round(cap)),
-                "remaining_usd": (measured > 0).then(|| round(remaining)),
+                "capacity_nano": (measured > 0).then(|| total.capacity_nano.to_string()),
+                "remaining_nano": (measured > 0).then(|| total.remaining_nano.to_string()),
+                "low_nano": low_complete.then(|| total.low_nano.to_string()),
+                "high_nano": high_complete.then(|| total.high_nano.to_string()),
+                "remaining_low_nano": low_complete
+                    .then(|| total.remaining_low_nano.to_string()),
+                "remaining_high_nano": high_complete
+                    .then(|| total.remaining_high_nano.to_string()),
+                "cap_usd": (measured > 0)
+                    .then(|| round(total.capacity_nano as f64 / 1e9)),
+                "remaining_usd": (measured > 0)
+                    .then(|| round(total.remaining_nano as f64 / 1e9)),
+                "low_usd": low_complete.then(|| round(total.low_nano as f64 / 1e9)),
+                "high_usd": high_complete.then(|| round(total.high_nano as f64 / 1e9)),
+                "remaining_low_usd": low_complete
+                    .then(|| round(total.remaining_low_nano as f64 / 1e9)),
+                "remaining_high_usd": high_complete
+                    .then(|| round(total.remaining_high_nano as f64 / 1e9)),
+                "observed_spend_nano": total.observed_spend_nano.to_string(),
+                "observed_fraction_units": total.observed_fraction_units.to_string(),
                 "measured_homes": measured,
-                "observed_homes": observed,
+                "observed_homes": total.observed_homes,
+                "source": if measured > 0 { "workload_blend" } else { "unknown" },
+                "workload_dependent": true,
             })
         })
         .collect();
@@ -2803,6 +2945,7 @@ mod tests {
                 inflight: 0,
                 rate_limits: None,
                 limit_reached: false,
+                spend_nano_total: 12_500_000_000,
                 spend_usd_total: 12.5,
                 calibration_persistence_ok: true,
                 capacities: vec![forward::codex::CodexWindowCapacityReport {
@@ -2811,11 +2954,22 @@ mod tests {
                     resets_at: Some(2_000_000_000),
                     observed_at: 100,
                     data_age_seconds: Some(5),
+                    used_fraction_units: 40_000_000,
                     used_percent: 40,
+                    capacity_nano: None,
+                    remaining_nano: None,
+                    low_nano: None,
+                    high_nano: None,
+                    remaining_low_nano: None,
+                    remaining_high_nano: None,
                     cap_usd: None,
                     remaining_usd: None,
                     low_usd: None,
                     high_usd: None,
+                    remaining_low_usd: None,
+                    remaining_high_usd: None,
+                    observed_spend_nano: 0,
+                    observed_fraction_units: 0,
                     source: "unknown",
                     confidence: 0.0,
                     samples: 0,
@@ -2891,6 +3045,7 @@ mod tests {
         // A home the gateway refuses to route to must never read as active on an operator surface.
         status.homes[0].limit_reached = true;
         status.homes[0].capacities[0].used_percent = 100;
+        status.homes[0].capacities[0].used_fraction_units = 100_000_000;
         status.available = 0;
         let value = codex_subs_value(&status, 105);
         assert_eq!(value["homes"][0]["limit_reached"], true);
@@ -2922,6 +3077,10 @@ mod tests {
         let window = &value["homes"][0]["windows"][0];
         assert_eq!(window["window_minutes"], 300);
         assert_eq!(window["source"], "unknown");
+        assert_eq!(window["used_fraction_units"], 40_000_000);
+        assert_eq!(window["used_fraction"], 0.4);
+        assert_eq!(window["workload_dependent"], true);
+        assert!(window["capacity_nano"].is_null());
         assert!(window["cap_usd"].is_null());
         assert!(window["remaining_usd"].is_null());
 
@@ -2937,22 +3096,59 @@ mod tests {
     }
 
     #[test]
-    fn codex_subscription_contract_publishes_cumulative_capacity_and_remaining() {
+    fn codex_subscription_contract_publishes_exact_workload_capacity_and_remaining() {
         let mut status = unknown_codex_status();
         let capacity = &mut status.homes[0].capacities[0];
+        capacity.capacity_nano = Some(2_450_041_880_000);
+        capacity.remaining_nano = Some(1_470_025_128_000);
+        capacity.low_nano = Some(2_449_980_630_000);
+        capacity.high_nano = Some(2_450_103_133_000);
+        capacity.remaining_low_nano = Some(1_469_988_378_000);
+        capacity.remaining_high_nano = Some(1_470_061_880_000);
         capacity.cap_usd = Some(2_450.04188);
-        capacity.remaining_usd = Some(1_911.0326664);
-        capacity.source = "measured_cumulative";
+        capacity.remaining_usd = Some(1_470.025128);
+        capacity.low_usd = Some(2_449.98063);
+        capacity.high_usd = Some(2_450.103133);
+        capacity.remaining_low_usd = Some(1_469.988378);
+        capacity.remaining_high_usd = Some(1_470.06188);
+        capacity.observed_spend_nano = 980_016_752_000;
+        capacity.observed_fraction_units = 40_000_000;
+        capacity.source = "workload_blend";
         capacity.confidence = 0.8333;
         capacity.samples = 10;
 
         let value = codex_subs_value(&status, 105);
         let window = &value["homes"][0]["windows"][0];
+        assert_eq!(value["homes"][0]["spend_nano_total"], "12500000000");
+        assert_eq!(window["capacity_nano"], "2450041880000");
+        assert_eq!(window["remaining_nano"], "1470025128000");
+        assert_eq!(window["remaining_low_nano"], "1469988378000");
+        assert_eq!(window["remaining_high_nano"], "1470061880000");
+        assert_eq!(window["observed_spend_nano"], "980016752000");
+        assert_eq!(window["observed_fraction_units"], 40_000_000);
+        assert_eq!(window["workload_dependent"], true);
         assert_eq!(window["cap_usd"], 2_450.04);
-        assert_eq!(window["remaining_usd"], 1_911.03);
-        assert_eq!(window["source"], "measured_cumulative");
+        assert_eq!(window["remaining_usd"], 1_470.03);
+        assert_eq!(window["source"], "workload_blend");
         assert_eq!(window["samples"], 10);
+        assert_eq!(value["window_totals"][0]["capacity_nano"], "2450041880000");
+        assert_eq!(value["window_totals"][0]["source"], "workload_blend");
         assert_eq!(value["window_totals"][0]["measured_homes"], 1);
+
+        let mut metrics = String::new();
+        write_codex_home_capacity_metrics(&mut metrics, &status.homes[0]);
+        assert!(metrics.contains(
+            "claude_api_codex_home_window_used_ratio{home=\"home-1\",slot=\"primary\",window_minutes=\"300\"} 0.40000000"
+        ));
+        assert!(metrics.contains(
+            "claude_api_codex_home_window_observed_spend_usd{home=\"home-1\",slot=\"primary\",window_minutes=\"300\"} 980.016752000"
+        ));
+        assert!(metrics.contains(
+            "claude_api_codex_home_window_capacity_usd{home=\"home-1\",slot=\"primary\",window_minutes=\"300\",source=\"workload_blend\"} 2450.041880000"
+        ));
+        assert!(metrics.contains(
+            "claude_api_codex_home_window_remaining_low_usd{home=\"home-1\",slot=\"primary\",window_minutes=\"300\"} 1469.988378000"
+        ));
     }
 
     #[test]
