@@ -1,4 +1,4 @@
-//! Universal Chat Completions → Anthropic Messages адаптер — этап 3.1
+//! Universal Chat Completions → Anthropic Messages адаптер — этапы 3.1–3.2
 //! docs/engine/UNIFIED_ROUTER.md (решения 1–3).
 //!
 //! `POST /v1/chat/completions` на Anthropic-плоскости. Поток запроса:
@@ -6,10 +6,14 @@
 //! `/v1/messages` → общий [`forward`] (auth, reserve, ротация, identity-инжект,
 //! tee-метеринг, settle — без единого изменения) → перевод ответа: Messages
 //! SSE → `chat.completion.chunk` либо JSON message → `chat.completion`.
+//! Поддержка tools (3.2): `tools`/`functions` → Messages `tools[]`
+//! (`parameters`→`input_schema`), `tool_choice`/`function_call`/
+//! `parallel_tool_calls` → `tool_choice` (+`disable_parallel_tool_use`),
+//! история `tool_calls`/tool-ролей ↔ `tool_use`/`tool_result` блоки.
 //!
 //! Capability matrix (решение 3): параметры, которые Messages не умеет
-//! (n>1, penalties, logprobs, seed, store, tools до этапа 3.2, structured
-//! output и reasoning до этапа 3.4, …), с не-дефолтным значением отклоняются
+//! (n>1, penalties, logprobs, seed, store, structured output и reasoning до
+//! этапа 3.4, …), с не-дефолтным значением отклоняются
 //! `400 unsupported_parameter`; с дефолтным — принимаются (stock SDK шлют
 //! дефолты пачками). Неизвестные адаптеру поля проксируются в Messages тело
 //! как есть (открытый список; валидация — на апстриме).
@@ -243,6 +247,24 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
             }
         }
     }
+    // Tools (этап 3.2): chat tools и legacy functions → Messages tools[]
+    // (`parameters` → `input_schema`); tool_choice / legacy function_call /
+    // parallel_tool_calls=false → Messages tool_choice. Пустой список инструментов
+    // и дефолтный tool_choice=auto в тело не вставляются (Messages и так auto).
+    if let Some(tools) = object.get("tools").filter(|v| !v.is_null()) {
+        let tools = translate_chat_tools(tools, "tools")?;
+        if !tools.is_empty() {
+            body.insert("tools".to_string(), Value::Array(tools));
+        }
+    } else if let Some(functions) = object.get("functions").filter(|v| !v.is_null()) {
+        let tools = translate_chat_tools(functions, "functions")?;
+        if !tools.is_empty() {
+            body.insert("tools".to_string(), Value::Array(tools));
+        }
+    }
+    if let Some(choice) = translate_tool_choice(&object)? {
+        body.insert("tool_choice".to_string(), choice);
+    }
     // Открытый список (решение 3): неизвестные адаптеру поля проксируются в
     // Messages тело. Известные consumed/matrix-ключи сюда не попадают.
     for (key, value) in &object {
@@ -298,14 +320,12 @@ const CONSUMED_KEYS: &[&str] = &[
 
 /// Capability matrix (решение 3): параметр, который Messages не умеет, с
 /// не-дефолтным значением → `400 unsupported_parameter`. Порядок правил
-/// определяет, какой параметр назовёт ошибка.
+/// определяет, какой параметр назовёт ошибка. Tools-поверхность
+/// (tools/functions/tool_choice/function_call/parallel_tool_calls) с этапа
+/// 3.2 переводится, а не отклоняется — см. translate_chat_tools /
+/// translate_tool_choice.
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
-    let rules: [(&str, fn(&Value) -> bool); 22] = [
-        ("tools", |v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)),
-        ("functions", |v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)),
-        ("tool_choice", |v| v.is_null() || v.as_str() == Some("auto")),
-        ("function_call", |v| v.is_null() || v.as_str() == Some("auto")),
-        ("parallel_tool_calls", |v| v.as_bool() == Some(true)),
+    let rules: [(&str, fn(&Value) -> bool); 17] = [
         ("response_format", |v| {
             v.is_null() || v.get("type").and_then(Value::as_str) == Some("text")
         }),
@@ -344,9 +364,10 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
 
 /// Перевод массива chat-сообщений в `(system blocks, messages)`.
 /// system/developer → top-level `system` Messages (массив text-блоков).
-/// Подряд идущие сообщения одной роли склеиваются: Messages требует
-/// чередования user/assistant, а OpenAI-клиенты шлют последовательные
-/// одноролевые сообщения штатно.
+/// role tool/function → user-сообщение с tool_result-блоками (этап 3.2).
+/// Подряд идущие сообщения с одинаковой Messages-ролью склеиваются: Messages
+/// требует чередования user/assistant, а OpenAI-клиенты шлют последовательные
+/// одноролевые сообщения и серии tool-ответов штатно.
 fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), Response> {
     let mut system = Vec::new();
     let mut conversation: Vec<Value> = Vec::new();
@@ -357,14 +378,9 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), 
         let role = object.get("role").and_then(Value::as_str).ok_or_else(|| {
             invalid_request("Each message must have a string role.", Some("messages"))
         })?;
-        // Message-level поля, относящиеся к tools (этап 3.2) или
-        // не существующие в Messages: не-дефолт → 400.
-        for field in ["tool_calls", "function_call", "tool_call_id"] {
-            if object.get(field).is_some_and(|v| !v.is_null()) {
-                return Err(unsupported_parameter(field));
-            }
-        }
-        if object.get("name").is_some_and(|v| !v.is_null()) {
+        // `name` существует только у legacy function-роли (имя функции);
+        // participant-name остальных ролей в Messages не существует.
+        if role != "function" && object.get("name").is_some_and(|v| !v.is_null()) {
             return Err(unsupported_parameter("name"));
         }
         match role {
@@ -372,26 +388,25 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), 
                 let text = message_text(object.get("content"))?;
                 system.push(json!({"type": "text", "text": text}));
             }
-            "user" | "assistant" => {
+            "user" => {
                 let blocks = message_blocks(role, object.get("content"))?;
-                if let Some(last) = conversation.last_mut() {
-                    if last.get("role").and_then(Value::as_str) == Some(role) {
-                        // Склейка одноролевых подряд: блоки конкатенируются.
-                        let merged = last
-                            .get_mut("content")
-                            .and_then(Value::as_array_mut)
-                            .expect("translated message content is an array");
-                        merged.extend(blocks);
-                        continue;
-                    }
-                }
-                conversation.push(json!({"role": role, "content": blocks}));
+                merge_or_push(&mut conversation, "user", blocks);
             }
-            // tool/function-роли — этап 3.2; сейчас fail-closed.
-            "tool" | "function" => return Err(unsupported_parameter("messages")),
+            "assistant" => {
+                let blocks = assistant_blocks(object)?;
+                merge_or_push(&mut conversation, "assistant", blocks);
+            }
+            "tool" => {
+                let block = tool_result_block(object)?;
+                merge_or_push(&mut conversation, "user", vec![block]);
+            }
+            "function" => {
+                let block = legacy_function_result_block(object)?;
+                merge_or_push(&mut conversation, "user", vec![block]);
+            }
             _ => {
                 return Err(invalid_request(
-                    "Invalid message role: expected system, developer, user or assistant.",
+                    "Invalid message role: expected system, developer, user, assistant, tool or function.",
                     Some("messages"),
                 ))
             }
@@ -404,6 +419,162 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), 
         ));
     }
     Ok((system, conversation))
+}
+
+/// Добавить блоки в conversation, склеивая с последним сообщением той же
+/// Messages-роли (чередование user/assistant + серии tool_result в одном
+/// user-сообщении — именно так Messages ждёт ответы параллельных tool calls).
+fn merge_or_push(conversation: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
+    if let Some(last) = conversation.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some(role) {
+            let merged = last
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+                .expect("translated message content is an array");
+            merged.extend(blocks);
+            return;
+        }
+    }
+    conversation.push(json!({"role": role, "content": blocks}));
+}
+
+/// Assistant-сообщение → Messages-блоки: text + tool_use (chat `tool_calls[]`
+/// и legacy `function_call`). Пустой text-блок не создаётся: Messages
+/// отклоняет пустой text, а chat допускает `content: null` при tool calls.
+fn assistant_blocks(object: &Map<String, Value>) -> Result<Vec<Value>, Response> {
+    let mut blocks = Vec::new();
+    let text = message_text(object.get("content"))?;
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    if let Some(tool_calls) = object.get("tool_calls").filter(|v| !v.is_null()) {
+        let tool_calls = tool_calls.as_array().ok_or_else(|| {
+            invalid_request(
+                "Invalid type for parameter: tool_calls must be an array.",
+                Some("messages"),
+            )
+        })?;
+        for call in tool_calls {
+            blocks.push(tool_use_block(call)?);
+        }
+    }
+    if let Some(function_call) = object.get("function_call").filter(|v| !v.is_null()) {
+        let name = function_call
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                invalid_request(
+                    "Invalid function_call: expected an object with a name.",
+                    Some("messages"),
+                )
+            })?;
+        let input = parse_tool_arguments(function_call.get("arguments"))?;
+        // Legacy function-ответы ссылаются по имени, а не по id — id
+        // восстанавливается детерминированно, чтобы tool_result ниже по
+        // истории нашёл свой tool_use (см. legacy_function_result_block).
+        blocks.push(json!({
+            "type": "tool_use",
+            "id": legacy_tool_use_id(name),
+            "name": name,
+            "input": input,
+        }));
+    }
+    if blocks.is_empty() {
+        return Err(invalid_request(
+            "Assistant message must have content or tool calls.",
+            Some("messages"),
+        ));
+    }
+    Ok(blocks)
+}
+
+/// Один chat tool_call → Messages tool_use. `arguments` по контракту OpenAI —
+/// JSON-строка; Messages ждёт уже разобранный object.
+fn tool_use_block(call: &Value) -> Result<Value, Response> {
+    match call.get("type").and_then(Value::as_str) {
+        Some("function") | None => {}
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid tool_calls entry: only function tool calls are supported.",
+                Some("messages"),
+            ))
+        }
+    }
+    let id = call.get("id").and_then(Value::as_str).ok_or_else(|| {
+        invalid_request("Invalid tool_calls entry: missing id.", Some("messages"))
+    })?;
+    let function = call.get("function").ok_or_else(|| {
+        invalid_request("Invalid tool_calls entry: missing function.", Some("messages"))
+    })?;
+    let name = function
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid tool_calls entry: missing function name.",
+                Some("messages"),
+            )
+        })?;
+    let input = parse_tool_arguments(function.get("arguments"))?;
+    Ok(json!({"type": "tool_use", "id": id, "name": name, "input": input}))
+}
+
+/// `arguments` tool call'а: JSON-строка → object. Пустая строка — `{}`
+/// (stock SDK шлют её для функций без аргументов).
+fn parse_tool_arguments(value: Option<&Value>) -> Result<Value, Response> {
+    let raw = match value {
+        None | Some(Value::Null) => return Ok(json!({})),
+        Some(Value::String(raw)) => raw,
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid tool call arguments: expected a JSON string.",
+                Some("messages"),
+            ))
+        }
+    };
+    if raw.is_empty() {
+        return Ok(json!({}));
+    }
+    match serde_json::from_str(raw) {
+        Ok(Value::Object(arguments)) => Ok(Value::Object(arguments)),
+        _ => Err(invalid_request(
+            "Invalid tool call arguments: expected a JSON object string.",
+            Some("messages"),
+        )),
+    }
+}
+
+/// Детерминированный tool_use id для legacy function_call/function-роли:
+/// `callu_<name>` (имена функций OpenAI — [a-zA-Z0-9_-], паттерн tool_use id
+/// Messages соблюдён).
+fn legacy_tool_use_id(name: &str) -> String {
+    format!("callu_{name}")
+}
+
+/// role "tool" → tool_result-блок в user-сообщении.
+fn tool_result_block(object: &Map<String, Value>) -> Result<Value, Response> {
+    let id = object
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            invalid_request("Tool message requires a tool_call_id.", Some("messages"))
+        })?;
+    let text = message_text(object.get("content"))?;
+    Ok(json!({"type": "tool_result", "tool_use_id": id, "content": text}))
+}
+
+/// Legacy role "function" → tool_result; tool_use_id восстанавливается из
+/// имени (та же формула, что у assistant function_call — см. assistant_blocks).
+fn legacy_function_result_block(object: &Map<String, Value>) -> Result<Value, Response> {
+    let name = object.get("name").and_then(Value::as_str).ok_or_else(|| {
+        invalid_request("Function message requires a name.", Some("messages"))
+    })?;
+    let text = message_text(object.get("content"))?;
+    Ok(json!({
+        "type": "tool_result",
+        "tool_use_id": legacy_tool_use_id(name),
+        "content": text,
+    }))
 }
 
 /// Текст system/developer-сообщения: строка либо массив text-частей
@@ -436,9 +607,8 @@ fn message_text(content: Option<&Value>) -> Result<String, Response> {
     }
 }
 
-/// Контент user/assistant-сообщения → массив Messages-блоков. В 3.1
-/// поддерживается только текст; image/audio/file/refusal-части идут в
-/// `400 unsupported_parameter` (этапы 3.2–3.4).
+/// Контент user-сообщения → массив Messages-блоков. Пока только текст;
+/// image/audio/file-части идут в `400 unsupported_parameter` (этап 3.4).
 fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Response> {
     let text = message_text(content)?;
     if text.is_empty() && role == "user" {
@@ -478,6 +648,150 @@ fn translate_stop(value: Option<&Value>) -> Result<Option<Value>, Response> {
         }
     };
     Ok(Some(Value::Array(sequences)))
+}
+
+/// Chat `tools[]` / legacy `functions[]` → Messages `tools[]`. Legacy
+/// functions — голые function-объекты без {"type":"function"} обёртки
+/// (тот же паттерн, что в codex/chat.rs translate_legacy_functions).
+fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Response> {
+    let tools = value.as_array().ok_or_else(|| {
+        invalid_request(
+            &format!("Invalid type for parameter: {param} must be an array."),
+            Some(param),
+        )
+    })?;
+    let mut translated = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let function = if param == "functions" {
+            tool.as_object()
+        } else {
+            match tool.get("type").and_then(Value::as_str) {
+                Some("function") => tool.get("function").and_then(Value::as_object),
+                _ => None,
+            }
+        };
+        let function = function.ok_or_else(|| {
+            invalid_request(
+                &format!("Invalid entry in parameter: {param} must contain function objects."),
+                Some(param),
+            )
+        })?;
+        translated.push(translate_tool_function(function, param)?);
+    }
+    Ok(translated)
+}
+
+/// Один function-дескриптор → Messages tool: name/description passthrough,
+/// `parameters` → `input_schema` (отсутствующая схема — пустой object).
+fn translate_tool_function(function: &Map<String, Value>, param: &str) -> Result<Value, Response> {
+    let name = function
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            invalid_request(
+                &format!("Invalid entry in parameter: {param} entries require a function name."),
+                Some(param),
+            )
+        })?;
+    let mut tool = json!({"name": name});
+    match function.get("description") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(description)) => {
+            tool["description"] = Value::String(description.clone())
+        }
+        Some(_) => {
+            return Err(invalid_request(
+                &format!("Invalid type for parameter: {param} description must be a string."),
+                Some(param),
+            ))
+        }
+    }
+    match function.get("parameters") {
+        None | Some(Value::Null) => tool["input_schema"] = json!({"type": "object"}),
+        Some(schema) if schema.is_object() => tool["input_schema"] = schema.clone(),
+        Some(_) => {
+            return Err(invalid_request(
+                &format!("Invalid type for parameter: {param} parameters must be an object."),
+                Some(param),
+            ))
+        }
+    }
+    Ok(tool)
+}
+
+/// `tool_choice` / legacy `function_call` + `parallel_tool_calls` → Messages
+/// `tool_choice`. Дефолт (`auto` без disable_parallel_tool_use) не
+/// вставляется — Messages без tool_choice и так auto.
+fn translate_tool_choice(object: &Map<String, Value>) -> Result<Option<Value>, Response> {
+    let mut choice = match object.get("tool_choice").filter(|v| !v.is_null()) {
+        Some(Value::String(mode)) => match mode.as_str() {
+            "auto" => None,
+            "required" => Some(json!({"type": "any"})),
+            "none" => Some(json!({"type": "none"})),
+            _ => {
+                return Err(invalid_request(
+                    "Invalid value for parameter: tool_choice.",
+                    Some("tool_choice"),
+                ))
+            }
+        },
+        Some(Value::Object(named))
+            if named.get("type").and_then(Value::as_str) == Some("function") =>
+        {
+            let name = named
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_request(
+                        "Invalid value for parameter: tool_choice requires a function name.",
+                        Some("tool_choice"),
+                    )
+                })?;
+            Some(json!({"type": "tool", "name": name}))
+        }
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid value for parameter: tool_choice.",
+                Some("tool_choice"),
+            ))
+        }
+        None => match object.get("function_call").filter(|v| !v.is_null()) {
+            Some(Value::String(mode)) => match mode.as_str() {
+                "auto" => None,
+                "none" => Some(json!({"type": "none"})),
+                _ => {
+                    return Err(invalid_request(
+                        "Invalid value for parameter: function_call.",
+                        Some("function_call"),
+                    ))
+                }
+            },
+            Some(Value::Object(named)) => {
+                let name = named.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    invalid_request(
+                        "Invalid value for parameter: function_call requires a name.",
+                        Some("function_call"),
+                    )
+                })?;
+                Some(json!({"type": "tool", "name": name}))
+            }
+            Some(_) => {
+                return Err(invalid_request(
+                    "Invalid value for parameter: function_call.",
+                    Some("function_call"),
+                ))
+            }
+            None => None,
+        },
+    };
+    if object.get("parallel_tool_calls").and_then(Value::as_bool) == Some(false) {
+        let mut merged = choice.unwrap_or_else(|| json!({"type": "auto"}));
+        merged["disable_parallel_tool_use"] = Value::Bool(true);
+        choice = Some(merged);
+    }
+    Ok(choice)
 }
 
 /// `stream_options`: honor `include_usage`; любой другой ключ отклонён в
@@ -649,22 +963,51 @@ async fn json_chat_response(upstream: Response) -> Response {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let text = value
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    // text-блоки склеиваются в content; tool_use блоки → message.tool_calls
+    // (input сериализуется обратно в JSON-строку arguments — контракт OpenAI).
+    // thinking/redacted блоки — этап 3.4; здесь пропускаются.
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    if let Some(blocks) = value.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(t) = block.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
+                Some("tool_use") => {
+                    tool_calls.push(json!({
+                        "id": block.get("id").cloned().unwrap_or(Value::Null),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name").cloned().unwrap_or(Value::Null),
+                            "arguments": block
+                                .get("input")
+                                .map(|i| i.to_string())
+                                .unwrap_or_else(|| "{}".to_string()),
+                        },
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
     let finish = map_finish_reason(value.get("stop_reason").and_then(Value::as_str));
     let usage = value
         .get("usage")
         .map(map_usage)
         .unwrap_or(Value::Null);
+    // Контракт OpenAI: при tool calls без текста content — null.
+    let content = if text.is_empty() && !tool_calls.is_empty() {
+        Value::Null
+    } else {
+        Value::String(text)
+    };
+    let mut message = json!({"role": "assistant", "content": content});
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = Value::Array(tool_calls);
+    }
     let completion = json!({
         "id": new_id("chatcmpl"),
         "object": "chat.completion",
@@ -672,7 +1015,7 @@ async fn json_chat_response(upstream: Response) -> Response {
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": text},
+            "message": message,
             "finish_reason": finish,
         }],
         "usage": usage,
@@ -736,6 +1079,11 @@ struct ChatSseTranslator {
     start_usage: Option<Value>,
     output_tokens: Option<u64>,
     role_sent: bool,
+    /// index контент-блока Messages → порядковый номер tool_call в чанках
+    /// (OpenAI нумерует tool calls с нуля в порядке появления, а Messages
+    /// нумерует все контент-блоки подряд, включая text).
+    tool_ordinals: std::collections::HashMap<u64, u64>,
+    next_tool_ordinal: u64,
     /// Терминальный кадр (`[DONE]` или error) уже поставлен в `out`.
     finished: bool,
 }
@@ -754,6 +1102,8 @@ impl ChatSseTranslator {
             start_usage: None,
             output_tokens: None,
             role_sent: false,
+            tool_ordinals: std::collections::HashMap::new(),
+            next_tool_ordinal: 0,
             finished: false,
         }
     }
@@ -823,21 +1173,73 @@ impl ChatSseTranslator {
                     self.push_chunk(json!({"role": "assistant", "content": ""}), Value::Null);
                 }
             }
+            "content_block_start" => {
+                // tool_use блок → первый tool_calls-чанк с id и именем
+                // (аргументы приедут input_json_delta'ми). text/thinking
+                // block starts client-visible дельт не несут.
+                let block = data.get("content_block");
+                if block.and_then(|b| b.get("type")).and_then(Value::as_str)
+                    == Some("tool_use")
+                {
+                    let block_index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
+                    let ordinal = self.next_tool_ordinal;
+                    self.next_tool_ordinal += 1;
+                    self.tool_ordinals.insert(block_index, ordinal);
+                    let id = block
+                        .and_then(|b| b.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let name = block
+                        .and_then(|b| b.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    self.push_chunk(
+                        json!({"tool_calls": [{
+                            "index": ordinal,
+                            "id": id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": ""},
+                        }]}),
+                        Value::Null,
+                    );
+                }
+            }
             "content_block_delta" => {
                 let delta = data.get("delta");
-                if delta.and_then(|d| d.get("type")).and_then(Value::as_str)
-                    == Some("text_delta")
-                {
-                    if let Some(text) = delta
-                        .and_then(|d| d.get("text"))
-                        .and_then(Value::as_str)
-                        .filter(|t| !t.is_empty())
-                    {
-                        self.push_chunk(json!({"content": text}), Value::Null);
+                match delta.and_then(|d| d.get("type")).and_then(Value::as_str) {
+                    Some("text_delta") => {
+                        if let Some(text) = delta
+                            .and_then(|d| d.get("text"))
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.is_empty())
+                        {
+                            self.push_chunk(json!({"content": text}), Value::Null);
+                        }
                     }
+                    // partial_json уезжает как есть — это уже сегмент
+                    // JSON-строки arguments в терминах OpenAI.
+                    Some("input_json_delta") => {
+                        let block_index =
+                            data.get("index").and_then(Value::as_u64).unwrap_or(0);
+                        let ordinal = self.tool_ordinals.get(&block_index).copied();
+                        let partial = delta
+                            .and_then(|d| d.get("partial_json"))
+                            .and_then(Value::as_str)
+                            .filter(|p| !p.is_empty());
+                        if let (Some(ordinal), Some(partial)) = (ordinal, partial) {
+                            self.push_chunk(
+                                json!({"tool_calls": [{
+                                    "index": ordinal,
+                                    "function": {"arguments": partial},
+                                }]}),
+                                Value::Null,
+                            );
+                        }
+                    }
+                    // thinking/redacted deltas — этап 3.4; здесь их быть не
+                    // может (адаптер не запрашивает), пропускаем.
+                    _ => {}
                 }
-                // thinking/redacted/tool deltas — этапы 3.2/3.4; здесь их
-                // быть не может (адаптер не запрашивает), пропускаем.
             }
             "message_delta" => {
                 if let Some(output) = data
@@ -890,8 +1292,8 @@ impl ChatSseTranslator {
                     .and_then(Value::as_str);
                 self.push_error(message, code);
             }
-            // content_block_start/stop и неизвестные события не несут
-            // client-visible дельт для text-only профиля 3.1.
+            // content_block_stop и неизвестные события не несут
+            // client-visible дельт.
             _ => {}
         }
     }
@@ -1138,13 +1540,337 @@ mod tests {
         assert_eq!(translated.body["stream"], true);
     }
 
+    // ---------- tools: перевод запроса (этап 3.2) ----------
+
+    #[test]
+    fn tools_translate_to_messages_tools() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": [
+                {"type": "function", "function": {
+                    "name": "get_weather",
+                    "description": "Current weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }},
+                {"type": "function", "function": {"name": "no_args"}}
+            ]
+        }));
+        assert_eq!(
+            translated.body["tools"],
+            serde_json::json!([
+                {"name": "get_weather", "description": "Current weather",
+                 "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}},
+                {"name": "no_args", "input_schema": {"type": "object"}}
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_functions_translate_to_tools() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "functions": [{"name": "f", "parameters": {"type": "object"}}]
+        }));
+        assert_eq!(
+            translated.body["tools"],
+            serde_json::json!([{"name": "f", "input_schema": {"type": "object"}}])
+        );
+    }
+
+    #[test]
+    fn empty_tools_list_is_not_forwarded() {
+        // Stock SDK шлют tools: [] как дефолт — Messages тело остаётся чистым.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": []
+        }));
+        assert!(translated.body.get("tools").is_none());
+        assert!(translated.body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn tool_choice_maps_to_messages_tool_choice() {
+        // auto — дефолт Messages, в тело не вставляется.
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "auto"
+        }));
+        assert!(translated.body.get("tool_choice").is_none());
+
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "required"
+        }));
+        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "any"}));
+
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "none"
+        }));
+        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "none"}));
+
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "function", "function": {"name": "f"}}
+        }));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "tool", "name": "f"})
+        );
+    }
+
+    #[test]
+    fn legacy_function_call_maps_to_tool_choice() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "function_call": {"name": "f"}
+        }));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "tool", "name": "f"})
+        );
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "function_call": "none"
+        }));
+        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "none"}));
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "function_call": "auto"
+        }));
+        assert!(translated.body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn parallel_tool_calls_false_disables_parallel_use() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": false
+        }));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "auto", "disable_parallel_tool_use": true})
+        );
+        // В сочетании с явным tool_choice флаг добавляется к нему.
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "required",
+            "parallel_tool_calls": false
+        }));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "any", "disable_parallel_tool_use": true})
+        );
+        // Дефолт true ничего не добавляет.
+        let translated = ok_translated(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": true
+        }));
+        assert!(translated.body.get("tool_choice").is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_tools_and_choices_are_400() {
+        // tools не массив.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tools": {"name": "f"}
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // не-function tool.
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "custom", "custom": {"name": "x"}}]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "tools");
+
+        // function без имени.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"description": "x"}}]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // неизвестное строковое значение tool_choice.
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "sometimes"
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "tool_choice");
+
+        // именной tool_choice без имени функции.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "function", "function": {}}
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ---------- tools: история сообщений (этап 3.2) ----------
+
+    #[test]
+    fn assistant_tool_calls_become_tool_use_blocks() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}},
+                    {"id": "call_2", "type": "function",
+                     "function": {"name": "no_args", "arguments": ""}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "done"}
+            ]
+        }));
+        // Серия tool-ответов склеивается в одно user-сообщение — именно так
+        // Messages ждёт результаты параллельных tool calls.
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([
+                {"role": "user", "content": [{"type": "text", "text": "weather?"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_1", "name": "get_weather",
+                     "input": {"city": "Paris"}},
+                    {"type": "tool_use", "id": "call_2", "name": "no_args", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"},
+                    {"type": "tool_result", "tool_use_id": "call_2", "content": "done"}
+                ]}
+            ])
+        );
+    }
+
+    #[test]
+    fn assistant_text_and_tool_calls_keep_both() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "Let me check.", "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "f", "arguments": "{}"}}
+                ]}
+            ]
+        }));
+        assert_eq!(
+            translated.body["messages"][1]["content"],
+            serde_json::json!([
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "call_1", "name": "f", "input": {}}
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_function_call_and_result_pair_by_name() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null,
+                 "function_call": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}},
+                {"role": "function", "name": "get_weather", "content": "cold"}
+            ]
+        }));
+        // tool_use id восстановлен детерминированно — tool_result его находит.
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "callu_get_weather", "name": "get_weather",
+                     "input": {"city": "Oslo"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "callu_get_weather", "content": "cold"}
+                ]}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_history_is_400() {
+        // arguments не JSON-строка-object.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "f", "arguments": "not json"}}
+                ]}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // tool message без tool_call_id.
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "tool", "content": "x"}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "messages");
+
+        // assistant без контента и tool calls — пустое сообщение недопустимо.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // tool_call без id.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // function-роль без имени.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "function", "content": "x"}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
     // ---------- capability matrix ----------
 
     #[tokio::test]
     async fn unsupported_non_default_parameters_are_400() {
         for (field, value) in [
-            ("tools", serde_json::json!([{"type": "function", "function": {"name": "f"}}])),
-            ("tool_choice", serde_json::json!("required")),
             ("response_format", serde_json::json!({"type": "json_object"})),
             ("reasoning_effort", serde_json::json!("low")),
             ("store", serde_json::json!(true)),
@@ -1155,7 +1881,6 @@ mod tests {
             ("logit_bias", serde_json::json!({"42": 1})),
             ("logprobs", serde_json::json!(true)),
             ("seed", serde_json::json!(7)),
-            ("parallel_tool_calls", serde_json::json!(false)),
             ("service_tier", serde_json::json!("flex")),
             ("modalities", serde_json::json!(["text", "audio"])),
             ("audio", serde_json::json!({"voice": "alloy"})),
@@ -1204,10 +1929,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_level_tool_and_media_fields_are_400() {
+    async fn message_level_media_and_name_fields_are_400() {
         for message in [
-            serde_json::json!({"role": "tool", "tool_call_id": "call_1", "content": "x"}),
-            serde_json::json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c"}]}),
             serde_json::json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x"}}]}),
             serde_json::json!({"role": "user", "content": "hi", "name": "alice"}),
         ] {
@@ -1419,6 +2142,67 @@ mod tests {
         assert_eq!(json["usage"]["total_tokens"], 17);
     }
 
+    #[tokio::test]
+    async fn non_stream_tool_use_maps_to_tool_calls() {
+        let upstream = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "model": "claude-opus-4-8-20260101",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                         "input": {"city": "Paris"}}
+                    ],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 12, "output_tokens": 5}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = json_chat_response(upstream).await;
+        let (_, json) = err_parts(response).await;
+        let message = &json["choices"][0]["message"];
+        // Контракт OpenAI: при tool calls без текста content — null.
+        assert!(message["content"].is_null(), "{message}");
+        assert_eq!(
+            message["tool_calls"],
+            serde_json::json!([{
+                "id": "toolu_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
+            }])
+        );
+        assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn non_stream_text_and_tool_use_keep_both() {
+        let upstream = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "model": "claude-opus-4-8-20260101",
+                    "content": [
+                        {"type": "text", "text": "Let me check."},
+                        {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}}
+                    ],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 3, "output_tokens": 9}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = json_chat_response(upstream).await;
+        let (_, json) = err_parts(response).await;
+        let message = &json["choices"][0]["message"];
+        assert_eq!(message["content"], "Let me check.");
+        assert_eq!(message["tool_calls"][0]["function"]["arguments"], "{}");
+        assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    }
+
     // ---------- SSE-транслятор ----------
 
     const SSE_DIALOG: &str = r#"event: message_start
@@ -1540,5 +2324,182 @@ data: {"type":"message_stop"}"#;
         let output = collect_stream(translator).await;
         assert!(output.contains("split ok"), "{output}");
         assert!(output.ends_with("data: [DONE]\n\n"), "{output}");
+    }
+
+    // ---------- contract-тесты словаря событий (решение 2) ----------
+    //
+    // Каноническая последовательность Messages-событий → точная
+    // последовательность chat.completion.chunk дельт. Это и есть контракт
+    // событий universal chat: другие плоскости (3.3 Gemini, этап 4 Responses)
+    // обязаны воспроизводить те же кадры на эквивалентном диалоге.
+
+    /// (delta, finish_reason) каждого не-usage чанка — без служебных полей.
+    fn delta_frames(output: &str) -> Vec<(Value, Value)> {
+        data_frames(output)
+            .iter()
+            .filter(|f| {
+                f.get("choices")
+                    .and_then(Value::as_array)
+                    .is_some_and(|c| !c.is_empty())
+            })
+            .map(|f| {
+                (
+                    f["choices"][0]["delta"].clone(),
+                    f["choices"][0]["finish_reason"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn contract_text_dialog_event_dictionary() {
+        // text: role → content* → finish [→ usage] → DONE (SSE_DIALOG).
+        let translator = ChatSseTranslator::new(sse_bytes(SSE_DIALOG), "m".into(), false);
+        let output = collect_stream(translator).await;
+        assert_eq!(
+            delta_frames(&output),
+            vec![
+                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (serde_json::json!({"content": "Hello"}), Value::Null),
+                (serde_json::json!({"content": ", world"}), Value::Null),
+                (serde_json::json!({}), serde_json::json!("stop")),
+            ]
+        );
+        assert!(output.ends_with("data: [DONE]\n\n"));
+    }
+
+    const SSE_TOOL_CALL: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8-20260101","usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":8}}
+
+event: message_stop
+data: {"type":"message_stop"}"#;
+
+    #[tokio::test]
+    async fn contract_tool_call_event_dictionary() {
+        // tool call: role → tool_calls start (id+name, arguments:"") →
+        // arguments-дельты → finish "tool_calls" → DONE.
+        let translator = ChatSseTranslator::new(sse_bytes(SSE_TOOL_CALL), "m".into(), false);
+        let output = collect_stream(translator).await;
+        assert_eq!(
+            delta_frames(&output),
+            vec![
+                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"city\":"}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "\"Paris\"}"}}]}), Value::Null),
+                (serde_json::json!({}), serde_json::json!("tool_calls")),
+            ]
+        );
+        assert!(output.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[tokio::test]
+    async fn contract_parallel_tool_calls_event_dictionary() {
+        // Два tool_use блока (block index 0 и 1) → tool_calls index 0 и 1
+        // строго в порядке появления; дельты мапятся по block index.
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"f\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"g\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":1}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
+        let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
+        let output = collect_stream(translator).await;
+        assert_eq!(
+            delta_frames(&output),
+            vec![
+                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_a", "type": "function", "function": {"name": "f", "arguments": ""}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 1, "id": "toolu_b", "type": "function", "function": {"name": "g", "arguments": ""}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 1, "function": {"arguments": "{\"x\":1}"}}]}), Value::Null),
+                (serde_json::json!({}), serde_json::json!("tool_calls")),
+            ]
+        );
+        assert!(output.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[tokio::test]
+    async fn contract_text_then_tool_call_event_dictionary() {
+        // text-блок (block index 0) перед tool_use (block index 1): tool
+        // ordinal считается отдельно от block index — первый tool call
+        // всегда index 0, к какому бы блоку Messages он ни относился.
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Checking.\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
+        let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
+        let output = collect_stream(translator).await;
+        assert_eq!(
+            delta_frames(&output),
+            vec![
+                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (serde_json::json!({"content": "Checking."}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "f", "arguments": ""}}]}), Value::Null),
+                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), Value::Null),
+                (serde_json::json!({}), serde_json::json!("tool_calls")),
+            ]
+        );
+        assert!(output.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[tokio::test]
+    async fn contract_tool_call_usage_chunk_carries_final_totals() {
+        // include_usage: usage-чанк (пустые choices) после finish — и при
+        // tool_use финале; словарь событий его не меняет.
+        let translator = ChatSseTranslator::new(sse_bytes(SSE_TOOL_CALL), "m".into(), true);
+        let output = collect_stream(translator).await;
+        let frames = data_frames(&output);
+        let usage = frames.last().expect("usage chunk is last");
+        assert_eq!(usage["choices"], serde_json::json!([]));
+        assert_eq!(usage["usage"]["prompt_tokens"], 10);
+        assert_eq!(usage["usage"]["completion_tokens"], 8);
+        assert_eq!(usage["usage"]["total_tokens"], 18);
+        assert!(output.ends_with("data: [DONE]\n\n"));
     }
 }

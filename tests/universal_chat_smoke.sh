@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# E2E smoke universal chat lane — этап 3.1 docs/engine/UNIFIED_ROUTER.md.
+# E2E smoke universal chat lane — этапы 3.1–3.2 docs/engine/UNIFIED_ROUTER.md.
 # Прогоняет ПОЛНУЮ цепочку без живых подписок и квоты (мок-апстрим):
 #   клиент → claude-router (model-based dispatch) → claude-api (Anthropic
 #   plane, chat→Messages адаптер) → mock upstream.
 # Проверяет: non-stream и stream перевод (chunk-последовательность, usage),
+# tools end-to-end (tool_calls/arguments-дельты, tool history round-trip),
 # namespaced и alias dispatch в router, capability matrix (400
 # unsupported_parameter), конверт ошибок (401 → OpenAI authentication_error),
 # 404 неизвестной модели. Ничего не тарифицирует, `claude` не зовёт.
@@ -120,37 +121,72 @@ check_code "$C" 200 "stream" && {
   check_body 'data: [DONE]' "stream terminator"
 }
 
-echo "[4] engine: capability matrix — tools → 400 unsupported_parameter (OpenAI-конверт)"
-C=$(req "$ENGINE" '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{}}}]}' -H "x-api-key: $ADMIN_KEY")
+echo "[4] engine: tools non-stream → message.tool_calls + finish tool_calls"
+C=$(req "$ENGINE" '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"tool_choice":"auto"}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "tools non-stream" && {
+  check_body '"object":"chat.completion"' "tools object"
+  check_body '"content":null' "tools content null"
+  check_body '"id":"toolu_mock1"' "tool call id"
+  check_body '"name":"get_weather"' "tool call name"
+  check_body '"arguments":"{\"city\":\"Paris\"}"' "tool call arguments"
+  check_body '"finish_reason":"tool_calls"' "tools finish"
+  check_body '"prompt_tokens":12' "tools usage prompt"
+}
+
+echo "[5] engine: tools streaming → tool_calls-чанки + arguments-дельты"
+C=$(req "$ENGINE" '{"model":"claude-haiku-4-5","stream":true,"messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}' -N -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "tools stream" && {
+  check_body '"id":"toolu_mock1"' "tool start id"
+  check_body '"arguments":""' "tool start empty arguments"
+  check_body '"name":"get_weather"' "tool call name"
+  check_body '"arguments":"{\"city\":"' "args delta 1"
+  check_body '"arguments":"\"Paris\"}"' "args delta 2"
+  check_body '"finish_reason":"tool_calls"' "tools stream finish"
+  check_body 'data: [DONE]' "tools stream terminator"
+}
+
+echo "[6] engine: tool history (assistant tool_calls + tool results) → 200"
+C=$(req "$ENGINE" '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"sunny"}]}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "tool history" && check_body '"content":"ok"' "tool history content"
+
+echo "[7] engine: capability matrix — response_format → 400 unsupported_parameter (OpenAI-конверт)"
+C=$(req "$ENGINE" '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 400 "capability" && {
   check_body '"code":"unsupported_parameter"' "capability code"
-  check_body '"param":"tools"' "capability param"
+  check_body '"param":"response_format"' "capability param"
   check_body '"type":"invalid_request_error"' "capability type"
 }
 
-echo "[5] engine: неверный ключ → 401 в OpenAI-конверте (конвертация local_err)"
+echo "[8] engine: неверный ключ → 401 в OpenAI-конверте (конвертация local_err)"
 C=$(req "$ENGINE" "$CHAT" -H "x-api-key: definitely-wrong-key")
 check_code "$C" 401 "bad key" && {
   check_body '"type":"authentication_error"' "bad key type"
   check_body '"code":"authentication_error"' "bad key code"
 }
 
-echo "[6] router: namespaced dispatch через полную цепочку"
+echo "[9] router: namespaced dispatch через полную цепочку"
 C=$(req "$ROUTER" '{"model":"anthropic/claude-haiku-4-5","messages":[{"role":"user","content":"hi"}]}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "router namespaced" && check_body '"object":"chat.completion"' "router namespaced object"
 
-echo "[7] router: alias dispatch через единый каталог"
+echo "[10] router: alias dispatch через единый каталог"
 C=$(req "$ROUTER" "$CHAT" -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "router alias" && check_body '"object":"chat.completion"' "router alias object"
 
-echo "[8] router: неизвестная модель → 404 model_not_found (OpenAI-конверт)"
+echo "[11] router: tools через полную цепочку router→engine→mock"
+C=$(req "$ROUTER" '{"model":"anthropic/claude-haiku-4-5","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "router tools" && {
+  check_body '"name":"get_weather"' "router tools name"
+  check_body '"finish_reason":"tool_calls"' "router tools finish"
+}
+
+echo "[12] router: неизвестная модель → 404 model_not_found (OpenAI-конверт)"
 C=$(req "$ROUTER" '{"model":"gpt-9","messages":[{"role":"user","content":"hi"}]}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 404 "unknown model" && {
   check_body '"code":"model_not_found"' "unknown model code"
   check_body '"param":"model"' "unknown model param"
 }
 
-echo "[9] router: отсутствует model → 400 invalid_request_error"
+echo "[13] router: отсутствует model → 400 invalid_request_error"
 C=$(req "$ROUTER" '{"messages":[{"role":"user","content":"hi"}]}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 400 "missing model" && check_body '"type":"invalid_request_error"' "missing model type"
 

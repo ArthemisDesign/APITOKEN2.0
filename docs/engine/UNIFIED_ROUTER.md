@@ -353,13 +353,31 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    finish-чанки, ping→heartbeat, `event: error`→OpenAI error frame без `[DONE]`,
    usage-чанк по `stream_options.include_usage`), JSON message → `chat.completion`
    (usage включает cache-токены с `prompt_tokens_details.cached_tokens`). Capability
-   matrix: tools/structured/reasoning/penalties/n>1/store и прочие не-дефолтные
-   unsupported-параметры → `400 unsupported_parameter` до этапов 3.2/3.4; дефолтные
+   matrix: structured/reasoning/penalties/n>1/store и прочие не-дефолтные
+   unsupported-параметры → `400 unsupported_parameter` до этапа 3.4; дефолтные
    значения принимаются, неизвестные поля проксируются. Все ошибки этого пути (включая
    `local_err` плоскости и пасsthrough апстрима) конвертируются в OpenAI-конверт с
    сохранением статуса (402 LowBalance тоже) и `Retry-After`; **3.2** — tools/tool_choice
-   + contract-тесты словаря событий; **3.3** — адаптер Gemini plane; **3.4** — images,
-   structured output, `reasoning_content`.
+   + contract-тесты словаря событий — **РЕАЛИЗОВАН**: chat `tools[]` и legacy
+   `functions[]` → Messages `tools[]` (`parameters`→`input_schema`, отсутствующая схема
+   → `{"type":"object"}`); `tool_choice` (auto/required/none/именная функция) и legacy
+   `function_call` → Messages `tool_choice` (auto/any/none/tool);
+   `parallel_tool_calls:false` → `disable_parallel_tool_use:true`; дефолты (пустой
+   `tools`, `auto`) в тело не вставляются. В истории assistant `tool_calls[]`/
+   `function_call` → `tool_use`-блоки (`arguments` JSON-строка парсится в `input`;
+   legacy id — детерминированный `callu_<name>`), role `tool`/`function` →
+   user-сообщение с `tool_result`-блоками, серии tool-ответов склеиваются в одно
+   user-сообщение (семантика параллельных tool calls Messages). В ответе non-stream
+   `tool_use`-блоки → `message.tool_calls` (`input` сериализуется обратно в
+   `arguments`-строку, `content:null` при отсутствии текста), SSE
+   `content_block_start(tool_use)` → tool_calls-чанк с id/name, `input_json_delta` →
+   arguments-дельты; tool ordinal нумеруется отдельно от Messages block index.
+   Contract-тесты словаря событий (решение 2): табличные «каноническая
+   последовательность Messages-событий → чанки» для text, одиночного и параллельных
+   tool calls, text+tool и usage — в тестах `crates/forward/src/anthropic.rs`; e2e —
+   `tests/universal_chat_smoke.sh` (мок отдаёт tool_use диалог, проверки tools
+   non-stream/stream/history и сквозной цепочки router→engine→mock); **3.3** —
+   адаптер Gemini plane; **3.4** — images, structured output, `reasoning_content`.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
    reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
    явный `400 documented_limitation`).

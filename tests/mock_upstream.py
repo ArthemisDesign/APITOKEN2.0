@@ -29,11 +29,15 @@ class H(BaseHTTPRequestHandler):
         payload = self.rfile.read(length) if length else b""
         self._ratelimit_headers(util5)
         try:
-            want_stream = bool(json.loads(payload or b"{}").get("stream"))
+            request = json.loads(payload or b"{}")
         except Exception:
-            want_stream = False
+            request = {}
+        want_stream = bool(request.get("stream"))
+        want_tools = bool(request.get("tools"))
         if want_stream:
-            self._sse()
+            self._sse(tools=want_tools)
+        elif want_tools:
+            self._tool_json()
         else:
             self._json()
     def _ratelimit_headers(self, util5):
@@ -56,12 +60,51 @@ class H(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-    def _sse(self):
+    def _tool_json(self):
+        # Tool-use ответ для e2e проверки universal chat tools (3.2):
+        # tool_use блок + stop_reason tool_use.
+        body = json.dumps({
+            "id": "msg_mock", "type": "message", "role": "assistant",
+            "model": "claude-haiku-4-5-20251001",
+            "content": [{"type": "tool_use", "id": "toolu_mock1", "name": "get_weather",
+                         "input": {"city": "Paris"}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 12, "output_tokens": 7,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        }).encode()
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def _sse(self, tools=False):
         # Мини-диалог Messages SSE: message_start → ping → 2 text-дельты →
         # message_delta(stop) → message_stop. Для e2e проверки universal chat
-        # streaming (tests/universal_chat_smoke.sh).
+        # streaming (tests/universal_chat_smoke.sh). При tools=True — tool_use
+        # диалог: content_block_start(tool_use) → 2 input_json_delta →
+        # message_delta(tool_use).
         model = "claude-haiku-4-5-20251001"
-        frames = [
+        if tools:
+            frames = [
+                ("message_start", {"type": "message_start", "message": {
+                    "id": "msg_mock", "type": "message", "role": "assistant",
+                    "model": model, "content": [], "stop_reason": None,
+                    "usage": {"input_tokens": 12, "output_tokens": 1,
+                              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}),
+                ("content_block_start", {"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "tool_use", "id": "toolu_mock1",
+                                      "name": "get_weather", "input": {}}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": "{\"city\":"}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": "\"Paris\"}"}}),
+                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                ("message_delta", {"type": "message_delta",
+                    "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                    "usage": {"output_tokens": 7}}),
+                ("message_stop", {"type": "message_stop"}),
+            ]
+        else:
+            frames = [
             ("message_start", {"type": "message_start", "message": {
                 "id": "msg_mock", "type": "message", "role": "assistant",
                 "model": model, "content": [], "stop_reason": None,

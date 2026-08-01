@@ -118,15 +118,22 @@ Stage 8 evidence или Stage 5/6 data application.
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
-`anthropic.rs` — universal Chat Completions→Messages адаптер (этап 3.1
+`anthropic.rs` — universal Chat Completions→Messages адаптер (этапы 3.1–3.2
 docs/engine/UNIFIED_ROUTER.md): переводит chat-запрос в Messages JSON (strip
 `anthropic/`-префикса ДО admission, дефолт `max_tokens` 4096, склейка одноролевых
-сообщений, capability matrix с `400 unsupported_parameter` для не-дефолтных
-tools/structured/reasoning/penalties) и вызывает общий `forward()` — auth, reserve,
+сообщений и серий tool-ответов, capability matrix с `400 unsupported_parameter` для
+не-дефолтных structured/reasoning/penalties) и вызывает общий `forward()` — auth, reserve,
 ротация, identity-инжект, tee-метеринг и settle без изменений; ответ переводится
 СНАРУЖИ (Messages SSE → `chat.completion.chunk`, JSON → `chat.completion`), а все
 ошибки этого пути (включая `local_err` и пасsthrough апстрима) конвертируются в
 OpenAI-конверт с сохранением HTTP-статуса (402 LowBalance тоже) и `Retry-After`.
+Tools (3.2): chat `tools`/`functions` → Messages `tools[]` (`parameters`→`input_schema`),
+`tool_choice`/`function_call`/`parallel_tool_calls` → `tool_choice` (+`disable_parallel_tool_use`),
+история `tool_calls`/tool-ролей ↔ `tool_use`/`tool_result` блоки (legacy id —
+детерминированный `callu_<name>`), в ответе `tool_use` ↔ `message.tool_calls`
+(non-stream) и tool_calls-чанки из `content_block_start`/`input_json_delta` (SSE, tool
+ordinal нумеруется отдельно от Messages block index); словарь событий закреплён
+contract-тестами в модуле.
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
