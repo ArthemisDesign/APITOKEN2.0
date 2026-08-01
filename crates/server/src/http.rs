@@ -13,13 +13,14 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use forward::{
-    anthropic_chat_completions, authed, client_keys, control_authed, forward, gemini_api,
-    gemini_chat_completions, openai_chat_completions, openai_delete_response, openai_get_response,
-    openai_input_tokens, openai_model, openai_models, openai_response_input_items,
-    openai_responses, readonly_authed, resolve_client_key, resolve_client_keys, AppState, Metrics,
-    PricingBridgeFallbackReason, PricingShadowEnqueueResult, PricingShadowProcessingResult,
-    StrictPricingProvider, StrictPricingRejectionReason, TerminalErrorReason,
-    PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
+    anthropic_chat_completions, anthropic_responses, authed, client_keys, control_authed, forward,
+    gemini_api, gemini_chat_completions, openai_chat_completions, openai_delete_response,
+    openai_get_response, openai_input_tokens, openai_model, openai_models,
+    openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
+    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
+    PricingShadowEnqueueResult, PricingShadowProcessingResult, StrictPricingProvider,
+    StrictPricingRejectionReason, TerminalErrorReason, PRICING_BRIDGE_LATENCY_BUCKETS_MS,
+    PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
 };
 use registry::pricing::{
     PricingMode, PricingShadowComparison, PricingShadowReadErrorCode, PricingShadowRejectionCode,
@@ -357,6 +358,10 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/codex-subs", get(codex_subs))
             // Universal lane (этап 3.1 UNIFIED_ROUTER.md): chat→Messages адаптер.
             .route("/v1/chat/completions", post(anthropic_chat_completions))
+            // Universal Responses (этап 4.1 UNIFIED_ROUTER.md): Responses→Messages
+            // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
+            // и остаются openai-only (решение 5).
+            .route("/v1/responses", post(anthropic_responses))
             .merge(admin)
             .fallback(forward),
         forward::ProviderMode::OpenAi => common

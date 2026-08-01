@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# E2E smoke universal chat lane — этапы 3.1–3.2 docs/engine/UNIFIED_ROUTER.md.
+# E2E smoke universal lanes — этапы 3.1–3.2 (chat) и 4.1 (responses)
+# docs/engine/UNIFIED_ROUTER.md.
 # Прогоняет ПОЛНУЮ цепочку без живых подписок и квоты (мок-апстрим):
 #   клиент → claude-router (model-based dispatch) → claude-api (Anthropic
-#   plane, chat→Messages адаптер) → mock upstream.
+#   plane, chat→Messages и responses→Messages адаптеры) → mock upstream.
 # Проверяет: non-stream и stream перевод (chunk-последовательность, usage),
 # tools end-to-end (tool_calls/arguments-дельты, tool history round-trip),
 # namespaced и alias dispatch в router, capability matrix (400
 # unsupported_parameter), конверт ошибок (401 → OpenAI authentication_error),
-# 404 неизвестной модели. Ничего не тарифицирует, `claude` не зовёт.
+# 404 неизвестной модели; для /v1/responses — Response object, Responses SSE
+# (response.created/…/completed, ping comment), function_call items и
+# store:true → 400 documented_limitation. Ничего не тарифицирует, `claude` не зовёт.
 #
 # Запуск:  cargo build && bash tests/universal_chat_smoke.sh
 # Требует: python3, curl, собранные debug-бинари target/debug/claude-api и
@@ -190,8 +193,72 @@ echo "[13] router: отсутствует model → 400 invalid_request_error"
 C=$(req "$ROUTER" '{"messages":[{"role":"user","content":"hi"}]}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 400 "missing model" && check_body '"type":"invalid_request_error"' "missing model type"
 
+# reqr <origin> <json-body> [extra curl args...] — то же для /v1/responses (этап 4.1)
+reqr() {
+  local origin="$1" body="$2"; shift 2
+  curl -sS -m10 -o "$RESP" -w '%{http_code}' "$@" "$origin/v1/responses" \
+    -H "content-type: application/json" -d "$body"
+}
+
+RESP_HI='{"model":"anthropic/claude-haiku-4-5","input":"hi"}'
+
+echo "[14] engine: non-stream responses → Response object + usage"
+C=$(reqr "$ENGINE" "$RESP_HI" -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses non-stream" && {
+  check_body '"object":"response"' "responses object"
+  check_body '"status":"completed"' "responses status"
+  check_body '"text":"ok"' "responses text"
+  check_body '"model":"claude-haiku-4-5-20251001"' "responses served model echo"
+  check_body '"input_tokens":10' "responses usage input"
+  check_body '"output_tokens":2' "responses usage output"
+  check_body '"total_tokens":12' "responses usage total"
+}
+
+echo "[15] engine: streaming responses → Responses SSE + ping comment + usage в completed"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","stream":true,"input":"hi"}' -N -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses stream" && {
+  check_body 'event: response.created' "responses stream created"
+  check_body 'event: response.in_progress' "responses stream in_progress"
+  check_body 'event: response.output_item.added' "responses stream item added"
+  check_body 'event: response.content_part.added' "responses stream part added"
+  check_body 'event: response.output_text.delta' "responses stream text delta event"
+  check_body '"delta":"mock"' "responses stream delta 1"
+  check_body '"delta":" ok"' "responses stream delta 2"
+  check_body 'event: response.output_text.done' "responses stream text done"
+  check_body 'event: response.output_item.done' "responses stream item done"
+  check_body ': ping' "responses stream ping comment"
+  check_body 'event: response.completed' "responses stream completed"
+  check_body '"input_tokens":10' "responses stream usage input"
+  check_body '"output_tokens":2' "responses stream usage output"
+}
+
+echo "[16] engine: responses tools non-stream → function_call item"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"weather?","tools":[{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses tools" && {
+  check_body '"type":"function_call"' "responses tools item type"
+  check_body '"call_id":"toolu_mock1"' "responses tools call_id"
+  check_body '"name":"get_weather"' "responses tools name"
+  check_body '"arguments":"{\"city\":\"Paris\"}"' "responses tools arguments"
+  check_body '"input_tokens":12' "responses tools usage input"
+}
+
+echo "[17] engine: store:true → 400 documented_limitation (stored — только openai/*)"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"hi","store":true}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 400 "responses store" && {
+  check_body '"code":"documented_limitation"' "responses store code"
+  check_body '"param":"store"' "responses store param"
+}
+
+echo "[18] router: namespaced responses dispatch через полную цепочку"
+C=$(reqr "$ROUTER" "$RESP_HI" -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "router responses namespaced" && check_body '"object":"response"' "router responses object"
+
+echo "[19] router: alias responses dispatch через единый каталог"
+C=$(reqr "$ROUTER" '{"model":"claude-haiku-4-5","input":"hi"}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "router responses alias" && check_body '"object":"response"' "router responses alias object"
+
 if [ "$FAIL" = 0 ]; then
-  echo "✓ SMOKE OK: universal chat lane (router dispatch + адаптер + стриминг + конверты)"
+  echo "✓ SMOKE OK: universal lanes (chat + responses: router dispatch + адаптеры + стриминг + конверты)"
 else
   echo "✗ SMOKE FAIL"
   echo "--- engine log ---"; tail -n 40 "$DATA/srv.log"

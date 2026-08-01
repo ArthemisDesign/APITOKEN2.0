@@ -12,6 +12,7 @@ mod chat;
 mod config;
 mod error;
 mod proxy;
+mod responses;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -50,9 +51,11 @@ fn build_client() -> anyhow::Result<Client> {
 
 /// Таблица маршрутизации публичного контракта (UNIFIED_ROUTER.md,
 /// «Публичный контракт»). Native lanes выбирают плоскость формой пути;
-/// `/v1/chat/completions` — universal lane с model-based dispatch
-/// (chat::proxy_chat, этап 3.1). Собственные поверхности router'а —
-/// агрегированный каталог /v1/models и dispatch chat-запросов.
+/// `/v1/chat/completions` и `/v1/responses` — universal lanes с model-based
+/// dispatch (chat::proxy_chat, этап 3.1; responses::proxy_responses, этап
+/// 4.1). Stored responses endpoints остаются native OpenAI lane (решение 5).
+/// Собственные поверхности router'а — агрегированный каталог /v1/models и
+/// dispatch universal-запросов.
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(proxy::health))
@@ -63,7 +66,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/messages/count_tokens", post(proxy_anthropic))
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model))
-        .route("/v1/responses", post(proxy_openai))
+        .route("/v1/responses", post(responses::proxy_responses))
         .route("/v1/responses/input_tokens", post(proxy_openai))
         .route("/v1/responses/{id}", get(proxy_openai).delete(proxy_openai))
         .route("/v1/responses/{id}/input_items", get(proxy_openai))
@@ -495,8 +498,16 @@ mod tests {
         ] {
             client.request(method.parse().unwrap(), format!("{router}{path}")).send().await.unwrap();
         }
+        // /v1/responses — universal lane с dispatch по model (этап 4.1):
+        // валидный namespaced model обязателен; openai/* остаётся на своей
+        // плоскости. Stored endpoints dispatch не используют (решение 5).
+        client
+            .post(format!("{router}/v1/responses"))
+            .body(r#"{"model":"openai/gpt-5.6","input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
         for (method, path) in [
-            ("POST", "/v1/responses"),
             ("POST", "/v1/responses/input_tokens"),
             ("GET", "/v1/responses/resp_42"),
             ("DELETE", "/v1/responses/resp_42"),
@@ -777,6 +788,147 @@ mod tests {
             .unwrap()
             .expect("first chunk present");
         assert!(String::from_utf8_lossy(&first).contains("delta"));
+    }
+
+    // ---------- universal responses dispatch (model-based routing, этап 4.1) ----------
+
+    #[tokio::test]
+    async fn responses_namespaced_models_route_by_prefix_without_catalog_fetch() {
+        let (a, log_a) = echo_plane().await;
+        let (o, log_o) = echo_plane().await;
+        let (g, log_g) = echo_plane().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+            let payload = format!(r#"{{"model":"{model}","input":"hi"}}"#);
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            // Тело проксируется байт-в-байт: namespaced ID резолвит плоскость.
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        let (la, lo, lg) = (
+            log_a.lock().unwrap().clone(),
+            log_o.lock().unwrap().clone(),
+            log_g.lock().unwrap().clone(),
+        );
+        // Ровно один запрос на каждой плоскости: catalog fetch не выполнялся,
+        // dispatch по префиксу каталог не опрашивает.
+        assert_eq!(la.len(), 1);
+        assert_eq!(lo.len(), 1);
+        assert_eq!(lg.len(), 1);
+        assert_eq!(la[0].path, "/v1/responses");
+        assert_eq!(lo[0].path, "/v1/responses");
+        assert_eq!(lg[0].path, "/v1/responses");
+        assert_eq!(la[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+    }
+
+    #[tokio::test]
+    async fn responses_alias_routes_via_cached_catalog() {
+        let (a, log_a) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
+        let (o, log_o) = chat_plane(OPENAI_MODELS, "/v1/models").await;
+        let (g, log_g) = chat_plane(GEMINI_MODELS, "/v1beta/models").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["claude-opus-4-8", "gpt-5.6", "gemini-2.5-pro"] {
+            let payload = format!(r#"{{"model":"{model}","input":"hi"}}"#);
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        let paths = |log: &SharedLog| log.lock().unwrap().iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
+        // Каждая плоскость увидела catalog fetch и ровно один responses-запрос.
+        assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
+        assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
+        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
+        assert_eq!(pa.iter().filter(|p| *p == "/v1/responses").count(), 1, "{pa:?}");
+        assert_eq!(po.iter().filter(|p| *p == "/v1/responses").count(), 1, "{po:?}");
+        assert_eq!(pg.iter().filter(|p| *p == "/v1/responses").count(), 1, "{pg:?}");
+    }
+
+    #[tokio::test]
+    async fn responses_unknown_model_is_openai_shaped_404() {
+        let (a, _) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
+        let (o, _) = chat_plane(OPENAI_MODELS, "/v1/models").await;
+        let (g, _) = chat_plane(GEMINI_MODELS, "/v1beta/models").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        // Неизвестный префикс и неизвестный alias оба уходят в alias-поиск и 404.
+        for model in ["cohere/command-x", "gpt-9"] {
+            let payload = format!(r#"{{"model":"{model}","input":"hi"}}"#);
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .body(payload)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{model}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["code"], "model_not_found", "{model}");
+            assert_eq!(json["error"]["param"], "model", "{model}");
+            assert!(json["error"]["message"].as_str().unwrap().contains(model), "{model}");
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_invalid_json_and_missing_model_are_400_without_plane_call() {
+        let (a, log_a) = echo_plane().await;
+        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for body in ["not json{", "{}", r#"{"model":42}"#, r#"{"model":""}"#] {
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .body(body.to_string())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{body}");
+            if body == "not json{" {
+                assert!(json["error"]["param"].is_null(), "{body}");
+            } else {
+                assert_eq!(json["error"]["param"], "model", "{body}");
+            }
+        }
+        // Невалидный запрос не должен дойти до плоскости.
+        assert!(log_a.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn responses_oversized_body_is_400_and_never_reaches_plane() {
+        let (a, log_a) = echo_plane().await;
+        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let body = vec![b'x'; 32 * 1024 * 1024 + 1];
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/responses"))
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert!(json["error"]["message"].as_str().unwrap().contains("32 MiB"));
+        assert!(log_a.lock().unwrap().is_empty());
     }
 
     // ---------- единый каталог ----------

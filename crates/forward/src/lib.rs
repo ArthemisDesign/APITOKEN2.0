@@ -10,6 +10,7 @@
 
 mod affinity;
 mod anthropic;
+pub mod anthropic_responses;
 mod billing;
 mod breaker;
 pub mod codex;
@@ -27,6 +28,7 @@ pub use affinity::{
     AffinityInput, AffinityResolution, AffinitySource, AffinityStats, AffinityStore,
 };
 pub use anthropic::anthropic_chat_completions;
+pub use anthropic_responses::anthropic_responses;
 pub use billing::AsyncBilling;
 pub use breaker::Breaker;
 pub use codex::{

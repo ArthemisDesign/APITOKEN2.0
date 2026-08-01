@@ -55,15 +55,16 @@ use crate::state::AppState;
 
 /// Лимит тела chat-запроса — тот же 32 MiB, что у native `/v1/messages`
 /// (публичный предел Anthropic Messages; images этапа 3.4 в него вписываются).
-const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// Общий с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`).
+pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Верхняя граница буферизации error/non-stream тел ответа `forward()`.
 /// Длинный non-stream completion укладывается в тот же 32 MiB предел.
-const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Дефолт `max_tokens`, когда chat-запрос его не задал: системная конвенция
 /// reserve-пути (proxy.rs трактует отсутствующий `max_tokens` как 4096).
-const DEFAULT_MAX_TOKENS: u64 = 4096;
+pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Anthropic`).
@@ -283,7 +284,7 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(format) = translate_response_format(object.get("response_format"))? {
         output_config.insert("format".to_string(), format);
     }
-    let effort = translate_reasoning_effort(object.get("reasoning_effort"))?;
+    let effort = translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")?;
     if let Some(effort) = effort {
         output_config.insert("effort".to_string(), Value::String(effort));
         // reasoning_effort без явного thinking включает adaptive thinking с
@@ -467,7 +468,8 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), 
 /// Добавить блоки в conversation, склеивая с последним сообщением той же
 /// Messages-роли (чередование user/assistant + серии tool_result в одном
 /// user-сообщении — именно так Messages ждёт ответы параллельных tool calls).
-fn merge_or_push(conversation: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
+/// Общая с Responses-адаптером этапа 4.1.
+pub(crate) fn merge_or_push(conversation: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
     if let Some(last) = conversation.last_mut() {
         if last.get("role").and_then(Value::as_str) == Some(role) {
             let merged = last
@@ -686,7 +688,7 @@ fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Res
                 if !text.is_empty() {
                     blocks.push(json!({"type": "text", "text": std::mem::take(&mut text)}));
                 }
-                blocks.push(image_block(part)?);
+                blocks.push(image_block(part, "messages")?);
             }
             _ => return Err(unsupported_parameter("messages")),
         }
@@ -705,35 +707,37 @@ fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Res
 
 /// Chat image_url-часть → Messages image-блок. `detail` Messages не умеет:
 /// дефолт (`auto`) принимается, остальное — `400 unsupported_parameter`.
-fn image_block(part: &Value) -> Result<Value, Response> {
+/// Общая с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`);
+/// `param` — имя параметра в ошибках (`messages` у chat, `input` у Responses).
+pub(crate) fn image_block(part: &Value, param: &str) -> Result<Value, Response> {
     let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
         invalid_request(
             "Invalid image_url part: expected an object with a url string.",
-            Some("messages"),
+            Some(param),
         )
     })?;
     if let Some(detail) = image.get("detail").and_then(Value::as_str) {
         if detail != "auto" {
-            return Err(unsupported_parameter("messages"));
+            return Err(unsupported_parameter(param));
         }
     }
     let url = image.get("url").and_then(Value::as_str).ok_or_else(|| {
         invalid_request(
             "Invalid image_url part: expected an object with a url string.",
-            Some("messages"),
+            Some(param),
         )
     })?;
     if let Some(data_url) = url.strip_prefix("data:") {
         let (media_type, data) = data_url.split_once(";base64,").ok_or_else(|| {
             invalid_request(
                 "Invalid image_url data URL: expected data:<mime>;base64,<data>.",
-                Some("messages"),
+                Some(param),
             )
         })?;
         if !media_type.starts_with("image/") || data.is_empty() {
             return Err(invalid_request(
                 "Invalid image_url data URL: expected an image MIME type and base64 data.",
-                Some("messages"),
+                Some(param),
             ));
         }
         return Ok(json!({
@@ -749,7 +753,7 @@ fn image_block(part: &Value) -> Result<Value, Response> {
     }
     Err(invalid_request(
         "Invalid image_url: expected an http(s) or data: URL.",
-        Some("messages"),
+        Some(param),
     ))
 }
 
@@ -808,8 +812,12 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<Value>, Res
 /// `reasoning_effort` → `output_config.effort` (GA-поле Messages, этап 3.4b;
 /// beta-заголовок не нужен). Отсутствие/null — выкл (поле не вставляется);
 /// minimal у Messages нет — клампится в low. Любое другое не-null значение →
-/// 400 invalid_request.
-fn translate_reasoning_effort(value: Option<&Value>) -> Result<Option<String>, Response> {
+/// 400 invalid_request. Общая с Responses-адаптером этапа 4.1; `param` — имя
+/// параметра в ошибке (`reasoning_effort` у chat, `reasoning` у Responses).
+pub(crate) fn translate_reasoning_effort(
+    value: Option<&Value>,
+    param: &str,
+) -> Result<Option<String>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
@@ -817,8 +825,10 @@ fn translate_reasoning_effort(value: Option<&Value>) -> Result<Option<String>, R
         Some("minimal") | Some("low") => Ok(Some("low".to_string())),
         Some(effort @ ("medium" | "high")) => Ok(Some(effort.to_string())),
         _ => Err(invalid_request(
-            "Invalid value for parameter: reasoning_effort (expected minimal, low, medium or high).",
-            Some("reasoning_effort"),
+            &format!(
+                "Invalid value for parameter: {param} (expected minimal, low, medium or high)."
+            ),
+            Some(param),
         )),
     }
 }
@@ -856,7 +866,9 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
 
 /// Один function-дескриптор → Messages tool: name/description passthrough,
 /// `parameters` → `input_schema` (отсутствующая схема — пустой object).
-fn translate_tool_function(function: &Map<String, Value>, param: &str) -> Result<Value, Response> {
+/// Общая с Responses-адаптером этапа 4.1 (у Responses function-дескриптор
+/// плоский — сам tool-объект, `strict` снимается тем же игнором).
+pub(crate) fn translate_tool_function(function: &Map<String, Value>, param: &str) -> Result<Value, Response> {
     let name = function
         .get("name")
         .and_then(Value::as_str)
@@ -1029,7 +1041,8 @@ fn openai_error_type(status: StatusCode) -> &'static str {
 
 /// Единая точка синтетических OpenAI-ошибок адаптера. `reason` — статический
 /// код для audit-middleware (TerminalErrorReason), как у local_err.
-fn chat_error(
+/// Общая с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`).
+pub(crate) fn chat_error(
     status: StatusCode,
     message: &str,
     param: Option<&str>,
@@ -1052,7 +1065,7 @@ fn chat_error(
     response
 }
 
-fn invalid_request(message: &str, param: Option<&str>) -> Response {
+pub(crate) fn invalid_request(message: &str, param: Option<&str>) -> Response {
     chat_error(
         StatusCode::BAD_REQUEST,
         message,
@@ -1062,7 +1075,7 @@ fn invalid_request(message: &str, param: Option<&str>) -> Response {
     )
 }
 
-fn unsupported_parameter(param: &str) -> Response {
+pub(crate) fn unsupported_parameter(param: &str) -> Response {
     chat_error(
         StatusCode::BAD_REQUEST,
         &format!("Unsupported parameter: '{param}' is not supported with this endpoint."),
@@ -1075,7 +1088,8 @@ fn unsupported_parameter(param: &str) -> Response {
 /// Перевод не-200 ответа `forward()` (наш `local_err` или пасsthrough-ошибка
 /// апстрима) из Anthropic-конверта в OpenAI-конверт. Статус и `Retry-After`
 /// сохраняются; audit-reason `local_err` пробрасывается в extension.
-async fn convert_error_response(upstream: Response) -> Response {
+/// Общая с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`).
+pub(crate) async fn convert_error_response(upstream: Response) -> Response {
     let status = upstream.status();
     let reason = upstream
         .extensions()

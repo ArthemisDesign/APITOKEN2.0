@@ -228,7 +228,7 @@ Body должен объяснять:
 cargo build                        # всегда зелёный до коммита
 cargo test -p <crate>              # точечно; для metering/денег — ВСЕ тесты обязательны
 cargo build && bash tests/rotation_fanout_smoke.sh   # smoke ротации без живых подписок (мок-апстрим)
-cargo build && bash tests/universal_chat_smoke.sh    # smoke universal chat lane (router→engine→мок-апстрим)
+cargo build && bash tests/universal_chat_smoke.sh    # smoke universal lanes chat+responses (router→engine→мок-апстрим)
 
 pnpm build && pnpm typecheck && pnpm test            # коммерческий workspace
 pnpm --filter @claude-api/<pkg> test                 # один пакет

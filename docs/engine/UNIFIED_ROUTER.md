@@ -99,10 +99,12 @@ prompt-cache boundaries, usage и canonical streaming events.
 POST /v1/messages                                   Anthropic Messages (Claude Code)
 POST /v1/messages/count_tokens                    Anthropic token counting
 
-POST /v1/responses                                OpenAI Responses (Codex)
-POST /v1/responses/input_tokens                   OpenAI token counting
-GET  /v1/responses/{id}                           stored response (семантика — этап 4,
-GET  /v1/responses/{id}/input_items               либо явные ограничения)
+POST /v1/responses                                OpenAI Responses (этап 1a — только OpenAI
+                                                  plane, этап 4.1 — + любая Claude-модель
+                                                  каталога через model-based dispatch)
+POST /v1/responses/input_tokens                   OpenAI token counting (пока openai-only)
+GET  /v1/responses/{id}                           stored response — только openai/*
+GET  /v1/responses/{id}/input_items               (решение 5)
 
 POST /v1/chat/completions                         universal OpenAI-compatible вход
                                                   (этап 1a — только OpenAI plane,
@@ -452,9 +454,59 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    выставляются (решение 4): signature_delta/thoughtSignature выбрасываются,
    redacted_thinking игнорируется. Правило `reasoning_effort` удалено из
    capability matrix обеих плоскостей (Anthropic 17→16, Gemini 19→18).
-4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
-   reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
-   явный `400 documented_limitation`).
+4. **Universal Responses для Codex-parity (2–4 недели).** `POST /v1/responses` для всех
+   моделей каталога: text, images, tools, reasoning, usage, streaming. Реализуется по решениям
+   1–5 раздела «Решения universal lanes»: адаптеры в плоскостях, router — только model-based
+   routing, stored responses — только `openai/*` (для остальных явный
+   `400 documented_limitation`). Подпакеты: **4.1** — router dispatch + адаптер Anthropic
+   plane (ядро: текст, usage, stream; tools в запросе и function_call в ответе) —
+   **РЕАЛИЗОВАН**: `POST /v1/responses` в router (`crates/router/src/responses.rs`) повторяет
+   chat-диспатч этапа 3.1 — буферизуется только тело запроса (32 MiB), извлекается `model`,
+   плоскость выбирается по namespace-префиксу без опроса каталога либо по alias через
+   кэшированный каталог, тело проксируется без изменений, ошибки dispatch (400 невалидный
+   JSON/нет `model`, 404 `model_not_found`, 503 `catalog_unavailable`, единый 401) — в
+   OpenAI-конверте. Stored endpoints (`POST /v1/responses/input_tokens`,
+   `GET/DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items`) dispatch НЕ
+   используют и остаются native OpenAI lane (решение 5; token counting пока тоже openai-only
+   — задокументированное ограничение). Адаптер Anthropic plane
+   (`crates/forward/src/anthropic_responses.rs`, роут в `ProviderMode::Anthropic`) переводит
+   Responses→Messages и вызывает общий `forward()` (auth, reserve, ротация, identity-инжект,
+   tee-метеринг, settle — без изменений). Запрос: `instructions` и system/developer items →
+   top-level `system` (instructions первым), `input` строка → user-сообщение, массив items
+   (message item — `{type:"message",…}` или компактная `{role, content}` без type) →
+   сообщения со склейкой одноролевых, parts `input_text`/`output_text` → text-блоки,
+   `input_image` → image-блоки (общий с chat-адаптером перевод: data: → base64, http(s) →
+   url source, `detail` != auto → 400), `tools` → `tools[]` (`parameters`→`input_schema`,
+   `strict` снимается; не-function tool → `400 unsupported_parameter`),
+   `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
+   `max_tokens` (дефолт 4096), `reasoning.effort` → `output_config.effort` (minimal
+   клампится в low) + инжект `thinking: {type:"adaptive", display:"summarized"}` (как 3.4c;
+   явный `thinking` клиента не переопределяется), `text.format` json_schema →
+   `output_config.format` (обёртка снимается; json_object → 400), capability matrix
+   (`background`, `service_tier`, `truncation`, `include`, `prompt_cache_key`,
+   `safety_identifier`, `user`, `metadata`, `max_tool_calls`, не-дефолтная `text.verbosity`)
+   с не-дефолтом → `400 unsupported_parameter`, неизвестные поля проксируются (open list).
+   Ответ (словарь 4.1): non-stream → Response object (`resp_*`; text-блоки склеиваются в
+   один message item с одним output_text part, tool_use → function_call items `fc_*` с
+   `call_id` = tool_use id и arguments-строкой; usage: input = input+cache_creation+
+   cache_read с `input_tokens_details.cached_tokens`, reasoning_tokens из thinking_tokens;
+   status completed/incomplete по stop_reason: max_tokens/context_window →
+   `max_output_tokens`, refusal → `content_filter`); stream Messages SSE → Responses SSE
+   (`response.created` → `response.in_progress` → per-block `output_item.added` /
+   `content_part.added` / `output_text.delta|done` / `function_call_arguments.delta|done` /
+   `output_item.done` → `response.completed` с полным объектом и usage; ping → `: ping`
+   comment-кадр; mid-stream `event: error` и преждевременный EOF → `response.failed`;
+   output_index — плотный собственный счётчик, thinking-блоки позицию не занимают).
+   Ошибки — общий с chat-адаптером OpenAI-конверт с сохранением статуса (402 LowBalance
+   тоже) и `Retry-After`. Временные ограничения 4.1: `function_call`/
+   `function_call_output` items во входе → `400 unsupported_parameter` (replay истории
+   tool calls — 4.2), `reasoning` items во входе принимаются и выбрасываются (подписи не
+   выставляются — решение 4), thinking-блоки ответа пропускаются без reasoning-событий,
+   `store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`;
+   **4.2** — replay tool-истории во входе (function_call/function_call_output items →
+   tool_use/tool_result блоки) и reasoning summary события (output reasoning item +
+   `response.reasoning_summary_text.delta` из thinking-блоков); **4.3** — Gemini-зеркало
+   (Responses→generateContent в Gemini plane по образцу 3.3).
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
    beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
    (зеркало решений 3–4, thinking без подписей).
