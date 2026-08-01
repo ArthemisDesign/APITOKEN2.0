@@ -37,9 +37,10 @@ const MIGRATION_0016: &str =
     include_str!("../migrations_pg/0016_multi_discount_strict_enforcement.sql");
 const MIGRATION_0017: &str = include_str!("../migrations_pg/0017_policy_runtime_floor.sql");
 const MIGRATION_0018: &str = include_str!("../migrations_pg/0018_codex_credit_calibration.sql");
+const MIGRATION_0019: &str = include_str!("../migrations_pg/0019_provider_turn_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -61,6 +62,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (16, MIGRATION_0016),
     (17, MIGRATION_0017),
     (18, MIGRATION_0018),
+    (19, MIGRATION_0019),
 ];
 
 #[cfg(test)]

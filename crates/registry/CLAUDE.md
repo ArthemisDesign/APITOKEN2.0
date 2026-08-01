@@ -74,6 +74,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   ложным zero-credit evidence. Raw observations остаются replay authority, включая rolling reset;
   workload/envelope/confidence и possibly-unattributed semantics принадлежат `forward`, registry
   только валидирует и CAS-сохраняет exact integer primitives.
+- Provider calibration migration 0019 expand-only создаёт общий immutable event ledger для
+  Claude/Gemini и отдельный exact cumulative nanoUSD ledger по provider subject. Event сохраняет
+  provider-specific token/tool/search classes, tariff schedule, speed/geography и disjoint API-cost
+  legs; native quota snapshots остаются в своих существующих Claude/Gemini authorities. Старый
+  runtime таблицы не читает и не пишет, поэтому migration SHA безопасно выкатывается до dependent
+  application commit.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed
