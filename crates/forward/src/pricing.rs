@@ -1,9 +1,11 @@
-//! Dormant, side-effect-free pricing-policy resolver.
+//! Pricing-policy resolver and shadow-evaluation pipeline.
 //!
-//! This module deliberately has no runtime caller yet. It consumes one transactionally read
-//! registry bundle plus identities fixed by the provider runtime, and either returns one exact
-//! rule or a typed fail-closed reason. It does not read a database, inspect HTTP input, calculate
-//! token costs, reserve money, emit telemetry, or change admission.
+//! Live, side-effect-free resolver: the strict-policy admission path (`proxy.rs`) and Codex
+//! billing (`codex/billing.rs`) call it at request time, and the shadow runtime runs in
+//! production. It consumes one transactionally read registry bundle plus identities fixed by the
+//! provider runtime, and either returns one exact rule or a typed fail-closed reason — under the
+//! per-account strict-policy flag that verdict rejects admission. It does not read a database,
+//! inspect HTTP input, calculate token costs, reserve money, or emit telemetry on its own.
 
 use anyhow::{bail, Result};
 use registry::pricing::{

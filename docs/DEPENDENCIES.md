@@ -21,7 +21,7 @@
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
 | `packages/engine-client` | TS-клиент `EngineClient`, zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками | `apps/api`, `apps/worker`, `apps/openkeys` (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` у каждого) | `docs/engine/CONTROL_API.md` |
-| `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`) | `apps/admin` (без engine-client и без своих секретов) | `docs/product/ADMIN_PANEL.md` |
+| `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`) | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для pricing-worker), usage,
@@ -45,10 +45,10 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 |---|---|---|---|
 | `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, `B2C_PRICING_TIERS`, `CURRENT_*_CANONICAL_MODELS` | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | — (сам пакет и есть контракт) |
 | `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
-| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key` | `apps/admin` | `docs/product/ADMIN_PANEL.md` |
+| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md` |
 | `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
 | `apps/sales-api` (публичный + админ API) | `partners.apitoken.sale/v1/*`; `/v1/admin` через Caddy `admin.apitoken.sale/partner-admin/*`, заголовок `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |
-| `packages/payments` | адаптеры провайдеров: Platega (дефолт), Cryptomus; вебхуки `POST /v1/payments/{platega,cryptomus}/webhook` в `apps/api`; reconcile-поллинг в `apps/worker` | `apps/api`, `apps/worker` (единственные потребители) | `docs/commerce/CRYPTOMUS_INTEGRATION.md`, `docs/commerce/DIGISELLER_INTEGRATION.md` |
+| `packages/payments` | адаптеры провайдеров: Platega (дефолт) и Cryptomus — боевые; DigiSeller — зарегистрирован, но отключён для клиентов (нет точки входа, статус в документе); вебхуки `POST /v1/payments/{platega,cryptomus}/webhook` в `apps/api`; reconcile-поллинг в `apps/worker` | `apps/api`, `apps/worker` (единственные потребители) | `docs/commerce/PLATEGA_INTEGRATION.md`, `docs/commerce/CRYPTOMUS_INTEGRATION.md`, `docs/commerce/DIGISELLER_INTEGRATION.md` |
 
 ## 2. Внутри движка (кратко)
 
@@ -61,7 +61,10 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
   `crates/server` (типы/тарифные идентификаторы).
 - `crates/registry/src/pricing/` — НЕ прайс-лист, а durable-идентичности multi-discount:
   каталоги/свитчи/политики, admission-снапшоты (`docs/commerce/MULTI-DISCOUNT.md`).
-- `crates/forward/src/pricing*` — shadow-evaluation конвейер (dormant), рантайм-вызовов нет.
+- `crates/forward/src/pricing*` — pricing-resolver и shadow-evaluation конвейер. Живой:
+  resolver вызывается в admission-пути strict-политики (`proxy.rs`) и в Codex-биллинге
+  (`codex/billing.rs`), shadow-runtime стартует в проде (`crates/server`). НЕ читает БД
+  и не считает стоимость токенов.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
 
 ## 3. Модели и цены — где ещё зеркалятся
@@ -107,16 +110,21 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 | `content-studio.apitoken.sale` | `/v1/*` → commerce 8791; остальное → `apps/content-studio` `:3500` |
 | `crm.apitoken.sale` | `/v1/ingest/*`, `/r/*` → crm-api `:3400` (без admin-auth); `/v1/*` и остальное → managed auth → crm-api 3400 / crm-web `:3300`. CRM живёт в отдельном репозитории — роутинг НЕ удалять |
 | `monitoring.apitoken.sale` | Grafana `:3600`; `support.apitoken.sale` → Chatwoot `:3010` |
+| `mail.apitoken.sale` (+`autodiscover.`, `autoconfig.`) | почтовый сервис `127.0.0.1:8080` |
+| `sales.apitoken.sale` | 301-редирект на `partners.apitoken.sale` |
+| `admin.partners.apitoken.sale` | managed auth; `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
 
 ### systemd (`systemd/`) — сервис → приложение
 
-`claude-api{,-openai,-gemini}[@]` → движок (Anthropic 8787/8788, OpenAI 8793/8797,
-Gemini 8795/8799) · `claude-router` → 8798 · `claude-authbot` → authbot ·
+`claude-api-anthropic@` → Anthropic-слоты 8787/8788 (текущий юнит; `claude-api@` — legacy) ·
+`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-router` → 8798 ·
+`claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
 `apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·
 `apitoken-sales-api` → 3100 · `apitoken-sales-web` → 3200 · `apitoken-crm-{api,web}` → внешняя
 CRM (3400/3300, НЕ удалять) · плюс infra-юниты: postgres, affinity-redis, deploy-watchdog,
-monitoring-collector, candidate-validator, backup, fingerprint.
+monitoring-collector, candidate-validator, backup, fingerprint · host-bootstrap:
+`apitoken-{sudoers,sysctl,tmpfiles}-install`.
 
 ### Мониторинг — петля «метрика → алерт → runbook»
 

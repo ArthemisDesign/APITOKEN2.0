@@ -90,8 +90,9 @@ const resolveSchema = z.object({
   code: z.string().trim().regex(/^[A-Za-z0-9_-]{3,32}$/),
 });
 
-// commerce спрашивает при OAuth-регистрации: этот ?ref= — код активного партнёра? и его B2B-скидка.
-// По ней реф партнёра переводится в B2B ДО welcome-бонуса (бонус ему не выдаётся).
+// Резервный read-only endpoint: сейчас НИКЕМ не вызывается — claim через POST
+// `referral-discount` (ниже) заменил прежнюю пару resolve+consume. Оставлен как expand-only
+// контракт: отвечает, является ли ?ref= кодом активного партнёра, и его B2B-скидкой.
 @Controller("internal/partners")
 @UseGuards(InternalKeyGuard)
 export class InternalPartnersController {
