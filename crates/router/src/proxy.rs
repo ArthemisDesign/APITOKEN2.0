@@ -10,6 +10,10 @@
 //!   тело ответа → роняется reqwest-стрим → соединение router→плоскость
 //!   закрывается → TeeMeter плоскости дренирует до authoritative usage
 //!   (инвариант 4). Поэтому здесь нет detached-тасков вокруг тела ответа.
+//! - `x-apitoken-execution-state` (авторитетная семантика исполнения,
+//!   docs/engine/ROUTING_FENCING.md §3) — контракт между движком и его клиентом;
+//!   с транзитных ответов заголовок снимается: router не может подтвердить его
+//!   условия и не транслирует чужое обещание (failover по нему — отдельная фаза).
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode};
@@ -38,6 +42,11 @@ pub const AUTH_HEADERS: [HeaderName; 3] = [
     HeaderName::from_static("x-goog-api-key"),
     HeaderName::from_static("authorization"),
 ];
+
+/// Авторитетная семантика исполнения (docs/engine/ROUTING_FENCING.md §3): выставляется
+/// движком только на отказах без исполнения (`not_started`). С транзитных ответов router
+/// заголовок снимает — за его условия отвечает только сам движок.
+const EXECUTION_STATE_HEADER: HeaderName = HeaderName::from_static("x-apitoken-execution-state");
 
 /// Копия заголовков запроса без hop-by-hop. Токены, перечисленные в значении
 /// `connection`, тоже вырезаются.
@@ -91,6 +100,11 @@ pub async fn proxy_request(
             let mut builder = Response::builder().status(res.status());
             let filtered = strip_hop_by_hop(res.headers());
             for (name, value) in filtered.iter() {
+                // Авторитетная семантика исполнения — не транзитный контракт: снимаем
+                // (см. EXECUTION_STATE_HEADER).
+                if name == EXECUTION_STATE_HEADER {
+                    continue;
+                }
                 builder = builder.header(name, value);
             }
             // Тело отдаётся стримом по мере поступления: ни полного чтения, ни

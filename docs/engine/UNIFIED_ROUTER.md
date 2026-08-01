@@ -706,7 +706,11 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым
    пакетом этапа идёт детальный дизайн на живой телеметрии этапов 3–5 — он зафиксирован в
    `docs/engine/ROUTING_FENCING.md` (фактбаза, контракт `execution_state=not_started`,
-   group/attempt identity, фазировка 6.1–6.4). Отдельно —
+   group/attempt identity, фазировка 6.1–6.4). Фаза 6.1 реализована (2026-08-01):
+   плоскости выставляют `x-apitoken-execution-state: not_started` на не-2xx отказах до
+   границы started при гарантии refund/cancel reserve, router снимает заголовок со всех
+   транзитных ответов (адаптеры universal lanes пока fail-closed, §3.2 там же); retry
+   по сигналу и поле `models` — фаза 6.2. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).

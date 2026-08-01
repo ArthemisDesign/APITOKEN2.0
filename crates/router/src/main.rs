@@ -390,6 +390,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_lane_strips_execution_state_header_from_transit_responses() {
+        // Плоскость пометила отказ авторитетной семантикой исполнения. Router снимает
+        // заголовок с транзита (за его условия отвечает только сам движок), а статус,
+        // тело и остальные заголовки доезжают до клиента без изменений.
+        let plane = spawn(Router::new().fallback(any(|| async {
+            AxumResponse::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header("content-type", "application/json")
+                .header("x-apitoken-execution-state", "not_started")
+                .header("x-plane-marker", "refused")
+                .body(Body::from("{}"))
+                .unwrap()
+        })))
+        .await;
+        let router = spawn(
+            make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/messages"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","max_tokens":64,"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response
+            .headers()
+            .get("x-apitoken-execution-state")
+            .is_none());
+        assert_eq!(response.headers().get("x-plane-marker").unwrap(), "refused");
+        assert_eq!(response.text().await.unwrap(), "{}");
+    }
+
+    #[tokio::test]
     async fn native_lane_passes_query_string_verbatim() {
         let (origin, log) = echo_plane().await;
         let router = spawn(make_router(&origin, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;

@@ -24,7 +24,7 @@ use crate::state::AppState;
 use crate::upstream::{limits_from_headers, Limits};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
 use registry::pricing::{
@@ -136,6 +136,31 @@ impl Drop for HoldGuard {
 }
 
 type ResponseByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
+
+/// Заголовок авторитетной семантики исполнения (docs/engine/ROUTING_FENCING.md §3):
+/// `not_started` — запрос гарантированно не был исполнен: ни байта публичного ответа клиенту не
+/// ушло, reserve по request_id НЕ будет тарифицирован (settle — только refund/cancel), статус не-2xx.
+/// Router снимает заголовок с транзитных ответов; наружу его отдаёт только сам движок.
+pub(crate) const EXECUTION_STATE_HEADER: &str = "x-apitoken-execution-state";
+pub(crate) const EXECUTION_STATE_NOT_STARTED: &str = "not_started";
+
+/// Выставляет `not_started` на ответ. Допустимо ТОЛЬКО при выполнении всех трёх условий
+/// контракта (см. EXECUTION_STATE_HEADER): не-2xx, ни байта клиенту не отправлено, reserve
+/// уйдёт в refund. На 2xx и после границы доставки — никогда.
+pub(crate) fn with_not_started(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        EXECUTION_STATE_HEADER,
+        HeaderValue::from_static(EXECUTION_STATE_NOT_STARTED),
+    );
+    response
+}
+
+/// Снимает `not_started` с ответа. Страховка для веток, где ответ собран через точку,
+/// выставляющую заголовок, но условия контракта не выполнены (возможен charge).
+pub(crate) fn without_not_started(mut response: Response) -> Response {
+    response.headers_mut().remove(EXECUTION_STATE_HEADER);
+    response
+}
 
 // Anthropic Messages принимает тела до 32 МиБ. Держим тот же публичный предел; точное различение
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
@@ -578,7 +603,10 @@ fn local_err_for(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(terminal_reason));
-    response
+    // Все ответы local_err_for — синтетические не-2xx ДО границы доставки: reserve по request_id
+    // (если был) закрывает armed HoldGuard refund'ом. Ветки после границы снимают заголовок через
+    // without_not_started (delivery-marker-failed с full-hold charge, fallback сборки stream_back).
+    with_not_started(response)
 }
 
 /// Точный баланс-лимит метерного ключа: сколько OUTPUT-токенов и какой hold клиент может позволить
@@ -1917,11 +1945,14 @@ pub async fn forward(
                         if let Some(g) = hold_guard.as_mut() {
                             g.disarm();
                         }
-                        return local_err_for(
+                        // Заголовок not_started снимаем: в legacy-scalar ветке выше settle
+                        // закрыл hold ПОЛНЫМ списанием (actual=hold), значит условие «reserve не
+                        // будет тарифицирован» не выполнено — отсутствие заголовка безопаснее.
+                        return without_not_started(local_err_for(
                             LocalErr::Overloaded,
                             "billing_delivery_marker_unavailable",
                             Some(2),
-                        );
+                        ));
                     }
                 }
                 let capacity = match (&guard.billing, &guard.capacity_lease_id) {
@@ -2157,11 +2188,18 @@ impl Stream for SseErrorTail {
 }
 
 fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) -> Response {
+    // Не-2xx passthrough без метеринга: hold по request_id вернёт armed HoldGuard (refund),
+    // а ни одного байта клиенту ещё не отправлено — контракт not_started выполнен. На 2xx
+    // (meter = Some) заголовок недопустим никогда, включая SseErrorTail внутри 200.
+    let not_started = meter.is_none() && !st.is_success();
     let mut builder = Response::builder().status(st);
     for (name, value) in resp.headers().iter() {
         if !skip_resp_header(name.as_str()) {
             builder = builder.header(name.as_str(), value.as_bytes());
         }
+    }
+    if not_started {
+        builder = builder.header(EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED);
     }
     let event_stream = is_event_stream(&resp);
     let stream = resp
@@ -2178,9 +2216,20 @@ fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) ->
         stream = Box::pin(SseErrorTail::new(stream));
     }
     let body = Body::from_stream(stream);
-    builder
-        .body(body)
-        .unwrap_or_else(|_| local_err(LocalErr::Internal, None))
+    match builder.body(body) {
+        Ok(response) => response,
+        Err(_) => {
+            // Сборка ответа не удалась. На 2xx-пути дропнутый TeeMeter при drain может списать
+            // фактику → not_started недопустим; на не-2xx armed HoldGuard вернёт hold — заголовок
+            // из local_err корректен и сохраняется.
+            let response = local_err(LocalErr::Internal, None);
+            if not_started {
+                response
+            } else {
+                without_not_started(response)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2327,7 +2376,7 @@ mod tests {
 
     async fn invoke_anthropic_bridge(
         pricing_bridge: PricingBridgeConfig,
-    ) -> (AppState, Arc<AsyncBilling>, std::path::PathBuf) {
+    ) -> (AppState, Arc<AsyncBilling>, std::path::PathBuf, Response) {
         const ACCOUNT: &str = "anthropic-bridge-account";
         const KEY: &str = "sk-pool-anthropic-bridge";
         let unique = std::time::SystemTime::now()
@@ -2375,7 +2424,7 @@ mod tests {
         .await;
         assert_eq!(response.status().as_u16(), 529);
         billing.flush().await.unwrap();
-        (app, billing, path)
+        (app, billing, path, response)
     }
 
     fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
@@ -2709,7 +2758,7 @@ mod tests {
     #[tokio::test]
     async fn sampled_anthropic_request_persists_snapshot_before_legacy_cancel_lifecycle() {
         let config = PricingBridgeConfig::from_parts(true, 10_000).unwrap();
-        let (app, billing, path) = invoke_anthropic_bridge(config).await;
+        let (app, billing, path, _response) = invoke_anthropic_bridge(config).await;
 
         assert_eq!(
             app.metrics
@@ -2757,7 +2806,8 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_anthropic_bridge_preserves_scalar_reserve_without_snapshot() {
-        let (app, billing, path) = invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
+        let (app, billing, path, _response) =
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
 
         assert_eq!(
             app.metrics
@@ -3114,5 +3164,251 @@ mod tests {
                 .map(|value| value.0),
             Some("key_spend_limit")
         );
+    }
+
+    #[test]
+    fn local_err_marks_every_synthetic_refusal_not_started() {
+        // Каждый синтетический отказ local_err — не-2xx до границы доставки → обязан нести
+        // x-apitoken-execution-state: not_started (с retry-after и без).
+        for reason in ALL_LOCAL_ERRS {
+            for retry_after in [None, Some(2)] {
+                let response = local_err(reason, retry_after);
+                assert!(!response.status().is_success());
+                assert_eq!(
+                    response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
+                    EXECUTION_STATE_NOT_STARTED,
+                    "{reason:?} обязан нести not_started"
+                );
+            }
+        }
+        // Страховка для веток после границы доставки: заголовок снимается.
+        let response = without_not_started(local_err(LocalErr::Internal, None));
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
+    }
+
+    #[tokio::test]
+    async fn not_started_overload_response_leaves_the_balance_untouched() {
+        // Пустой пул → синтетический 529 с заголовком; заголовок ⇒ reserve не тарифицирован:
+        // баланс целиком на месте, резерв нулевой, charge-строк в журнале нет.
+        let (app, billing, path, response) =
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
+        assert_eq!(response.status().as_u16(), 529);
+        assert_eq!(
+            response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
+            EXECUTION_STATE_NOT_STARTED
+        );
+        let account = billing
+            .account("anthropic-bridge-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, 20_000_000);
+        assert_eq!(account.reserved_nano, 0);
+        let ledger = billing.ledger("anthropic-bridge-account", 10).await.unwrap();
+        assert!(!ledger.iter().any(|row| row.kind == "charge"));
+
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    const NS_ACCOUNT: &str = "not-started-account";
+    const NS_KEY: &str = "sk-pool-not-started";
+    const NS_TOPUP: i64 = 20_000_000;
+
+    /// Биллинг-фикстура с метерным ключом, как в `invoke_anthropic_bridge`, но со своим
+    /// аккаунтом — тесты с реальным upstream-проходом и settle.
+    async fn not_started_billing(tag: &str) -> (Arc<AsyncBilling>, std::path::PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_ANTHROPIC_BRIDGE_DB.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-not-started-{tag}-{}-{unique}-{sequence}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start not_started test billing"),
+        );
+        billing.create_account(NS_ACCOUNT, None, 2_000).await.unwrap();
+        billing
+            .topup(NS_ACCOUNT, NS_TOPUP, Some("not-started-seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(NS_KEY, NS_ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        (billing, path)
+    }
+
+    /// AppState с ОДНОЙ подпиской в пуле и upstream'ом на мок: запрос реально уходит в сеть
+    /// (loopback), резерв берётся по-настоящему.
+    fn not_started_pool_app(billing: Arc<AsyncBilling>, upstream: String) -> AppState {
+        let mut cfg = (*anthropic_bridge_proxy_config(PricingBridgeConfig::disabled())).clone();
+        cfg.upstream = upstream;
+        let cfg = Arc::new(cfg);
+        AppState {
+            provider: ProviderMode::Anthropic,
+            authority: Arc::new(registry::authority::AuthorityConfig::new(
+                ":memory:".to_string(),
+                None,
+            )),
+            data_db_path: Arc::new(":memory:".to_string()),
+            pool: Arc::new(Pool::new(
+                vec![registry::Sub {
+                    email: "not-started@example.test".into(),
+                    token: "secret".into(),
+                    proxy: String::new(),
+                    fleet: "test".into(),
+                    plan: "max20".into(),
+                }],
+                Reserve::FULL,
+                50.0,
+                1_500.0,
+            )),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: None,
+            gemini: None,
+            billing: Some(billing),
+            pricing_shadow: None,
+            pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            probe_poke: None,
+            cfg,
+        }
+    }
+
+    struct FixedUpstream {
+        upstream: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for FixedUpstream {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    /// Мок-апстрим, который на любой запрос отвечает одним фиксированным JSON-ответом.
+    async fn fixed_upstream(status: StatusCode, body: serde_json::Value) -> FixedUpstream {
+        let router = axum::Router::new().fallback(move || {
+            let body = body.clone();
+            async move { (status, axum::Json(body)) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        FixedUpstream {
+            upstream: format!("http://{address}"),
+            task,
+        }
+    }
+
+    async fn invoke_not_started(app: &AppState) -> Response {
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", NS_KEY)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        forward(
+            State(app.clone()),
+            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+            request,
+        )
+        .await
+    }
+
+    /// Ждём закрытия резерва (settle асинхронен): возвращает аккаунт с reserved_nano == 0.
+    async fn settled_account(billing: &AsyncBilling) -> registry::AccountRow {
+        loop {
+            billing.flush().await.unwrap();
+            let account = billing.account(NS_ACCOUNT).await.unwrap().unwrap();
+            if account.reserved_nano == 0 {
+                break account;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn not_started_upstream_failure_passthrough_refunds_the_hold() {
+        // Upstream отвечает 500, попытка одна → терминальный passthrough 500 с заголовком;
+        // reserve ушёл в refund (armed HoldGuard), ни цента не списано.
+        let mock = fixed_upstream(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"type":"error","error":{"type":"api_error","message":"boom"}}),
+        )
+        .await;
+        let (billing, path) = not_started_billing("upstream-500").await;
+        let app = not_started_pool_app(Arc::clone(&billing), mock.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status().as_u16(), 500);
+        assert_eq!(
+            response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
+            EXECUTION_STATE_NOT_STARTED
+        );
+        let account = settled_account(&billing).await;
+        assert_eq!(account.balance_nano, NS_TOPUP);
+        let ledger = billing.ledger(NS_ACCOUNT, 10).await.unwrap();
+        assert!(!ledger.iter().any(|row| row.kind == "charge"));
+
+        drop(app);
+        drop(billing);
+        drop(mock);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn successful_delivery_never_carries_not_started_and_charges_the_actual_cost() {
+        // Успешный 200: заголовка нет НИКОГДА; tee-метеринг закрывает резерв фактической
+        // стоимостью (10 input + 5 output) — баланс уменьшился, charge в журнале есть.
+        let upstream_body = serde_json::json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let mock = fixed_upstream(StatusCode::OK, upstream_body.clone()).await;
+        let (billing, path) = not_started_billing("upstream-200").await;
+        let app = not_started_pool_app(Arc::clone(&billing), mock.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status().as_u16(), 200);
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
+        let delivered = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let delivered: serde_json::Value = serde_json::from_slice(&delivered).unwrap();
+        assert_eq!(delivered["usage"]["output_tokens"], 5);
+        let account = settled_account(&billing).await;
+        assert!(account.balance_nano < NS_TOPUP);
+        let ledger = billing.ledger(NS_ACCOUNT, 10).await.unwrap();
+        assert!(ledger.iter().any(|row| row.kind == "charge"));
+
+        drop(app);
+        drop(billing);
+        drop(mock);
+        let _ = std::fs::remove_file(path);
     }
 }

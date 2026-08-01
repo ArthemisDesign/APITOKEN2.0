@@ -74,7 +74,7 @@ use super::chat::{
     enforce_output_limits, output_chars_for, send_chat_bytes, ChatReceiverStream, StopFilter,
 };
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
-use crate::proxy::TerminalErrorReason;
+use crate::proxy::{with_not_started, without_not_started, TerminalErrorReason};
 use crate::state::AppState;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
@@ -108,7 +108,11 @@ fn skin_error(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(reason));
-    response
+    // Все вызовы skin_error — отказ ДО границы доставки: reserve закрывает дроп admission
+    // (HoldGuard, refund), ни байта клиенту не ушло. Исключение — fallback сборки SSE-ответа в
+    // stream_messages: там spawn-таск с admission уже запущен и может settle'ить фактику, поэтому
+    // он снимает заголовок через without_not_started.
+    with_not_started(response)
 }
 
 /// 400 adapter-validation error; the parameter name lives inside the message (the Anthropic
@@ -1324,13 +1328,15 @@ async fn stream_messages(
         .header("request-id", request_id_header)
         .body(Body::from_stream(ChatReceiverStream::new(frame_rx)))
         .unwrap_or_else(|_| {
-            skin_error(
+            // Spawn-таск с admission уже запущен и может settle'ить фактику (charge) —
+            // условия not_started не выполнены, заголовок из skin_error снимаем.
+            without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "Internal server error",
                 "internal_response_error",
                 None,
-            )
+            ))
         })
 }
 
@@ -1528,6 +1534,42 @@ mod tests {
 
     async fn expect_err(value: Value) -> (StatusCode, Value) {
         err_parts(translate_messages_request(value, true).unwrap_err()).await
+    }
+
+    #[tokio::test]
+    async fn skin_errors_mark_the_execution_not_started() {
+        // Отказы Anthropic-конверта skin — до границы доставки (reserve возвращает дроп
+        // admission → HoldGuard, ни байта клиенту не ушло): каждый несёт not_started.
+        // 200-ответ skin_json_response — не несёт никогда.
+        for response in [
+            skin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "overloaded_error",
+                "Overloaded",
+                "test_reason",
+                Some(2),
+            ),
+            invalid_request("bad request"),
+            anthropic_error(ApiError::from(crate::codex::billing::AdmissionError::LowBalance)),
+            anthropic_error(ApiError::from(
+                crate::codex::billing::AdmissionError::Unauthorized,
+            )),
+            translate_messages_request(json!({"model": "gpt-5.6"}), true).unwrap_err(),
+        ] {
+            assert!(!response.status().is_success());
+            assert_eq!(
+                response
+                    .headers()
+                    .get(crate::proxy::EXECUTION_STATE_HEADER)
+                    .unwrap(),
+                crate::proxy::EXECUTION_STATE_NOT_STARTED
+            );
+        }
+        let ok = skin_json_response(json!({"id": "msg_1"}), "msg_1");
+        assert!(ok
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
     }
 
     // ---------- request translation ----------

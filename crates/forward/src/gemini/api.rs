@@ -5,7 +5,7 @@ use super::config::GeminiModel;
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
 use super::transport::{TransportError, TransportResponse};
 use crate::metrics::Metrics;
-use crate::proxy::TerminalErrorReason;
+use crate::proxy::{with_not_started, TerminalErrorReason};
 use crate::state::AppState;
 use crate::{AffinityInput, AffinityResolution};
 use axum::body::{to_bytes, Body};
@@ -406,7 +406,10 @@ impl ApiError {
         response
             .extensions_mut()
             .insert(TerminalErrorReason(self.reason));
-        response
+        // Все Err-ветки api_inner — отказ ДО первого публичного байта: admission ещё в Option и
+        // при дропе закрывает reserve через HoldGuard (refund), mark_delivering на Err-путях
+        // не выполнялся. Конструкторы ApiError всегда не-2xx → контракт not_started выполнен.
+        with_not_started(response)
     }
 }
 
@@ -3875,6 +3878,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_public_error_marks_the_execution_not_started() {
+        // Все конструкторы публичных ошибок плоскости — не-2xx отказы до первого публичного
+        // байта: admission ещё в Option и при дропе возвращает reserve через HoldGuard
+        // (refund). Каждый такой ответ обязан нести not_started.
+        for error in [
+            ApiError::invalid("bad request"),
+            ApiError::not_found(),
+            ApiError::unavailable("test_unavailable"),
+            ApiError::rate_limited(Some(3)),
+            ApiError::provider_rejected(StatusCode::PAYLOAD_TOO_LARGE),
+            ApiError::from(AdmissionError::Unauthorized),
+            ApiError::from(AdmissionError::Unavailable),
+            ApiError::from(AdmissionError::LowBalance),
+        ] {
+            let response = error.into_response();
+            assert!(!response.status().is_success());
+            assert_eq!(
+                response
+                    .headers()
+                    .get(crate::proxy::EXECUTION_STATE_HEADER)
+                    .unwrap(),
+                crate::proxy::EXECUTION_STATE_NOT_STARTED
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn existing_profile_load_never_delays_a_new_request() {
         let success = MockReply::json(
             StatusCode::OK,
@@ -5424,6 +5454,85 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(Metrics::get(&app.metrics.gemini_usage_missing), 1);
+        drop(app);
+        drop(billing);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn not_started_refusal_before_first_byte_refunds_the_whole_reservation() {
+        // Upstream «успешно» ответил без usageMetadata → плоскость удерживает ответ ДО первого
+        // публичного байта и возвращает reserve целиком (admission дропается до mark_delivering).
+        // Ответ не-2xx → контракт not_started: заголовок есть, списания нет.
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({"candidates": [{"content": {"parts": [{"text": "withheld"}]}}]}),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let (app, billing, db_path) = billed_app(fixture.gateway.clone()).await;
+        let response = invoke(app.clone(), json!({"contents": []}), false).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::proxy::EXECUTION_STATE_HEADER)
+                .unwrap(),
+            crate::proxy::EXECUTION_STATE_NOT_STARTED
+        );
+
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+        assert_eq!(account.balance_nano, 1_000_000_000);
+        assert_eq!(account.reserved_nano, 0);
+        assert_eq!(account.spent_nano, 0);
+        assert!(billing
+            .ledger(ACCOUNT_ID, 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.kind != "charge"));
+        drop(app);
+        drop(billing);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn successful_delivery_never_carries_not_started_and_charges_usage() {
+        // Успешный 200: заголовка нет НИКОГДА; резерв закрывается фактической стоимостью usage.
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "candidates": [{"content": {"parts": [{"text": "delivered"}]}}],
+                    "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1}
+                }),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let (app, billing, db_path) = billed_app(fixture.gateway.clone()).await;
+        let response = invoke(app.clone(), json!({"contents": []}), false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
+
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+        assert_eq!(account.reserved_nano, 0);
+        assert!(account.spent_nano > 0, "usage must be charged");
+        assert!(billing
+            .ledger(ACCOUNT_ID, 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.kind == "charge"));
         drop(app);
         drop(billing);
         let _ = fs::remove_file(db_path);

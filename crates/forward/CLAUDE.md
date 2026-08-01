@@ -71,6 +71,24 @@ outbox, а writer retry-ит до commit. RAII cancel закрывает име�
 Pricing shadow adds a separately sized PostgreSQL read-actor pool; evaluation inserts remain on the
 same single writer and deliberately do not use the normal five-second money-operation retry loop.
 
+**Execution-state контракт (этап 6.1 docs/engine/ROUTING_FENCING.md, `proxy.rs`
+`EXECUTION_STATE_HEADER` + хелперы `with_not_started`/`without_not_started`):** плоскости
+выставляют `x-apitoken-execution-state: not_started` на ответе, только когда выполнены ВСЕ три
+условия — не-2xx, ни байта публичного ответа клиенту не ушло (per-plane граница доставки:
+Anthropic — до `mark_delivering`, Codex — до `emitted`/первого SSE-кадра, Gemini — до первого
+публичного события), reserve по request_id гарантированно уйдёт в refund/cancel. Денежный
+инвариант «ответ с заголовком ⇒ ledger не содержит и не будет содержать charge по request_id»
+доказан per-plane тестами с реальным reserve; ветки, где charge возможен (legacy-scalar
+full-hold, дропнутый TeeMeter на 2xx-пути, fallback-сборки SSE после запущенного admission),
+обязаны снимать заголовок через `without_not_started`. Точки выставления: Anthropic —
+`local_err_for` и `stream_back` (не-2xx без метеринга), Codex — `ApiError::into_response` и
+`skin_error`, Gemini — `ApiError::into_response`. На 2xx заголовок недопустим никогда (включая
+SseErrorTail внутри 200). Адаптеры (`anthropic.rs`/`anthropic_responses.rs`,
+`gemini/chat.rs`/`gemini/responses.rs`) пересобирают upstream-ошибки и заголовок теряют —
+fail-closed деградация: нет заголовка = нет retry (ROUTING_FENCING §3.3), покрытие этих
+поверхностей — отдельная правка. Router обязан снимать заголовок с транзитных ответов
+(см. crates/router/CLAUDE.md).
+
 **Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** отдельный
 `ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned
 typed snapshot как единственный источник request/account/hold и вызывает guarded registry commit.

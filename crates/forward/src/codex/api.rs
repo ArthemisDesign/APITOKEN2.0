@@ -5,7 +5,7 @@ use super::{
     new_id, CodexGateway, CodexModel, CodexTurnRequest, CodexTurnResult, CodexUsage, HistoryError,
     ProcessError, StoredHistory, TurnUpdate,
 };
-use crate::proxy::{authorize, Authz, TerminalErrorReason};
+use crate::proxy::{authorize, with_not_started, Authz, TerminalErrorReason};
 use crate::state::AppState;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, Path, State};
@@ -134,7 +134,10 @@ impl ApiError {
         response
             .extensions_mut()
             .insert(TerminalErrorReason(self.reason));
-        response
+        // Все ветки, рождающие ApiError, — отказ ДО границы доставки: ни байта клиенту не ушло,
+        // а reserve (если успели взять) закрывает дроп CodexAdmission → внутренний HoldGuard
+        // возвращает hold без charge. Статусы здесь всегда не-2xx → контракт not_started выполнен.
+        with_not_started(response)
     }
 }
 
@@ -3381,6 +3384,30 @@ mod tests {
             };
             assert_eq!(error.kind, expected_kind, "status {}", error.status);
         }
+    }
+
+    #[test]
+    fn every_public_error_marks_the_execution_not_started() {
+        // Каждый публичный отказ OpenAI-конверта — не-2xx до границы доставки: reserve (если
+        // успели взять) возвращает дроп CodexAdmission → HoldGuard, ни байта клиенту не ушло.
+        // Значит все они обязаны нести x-apitoken-execution-state: not_started, а успешный
+        // json_response (2xx) — не нести никогда.
+        for error in all_public_errors() {
+            let response = error.into_response();
+            assert!(!response.status().is_success());
+            assert_eq!(
+                response
+                    .headers()
+                    .get(crate::proxy::EXECUTION_STATE_HEADER)
+                    .unwrap(),
+                crate::proxy::EXECUTION_STATE_NOT_STARTED
+            );
+        }
+        let ok = json_response(StatusCode::OK, json!({"id": "resp_1"}), "req_1");
+        assert!(ok
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
     }
 
     #[test]
