@@ -23,6 +23,11 @@ pub struct BillCtx {
     pub key: String,
     pub mult_bp: i64,
     pub hold: i64, // зарезервированный при допуске потолок — закрываем его фактической стоимостью
+    /// Strict policy settlement reuses the exact tariff timestamp pinned at admission. Legacy
+    /// scalar requests keep `None` and preserve their existing completion-time tariff lookup.
+    pub tariff_priced_ts: Option<i64>,
+    pub policy_fast: Option<bool>,
+    pub policy_us_inference: Option<bool>,
     /// Internal, generated before reservation; the exactly-once money identity.
     pub request_id: String,
     /// Upstream Anthropic request-id retained only as audit metadata.
@@ -288,10 +293,26 @@ impl TeeMeter {
         // Реальная стоимость (×1.0, до наценки). 0, если usage нет — count_tokens/models/любой 200
         // без usage/обрыв до message_start. ВАЖНО: даже при 0 нельзя просто выйти — иначе hold висел
         // бы в reserved_nano до рестарта (тихая утечка баланса клиента на штатном count_tokens).
-        let fast = speed
-            .as_deref()
-            .is_some_and(|speed| speed.eq_ignore_ascii_case("fast"));
-        let prices = metering::model_prices_for_speed_at(price_model, now_unix, fast);
+        let fast = ctx
+            .bill
+            .as_ref()
+            .and_then(|bill| bill.policy_fast)
+            .unwrap_or_else(|| {
+                speed
+                    .as_deref()
+                    .is_some_and(|speed| speed.eq_ignore_ascii_case("fast"))
+            });
+        let us_inference = ctx
+            .bill
+            .as_ref()
+            .and_then(|bill| bill.policy_us_inference)
+            .unwrap_or(us_inference);
+        let priced_ts = ctx
+            .bill
+            .as_ref()
+            .and_then(|bill| bill.tariff_priced_ts)
+            .unwrap_or(now_unix);
+        let prices = metering::model_prices_for_speed_at(price_model, priced_ts, fast);
         let base_breakdown = if usage.is_zero() {
             metering::CostBreakdown::default()
         } else {
@@ -360,7 +381,7 @@ impl TeeMeter {
                     cache_write_1h_tokens: usage.cache_write_1h_tokens as i64,
                     web_search_requests: usage.web_search_requests as i64,
                     real_nano: real.clamp(0, i64::MAX as i128) as i64,
-                    speed: speed.unwrap_or_else(|| "standard".to_string()),
+                    speed: if fast { "fast" } else { "standard" }.to_string(),
                     inference_geo: if us_inference {
                         "us".to_string()
                     } else {
@@ -372,7 +393,7 @@ impl TeeMeter {
                     cache_write_5m_nano: breakdown.cache_write_5m.clamp(0, i64::MAX as i128) as i64,
                     cache_write_1h_nano: breakdown.cache_write_1h.clamp(0, i64::MAX as i128) as i64,
                     web_search_nano: breakdown.web_search.clamp(0, i64::MAX as i128) as i64,
-                    priced_ts: now_unix,
+                    priced_ts,
                 })
             } else {
                 None
@@ -499,6 +520,9 @@ mod tests {
                     key: KEY.into(),
                     mult_bp: 10_000,
                     hold: HOLD_NANO,
+                    tariff_priced_ts: None,
+                    policy_fast: None,
+                    policy_us_inference: None,
                     request_id: "request".into(),
                     reference: None,
                 }),

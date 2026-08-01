@@ -71,6 +71,9 @@ pub struct AppState {
     /// Default-off evaluation-time pricing shadow. Its producer uses one non-blocking enqueue;
     /// policy reads and persistence remain on its bounded background worker.
     pub pricing_shadow: Option<Arc<PricingShadowRuntime>>,
+    /// Compile-fixed canonical capability manifest used by strict admission and stamped into the
+    /// PostgreSQL owner lease. It is runtime-owned and never derived from request data.
+    pub pricing_manifest: Arc<registry::pricing::PricingRuntimeManifestEvidence>,
     /// Live dependency health. PostgreSQL heartbeat toggles this and request admission fails closed.
     pub authority_ready: Arc<AtomicBool>,
     /// Глобальный circuit breaker апстрима (анти-амплификация при брауноуте api.anthropic.com).

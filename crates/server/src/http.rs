@@ -17,8 +17,9 @@ use forward::{
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
     resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
-    PricingShadowEnqueueResult, PricingShadowProcessingResult, TerminalErrorReason,
-    PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
+    PricingShadowEnqueueResult, PricingShadowProcessingResult, StrictPricingProvider,
+    StrictPricingRejectionReason, TerminalErrorReason, PRICING_BRIDGE_LATENCY_BUCKETS_MS,
+    PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
 };
 use registry::pricing::{
     PricingMode, PricingShadowComparison, PricingShadowReadErrorCode, PricingShadowRejectionCode,
@@ -881,6 +882,35 @@ async fn metrics(
              claude_api_pricing_bridge_atomic_reserve_duration_seconds_count{{provider=\"{provider_id}\"}} {latency_count}",
             m.pricing_bridge_latency_sum_seconds(provider),
         );
+    }
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_strict_pricing_admitted_total counter\n\
+         # TYPE claude_api_strict_pricing_rejected_total counter"
+    );
+    for provider in StrictPricingProvider::ALL {
+        let provider_id = provider.as_str();
+        for mode in [PricingMode::Track, PricingMode::Discount] {
+            let mode_id = match mode {
+                PricingMode::Track => "track",
+                PricingMode::Discount => "discount",
+            };
+            for (model_scope, scope_id) in [(false, "provider"), (true, "model")] {
+                let _ = writeln!(
+                    body,
+                    "claude_api_strict_pricing_admitted_total{{provider=\"{provider_id}\",mode=\"{mode_id}\",scope=\"{scope_id}\"}} {}",
+                    m.strict_pricing_admitted_count(*provider, mode, model_scope),
+                );
+            }
+        }
+        for reason in StrictPricingRejectionReason::ALL {
+            let _ = writeln!(
+                body,
+                "claude_api_strict_pricing_rejected_total{{provider=\"{provider_id}\",reason=\"{}\"}} {}",
+                reason.code(),
+                m.strict_pricing_rejected_count(*provider, *reason),
+            );
+        }
     }
     let shadow = app.pricing_shadow.as_ref();
     let _ = writeln!(
@@ -3286,6 +3316,7 @@ mod tests {
             gemini: None,
             billing: None,
             pricing_shadow: None,
+            pricing_manifest: Arc::new(forward::builtin_pricing_runtime_manifest()),
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(forward::Breaker::new(0)),
             metrics: Arc::new(Metrics::new()),
@@ -4310,6 +4341,126 @@ mod tests {
         let billing = forward::AsyncBilling::start(db.to_string_lossy().into_owned(), 1).unwrap();
         app.billing = Some(Arc::new(billing));
         (app, dir)
+    }
+
+    #[tokio::test]
+    async fn strict_key_issue_and_reactivation_require_the_exact_policy_ack() {
+        let (app, dir) = billing_test_app("strict_key_policy_ack");
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        registry::account_create(&conn, "strict-http-account", None, 10_000).unwrap();
+        conn.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES('main',1,1,1,'capability','catalog-digest',1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES(1,1,1,'capability','switch-digest',1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+                 switch_generation,content_digest,replacement_locked,created_ts
+             ) VALUES(
+                 'strict-http-account',7,'b2c:global',3,'source-policy','global_b2c','global',
+                 'b2c','main',1,1,1,'policy-digest-7',0,1
+             );
+             INSERT INTO account_policy_bindings(
+                 account_id,product_id,account_class,active_effective_version,
+                 policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+             ) VALUES(
+                 'strict-http-account','main','b2c',7,'strict','strict','verified',1
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let issue_body = |activation_policy_ack: Option<Value>| {
+            let mut body = json!({"account_id": "strict-http-account"});
+            if let Some(ack) = activation_policy_ack {
+                body["activation_policy_ack"] = ack;
+            }
+            body
+        };
+
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/key",
+            issue_body(Some(json!({
+                "effective_policy_version": 0,
+                "policy_digest": "policy-digest-7"
+            }))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) =
+            control_json_request(&service, Method::POST, "/admin/key", issue_body(None)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/key",
+            issue_body(Some(json!({
+                "effective_policy_version": 7,
+                "policy_digest": "wrong-digest"
+            }))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, issued) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/key",
+            issue_body(Some(json!({
+                "effective_policy_version": 7,
+                "policy_digest": "policy-digest-7"
+            }))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let key_id = issued["key_id"].as_str().unwrap();
+
+        let status_path = format!("/admin/key-id/{key_id}/status");
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            &status_path,
+            json!({"status": "disabled"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            &status_path,
+            json!({"status": "active"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            &status_path,
+            json!({
+                "status": "active",
+                "activation_policy_ack": {
+                    "effective_policy_version": 7,
+                    "policy_digest": "policy-digest-7"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// /spend-stats кэширует periods в процессном static, а cargo test гоняет тесты параллельно:

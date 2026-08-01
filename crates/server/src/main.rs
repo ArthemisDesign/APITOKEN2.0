@@ -1152,16 +1152,25 @@ async fn serve() -> Result<()> {
     let startup_billing = s.billing;
     let startup_is_postgres = authority.is_postgres();
     let startup_load_anthropic = serves_anthropic;
+    let startup_pricing_manifest = s.pricing_shadow_manifest.clone();
     let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) =
         tokio::task::spawn_blocking(move || {
             let mut db = startup_authority.connect()?;
             db.verify_schema()?;
-            let owner = db.claim_instance(&startup_instance, 30)?;
+            let owner = db.claim_instance_with_pricing_manifest(
+                &startup_instance,
+                30,
+                &startup_pricing_manifest,
+            )?;
             let mut recovery = registry::pg::ReconcileReport::default();
             if let Some(current) = owner.as_ref() {
                 let pg = db.postgres()?;
                 recovery = pg.reconcile_expired(10_000)?;
-                if !pg.heartbeat_instance(current, 30)? {
+                if !pg.heartbeat_instance_with_pricing_manifest(
+                    current,
+                    30,
+                    &startup_pricing_manifest,
+                )? {
                     bail!("engine PostgreSQL owner epoch was fenced during startup");
                 }
             }
@@ -1380,6 +1389,7 @@ async fn serve() -> Result<()> {
         gemini,
         billing,
         pricing_shadow,
+        pricing_manifest: Arc::new(s.pricing_shadow_manifest.clone()),
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
         metrics,
@@ -1421,6 +1431,7 @@ async fn serve() -> Result<()> {
         tokio::spawn(poller::owner_heartbeat_loop(
             authority.clone(),
             owner.clone(),
+            s.pricing_shadow_manifest.clone(),
             authority_ready.clone(),
         ));
     }

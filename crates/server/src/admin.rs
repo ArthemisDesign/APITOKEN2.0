@@ -52,6 +52,36 @@ fn is_control_conflict(error: &anyhow::Error) -> bool {
         || message.contains("already exists")
 }
 
+fn is_policy_ack_conflict(error: &anyhow::Error) -> bool {
+    format!("{error:#}")
+        .to_ascii_lowercase()
+        .contains("policy ack")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyActivationPolicyAckReq {
+    effective_policy_version: i64,
+    policy_digest: String,
+}
+
+impl KeyActivationPolicyAckReq {
+    fn into_registry(self) -> Result<registry::KeyActivationPolicyAck, Response> {
+        let ack = registry::KeyActivationPolicyAck {
+            effective_policy_version: self.effective_policy_version,
+            policy_digest: self.policy_digest,
+        };
+        ack.validate().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid activation_policy_ack"})),
+            )
+                .into_response()
+        })?;
+        Ok(ack)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CreateAccountReq {
     handle: Option<String>,
@@ -489,11 +519,13 @@ pub async fn account_pricing(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IssueKeyReq {
     account_id: String,
     label: Option<String>,
     spend_limit_nano: Option<String>,
     expires_ts: Option<i64>,
+    activation_policy_ack: Option<KeyActivationPolicyAckReq>,
 }
 
 /// POST /admin/key — выпустить ключ доступа к аккаунту. Тело: {account_id, label?}. → {key, account}.
@@ -549,6 +581,13 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
         )
             .into_response();
     }
+    let activation_policy_ack = match req.activation_policy_ack {
+        Some(ack) => match ack.into_registry() {
+            Ok(ack) => Some(ack),
+            Err(response) => return response,
+        },
+        None => None,
+    };
     let key = match crate::gen_key() {
         Ok(k) => k,
         Err(e) => {
@@ -560,12 +599,13 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
         }
     };
     match b
-        .issue_key(
+        .issue_key_with_policy_ack(
             &key,
             &req.account_id,
             label.as_deref(),
             spend_limit_nano,
             req.expires_ts,
+            activation_policy_ack.as_ref(),
         )
         .await
     {
@@ -585,6 +625,11 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
                 .into_response(),
             Err(error) => authority_unavailable("issued key lookup", error),
         },
+        Err(error) if is_policy_ack_conflict(&error) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "activation_policy_ack does not match the active policy"})),
+        )
+            .into_response(),
         Err(error) if is_control_conflict(&error) => (
             StatusCode::CONFLICT,
             Json(json!({"error": "key already exists"})),
@@ -594,11 +639,18 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyStatusReq {
+    status: String,
+    activation_policy_ack: Option<KeyActivationPolicyAckReq>,
+}
+
 /// POST /admin/key-id/{key_id}/status — revoke/enable through a stable non-secret identifier.
 pub async fn key_status_by_id(
     State(app): State<AppState>,
     Path(key_id): Path<String>,
-    Json(req): Json<StatusReq>,
+    Json(req): Json<KeyStatusReq>,
 ) -> Response {
     if !valid_status(&req.status) {
         return (
@@ -611,8 +663,25 @@ pub async fn key_status_by_id(
         Ok(b) => b,
         Err(r) => return r,
     };
-    let n = match b.key_status_by_id(&key_id, &req.status).await {
+    let activation_policy_ack = match req.activation_policy_ack {
+        Some(ack) => match ack.into_registry() {
+            Ok(ack) => Some(ack),
+            Err(response) => return response,
+        },
+        None => None,
+    };
+    let n = match b
+        .key_status_by_id_with_policy_ack(&key_id, &req.status, activation_policy_ack.as_ref())
+        .await
+    {
         Ok(n) => n,
+        Err(error) if is_policy_ack_conflict(&error) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "activation_policy_ack does not match the active policy"})),
+            )
+                .into_response()
+        }
         Err(error) => return authority_unavailable("key status update", error),
     };
     if n == 0 {

@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::pricing::{
-    PricingBridgeFallbackReason, PricingShadowEnqueueResult, PricingShadowProcessingResult,
+    PricingBridgeFallbackReason, PricingDependencyKind, PricingResolutionRejection,
+    PricingShadowEnqueueResult, PricingShadowProcessingResult,
 };
 use registry::pricing::{
     PolicyRuleScope, PricingMode, PricingShadowComparison, PricingShadowEvaluationOutcome,
@@ -22,6 +23,134 @@ const PRICING_SHADOW_PROCESSING_RESULT_COUNT: usize = PricingShadowProcessingRes
 const PRICING_SHADOW_REJECTION_COUNT: usize = PricingShadowRejectionCode::ALL.len();
 const PRICING_SHADOW_READ_ERROR_COUNT: usize = PricingShadowReadErrorCode::ALL.len();
 const PRICING_SHADOW_RESOLVED_DIMENSION_COUNT: usize = 8;
+const STRICT_PRICING_ADMITTED_DIMENSION_COUNT: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum StrictPricingProvider {
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+impl StrictPricingProvider {
+    pub const ALL: &'static [Self] = &[Self::Anthropic, Self::OpenAi, Self::Gemini];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
+        }
+    }
+}
+
+impl From<SnapshotProvider> for StrictPricingProvider {
+    fn from(provider: SnapshotProvider) -> Self {
+        match provider {
+            SnapshotProvider::Anthropic => Self::Anthropic,
+            SnapshotProvider::OpenAi => Self::OpenAi,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum StrictPricingRejectionReason {
+    UnsupportedModel,
+    MissingPolicy,
+    MissingRule,
+    ModelUnavailable,
+    SwitchUnavailable,
+    UnsupportedCapability,
+    InvalidContract,
+    ReadUnavailable,
+    LowBalance,
+    QuoteInvariant,
+    SnapshotInvariant,
+    ReserveConflict,
+    HandoffAborted,
+    ReserveUnavailable,
+    GeminiUnsupported,
+}
+
+impl StrictPricingRejectionReason {
+    pub const ALL: &'static [Self] = &[
+        Self::UnsupportedModel,
+        Self::MissingPolicy,
+        Self::MissingRule,
+        Self::ModelUnavailable,
+        Self::SwitchUnavailable,
+        Self::UnsupportedCapability,
+        Self::InvalidContract,
+        Self::ReadUnavailable,
+        Self::LowBalance,
+        Self::QuoteInvariant,
+        Self::SnapshotInvariant,
+        Self::ReserveConflict,
+        Self::HandoffAborted,
+        Self::ReserveUnavailable,
+        Self::GeminiUnsupported,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::UnsupportedModel => "unsupported_model",
+            Self::MissingPolicy => "missing_policy",
+            Self::MissingRule => "missing_rule",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::SwitchUnavailable => "switch_unavailable",
+            Self::UnsupportedCapability => "unsupported_capability",
+            Self::InvalidContract => "invalid_contract",
+            Self::ReadUnavailable => "read_unavailable",
+            Self::LowBalance => "low_balance",
+            Self::QuoteInvariant => "quote_invariant",
+            Self::SnapshotInvariant => "snapshot_invariant",
+            Self::ReserveConflict => "reserve_conflict",
+            Self::HandoffAborted => "handoff_aborted",
+            Self::ReserveUnavailable => "reserve_unavailable",
+            Self::GeminiUnsupported => "gemini_unsupported",
+        }
+    }
+
+    pub const fn from_resolution(reason: PricingResolutionRejection) -> Self {
+        match reason {
+            PricingResolutionRejection::NoPolicyBinding
+            | PricingResolutionRejection::InactivePolicy => Self::MissingPolicy,
+            PricingResolutionRejection::MissingRule => Self::MissingRule,
+            PricingResolutionRejection::MissingDependency {
+                dependency: PricingDependencyKind::Catalog,
+                ..
+            }
+            | PricingResolutionRejection::ModelNotInCatalog { .. }
+            | PricingResolutionRejection::ModelDisabled { .. } => Self::ModelUnavailable,
+            PricingResolutionRejection::MissingDependency {
+                dependency: PricingDependencyKind::Switches,
+                ..
+            }
+            | PricingResolutionRejection::MissingMasterSwitch { .. }
+            | PricingResolutionRejection::MasterSwitchDisabled { .. }
+            | PricingResolutionRejection::MissingScopedSwitch { .. }
+            | PricingResolutionRejection::PolicyScopedSwitchTargetMismatch
+            | PricingResolutionRejection::AdmissionScopedSwitchTargetMismatch
+            | PricingResolutionRejection::ScopedSwitchDisabled { .. } => Self::SwitchUnavailable,
+            PricingResolutionRejection::InvalidRuntimeManifest
+            | PricingResolutionRejection::CapabilityNotInManifest { .. } => {
+                Self::UnsupportedCapability
+            }
+            PricingResolutionRejection::InvalidRequest
+            | PricingResolutionRejection::AccountMismatch
+            | PricingResolutionRejection::PolicySchemaMismatch
+            | PricingResolutionRejection::SchemaMismatch { .. }
+            | PricingResolutionRejection::CatalogTargetMismatch { .. }
+            | PricingResolutionRejection::PolicySwitchTargetMismatch
+            | PricingResolutionRejection::InvalidDependency { .. }
+            | PricingResolutionRejection::InvalidPolicyContract => Self::InvalidContract,
+        }
+    }
+}
+
+const STRICT_PRICING_PROVIDER_COUNT: usize = StrictPricingProvider::ALL.len();
 
 fn pricing_bridge_provider_index(provider: SnapshotProvider) -> usize {
     match provider {
@@ -84,6 +213,22 @@ struct PricingShadowMetrics {
     queue_age_sum_secs: [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT],
     queue_age_buckets:
         [AtomicU64; PRICING_BRIDGE_PROVIDER_COUNT * PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS.len()],
+}
+
+struct StrictPricingMetrics {
+    admitted: [AtomicU64; STRICT_PRICING_PROVIDER_COUNT * STRICT_PRICING_ADMITTED_DIMENSION_COUNT],
+    rejected: [AtomicU64; STRICT_PRICING_PROVIDER_COUNT * StrictPricingRejectionReason::ALL.len()],
+}
+
+impl Default for StrictPricingMetrics {
+    fn default() -> Self {
+        Self {
+            admitted: [const { AtomicU64::new(0) };
+                STRICT_PRICING_PROVIDER_COUNT * STRICT_PRICING_ADMITTED_DIMENSION_COUNT],
+            rejected: [const { AtomicU64::new(0) };
+                STRICT_PRICING_PROVIDER_COUNT * StrictPricingRejectionReason::ALL.len()],
+        }
+    }
 }
 
 impl Default for PricingShadowMetrics {
@@ -149,6 +294,7 @@ pub struct Metrics {
     pub gemini_stream_start_failures: AtomicU64,
     pricing_bridge: PricingBridgeMetrics,
     pricing_shadow: PricingShadowMetrics,
+    strict_pricing: StrictPricingMetrics,
 }
 
 pub struct PricingBridgeLatencyGuard<'a> {
@@ -179,6 +325,55 @@ impl Metrics {
 
     pub fn pricing_bridge_selected(&self, provider: SnapshotProvider) {
         Self::inc(&self.pricing_bridge.selected[pricing_bridge_provider_index(provider)]);
+    }
+
+    pub fn strict_pricing_admitted(
+        &self,
+        provider: StrictPricingProvider,
+        mode: PricingMode,
+        model_scope: bool,
+    ) {
+        let mode = match mode {
+            PricingMode::Track => 0,
+            PricingMode::Discount => 1,
+        };
+        let scope = usize::from(model_scope);
+        let index = provider as usize * STRICT_PRICING_ADMITTED_DIMENSION_COUNT + mode * 2 + scope;
+        Self::inc(&self.strict_pricing.admitted[index]);
+    }
+
+    pub fn strict_pricing_rejected(
+        &self,
+        provider: StrictPricingProvider,
+        reason: StrictPricingRejectionReason,
+    ) {
+        let index = provider as usize * StrictPricingRejectionReason::ALL.len() + reason as usize;
+        Self::inc(&self.strict_pricing.rejected[index]);
+    }
+
+    pub fn strict_pricing_admitted_count(
+        &self,
+        provider: StrictPricingProvider,
+        mode: PricingMode,
+        model_scope: bool,
+    ) -> u64 {
+        let mode = match mode {
+            PricingMode::Track => 0,
+            PricingMode::Discount => 1,
+        };
+        let index = provider as usize * STRICT_PRICING_ADMITTED_DIMENSION_COUNT
+            + mode * 2
+            + usize::from(model_scope);
+        Self::get(&self.strict_pricing.admitted[index])
+    }
+
+    pub fn strict_pricing_rejected_count(
+        &self,
+        provider: StrictPricingProvider,
+        reason: StrictPricingRejectionReason,
+    ) -> u64 {
+        let index = provider as usize * StrictPricingRejectionReason::ALL.len() + reason as usize;
+        Self::get(&self.strict_pricing.rejected[index])
     }
 
     pub fn pricing_bridge_inserted(&self, provider: SnapshotProvider) {
@@ -549,5 +744,87 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn strict_pricing_counters_have_fixed_provider_reason_and_admission_dimensions() {
+        let metrics = Metrics::new();
+        for provider in StrictPricingProvider::ALL {
+            for reason in StrictPricingRejectionReason::ALL {
+                metrics.strict_pricing_rejected(*provider, *reason);
+            }
+            for mode in [PricingMode::Track, PricingMode::Discount] {
+                for model_scope in [false, true] {
+                    metrics.strict_pricing_admitted(*provider, mode, model_scope);
+                }
+            }
+        }
+
+        for provider in StrictPricingProvider::ALL {
+            for reason in StrictPricingRejectionReason::ALL {
+                assert_eq!(metrics.strict_pricing_rejected_count(*provider, *reason), 1);
+            }
+            for mode in [PricingMode::Track, PricingMode::Discount] {
+                for model_scope in [false, true] {
+                    assert_eq!(
+                        metrics.strict_pricing_admitted_count(*provider, mode, model_scope),
+                        1
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            metrics.strict_pricing.rejected.len(),
+            StrictPricingProvider::ALL.len() * StrictPricingRejectionReason::ALL.len()
+        );
+        assert_eq!(
+            metrics.strict_pricing.admitted.len(),
+            StrictPricingProvider::ALL.len() * STRICT_PRICING_ADMITTED_DIMENSION_COUNT
+        );
+    }
+
+    #[test]
+    fn strict_resolution_rejections_keep_operational_categories_distinct() {
+        use crate::pricing::PricingResolutionLineage;
+
+        let cases = [
+            (
+                PricingResolutionRejection::NoPolicyBinding,
+                StrictPricingRejectionReason::MissingPolicy,
+            ),
+            (
+                PricingResolutionRejection::MissingRule,
+                StrictPricingRejectionReason::MissingRule,
+            ),
+            (
+                PricingResolutionRejection::ModelDisabled {
+                    lineage: PricingResolutionLineage::Admission,
+                },
+                StrictPricingRejectionReason::ModelUnavailable,
+            ),
+            (
+                PricingResolutionRejection::MissingScopedSwitch {
+                    lineage: PricingResolutionLineage::Policy,
+                },
+                StrictPricingRejectionReason::SwitchUnavailable,
+            ),
+            (
+                PricingResolutionRejection::CapabilityNotInManifest {
+                    lineage: PricingResolutionLineage::Admission,
+                    dependency: PricingDependencyKind::Catalog,
+                },
+                StrictPricingRejectionReason::UnsupportedCapability,
+            ),
+            (
+                PricingResolutionRejection::InvalidPolicyContract,
+                StrictPricingRejectionReason::InvalidContract,
+            ),
+        ];
+        for (rejection, expected) in cases {
+            assert_eq!(
+                StrictPricingRejectionReason::from_resolution(rejection),
+                expected
+            );
+        }
     }
 }

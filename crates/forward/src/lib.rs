@@ -44,17 +44,19 @@ pub use gemini::{
 };
 pub use keylimiter::KeyLimiter;
 pub use metrics::{
-    Metrics, PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
+    Metrics, StrictPricingProvider, StrictPricingRejectionReason,
+    PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
 };
 pub use pricing::{
-    build_pricing_shadow_evaluation, resolve_pricing, PricingBridgeConfig,
-    PricingBridgeConfigError, PricingBridgeDecision, PricingBridgeFallbackReason,
-    PricingDependencyKind, PricingResolution, PricingResolutionLineage, PricingResolutionRejection,
-    PricingResolutionRequest, PricingShadowConfig, PricingShadowConfigError,
-    PricingShadowConfigValues, PricingShadowEnqueueResult, PricingShadowEvaluationSource,
-    PricingShadowProcessingResult, PricingShadowReadFailure, PricingShadowRuntime,
-    PricingShadowWorkItem, PricingShadowWorkItemError, ResolvedPricingDependency,
-    ResolvedPricingLineage, ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
+    build_pricing_shadow_evaluation, builtin_pricing_runtime_manifest, resolve_pricing,
+    PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,
+    PricingBridgeFallbackReason, PricingDependencyKind, PricingResolution,
+    PricingResolutionLineage, PricingResolutionRejection, PricingResolutionRequest,
+    PricingShadowConfig, PricingShadowConfigError, PricingShadowConfigValues,
+    PricingShadowEnqueueResult, PricingShadowEvaluationSource, PricingShadowProcessingResult,
+    PricingShadowReadFailure, PricingShadowRuntime, PricingShadowWorkItem,
+    PricingShadowWorkItemError, ResolvedPricingDependency, ResolvedPricingLineage,
+    ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{
     authed, client_keys, control_authed, forward, readonly_authed, resolve_client_key,

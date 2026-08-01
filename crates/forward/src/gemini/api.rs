@@ -3138,6 +3138,7 @@ mod tests {
             gemini: Some(gateway),
             billing,
             pricing_shadow: None,
+            pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),

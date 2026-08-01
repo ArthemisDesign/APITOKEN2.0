@@ -207,14 +207,7 @@ fn parse_pricing_shadow_config(
 }
 
 fn pricing_shadow_runtime_manifest() -> registry::pricing::PricingRuntimeManifestEvidence {
-    let capability = registry::pricing::PricingRuntimeCapabilityEvidence::new(
-        registry::pricing::PRICING_SCHEMA_VERSION,
-        1,
-        "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd",
-    )
-    .expect("built-in pricing evaluator capability is valid");
-    registry::pricing::PricingRuntimeManifestEvidence::new(1, vec![capability])
-        .expect("built-in pricing evaluator manifest is valid")
+    forward::builtin_pricing_runtime_manifest()
 }
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {

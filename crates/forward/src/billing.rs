@@ -19,12 +19,13 @@
 use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
-    PricingCatalogSpec, PricingMutation, PricingReadBundle, PricingShadowAdmissionEvaluationInput,
-    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
+    PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
+    PricingReadBundle, PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
+    ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
     AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, GeminiCalibrationRow,
-    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
+    GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
 };
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -263,6 +264,40 @@ fn finish_snapshot_reserve(
     }
 }
 
+fn finish_policy_snapshot_reserve(
+    handoff: &AtomicU8,
+    reply: oneshot::Sender<anyhow::Result<PolicyReserveOutcome>>,
+    result: anyhow::Result<PolicyReserveOutcome>,
+) {
+    match result {
+        Ok(outcome @ PolicyReserveOutcome::Inserted(_))
+        | Ok(outcome @ PolicyReserveOutcome::Unchanged(_)) => {
+            if let Err(state) = handoff.compare_exchange(
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                let _ = reply.send(Err(anyhow::anyhow!(
+                    "policy snapshot reservation committed with unexpected handoff state {state}"
+                )));
+                return;
+            }
+            let _ = reply.send(Ok(outcome));
+        }
+        Ok(outcome) => {
+            if !matches!(&outcome, PolicyReserveOutcome::AbortedBeforeCommit) {
+                mark_snapshot_reserve_failed(handoff);
+            }
+            let _ = reply.send(Ok(outcome));
+        }
+        Err(error) => {
+            mark_snapshot_reserve_failed(handoff);
+            let _ = reply.send(Err(error));
+        }
+    }
+}
+
 #[derive(Default)]
 struct DetachedDispatchTracker {
     pending: AtomicUsize,
@@ -450,6 +485,66 @@ fn run_pg_snapshot_reserve_with_retry(
     }
 }
 
+fn run_pg_policy_snapshot_reserve_with_retry(
+    pg: &mut registry::pg::PgStore,
+    url: &str,
+    owner: &registry::pg::Owner,
+    key: &str,
+    snapshot: &PolicyAdmissionSnapshot,
+    handoff: &AtomicU8,
+    lease_secs: i64,
+) -> anyhow::Result<PolicyReserveOutcome> {
+    let deadline = Instant::now() + PG_OPERATION_RETRY_DEADLINE;
+    loop {
+        match pg.reserve_request_with_policy_snapshot_guarded(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            || authorize_snapshot_reserve_commit(handoff),
+        ) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let class = registry::pg::classify_failure(&error);
+                if handoff.load(Ordering::Acquire) != SNAPSHOT_RESERVE_HANDOFF_PENDING
+                    || class != registry::pg::FailureClass::Transient
+                    || Instant::now() >= deadline
+                {
+                    return Err(error);
+                }
+                eprintln!(
+                    "billing PostgreSQL policy snapshot reserve transient failure: {error:#}"
+                );
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+        match registry::pg::PgStore::connect(url) {
+            Ok(mut next) => match next.heartbeat_instance(owner, 30) {
+                Ok(true) => *pg = next,
+                Ok(false) => {
+                    return Err(anyhow::anyhow!(
+                        "engine owner was fenced during policy snapshot reserve"
+                    ))
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        return Err(error
+                            .context("heartbeat failed while retrying policy snapshot reserve"));
+                    }
+                }
+            },
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(
+                        error.context("reconnect deadline exceeded for policy snapshot reserve")
+                    );
+                }
+            }
+        }
+    }
+}
+
 enum WriteCmd {
     GeminiCreditSpend {
         profile_id: String,
@@ -505,6 +600,12 @@ enum WriteCmd {
         snapshot: LegacyScalarAdmissionSnapshot,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
+    },
+    ReserveWithPolicySnapshot {
+        key: String,
+        snapshot: PolicyAdmissionSnapshot,
+        handoff: Arc<AtomicU8>,
+        reply: oneshot::Sender<anyhow::Result<PolicyReserveOutcome>>,
     },
     InsertPricingShadowEvaluation {
         input: PricingShadowAdmissionEvaluationInput,
@@ -576,6 +677,7 @@ enum WriteCmd {
         label: Option<String>,
         spend_limit_nano: Option<i64>,
         expires_ts: Option<i64>,
+        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     AccountStatus {
@@ -591,11 +693,13 @@ enum WriteCmd {
     KeyStatus {
         key: String,
         status: String,
+        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
     KeyStatusById {
         key_id: String,
         status: String,
+        activation_policy_ack: Option<KeyActivationPolicyAck>,
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
     KeyLabelById {
@@ -961,9 +1065,8 @@ impl AsyncBilling {
                     ).is_err() {
                         return;
                     }
-                    match registry::sqlite_settle_request(
-                        &conn, request_id, account_id, key, hold, 0,
-                        Some("reserve-handoff-canceled"), None,
+                    match registry::sqlite_cancel_request(
+                        &conn, request_id, account_id, key, hold,
                     ) {
                         Ok(Some(_)) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
                         Ok(None) => {
@@ -1169,6 +1272,20 @@ impl AsyncBilling {
                         );
                         finish_snapshot_reserve(&handoff, reply, result);
                     }
+                    WriteCmd::ReserveWithPolicySnapshot { key, snapshot, handoff, reply } => {
+                        if handoff.load(Ordering::Acquire) == SNAPSHOT_RESERVE_HANDOFF_CANCELED {
+                            let _ = reply.send(Ok(PolicyReserveOutcome::AbortedBeforeCommit));
+                            continue;
+                        }
+                        let result = registry::sqlite_reserve_request_with_policy_snapshot_guarded(
+                            &conn,
+                            &key,
+                            RESERVATION_LEASE_SECS,
+                            &snapshot,
+                            || authorize_snapshot_reserve_commit(&handoff),
+                        );
+                        finish_policy_snapshot_reserve(&handoff, reply, result);
+                    }
                     WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms: _, reply } => {
                         let _ = reply.send(
                             registry::pricing::sqlite_insert_pricing_shadow_admission_evaluation(
@@ -1214,11 +1331,26 @@ impl AsyncBilling {
                     WriteCmd::Settle {
                         request_id, account_id, key, hold, actual, reference, usage, reply,
                     } => {
-                        let usage_ref = if actual > 0 { usage.as_ref() } else { None };
-                        let result = registry::sqlite_settle_request(
-                            &conn, &request_id, &account_id, &key, hold, actual,
-                            reference.as_deref(), usage_ref,
-                        );
+                        let result = if actual == 0 && usage.is_none() {
+                            registry::sqlite_cancel_request(
+                                &conn,
+                                &request_id,
+                                &account_id,
+                                &key,
+                                hold,
+                            )
+                        } else {
+                            registry::sqlite_settle_request(
+                                &conn,
+                                &request_id,
+                                &account_id,
+                                &key,
+                                hold,
+                                actual,
+                                reference.as_deref(),
+                                usage.as_ref(),
+                            )
+                        };
                         if let Err(error) = &result {
                             eprintln!("billing SQLite settlement persisted/retryable failure: {error:#}");
                         }
@@ -1228,15 +1360,16 @@ impl AsyncBilling {
                         let _ = reply.send(registry::account_topup(&conn, &account_id, amount, reference.as_deref()));
                     }
                     WriteCmd::CreateAccount { id, handle, mult_bp, reply } => { let _ = reply.send(registry::account_create(&conn, &id, handle.as_deref(), mult_bp)); }
-                    WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
-                        let _ = reply.send(registry::key_issue_with_policy(
+                    WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, activation_policy_ack, reply } => {
+                        let _ = reply.send(registry::key_issue_with_policy_ack(
                             &conn,&key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
+                            activation_policy_ack.as_ref(),
                         ));
                     }
                     WriteCmd::AccountStatus { id, status, reply } => { let _ = reply.send(registry::account_set_status(&conn, &id, &status)); }
                     WriteCmd::AccountMultiplier { id, mult_bp, reply } => { let _ = reply.send(registry::account_set_mult_bp(&conn, &id, mult_bp)); }
-                    WriteCmd::KeyStatus { key, status, reply } => { let _ = reply.send(registry::key_set_status(&conn, &key, &status)); }
-                    WriteCmd::KeyStatusById { key_id, status, reply } => { let _ = reply.send(registry::key_set_status_by_id(&conn, &key_id, &status)); }
+                    WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_with_policy_ack(&conn, &key, &status, activation_policy_ack.as_ref())); }
+                    WriteCmd::KeyStatusById { key_id, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_by_id_with_policy_ack(&conn, &key_id, &status, activation_policy_ack.as_ref())); }
                     WriteCmd::KeyLabelById { key_id, label, reply } => { let _ = reply.send(registry::key_set_label_by_id(&conn, &key_id, &label)); }
                     WriteCmd::KeyPolicyById { account_id, key_id, spend_limit_nano, expires_ts, reply } => {
                         let _ = reply.send(registry::key_set_policy_by_id(
@@ -1696,6 +1829,31 @@ impl AsyncBilling {
                             }
                             finish_snapshot_reserve(&handoff, reply, result);
                         }
+                        WriteCmd::ReserveWithPolicySnapshot { key, snapshot, handoff, reply } => {
+                            if handoff.load(Ordering::Acquire)
+                                == SNAPSHOT_RESERVE_HANDOFF_CANCELED
+                            {
+                                let _ = reply.send(Ok(
+                                    PolicyReserveOutcome::AbortedBeforeCommit,
+                                ));
+                                continue;
+                            }
+                            let result = run_pg_policy_snapshot_reserve_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                &key,
+                                &snapshot,
+                                &handoff,
+                                RESERVATION_LEASE_SECS,
+                            );
+                            if let Err(error) = &result {
+                                eprintln!(
+                                    "billing PostgreSQL policy snapshot reserve failed: {error:#}"
+                                );
+                            }
+                            finish_policy_snapshot_reserve(&handoff, reply, result);
+                        }
                         WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms, reply } => {
                             // Shadow is deliberately best-effort: one bounded database attempt,
                             // with no five-second retry loop that could head-of-line block money.
@@ -1790,9 +1948,18 @@ impl AsyncBilling {
                         WriteCmd::Settle { request_id, actual, reference, usage, reply, .. } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "settlement",
-                                |pg| pg.settle_request(
-                                    &request_id, actual, reference.as_deref(), usage.as_ref(),
-                                ),
+                                |pg| {
+                                    if actual == 0 && usage.is_none() {
+                                        pg.cancel_request(&request_id)
+                                    } else {
+                                        pg.settle_request(
+                                            &request_id,
+                                            actual,
+                                            reference.as_deref(),
+                                            usage.as_ref(),
+                                        )
+                                    }
+                                },
                             );
                             if let Err(error) = &result {
                                 eprintln!("billing PostgreSQL settlement failed: {error:#}");
@@ -1852,11 +2019,12 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, reply } => {
+                        WriteCmd::IssueKey { key, account_id, label, spend_limit_nano, expires_ts, activation_policy_ack, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key issuance",
-                                |pg| pg.key_issue_with_policy(
+                                |pg| pg.key_issue_with_policy_ack(
                                     &key,&account_id,label.as_deref(),spend_limit_nano,expires_ts,
+                                    activation_policy_ack.as_ref(),
                                 ),
                             );
                             let _ = reply.send(result);
@@ -1875,17 +2043,21 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::KeyStatus { key, status, reply } => {
+                        WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key status update",
-                                |pg| pg.key_set_status(&key,&status),
+                                |pg| pg.key_set_status_with_policy_ack(
+                                    &key,&status,activation_policy_ack.as_ref(),
+                                ),
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::KeyStatusById { key_id, status, reply } => {
+                        WriteCmd::KeyStatusById { key_id, status, activation_policy_ack, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key status update",
-                                |pg| pg.key_set_status_by_id(&key_id,&status),
+                                |pg| pg.key_set_status_by_id_with_policy_ack(
+                                    &key_id,&status,activation_policy_ack.as_ref(),
+                                ),
                             );
                             let _ = reply.send(result);
                         }
@@ -2520,6 +2692,42 @@ impl AsyncBilling {
         }
         Ok(outcome)
     }
+    /// Atomically revalidates and persists a strict policy admission together with its ordered
+    /// funding allocations. As with the legacy snapshot bridge, caller cancellation can win only
+    /// before the writer's final commit gate; a decided commit remains replayable and recoverable.
+    pub async fn reserve_request_with_policy_snapshot(
+        &self,
+        key: &str,
+        snapshot: PolicyAdmissionSnapshot,
+    ) -> anyhow::Result<PolicyReserveOutcome> {
+        let (reply, result) = oneshot::channel();
+        let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
+        let guard = SnapshotReserveHandoffGuard {
+            handoff: Arc::clone(&handoff),
+        };
+        self.writer
+            .send(WriteCmd::ReserveWithPolicySnapshot {
+                key: key.into(),
+                snapshot,
+                handoff,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        let outcome = result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))??;
+        if matches!(
+            &outcome,
+            PolicyReserveOutcome::Inserted(_) | PolicyReserveOutcome::Unchanged(_)
+        ) && !guard.claim()
+        {
+            return Err(anyhow::anyhow!(
+                "policy snapshot reservation handoff was not claimable"
+            ));
+        }
+        Ok(outcome)
+    }
     pub async fn settle_request(
         &self,
         request_id: &str,
@@ -2819,6 +3027,18 @@ impl AsyncBilling {
         spend_limit_nano: Option<i64>,
         expires_ts: Option<i64>,
     ) -> anyhow::Result<()> {
+        self.issue_key_with_policy_ack(key, account_id, label, spend_limit_nano, expires_ts, None)
+            .await
+    }
+    pub async fn issue_key_with_policy_ack(
+        &self,
+        key: &str,
+        account_id: &str,
+        label: Option<&str>,
+        spend_limit_nano: Option<i64>,
+        expires_ts: Option<i64>,
+        activation_policy_ack: Option<&KeyActivationPolicyAck>,
+    ) -> anyhow::Result<()> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::IssueKey {
@@ -2827,6 +3047,7 @@ impl AsyncBilling {
                 label: label.map(|s| s.into()),
                 spend_limit_nano,
                 expires_ts,
+                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await
@@ -2861,11 +3082,20 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
     pub async fn key_status(&self, key: &str, status: &str) -> anyhow::Result<usize> {
+        self.key_status_with_policy_ack(key, status, None).await
+    }
+    pub async fn key_status_with_policy_ack(
+        &self,
+        key: &str,
+        status: &str,
+        activation_policy_ack: Option<&KeyActivationPolicyAck>,
+    ) -> anyhow::Result<usize> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::KeyStatus {
                 key: key.into(),
                 status: status.into(),
+                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await
@@ -2874,11 +3104,21 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
     pub async fn key_status_by_id(&self, key_id: &str, status: &str) -> anyhow::Result<usize> {
+        self.key_status_by_id_with_policy_ack(key_id, status, None)
+            .await
+    }
+    pub async fn key_status_by_id_with_policy_ack(
+        &self,
+        key_id: &str,
+        status: &str,
+        activation_policy_ack: Option<&KeyActivationPolicyAck>,
+    ) -> anyhow::Result<usize> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::KeyStatusById {
                 key_id: key_id.into(),
                 status: status.into(),
+                activation_policy_ack: activation_policy_ack.cloned(),
                 reply: r,
             })
             .await
@@ -2984,6 +3224,59 @@ mod tests {
             payable_multiplier_bp: 2_000,
             official_hold_nano,
             charged_hold_nano,
+            premium_modifiers: registry::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                speed: registry::pricing::SnapshotAnthropicSpeed::Standard,
+                inference_geo: registry::pricing::SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap()
+    }
+
+    fn strict_track_snapshot(request_id: &str, account_id: &str) -> PolicyAdmissionSnapshot {
+        let admission_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        PolicyAdmissionSnapshot::new(registry::pricing::PolicyAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: account_id.into(),
+            provider: registry::pricing::SnapshotProvider::Anthropic,
+            product_id: "main".into(),
+            account_class: registry::pricing::AccountClass::B2c,
+            requested_model_id: "claude-test".into(),
+            canonical_model_id: "claude-test".into(),
+            alias_generation: 1,
+            rule_id: "track-provider".into(),
+            rule_digest: "track-digest".into(),
+            rule_scope: registry::pricing::PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: registry::pricing::PricingMode::Track,
+            rule_origin: registry::pricing::RuleOrigin::Managed,
+            discount_bps: None,
+            payable_multiplier_bp: 5_000,
+            policy_id: "b2c:global".into(),
+            policy_version: 1,
+            effective_policy_version: 1,
+            source_policy_digest: "source-policy".into(),
+            policy_digest: "policy-digest".into(),
+            policy_catalog_generation: 1,
+            policy_switch_generation: 1,
+            admission_catalog_generation: 1,
+            admission_catalog_digest: "catalog-digest".into(),
+            admission_switch_generation: 1,
+            admission_switch_digest: "switch-digest".into(),
+            runtime_manifest_generation: 1,
+            runtime_manifest_digest: "runtime-manifest".into(),
+            tariff_schedule_id: "anthropic/claude-test/v1".into(),
+            tariff_priced_ts: admission_ts,
+            admission_ts,
+            official_hold_nano: 1_000,
+            charged_hold_nano: 500,
+            track_eligible: true,
+            retention_eligible: true,
+            commission_eligible: true,
             premium_modifiers: registry::pricing::LegacyPremiumModifiers::AnthropicV1 {
                 speed: registry::pricing::SnapshotAnthropicSpeed::Standard,
                 inference_geo: registry::pricing::SnapshotAnthropicInferenceGeo::Global,
@@ -3429,6 +3722,167 @@ mod tests {
             )
             .unwrap();
         assert_eq!(durable_rows, (0, 0));
+
+        drop(conn);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn detached_zero_settlement_cancels_strict_reserve_and_restores_funding_buckets() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-strict-cancel-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        billing
+            .create_account("strict-account", None, 5_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            billing
+                .topup("strict-account", 1_000, Some("strict-seed"))
+                .await
+                .unwrap(),
+            Some(1_000)
+        );
+
+        let conn = registry::open(&path_string).unwrap();
+        conn.execute_batch(
+            "INSERT INTO pricing_catalog_versions(
+                 product_id,generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES('main',1,1,1,'capability','catalog-digest',1);
+             INSERT INTO pricing_catalog_entries(
+                 product_id,generation,provider_id,canonical_model_id,enabled
+             ) VALUES('main',1,'anthropic','claude-test',1);
+             INSERT INTO pricing_catalog_heads(product_id,active_generation,updated_ts)
+             VALUES('main',1,1);
+             INSERT INTO provider_switch_versions(
+                 generation,schema_version,capability_generation,capability_digest,
+                 content_digest,created_ts
+             ) VALUES(1,1,1,'capability','switch-digest',1);
+             INSERT INTO provider_switch_entries(
+                 generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+             ) VALUES
+                 (1,'anthropic','master','','',NULL,1),
+                 (1,'anthropic','segment','main','b2c',1,1);
+             INSERT INTO provider_switch_head(singleton,active_generation,updated_ts)
+             VALUES(1,1,1);
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+                 switch_generation,content_digest,replacement_locked,created_ts
+             ) VALUES(
+                 'strict-account',1,'b2c:global',1,'source-policy','global_b2c','global','b2c',
+                 'main',1,1,1,'policy-digest',0,1
+             );
+             INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                 track_eligible,retention_eligible,commission_eligible
+             ) VALUES(
+                 'strict-account',1,'track-provider','track-digest','provider','anthropic',NULL,
+                 'track','managed',NULL,5000,1,1,1
+             );
+             INSERT INTO account_policy_bindings(
+                 account_id,product_id,account_class,active_effective_version,
+                 policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+             ) VALUES('strict-account','main','b2c',1,'strict','strict','verified',1);
+             INSERT INTO funding_buckets(
+                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES
+                 ('strict-bonus','strict-account','welcome_track_bonus','welcome','track',400,
+                  0,0,1,'active',1,1),
+                 ('strict-paid','strict-account','paid','seed','any',600,
+                  0,0,1,'active',2,2);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let ack = registry::KeyActivationPolicyAck {
+            effective_policy_version: 1,
+            policy_digest: "policy-digest".into(),
+        };
+        billing
+            .issue_key_with_policy_ack("strict-key", "strict-account", None, None, None, Some(&ack))
+            .await
+            .unwrap();
+        let snapshot = strict_track_snapshot("strict-cancel-request", "strict-account");
+        assert!(matches!(
+            billing
+                .reserve_request_with_policy_snapshot("strict-key", snapshot)
+                .await
+                .unwrap(),
+            PolicyReserveOutcome::Inserted(_)
+        ));
+        let reserved = billing.account("strict-account").await.unwrap().unwrap();
+        assert_eq!((reserved.balance_nano, reserved.reserved_nano), (500, 500));
+
+        billing.settle_detached(
+            "strict-cancel-request",
+            "strict-account",
+            "strict-key",
+            500,
+            0,
+            None,
+            None,
+        );
+        billing.flush().await.unwrap();
+
+        let account = billing.account("strict-account").await.unwrap().unwrap();
+        let key = billing.get("strict-key").await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (1_000, 0));
+        assert_eq!(
+            (account.spent_nano, key.spent_nano, key.reserved_nano),
+            (0, 0, 0)
+        );
+        let conn = registry::open(&path_string).unwrap();
+        let buckets = conn
+            .prepare(
+                "SELECT bucket_id,balance_nano,reserved_nano,spent_nano,status
+                   FROM funding_buckets WHERE account_id='strict-account' ORDER BY bucket_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            buckets,
+            vec![
+                ("strict-bonus".into(), 400, 0, 0, "active".into()),
+                ("strict-paid".into(), 600, 0, 0, "active".into()),
+            ]
+        );
+        let terminal: (String, String, String) = conn
+            .query_row(
+                "SELECT reservation.state,outbox.state,outbox.disposition
+                   FROM billing_reservations reservation
+                   JOIN billing_settlement_outbox outbox USING(request_id)
+                  WHERE reservation.request_id='strict-cancel-request'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal,
+            ("canceled".into(), "done".into(), "cancel".into())
+        );
 
         drop(conn);
         drop(billing);

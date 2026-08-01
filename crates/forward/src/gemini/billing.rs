@@ -1,7 +1,7 @@
 //! Shared customer admission and exact native-Gemini settlement.
 
 use super::config::GeminiModel;
-use crate::metrics::Metrics;
+use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::proxy::{authorize, Authz, HoldGuard, KeyGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
@@ -69,6 +69,7 @@ impl PendingGeminiAdmission {
                     key,
                     mult_bp,
                     available_nano,
+                    ..
                 },
                 Some(billing),
             ) => {
@@ -217,6 +218,16 @@ pub(crate) async fn begin_admission(
     let authz = authorize(app, headers, peer).await;
     match &authz {
         Authz::Admin { .. } => {}
+        Authz::Metered {
+            strict_policy: true,
+            ..
+        } => {
+            app.metrics.strict_pricing_rejected(
+                StrictPricingProvider::Gemini,
+                StrictPricingRejectionReason::GeminiUnsupported,
+            );
+            return Err(AdmissionError::Unavailable);
+        }
         Authz::Metered { available_nano, .. } if *available_nano > 0 => {}
         Authz::Metered { .. } => return Err(AdmissionError::LowBalance),
         Authz::Unauthorized => {
@@ -440,6 +451,81 @@ fn settled_charge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AffinityStore, Breaker, Clients, KeyLimiter, PricingBridgeConfig, PricingShadowConfig,
+        ProviderMode, ProxyConfig,
+    };
+    use pool::{Pool, Reserve};
+    use registry::pricing::{FundingEnforcement, PolicyEnforcement, PricingMode};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn proxy_config() -> Arc<ProxyConfig> {
+        Arc::new(ProxyConfig {
+            api_keys: Vec::new(),
+            control_keys: Vec::new(),
+            panel_keys: Vec::new(),
+            default_mult_bp: 10_000,
+            pricing_bridge: PricingBridgeConfig::disabled(),
+            pricing_shadow: PricingShadowConfig::default(),
+            trust_loopback: false,
+            upstream: "http://127.0.0.1:1".to_string(),
+            max_tries: 1,
+            max_inflight_per_key: 10,
+            util_cap: 1.0,
+            cool_secs: 1,
+            smooth_wait_ms: 0,
+            affinity_wait_ms: 0,
+            affinity_wait_min_bytes: 0,
+            poll: false,
+            inject_identity: false,
+            identity: String::new(),
+            inject_billing: false,
+            cc_version: String::new(),
+            cc_entrypoint: String::new(),
+            default_beta: String::new(),
+            user_agent: "gemini-strict-test".to_string(),
+            user_agents: Vec::new(),
+            ua_spread: 0,
+            anthropic_version: String::new(),
+            connect_timeout: 1,
+            x_app: String::new(),
+            stainless_lang: String::new(),
+            stainless_runtime: String::new(),
+            stainless_runtime_version: String::new(),
+            stainless_package_version: String::new(),
+            stainless_os: String::new(),
+            stainless_arch: String::new(),
+        })
+    }
+
+    fn app_state(billing: Arc<crate::billing::AsyncBilling>, path: &str) -> AppState {
+        let cfg = proxy_config();
+        AppState {
+            provider: ProviderMode::Gemini,
+            authority: Arc::new(registry::authority::AuthorityConfig::new(
+                path.to_string(),
+                None,
+            )),
+            data_db_path: Arc::new(path.to_string()),
+            pool: Arc::new(Pool::new(Vec::new(), Reserve::FULL, 1.0, 1.0)),
+            affinity: Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap()),
+            clients: Arc::new(Clients::new(&cfg)),
+            codex: None,
+            gemini: None,
+            billing: Some(billing),
+            pricing_shadow: None,
+            pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
+            authority_ready: Arc::new(AtomicBool::new(true)),
+            breaker: Arc::new(Breaker::new(1)),
+            metrics: Arc::new(Metrics::new()),
+            key_limiter: Arc::new(KeyLimiter::new()),
+            concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
+            probe_poke: None,
+            cfg,
+        }
+    }
 
     fn model() -> GeminiModel {
         let spec = metering::gemini_catalog_at(0)
@@ -467,6 +553,111 @@ mod tests {
             output_token_limit: spec.output_token_limit,
             prices: spec.prices,
         }
+    }
+
+    #[tokio::test]
+    async fn strict_metered_gemini_fails_before_admission_or_reservation() {
+        const ACCOUNT: &str = "strict-gemini-account";
+        const KEY: &str = "strict-gemini-key";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-strict-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing =
+            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
+        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
+        billing
+            .topup(ACCOUNT, 1_000_000, Some("strict-gemini-seed"))
+            .await
+            .unwrap();
+
+        let manifest = crate::builtin_pricing_runtime_manifest();
+        let capability = &manifest.capabilities()[0];
+        let connection = registry::open(&path_string).unwrap();
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO pricing_catalog_versions(
+                     product_id,generation,schema_version,capability_generation,capability_digest,
+                     content_digest,created_ts
+                 ) VALUES('main',1,1,{},'{}','catalog-digest',1);
+                 INSERT INTO provider_switch_versions(
+                     generation,schema_version,capability_generation,capability_digest,
+                     content_digest,created_ts
+                 ) VALUES(1,1,{},'{}','switch-digest',1);
+                 INSERT INTO account_policy_versions(
+                     account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                     owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+                     switch_generation,content_digest,replacement_locked,created_ts
+                 ) VALUES(
+                     '{ACCOUNT}',1,'gemini-test-policy',1,'source-policy','global_b2c','global',
+                     'b2c','main',1,1,1,'policy-digest',0,1
+                 );
+                 INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES('{ACCOUNT}','main','b2c',1,'strict','strict','verified',1);",
+                capability.capability_generation(),
+                capability.capability_digest(),
+                capability.capability_generation(),
+                capability.capability_digest(),
+            ))
+            .unwrap();
+        let ack = registry::KeyActivationPolicyAck {
+            effective_policy_version: 1,
+            policy_digest: "policy-digest".to_string(),
+        };
+        billing
+            .issue_key_with_policy_ack(KEY, ACCOUNT, None, None, None, Some(&ack))
+            .await
+            .unwrap();
+
+        let app = app_state(Arc::clone(&billing), &path_string);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-goog-api-key", KEY.parse().unwrap());
+        let peer = "198.51.100.10:12345".parse().unwrap();
+        let result = begin_admission(&app, &headers, &peer).await;
+
+        assert!(matches!(result, Err(AdmissionError::Unavailable)));
+        assert_eq!(Metrics::get(&app.metrics.requests), 0);
+        for mode in [PricingMode::Track, PricingMode::Discount] {
+            for model_scope in [false, true] {
+                assert_eq!(
+                    app.metrics.strict_pricing_admitted_count(
+                        StrictPricingProvider::Gemini,
+                        mode,
+                        model_scope,
+                    ),
+                    0
+                );
+            }
+        }
+        assert_eq!(
+            app.metrics.strict_pricing_rejected_count(
+                StrictPricingProvider::Gemini,
+                StrictPricingRejectionReason::GeminiUnsupported,
+            ),
+            1
+        );
+        let reservations = connection
+            .query_row("SELECT COUNT(*) FROM billing_reservations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(reservations, 0);
+        let auth = billing.key_auth(KEY).await.unwrap().unwrap();
+        assert_eq!(auth.policy_enforcement, Some(PolicyEnforcement::Strict));
+        assert_eq!(auth.funding_enforcement, Some(FundingEnforcement::Strict));
+
+        drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

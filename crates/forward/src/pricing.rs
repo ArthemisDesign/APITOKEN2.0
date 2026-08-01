@@ -5,18 +5,34 @@
 //! rule or a typed fail-closed reason. It does not read a database, inspect HTTP input, calculate
 //! token costs, reserve money, emit telemetry, or change admission.
 
+use anyhow::{bail, Result};
 use registry::pricing::{
     validate_account_policy, validate_account_policy_binding, validate_account_policy_shape,
     validate_pricing_catalog, validate_provider_switches, AccountClass, AccountPolicyBindingSpec,
-    AccountPolicyRuleSpec, PolicyRuleScope, PricingCatalogSpec, PricingPolicySnapshot,
-    PricingReadBundle, PricingRuntimeManifestEvidence, ProviderSwitchScope, ProviderSwitchSpec,
-    VersionTarget, PRICING_SCHEMA_VERSION,
+    AccountPolicyRuleSpec, FundingEnforcement, LegacyScalarAdmissionSnapshot,
+    PolicyAdmissionSnapshot, PolicyAdmissionSnapshotInput, PolicyEnforcement, PolicyRuleScope,
+    PricingCatalogSpec, PricingPolicySnapshot, PricingReadBundle, PricingRuntimeManifestEvidence,
+    ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, VersionTarget,
+    PRICING_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
 
 mod bridge;
 mod runtime;
 mod shadow;
+
+/// Canonical compile-fixed capability evidence for the policy evaluator in this binary. Startup
+/// stamps this exact identity into the owner lease and strict reserve checks it transactionally.
+pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
+    let capability = registry::pricing::PricingRuntimeCapabilityEvidence::new(
+        PRICING_SCHEMA_VERSION,
+        1,
+        "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd",
+    )
+    .expect("built-in pricing evaluator capability is valid");
+    PricingRuntimeManifestEvidence::new(1, vec![capability])
+        .expect("built-in pricing evaluator manifest is valid")
+}
 
 pub(crate) use bridge::{
     snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgePrepare,
@@ -121,6 +137,81 @@ pub struct ResolvedPricingRule {
     pub source_policy_digest: String,
     pub binding: AccountPolicyBindingSpec,
     pub rule: AccountPolicyRuleSpec,
+}
+
+/// Convert one provider-canonical official quote into the immutable strict policy snapshot. The
+/// provider adapter remains the sole owner of tariff/model/modifier identity; this layer adds only
+/// the already-resolved policy, lineage, eligibility and runtime-manifest facts.
+pub(crate) fn build_policy_admission_snapshot(
+    account_id: &str,
+    resolved: ResolvedPricingRule,
+    quote: LegacyScalarAdmissionSnapshot,
+) -> Result<PolicyAdmissionSnapshot> {
+    quote.validate()?;
+    if resolved.evaluator_schema_version != PRICING_SCHEMA_VERSION
+        || resolved.policy_schema_version != PRICING_SCHEMA_VERSION
+    {
+        bail!("strict pricing resolution uses an unsupported schema");
+    }
+    if resolved.binding.policy_enforcement != PolicyEnforcement::Strict
+        || resolved.binding.funding_enforcement != FundingEnforcement::Strict
+        || resolved.binding.reconciliation_state != ReconciliationState::Verified
+    {
+        bail!("strict admission requires one verified strict policy/funding binding");
+    }
+    if quote.account_id() != account_id
+        || quote.provider().as_str() != resolved.provider_id
+        || quote.requested_model_id() != resolved.requested_model_id
+        || quote.canonical_model_id() != resolved.canonical_model_id
+        || quote.payable_multiplier_bp() != resolved.rule.payable_multiplier_bp
+    {
+        bail!("provider quote identity differs from the strict pricing resolution");
+    }
+    if resolved.rule.payable_multiplier_bp == 0 {
+        bail!(
+            "zero-charge strict admission is unsupported until it has an explicit funding contract"
+        );
+    }
+
+    PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+        request_id: quote.request_id().to_owned(),
+        account_id: quote.account_id().to_owned(),
+        provider: quote.provider(),
+        product_id: resolved.product_id,
+        account_class: resolved.account_class,
+        requested_model_id: quote.requested_model_id().to_owned(),
+        canonical_model_id: quote.canonical_model_id().to_owned(),
+        alias_generation: quote.alias_generation(),
+        rule_id: resolved.rule.rule_id,
+        rule_digest: resolved.rule.rule_digest,
+        rule_scope: resolved.rule.scope,
+        pricing_mode: resolved.rule.pricing_mode,
+        rule_origin: resolved.rule.rule_origin,
+        discount_bps: resolved.rule.discount_bps,
+        payable_multiplier_bp: resolved.rule.payable_multiplier_bp,
+        policy_id: resolved.policy_id,
+        policy_version: resolved.policy_version,
+        effective_policy_version: resolved.policy_target.version,
+        source_policy_digest: resolved.source_policy_digest,
+        policy_digest: resolved.policy_target.content_digest,
+        policy_catalog_generation: resolved.policy_lineage.catalog.target.version,
+        policy_switch_generation: resolved.policy_lineage.switches.target.version,
+        admission_catalog_generation: resolved.admission_lineage.catalog.target.version,
+        admission_catalog_digest: resolved.admission_lineage.catalog.target.content_digest,
+        admission_switch_generation: resolved.admission_lineage.switches.target.version,
+        admission_switch_digest: resolved.admission_lineage.switches.target.content_digest,
+        runtime_manifest_generation: resolved.runtime_manifest_generation,
+        runtime_manifest_digest: resolved.runtime_manifest_digest,
+        tariff_schedule_id: quote.tariff_schedule_id().to_owned(),
+        tariff_priced_ts: quote.tariff_priced_ts(),
+        admission_ts: quote.admission_ts(),
+        official_hold_nano: quote.official_hold_nano(),
+        charged_hold_nano: quote.charged_hold_nano(),
+        track_eligible: resolved.rule.track_eligible,
+        retention_eligible: resolved.rule.retention_eligible,
+        commission_eligible: resolved.rule.commission_eligible,
+        premium_modifiers: quote.premium_modifiers().clone(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1877,5 +1968,56 @@ mod tests {
             PricingResolutionRejection::MissingRule.code(),
             "missing_rule"
         );
+    }
+
+    #[test]
+    fn strict_snapshot_builder_rejects_zero_charge_without_inventing_funding_identity() {
+        let mut bundle = bundle();
+        let PricingPolicySnapshot::Active(active) = &mut bundle.policy else {
+            unreachable!()
+        };
+        active.binding.policy_enforcement = PolicyEnforcement::Strict;
+        active.binding.funding_enforcement = FundingEnforcement::Strict;
+        let PricingResolution::Resolved(mut resolved) =
+            resolve_pricing(&bundle, &request("openai", "gpt-5.6-sol"), &manifest())
+        else {
+            panic!("fixture must resolve")
+        };
+        resolved.rule.pricing_mode = PricingMode::Track;
+        resolved.rule.rule_origin = RuleOrigin::Managed;
+        resolved.rule.discount_bps = None;
+        resolved.rule.payable_multiplier_bp = 0;
+        resolved.rule.track_eligible = true;
+        resolved.rule.retention_eligible = true;
+        resolved.rule.commission_eligible = false;
+        let quote = LegacyScalarAdmissionSnapshot::new(
+            registry::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "00000000-0000-4000-8000-000000000001".into(),
+                account_id: "acct".into(),
+                provider: registry::pricing::SnapshotProvider::OpenAi,
+                requested_model_id: "gpt-5.6-sol".into(),
+                canonical_model_id: "gpt-5.6-sol".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "openai/gpt-5.6-sol/test/v1".into(),
+                tariff_priced_ts: 1,
+                admission_ts: 1,
+                payable_multiplier_bp: 0,
+                official_hold_nano: 100,
+                charged_hold_nano: 0,
+                premium_modifiers: registry::pricing::LegacyPremiumModifiers::OpenAiV1 {
+                    service_tier: registry::pricing::SnapshotOpenAiServiceTier::Standard,
+                    service_tier_multiplier_basis_points: 10_000,
+                    context_tier: registry::pricing::SnapshotOpenAiContextTier::Standard,
+                    input_multiplier_basis_points: 10_000,
+                    output_multiplier_basis_points: 10_000,
+                },
+            },
+        )
+        .unwrap();
+
+        let error = build_policy_admission_snapshot("acct", resolved, quote).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("zero-charge strict admission is unsupported"));
     }
 }
