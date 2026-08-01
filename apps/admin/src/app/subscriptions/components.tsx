@@ -3,10 +3,19 @@
 // Таблицы страницы «Подписки» — порт 1:1 разметки subscriptions() из
 // crates/server/src/admin-panel.js (Claude / GPT / Gemini / transport details).
 // Компоненты мемоизированы: рендер идёт каждый poll-тик (10 с).
-import { Fragment, memo, type ReactElement, type ReactNode } from "react";
-import { ago, duration, formatDate, money, windowLabel } from "@/lib/format";
+import { memo, type ReactElement, type ReactNode } from "react";
+import { ago, count, duration, formatDate, money, windowLabel } from "@/lib/format";
 import { Dot, EmptyRow, Pill, TableCard } from "@/components/ui";
-import { barFromPercent, barFromRemaining, barFromUtil, deadLabel, geminiStatus, homeStatus, stripProxyPort, type BarSpec } from "./logic";
+import {
+  barFromPercent,
+  barFromRemaining,
+  barFromUtil,
+  deadLabel,
+  geminiProfileStatus,
+  homeStatus,
+  stripProxyPort,
+  type BarSpec,
+} from "./logic";
 import type {
   CapacitySub,
   ClaudeSub,
@@ -262,11 +271,31 @@ export const GptTable = memo(function GptTable({
 
 /* ── Gemini ─────────────────────────────────────────────── */
 
-// Ячейка workload-ёмкости профиля (окна «5h»/«weekly»): realized blend,
-// envelope, Δquota и сброс — дословно из легаси.
-function geminiCapacityCell(profile: GeminiProfile, kind: string, nowSec: number): ReactNode {
+function geminiWindow(profile: GeminiProfile, kind: string) {
+  return (profile.windows ?? []).find((item) => item.window_kind === kind);
+}
+
+// Окно профиля в том же компактном формате, что GPT: бар и время сброса.
+function geminiWindowCell(profile: GeminiProfile, kind: string, nowSec: number): ReactNode {
+  const window = geminiWindow(profile, kind);
+  if (!window) return "—";
+  return (
+    <>
+      <div>
+        <Bar spec={barFromRemaining(window.remaining_fraction)} />
+      </div>
+      <div className="sub">
+        остаток · сброс {window.resets_at ? duration(Math.max(0, window.resets_at - nowSec)) : "—"}
+      </div>
+    </>
+  );
+}
+
+// Остаток / вместимость в API-$; workload evidence остаётся доступным в title,
+// но не растягивает основную таблицу подписок.
+function geminiBudgetCell(profile: GeminiProfile, kind: string, label: string): ReactNode {
   const window = (profile.windows ?? []).find((item) => item.window_kind === kind);
-  if (!window) return "нет summary";
+  if (!window) return "—";
   const known = window.source === "workload_blend";
   const range =
     known && window.low_usd != null
@@ -279,102 +308,86 @@ function geminiCapacityCell(profile: GeminiProfile, kind: string, nowSec: number
         window.samples || 0,
       )} интервала · confidence ${Math.round(Number(window.confidence || 0) * 100)}%`;
   return (
-    <>
-      <div>
-        <Bar spec={barFromRemaining(window.remaining_fraction)} />
-      </div>
+    <div title={evidence}>
       <b>{window.remaining_usd == null ? "—" : money(window.remaining_usd)}</b>
       <div className="sub">
-        realized blend из {window.cap_usd == null ? "—" : money(window.cap_usd)} · {evidence} · сброс{" "}
-        {duration(Number(window.resets_at || 0) - nowSec)}
+        остаток из {window.cap_usd == null ? "—" : money(window.cap_usd)} · {label}
       </div>
-    </>
+    </div>
   );
 }
 
-function GeminiRows({
-  profiles,
+function GeminiModelCoverage({
+  profile,
   models,
   nowSec,
 }: {
-  profiles: GeminiProfile[];
+  profile: GeminiProfile;
   models: GeminiModel[];
   nowSec: number;
 }): ReactElement {
-  const effectiveModels: GeminiModel[] = models.length ? models : [{ id: "—", available: 0 }];
+  const health = profile.model_cooling ?? [];
+  const total = models.length || health.length;
+  const available = profile.authenticated
+    ? health.filter((model) => Number(model.cooling_until || 0) <= nowSec).length
+    : 0;
+  const degraded = health.filter((model) => Number(model.failure_streak || 0) > 0).length;
+  const unknown = health.filter(
+    (model) => Number(model.last_success_at || 0) === 0 && Number(model.last_failure_at || 0) === 0,
+  ).length;
   return (
-    <>
-      {profiles.flatMap((profile, profileIndex) =>
-        effectiveModels.map((model, modelIndex) => {
-          const modelHealth = (profile.model_cooling ?? []).find((item) => item.model_id === model.id) ?? {};
-          const quotas = (profile.quotas ?? []).filter((item) => item.model_id === model.id);
-          const status = geminiStatus(profile, modelHealth, nowSec);
-          const reset = quotas.some((quota) => quota.reset_time)
-            ? quotas
-                .filter((quota) => quota.reset_time)
-                .map((quota, index) => (
-                  <div key={index}>
-                    <b>{duration(Date.parse(quota.reset_time as string) / 1000 - nowSec)}</b>
-                    <div className="sub">{formatDate(quota.reset_time, true)}</div>
-                  </div>
-                ))
-            : "—";
-          return (
-            <tr key={`${profile.id ?? profileIndex}/${model.id ?? modelIndex}`}>
-              <td className="left">
-                <b className="mono">{profile.id}</b>
-                <div className="sub">spent {money(profile.spend_usd_total)}</div>
-              </td>
-              <td>
-                <Pill kind={status.kind}>{status.label}</Pill>
-              </td>
-              <td className="left">
-                <b>{model.id}</b>
-              </td>
-              <td>
-                {model.available ?? 0}/{profiles.length} профилей
-                {model.soonest_ready ? (
-                  <div className="sub">следующий {duration(model.soonest_ready - nowSec)}</div>
-                ) : null}
-              </td>
-              <td>{geminiCapacityCell(profile, "5h", nowSec)}</td>
-              <td>{geminiCapacityCell(profile, "weekly", nowSec)}</td>
-              <td>
-                {quotas.length
-                  ? quotas.map((quota, index) => (
-                      <div key={index}>
-                        {quota.remaining_amount != null ? <b>{quota.remaining_amount}</b> : <b>официальный fraction</b>}
-                        {quota.remaining_fraction != null ? (
-                          <div>
-                            <Bar spec={barFromRemaining(quota.remaining_fraction)} />
-                          </div>
-                        ) : null}
-                      </div>
-                    ))
-                  : "—"}
-              </td>
-              <td>{reset}</td>
-              <td>
-                {quotas.length
-                  ? quotas.map((quota, index) => (
-                      <Fragment key={index}>
-                        {index > 0 ? <br /> : null}
-                        {quota.token_type || "—"}
-                      </Fragment>
-                    ))
-                  : "—"}
-              </td>
-              <td>
-                {profile.last_probe_at ? duration(nowSec - profile.last_probe_at) + " назад" : "—"}
-                <div className="sub">
-                  quota {profile.quota_updated_at ? duration(nowSec - profile.quota_updated_at) + " назад" : "—"}
-                </div>
-              </td>
-            </tr>
-          );
-        }),
-      )}
-    </>
+    <div title={`${degraded} degraded · ${unknown} без probe`}>
+      <b>{health.length && total ? `${available}/${total}` : "—"}</b> доступны
+      <div className="sub">
+        {degraded ? `${degraded} degraded` : "без деградации"}
+        {unknown ? ` · ${unknown} без probe` : ""}
+      </div>
+    </div>
+  );
+}
+
+function GeminiRow({
+  profile,
+  models,
+  nowSec,
+}: {
+  profile: GeminiProfile;
+  models: GeminiModel[];
+  nowSec: number;
+}): ReactElement {
+  const status = geminiProfileStatus(profile, nowSec);
+  return (
+    <tr>
+      <td className="left">
+        <b className="mono">{profile.id}</b>
+      </td>
+      <td>
+        <Pill kind={status.kind}>{status.label}</Pill>
+      </td>
+      <td>{profile.inflight ?? 0}</td>
+      <td>{geminiWindowCell(profile, "5h", nowSec)}</td>
+      <td>{geminiWindowCell(profile, "weekly", nowSec)}</td>
+      <td>
+        {geminiBudgetCell(profile, "5h", "5ч")}
+        {geminiWindow(profile, "weekly") ? (
+          <div style={{ marginTop: 5 }}>
+            {geminiBudgetCell(profile, "weekly", "7д")}
+          </div>
+        ) : null}
+      </td>
+      <td>
+        <GeminiModelCoverage profile={profile} models={models} nowSec={nowSec} />
+      </td>
+      <td>
+        <b>{money(profile.spend_usd_total)}</b>
+        <div className="sub">
+          probe {profile.last_probe_at ? duration(Math.max(0, nowSec - profile.last_probe_at)) + " назад" : "—"}
+        </div>
+        <div className="sub">
+          quota {profile.quota_updated_at ? duration(Math.max(0, nowSec - profile.quota_updated_at)) + " назад" : "—"}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -399,25 +412,130 @@ export const GeminiTable = memo(function GeminiTable({
           <tr>
             <th className="left">профиль</th>
             <th>статус</th>
-            <th className="left">модель</th>
-            <th>доступность</th>
-            <th>5ч · workload API-$</th>
-            <th>7д · workload API-$</th>
-            <th>model quota</th>
-            <th>model reset</th>
-            <th>тип</th>
-            <th>probe / quota</th>
+            <th>в работе</th>
+            <th>окно 5 ч</th>
+            <th>окно 7 д</th>
+            <th>остаток / вместимость API $</th>
+            <th>модели</th>
+            <th>потрачено / probe</th>
           </tr>
         </thead>
         <tbody>
           {profiles.length ? (
-            <GeminiRows profiles={profiles} models={models} nowSec={nowSec} />
+            profiles.map((profile, index) => (
+              <GeminiRow key={profile.id ?? index} profile={profile} models={models} nowSec={nowSec} />
+            ))
           ) : (
-            <EmptyRow columns={10} />
+            <EmptyRow columns={8} />
           )}
         </tbody>
       </table>
     </TableCard>
+  );
+});
+
+function modelQuotaCell(model: GeminiModel, profiles: GeminiProfile[]): ReactNode {
+  const quotaProfiles = profiles
+    .map((profile) => (profile.quotas ?? []).filter((quota) => quota.model_id === model.id))
+    .filter((quotas) => quotas.length > 0);
+  const profileFractions = quotaProfiles
+    .map((quotas) =>
+      quotas
+        .map((quota) => quota.remaining_fraction)
+        .filter((value): value is number => value != null && Number.isFinite(value)),
+    )
+    .filter((fractions) => fractions.length > 0)
+    .map((fractions) => Math.min(...fractions));
+  if (!quotaProfiles.length) return "—";
+  if (!profileFractions.length) return <span className="sub">официальный bucket · fraction не опубликован</span>;
+  const remaining = Math.min(...profileFractions);
+  return (
+    <>
+      <div>
+        <Bar spec={barFromRemaining(remaining)} />
+      </div>
+      <div className="sub">
+        минимум · metadata {profileFractions.length}/{profiles.length} профилей
+      </div>
+    </>
+  );
+}
+
+export const GeminiModelDetails = memo(function GeminiModelDetails({
+  profiles,
+  models,
+  now,
+  nowMs,
+}: {
+  profiles: GeminiProfile[];
+  models: GeminiModel[];
+  now?: number;
+  nowMs: number;
+}): ReactElement {
+  const nowSec = Number(now || nowMs / 1000);
+  return (
+    <details>
+      <summary>Каталог Gemini · {count(models.length, "модель", "модели", "моделей")}</summary>
+      <TableCard>
+        <table>
+          <thead>
+            <tr>
+              <th className="left">модель</th>
+              <th>доступно профилей</th>
+              <th>health</th>
+              <th>официальная quota</th>
+              <th>ближайший reset</th>
+            </tr>
+          </thead>
+          <tbody>
+            {models.length ? (
+              models.map((model, index) => {
+                const healthy = Number(model.healthy || 0);
+                const degraded = Number(model.degraded || 0);
+                const unknown = Number(model.unknown || 0);
+                const resets = profiles
+                  .flatMap((profile) => (profile.quotas ?? []).filter((quota) => quota.model_id === model.id))
+                  .map((quota) => Date.parse(quota.reset_time ?? "") / 1000)
+                  .filter((reset) => Number.isFinite(reset) && reset > 0);
+                const nearestReset = resets.length ? Math.min(...resets) : 0;
+                return (
+                  <tr key={model.id ?? index}>
+                    <td className="left">
+                      <b>{model.id ?? "—"}</b>
+                    </td>
+                    <td>
+                      <b>{model.available ?? 0}</b>/{profiles.length}
+                      {model.soonest_ready ? (
+                        <div className="sub">следующий {duration(Math.max(0, model.soonest_ready - nowSec))}</div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {healthy > 0 ? <Pill kind="ok">{healthy} healthy</Pill> : null}{" "}
+                      {degraded > 0 ? <Pill kind="warn">{degraded} degraded</Pill> : null}{" "}
+                      {unknown > 0 ? <Pill>{unknown} без probe</Pill> : null}
+                      {!healthy && !degraded && !unknown ? <Pill>нет health snapshot</Pill> : null}
+                    </td>
+                    <td>{modelQuotaCell(model, profiles)}</td>
+                    <td>
+                      {nearestReset ? (
+                        <>
+                          <b>{duration(Math.max(0, nearestReset - nowSec))}</b>
+                          <div className="sub">{formatDate(nearestReset * 1000, true)}</div>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <EmptyRow columns={5} text="каталог моделей пуст" />
+            )}
+          </tbody>
+        </table>
+      </TableCard>
+    </details>
   );
 });
 

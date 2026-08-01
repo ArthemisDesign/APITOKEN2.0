@@ -12,13 +12,13 @@ vi.mock("next/link", () => ({
 }));
 
 import SubsPage from "./page";
-import { ClaudeTable, GeminiTable, GptTable, TransportDetails } from "./components";
+import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
 import {
   barFromPercent,
   barFromRemaining,
   barFromUtil,
   deadLabel,
-  geminiStatus,
+  geminiProfileStatus,
   homeStatus,
   resolveBanner,
   stripProxyPort,
@@ -118,28 +118,31 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("official-price");
   });
 
-  it("GeminiTable: профиль × модель с quota и сбросами", () => {
+  it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {
     const nowMs = 1_700_000_000_000;
+    const models = Array.from({ length: 7 }, (_, index) => ({
+      id: `gemini-model-${index + 1}`,
+      available: 2,
+      healthy: 1,
+      unknown: 1,
+    }));
+    const modelHealth = models.map((model) => ({
+      model_id: model.id,
+      cooling_until: 0,
+      last_success_at: nowMs / 1000 - 60,
+    }));
     const html = renderToString(
       <GeminiTable
         nowMs={nowMs}
         now={nowMs / 1000}
-        models={[{ id: "gemini-3-pro", available: 1 }]}
+        models={models}
         profiles={[
           {
             id: "prof-1",
             authenticated: true,
+            inflight: 2,
             spend_usd_total: 7.5,
-            model_cooling: [{ model_id: "gemini-3-pro", last_success_at: nowMs / 1000 - 60 }],
-            quotas: [
-              {
-                model_id: "gemini-3-pro",
-                token_type: "requests",
-                remaining_fraction: 0.25,
-                remaining_amount: "250",
-                reset_time: new Date(nowMs + 3600_000).toISOString(),
-              },
-            ],
+            model_cooling: modelHealth,
             windows: [
               {
                 window_kind: "5h",
@@ -158,16 +161,55 @@ describe("таблицы флотов (smoke render с данными)", () => {
             ],
             last_probe_at: nowMs / 1000 - 120,
           },
+          {
+            id: "prof-2",
+            authenticated: true,
+            spend_usd_total: 2.5,
+            model_cooling: modelHealth,
+          },
         ]}
       />,
     );
     expect(html).toContain("prof-1");
-    expect(html).toContain("gemini-3-pro");
+    expect(html).toContain("prof-2");
     expect(html).toContain("active");
     expect(html).toContain("workload envelope");
     expect(html).toContain("0.40000%"); // Δquota
-    expect(html).toContain("requests");
-    expect(plain(html)).toContain("1/1 профилей");
+    expect(html).toContain("<b>7/7</b> доступны");
+    expect(html).not.toContain("gemini-model-1");
+    // header + две подписки: семь моделей не создают ещё 14 строк.
+    expect(html.match(/<tr/g)).toHaveLength(3);
+  });
+
+  it("GeminiModelDetails: каталог моделей хранит health, quota и reset отдельно от профилей", () => {
+    const nowMs = 1_700_000_000_000;
+    const html = renderToString(
+      <GeminiModelDetails
+        nowMs={nowMs}
+        now={nowMs / 1000}
+        models={[{ id: "gemini-3-pro", available: 1, healthy: 1, degraded: 0, unknown: 0 }]}
+        profiles={[
+          {
+            id: "prof-1",
+            quotas: [
+              {
+                model_id: "gemini-3-pro",
+                token_type: "requests",
+                remaining_fraction: 0.25,
+                remaining_amount: "250",
+                reset_time: new Date(nowMs + 3600_000).toISOString(),
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(plain(html)).toContain("Каталог Gemini · 1 модель");
+    expect(html).toContain("gemini-3-pro");
+    expect(plain(html)).toContain("1 healthy");
+    expect(html).toContain("официальная quota");
+    expect(plain(html)).toContain("25%");
+    expect(html).toContain("1ч 0м");
   });
 
   it("TransportDetails: fingerprint и affinity-счётчики", () => {
@@ -282,29 +324,40 @@ describe("homeStatus (вердикт допуска gateway)", () => {
   });
 });
 
-describe("geminiStatus (профиль × модель)", () => {
+describe("geminiProfileStatus (профиль подписки)", () => {
   const now = 1_000_000;
 
-  it("цепочка приоритетов: auth → cooling → streak → calibration → probe", () => {
-    expect(geminiStatus({ authenticated: false }, {}, now)).toEqual({ label: "ошибка auth", kind: "bad" });
-    expect(geminiStatus({ authenticated: true, cooling_until: now + 300 }, {}, now)).toEqual({
+  it("цепочка приоритетов: auth → profile/model cooling → degradation → calibration", () => {
+    expect(geminiProfileStatus({ authenticated: false }, now)).toEqual({ label: "ошибка auth", kind: "bad" });
+    expect(geminiProfileStatus({ authenticated: true, cooling_until: now + 300 }, now)).toEqual({
       label: "cooling 5м",
       kind: "warn",
     });
-    // model_cooling профиля-модели тоже держит профиль в cooling
-    expect(geminiStatus({ authenticated: true }, { cooling_until: now + 300 }, now).label).toBe("cooling 5м");
-    expect(geminiStatus({ authenticated: true }, { failure_streak: 3 }, now)).toEqual({
-      label: "degraded · 3",
+    expect(
+      geminiProfileStatus(
+        { authenticated: true, model_cooling: [{ cooling_until: now + 300 }, { cooling_until: now + 600 }] },
+        now,
+      ),
+    ).toEqual({ label: "модели cooling 5м", kind: "warn" });
+    expect(
+      geminiProfileStatus(
+        { authenticated: true, model_cooling: [{ failure_streak: 3 }, { last_success_at: now - 10 }] },
+        now,
+      ),
+    ).toEqual({
+      label: "active · 1 модель degraded",
       kind: "warn",
     });
-    expect(geminiStatus({ authenticated: true, calibration_persistence_ok: false }, {}, now).label).toBe(
+    expect(geminiProfileStatus({ authenticated: true, calibration_persistence_ok: false }, now).label).toBe(
       "active · calibration storage",
     );
-    expect(geminiStatus({ authenticated: true }, { last_success_at: now - 10 }, now)).toEqual({
+  });
+
+  it("authenticated профиль остаётся active без probe отдельных моделей", () => {
+    expect(geminiProfileStatus({ authenticated: true, model_cooling: [{}, {}] }, now)).toEqual({
       label: "active",
       kind: "ok",
     });
-    expect(geminiStatus({ authenticated: true }, {}, now)).toEqual({ label: "не проверена", kind: "warn" });
   });
 });
 

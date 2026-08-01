@@ -10,7 +10,7 @@ import { usePoll } from "@/lib/usePoll";
 import { count, duration, formatDate, money } from "@/lib/format";
 import { Banner, CardGrid, LoadingGrid, PageHead, Pill, SectionHeader, StatCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
-import { ClaudeTable, GeminiTable, GptTable, TransportDetails } from "./components";
+import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
 import { resolveBanner } from "./logic";
 import type {
   CapacityResponse,
@@ -376,12 +376,20 @@ export default function SubsPage() {
             </div>
           </div>
         ) : (
-          <GeminiTable
-            profiles={derived.geminiProfiles}
-            models={derived.geminiModels}
-            now={derived.gemini?.now}
-            nowMs={result.nowMs}
-          />
+          <>
+            <GeminiTable
+              profiles={derived.geminiProfiles}
+              models={derived.geminiModels}
+              now={derived.gemini?.now}
+              nowMs={result.nowMs}
+            />
+            <GeminiModelDetails
+              profiles={derived.geminiProfiles}
+              models={derived.geminiModels}
+              now={derived.gemini?.now}
+              nowMs={result.nowMs}
+            />
+          </>
         )}
       </div>
 

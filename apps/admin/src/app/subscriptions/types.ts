@@ -104,6 +104,9 @@ export interface CodexSubsResponse {
 export interface GeminiModel {
   id?: string;
   available?: number;
+  healthy?: number;
+  degraded?: number;
+  unknown?: number;
   /** epoch-секунды ближайшей разморозки модели. */
   soonest_ready?: number;
 }
@@ -113,6 +116,8 @@ export interface GeminiModelHealth {
   cooling_until?: number;
   failure_streak?: number;
   last_success_at?: number;
+  last_failure_at?: number;
+  last_failure_class?: string | null;
 }
 
 export interface GeminiQuota {
@@ -141,6 +146,7 @@ export interface GeminiProfileWindow {
 export interface GeminiProfile {
   id?: string;
   authenticated?: boolean;
+  inflight?: number;
   spend_usd_total?: number;
   cooling_until?: number;
   calibration_persistence_ok?: boolean;

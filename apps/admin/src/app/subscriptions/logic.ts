@@ -3,7 +3,7 @@
 // пороговые бары. Вынесена из JSX ради юнит-тестов.
 import { count, duration } from "@/lib/format";
 import type { Tone } from "@/components/ui";
-import type { CodexHome, GeminiModelHealth, GeminiProfile } from "./types";
+import type { CodexHome, GeminiProfile } from "./types";
 
 // deadLabel: причина смерти Claude-токена → русская подпись пилюли.
 export function deadLabel(reason: string | null | undefined): string {
@@ -76,20 +76,33 @@ export function homeStatus(home: CodexHome, nowSec: number): StatusPill {
   return { label: "active", kind: "ok" };
 }
 
-// Статус пары «Gemini-профиль × модель»: auth → cooling → streak → calibration → probe.
-export function geminiStatus(
-  profile: GeminiProfile,
-  modelHealth: GeminiModelHealth,
-  nowSec: number,
-): StatusPill {
-  const coolingUntil = Math.max(Number(profile.cooling_until || 0), Number(modelHealth.cooling_until || 0));
+// Статус Gemini-подписки целиком. Не превращаем отсутствие probe конкретной модели
+// в статус всего профиля: routing допускает authenticated профиль, пока он не cooling.
+export function geminiProfileStatus(profile: GeminiProfile, nowSec: number): StatusPill {
+  const coolingUntil = Number(profile.cooling_until || 0);
   if (!profile.authenticated) return { label: "ошибка auth", kind: "bad" };
   if (coolingUntil > nowSec) return { label: "cooling " + duration(coolingUntil - nowSec), kind: "warn" };
-  if (Number(modelHealth.failure_streak || 0) > 0)
-    return { label: "degraded · " + modelHealth.failure_streak, kind: "warn" };
+
+  const models = profile.model_cooling ?? [];
+  const coolingModels = models.filter((model) => Number(model.cooling_until || 0) > nowSec);
+  if (models.length > 0 && coolingModels.length === models.length) {
+    const soonestReady = Math.min(...coolingModels.map((model) => Number(model.cooling_until)));
+    return { label: "модели cooling " + duration(soonestReady - nowSec), kind: "warn" };
+  }
+
+  const degraded = models.filter((model) => Number(model.failure_streak || 0) > 0).length;
+  if (degraded > 0)
+    return {
+      label: "active · " + count(degraded, "модель degraded", "модели degraded", "моделей degraded"),
+      kind: "warn",
+    };
+  if (coolingModels.length > 0)
+    return {
+      label: "active · " + count(coolingModels.length, "модель cooling", "модели cooling", "моделей cooling"),
+      kind: "warn",
+    };
   if (profile.calibration_persistence_ok === false) return { label: "active · calibration storage", kind: "warn" };
-  if (Number(modelHealth.last_success_at || 0) > 0) return { label: "active", kind: "ok" };
-  return { label: "не проверена", kind: "warn" };
+  return { label: "active", kind: "ok" };
 }
 
 export interface FleetBanner {
