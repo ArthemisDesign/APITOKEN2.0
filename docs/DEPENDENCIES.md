@@ -131,7 +131,9 @@ monitoring-collector, candidate-validator, backup, fingerprint · host-bootstrap
 `observability/prometheus/rules/{application,operations}.yml` (~58 алертов) — у каждого
 аннотация `runbook: 'docs/ops/MONITORING.md#<alert>'`, и секция `## <Alert>` обязана
 существовать в `docs/ops/MONITORING.md`. Согласованность механически проверяет
-`deploy/monitoring-config.test.sh` (часть статического merge-gate). Это образцовый пример
+`deploy/monitoring-config.test.sh`, который host прогоняет при валидации каждого
+merge-кандидата (`deploy/watchdog.sh`), — проверка покрывает ВСЕ алерты обоих rules-файлов,
+а не только закреплённые поимённо. Это образцовый пример
 замкнутой связи «код ↔ документация» — новые связи оформлять по тому же принципу.
 
 ### Доставка

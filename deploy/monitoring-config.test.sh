@@ -328,4 +328,42 @@ if grep -R -E '(password|secret|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{
   exit 1
 fi
 
+# Every alert in both rules files must carry a runbook annotation, and every anchor must
+# resolve to a real '## ' section in docs/ops/MONITORING.md. The named loops above pin extra
+# properties of specific alerts; this generic pass extends the anchor guarantee to every
+# alert, including ones nobody pinned yet.
+node - "$ROOT" <<'EOF'
+const { readFileSync } = require('node:fs');
+const root = process.argv[2];
+const rulesFiles = [
+  `${root}/observability/prometheus/rules/application.yml`,
+  `${root}/observability/prometheus/rules/operations.yml`,
+];
+const alerts = [];
+const anchors = [];
+for (const file of rulesFiles) {
+  const text = readFileSync(file, 'utf8');
+  for (const m of text.matchAll(/^\s*-\s*alert:\s*(\S+)\s*$/gm)) alerts.push(m[1]);
+  for (const m of text.matchAll(/runbook:\s*['"]docs\/ops\/MONITORING\.md#([^'"]+)['"]/g)) anchors.push(m[1]);
+}
+const headingAnchors = new Set(
+  readFileSync(`${root}/docs/ops/MONITORING.md`, 'utf8')
+    .split('\n')
+    .filter((l) => l.startsWith('## '))
+    .map((l) => l.slice(3).trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-')),
+);
+const problems = [];
+if (alerts.length !== anchors.length) {
+  problems.push(`alert count ${alerts.length} != runbook anchor count ${anchors.length}`);
+}
+for (const anchor of new Set(anchors)) {
+  if (!headingAnchors.has(anchor)) problems.push(`runbook anchor #${anchor} has no '## ' section in docs/ops/MONITORING.md`);
+}
+if (problems.length) {
+  for (const p of problems) console.error(`monitoring-config: ${p}`);
+  process.exit(1);
+}
+console.log(`monitoring-config: all ${alerts.length} alerts carry runbook anchors resolving to MONITORING.md sections`);
+EOF
+
 printf 'monitoring static configuration tests passed\n'
