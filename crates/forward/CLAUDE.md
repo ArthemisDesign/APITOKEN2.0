@@ -355,7 +355,7 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    ledger, и только затем повторяется cached post-turn quota snapshot — обратный порядок ложно
    превращал реальный gateway spend во внешний. Pending/drop видны в `/codex-subs`; overflow не
    молчит. Permanent immutable replay conflict карантинит только одну строку и не блокирует
-   последующие. Estimator v9 после credit cutover начинает shared anchor для
+   последующие. Estimator v10 после credit cutover начинает shared anchor для
    обоих units: `native cap = 100_000_000*ΣΔnanocredits/ΣΔfraction`, API cap остаётся realized
    workload equivalent по `ΣΔnanoUSD`. Старое API evidence переносится в `last_*`, а не считается
    нулевым credit spend. Первое quota-only движение ждёт ledger catch-up; повторившееся движение без
@@ -364,8 +364,13 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    после credit cutover, остаётся в raw authority, но пропускается как неполный: следующий tracked
    cumulative snapshot безопасно охватывает этот интервал. Live tracked→untracked regression
    по-прежнему fail-closed.
-   Low/high, samples, confidence и missing-data reason публикуются явно. Нет prior/EMA/WLS/float
-   money. Raw observations переживают restart/blue-green/reset и распознают rolling reset;
+   Storage `10^-8` не считается точностью provider measurement: trailing-zero resolution каждого
+   endpoint (целый процент = `1_000_000` units) входит в low/high, а interval не больше rounding
+   uncertainty получает `high:null`. `/codex-subs.plan_cohorts` группирует exact paid plan +
+   duration и делит pooled native-credit evidence на pooled fraction movement, публикуя одну
+   capacity per home и fleet remaining; individual estimates/evidence не перезаписываются, API USD
+   не pool-ится. Low/high, samples, confidence и missing-data reason публикуются явно. Нет
+   prior/EMA/WLS/float money. Raw observations переживают restart/blue-green/reset и распознают rolling reset;
    каждое provider-reported duration калибруется независимо. Usage translation принимает оба
    реально встречающихся alias (`cache_write_tokens` и legacy `cache_creation_tokens`), предпочитая
    current spelling и никогда не складывая их дважды.

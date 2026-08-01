@@ -10,16 +10,18 @@
 //!
 //! OpenAI documents that Codex credit consumption varies by model, context, reasoning and tools.
 //! API-dollar capacity is therefore a realized mix, not a fixed subscription nominal. Low/high
-//! retain the observed per-interval workload envelope (including fraction quantisation), while
-//! confidence combines sample maturity, workload stability and resolution. There is no configured
-//! prior, subscription-price assumption, EMA or floating-point money arithmetic.
+//! retain the observed per-interval workload envelope, including the decimal precision actually
+//! present in provider percentages: an integer `40%` has one-percentage-point endpoint resolution,
+//! not fictitious `10^-8` precision merely because that is the storage scale. Confidence combines
+//! sample maturity, workload stability and resolution. There is no configured prior,
+//! subscription-price assumption, EMA or floating-point money arithmetic.
 
 use anyhow::Context as _;
 use registry::{CodexCalibrationRow, CodexWindowObservation};
 
 pub const FRACTION_SCALE: i64 = 100_000_000;
 const PERCENT_SCALE: i64 = FRACTION_SCALE / 100;
-pub const ESTIMATOR_VERSION: i64 = 9;
+pub const ESTIMATOR_VERSION: i64 = 10;
 const CREDIT_ESTIMATOR_VERSION: i64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +74,7 @@ impl WindowCalibration {
                 anchor_spend_nano: observation.gateway_spend_nano,
                 used_percent: observation.used_percent,
                 observed_at: observation.observed_at,
-                // Legacy WLS fields stay zero in estimator v8. They remain in storage so the
+                // Legacy WLS fields stay zero in estimator v10. They remain in storage so the
                 // migration-first rollout is expand-only for the previous binary.
                 sum_used_sq: 0,
                 sum_used_spend_nano: 0,
@@ -263,7 +265,11 @@ impl WindowCalibration {
             if delta_spend == 0 {
                 return Ok(());
             }
-            self.update_workload_envelope(delta_used, delta_spend)?;
+            let uncertainty = interval_fraction_uncertainty(
+                self.row.anchor_used_fraction_units,
+                observation.used_fraction_units,
+            );
+            self.update_workload_envelope(delta_used, uncertainty, delta_spend)?;
             self.row.observed_fraction_units = self
                 .row
                 .observed_fraction_units
@@ -315,8 +321,12 @@ impl WindowCalibration {
             anyhow::bail!("Codex atomic API/credit ledgers diverged");
         }
 
-        self.update_workload_envelope(delta_used, delta_spend)?;
-        self.update_credit_envelope(delta_used, delta_nanocredits)?;
+        let uncertainty = interval_fraction_uncertainty(
+            self.row.anchor_used_fraction_units,
+            observation.used_fraction_units,
+        );
+        self.update_workload_envelope(delta_used, uncertainty, delta_spend)?;
+        self.update_credit_envelope(delta_used, uncertainty, delta_nanocredits)?;
         self.row.observed_fraction_units = self
             .row
             .observed_fraction_units
@@ -404,6 +414,7 @@ impl WindowCalibration {
     fn update_workload_envelope(
         &mut self,
         delta_used: i64,
+        uncertainty: i64,
         delta_spend: i64,
     ) -> anyhow::Result<()> {
         let numerator = i128::from(FRACTION_SCALE)
@@ -411,7 +422,7 @@ impl WindowCalibration {
             .context("Codex workload envelope numerator overflow")?;
         let low = checked_i64(
             numerator
-                .checked_div(i128::from(delta_used) + 1)
+                .checked_div(i128::from(delta_used) + i128::from(uncertainty))
                 .context("Codex workload low bound overflow")?,
         )?;
         self.row.current_low_nano = Some(
@@ -420,10 +431,10 @@ impl WindowCalibration {
                 .map_or(low, |existing| existing.min(low)),
         );
 
-        let sample_high = if delta_used > 1 {
+        let sample_high = if delta_used > uncertainty {
             Some(checked_i64(ceil_nonnegative(
                 numerator,
-                i128::from(delta_used) - 1,
+                i128::from(delta_used) - i128::from(uncertainty),
             )?)?)
         } else {
             None
@@ -442,6 +453,7 @@ impl WindowCalibration {
     fn update_credit_envelope(
         &mut self,
         delta_used: i64,
+        uncertainty: i64,
         delta_nanocredits: i64,
     ) -> anyhow::Result<()> {
         let numerator = i128::from(FRACTION_SCALE)
@@ -449,7 +461,7 @@ impl WindowCalibration {
             .context("Codex credit envelope numerator overflow")?;
         let low = checked_i64(
             numerator
-                .checked_div(i128::from(delta_used) + 1)
+                .checked_div(i128::from(delta_used) + i128::from(uncertainty))
                 .context("Codex credit low bound overflow")?,
         )?;
         self.row.current_low_nanocredits = Some(
@@ -457,10 +469,10 @@ impl WindowCalibration {
                 .current_low_nanocredits
                 .map_or(low, |existing| existing.min(low)),
         );
-        let sample_high = if delta_used > 1 {
+        let sample_high = if delta_used > uncertainty {
             Some(checked_i64(ceil_nonnegative(
                 numerator,
-                i128::from(delta_used) - 1,
+                i128::from(delta_used) - i128::from(uncertainty),
             )?)?)
         } else {
             None
@@ -768,6 +780,35 @@ fn checked_i64(value: i128) -> anyhow::Result<i64> {
     i64::try_from(value).context("Codex calibration result exceeds bigint")
 }
 
+/// Conservative numeric precision recoverable from a fixed-point provider value.
+///
+/// Storage always uses `10^-8` fraction units, but the live provider commonly returns whole
+/// percentages. Trailing zeroes therefore describe measurement resolution up to the one-percent
+/// ceiling: `40%` -> `1_000_000` units, `12.5%` -> `100_000`, `12.125%` -> `1_000`.
+/// The original spelling is intentionally not required for persistence/replay; when a value such
+/// as `40.0` loses its trailing decimal, treating it as whole-percent is the safe wider bound.
+pub fn fraction_resolution_units(units: i64) -> i64 {
+    let mut value = units.saturating_abs();
+    if value == 0 {
+        return PERCENT_SCALE;
+    }
+    let mut resolution = 1i64;
+    while resolution < PERCENT_SCALE && value % 10 == 0 {
+        value /= 10;
+        resolution *= 10;
+    }
+    resolution.min(PERCENT_SCALE)
+}
+
+/// Difference uncertainty for two independently rounded endpoints. Each endpoint is within half
+/// its own numeric resolution; ceil-half of their sum is the conservative integer denominator
+/// adjustment used by the low/high envelope.
+fn interval_fraction_uncertainty(anchor_units: i64, observed_units: i64) -> i64 {
+    let total = fraction_resolution_units(anchor_units)
+        .saturating_add(fraction_resolution_units(observed_units));
+    total.saturating_add(1).saturating_div(2).max(1)
+}
+
 fn rounded_percent(units: i64) -> i64 {
     units.saturating_add(PERCENT_SCALE / 2) / PERCENT_SCALE
 }
@@ -857,6 +898,97 @@ mod tests {
     }
 
     #[test]
+    fn provider_numeric_resolution_is_recovered_conservatively() {
+        assert_eq!(fraction_resolution_units(40_000_000), 1_000_000);
+        assert_eq!(fraction_resolution_units(12_500_000), 100_000);
+        assert_eq!(fraction_resolution_units(12_125_000), 1_000);
+        assert_eq!(fraction_resolution_units(12_125_100), 100);
+        assert_eq!(fraction_resolution_units(12_125_101), 1);
+        assert_eq!(fraction_resolution_units(0), 1_000_000);
+        assert_eq!(fraction_resolution_units(FRACTION_SCALE), 1_000_000);
+
+        assert_eq!(
+            interval_fraction_uncertainty(12_000_000, 14_000_000),
+            1_000_000
+        );
+        assert_eq!(interval_fraction_uncertainty(12_125_001, 12_125_101), 1);
+    }
+
+    #[test]
+    fn whole_percent_quota_publishes_wide_honest_bounds_for_both_ledgers() {
+        let row = next(None, credit_observation(12_000_000, 0, 0, 100));
+        let row = next(
+            Some(row),
+            credit_observation(14_000_000, 36_000_000_000, 900_000_000_000, 101),
+        );
+        let calibration = WindowCalibration::from_row(row).unwrap();
+        let api = calibration.estimate().unwrap();
+        let credits = calibration.credit_estimate().unwrap();
+
+        assert_eq!(api.capacity_nano, 1_800_000_000_000);
+        assert_eq!(api.low_nano, Some(1_200_000_000_000));
+        assert_eq!(api.high_nano, Some(3_600_000_000_000));
+        assert_eq!(credits.capacity_nanocredits, 45_000_000_000_000);
+        assert_eq!(credits.low_nanocredits, Some(30_000_000_000_000));
+        assert_eq!(credits.high_nanocredits, Some(90_000_000_000_000));
+        assert!(credits.confidence_bp < 1_200);
+    }
+
+    #[test]
+    fn fine_decimal_quota_keeps_a_finite_tight_envelope() {
+        let row = next(None, observation(12_125_001, 0, 100));
+        let row = next(Some(row), observation(12_125_101, 10_000, 101));
+        let estimate = WindowCalibration::from_row(row)
+            .unwrap()
+            .estimate()
+            .unwrap();
+
+        assert_eq!(estimate.capacity_nano, 10_000_000_000);
+        assert_eq!(estimate.low_nano, Some(9_900_990_099));
+        assert_eq!(estimate.high_nano, Some(10_101_010_102));
+        assert!(estimate.confidence_bp > 3_200);
+    }
+
+    #[test]
+    fn resolution_envelope_contains_every_admissible_true_capacity_boundary() {
+        for (anchor, observed) in [
+            (12_000_000, 14_000_000),
+            (12_000_000, 13_000_000),
+            (12_125_001, 12_125_101),
+            (12_500_000, 12_625_000),
+        ] {
+            let reported_delta = observed - anchor;
+            let uncertainty = interval_fraction_uncertainty(anchor, observed);
+            let true_deltas = [
+                (reported_delta - uncertainty).max(1),
+                reported_delta,
+                reported_delta + uncertainty,
+            ];
+            for true_delta in true_deltas {
+                // With spend == true quota movement, the hidden true capacity is exactly SCALE.
+                let row = next(None, observation(anchor, 0, 100));
+                let row = next(Some(row), observation(observed, true_delta, 101));
+                let estimate = WindowCalibration::from_row(row)
+                    .unwrap()
+                    .estimate()
+                    .unwrap();
+                assert!(
+                    estimate.low_nano.unwrap() <= FRACTION_SCALE,
+                    "lower bound excluded true capacity for {anchor}->{observed}"
+                );
+                if let Some(high) = estimate.high_nano {
+                    assert!(
+                        high >= FRACTION_SCALE,
+                        "upper bound excluded true capacity for {anchor}->{observed}"
+                    );
+                } else {
+                    assert!(reported_delta <= uncertainty);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn credit_cutover_keeps_old_api_result_but_restarts_both_current_estimators() {
         let row = next(None, observation(10_000_000, 0, 100));
         let row = next(Some(row), observation(12_000_000, 40_000_000_000, 101));
@@ -905,10 +1037,10 @@ mod tests {
 
     #[test]
     fn mixed_models_publish_the_realized_api_dollar_blend_and_envelope() {
-        let row = next(None, observation(1_000, 0, 100));
-        let row = next(Some(row), observation(2_000, 100_000, 101)); // $10 regime
-        let row = next(Some(row), observation(3_000, 300_000, 102)); // $20 regime
-        let row = next(Some(row), observation(3_500, 700_000, 103)); // $80 regime
+        let row = next(None, observation(1_001, 0, 100));
+        let row = next(Some(row), observation(2_001, 100_000, 101)); // $10 regime
+        let row = next(Some(row), observation(3_001, 300_000, 102)); // $20 regime
+        let row = next(Some(row), observation(3_501, 700_000, 103)); // $80 regime
         let estimate = WindowCalibration::from_row(row.clone())
             .unwrap()
             .estimate()
@@ -1050,6 +1182,30 @@ mod tests {
     }
 
     #[test]
+    fn estimator_upgrade_replays_whole_percent_history_with_v10_bounds() {
+        let history = vec![
+            credit_observation(12_000_000, 0, 0, 100),
+            credit_observation(14_000_000, 36_000_000_000, 900_000_000_000, 101),
+        ];
+        let mut poisoned = replay_observations(&history, 7).unwrap().unwrap();
+        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
+        poisoned.current_low_nanocredits = Some(44_999_977_500_011);
+        poisoned.current_high_nanocredits = Some(45_000_022_500_012);
+
+        let rebuilt =
+            apply_observation_with_history(Some(poisoned), &history, history.last().unwrap())
+                .unwrap();
+        assert_eq!(rebuilt.version, 7);
+        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
+        assert_eq!(
+            rebuilt.current_capacity_nanocredits,
+            Some(45_000_000_000_000)
+        );
+        assert_eq!(rebuilt.current_low_nanocredits, Some(30_000_000_000_000));
+        assert_eq!(rebuilt.current_high_nanocredits, Some(90_000_000_000_000));
+    }
+
+    #[test]
     fn estimator_upgrade_skips_legacy_untracked_points_after_credit_cutover() {
         let history = vec![
             observation(4_000_000, 57_430_898_100, 100),
@@ -1091,9 +1247,9 @@ mod tests {
 
     #[test]
     fn remaining_and_its_bounds_use_the_exact_current_fraction() {
-        let row = next(None, observation(10_000_000, 0, 100));
-        let row = next(Some(row), observation(10_000_100, 20_000, 101));
-        let row = next(Some(row), observation(10_000_300, 60_000, 102));
+        let row = next(None, observation(10_000_001, 0, 100));
+        let row = next(Some(row), observation(10_000_101, 20_000, 101));
+        let row = next(Some(row), observation(10_000_301, 60_000, 102));
         let calibration = WindowCalibration::from_row(row).unwrap();
         assert_eq!(calibration.remaining_nano(50_000_000), Some(10_000_000_000));
         assert!(calibration.remaining_low_nano(50_000_000).is_some());

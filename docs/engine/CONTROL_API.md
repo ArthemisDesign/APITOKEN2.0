@@ -58,6 +58,28 @@ cache-write, output/reasoning, все API legs и все ChatGPT-credit legs. Э
 не появится подтверждённое положительное `Δquota`; `null` не означает ноль. Integrity поля
 `calibration_pending_events`/`calibration_dropped_events` должны быть `0/0`.
 
+`measurement_resolution_fraction_units` у окна сообщает реальную числовую разрешающую способность
+quota snapshot: для типичного целого `40%` это `1_000_000`, а не `1`. Low/high estimator v10
+учитывают половину разрешения обоих endpoints; если движение quota не больше этой погрешности,
+верхняя граница честно остаётся `null`.
+
+Для коммерческого ответа по одинаковым подпискам используй корневой `plan_cohorts`, сгруппированный
+по exact `plan + window_minutes`. `capacity_per_home_nanocredits` — одна общая pooled-оценка для
+каждого home этой когорты, а `fleet_capacity_*`/`fleet_remaining_*` — её размер и текущий остаток
+по всему cohort. Формула point estimate:
+
+```text
+capacity_per_home_nanocredits =
+  100_000_000 × Σobserved_spend_nanocredits / Σobserved_fraction_units
+```
+
+`measured_homes` показывает число contributors, `homes_total` — размер когорты. Low/high —
+консервативный общий envelope; если хотя бы один contributor не даёт конечную верхнюю границу,
+cohort high тоже `null`. Per-home `capacity_nanocredits` не перезаписывается и остаётся raw audit
+evidence, поэтому его разброс при whole-percent quota ожидаем. `window_totals` также остаётся суммой
+individual estimates. API USD нельзя брать из `plan_cohorts`: он зависит от workload и считается
+через conversion formula ниже.
+
 Корень ответа также публикует `conversion_models`: versioned API/credit rates, независимые Fast
 multipliers и long-context modifiers. Все деньги и credits сериализуются decimal strings; токены,
 проценты, timestamps и counters — числа. Email — только bounded mask без домена. UI обязан считать

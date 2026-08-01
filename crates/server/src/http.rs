@@ -1607,6 +1607,23 @@ struct CodexWindowTotal {
     credit_high_homes: usize,
 }
 
+/// Equal paid plans with the same provider window share one native-credit capacity parameter.
+/// Individual home estimates remain available for audit, while this aggregate removes arbitrary
+/// whole-percent rounding noise from the operator answer "how many credits does one plan hold?".
+#[derive(Default)]
+struct CodexPlanCohort {
+    homes_total: usize,
+    measured_homes: usize,
+    observed_fraction_units: i128,
+    observed_spend_nanocredits: i128,
+    unused_fraction_units: i128,
+    measurement_resolution_fraction_units: i64,
+    low_nanocredits: Option<i64>,
+    low_homes: usize,
+    high_nanocredits: Option<i64>,
+    high_homes: usize,
+}
+
 fn codex_window_totals(
     status: &forward::codex::CodexOperationalStatus,
 ) -> BTreeMap<i64, CodexWindowTotal> {
@@ -1676,6 +1693,132 @@ fn codex_window_totals(
         }
     }
     totals
+}
+
+fn codex_plan_cohorts(status: &forward::codex::CodexOperationalStatus) -> Vec<Value> {
+    const FRACTION_SCALE: i128 = 100_000_000;
+
+    let mut cohorts: BTreeMap<(String, i64), CodexPlanCohort> = BTreeMap::new();
+    for home in &status.homes {
+        let mut seen = BTreeSet::new();
+        for capacity in &home.capacities {
+            let Some(duration) = capacity.window_minutes else {
+                continue;
+            };
+            if !seen.insert(duration) {
+                continue;
+            }
+            let cohort = cohorts.entry((home.plan.clone(), duration)).or_default();
+            cohort.homes_total += 1;
+            cohort.unused_fraction_units += i128::from(
+                100_000_000i64.saturating_sub(capacity.used_fraction_units.clamp(0, 100_000_000)),
+            );
+            cohort.measurement_resolution_fraction_units = cohort
+                .measurement_resolution_fraction_units
+                .max(capacity.measurement_resolution_fraction_units);
+
+            let Some(observed_spend) = capacity.observed_spend_nanocredits else {
+                continue;
+            };
+            if capacity.capacity_nanocredits.is_none()
+                || observed_spend <= 0
+                || capacity.observed_fraction_units <= 0
+            {
+                continue;
+            }
+            cohort.measured_homes += 1;
+            cohort.observed_spend_nanocredits += i128::from(observed_spend);
+            cohort.observed_fraction_units += i128::from(capacity.observed_fraction_units);
+            if let Some(low) = capacity.low_nanocredits {
+                cohort.low_nanocredits = Some(
+                    cohort
+                        .low_nanocredits
+                        .map_or(low, |existing| existing.min(low)),
+                );
+                cohort.low_homes += 1;
+            }
+            if let Some(high) = capacity.high_nanocredits {
+                cohort.high_nanocredits = Some(
+                    cohort
+                        .high_nanocredits
+                        .map_or(high, |existing| existing.max(high)),
+                );
+                cohort.high_homes += 1;
+            }
+        }
+    }
+
+    let multiply = |value: Option<i128>, multiplier: i128| {
+        value.and_then(|value| value.checked_mul(multiplier))
+    };
+    let remaining = |capacity: Option<i128>, unused_fraction_units: i128| {
+        capacity
+            .and_then(|value| value.checked_mul(unused_fraction_units))
+            .and_then(|value| value.checked_div(FRACTION_SCALE))
+    };
+    cohorts
+        .into_iter()
+        .map(|((plan, duration), cohort)| {
+            let capacity_per_home = if cohort.observed_fraction_units > 0 {
+                cohort
+                    .observed_spend_nanocredits
+                    .checked_mul(FRACTION_SCALE)
+                    .and_then(|numerator| {
+                        numerator
+                            .checked_add(cohort.observed_fraction_units / 2)
+                            .and_then(|rounded| {
+                                rounded.checked_div(cohort.observed_fraction_units)
+                            })
+                    })
+            } else {
+                None
+            };
+            let low_per_home = (cohort.measured_homes > 0
+                && cohort.low_homes == cohort.measured_homes)
+                .then(|| cohort.low_nanocredits.map(i128::from))
+                .flatten();
+            let high_per_home = (cohort.measured_homes > 0
+                && cohort.high_homes == cohort.measured_homes)
+                .then(|| cohort.high_nanocredits.map(i128::from))
+                .flatten();
+            let homes_total = i128::try_from(cohort.homes_total).expect("usize fits i128");
+            let string_opt = |value: Option<i128>| value.map(|value| value.to_string());
+            json!({
+                "plan": plan,
+                "window_minutes": duration,
+                "homes_total": cohort.homes_total,
+                "measured_homes": cohort.measured_homes,
+                "observed_fraction_units": cohort.observed_fraction_units.to_string(),
+                "observed_spend_nanocredits": cohort.observed_spend_nanocredits.to_string(),
+                "measurement_resolution_fraction_units": cohort.measurement_resolution_fraction_units,
+                "capacity_per_home_nanocredits": string_opt(capacity_per_home),
+                "capacity_per_home_low_nanocredits": string_opt(low_per_home),
+                "capacity_per_home_high_nanocredits": string_opt(high_per_home),
+                "fleet_capacity_nanocredits": string_opt(multiply(capacity_per_home, homes_total)),
+                "fleet_capacity_low_nanocredits": string_opt(multiply(low_per_home, homes_total)),
+                "fleet_capacity_high_nanocredits": string_opt(multiply(high_per_home, homes_total)),
+                "fleet_remaining_nanocredits": string_opt(remaining(
+                    capacity_per_home,
+                    cohort.unused_fraction_units,
+                )),
+                "fleet_remaining_low_nanocredits": string_opt(remaining(
+                    low_per_home,
+                    cohort.unused_fraction_units,
+                )),
+                "fleet_remaining_high_nanocredits": string_opt(remaining(
+                    high_per_home,
+                    cohort.unused_fraction_units,
+                )),
+                "source": if capacity_per_home.is_some() {
+                    "plan_pooled_native_credits"
+                } else {
+                    "unknown"
+                },
+                "same_plan_capacity": true,
+                "workload_dependent": false,
+            })
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -2537,6 +2680,7 @@ fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
         "used_percent": c.used_percent,
         "used_fraction_units": c.used_fraction_units,
         "used_fraction": c.used_fraction_units as f64 / 100_000_000.0,
+        "measurement_resolution_fraction_units": c.measurement_resolution_fraction_units,
         "capacity_nano": nano_opt(c.capacity_nano),
         "remaining_nano": nano_opt(c.remaining_nano),
         "low_nano": nano_opt(c.low_nano),
@@ -2765,6 +2909,7 @@ fn codex_subs_value_with_report(
         "soonest_ready": status.soonest_ready,
         "calibration_evidence_available": report.is_some(),
         "credit_schedule_id": metering::CODEX_CREDIT_SCHEDULE_ID,
+        "plan_cohorts": codex_plan_cohorts(status),
         "window_totals": totals,
         "homes": homes,
     })
@@ -3173,6 +3318,7 @@ mod tests {
                     data_age_seconds: Some(5),
                     used_fraction_units: 40_000_000,
                     used_percent: 40,
+                    measurement_resolution_fraction_units: 1_000_000,
                     capacity_nano: None,
                     remaining_nano: None,
                     low_nano: None,
@@ -3319,6 +3465,7 @@ mod tests {
         assert_eq!(window["source"], "unknown");
         assert_eq!(window["used_fraction_units"], 40_000_000);
         assert_eq!(window["used_fraction"], 0.4);
+        assert_eq!(window["measurement_resolution_fraction_units"], 1_000_000);
         assert_eq!(window["workload_dependent"], true);
         assert!(window["capacity_nano"].is_null());
         assert!(window["cap_usd"].is_null());
@@ -3333,6 +3480,136 @@ mod tests {
         assert_eq!(total["measured_homes"], 0);
         assert!(total["cap_usd"].is_null());
         assert!(total["remaining_usd"].is_null());
+        let cohort = &value["plan_cohorts"][0];
+        assert_eq!(cohort["plan"], "chatgpt_pro");
+        assert_eq!(cohort["homes_total"], 1);
+        assert_eq!(cohort["measured_homes"], 0);
+        assert!(cohort["capacity_per_home_nanocredits"].is_null());
+        assert_eq!(cohort["source"], "unknown");
+    }
+
+    #[test]
+    fn codex_plan_cohort_pools_equal_plans_without_overwriting_home_evidence() {
+        let mut status = unknown_codex_status();
+        let first = &mut status.homes[0].capacities[0];
+        first.capacity_nanocredits = Some(45_000_000_000_000);
+        first.remaining_nanocredits = Some(27_000_000_000_000);
+        first.low_nanocredits = Some(30_000_000_000_000);
+        first.high_nanocredits = Some(90_000_000_000_000);
+        first.remaining_low_nanocredits = Some(18_000_000_000_000);
+        first.remaining_high_nanocredits = Some(54_000_000_000_000);
+        first.observed_spend_nanocredits = Some(900_000_000_000);
+        first.observed_fraction_units = 2_000_000;
+        first.credit_samples = Some(1);
+
+        let mut second_home = status.homes[0].clone();
+        second_home.id = "home-2".into();
+        second_home.masked_email = "seco…".into();
+        let second = &mut second_home.capacities[0];
+        second.used_fraction_units = 14_000_000;
+        second.used_percent = 14;
+        second.capacity_nanocredits = Some(60_000_000_000_000);
+        second.remaining_nanocredits = Some(51_600_000_000_000);
+        second.low_nanocredits = Some(40_000_000_000_000);
+        second.high_nanocredits = Some(120_000_000_000_000);
+        second.remaining_low_nanocredits = Some(34_400_000_000_000);
+        second.remaining_high_nanocredits = Some(103_200_000_000_000);
+        second.observed_spend_nanocredits = Some(1_800_000_000_000);
+        second.observed_fraction_units = 3_000_000;
+        second.credit_samples = Some(1);
+
+        let mut unmeasured_home = status.homes[0].clone();
+        unmeasured_home.id = "home-3".into();
+        unmeasured_home.masked_email = "thir…".into();
+        unmeasured_home.capacities[0].used_fraction_units = 5_000_000;
+        unmeasured_home.capacities[0].used_percent = 5;
+        unmeasured_home.capacities[0].capacity_nanocredits = None;
+        unmeasured_home.capacities[0].remaining_nanocredits = None;
+        unmeasured_home.capacities[0].low_nanocredits = None;
+        unmeasured_home.capacities[0].high_nanocredits = None;
+        unmeasured_home.capacities[0].remaining_low_nanocredits = None;
+        unmeasured_home.capacities[0].remaining_high_nanocredits = None;
+        unmeasured_home.capacities[0].observed_spend_nanocredits = Some(0);
+        unmeasured_home.capacities[0].observed_fraction_units = 0;
+        unmeasured_home.capacities[0].credit_samples = Some(0);
+        let mut duplicate_slot = unmeasured_home.capacities[0].clone();
+        duplicate_slot.slot = "secondary";
+        unmeasured_home.capacities.push(duplicate_slot);
+
+        let mut other_plan = status.homes[0].clone();
+        other_plan.id = "home-plus".into();
+        other_plan.plan = "chatgpt_plus".into();
+        let plus = &mut other_plan.capacities[0];
+        plus.capacity_nanocredits = Some(10_000_000_000_000);
+        plus.remaining_nanocredits = Some(6_000_000_000_000);
+        plus.low_nanocredits = Some(8_000_000_000_000);
+        plus.high_nanocredits = Some(12_000_000_000_000);
+        plus.remaining_low_nanocredits = Some(4_800_000_000_000);
+        plus.remaining_high_nanocredits = Some(7_200_000_000_000);
+        plus.observed_spend_nanocredits = Some(100_000_000_000);
+        plus.observed_fraction_units = 1_000_000;
+        plus.credit_samples = Some(1);
+
+        status
+            .homes
+            .extend([second_home, unmeasured_home, other_plan]);
+        let value = codex_subs_value(&status, 105);
+        let cohorts = value["plan_cohorts"].as_array().unwrap();
+        let pro = cohorts
+            .iter()
+            .find(|cohort| cohort["plan"] == "chatgpt_pro")
+            .unwrap();
+        assert_eq!(pro["window_minutes"], 300);
+        assert_eq!(pro["homes_total"], 3);
+        assert_eq!(pro["measured_homes"], 2);
+        assert_eq!(pro["observed_fraction_units"], "5000000");
+        assert_eq!(pro["observed_spend_nanocredits"], "2700000000000");
+        assert_eq!(pro["capacity_per_home_nanocredits"], "54000000000000");
+        assert_eq!(pro["capacity_per_home_low_nanocredits"], "30000000000000");
+        assert_eq!(pro["capacity_per_home_high_nanocredits"], "120000000000000");
+        assert_eq!(pro["fleet_capacity_nanocredits"], "162000000000000");
+        assert_eq!(pro["fleet_remaining_nanocredits"], "130140000000000");
+        assert_eq!(pro["source"], "plan_pooled_native_credits");
+        assert_eq!(pro["same_plan_capacity"], true);
+        assert_eq!(pro["workload_dependent"], false);
+
+        assert_eq!(
+            value["homes"][0]["windows"][0]["capacity_nanocredits"], "45000000000000",
+            "the pooled plan answer must not overwrite immutable per-home evidence"
+        );
+        assert_eq!(
+            value["homes"][1]["windows"][0]["capacity_nanocredits"],
+            "60000000000000"
+        );
+        let plus = cohorts
+            .iter()
+            .find(|cohort| cohort["plan"] == "chatgpt_plus")
+            .unwrap();
+        assert_eq!(plus["homes_total"], 1);
+        assert_eq!(plus["capacity_per_home_nanocredits"], "10000000000000");
+    }
+
+    #[test]
+    fn codex_plan_cohort_keeps_upper_bound_unknown_if_any_evidence_is_one_sided() {
+        let mut status = unknown_codex_status();
+        let first = &mut status.homes[0].capacities[0];
+        first.capacity_nanocredits = Some(45_000_000_000_000);
+        first.remaining_nanocredits = Some(27_000_000_000_000);
+        first.low_nanocredits = Some(30_000_000_000_000);
+        first.high_nanocredits = None;
+        first.observed_spend_nanocredits = Some(900_000_000_000);
+        first.observed_fraction_units = 1_000_000;
+        first.credit_samples = Some(1);
+
+        let value = codex_subs_value(&status, 105);
+        let cohort = &value["plan_cohorts"][0];
+        assert_eq!(cohort["capacity_per_home_nanocredits"], "90000000000000");
+        assert_eq!(
+            cohort["capacity_per_home_low_nanocredits"],
+            "30000000000000"
+        );
+        assert!(cohort["capacity_per_home_high_nanocredits"].is_null());
+        assert!(cohort["fleet_remaining_high_nanocredits"].is_null());
     }
 
     #[test]

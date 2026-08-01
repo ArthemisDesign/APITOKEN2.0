@@ -89,7 +89,10 @@
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого
   `admin.apitoken.sale/sales/calculator`; этот классификатор не является credential. `/codex-subs`
   гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
-  символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy.
+  символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy. Окна явно
+  публикуют provider measurement resolution, а `plan_cohorts` объединяет только exact paid plan +
+  duration в общий native-credit capacity per home/fleet; per-home evidence и workload-dependent
+  API USD не заменяются этим агрегатом.
   `/fleet-history` читает историю metrics.db
   (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
   per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными

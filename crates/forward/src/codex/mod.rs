@@ -22,8 +22,8 @@ pub use api::{
     input_tokens as openai_input_tokens, model as openai_model, models as openai_models,
     response_input_items as openai_response_input_items, responses as openai_responses,
 };
-pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
+pub use calibration::{fraction_resolution_units, WindowCalibration};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
@@ -344,6 +344,9 @@ pub struct CodexWindowCapacityReport {
     pub data_age_seconds: Option<i64>,
     pub used_fraction_units: i64,
     pub used_percent: i64,
+    /// Numeric resolution recoverable from the provider value. Whole percentages report
+    /// `1_000_000` fraction units even though storage itself supports single-unit precision.
+    pub measurement_resolution_fraction_units: i64,
     /// `None` until a real positive utilisation movement is paired with gateway spend.
     pub capacity_nano: Option<i64>,
     pub remaining_nano: Option<i64>,
@@ -1295,6 +1298,9 @@ impl CodexHome {
                 .then(|| pool::now().saturating_sub(observed_at).max(0)),
             used_fraction_units: window.used_fraction_units,
             used_percent: window.used_percent,
+            measurement_resolution_fraction_units: fraction_resolution_units(
+                window.used_fraction_units,
+            ),
             capacity_nano: estimate.map(|value| value.capacity_nano),
             remaining_nano,
             low_nano: estimate.and_then(|value| value.low_nano),

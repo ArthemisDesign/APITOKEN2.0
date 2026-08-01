@@ -142,7 +142,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
   successful billable turn creates one immutable event for the exact home that served it, model,
   effective Standard/Fast tier, provider-reported tier and all token legs. Registry advances in one
   transaction both exact cumulative ledgers: API replacement cost in integer nanoUSD and native
-  ChatGPT subscription consumption in integer nanocredits. Estimator v9 calculates
+  ChatGPT subscription consumption in integer nanocredits. Estimator v10 calculates
   `native_capacity_nanocredits = 100_000_000 × ΣΔnanocredits / ΣΔused_fraction_units`; separately,
   `capacity_nano = 100_000_000 × ΣΔnanoUSD / ΣΔused_fraction_units` remains the API-dollar
   equivalent of the workload actually served. Native capacity is the like-for-like unit for
@@ -152,10 +152,14 @@ token on every refresh with strict family reuse detection. The pool therefore:
   different API-dollar equivalents. That distinction is required by the
   [official Codex pricing documentation](https://learn.chatgpt.com/docs/pricing): consumption
   varies by model, context, reasoning and tools.
-  Each complete interval also contributes a conservative ±1-fraction-unit low/high workload
-  envelope. `confidence` is deterministic evidence quality
-  (`sample maturity × workload stability × quantisation resolution`), not a probability. There
-  is no configured prior, EMA, WLS, float-money arithmetic or hidden fallback nominal.
+  Storage precision is not treated as provider measurement precision. The live provider commonly
+  emits whole percentages: `40%` therefore has resolution `1_000_000` fraction units (one percentage
+  point), while `12.5%` has `100_000` and `12.125%` has `1_000`. Estimator v10 derives that
+  conservative resolution from each fixed-point endpoint and applies half of both endpoint
+  resolutions to every interval denominator. A movement no larger than its rounding uncertainty
+  has no finite upper bound. `confidence` is deterministic evidence quality (`sample maturity ×
+  workload/envelope stability × quantisation resolution`), not a probability. There is no
+  configured prior, EMA, WLS, float-money arithmetic or hidden fallback nominal.
   A cold snapshot alone remains an unpublished anchor, while the first confirmed positive
   utilisation movement is already counted as a complete interval with its quantisation envelope.
   A movement without positive settled spend waits for settlement catch-up. The credit cutover
@@ -182,7 +186,16 @@ token on every refresh with strict family reuse detection. The pool therefore:
   `cache_write_tokens` and legacy `cache_creation_tokens` as aliases and never adds both.
   The control-authenticated `/codex-subs` projection includes the reviewed non-secret paid-plan
   identity (`chatgpt_plus|chatgpt_pro|chatgpt_business`) so the admin sales calculator can aggregate
-  like-for-like profiles. Full email, account id, OAuth and proxy remain sealed.
+  like-for-like profiles. Its `plan_cohorts` groups exact `plan + window_minutes` identities and
+  publishes one pooled native capacity per home:
+  `100_000_000 × Σobserved_spend_nanocredits / Σobserved_fraction_units`. That common value is
+  applied to the current unused fractions for fleet remaining capacity, so equal subscriptions no
+  longer receive different commercial capacities merely because their whole-percent endpoints
+  rounded differently. `measured_homes` and `homes_total` expose coverage; conservative low/high
+  are the union of contributing home envelopes, and a missing upper bound remains `null`.
+  Individual home estimates and immutable turn evidence remain unchanged for audit. API-dollar
+  capacity is deliberately not pooled because it remains workload-dependent. Full email, account
+  id, OAuth and proxy remain sealed.
 - **Health** is the same pure two-axis policy (`health.rs`): account
   (healthy→suspect→dead, durable in the authority) and transport
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that
@@ -252,7 +265,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
   nanoUSD values as decimal strings (`capacity_nano`, remaining and low/high variants), exact
   fraction/evidence counters, `workload_dependent:true`, source `workload_blend` and rounded USD
   compatibility fields. Before the first complete interval, capacity/remaining and their dollar
-  metrics stay absent/null rather than publishing a false zero.
+  metrics stay absent/null rather than publishing a false zero. Each window also exposes
+  `measurement_resolution_fraction_units`; `plan_cohorts` is the like-for-like native-credit
+  planning surface, while per-home and `window_totals` remain diagnostic evidence views.
 - **Runbook alerts** are unchanged in name (`CodexNoAvailableHomes`, `CodexHomeUnauthenticated`,
   `CodexHomeQuotaSnapshotStale`); their meaning maps to sealed profiles.
 - **Wire verification** before enabling in production and after any `CODEX_CLI_VERSION` bump:
