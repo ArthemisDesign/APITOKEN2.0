@@ -97,7 +97,12 @@ prompt-cache boundaries, usage и canonical streaming events.
 
 ```
 POST /v1/messages                                   Anthropic Messages (Claude Code)
+                                                    (этап 5.1 — + любая openai/* модель
+                                                    каталога через model-based dispatch
+                                                    в Anthropic Skin на Codex plane)
 POST /v1/messages/count_tokens                    Anthropic token counting
+                                                    (этап 5.1 — endpoint есть на Codex
+                                                    plane; dispatch в router — этап 5.2)
 
 POST /v1/responses                                OpenAI Responses (этап 1a — только OpenAI
                                                   plane, этап 4.1 — + любая Claude-модель
@@ -590,7 +595,60 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    в `tests/universal_chat_smoke.sh`.
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
    beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
-   (зеркало решений 3–4, thinking без подписей).
+   (зеркало решений 3–4, thinking без подписей). **5.1 — Anthropic Skin для `openai/*`
+   моделей (Codex plane) — РЕАЛИЗОВАН.** В router `POST /v1/messages` получил model-based
+   dispatch (`crates/router/src/messages.rs`) по тем же правилам, что chat/responses
+   dispatch'и 3.1/4.1: буферизуется только тело запроса (32 MiB), namespace-префикс
+   `openai/` выбирает Codex plane без опроса каталога (общий `catalog::namespace_lane`;
+   `anthropic/` и `google/` уходят на свои плоскости — Gemini Messages skin появится
+   поздним этапом 5, до этого plane честно отвечает своей 404),
+   остальное — alias через кэшированный каталог; тело проксируется без изменений, ошибки
+   dispatch — в Anthropic-конверте. `POST /v1/messages/count_tokens` в router остаётся
+   байт-прокси на Anthropic plane (dispatch — 5.2). На Codex plane
+   (`crates/forward/src/codex/skin.rs`, роуты `/v1/messages` и
+   `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
+   Responses JSON и идёт через тот же turn pipeline, что chat-адаптер (admission,
+   affinity, reserve, run, settle по authoritative usage): strip `openai/`-префикса,
+   top-level `system` (строка или text-блоки, склейка \n\n) → `instructions`, user
+   text/image-блоки → `input_text`/`input_image` (общий `canonical_image_part`),
+   assistant text → `output_text`, replay tool-истории — зеркало 4.2 (`tool_use` →
+   `function_call` с `call_id` и arguments-строкой, `tool_result` →
+   `function_call_output`; pairing не валидируется), thinking/redacted_thinking входных
+   блоков дропаются (решение 6), `tools[]` → function tools (`input_schema` →
+   `parameters`; server tools → 400), `tool_choice` auto/any/none/tool →
+   default/required/none/named (+`disable_parallel_tool_use` →
+   `parallel_tool_calls:false`), `thinking` → `reasoning.effort` (lossy: disabled/
+   adaptive → дефолт модели; enabled budget <4096 → low, <16384 → medium, иначе high;
+   <1024 → 400), `stop_sequences` и `max_tokens` честно обрабатываются на доставленном
+   тексте общим `StopFilter` и output-бюджетом ~4 chars/token (как chat.rs — транспорт
+   не умеет резать генерацию upstream). Capability matrix: не-дефолтный `cache_control`
+   где угодно (system, content-блоки, tools), `context_management`, `mcp_servers`,
+   `container`, `output_config` → `400 invalid_request_error` с именем параметра;
+   `metadata` (включая `user_id`), sampling controls и неизвестные поля принимаются и
+   игнорируются (та же leniency, что у chat.rs, — Claude Code шлёт `metadata.user_id`
+   в каждом запросе). Ответ — зеркало словаря 4.1+4.2: message items → text-блок на
+   позиции первого message item, `function_call` → `tool_use` (arguments парсятся в
+   `input`, невалидный JSON → `{}`), `reasoning` → thinking-блоки БЕЗ signature
+   (summary-парты склеиваются \n\n), usage → Messages usage (cache write/read →
+   `cache_creation_input_tokens`/`cache_read_input_tokens` при >0, reasoning →
+   `output_tokens_details.thinking_tokens`), stop_reason: function_call в output →
+   `tool_use`, срез output-бюджета → `max_tokens`, совпавшая stop_sequence →
+   `stop_sequence`, иначе `end_turn`. SSE: `message_start` с нулевым usage
+   (authoritative usage существует только в конце turn — задокументированное
+   ограничение) → per-block `content_block_start`/`content_block_delta`
+   (`text_delta`, `thinking_delta`, `input_json_delta`)/`content_block_stop` (плотные
+   индексы, новый тип блока закрывает предыдущий) → `message_delta` (stop reason +
+   usage) → `message_stop`; heartbeat — `event: ping`, mid-stream отказ — `event:
+   error`; disconnect клиента не убивает turn — он добегает до authoritative usage для
+   settlement (как chat.rs). Все ошибки endpoint'а (валидация адаптера, общий парсер,
+   admission, billing) пересобираются в Anthropic-конверт с сохранением статуса и
+   `Retry-After` (503 → 529 `overloaded_error`, 402 сохраняется — Claude Code
+   восстанавливается по тексту ошибки). `POST /v1/messages/count_tokens` на плоскости —
+   тот же parse + `parse_responses_request`/`prepare_turn` → reserve-grade оценка
+   `input_tokens` без сети (`max_tokens` там опционален, как у официального endpoint'а).
+   Ограничения 5.1: лимит тела — 8 MiB (общий `OPENAI_BODY_LIMIT` плоскости, не 32),
+   dispatch `count_tokens` в router — 5.2, сквозного e2e-smoke Codex plane нет (харнесс
+   не умеет encrypted OAuth-профили — покрытие unit/contract-тестами, как 3.3/4.3).
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,
    см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым

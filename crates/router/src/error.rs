@@ -118,6 +118,51 @@ pub fn catalog_unavailable() -> Response {
     )
 }
 
+// ---------- Anthropic-конверт: universal messages dispatch (этап 5.1) ----------
+//
+// Путь `/v1/messages` говорит на Messages, поэтому синтетические ошибки его
+// dispatch'а — в конверте нативной Anthropic-плоскости
+// (`{"type":"error","error":{"type":...,"message":...}}`, без param/code — их
+// в этом конверте нет): Claude Code восстанавливается по тексту ошибки, чужой
+// формат оборачивать нельзя (см. «Совместимость с harness-агентами»). Зеркало
+// OpenAI-конверта chat/responses dispatch'ей выше.
+
+/// 400 universal messages-пути: тело не JSON, превышает лимит или не содержит
+/// валидный `model`. Имя параметра — в тексте (в конверте поля param нет).
+pub fn invalid_messages_request(message: &str) -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}}),
+    )
+}
+
+/// 404 неизвестной модели на messages-пути — форма нативной Anthropic-плоскости.
+pub fn messages_model_not_found(id: &str) -> Response {
+    json_response(
+        StatusCode::NOT_FOUND,
+        json!({"type": "error", "error": {"type": "not_found_error",
+            "message": format!("The model `{id}` does not exist or you do not have access to it.")}}),
+    )
+}
+
+/// 503 messages-пути: каталог недоступен, alias разрешить нельзя.
+pub fn messages_catalog_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"type": "error", "error": {"type": "api_error",
+            "message": "The model catalog is temporarily unavailable."}}),
+    )
+}
+
+/// Единый 401 messages-пути: ключ отклонён плоскостью при опросе каталога.
+pub fn messages_auth_rejected() -> Response {
+    json_response(
+        StatusCode::UNAUTHORIZED,
+        json!({"type": "error", "error": {"type": "authentication_error",
+            "message": "Invalid or missing API key."}}),
+    )
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -195,5 +240,37 @@ mod tests {
         assert_eq!(json["error"]["code"], "model_not_found");
         assert_eq!(json["error"]["param"], "model");
         assert!(json["error"]["message"].as_str().unwrap().contains("gpt-9"));
+    }
+
+    // ---------- universal messages dispatch: Anthropic-конверт (этап 5.1) ----------
+
+    #[tokio::test]
+    async fn messages_dispatch_errors_are_anthropic_shaped() {
+        let response = invalid_messages_request("Missing or invalid required parameter: model.");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert!(json["error"]["message"].as_str().unwrap().contains("model"));
+        // В Anthropic-конверте нет param/code полей OpenAI-формы.
+        assert!(json["error"].get("param").is_none());
+        assert!(json["error"].get("code").is_none());
+
+        let response = messages_model_not_found("gpt-9");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let json = body_json(response).await;
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["error"]["type"], "not_found_error");
+        assert!(json["error"]["message"].as_str().unwrap().contains("gpt-9"));
+
+        let response = messages_catalog_unavailable();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "api_error");
+
+        let response = messages_auth_rejected();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "authentication_error");
     }
 }

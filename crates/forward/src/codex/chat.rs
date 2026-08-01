@@ -346,7 +346,9 @@ fn parse_max_output_tokens(object: &Map<String, Value>) -> Result<Option<u64>, A
     Ok(Some(tokens))
 }
 
-fn output_chars_for(tokens: Option<u64>) -> Option<usize> {
+/// Token-to-character conversion for the delivered-text budget. Shared with the Messages skin
+/// adapter (`skin.rs`, stage 5.1).
+pub(crate) fn output_chars_for(tokens: Option<u64>) -> Option<usize> {
     const CHARS_PER_TOKEN: u64 = 4;
     tokens
         .map(|tokens| usize::try_from(tokens.saturating_mul(CHARS_PER_TOKEN)).unwrap_or(usize::MAX))
@@ -796,8 +798,9 @@ fn translate_chat_tools(value: &Value) -> Result<Value, ApiError> {
 
 /// Applies client stop sequences and the approximate output budget to completed text. The
 /// stop sequence itself is removed, matching the official endpoint. Returns the truncated text
-/// and whether the budget (not a stop sequence) caused the cut.
-fn enforce_output_limits(
+/// and whether the budget (not a stop sequence) caused the cut. Shared with the Messages skin
+/// adapter (`skin.rs`, stage 5.1).
+pub(crate) fn enforce_output_limits(
     mut text: String,
     stop: &[String],
     max_chars: Option<usize>,
@@ -825,8 +828,9 @@ fn enforce_output_limits(
 
 /// Incremental stop-sequence matcher for streaming text. Holds back at most
 /// `longest_stop - 1` bytes so a sequence straddling delta boundaries is still detected, and
-/// reports the cut position without emitting the sequence itself.
-struct StopFilter {
+/// reports the cut position without emitting the sequence itself. Shared with the Messages
+/// skin adapter (`skin.rs`, stage 5.1).
+pub(crate) struct StopFilter {
     stops: Vec<String>,
     hold_back: usize,
     pending: String,
@@ -834,7 +838,7 @@ struct StopFilter {
 }
 
 impl StopFilter {
-    fn new(stops: Vec<String>) -> Option<Self> {
+    pub(crate) fn new(stops: Vec<String>) -> Option<Self> {
         if stops.is_empty() {
             return None;
         }
@@ -854,7 +858,7 @@ impl StopFilter {
 
     /// Feeds a delta; returns the text safe to emit now (empty when everything is held back or
     /// the filter already triggered).
-    fn push(&mut self, delta: &str) -> String {
+    pub(crate) fn push(&mut self, delta: &str) -> String {
         if self.triggered {
             return String::new();
         }
@@ -882,12 +886,18 @@ impl StopFilter {
     }
 
     /// Drains the held-back tail at end of stream (no-op when a stop already triggered).
-    fn finish(&mut self) -> String {
+    pub(crate) fn finish(&mut self) -> String {
         if self.triggered {
             String::new()
         } else {
             std::mem::take(&mut self.pending)
         }
+    }
+
+    /// Whether a stop sequence has already cut the stream (the Messages skin reports
+    /// `stop_reason: "stop_sequence"` from this).
+    pub(crate) fn triggered(&self) -> bool {
+        self.triggered
     }
 }
 
@@ -1337,7 +1347,9 @@ async fn send_chat_frame(sender: &mpsc::Sender<Bytes>, value: Value) -> bool {
     send_chat_bytes(sender, Bytes::from(format!("data: {data}\n\n"))).await
 }
 
-async fn send_chat_bytes(sender: &mpsc::Sender<Bytes>, frame: Bytes) -> bool {
+/// SSE byte-frame sender with the shared frame timeout. Shared with the Messages skin
+/// adapter (`skin.rs`, stage 5.1).
+pub(crate) async fn send_chat_bytes(sender: &mpsc::Sender<Bytes>, frame: Bytes) -> bool {
     matches!(
         tokio::time::timeout(STREAM_FRAME_SEND_TIMEOUT, sender.send(frame)).await,
         Ok(Ok(()))
@@ -1363,8 +1375,16 @@ async fn send_chat_error(sender: &mpsc::Sender<Bytes>) -> bool {
     send_chat_bytes(sender, Bytes::from_static(b"data: [DONE]\n\n")).await
 }
 
-struct ChatReceiverStream {
+/// mpsc→`Stream` adapter for SSE bodies. Shared with the Messages skin adapter (`skin.rs`,
+/// stage 5.1).
+pub(crate) struct ChatReceiverStream {
     receiver: mpsc::Receiver<Bytes>,
+}
+
+impl ChatReceiverStream {
+    pub(crate) fn new(receiver: mpsc::Receiver<Bytes>) -> Self {
+        Self { receiver }
+    }
 }
 
 impl Stream for ChatReceiverStream {

@@ -15,6 +15,7 @@ mod health;
 mod history;
 mod openai_snapshot;
 mod runner;
+mod skin;
 mod transport;
 
 pub use api::{
@@ -28,6 +29,7 @@ pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
+pub use skin::{count_tokens as codex_messages_count_tokens, messages as codex_messages_skin};
 pub use transport::RATE_LIMIT_FRACTION_SCALE;
 pub(crate) use transport::{
     AppServerEvent, AuthContext, CodexModelCatalog, ProfileTransport, TurnEvents,

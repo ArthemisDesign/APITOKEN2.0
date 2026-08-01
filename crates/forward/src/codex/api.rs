@@ -47,8 +47,10 @@ pub(super) struct ApiError {
     kind: &'static str,
     param: Option<String>,
     code: Option<&'static str>,
-    retry_after: Option<u64>,
-    reason: &'static str,
+    // `retry_after`/`reason` are read by the Messages skin (`skin.rs`, stage 5.1) to rebuild
+    // the error in the Anthropic envelope with Retry-After and the audit reason preserved.
+    pub(super) retry_after: Option<u64>,
+    pub(super) reason: &'static str,
 }
 
 impl ApiError {

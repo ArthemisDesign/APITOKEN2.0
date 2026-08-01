@@ -13,7 +13,8 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use forward::{
-    anthropic_chat_completions, anthropic_responses, authed, client_keys, control_authed, forward,
+    anthropic_chat_completions, anthropic_responses, authed, client_keys,
+    codex_messages_count_tokens, codex_messages_skin, control_authed, forward,
     gemini_api, gemini_chat_completions, gemini_responses, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
@@ -377,6 +378,14 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
                 get(openai_response_input_items),
             )
             .route("/v1/chat/completions", post(openai_chat_completions))
+            // Anthropic Skin (этап 5.1 UNIFIED_ROUTER.md): Messages→Responses адаптер
+            // на Codex-плоскости. Dispatch по модели (`openai/*` сюда, остальное на
+            // Claude-плоскость) выполняет router; сюда попадают только openai-модели.
+            .route("/v1/messages", post(codex_messages_skin))
+            .route(
+                "/v1/messages/count_tokens",
+                post(codex_messages_count_tokens),
+            )
             .route("/v1/models", get(openai_models))
             .route("/v1/models/{model_id}", get(openai_model))
             .fallback(fixed_openai_not_found)

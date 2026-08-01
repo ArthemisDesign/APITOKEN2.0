@@ -183,7 +183,34 @@ cache/reasoning details, status по stop_reason); ошибки — общий �
 (stored responses — только openai/*, решение 5).
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
 Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
-events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
+events; `codex/skin.rs` — Anthropic Skin (этап 5.1 docs/engine/UNIFIED_ROUTER.md, роуты
+`POST /v1/messages` и `/v1/messages/count_tokens` в `ProviderMode::OpenAi`, dispatch по
+модели — в router): Messages-запрос переводится в Responses JSON (strip `openai/`-префикса,
+top-level `system` → `instructions` со склейкой text-блоков через \n\n, user text/image →
+`input_text`/`input_image` общим `canonical_image_part`, replay tool-истории — зеркало 4.2:
+`tool_use` → `function_call`, `tool_result` → `function_call_output`, входные
+thinking/redacted_thinking дропаются — решение 6; `tools[]` → function tools, `tool_choice`
+→ default/required/none/named + `parallel_tool_calls`, `thinking` → `reasoning.effort`
+lossy по порогам <4096 → low / <16384 → medium / иначе high, <1024 → 400; capability
+matrix: не-дефолтный `cache_control` где угодно, `context_management`, `mcp_servers`,
+`container`, `output_config` → `400 invalid_request_error`, а `metadata` (включая
+`user_id`), sampling controls и неизвестные поля принимаются и игнорируются — та же
+leniency, что у chat.rs, иначе сломался бы Claude Code с его `metadata.user_id`) и идёт
+через ТОТ ЖЕ turn pipeline, что chat.rs (admission, affinity, reserve, run, settle);
+ответ переводится СНАРУЖИ — output items → Messages content blocks (message → text-блок
+на позиции первого message item, function_call → tool_use, reasoning → thinking БЕЗ
+signature), usage → Messages usage с cache/thinking details, stop_reason
+tool_use/max_tokens/stop_sequence/end_turn; `stop_sequences` и output-бюджет ~4
+chars/token честно обрабатываются на доставленном тексте общими с chat.rs
+`StopFilter`/`enforce_output_limits` (транспорт не режет генерацию upstream); SSE —
+`message_start` с нулевым usage (authoritative usage только в `message_delta`) → плотные
+content_block start/delta/stop → `message_delta` → `message_stop`, heartbeat `event:
+ping`, mid-stream отказ `event: error`, disconnect клиента не убивает turn до settlement;
+все ошибки endpoint'а — Anthropic-конверт с сохранением статуса и `Retry-After` (503 →
+529 `overloaded_error`, 402 сохраняется). `count_tokens` — тот же parse +
+`parse_responses_request`/`prepare_turn` → reserve-grade оценка `input_tokens` без сети
+(`max_tokens` опционален); сквозного e2e для Codex plane нет — покрытие
+contract-тестами модуля, как 3.3/4.3; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
 settlement; `gemini/chat.rs` — universal Chat Completions→generateContent адаптер (этапы 3.3–3.4b
 docs/engine/UNIFIED_ROUTER.md) по той же схеме, что `anthropic.rs`: chat-запрос переводится в
 GenerateContentRequest JSON (system/developer → `systemInstruction`, склейка одноролевых contents
