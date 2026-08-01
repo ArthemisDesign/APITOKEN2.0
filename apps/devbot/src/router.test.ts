@@ -223,6 +223,27 @@ describe("Router deploy events", () => {
     expect(criticalMessage?.text).toContain("👤 qqjamba");
   });
 
+  it("finalizes the previous deploy from tail events after HEAD moves on", async () => {
+    const { router, edited, state } = await makeRouter();
+    await router.handleDeployEvent({ kind: "new-sha", sha: "111aaaa", title: "feat: old" });
+    const oldMessageId = state.data.deploy?.messageId;
+    // HEAD уходит на новый SHA до прихода green старого — старый уходит в previousDeploy.
+    await router.handleDeployEvent({ kind: "new-sha", sha: "222bbbb", title: "feat: new" });
+    expect(state.data.previousDeploy?.sha).toBe("111aaaa");
+    // Tail-опрос доизлучает финал старого: правится ЕГО сообщение, а не нового.
+    await router.handleDeployEvent({ kind: "green", sha: "111aaaa" });
+    const finalEdit = edited.at(-1);
+    expect(finalEdit?.messageId).toBe(oldMessageId);
+    expect(finalEdit?.text).toContain("✅ <b>Deployed</b>");
+    expect(finalEdit?.text).toContain("feat: old");
+    expect(state.data.deploy?.sha).toBe("222bbbb");
+    expect(state.data.deploy?.done).toBe(false);
+    // Поздняя фаза для завершённого деплоя не разворачивает сводку обратно.
+    const editsBefore = edited.length;
+    await router.handleDeployEvent({ kind: "phase", sha: "111aaaa", phase: "engine", state: "pending" });
+    expect(edited).toHaveLength(editsBefore);
+  });
+
   it("sends candidate-validation events to the CI topic", async () => {
     const { router, sent } = await makeRouter();
     await router.handleDeployEvent({ kind: "ci", environment: "candidate-validation", state: "success" });

@@ -35,6 +35,13 @@ export interface GithubSnapshot {
   author?: string;
   statuses: Record<string, PhaseState>;
   deployments: Record<string, { id: number; state: PhaseState; sha?: string }>;
+  /**
+   * Хвост предыдущего master SHA, чей финал пайплайна ещё не наблюдался: agent-merge
+   * пушит следующий master сразу после зелени предыдущего, поэтому HEAD уходит вперёд
+   * раньше, чем поллер видит deploy/watchdog=success. Пока хвост есть, поллер опрашивает
+   * статусы старого SHA и доизлучает его phase/green/quarantine; терминал → хвост снимается.
+   */
+  tail?: { sha: string; statuses: Record<string, PhaseState> };
 }
 
 export interface DigestEvent {
@@ -49,6 +56,8 @@ export interface DevbotState {
   lastProcessedSha: string | null;
   github: GithubSnapshot | null;
   deploy: DeployState | null;
+  /** Предыдущий недошедший до финала деплой — события его tail'а правят его сообщение. */
+  previousDeploy?: DeployState | null;
   fingerprints: Record<string, FingerprintEntry>;
   events: DigestEvent[];
 }

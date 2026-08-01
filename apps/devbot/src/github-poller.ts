@@ -120,6 +120,19 @@ export class GithubPoller {
     return await response.json() as T;
   }
 
+  /** deploy/* статусы одного коммита (новейшее состояние каждого контекста). */
+  private async fetchStatuses(sha: string): Promise<Record<string, PhaseState>> {
+    const statusesRaw = await this.api<GhStatus[]>(`/commits/${sha}/statuses?per_page=100`);
+    const statuses: Record<string, PhaseState> = {};
+    for (const item of statusesRaw) {
+      const context = item.context ?? "";
+      if (!context.startsWith("deploy/")) continue;
+      // statuses отсортированы новейшими первыми — первое вхождение контекста актуально.
+      if (!(context in statuses)) statuses[context] = mapGhState(item.state);
+    }
+    return statuses;
+  }
+
   /** Один цикл опроса: statuses origin/master HEAD + deployments, diff против state. */
   async pollOnce(): Promise<void> {
     const { state } = this.deps;
@@ -138,14 +151,7 @@ export class GithubPoller {
       ? `${gitName} @${login}`
       : gitName || (login ? `@${login}` : undefined);
 
-    const statusesRaw = await this.api<GhStatus[]>(`/commits/${sha}/statuses?per_page=100`);
-    const statuses: Record<string, PhaseState> = {};
-    for (const item of statusesRaw) {
-      const context = item.context ?? "";
-      if (!context.startsWith("deploy/")) continue;
-      // statuses отсортированы новейшими первыми — первое вхождение контекста актуально.
-      if (!(context in statuses)) statuses[context] = mapGhState(item.state);
-    }
+    const statuses = await this.fetchStatuses(sha);
 
     const deploymentsRaw = await this.api<GhDeployment[]>("/deployments?per_page=30");
     const latestByEnv = new Map<string, GhDeployment>();
@@ -166,8 +172,39 @@ export class GithubPoller {
       };
     }
 
+    const prev = state.data.github;
     const snapshot: GithubSnapshot = { sha, title, ...(author ? { author } : {}), statuses, deployments };
-    const events = diffSnapshots(state.data.github, snapshot);
+
+    // Хвост предыдущего SHA: agent-merge пушит следующий master сразу после зелени
+    // предыдущего, поэтому финал (deploy/watchdog=success) почти всегда ускользает от
+    // diff'а по HEAD. Пока финал не наблюдался — держим хвост и доталкиваем его события.
+    // Одного слота достаточно: следующий master не может быть запушен, пока предыдущий
+    // не дойдёт до терминала (merge-lock + проверка зелени в agent-merge).
+    if (prev && prev.sha !== snapshot.sha) {
+      const prevWatchdog = prev.statuses["deploy/watchdog"];
+      if (prevWatchdog !== "success" && prevWatchdog !== "failure") {
+        snapshot.tail = { sha: prev.sha, statuses: prev.statuses };
+      }
+    } else if (prev?.tail) {
+      snapshot.tail = prev.tail;
+    }
+
+    const events = diffSnapshots(prev, snapshot);
+
+    if (snapshot.tail) {
+      const tailSha = snapshot.tail.sha;
+      const tailStatuses = await this.fetchStatuses(tailSha);
+      const tailPrev: GithubSnapshot = { sha: tailSha, title: "", statuses: snapshot.tail.statuses, deployments: {} };
+      const tailNext: GithubSnapshot = { sha: tailSha, title: "", statuses: tailStatuses, deployments: {} };
+      events.push(...diffSnapshots(tailPrev, tailNext));
+      const terminal = tailStatuses["deploy/watchdog"];
+      if (terminal === "success" || terminal === "failure") {
+        delete snapshot.tail;
+      } else {
+        snapshot.tail = { sha: tailSha, statuses: tailStatuses };
+      }
+    }
+
     state.data.github = snapshot;
     if (events.length > 0) {
       this.deps.onEvents(events);

@@ -283,6 +283,12 @@ export class Router {
   private async deployNewSha(sha: string, title: string, author?: string): Promise<void> {
     const { state, tg, chatId, topics } = this.deps;
     const now = this.now();
+    // Текущий деплой уходит в previousDeploy: его финал ещё может прийти от tail-опроса
+    // поллера (HEAD ушёл вперёд раньше, чем мы увидели deploy/watchdog=success) — и тогда
+    // править нужно уже ЕГО сообщение, а не новое.
+    if (state.data.deploy && !state.data.deploy.done) {
+      state.data.previousDeploy = state.data.deploy;
+    }
     const deploy: DeployState = {
       sha,
       title,
@@ -300,6 +306,14 @@ export class Router {
     await state.save();
   }
 
+  /** Деплой по SHA: актуальный или предыдущий (события tail'а адресуются старому). */
+  private findDeploy(sha: string): DeployState | undefined {
+    const { deploy, previousDeploy } = this.deps.state.data;
+    if (deploy?.sha === sha) return deploy;
+    if (previousDeploy?.sha === sha) return previousDeploy;
+    return undefined;
+  }
+
   private async editDeploy(deploy: DeployState, finished?: { ok: boolean; durationMs: number }): Promise<void> {
     if (deploy.messageId === null) return;
     await this.deps.tg.editMessageText(this.deps.chatId, deploy.messageId, this.renderDeploy(deploy, finished));
@@ -307,8 +321,9 @@ export class Router {
 
   private async deployPhase(sha: string, phase: string, phaseState: PhaseState): Promise<void> {
     const { state } = this.deps;
-    const deploy = state.data.deploy;
-    if (!deploy || deploy.sha !== sha) return;
+    const deploy = this.findDeploy(sha);
+    // Финальный рендер авторитетен: поздняя фаза не должна разворачивать сводку обратно.
+    if (!deploy || deploy.done) return;
     deploy.phases[phase] = phaseState;
     if (phaseState === "failure") deploy.failedPhase = phase;
     await this.editDeploy(deploy);
@@ -318,8 +333,8 @@ export class Router {
 
   private async deployGreen(sha: string): Promise<void> {
     const { state } = this.deps;
-    const deploy = state.data.deploy;
-    if (!deploy || deploy.sha !== sha || deploy.done) return;
+    const deploy = this.findDeploy(sha);
+    if (!deploy || deploy.done) return;
     deploy.done = true;
     const now = this.now();
     // deploy/watchdog зелёный — значит, прошли ВСЕ лейны, включая те, чей последний
@@ -336,9 +351,9 @@ export class Router {
 
   private async deployQuarantine(sha: string, phase?: string): Promise<void> {
     const { state, tg, chatId, topics } = this.deps;
-    const deploy = state.data.deploy;
+    const deploy = this.findDeploy(sha);
     const now = this.now();
-    if (deploy && deploy.sha === sha) {
+    if (deploy) {
       deploy.done = true;
       if (phase) deploy.failedPhase = phase;
       await this.editDeploy(deploy, { ok: false, durationMs: now - deploy.startedAt });

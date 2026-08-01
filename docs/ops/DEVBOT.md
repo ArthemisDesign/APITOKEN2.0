@@ -195,6 +195,15 @@ GitHub-аккаунту (для агентских адресов GitHub отд�
 ~500 символами причины (`wd_die`-строка из journald, этап 3; до этапа 3 — только фаза и
 ссылка на статус).
 
+Финал гарантирован даже когда HEAD уходит вперёд: agent-merge пушит следующий master сразу
+после зелени предыдущего, поэтому `deploy/watchdog=success` предыдущего SHA почти всегда
+ускользает от diff'а по HEAD. Поллер держит «хвост» — предыдущий SHA с нетерминальным
+watchdog — и опрашивает его статусы параллельно с HEAD, доизлучая его phase/green/
+quarantine; роутер хранит `previousDeploy`, и события хвоста правят сообщение ИМЕННО того
+деплоя. Одного слота достаточно: следующий master не может быть запушен, пока предыдущий
+не дойдёт до терминала (merge-lock + проверка зелени в agent-merge). Поздняя фаза для
+завершённого деплоя игнорируется — финальная сводка не разворачивается обратно.
+
 ### 4.3 Дедупликация и сворачивание
 
 - Ключ дедупликации алерта: `fingerprint` из webhook Alertmanager. Повторный firing с тем
@@ -248,7 +257,8 @@ apps/devbot/src/
   main.ts            — wiring, config (zod, как apps/api/src/config.ts)
   tg.ts              — Bot API клиент: send/edit, thread ids, retry/429, redact токена
   am-webhook.ts      — HTTP-сервер 127.0.0.1:DEVBOT_PORT, приём webhook Alertmanager
-  github-poller.ts   — поллер commit statuses/deployments (30–60 с), diff-логика вех
+  github-poller.ts   — поллер commit statuses/deployments (30–60 с), diff-логика вех,
+                       tail-опрос предыдущего SHA до терминала deploy/watchdog
   journald.ts        — (этап 3) tail journalctl, парсеры префиксов
   router.ts          — маршрутизация событие → топик/форматтер
   dedup.ts           — fingerprint-store, сворачивание, шторм-коалесцинг

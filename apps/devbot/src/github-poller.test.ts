@@ -1,6 +1,10 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { diffSnapshots } from "./github-poller.js";
-import type { GithubSnapshot } from "./state.js";
+import { diffSnapshots, GithubPoller } from "./github-poller.js";
+import { StateStore, type GithubSnapshot } from "./state.js";
+import type { DeployEvent } from "./events.js";
 
 const SHA1 = "1bd14c3deadbeef1";
 const SHA2 = "2bd14c3deadbeef2";
@@ -91,5 +95,102 @@ describe("github diffSnapshots", () => {
     const prev = snapshot({ deployments });
     const next = snapshot({ deployments });
     expect(diffSnapshots(prev, next)).toEqual([]);
+  });
+});
+
+
+/**
+ * Мок GitHub API по суффиксу URL: /commits/master, /commits/{sha}/statuses?…, /deployments?… .
+ * Возвращает 404 на неизвестный путь — poller тогда бросает, и тест это увидит.
+ */
+function ghMock(routes: Record<string, unknown>, calls: string[] = []): typeof fetch {
+  return (async (input: unknown) => {
+    const url = String(input);
+    calls.push(url);
+    for (const [suffix, payload] of Object.entries(routes)) {
+      if (url.endsWith(suffix)) return new Response(JSON.stringify(payload), { status: 200 });
+    }
+    return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
+  }) as typeof fetch;
+}
+
+function commitPayload(sha: string, message: string) {
+  return { sha, commit: { message, author: { name: "agent" } }, author: null };
+}
+
+describe("GithubPoller tail polling", () => {
+  async function makePoller(routes: Record<string, unknown>, calls: string[] = []) {
+    const dir = await mkdtemp(path.join(tmpdir(), "devbot-poller-"));
+    const state = new StateStore(path.join(dir, "state.json"));
+    await state.load();
+    const events: DeployEvent[] = [];
+    const poller = new GithubPoller({
+      token: "x",
+      repo: "acme/repo",
+      state,
+      onEvents: (batch) => events.push(...batch),
+      fetchFn: ghMock(routes, calls),
+    });
+    return { poller, state, events };
+  }
+
+  it("keeps polling the previous SHA after HEAD moves and emits its green exactly once", async () => {
+    const calls: string[] = [];
+    const routes: Record<string, unknown> = {
+      "/commits/master": commitPayload(SHA1, "feat: one"),
+      [`/commits/${SHA1}/statuses?per_page=100`]: [
+        { context: "deploy/tests", state: "success" },
+        { context: "deploy/watchdog", state: "pending" },
+      ],
+      "/deployments?per_page=30": [],
+    };
+    const { poller, state, events } = await makePoller(routes, calls);
+
+    // База: SHA1 в полёте, событий нет.
+    await poller.pollOnce();
+    expect(events).toEqual([]);
+    expect(state.data.github?.sha).toBe(SHA1);
+    expect(state.data.github?.tail).toBeUndefined();
+
+    // HEAD уходит на SHA2, а SHA1 за это время доезжает до зелёного — финал SHA1
+    // больше не теряется: приходит и new-sha(SHA2), и green(SHA1) из tail'а.
+    routes["/commits/master"] = commitPayload(SHA2, "feat: two");
+    routes[`/commits/${SHA2}/statuses?per_page=100`] = [{ context: "deploy/watchdog", state: "pending" }];
+    routes[`/commits/${SHA1}/statuses?per_page=100`] = [
+      { context: "deploy/tests", state: "success" },
+      { context: "deploy/watchdog", state: "success" },
+    ];
+    await poller.pollOnce();
+    expect(events).toContainEqual(expect.objectContaining({ kind: "new-sha", sha: SHA2 }));
+    expect(events).toContainEqual({ kind: "green", sha: SHA1 });
+    // Терминал → хвост снят.
+    expect(state.data.github?.tail).toBeUndefined();
+
+    // Дальше хвост не опрашивается и green не дублируется.
+    const greenCount = events.filter((event) => event.kind === "green" && event.sha === SHA1).length;
+    await poller.pollOnce();
+    expect(events.filter((event) => event.kind === "green" && event.sha === SHA1)).toHaveLength(greenCount);
+    expect(calls.filter((url) => url.includes(`/commits/${SHA1}/statuses`)).length <= 2).toBe(true);
+  });
+
+  it("keeps the tail across polls while the previous pipeline is still pending", async () => {
+    const routes: Record<string, unknown> = {
+      "/commits/master": commitPayload(SHA1, "feat: one"),
+      [`/commits/${SHA1}/statuses?per_page=100`]: [{ context: "deploy/watchdog", state: "pending" }],
+      [`/commits/${SHA2}/statuses?per_page=100`]: [{ context: "deploy/watchdog", state: "pending" }],
+      "/deployments?per_page=30": [],
+    };
+    const { poller, state, events } = await makePoller(routes);
+    await poller.pollOnce();
+    routes["/commits/master"] = commitPayload(SHA2, "feat: two");
+    await poller.pollOnce();
+    // Хвост жив (watchdog SHA1 ещё pending), событий финала нет.
+    expect(state.data.github?.tail?.sha).toBe(SHA1);
+    expect(events.some((event) => event.kind === "green")).toBe(false);
+    // Карантин хвоста тоже доизлучается и снимает хвост.
+    routes[`/commits/${SHA1}/statuses?per_page=100`] = [{ context: "deploy/watchdog", state: "failure" }];
+    await poller.pollOnce();
+    expect(events).toContainEqual({ kind: "quarantine", sha: SHA1 });
+    expect(state.data.github?.tail).toBeUndefined();
   });
 });
