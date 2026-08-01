@@ -160,9 +160,23 @@ token on every refresh with strict family reuse detection. The pool therefore:
   (healthy→suspect→dead, durable in the authority) and transport
   (responsive→degraded→wedged, in-memory). A successful turn or probe is the only thing that
   clears a verdict.
-- **Pricing** comes only from `metering::codex` (audited, effective-dated). Public `fast` and
-  `priority` normalize to the official request value `priority`; Standard omits that value.
-  Reservation keeps the conservative Fast hold. After a successful turn the accepted request is
+- **API replacement cost and subscription consumption are separate ledgers.** Both audited rate
+  cards live in `metering::codex`, but they never convert into each other implicitly. Public API
+  nanoUSD uses the effective-dated API schedule; ChatGPT quota uses the official Codex credit card
+  (input / cached input / output). Cached input is a subset of input, and reasoning is a subset of
+  output, so neither is double-counted. The subscription card publishes no cache-write premium or
+  long-context multiplier, and the implementation does not invent either. Since 2026-07-30 the API
+  rates for GPT-5.6 Terra are `$2 / $0.20 / $2.50 / $12` and Luna
+  `$0.20 / $0.02 / $0.25 / $1.20` per million fresh / cached / cache-write / output tokens. The
+  same effective epoch changed GPT-5.6 API Fast to `2x`, while ChatGPT subscription Fast remains
+  `2.5x` credits (`2x` for GPT-5.4). This distinction prevents the API-dollar workload equivalent
+  from being mistaken for a plan's fixed dollar size. Sources:
+  [Codex credits](https://learn.chatgpt.com/docs/pricing#what-are-tokens-and-credits),
+  [Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode), and the
+  [2026-07-30 API changelog](https://developers.openai.com/api/docs/changelog#july-2026).
+- **Request pricing** comes only from that effective-dated catalogue. Public `fast` and `priority`
+  normalize to the official request value `priority`; Standard omits that value. Reservation keeps
+  the audited API Fast hold. After a successful turn the accepted request is
   the effective product tier used by settlement, ledger, capacity spend and the public response:
   requested `priority` remains Fast, while Standard remains `default`. The private ChatGPT backend's
   completed `response.service_tier` is stored separately as diagnostic

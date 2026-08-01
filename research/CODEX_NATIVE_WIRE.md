@@ -114,6 +114,39 @@ Production A/B на одинаковом длинном выводе `gpt-5.5` �
 `provider_reported_tier` только для wire-диагностики. Fast-routing опирается на capability каталога
 и не демотирует профиль из-за reported `default`.
 
+## Две независимые шкалы стоимости (проверено 2026-08-01)
+
+Официальная документация публикует отдельные тарифы для API и для расхода ChatGPT Codex credits.
+Это не две записи одной и той же цены: API nanoUSD отвечает «сколько стоили бы эти токены через
+API», а credits отвечают «какую нормализованную долю подписочной квоты съела нагрузка». Поэтому
+одинаковые Pro-подписки нельзя сравнивать по единственному USD total, если на них попадала разная
+смесь моделей, cache hit и output.
+
+Подписочная credit-карта на 1M токенов (input / cached input / output):
+
+| Модель | Input credits | Cached credits | Output credits |
+|---|---:|---:|---:|
+| GPT-5.6 Sol / GPT-5.5 | 125 | 12.5 | 750 |
+| GPT-5.6 Terra | 50 | 5 | 300 |
+| GPT-5.6 Luna | 5 | 0.5 | 30 |
+| GPT-5.4 | 62.5 | 6.25 | 375 |
+
+Reasoning уже входит в `output_tokens`, cached input — подмножество `input_tokens`: прибавление
+этих полей второй раз завысило бы расход. В credit-карте нет отдельного cache-write тарифа или
+long-context множителя, поэтому они допустимы в API-USD расчёте, но не выдумываются для credits.
+
+С 2026-07-30 API-тариф Terra равен `$2 / $0.20 / $2.50 / $12`, Luna —
+`$0.20 / $0.02 / $0.25 / $1.20` на 1M fresh / cached / cache-write / output. API Fast для
+GPT-5.6 стал `2x`, но подписочный Fast по-прежнему списывает `2.5x` credits; для GPT-5.4 обе
+официальные карты используют `2x`. Каталог хранит эти величины раздельно и effective-dated, чтобы
+новая цена не переписывала исторические turn.
+
+Источники:
+
+- https://learn.chatgpt.com/docs/pricing#what-are-tokens-and-credits
+- https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode
+- https://developers.openai.com/api/docs/changelog#july-2026
+
 ## Открытые вопросы (не блокеры)
 
 1. Появляется ли `codex.rate_limits` в стриме при исчерпании/429 — парсер принимает обе формы.

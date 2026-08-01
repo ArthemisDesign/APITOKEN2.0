@@ -453,7 +453,7 @@ pub(super) fn reserve_cost(
     let standard = (estimated_input_tokens as i128)
         .saturating_mul(input_rate)
         .saturating_add((output_tokens as i128).saturating_mul(output_rate));
-    apply_fast_multiplier(model, standard, fast)
+    apply_fast_multiplier(prices, standard, fast)
 }
 
 /// Exact official-price cost of one completed turn, used for per-home window-capacity
@@ -500,22 +500,22 @@ fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64, fast: bool) -> 
         (normal_input as i128).saturating_mul(prices.input),
         input_multiplier,
     );
-    let input_nano = apply_fast_multiplier(model, input_nano, fast);
+    let input_nano = apply_fast_multiplier(prices, input_nano, fast);
     let cached_nano = metering::apply_multiplier(
         (cached_input as i128).saturating_mul(prices.cached_input),
         input_multiplier,
     );
-    let cached_nano = apply_fast_multiplier(model, cached_nano, fast);
+    let cached_nano = apply_fast_multiplier(prices, cached_nano, fast);
     let cache_write_nano = metering::apply_multiplier(
         (cache_write_input as i128).saturating_mul(prices.cache_write_input),
         input_multiplier,
     );
-    let cache_write_nano = apply_fast_multiplier(model, cache_write_nano, fast);
+    let cache_write_nano = apply_fast_multiplier(prices, cache_write_nano, fast);
     let output_nano = metering::apply_multiplier(
         (usage.output_tokens as i128).saturating_mul(prices.output),
         output_multiplier,
     );
-    let output_nano = apply_fast_multiplier(model, output_nano, fast);
+    let output_nano = apply_fast_multiplier(prices, output_nano, fast);
     PricedUsage {
         normal_input,
         cached_input,
@@ -531,18 +531,11 @@ fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64, fast: bool) -> 
     }
 }
 
-fn apply_fast_multiplier(model: &CodexModel, amount: i128, fast: bool) -> i128 {
+fn apply_fast_multiplier(prices: metering::CodexPrices, amount: i128, fast: bool) -> i128 {
     if !fast {
         return amount;
     }
-    // Prefer the effective audited catalog, while retaining the config-resolved copy for an
-    // already-admitted model removed by a later catalog revision. The final fallback is
-    // conservative: a future fast-capable model must not be under-reserved if plumbing reaches
-    // this layer before its audited multiplier does.
-    let basis_points = metering::codex_fast_multiplier_basis_points(&model.id)
-        .or(model.fast_multiplier_basis_points)
-        .unwrap_or(25_000);
-    metering::apply_multiplier(amount, basis_points)
+    metering::apply_multiplier(amount, prices.api_fast_multiplier_basis_points)
 }
 
 #[cfg(test)]
@@ -578,6 +571,7 @@ mod tests {
                 cached_input: 500,
                 cache_write_input: 6_250,
                 output: 30_000,
+                api_fast_multiplier_basis_points: 25_000,
                 long_context_threshold: 272_000,
                 long_input_basis_points: 20_000,
                 long_output_basis_points: 15_000,

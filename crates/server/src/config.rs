@@ -525,7 +525,7 @@ fn codex_model_catalog(now_unix: i64) -> Vec<CodexModel> {
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
-            fast_multiplier_basis_points: spec.fast_multiplier_basis_points,
+            fast_multiplier_basis_points: spec.subscription_fast_multiplier_basis_points,
             prices: spec.prices,
         })
         .collect()

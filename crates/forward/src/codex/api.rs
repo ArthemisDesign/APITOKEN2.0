@@ -3453,6 +3453,7 @@ mod tests {
                 cached_input: 500,
                 cache_write_input: 6_250,
                 output: 30_000,
+                api_fast_multiplier_basis_points: 25_000,
                 long_context_threshold: 272_000,
                 long_input_basis_points: 20_000,
                 long_output_basis_points: 15_000,

@@ -113,9 +113,8 @@ pub(super) fn prepare_codex_legacy_quote(
     );
     if input.fast {
         ensure!(
-            input.model.fast_multiplier_basis_points
-                == Some(identity.modifiers.service_tier_multiplier_basis_points),
-            "OpenAI runtime Fast capability differs from its audited modifier"
+            input.model.fast_multiplier_basis_points.is_some(),
+            "OpenAI runtime Fast capability is disabled for an audited Fast quote"
         );
     }
 
@@ -221,7 +220,7 @@ mod tests {
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
-            fast_multiplier_basis_points: spec.fast_multiplier_basis_points,
+            fast_multiplier_basis_points: spec.subscription_fast_multiplier_basis_points,
             prices: spec.prices,
         }
     }
@@ -326,13 +325,13 @@ mod tests {
         assert_eq!(full.snapshot().canonical_model_id(), "gpt-5.6-sol");
         assert_eq!(
             full.snapshot().tariff_schedule_id(),
-            "openai/gpt-5.6-sol/epoch-0/v1"
+            "openai/gpt-5.6-sol/2026-07-30/v2"
         );
         assert!(matches!(
             full.snapshot().premium_modifiers(),
             LegacyPremiumModifiers::OpenAiV1 {
                 service_tier: SnapshotOpenAiServiceTier::Fast,
-                service_tier_multiplier_basis_points: 25_000,
+                service_tier_multiplier_basis_points: 20_000,
                 ..
             }
         ));

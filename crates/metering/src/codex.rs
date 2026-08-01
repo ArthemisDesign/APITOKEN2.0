@@ -5,11 +5,14 @@
 //! composition layer. `server::config` selects which advertised ids are enabled, `forward` receives
 //! the resolved prices, and neither invents a rate.
 //!
-//! Values are nanodollars per token (= $/Mtoken × 1000), copied from the official OpenAI standard
-//! token-pricing table. They are never updated remotely at runtime: a price change is a reviewed
-//! commit that adds a new schedule entry, so historical settlements stay explainable.
+//! API values are nanodollars per token (= $/Mtoken × 1000), copied from the official OpenAI
+//! pricing table. ChatGPT-subscription values are nanocredits per token (= credits/Mtoken × 1000),
+//! copied from the separate Codex credit rate card. The units deliberately never convert into one
+//! another: one describes public API replacement cost, the other describes subscription quota.
+//! Neither is updated remotely at runtime; a change is a reviewed commit so historical settlement
+//! and calibration remain explainable.
 
-use crate::{TariffIdentityError, TariffScheduleId};
+use crate::{apply_multiplier, TariffIdentityError, TariffScheduleId};
 
 /// Official API-equivalent token rates in nanodollars per token.
 ///
@@ -21,10 +24,37 @@ pub struct CodexPrices {
     pub cached_input: i128,
     pub cache_write_input: i128,
     pub output: i128,
+    /// Public API Fast-mode price multiplier. This is not the ChatGPT-subscription credit
+    /// multiplier: GPT-5.6 API Fast is 2x after 2026-07-30 while subscription Fast is 2.5x.
+    pub api_fast_multiplier_basis_points: i64,
     /// OpenAI applies long-context pricing to the whole request above this input-token boundary.
     pub long_context_threshold: u64,
     pub long_input_basis_points: i64,
     pub long_output_basis_points: i64,
+}
+
+/// Official ChatGPT Codex credit rates in nanocredits per token.
+///
+/// The published subscription card has exactly three priced classes. `cached_input` is a subset
+/// of `input`; reasoning tokens are a subset of `output` and therefore use the output rate. The
+/// card publishes no cache-write premium or long-context multiplier, so neither is invented here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodexCreditRates {
+    pub input: i128,
+    pub cached_input: i128,
+    pub output: i128,
+}
+
+/// Exact credit breakdown for one completed ChatGPT-backed turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CodexCreditUsage {
+    pub fresh_input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub input_credit_nano: i128,
+    pub cached_input_credit_nano: i128,
+    pub output_credit_nano: i128,
+    pub total_credit_nano: i128,
 }
 
 /// One advertised OpenAI-compatible model: public id, the id sent upstream, and its rates as
@@ -38,10 +68,10 @@ pub struct CodexModelSpec {
     /// ChatGPT-subscription credit multiplier for Codex Fast mode.
     ///
     /// `None` means the model must not accept the Fast/priority service tier. The multiplier is
-    /// kept beside the audited price schedule because it changes both customer settlement and the
-    /// subscription-window spend used for capacity calibration.
-    pub fast_multiplier_basis_points: Option<i64>,
+    /// kept separately from API pricing because GPT-5.6 currently uses different multipliers.
+    pub subscription_fast_multiplier_basis_points: Option<i64>,
     pub prices: CodexPrices,
+    pub credit_rates: CodexCreditRates,
 }
 
 /// A price that takes effect at `effective_from` (unix seconds) and holds until the next entry.
@@ -107,7 +137,8 @@ struct CatalogEntry {
     upstream: &'static str,
     max_output_tokens: u64,
     reasoning_efforts: &'static [&'static str],
-    fast_multiplier_basis_points: Option<i64>,
+    subscription_fast_multiplier_basis_points: Option<i64>,
+    credit_rates: CodexCreditRates,
     /// Ordered oldest-first.
     schedule: &'static [IdentifiedCodexPriceEpoch],
 }
@@ -116,6 +147,7 @@ const EFFORTS_WITH_MAX: &[&str] = &["none", "low", "medium", "high", "xhigh", "m
 const EFFORTS_STANDARD: &[&str] = &["none", "low", "medium", "high", "xhigh"];
 const FAST_25X: Option<i64> = Some(25_000);
 const FAST_20X: Option<i64> = Some(20_000);
+const PRICE_CUT_2026_07_30: i64 = 1_785_369_600;
 
 /// OpenAI's long-context boundary and multipliers are uniform across the pinned catalog.
 const fn prices(
@@ -123,15 +155,25 @@ const fn prices(
     cached_input: i128,
     cache_write_input: i128,
     output: i128,
+    api_fast_multiplier_basis_points: i64,
 ) -> CodexPrices {
     CodexPrices {
         input,
         cached_input,
         cache_write_input,
         output,
+        api_fast_multiplier_basis_points,
         long_context_threshold: 272_000,
         long_input_basis_points: 20_000,
         long_output_basis_points: 15_000,
+    }
+}
+
+const fn credits(input: i128, cached_input: i128, output: i128) -> CodexCreditRates {
+    CodexCreditRates {
+        input,
+        cached_input,
+        output,
     }
 }
 
@@ -139,38 +181,65 @@ const fn prices(
 // GPT-5.5/5.4 models retain their published input-rate write price. Keep this as a separate bucket:
 // a write is neither a normal input token nor a discounted cache read.
 // Source: https://developers.openai.com/api/docs/guides/latest-model#using-gpt-56
-const GPT_56_SOL_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[IdentifiedCodexPriceEpoch {
-    epoch: CodexPriceEpoch {
-        effective_from: 0,
-        prices: prices(5_000, 500, 6_250, 30_000),
+const GPT_56_SOL_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: 0,
+            prices: prices(5_000, 500, 6_250, 30_000, 25_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-sol/epoch-0/v1"),
     },
-    tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-sol/epoch-0/v1"),
-}];
-const GPT_56_TERRA_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[IdentifiedCodexPriceEpoch {
-    epoch: CodexPriceEpoch {
-        effective_from: 0,
-        prices: prices(2_500, 250, 3_125, 15_000),
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: PRICE_CUT_2026_07_30,
+            prices: prices(5_000, 500, 6_250, 30_000, 20_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-sol/2026-07-30/v2"),
     },
-    tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-terra/epoch-0/v1"),
-}];
-const GPT_56_LUNA_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[IdentifiedCodexPriceEpoch {
-    epoch: CodexPriceEpoch {
-        effective_from: 0,
-        prices: prices(1_000, 100, 1_250, 6_000),
+];
+const GPT_56_TERRA_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: 0,
+            prices: prices(2_500, 250, 3_125, 15_000, 25_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-terra/epoch-0/v1"),
     },
-    tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-luna/epoch-0/v1"),
-}];
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: PRICE_CUT_2026_07_30,
+            prices: prices(2_000, 200, 2_500, 12_000, 20_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-terra/2026-07-30/v2"),
+    },
+];
+const GPT_56_LUNA_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: 0,
+            prices: prices(1_000, 100, 1_250, 6_000, 25_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-luna/epoch-0/v1"),
+    },
+    IdentifiedCodexPriceEpoch {
+        epoch: CodexPriceEpoch {
+            effective_from: PRICE_CUT_2026_07_30,
+            prices: prices(200, 20, 250, 1_200, 20_000),
+        },
+        tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.6-luna/2026-07-30/v2"),
+    },
+];
 const GPT_55_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[IdentifiedCodexPriceEpoch {
     epoch: CodexPriceEpoch {
         effective_from: 0,
-        prices: prices(5_000, 500, 5_000, 30_000),
+        prices: prices(5_000, 500, 5_000, 30_000, 25_000),
     },
     tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.5/epoch-0/v1"),
 }];
 const GPT_54_SCHEDULE: &[IdentifiedCodexPriceEpoch] = &[IdentifiedCodexPriceEpoch {
     epoch: CodexPriceEpoch {
         effective_from: 0,
-        prices: prices(2_500, 250, 2_500, 15_000),
+        prices: prices(2_500, 250, 2_500, 15_000, 20_000),
     },
     tariff_schedule_id: TariffScheduleId::from_static("openai/gpt-5.4/epoch-0/v1"),
 }];
@@ -183,7 +252,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-sol",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
-        fast_multiplier_basis_points: FAST_25X,
+        subscription_fast_multiplier_basis_points: FAST_25X,
+        credit_rates: credits(125_000, 12_500, 750_000),
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -191,7 +261,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-sol",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
-        fast_multiplier_basis_points: FAST_25X,
+        subscription_fast_multiplier_basis_points: FAST_25X,
+        credit_rates: credits(125_000, 12_500, 750_000),
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -199,7 +270,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-terra",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
-        fast_multiplier_basis_points: FAST_25X,
+        subscription_fast_multiplier_basis_points: FAST_25X,
+        credit_rates: credits(50_000, 5_000, 300_000),
         schedule: GPT_56_TERRA_SCHEDULE,
     },
     CatalogEntry {
@@ -207,7 +279,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.6-luna",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_WITH_MAX,
-        fast_multiplier_basis_points: FAST_25X,
+        subscription_fast_multiplier_basis_points: FAST_25X,
+        credit_rates: credits(5_000, 500, 30_000),
         schedule: GPT_56_LUNA_SCHEDULE,
     },
     CatalogEntry {
@@ -215,7 +288,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.5",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
-        fast_multiplier_basis_points: FAST_25X,
+        subscription_fast_multiplier_basis_points: FAST_25X,
+        credit_rates: credits(125_000, 12_500, 750_000),
         schedule: GPT_55_SCHEDULE,
     },
     CatalogEntry {
@@ -223,7 +297,8 @@ const CATALOG: &[CatalogEntry] = &[
         upstream: "gpt-5.4",
         max_output_tokens: 128_000,
         reasoning_efforts: EFFORTS_STANDARD,
-        fast_multiplier_basis_points: FAST_20X,
+        subscription_fast_multiplier_basis_points: FAST_20X,
+        credit_rates: credits(62_500, 6_250, 375_000),
         schedule: GPT_54_SCHEDULE,
     },
 ];
@@ -237,8 +312,10 @@ pub fn codex_catalog_at(now_unix: i64) -> Vec<CodexModelSpec> {
             upstream: entry.upstream,
             max_output_tokens: entry.max_output_tokens,
             reasoning_efforts: entry.reasoning_efforts,
-            fast_multiplier_basis_points: entry.fast_multiplier_basis_points,
+            subscription_fast_multiplier_basis_points: entry
+                .subscription_fast_multiplier_basis_points,
             prices: prices_at(entry.schedule, now_unix),
+            credit_rates: entry.credit_rates,
         })
         .collect()
 }
@@ -270,13 +347,16 @@ pub fn codex_tariff_capability_at(
         .find(|entry| entry.id == model_id)
         .ok_or(TariffIdentityError::UnsupportedModelIdentity)?;
     let epoch = price_epoch_at(entry.schedule, priced_ts);
+    let prices = epoch.epoch.prices;
     let service_tier_multiplier_basis_points = match service_tier {
         CodexServiceTier::Standard => 10_000,
-        CodexServiceTier::Fast => entry
-            .fast_multiplier_basis_points
-            .ok_or(TariffIdentityError::UnsupportedModifier)?,
+        CodexServiceTier::Fast => {
+            entry
+                .subscription_fast_multiplier_basis_points
+                .ok_or(TariffIdentityError::UnsupportedModifier)?;
+            prices.api_fast_multiplier_basis_points
+        }
     };
-    let prices = epoch.epoch.prices;
     let (context_tier, input_multiplier_basis_points, output_multiplier_basis_points) =
         if estimated_input_tokens > prices.long_context_threshold {
             (
@@ -310,11 +390,63 @@ pub fn codex_tariff_capability_at(
 /// The provider currently consumes 2.5x credits for GPT-5.6/5.5 Fast turns and 2x for GPT-5.4.
 /// Returning `None` is also the capability gate: an unknown or unsupported model cannot silently
 /// opt into priority service and bypass the corresponding reserve.
-pub fn codex_fast_multiplier_basis_points(model_id: &str) -> Option<i64> {
+pub fn codex_subscription_fast_multiplier_basis_points(model_id: &str) -> Option<i64> {
     CATALOG
         .iter()
         .find(|entry| entry.id == model_id)
-        .and_then(|entry| entry.fast_multiplier_basis_points)
+        .and_then(|entry| entry.subscription_fast_multiplier_basis_points)
+}
+
+/// Exact current ChatGPT credit rates for one advertised model.
+pub fn codex_credit_rates(model_id: &str) -> Option<CodexCreditRates> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .map(|entry| entry.credit_rates)
+}
+
+/// Price one authoritative response-usage payload in official ChatGPT subscription credits.
+///
+/// `input_tokens` is the provider's total input count; cached tokens are its subset. Reasoning is
+/// already included in `output_tokens`, so the caller must not add it again.
+pub fn codex_credit_cost_nano(
+    model_id: &str,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    fast: bool,
+) -> Option<CodexCreditUsage> {
+    let rates = codex_credit_rates(model_id)?;
+    let cached_input_tokens = cached_input_tokens.min(input_tokens);
+    let fresh_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
+    let fast_multiplier = if fast {
+        codex_subscription_fast_multiplier_basis_points(model_id)?
+    } else {
+        10_000
+    };
+    let input_credit_nano = apply_multiplier(
+        i128::from(fresh_input_tokens).saturating_mul(rates.input),
+        fast_multiplier,
+    );
+    let cached_input_credit_nano = apply_multiplier(
+        i128::from(cached_input_tokens).saturating_mul(rates.cached_input),
+        fast_multiplier,
+    );
+    let output_credit_nano = apply_multiplier(
+        i128::from(output_tokens).saturating_mul(rates.output),
+        fast_multiplier,
+    );
+    Some(CodexCreditUsage {
+        fresh_input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        input_credit_nano,
+        cached_input_credit_nano,
+        output_credit_nano,
+        total_credit_nano: input_credit_nano
+            .saturating_add(cached_input_credit_nano)
+            .saturating_add(output_credit_nano),
+    })
 }
 
 /// Resolve a schedule at a point in time: the newest entry that has already taken effect, or the
@@ -343,8 +475,8 @@ fn price_epoch_at(
 mod tests {
     use super::*;
 
-    const LAUNCH: CodexPrices = prices(5_000, 500, 6_250, 30_000);
-    const LATER: CodexPrices = prices(9_000, 900, 11_250, 54_000);
+    const LAUNCH: CodexPrices = prices(5_000, 500, 6_250, 30_000, 25_000);
+    const LATER: CodexPrices = prices(9_000, 900, 11_250, 54_000, 20_000);
 
     const fn identified_epoch(
         effective_from: i64,
@@ -384,9 +516,10 @@ mod tests {
         assert_eq!(alias.upstream, concrete.upstream);
         assert_eq!(alias.prices, concrete.prices);
         assert_eq!(
-            alias.fast_multiplier_basis_points,
-            concrete.fast_multiplier_basis_points
+            alias.subscription_fast_multiplier_basis_points,
+            concrete.subscription_fast_multiplier_basis_points
         );
+        assert_eq!(alias.credit_rates, concrete.credit_rates);
         assert_eq!(alias.prices.input, 5_000);
         assert_eq!(alias.prices.output, 30_000);
     }
@@ -401,13 +534,19 @@ mod tests {
             "gpt-5.5",
         ] {
             assert_eq!(
-                codex_fast_multiplier_basis_points(model),
+                codex_subscription_fast_multiplier_basis_points(model),
                 Some(25_000),
                 "{model}"
             );
         }
-        assert_eq!(codex_fast_multiplier_basis_points("gpt-5.4"), Some(20_000));
-        assert_eq!(codex_fast_multiplier_basis_points("gpt-4o"), None);
+        assert_eq!(
+            codex_subscription_fast_multiplier_basis_points("gpt-5.4"),
+            Some(20_000)
+        );
+        assert_eq!(
+            codex_subscription_fast_multiplier_basis_points("gpt-4o"),
+            None
+        );
     }
 
     #[test]
@@ -526,42 +665,42 @@ mod tests {
                 "gpt-5.6",
                 "gpt-5.6-sol",
                 "openai/gpt-5.6-sol/epoch-0/v1",
-                prices(5_000, 500, 6_250, 30_000),
+                prices(5_000, 500, 6_250, 30_000, 25_000),
                 25_000,
             ),
             (
                 "gpt-5.6-sol",
                 "gpt-5.6-sol",
                 "openai/gpt-5.6-sol/epoch-0/v1",
-                prices(5_000, 500, 6_250, 30_000),
+                prices(5_000, 500, 6_250, 30_000, 25_000),
                 25_000,
             ),
             (
                 "gpt-5.6-terra",
                 "gpt-5.6-terra",
                 "openai/gpt-5.6-terra/epoch-0/v1",
-                prices(2_500, 250, 3_125, 15_000),
+                prices(2_500, 250, 3_125, 15_000, 25_000),
                 25_000,
             ),
             (
                 "gpt-5.6-luna",
                 "gpt-5.6-luna",
                 "openai/gpt-5.6-luna/epoch-0/v1",
-                prices(1_000, 100, 1_250, 6_000),
+                prices(1_000, 100, 1_250, 6_000, 25_000),
                 25_000,
             ),
             (
                 "gpt-5.5",
                 "gpt-5.5",
                 "openai/gpt-5.5/epoch-0/v1",
-                prices(5_000, 500, 5_000, 30_000),
+                prices(5_000, 500, 5_000, 30_000, 25_000),
                 25_000,
             ),
             (
                 "gpt-5.4",
                 "gpt-5.4",
                 "openai/gpt-5.4/epoch-0/v1",
-                prices(2_500, 250, 2_500, 15_000),
+                prices(2_500, 250, 2_500, 15_000, 20_000),
                 20_000,
             ),
         ] {
@@ -636,6 +775,74 @@ mod tests {
                     model.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn july_price_cut_is_effective_dated_without_repricing_history() {
+        let before = PRICE_CUT_2026_07_30 - 1;
+        let after = PRICE_CUT_2026_07_30;
+
+        let terra_before = codex_prices_at("gpt-5.6-terra", before).unwrap();
+        let terra_after = codex_prices_at("gpt-5.6-terra", after).unwrap();
+        assert_eq!(terra_before.input, 2_500);
+        assert_eq!(terra_before.cached_input, 250);
+        assert_eq!(terra_before.output, 15_000);
+        assert_eq!(terra_before.api_fast_multiplier_basis_points, 25_000);
+        assert_eq!(terra_after.input, 2_000);
+        assert_eq!(terra_after.cached_input, 200);
+        assert_eq!(terra_after.output, 12_000);
+        assert_eq!(terra_after.api_fast_multiplier_basis_points, 20_000);
+
+        let luna_after = codex_prices_at("gpt-5.6-luna", after).unwrap();
+        assert_eq!(luna_after.input, 200);
+        assert_eq!(luna_after.cached_input, 20);
+        assert_eq!(luna_after.output, 1_200);
+        assert_eq!(luna_after.api_fast_multiplier_basis_points, 20_000);
+
+        let sol_after =
+            codex_tariff_capability_at("gpt-5.6-sol", after, CodexServiceTier::Fast, 0).unwrap();
+        assert_eq!(
+            sol_after.tariff_schedule_id.as_str(),
+            "openai/gpt-5.6-sol/2026-07-30/v2"
+        );
+        assert_eq!(
+            sol_after.modifiers.service_tier_multiplier_basis_points,
+            20_000
+        );
+        assert_eq!(
+            codex_subscription_fast_multiplier_basis_points("gpt-5.6-sol"),
+            Some(25_000)
+        );
+    }
+
+    #[test]
+    fn credit_pricing_keeps_cached_and_reasoning_semantics_exact() {
+        let usage = codex_credit_cost_nano("gpt-5.6-terra", 1_000, 800, 100, false).unwrap();
+        assert_eq!(usage.fresh_input_tokens, 200);
+        assert_eq!(usage.cached_input_tokens, 800);
+        assert_eq!(usage.output_tokens, 100);
+        assert_eq!(usage.input_credit_nano, 10_000_000);
+        assert_eq!(usage.cached_input_credit_nano, 4_000_000);
+        assert_eq!(usage.output_credit_nano, 30_000_000);
+        assert_eq!(usage.total_credit_nano, 44_000_000);
+
+        let fast = codex_credit_cost_nano("gpt-5.6-terra", 1_000, 800, 100, true).unwrap();
+        assert_eq!(fast.total_credit_nano, 110_000_000);
+        assert!(codex_credit_cost_nano("gpt-4o", 1, 0, 1, false).is_none());
+    }
+
+    #[test]
+    fn credit_catalog_matches_every_published_model_rate() {
+        for (model, expected) in [
+            ("gpt-5.6", credits(125_000, 12_500, 750_000)),
+            ("gpt-5.6-sol", credits(125_000, 12_500, 750_000)),
+            ("gpt-5.6-terra", credits(50_000, 5_000, 300_000)),
+            ("gpt-5.6-luna", credits(5_000, 500, 30_000)),
+            ("gpt-5.5", credits(125_000, 12_500, 750_000)),
+            ("gpt-5.4", credits(62_500, 6_250, 375_000)),
+        ] {
+            assert_eq!(codex_credit_rates(model), Some(expected), "{model}");
         }
     }
 }

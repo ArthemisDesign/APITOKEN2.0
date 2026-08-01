@@ -15,9 +15,11 @@ use serde_json::Value;
 pub mod codex;
 pub mod gemini;
 pub use codex::{
-    codex_catalog_at, codex_fast_multiplier_basis_points, codex_prices_at,
-    codex_tariff_capability_at, CodexAdmissionTariffIdentity, CodexContextTier, CodexModelSpec,
-    CodexPriceEpoch, CodexPrices, CodexServiceTier, CodexTariffModifiers, CODEX_ALIAS_GENERATION,
+    codex_catalog_at, codex_credit_cost_nano, codex_credit_rates, codex_prices_at,
+    codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
+    CodexAdmissionTariffIdentity, CodexContextTier, CodexCreditRates, CodexCreditUsage,
+    CodexModelSpec, CodexPriceEpoch, CodexPrices, CodexServiceTier, CodexTariffModifiers,
+    CODEX_ALIAS_GENERATION,
 };
 pub use gemini::{
     gemini_catalog_at, gemini_prices_at, GeminiModelSpec, GeminiPriceEpoch, GeminiPrices,
