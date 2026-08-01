@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { localeHref } from "@/lib/locale-routes";
 import { IntegrationBuilder } from "./integration-builder";
 import { ApiReference } from "./api-reference";
+import { ModelsPricing } from "./models-pricing";
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
 
@@ -34,7 +35,7 @@ const GPT_CACHE_JSON = `{
 
 const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "errors", "caching", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -61,6 +62,9 @@ const copy = {
     quickstartText: "Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.",
     apiTitle: "Use the API in your code",
     apiText: "One sk-pool key, two compatible surfaces. Pick a provider and a programming language — the exact request for your app, bot, or script appears below.",
+    models: "Models & pricing",
+    modelsTitle: "Models & pricing",
+    modelsText: "Both providers, every available model, and exact per-1M-token rates — official list price vs. what you actually pay at the flat 50% discount.",
     caching: "Prompt caching",
     cachingTitle: "Prompt caching",
     cachingText: "Cache the large stable prefix once — every later read of it bills at 10% of the input price.",
@@ -118,6 +122,9 @@ const copy = {
     quickstartText: "Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.",
     apiTitle: "Используйте API в своём коде",
     apiText: "Один ключ sk-pool, две совместимые поверхности. Выберите провайдера и язык программирования — готовый запрос для приложения, бота или скрипта появится ниже.",
+    models: "Модели и цены",
+    modelsTitle: "Модели и цены",
+    modelsText: "Оба провайдера, все доступные модели и точные ставки за 1M токенов — официальная цена против той, что платите вы с единой скидкой 50%.",
     caching: "Кеширование промптов",
     cachingTitle: "Кеширование промптов",
     cachingText: "Закешируйте большой стабильный префикс один раз — каждое следующее чтение стоит 10% от цены входных токенов.",
@@ -164,6 +171,7 @@ export function DocsPortal() {
     { id: "setup-support", label: t.support },
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
+    { id: "models", label: t.models },
     { id: "errors", label: t.errors },
     { id: "caching", label: t.caching },
     { id: "next", label: t.nextSteps },
@@ -243,13 +251,18 @@ export function DocsPortal() {
           <ApiReference language={language} />
         </section>
 
+        <section className="docs-section" id="models">
+          <div className="docs-section-heading"><span>04</span><div><h2>{t.modelsTitle}</h2><p>{t.modelsText}</p></div></div>
+          <ModelsPricing language={language} />
+        </section>
+
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>04</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
         </section>
 
         <section className="docs-section" id="caching">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
           <div className="docs-cache-stack">
             <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
             <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
@@ -257,7 +270,7 @@ export function DocsPortal() {
         </section>
 
         <section className="docs-section docs-next" id="next">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
           <div className="learn-related">
             <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
             <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>

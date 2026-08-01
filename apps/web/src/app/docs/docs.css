@@ -194,6 +194,51 @@
 .cache-card>header{padding:18px 20px}
 .cache-card .ib-code{margin:0;border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none}
 .docs-cache-stack{display:grid;gap:18px}
+
+/* Models & pricing: provider panels with official-vs-discount per-1M rates. */
+.mp-root{display:grid;gap:18px}
+.mp-panel{border:1px solid var(--line);border-radius:14px;background:var(--bg-card);overflow:hidden;box-shadow:var(--shadow)}
+.mp-panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 22px;border-bottom:1px solid var(--line)}
+.mp-panel-title{display:flex;align-items:center;gap:13px;min-width:0}
+.mp-panel-title .ib-icon{width:22px;height:22px;background:var(--txt)}
+.mp-panel-title h3{margin:0;font-family:var(--font-ui);font-size:15.5px;font-weight:650;letter-spacing:-.01em}
+.mp-panel-title code{display:block;margin-top:2px;font:11px var(--font-mono);color:var(--txt-4)}
+.mp-auth{flex:none;padding:6px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft);
+  color:var(--txt-3);font:600 10.5px var(--font-mono);white-space:nowrap}
+.mp-table-wrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+.mp-table{width:100%;min-width:900px;border-collapse:collapse}
+.mp-table th{padding:11px 16px;border-bottom:1px solid var(--line);color:var(--txt-4);
+  font:650 9.5px/1.3 var(--font-mono);letter-spacing:.09em;text-transform:uppercase;text-align:left;white-space:nowrap}
+.mp-table td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+.mp-table tbody tr{transition:background-color .12s ease}
+.mp-table tbody tr:hover{background:var(--bg-soft)}
+.mp-table tbody tr:last-child td{border-bottom:0}
+.mp-model a{display:flex;min-width:0;flex-direction:column;gap:3px}
+.mp-model strong{display:flex;align-items:center;gap:8px;color:var(--txt);font-size:13.5px;font-weight:650;white-space:nowrap}
+.mp-model a:hover strong{color:var(--accent)}
+.mp-badge{padding:2px 7px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
+  color:var(--accent);font:650 8.5px/1.5 var(--font-mono);letter-spacing:.06em;text-transform:uppercase}
+.mp-model code{font:10.5px var(--font-mono);color:var(--txt-4);white-space:nowrap}
+.mp-num{color:var(--txt-2);font:12px var(--font-mono);white-space:nowrap}
+.mp-price b{display:block;color:var(--txt);font:700 13.5px/1.3 var(--font-ui);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mp-price s{display:block;color:var(--txt-4);font:10.5px/1.4 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mp-panel-foot{padding:13px 22px;border-top:1px solid var(--line);color:var(--txt-3);font-size:12.5px;line-height:1.6}
+.mp-panel-foot code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
+.mp-math{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px 26px;align-items:center;padding:20px 26px;
+  border:1px solid var(--line);border-radius:14px;background:var(--bg-card);box-shadow:var(--shadow)}
+.mp-math-example{display:flex;min-width:0;flex-direction:column;gap:5px}
+.mp-math-example>span{color:var(--txt-4);font:650 10px/1.4 var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+.mp-math-example code{color:var(--txt-2);font:12px/1.5 var(--font-mono);white-space:nowrap}
+.mp-math-example .mp-math-total{color:var(--txt);font-weight:700}
+.mp-math-arrow{color:var(--txt-4);font-size:22px}
+.mp-math-result{display:flex;flex-direction:column;gap:1px;justify-self:end;text-align:right}
+.mp-math-result>span{color:var(--txt-4);font:650 10px/1.4 var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+.mp-math-result>b{color:var(--txt);font-size:28px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.mp-math-strip{grid-column:1/-1;margin-top:8px;padding-top:14px;border-top:1px solid var(--line);color:var(--txt-3);font-size:12.5px;line-height:1.55}
+.mp-notes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 30px;margin:0;padding:0 4px;list-style:none}
+.mp-notes li{position:relative;padding-left:16px;color:var(--txt-3);font-size:12px;line-height:1.6}
+.mp-notes li::before{content:"";position:absolute;left:0;top:8px;width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.55}
+.mp-notes code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
 .docs-auth-flow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);gap:14px;align-items:center;
   padding:22px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card)}
 .docs-auth-flow>div{display:flex;align-items:center;gap:12px;min-width:0;padding:15px;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft)}
@@ -246,6 +291,13 @@
   .docs-support-actions .btn{justify-content:center;white-space:normal;text-align:center}
   .docs-support-actions>span{grid-column:1/-1;justify-self:center;margin-top:3px;text-align:center}
   .docs-integration-builder{border-radius:14px}
+  .mp-panel-head{padding:13px 16px}
+  .mp-auth{display:none}
+  .mp-panel-foot{padding:12px 16px}
+  .mp-math{grid-template-columns:1fr;gap:14px;padding:18px 20px}
+  .mp-math-arrow{transform:rotate(90deg);justify-self:start}
+  .mp-math-result{justify-self:start;text-align:left}
+  .mp-notes{grid-template-columns:1fr}
   .ib-head{padding:22px 20px}
   .ib-head h3{font-size:24px}
   .ib-controls{display:flex;flex-direction:column;padding:20px 18px 22px}
@@ -354,7 +406,7 @@
 /* Documentation portal: every layout child can shrink; only code owns horizontal scrolling. */
 .docs-layout,.docs-main,.docs-main>*,.docs-main section,.docs-hero,.docs-section,
 .docs-section-heading>div,.docs-essential-grid>*,.docs-cache-stack>*,.docs-auth-flow>*,
-.cache-card,.docs-checklist,.docs-errors,
+.cache-card,.docs-checklist,.docs-errors,.mp-root,.mp-root>*,
 .docs-integration-builder,.ib-layout,.ib-controls,.ib-guide,.ib-rows,.ib-row,.ib-steps>li,.ib-code{
   min-width:0;max-width:100%
 }
