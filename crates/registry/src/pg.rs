@@ -7444,7 +7444,7 @@ mod tests {
             measurement_resolution_fraction_units: anthropic_state
                 .measurement_resolution_fraction_units,
             gateway_spend_nano: 0,
-            observation_source: "stage2-test".into(),
+            observation_source: "poll".into(),
             source_request_id: None,
         };
         assert_eq!(
