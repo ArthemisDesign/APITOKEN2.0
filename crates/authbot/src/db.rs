@@ -191,6 +191,11 @@ impl Store {
              CREATE TABLE IF NOT EXISTS responses(
                 offer_id INTEGER, uid INTEGER, status TEXT DEFAULT '', address TEXT DEFAULT '',
                 ts INTEGER DEFAULT 0, PRIMARY KEY(offer_id, uid));
+             CREATE TABLE IF NOT EXISTS offer_archive_events(
+                offer_id INTEGER PRIMARY KEY,
+                seller_chat INTEGER NOT NULL, seller_uid INTEGER NOT NULL,
+                response_status TEXT NOT NULL, job_phase TEXT NOT NULL,
+                archived_by INTEGER NOT NULL, ts INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE IF NOT EXISTS admin_state(
                 chat_id INTEGER PRIMARY KEY, step TEXT, product TEXT DEFAULT '',
                 mode TEXT DEFAULT 'single', quantity INTEGER DEFAULT 1,
@@ -1203,6 +1208,91 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Remove one exact single-offer generation from the operational queue while preserving its
+    /// prior payment/work phase for audit. An uncertain `paying` state is deliberately immutable
+    /// until the administrator completes payment review.
+    pub fn archive_offer(
+        &self,
+        offer_id: i64,
+        seller_chat: i64,
+        expected_token: &str,
+        archived_by: i64,
+    ) -> Result<Option<String>> {
+        let mut connection = self.c.lock().unwrap();
+        let transaction = connection.transaction()?;
+        let state = transaction
+            .query_row(
+                "SELECT u.uid,r.status,j.phase
+                 FROM seller_jobs j
+                 JOIN offers o ON o.id=j.offer_id
+                 JOIN users u ON u.chat_id=j.seller_chat
+                 JOIN responses r ON r.offer_id=j.offer_id AND r.uid=u.uid
+                 WHERE j.seller_chat=?1 AND j.kind='offer' AND j.offer_id=?2
+                   AND j.job_token=?3",
+                rusqlite::params![seller_chat, offer_id, expected_token],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((seller_uid, response_status, job_phase)) = state else {
+            transaction.rollback()?;
+            return Ok(None);
+        };
+        let consistent = matches!(
+            (response_status.as_str(), job_phase.as_str()),
+            ("accepted", "accepted") | ("paid", "processing")
+        );
+        if !consistent {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        let timestamp = now();
+        let audit_changed = transaction.execute(
+            "INSERT INTO offer_archive_events(
+                offer_id,seller_chat,seller_uid,response_status,job_phase,archived_by,ts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                offer_id,
+                seller_chat,
+                seller_uid,
+                response_status,
+                job_phase,
+                archived_by,
+                timestamp
+            ],
+        )?;
+        let response_changed = transaction.execute(
+            "UPDATE responses SET status='cancelled',ts=?3
+             WHERE offer_id=?1 AND uid=?2 AND status=?4",
+            rusqlite::params![offer_id, seller_uid, timestamp, response_status],
+        )?;
+        let job_changed = transaction.execute(
+            "DELETE FROM seller_jobs
+             WHERE seller_chat=?1 AND kind='offer' AND offer_id=?2
+               AND job_token=?3 AND phase=?4",
+            rusqlite::params![seller_chat, offer_id, expected_token, job_phase],
+        )?;
+        if audit_changed != 1 || response_changed != 1 || job_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        transaction.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.commit()?;
+        Ok(Some(job_phase))
     }
 
     // ── машина создания оффера (persisted) ────────────────────────────────────
@@ -2595,6 +2685,128 @@ mod tests {
             s.get_batch_item(batch, 1).unwrap().unwrap().status,
             "processing"
         );
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn archiving_an_accepted_offer_is_exact_and_audit_safe() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("Claude Pro", "$20", 999, 111, "seller", "")
+            .unwrap();
+        assert!(s.accept_offer(offer, 111, 111).unwrap());
+        s.set_want(111, "reg_address").unwrap();
+        let job = s.active_seller_job(111).unwrap().unwrap();
+
+        assert!(s
+            .archive_offer(offer, 111, "stale-generation", 999)
+            .unwrap()
+            .is_none());
+        assert_eq!(s.active_seller_job(111).unwrap().unwrap(), job);
+        assert_eq!(
+            s.archive_offer(offer, 111, &job.reference.token, 999)
+                .unwrap()
+                .as_deref(),
+            Some("accepted")
+        );
+        assert!(s.active_seller_job(111).unwrap().is_none());
+        assert_eq!(
+            s.response_status(offer, 111).unwrap().as_deref(),
+            Some("cancelled")
+        );
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "");
+        assert!(s.get_offer(offer).unwrap().is_some());
+        assert_eq!(s.recover_seller_jobs().unwrap(), 0);
+        assert!(!s.accept_offer(offer, 111, 111).unwrap());
+
+        let audit =
+            s.c.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT seller_chat,seller_uid,response_status,job_phase,archived_by
+                 FROM offer_archive_events WHERE offer_id=?1",
+                    rusqlite::params![offer],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .unwrap();
+        assert_eq!(audit, (111, 111, "accepted".into(), "accepted".into(), 999));
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn offer_archive_blocks_uncertain_payment_but_can_stop_paid_handoff() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        assert!(s.accept_offer(offer, 111, 111).unwrap());
+        assert!(s.claim_offer_payment(offer, 111).unwrap());
+        let paying = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(paying.phase, "paying");
+        assert!(s
+            .archive_offer(offer, 111, &paying.reference.token, 999)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            s.response_status(offer, 111).unwrap().as_deref(),
+            Some("paying")
+        );
+        let audit_count: i64 =
+            s.c.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM offer_archive_events", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+        assert_eq!(audit_count, 0);
+
+        assert!(s.reset_offer_payment(offer, 111).unwrap());
+        assert!(s.claim_offer_payment(offer, 111).unwrap());
+        assert!(s.mark_offer_paid(offer, 111).unwrap());
+        let processing = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(processing.phase, "processing");
+        assert_eq!(
+            s.archive_offer(offer, 111, &processing.reference.token, 999)
+                .unwrap()
+                .as_deref(),
+            Some("processing")
+        );
+        assert!(s.active_seller_job(111).unwrap().is_none());
+        assert_eq!(
+            s.response_status(offer, 111).unwrap().as_deref(),
+            Some("cancelled")
+        );
+        let audit =
+            s.c.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT response_status,job_phase,archived_by
+                 FROM offer_archive_events WHERE offer_id=?1",
+                    rusqlite::params![offer],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap();
+        assert_eq!(audit, ("paid".into(), "processing".into(), 999));
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 

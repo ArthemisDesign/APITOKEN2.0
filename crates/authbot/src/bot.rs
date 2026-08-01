@@ -299,6 +299,15 @@ fn batch_jobs_kb(overview: &BatchOverview, admin: bool) -> Option<Keyboard> {
     (!keyboard.is_empty()).then_some(keyboard)
 }
 
+fn single_job_kb(job: &SellerJob, admin: bool) -> Option<Keyboard> {
+    (admin && matches!(job.phase.as_str(), "accepted" | "processing")).then(|| {
+        vec![vec![(
+            "🗑 Удалить оффер".into(),
+            format!("odel:{}:ask", job.reference.offer_id),
+        )]]
+    })
+}
+
 async fn show_jobs(bot: &Bot, store: &Store, chat: i64, admin: bool) {
     let singles = store
         .active_seller_jobs()
@@ -329,13 +338,18 @@ async fn show_jobs(bot: &Bot, store: &Store, chat: i64, admin: bool) {
         )
         .await;
     for job in singles {
+        let keyboard = single_job_kb(&job, admin);
         let seller = if admin {
             format!("\n👤 Продавец: {}", seller_label(store, job.seller_chat))
         } else {
             String::new()
         };
         let _ = bot
-            .send(chat, &format!("{}{}", seller_job_label(&job), seller))
+            .send_kb(
+                chat,
+                &format!("{}{}", seller_job_label(&job), seller),
+                keyboard.as_ref(),
+            )
             .await;
     }
     for overview in batches {
@@ -2955,6 +2969,121 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
         return;
     }
 
+    // Одиночные оферы удаляет только администратор. Callback подтверждения привязан к exact
+    // generation, поэтому устаревшая кнопка не может остановить повторно запущенную авторизацию.
+    if let Some(rest) = data.strip_prefix("odel:") {
+        if !admin {
+            return;
+        }
+        let mut parts = rest.splitn(2, ':');
+        let offer_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let action = parts.next().unwrap_or_default();
+        let Some(job) = store
+            .active_seller_jobs()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|job| job.reference.kind == "offer" && job.reference.offer_id == offer_id)
+        else {
+            let _ = bot
+                .send(chat, "Оффер уже не находится в активных /jobs.")
+                .await;
+            return;
+        };
+        if action == "ask" {
+            if job.phase == "paying" {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Этот оффер сейчас в неопределённой фазе выплаты. Сначала проверь транзакцию и разблокируй её через payment review.",
+                    )
+                    .await;
+                return;
+            }
+            if !matches!(job.phase.as_str(), "accepted" | "processing") {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Оффер уже изменился; старая кнопка удаления неактивна.",
+                    )
+                    .await;
+                return;
+            }
+            let paid_warning = if job.phase == "processing" {
+                "\n\n⚠️ <b>Выплата уже отмечена отправленной.</b> Авторизация будет остановлена, но факт выплаты останется в аудите."
+            } else {
+                ""
+            };
+            let confirm = vec![vec![(
+                "⚠️ Да, удалить из очереди".into(),
+                format!("odel:{}:{}", offer_id, job.reference.token),
+            )]];
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "🗑 <b>Удалить оффер #{}?</b>\n\nОн исчезнет из активных /jobs, текущая авторизация будет остановлена, а продавец освободится. Данные оффера и исходная фаза сохранятся в архиве. Автоматически восстановить оффер после подтверждения нельзя.{}",
+                        offer_id, paid_warning
+                    ),
+                    Some(&confirm),
+                )
+                .await;
+            return;
+        }
+        if action != job.reference.token {
+            let _ = bot
+                .send(
+                    chat,
+                    "Оффер уже изменился; подтверждение удаления устарело.",
+                )
+                .await;
+            return;
+        }
+        let Some(archived_phase) = store
+            .archive_offer(offer_id, job.seller_chat, &job.reference.token, chat)
+            .ok()
+            .flatten()
+        else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Не удалось удалить оффер: его состояние уже изменилось или выплата требует проверки.",
+                )
+                .await;
+            return;
+        };
+        setup_token::kill(job.seller_chat);
+        crate::codex_login::cancel(job.seller_chat);
+        let payment_note = if archived_phase == "processing" {
+            " Отметка о выполненной выплате сохранена в аудите."
+        } else {
+            ""
+        };
+        let _ = bot
+            .send(
+                chat,
+                &format!(
+                    "🗑 Оффер #{} удалён из активных /jobs. Продавец освобождён.{}",
+                    offer_id, payment_note
+                ),
+            )
+            .await;
+        if chat != job.seller_chat {
+            let _ = bot
+                .send(
+                    job.seller_chat,
+                    &format!(
+                        "🗑 Администратор удалил оффер #{} из рабочей очереди. Продолжать регистрацию или авторизацию по нему больше не нужно.",
+                        offer_id
+                    ),
+                )
+                .await;
+        }
+        return;
+    }
+
     // Продавец и админ могут немедленно освободить продавца от текущего batch. Завершённые
     // позиции остаются завершёнными; текущая попытка инвалидируется и при resume начнётся заново.
     if let Some(rest) = data.strip_prefix("batchpause:") {
@@ -4026,6 +4155,31 @@ mod tests {
 
     #[test]
     fn jobs_card_exposes_progress_and_role_safe_batch_controls() {
+        let mut single = SellerJob {
+            seller_chat: 42,
+            reference: SellerJobRef {
+                kind: "offer".into(),
+                offer_id: 9,
+                batch_id: 0,
+                item_no: 0,
+                token: "0123456789abcdef0123456789abcdef".into(),
+            },
+            product: "ChatGPT Plus".into(),
+            phase: "accepted".into(),
+            total: 1,
+        };
+        assert!(single_job_kb(&single, false).is_none());
+        let single_admin = single_job_kb(&single, true).unwrap();
+        assert_eq!(single_admin[0][0].1, "odel:9:ask");
+        assert!(
+            format!("odel:{}:{}", i64::MAX, single.reference.token).len() <= 64,
+            "confirmation callback must fit Telegram's limit"
+        );
+        single.phase = "paying".into();
+        assert!(single_job_kb(&single, true).is_none());
+        single.phase = "processing".into();
+        assert!(single_job_kb(&single, true).is_some());
+
         let mut overview = BatchOverview {
             batch: PurchaseBatch {
                 id: 7,
