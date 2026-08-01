@@ -2573,9 +2573,9 @@ grep -Fq 'wd_content_studio_runtime_directory "$COMMERCE_RELEASE_ROOT/$sha"' \
   || wd_die 'final verification does not verify the selected Content Studio runtime directory'
 grep -Fq 'promoting exact tested engine binaries' "$ROOT/deploy/deploy.sh" \
   || wd_die 'engine is rebuilt after the candidate gate'
-[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys|admin)' \
+[[ $(grep -Fc 'production-(database|engine|backend|sales|openkeys|admin|devbot)' \
   "$ROOT/deploy/watchdog-github.sh") == 2 ]] \
-  || wd_die 'GitHub deployment reporting does not allow the admin environment'
+  || wd_die 'GitHub deployment reporting does not allow the admin and devbot environments'
 
 # Trusted pre-merge validation is host-owned and SHA-keyed. A separate low-priority service can
 # validate two distinct descendants while production is active, but it shares only the exact-SHA
