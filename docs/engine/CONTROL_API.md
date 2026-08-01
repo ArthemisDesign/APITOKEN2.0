@@ -65,8 +65,9 @@
 2. `POST /admin/account` → движок вернёт `account_id` (`acct_…`). Сохрани его у себя рядом с юзером.
    Повтор с тем же непустым `handle` вернёт тот же аккаунт, поэтому восстановление регистрации
    идемпотентно и не создаёт осиротевшие аккаунты.
-3. `POST /admin/key` c этим `account_id` → движок вернёт **`sk-pool-…`**. Покажи юзеру **один раз**
-   (это его API-ключ, секрет). У аккаунта может быть много ключей (на проекты/команду).
+3. `POST /admin/key` c этим `account_id` → движок вернёт **`sk-pool-…`**. Для strict-аккаунта
+   запрос обязан включать exact `activation_policy_ack` из применённой active policy. Покажи ключ
+   юзеру **один раз** (это его API-ключ, секрет). У аккаунта может быть много ключей.
 
 ### B. Оплата → зачисление (ИДЕМПОТЕНТНО!)
 1. Юзер платит → твой платёжный провайдер шлёт тебе **вебхук**.
@@ -118,10 +119,19 @@ returned oldest-first with `id > after_id`; this is the durable worker cursor fo
 ### Ключи доступа
 ```
 POST /admin/key                         {"account_id", "label"?,
-                                         "spend_limit_nano"?, "expires_ts"?}
+                                         "spend_limit_nano"?, "expires_ts"?,
+                                         "activation_policy_ack"?: {
+                                           "effective_policy_version": integer,
+                                           "policy_digest": string
+                                         }}
                                                                      → 200 {key:"sk-pool-…", key_id:"key_…", account,
-                                                                            spend_limit_nano,expires_ts}  (key виден 1 раз!)
-POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled"} → 200 {updated} | 404 (рекомендуется)
+                                                                            spend_limit_nano,expires_ts}
+                                                                       | 400 | 409  (key виден 1 раз!)
+POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled",
+                                         "activation_policy_ack"?: {
+                                           "effective_policy_version": integer,
+                                           "policy_digest": string
+                                         }} → 200 {updated} | 400 | 404 | 409 (рекомендуется)
 POST /admin/account/{id}/key-id/{key_id}/policy
                                         {"spend_limit_nano":string|null,
                                          "expires_ts":integer|null}
@@ -132,6 +142,13 @@ POST /admin/account/{id}/key-id/{key_id}/policy
 `key_id` не даёт доступа к `/v1` и безопасен для хранения в коммерческой PostgreSQL. Новый backend
 должен отзывать ключ по `key_id`, чтобы никогда не сохранять пригодный к использованию `sk-pool-…`.
 Полный ключ никогда помещается в URL; legacy endpoint удалён.
+
+Для strict-аккаунта выпуск нового ключа и перевод disabled-ключа обратно в `active` требуют ACK,
+который дословно совпадает с `effective_version` и `content_digest` текущей active policy.
+Отсутствующий, устаревший или неверный ACK возвращает `409`; синтаксически допустимый, но
+невалидный identity (неположительная версия, пустой/необрезанный digest) — `400`. Отключение ключа
+не требует ACK. Для legacy/shadow-аккаунта поле необязательно, но если оно передано, движок всё
+равно проверяет exact match и не принимает двусмысленное подтверждение.
 
 `spend_limit_nano` is an optional positive decimal string and caps lifetime charged platform spend
 for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both

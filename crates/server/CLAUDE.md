@@ -70,6 +70,14 @@
   Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI plane. Server собирает fixed
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
   FIFO flush.
+- Тот же compile-fixed pricing manifest используется независимо от shadow enablement при claim
+  PostgreSQL owner epoch, startup heartbeat и каждом регулярном heartbeat. Active strict
+  dependencies, которых нет в manifest, не получают новый owner; drift после claim снимает
+  readiness и fence-ит slot. Scalar-only `claim_instance` остаётся несовместимым со strict heads.
+- `POST /admin/key` и reactivation через `/admin/key-id/{key_id}/status` принимают nested
+  `activation_policy_ack {effective_policy_version, policy_digest}`. Для strict binding exact ACK
+  обязателен; отсутствующий/stale/wrong identity даёт 409, malformed identity — 400. Disable не
+  требует ACK. Секрет ключа по-прежнему выдаётся один раз и только после durable ACK check.
 - `db stage8-evidence` получает тот же compile-fixed runtime manifest из `Settings`, требует явное
   frozen window/sample limits и внешний агрегат Gemini admissions, печатает read-only JSON и
   возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
@@ -108,8 +116,12 @@
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; оба blue-green поколения читают один sealed roster, поэтому паритет
   authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
-- `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes; raw client
-  IDs, prompt content, account IDs и subscription IDs в Redis/метрики не попадают.
+- `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes, и
+  fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini. Raw client IDs,
+  prompt content, account IDs, model IDs и subscription IDs в Redis/метрики не попадают.
+- Stage 9 runtime delivery не активирует production bindings и не применяет account assignments.
+  Production Stage 5/6 data application, Stage 8 evidence и strict activation остаются
+  заблокированы до reviewed B2B/service/OpenKeys assignment matrix.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер

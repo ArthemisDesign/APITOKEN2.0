@@ -17,8 +17,12 @@ typed shadow work-item/evaluation builder в `forward`, без caller/config/tra
 worker не влияют на HTTP, reserve, settlement или readiness. Этот runtime доставлен default-off.
 Текущий application-checkpoint Stage 3C добавляет аутентифицированный versioned Control API поверх
 уже доставленного registry CAS, не выполняя backfill, strict activation или key provisioning.
-Production shadow activation, settlement tariff pinning и использование shadow outcome в admission
-в Stage 3C не входят.
+Текущий Stage 9 application-checkpoint добавляет policy-native reserve/settlement, funding buckets,
+key activation ACK, runtime-manifest fencing и live fail-closed Anthropic/OpenAI resolver path;
+Gemini strict metered traffic остаётся запрещён. Кодовый checkpoint не меняет production bindings,
+не выполняет Stage 5/6 data application, не производит assignment matrix по аналогии и не считается
+Stage 8 evidence или strict activation. Production application остаётся заблокированным до reviewed
+фактической B2B/service/OpenKeys assignment matrix.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -2000,6 +2004,25 @@ Application checkpoint Stage 8 добавляет два read-only evidence repo
 - Key activation требует policy ACK.
 - Segment/master switches становятся authority.
 - Bonus eligibility применяется до reserve.
+
+Application checkpoint Stage 9 реализует runtime-контракт, но доставляется dormant относительно
+production data:
+
+- strict Anthropic/OpenAI читают один coherent policy bundle и не имеют scalar reserve fallback;
+  provider/model/policy/dual-lineage/runtime-manifest/tariff identity фиксируются до денег;
+- `track` резервирует bonus-first, затем paid; `discount` может резервировать только paid. Cancel,
+  settlement и recovery сохраняют исходную funding identity;
+- key issue и reactivation требуют exact active-policy ACK. Stale/missing/wrong ACK — конфликт до
+  выдачи секрета или смены статуса;
+- startup claim и heartbeat публикуют compile-fixed manifest и fail closed, если active strict
+  dependencies не поддерживаются данным runtime;
+- bounded metrics различают missing policy/rule, unavailable model/switch, unsupported capability,
+  invalid contract и reserve/lifecycle failures. Gemini имеет отдельный fixed provider series и
+  допускает только нулевое число strict admissions;
+- нулевой strict multiplier пока fail closed: без отдельного утверждённого zero-charge funding
+  lifecycle runtime не создаёт фиктивный hold или funding attribution;
+- Stage 5/6 application, повторное Stage 8 evidence и strict activation этим коммитом не
+  выполняются. Ни B2B, ни service, ни OpenKeys assignments не выводятся автоматически.
 
 Как только появились различающиеся provider/model rules, rollback на scalar-only binary становится
 небезопасным. Readiness/deploy fencing должны разрешать откат только на policy-capable build.

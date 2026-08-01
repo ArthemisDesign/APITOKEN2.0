@@ -97,6 +97,24 @@ mark-delivering/cancel/settlement lifecycle. Default config остаётся `fa
 atomic reserve latency histogram. Gemini, policy read/resolver, shadow queue, readiness и
 settlement pricing этим caller не затронуты.
 
+**Stage 9 strict runtime:** ключ с verified `strict/strict` binding больше не входит в scalar path.
+Anthropic и OpenAI читают один coherent `PricingReadBundle`, фиксируют provider-owned canonical
+model/tariff identity, вызывают fail-closed resolver и атомарно сохраняют policy snapshot вместе с
+резервом и ordered funding allocations. `track` видит bonus+paid и расходует welcome bonus первым;
+`discount` видит только paid. Settlement использует pinned multiplier, tariff timestamp и premium
+modifiers; cancel/RAII возвращает каждую allocation в исходный bucket. OpenAI over-hold usage не
+создаёт заведомо невалидный settlement, а оставляет durable reservation для full-hold recovery.
+Gemini metered strict admission запрещён до отдельного продуктового catalog/rule launch. Нулевой
+strict multiplier пока fail-closed: zero-charge snapshot не получает выдуманную funding identity,
+пока отдельный контракт явно не определит такой lifecycle.
+
+Strict counters имеют только фиксированные `provider`, `mode`, `scope`, `reason`; Gemini входит в
+фиксированный provider set и его admitted series обязана оставаться нулевой. Typed resolver
+rejections сводятся к bounded operational classes (missing policy/rule, unavailable model/switch,
+unsupported capability, invalid contract), без account/model labels. Наличие этого runtime-кода
+само по себе не переводит production bindings в strict и не заменяет reviewed assignment matrix,
+Stage 8 evidence или Stage 5/6 data application.
+
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
