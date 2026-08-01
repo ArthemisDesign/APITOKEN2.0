@@ -19,6 +19,8 @@ export interface FingerprintEntry {
 export interface DeployState {
   sha: string;
   title: string;
+  /** Git author name (+ @login, если коммит привязан к GitHub-аккаунту). */
+  author?: string;
   messageId: number | null;
   startedAt: number;
   phases: Record<string, PhaseState>;
@@ -30,6 +32,7 @@ export interface DeployState {
 export interface GithubSnapshot {
   sha: string;
   title: string;
+  author?: string;
   statuses: Record<string, PhaseState>;
   deployments: Record<string, { id: number; state: PhaseState; sha?: string }>;
 }

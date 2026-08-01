@@ -14,7 +14,7 @@ export interface AlertInstance {
 }
 
 export type DeployEvent =
-  | { kind: "new-sha"; sha: string; title: string }
+  | { kind: "new-sha"; sha: string; title: string; author?: string }
   | { kind: "phase"; sha: string; phase: string; state: PhaseState }
   | { kind: "green"; sha: string }
   | { kind: "quarantine"; sha: string; phase?: string }

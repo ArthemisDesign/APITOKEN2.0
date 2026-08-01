@@ -232,14 +232,17 @@ export class Router {
     const checklist = DEPLOY_PHASES
       .map((phase) => `${phaseIcon(deploy.phases[phase])} ${phase}`)
       .join(" · ");
-    const lines = [
-      `🚀 <b>Deploy</b> <code>${escapeHtml(short)}</code> — ${escapeHtml(truncate(deploy.title, 120))}`,
-      checklist,
-    ];
-    let footer = `Started: ${fmtTime(deploy.startedAt)} · <a href="${this.commitUrl(deploy.sha)}">commit</a>`;
+    // Финальное состояние читается с первого взгляда по заголовку, а не только по футеру.
+    const header = finished
+      ? `${finished.ok ? "✅ <b>Deployed</b>" : "❌ <b>Deploy failed</b>"} <code>${escapeHtml(short)}</code> — ${escapeHtml(truncate(deploy.title, 120))}`
+      : `🚀 <b>Deploy</b> <code>${escapeHtml(short)}</code> — ${escapeHtml(truncate(deploy.title, 120))}`;
+    const lines = [header, checklist];
+    let footer = `Started: ${fmtTime(deploy.startedAt)}`;
+    if (deploy.author) footer += ` · 👤 ${escapeHtml(deploy.author)}`;
+    footer += ` · <a href="${this.commitUrl(deploy.sha)}">commit</a>`;
     if (deploy.failedPhase) lines.push(`❌ failed phase: <b>${escapeHtml(deploy.failedPhase)}</b>`);
     if (finished) {
-      footer += ` · ${finished.ok ? "✅ done" : "❌ failed"} in ${fmtDuration(finished.durationMs)}`;
+      footer += ` · ${finished.ok ? "done" : "failed"} in ${fmtDuration(finished.durationMs)}`;
     }
     lines.push(footer);
     return lines.join("\n");
@@ -249,7 +252,7 @@ export class Router {
     try {
       switch (event.kind) {
         case "new-sha":
-          await this.deployNewSha(event.sha, event.title);
+          await this.deployNewSha(event.sha, event.title, event.author);
           break;
         case "phase":
           await this.deployPhase(event.sha, event.phase, event.state);
@@ -269,10 +272,18 @@ export class Router {
     }
   }
 
-  private async deployNewSha(sha: string, title: string): Promise<void> {
+  private async deployNewSha(sha: string, title: string, author?: string): Promise<void> {
     const { state, tg, chatId, topics } = this.deps;
     const now = this.now();
-    const deploy: DeployState = { sha, title, messageId: null, startedAt: now, phases: {}, done: false };
+    const deploy: DeployState = {
+      sha,
+      title,
+      ...(author ? { author } : {}),
+      messageId: null,
+      startedAt: now,
+      phases: {},
+      done: false,
+    };
     state.data.deploy = deploy;
     state.data.lastProcessedSha = sha;
     const messageId = await tg.sendMessage(chatId, this.renderDeploy(deploy), { threadId: topics.deploys });
@@ -303,8 +314,11 @@ export class Router {
     if (!deploy || deploy.sha !== sha || deploy.done) return;
     deploy.done = true;
     const now = this.now();
+    // deploy/watchdog зелёный — значит, прошли ВСЕ лейны, включая те, чей последний
+    // известный нам статус ещё pending/неизвестен (наблюдалось в проде: финальное
+    // сообщение «done», а engine навсегда 🔄). Нормализуем всё, кроме явных failure.
     for (const phase of DEPLOY_PHASES) {
-      if (!deploy.phases[phase]) deploy.phases[phase] = "success";
+      if (deploy.phases[phase] !== "failure") deploy.phases[phase] = "success";
     }
     state.recordEvent({ ts: now, kind: "deploy", name: sha.slice(0, 7), severity: "success" }, now);
     await this.editDeploy(deploy, { ok: true, durationMs: now - deploy.startedAt });
@@ -322,7 +336,7 @@ export class Router {
       await this.editDeploy(deploy, { ok: false, durationMs: now - deploy.startedAt });
     }
     state.recordEvent({ ts: now, kind: "deploy", name: sha.slice(0, 7), severity: "quarantine" }, now);
-    const text = `🚨 <b>Deploy quarantined</b> <code>${escapeHtml(sha.slice(0, 7))}</code>${phase ? ` — phase <b>${escapeHtml(phase)}</b> failed` : ""}\n<a href="${this.commitUrl(sha)}">commit</a> · SHA в карантине, пайплайн остановлен`;
+    const text = `🚨 <b>Deploy quarantined</b> <code>${escapeHtml(sha.slice(0, 7))}</code>${phase ? ` — phase <b>${escapeHtml(phase)}</b> failed` : ""}\n<a href="${this.commitUrl(sha)}">commit</a>${deploy?.author ? ` · 👤 ${escapeHtml(deploy.author)}` : ""} · SHA в карантине, пайплайн остановлен`;
     await tg.sendMessage(chatId, text, { threadId: topics.critical });
     this.countEvent("critical", "quarantine");
     await state.save();

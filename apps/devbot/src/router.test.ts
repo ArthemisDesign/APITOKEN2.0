@@ -172,6 +172,7 @@ describe("Router deploy events", () => {
     await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x" });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.options.threadId).toBe(TOPICS.deploys);
+    expect(sent[0]?.text).toContain("🚀 <b>Deploy</b>");
     expect(sent[0]?.text).toContain("<code>1bd14c3</code>");
     expect(sent[0]?.text).toContain("⏳ tests");
 
@@ -181,24 +182,41 @@ describe("Router deploy events", () => {
     expect(edited[0]?.text).toContain("✅ tests");
   });
 
-  it("finishes the deploy message with duration on green", async () => {
+  it("shows the commit author in the deploy message footer", async () => {
+    const { router, sent } = await makeRouter();
+    await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x", author: "3xcalibur @3xcalibur-tech" });
+    expect(sent[0]?.text).toContain("👤 3xcalibur @3xcalibur-tech");
+  });
+
+  it("finishes the deploy message with a clear header, duration and no stale pending phases", async () => {
     const { router, edited } = await makeRouter();
     await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x" });
+    await router.handleDeployEvent({ kind: "phase", sha: "1bd14c3deadbeef", phase: "engine", state: "pending" });
+    expect(edited.at(-1)?.text).toContain("🔄 engine");
     await router.handleDeployEvent({ kind: "green", sha: "1bd14c3deadbeef" });
     const last = edited.at(-1)?.text ?? "";
-    expect(last).toContain("✅ done");
+    // Заголовок явно говорит о завершении, а зелёный watchdog закрывает и те фазы,
+    // чей последний известный статус был pending (реальный кейс: «done» с вечным 🔄 engine).
+    expect(last).toContain("✅ <b>Deployed</b>");
+    expect(last).toContain("done in");
     expect(last).toContain("✅ tests");
+    expect(last).toContain("✅ engine");
     expect(last).toContain("✅ admin");
+    expect(last).not.toContain("🔄");
+    expect(last).not.toContain("⏳");
   });
 
   it("duplicates quarantine to Critical and marks the deploy message failed", async () => {
     const { router, sent, edited } = await makeRouter();
-    await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x" });
+    await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x", author: "qqjamba" });
     await router.handleDeployEvent({ kind: "quarantine", sha: "1bd14c3deadbeef", phase: "tests" });
-    expect(edited.at(-1)?.text).toContain("❌ failed");
+    const lastDeploy = edited.at(-1)?.text ?? "";
+    expect(lastDeploy).toContain("❌ <b>Deploy failed</b>");
+    expect(lastDeploy).toContain("failed phase: <b>tests</b>");
     const criticalMessage = sent.find((message) => message.options.threadId === TOPICS.critical);
     expect(criticalMessage?.text).toContain("quarantined");
     expect(criticalMessage?.text).toContain("tests");
+    expect(criticalMessage?.text).toContain("👤 qqjamba");
   });
 
   it("sends candidate-validation events to the CI topic", async () => {

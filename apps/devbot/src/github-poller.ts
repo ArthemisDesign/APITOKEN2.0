@@ -55,7 +55,7 @@ export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot)
   const events: DeployEvent[] = [];
   const newSha = next.sha !== prev.sha;
   if (newSha) {
-    events.push({ kind: "new-sha", sha: next.sha, title: next.title });
+    events.push({ kind: "new-sha", sha: next.sha, title: next.title, ...(next.author ? { author: next.author } : {}) });
   }
   for (const [context, state] of Object.entries(next.statuses)) {
     if (!newSha && prev.statuses[context] === state) continue;
@@ -123,9 +123,20 @@ export class GithubPoller {
   /** Один цикл опроса: statuses origin/master HEAD + deployments, diff против state. */
   async pollOnce(): Promise<void> {
     const { state } = this.deps;
-    const branch = await this.api<{ sha: string; commit: { message: string } }>("/commits/master");
+    const branch = await this.api<{
+      sha: string;
+      commit: { message: string; author?: { name?: string } };
+      author?: { login?: string } | null;
+    }>("/commits/master");
     const sha = branch.sha;
     const title = branch.commit.message.split("\n")[0] ?? "";
+    // Кто отправил коммит: git author name всегда есть в коммите; @login — только когда
+    // email коммита привязан к GitHub-аккаунту (для агентских адресов author === null).
+    const gitName = branch.commit.author?.name?.trim() ?? "";
+    const login = branch.author?.login?.trim() ?? "";
+    const author = gitName && login && gitName.toLowerCase() !== login.toLowerCase()
+      ? `${gitName} @${login}`
+      : gitName || (login ? `@${login}` : undefined);
 
     const statusesRaw = await this.api<GhStatus[]>(`/commits/${sha}/statuses?per_page=100`);
     const statuses: Record<string, PhaseState> = {};
@@ -155,7 +166,7 @@ export class GithubPoller {
       };
     }
 
-    const snapshot: GithubSnapshot = { sha, title, statuses, deployments };
+    const snapshot: GithubSnapshot = { sha, title, ...(author ? { author } : {}), statuses, deployments };
     const events = diffSnapshots(state.data.github, snapshot);
     state.data.github = snapshot;
     if (events.length > 0) {

@@ -28,6 +28,17 @@ describe("github diffSnapshots", () => {
     expect(events).toContainEqual({ kind: "phase", sha: SHA2, phase: "tests", state: "pending" });
   });
 
+  it("carries the commit author through the new-sha event when present", () => {
+    const prev = snapshot();
+    const next = snapshot({ sha: SHA2, author: "qqjamba" });
+    expect(diffSnapshots(prev, next)[0]).toEqual({
+      kind: "new-sha",
+      sha: SHA2,
+      title: "feat: something",
+      author: "qqjamba",
+    });
+  });
+
   it("emits phase transitions only on state change", () => {
     const prev = snapshot({ statuses: { "deploy/tests": "pending" } });
     const same = snapshot({ statuses: { "deploy/tests": "pending" } });
