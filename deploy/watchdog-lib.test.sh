@@ -1396,6 +1396,9 @@ grep -Fq '/usr/bin/systemctl --no-block stop claude-api-openai@[0-9]*.service' \
   || wd_die "OpenAI blue-green cannot retire its old HTTP slot outside the deploy path"
 grep -Fq '/usr/bin/systemctl restart claude-api-gemini.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl --no-block stop claude-api-gemini.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "first Gemini slot cutover cannot retire the legacy singleton asynchronously"
 grep -Fq '/usr/bin/systemctl --no-block stop claude-api-gemini@[0-9]*.service' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "Gemini blue-green cannot retire its old slot outside the deploy path"
@@ -1754,6 +1757,8 @@ grep -Fq 'GEMINI_TARGET_PREEXISTING=1' "$provider_controller" \
   || wd_die 'same-release recovery can stop the only pre-existing current Gemini slot'
 grep -Fq 'recovery retains the pre-existing current Gemini target' "$provider_controller" \
   || wd_die 'pre-drain recovery can destroy a previously admitted Gemini target'
+grep -Fq 'as the release-rollback anchor' "$provider_controller" \
+  || wd_die 'failed first Gemini cutover can remove the only alternate-port rollback anchor'
 grep -Fq 'wait_gemini_retirement_ack "$GEMINI_ACTIVE_UNIT" "$GEMINI_ACTIVE_PORT"' \
   "$provider_controller" \
   || wd_die 'Gemini async retirement is not acknowledged before commit'

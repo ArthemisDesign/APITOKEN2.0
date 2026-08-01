@@ -500,6 +500,15 @@ recover() {
       if [[ $gemini_old_recovered == 1 && $GEMINI_TARGET_STARTED == 1 ]]; then
         if [[ $GEMINI_TARGET_PREEXISTING == 1 ]]; then
           warn "recovery retains the pre-existing current Gemini target $GEMINI_TARGET_UNIT"
+        elif [[ $GEMINI_OLD_SIGNALLED == 1 \
+            && $GEMINI_ACTIVE_UNIT == "$GEMINI_LEGACY_UNIT" ]] \
+            && gemini_target_serves_current; then
+          # The outer release rollback needs this alternate-port process after `current` moves back:
+          # the restarted singleton still executes the failed candidate and cannot itself become the
+          # old-release target without a bind gap. Keep the verified slot live but boot-disabled;
+          # Caddy's ordered policy sends new work to the recovered singleton until rollback drains it.
+          warn "recovery retains verified Gemini target $GEMINI_TARGET_UNIT as the release-rollback anchor"
+          systemctl_raw disable "$GEMINI_TARGET_UNIT" || failed=1
         else
           warn "recovery stopping the unverified Gemini target $GEMINI_TARGET_UNIT"
           systemctl_raw stop "$GEMINI_TARGET_UNIT" || failed=1

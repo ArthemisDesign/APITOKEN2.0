@@ -169,6 +169,8 @@ require_permitted 'legacy Codex home migration' \
 require_permitted 'Gemini provider restart' /usr/bin/systemctl restart claude-api-gemini.service
 require_permitted 'Gemini provider stop' /usr/bin/systemctl stop claude-api-gemini.service
 require_permitted 'Gemini provider enable' /usr/bin/systemctl enable claude-api-gemini.service
+require_permitted 'Gemini provider async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-gemini.service
 require_permitted 'Gemini provider drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini.service
 require_permitted 'Gemini target start' /usr/bin/systemctl start claude-api-gemini@8799.service

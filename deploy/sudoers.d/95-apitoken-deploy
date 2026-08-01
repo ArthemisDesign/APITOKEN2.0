@@ -120,6 +120,7 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl restart claude-api-gemini.service, \
     /usr/bin/systemctl enable claude-api-gemini.service, \
     /usr/bin/systemctl disable claude-api-gemini.service, \
+    /usr/bin/systemctl --no-block stop claude-api-gemini.service, \
     /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini.service, \
     /usr/bin/systemctl start claude-api-gemini@[0-9]*.service, \
     /usr/bin/systemctl stop claude-api-gemini@[0-9]*.service, \
