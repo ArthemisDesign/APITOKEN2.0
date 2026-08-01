@@ -47,19 +47,18 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
   const [provider, setProviderState] = useState<IntegrationProvider>("anthropic");
   const [tool, setTool] = useState<IntegrationTool>("claude-code");
   const [os, setOs] = useState<IntegrationOs>("unix");
-  const [modelId, setModelId] = useState(INTEGRATION_MODELS.anthropic[0].id);
   const [copiedStep, setCopiedStep] = useState<number | null>(null);
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
 
+  const modelId = INTEGRATION_MODELS[provider][0].id;
   const guide = useMemo(() => buildIntegrationGuide({ provider, tool, os, modelId, language }), [provider, tool, os, modelId, language]);
   const activeProvider = providers.find((candidate) => candidate.id === provider)!;
   const activeTool = tools.find((candidate) => candidate.id === tool)!;
   const activeOs = operatingSystems.find((candidate) => candidate.id === os)!;
-  const activeModel = INTEGRATION_MODELS[provider].find((model) => model.id === modelId) ?? INTEGRATION_MODELS[provider][0];
+  const activeModel = INTEGRATION_MODELS[provider][0];
 
   function setProvider(nextProvider: IntegrationProvider) {
     setProviderState(nextProvider);
-    setModelId(INTEGRATION_MODELS[nextProvider][0].id);
     if (!isToolCompatible(tool, nextProvider)) setTool(defaultTool[nextProvider]);
   }
 
@@ -96,16 +95,6 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
               </button>;
             })}
           </div>
-        </section>
-
-        <section className="ib-group" aria-label={tr(language, "Model", "Модель")}>
-          <h6>{tr(language, "Model", "Модель")}</h6>
-          <label className="ib-select">
-            <select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label={tr(language, "Model", "Модель")}>
-              {INTEGRATION_MODELS[provider].map((model) => <option value={model.id} key={model.id}>{model.name}</option>)}
-            </select>
-            <ChevronIcon />
-          </label>
         </section>
 
         <section className="ib-group" aria-label={tr(language, "Operating system", "Операционная система")}>
@@ -185,10 +174,6 @@ export function IntegrationBuilder({ language }: { language: IntegrationLanguage
 
 function CheckIcon() {
   return <svg className="ib-check" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5.5" /></svg>;
-}
-
-function ChevronIcon() {
-  return <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5.5 7.5 4.5 4.5 4.5-4.5" /></svg>;
 }
 
 function CopyIcon({ copied }: { copied: boolean }) {

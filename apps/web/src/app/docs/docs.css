@@ -78,7 +78,7 @@
 .ib-row:not(:disabled):hover{background:var(--bg-soft)}
 .ib-row.active{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
 .ib-row:disabled{cursor:not-allowed;opacity:.45}
-.ib-row:focus-visible,.ib-select select:focus-visible,.ib-code button:focus-visible,.ib-endpoint button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:-2px}
+.ib-row:focus-visible,.ib-code button:focus-visible,.ib-endpoint button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:-2px}
 .ib-icon{flex:none;width:19px;height:19px;background:var(--txt-3);-webkit-mask-position:center;-webkit-mask-repeat:no-repeat;-webkit-mask-size:contain;mask-position:center;mask-repeat:no-repeat;mask-size:contain}
 .ib-row.active .ib-icon{background:var(--txt)}
 .ib-icon.p-anthropic{-webkit-mask-image:url("/assets/providers/anthropic.svg");mask-image:url("/assets/providers/anthropic.svg")}
@@ -95,10 +95,6 @@
 .ib-row-text small{color:var(--txt-3);font-size:12.5px;line-height:1.35}
 .ib-check{flex:none;margin-left:auto;color:var(--accent)}
 .ib-row-tag{flex:none;margin-left:auto;color:var(--txt-4);font-size:11px;font-style:normal;font-weight:600}
-.ib-select{position:relative;display:block}
-.ib-select select{width:100%;min-width:0;padding:13px 38px 13px 14px;border:1px solid var(--line);border-radius:12px;outline:0;appearance:none;background:var(--bg-card);color:var(--txt);font-family:var(--font-ui);font-size:14px;font-weight:550;cursor:pointer}
-.ib-select select:hover{background:var(--bg-soft)}
-.ib-select svg{position:absolute;top:50%;right:14px;transform:translateY(-50%);color:var(--txt-3);pointer-events:none}
 .docs-integration-builder .ib-guide{min-width:0;padding:28px 32px 28px}
 .ib-guide-head{min-width:0}
 .ib-guide-head h4{margin:0;font-family:var(--font-ui);font-size:22px;font-weight:650;line-height:1.25;letter-spacing:-.02em;text-wrap:balance}
