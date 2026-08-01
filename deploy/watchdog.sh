@@ -1999,6 +1999,19 @@ deploy_devbot() {
     wd_log "devbot disabled: $DEVBOT_ENV_FILE missing — skipping (devbot.sha not advanced)"
     return 0
   fi
+  local candidate
+  candidate=$(candidate_for "$sha")
+  if [[ ! -f $candidate/apps/devbot/dist/main.js ]]; then
+    # A candidate without the TypeScript lane (deploy/observability/engine-only diff) carries no
+    # built devbot. By classifier construction its devbot code is identical to the running
+    # release, so there is nothing to roll. Do NOT advance devbot.sha here: while the baseline
+    # is missing the lane would otherwise keep quarantining every TypeScript-less master after
+    # provisioning (devbot-deploy.sh dies on the missing dist). Deferring retries on the next
+    # TypeScript-bearing master, which is guaranteed to carry a built devbot.
+    github_status success deploy/devbot "No built devbot in this candidate; rollout deferred"
+    wd_log "candidate $sha carries no built devbot (TypeScript lane not selected) — rollout deferred (devbot.sha not advanced)"
+    return 0
+  fi
   github_deployment_start devbot production-devbot http://127.0.0.1:3800/health
   "$DEVBOT_RUNNER" "$sha"
   wd_atomic_write "$DEVBOT_FILE" "$sha"

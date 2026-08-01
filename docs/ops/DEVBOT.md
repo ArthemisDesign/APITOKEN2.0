@@ -308,6 +308,12 @@ devbot` добавляются в `docs/DEPENDENCIES.md`, а `apps/devbot` — �
   `deploy/devbot-deploy.sh`, релизный корень `/opt/apitoken/devbot-releases`, статус-контекст
   `deploy/devbot`, deployment-окружение `production-devbot`. Реализовано в
   `deploy/watchdog.sh` (классификатор `wd_path_is_devbot` — `deploy/watchdog-lib.sh`).
+  Кандидат без TypeScript-лейны (deploy/observability/engine-only diff) не несёт собранный
+  `apps/devbot/dist` — по построению классификатора его devbot-код идентичен запущенному
+  релизу, поэтому lane завершается зелёным deferral'ом, НЕ двигая `devbot.sha`; реальный
+  роллаут происходит на ближайшем master с TypeScript-лейной. Двигать baseline здесь нельзя:
+  иначе после provisioning каждый TypeScript-less master уходил бы в карантин
+  (`devbot-deploy.sh` падает на отсутствующем dist).
 - Наблюдаемость бота:
   - падение юнита ловит существующий `ProjectSystemdUnitFailed` (паттерн `apitoken-*`);
   - heartbeat: каждые 60 с бот атомарно переписывает

@@ -2201,6 +2201,10 @@ grep -Fq 'github_deployment_start devbot production-devbot' "$ROOT/deploy/watchd
   || wd_die 'the devbot lane does not publish its deployment environment'
 grep -Fq 'success deploy/devbot' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the devbot lane does not publish its status context'
+# A TypeScript-less candidate carries no built devbot; the lane must defer green WITHOUT advancing
+# devbot.sha, or every deploy/observability/engine-only master is quarantined after provisioning.
+grep -Fq 'rollout deferred (devbot.sha not advanced)' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the devbot lane does not defer TypeScript-less candidates'
 
 # A pre-candidate failure must never quarantine a commit: no SHA has been evaluated at that point.
 grep -Fq 'no commit was evaluated' "$ROOT/deploy/watchdog.sh" \
