@@ -1096,6 +1096,9 @@ pub fn open(path: &str) -> Result<Connection> {
         "CREATE TABLE IF NOT EXISTS codex_home_spend( \
            home_id TEXT PRIMARY KEY, \
            spent_nano INTEGER NOT NULL DEFAULT 0 CHECK(spent_nano >= 0), \
+           spent_nanocredits INTEGER CHECK(spent_nanocredits IS NULL OR spent_nanocredits >= 0), \
+           credit_tracking_started_ts INTEGER \
+             CHECK(credit_tracking_started_ts IS NULL OR credit_tracking_started_ts > 0), \
            updated_ts INTEGER NOT NULL); \
          CREATE TABLE IF NOT EXISTS codex_home_health( \
            home_id TEXT PRIMARY KEY, \
@@ -1131,6 +1134,27 @@ pub fn open(path: &str) -> Result<Connection> {
            used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
            observed_fraction_units INTEGER CHECK(observed_fraction_units >= 0), \
            observed_spend_nano INTEGER CHECK(observed_spend_nano >= 0), \
+           anchor_spend_nanocredits INTEGER \
+             CHECK(anchor_spend_nanocredits IS NULL OR anchor_spend_nanocredits >= 0), \
+           observed_spend_nanocredits INTEGER \
+             CHECK(observed_spend_nanocredits IS NULL OR observed_spend_nanocredits >= 0), \
+           current_capacity_nanocredits INTEGER \
+             CHECK(current_capacity_nanocredits IS NULL OR current_capacity_nanocredits >= 0), \
+           current_low_nanocredits INTEGER \
+             CHECK(current_low_nanocredits IS NULL OR current_low_nanocredits >= 0), \
+           current_high_nanocredits INTEGER \
+             CHECK(current_high_nanocredits IS NULL OR current_high_nanocredits >= 0), \
+           last_capacity_nanocredits INTEGER \
+             CHECK(last_capacity_nanocredits IS NULL OR last_capacity_nanocredits >= 0), \
+           last_low_nanocredits INTEGER \
+             CHECK(last_low_nanocredits IS NULL OR last_low_nanocredits >= 0), \
+           last_high_nanocredits INTEGER \
+             CHECK(last_high_nanocredits IS NULL OR last_high_nanocredits >= 0), \
+           credit_samples INTEGER CHECK(credit_samples IS NULL OR credit_samples >= 0), \
+           credit_estimator_version INTEGER \
+             CHECK(credit_estimator_version IS NULL OR credit_estimator_version > 0), \
+           unattributed_fraction_units INTEGER \
+             CHECK(unattributed_fraction_units IS NULL OR unattributed_fraction_units >= 0), \
            estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
            version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
            updated_ts INTEGER NOT NULL, \
@@ -1138,7 +1162,11 @@ pub fn open(path: &str) -> Result<Connection> {
            CHECK(current_low_nano IS NULL OR current_capacity_nano IS NOT NULL), \
            CHECK(current_high_nano IS NULL OR current_capacity_nano IS NOT NULL), \
            CHECK(last_low_nano IS NULL OR last_capacity_nano IS NOT NULL), \
-           CHECK(last_high_nano IS NULL OR last_capacity_nano IS NOT NULL)); \
+           CHECK(last_high_nano IS NULL OR last_capacity_nano IS NOT NULL), \
+           CHECK((current_low_nanocredits IS NULL AND current_high_nanocredits IS NULL) \
+             OR current_capacity_nanocredits IS NOT NULL), \
+           CHECK((last_low_nanocredits IS NULL AND last_high_nanocredits IS NULL) \
+             OR last_capacity_nanocredits IS NOT NULL)); \
          CREATE TABLE IF NOT EXISTS codex_window_observations( \
            id INTEGER PRIMARY KEY AUTOINCREMENT, \
            home_id TEXT NOT NULL, \
@@ -1148,9 +1176,48 @@ pub fn open(path: &str) -> Result<Connection> {
            used_percent INTEGER NOT NULL CHECK(used_percent BETWEEN 0 AND 100), \
            used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
            gateway_spend_nano INTEGER NOT NULL CHECK(gateway_spend_nano >= 0), \
+           gateway_spend_nanocredits INTEGER \
+             CHECK(gateway_spend_nanocredits IS NULL OR gateway_spend_nanocredits >= 0), \
            UNIQUE(home_id,window_duration_mins,resets_at,observed_at,used_percent,gateway_spend_nano)); \
          CREATE INDEX IF NOT EXISTS codex_window_observations_window \
-           ON codex_window_observations(home_id,window_duration_mins,resets_at,observed_at);",
+           ON codex_window_observations(home_id,window_duration_mins,resets_at,observed_at); \
+         CREATE TABLE IF NOT EXISTS codex_turn_calibration_events( \
+           request_id TEXT PRIMARY KEY, \
+           home_id TEXT NOT NULL CHECK(home_id <> ''), \
+           model_id TEXT NOT NULL CHECK(model_id <> ''), \
+           service_tier TEXT NOT NULL CHECK(service_tier IN ('standard','fast')), \
+           provider_reported_tier TEXT, \
+           api_tariff_schedule_id TEXT NOT NULL CHECK(api_tariff_schedule_id <> ''), \
+           credit_schedule_id TEXT NOT NULL CHECK(credit_schedule_id <> ''), \
+           completed_at INTEGER NOT NULL CHECK(completed_at > 0), \
+           input_tokens INTEGER NOT NULL CHECK(input_tokens >= 0), \
+           cached_input_tokens INTEGER NOT NULL CHECK(cached_input_tokens >= 0), \
+           cache_write_input_tokens INTEGER NOT NULL CHECK(cache_write_input_tokens >= 0), \
+           output_tokens INTEGER NOT NULL CHECK(output_tokens >= 0), \
+           reasoning_output_tokens INTEGER NOT NULL CHECK(reasoning_output_tokens >= 0), \
+           api_input_nanousd INTEGER NOT NULL CHECK(api_input_nanousd >= 0), \
+           api_cached_input_nanousd INTEGER NOT NULL CHECK(api_cached_input_nanousd >= 0), \
+           api_cache_write_nanousd INTEGER NOT NULL CHECK(api_cache_write_nanousd >= 0), \
+           api_output_nanousd INTEGER NOT NULL CHECK(api_output_nanousd >= 0), \
+           api_total_nanousd INTEGER NOT NULL CHECK(api_total_nanousd >= 0), \
+           chatgpt_input_nanocredits INTEGER NOT NULL CHECK(chatgpt_input_nanocredits >= 0), \
+           chatgpt_cached_input_nanocredits INTEGER NOT NULL \
+             CHECK(chatgpt_cached_input_nanocredits >= 0), \
+           chatgpt_output_nanocredits INTEGER NOT NULL CHECK(chatgpt_output_nanocredits >= 0), \
+           chatgpt_total_nanocredits INTEGER NOT NULL CHECK(chatgpt_total_nanocredits >= 0), \
+           CHECK(cached_input_tokens + cache_write_input_tokens <= input_tokens), \
+           CHECK(reasoning_output_tokens <= output_tokens), \
+           CHECK(input_tokens > 0 OR output_tokens > 0), \
+           CHECK(api_total_nanousd = api_input_nanousd + api_cached_input_nanousd \
+             + api_cache_write_nanousd + api_output_nanousd), \
+           CHECK(chatgpt_total_nanocredits = chatgpt_input_nanocredits \
+             + chatgpt_cached_input_nanocredits + chatgpt_output_nanocredits)); \
+         CREATE INDEX IF NOT EXISTS codex_turn_calibration_events_home_time \
+           ON codex_turn_calibration_events(home_id,completed_at DESC); \
+         CREATE INDEX IF NOT EXISTS codex_turn_calibration_events_model_time \
+           ON codex_turn_calibration_events(model_id,completed_at DESC); \
+         CREATE INDEX IF NOT EXISTS codex_turn_calibration_events_time \
+           ON codex_turn_calibration_events(completed_at DESC);",
     )?;
     // Expand-only compatibility for SQLite databases created before estimator v3. The ignored
     // duplicate-column error is expected on every later open and on freshly created databases.
@@ -1167,6 +1234,20 @@ pub fn open(path: &str) -> Result<Connection> {
         "ALTER TABLE codex_window_calibrations ADD COLUMN observed_fraction_units INTEGER CHECK(observed_fraction_units >= 0)",
         "ALTER TABLE codex_window_calibrations ADD COLUMN observed_spend_nano INTEGER CHECK(observed_spend_nano >= 0)",
         "ALTER TABLE codex_window_observations ADD COLUMN used_fraction_units INTEGER CHECK(used_fraction_units BETWEEN 0 AND 100000000)",
+        "ALTER TABLE codex_home_spend ADD COLUMN spent_nanocredits INTEGER CHECK(spent_nanocredits IS NULL OR spent_nanocredits >= 0)",
+        "ALTER TABLE codex_home_spend ADD COLUMN credit_tracking_started_ts INTEGER CHECK(credit_tracking_started_ts IS NULL OR credit_tracking_started_ts > 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN anchor_spend_nanocredits INTEGER CHECK(anchor_spend_nanocredits IS NULL OR anchor_spend_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN observed_spend_nanocredits INTEGER CHECK(observed_spend_nanocredits IS NULL OR observed_spend_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN current_capacity_nanocredits INTEGER CHECK(current_capacity_nanocredits IS NULL OR current_capacity_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN current_low_nanocredits INTEGER CHECK(current_low_nanocredits IS NULL OR current_low_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN current_high_nanocredits INTEGER CHECK(current_high_nanocredits IS NULL OR current_high_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN last_capacity_nanocredits INTEGER CHECK(last_capacity_nanocredits IS NULL OR last_capacity_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN last_low_nanocredits INTEGER CHECK(last_low_nanocredits IS NULL OR last_low_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN last_high_nanocredits INTEGER CHECK(last_high_nanocredits IS NULL OR last_high_nanocredits >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN credit_samples INTEGER CHECK(credit_samples IS NULL OR credit_samples >= 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN credit_estimator_version INTEGER CHECK(credit_estimator_version IS NULL OR credit_estimator_version > 0)",
+        "ALTER TABLE codex_window_calibrations ADD COLUMN unattributed_fraction_units INTEGER CHECK(unattributed_fraction_units IS NULL OR unattributed_fraction_units >= 0)",
+        "ALTER TABLE codex_window_observations ADD COLUMN gateway_spend_nanocredits INTEGER CHECK(gateway_spend_nanocredits IS NULL OR gateway_spend_nanocredits >= 0)",
     ] {
         let _ = c.execute(statement, []);
     }
@@ -5939,12 +6020,13 @@ mod tests {
         let tables: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ( \
-                   'codex_home_spend','codex_window_calibrations','codex_window_observations')",
+                   'codex_home_spend','codex_window_calibrations','codex_window_observations', \
+                   'codex_turn_calibration_events')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 3);
+        assert_eq!(tables, 4);
 
         let columns = c
             .prepare("SELECT name FROM pragma_table_info('codex_window_calibrations')")
@@ -5957,6 +6039,35 @@ mod tests {
         assert!(columns.contains(&"window_duration_mins".to_owned()));
         assert!(columns.contains(&"resets_at".to_owned()));
         assert!(columns.contains(&"anchor_ready".to_owned()));
+        for name in [
+            "anchor_spend_nanocredits",
+            "observed_spend_nanocredits",
+            "current_capacity_nanocredits",
+            "credit_samples",
+            "unattributed_fraction_units",
+        ] {
+            assert!(columns.contains(&name.to_owned()), "missing {name}");
+        }
+
+        let turn_columns = c
+            .prepare("SELECT name FROM pragma_table_info('codex_turn_calibration_events')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for name in [
+            "home_id",
+            "model_id",
+            "service_tier",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "reasoning_output_tokens",
+            "api_total_nanousd",
+            "chatgpt_total_nanocredits",
+        ] {
+            assert!(turn_columns.contains(&name.to_owned()), "missing {name}");
+        }
     }
 
     #[test]

@@ -35,6 +35,7 @@ Money is signed 64-bit integer nanodollars; leases use Unix seconds.
 | `settlement_outbox` | Idempotent settlement/cancel intent retried until the money transaction commits. |
 | `ledger` | Monetary journal; `(kind, request_id)` and payment/adjustment references are unique. |
 | `usage_events` | At most one usage record per request ID. |
+| `codex_turn_calibration_events` | Idempotent per-request Codex token breakdown with independent API-nanoUSD and ChatGPT-nanocredit ledgers. |
 | `pool_state` | Cooling/utilization/calibration with CAS `version` and fenced writer identity. |
 | `capacity_leases` | Atomic per-request subscription admission and matching inflight ownership. |
 | `leader_leases` | One PostgreSQL lease-epoch leader for polling; there is no Redlock path. |
