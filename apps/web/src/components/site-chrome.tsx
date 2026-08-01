@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { localeHref, localeRoute } from "@/lib/locale-routes";
 import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
+import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
 
@@ -30,36 +31,16 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const [authenticated, setAuthenticated] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
 
+  // Проверка идентичности стартует сразу при гидрации: сессионная кука HttpOnly и host-only,
+  // поэтому ни JS, ни SSR не знают о логине без запроса — а залогиненный пользователь не должен
+  // секундами видеть Login/Register. BackendPreconnect ниже греет TLS к API, чтобы ответ
+  // пришёл за один RTT.
   useEffect(() => {
     let cancelled = false;
-    let timer = 0;
-    let started = false;
-    const startIdentityCheck = () => {
-      if (started) return;
-      started = true;
-      window.removeEventListener("pointerdown", startIdentityCheck);
-      window.removeEventListener("keydown", startIdentityCheck);
-      window.removeEventListener("touchstart", startIdentityCheck);
-      api.me()
-        .then(() => { if (!cancelled) setAuthenticated(true); })
-        .catch(() => { if (!cancelled) setAuthenticated(false); });
-    };
-    const scheduleIdentityCheck = () => {
-      window.addEventListener("pointerdown", startIdentityCheck, { once: true, passive: true });
-      window.addEventListener("keydown", startIdentityCheck, { once: true });
-      window.addEventListener("touchstart", startIdentityCheck, { once: true, passive: true });
-      timer = window.setTimeout(startIdentityCheck, 5_000);
-    };
-    if (document.readyState === "complete") scheduleIdentityCheck();
-    else window.addEventListener("load", scheduleIdentityCheck, { once: true });
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      window.removeEventListener("load", scheduleIdentityCheck);
-      window.removeEventListener("pointerdown", startIdentityCheck);
-      window.removeEventListener("keydown", startIdentityCheck);
-      window.removeEventListener("touchstart", startIdentityCheck);
-    };
+    api.me()
+      .then(() => { if (!cancelled) setAuthenticated(true); })
+      .catch(() => { if (!cancelled) setAuthenticated(false); });
+    return () => { cancelled = true; };
   }, []);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setMenuOpen(false));
@@ -96,7 +77,9 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
     <Link className="btn btn-primary" href={loc("/register")}>{t("signup")}</Link>
   </>;
 
-  return <header className="nav">
+  return <>
+    <BackendPreconnect />
+    <header className="nav">
     <a className="skip-link" href="#main-content">{ru ? "К содержимому" : "Skip to content"}</a>
     <div className="wrap nav-in">
       <Brand />
@@ -118,7 +101,8 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
       </div>
       {!compact && <button ref={burgerRef} type="button" className="nav-burger" aria-label={menuOpen ? (ru ? "Закрыть меню" : "Close menu") : (ru ? "Открыть меню" : "Open menu")} aria-controls="site-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>{menuOpen ? "×" : "☰"}</button>}
     </div>
-  </header>;
+  </header>
+  </>;
 }
 
 const THEME_STORAGE_KEY = "theme:v1";

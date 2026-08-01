@@ -166,7 +166,8 @@ section{scroll-margin-top:64px}
 .nav-links a:hover{color:var(--txt)}
 .nav-right{grid-column:3;display:flex;align-items:center;gap:12px;justify-self:end}
 .nav-actions{display:grid;grid-template-columns:repeat(2,134px);gap:10px}
-.nav-actions.authenticated .btn{grid-column:2}
+/* Залогиненному показывается одна кнопка — сетка схлопывается до неё, без пустой колонки-дыры. */
+.nav-actions.authenticated{grid-template-columns:134px}
 .nav-actions .btn{inline-size:134px;justify-content:center;padding-inline:12px}
 .lang{display:flex;border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden}
 .lang a,.lang button{display:flex;align-items:center;justify-content:center;background:transparent;border:0;
