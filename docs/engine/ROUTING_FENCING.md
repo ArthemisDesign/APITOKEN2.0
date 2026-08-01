@@ -133,10 +133,12 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   плоскости `x-apitoken-execution-group: <group_id>` + `x-apitoken-attempt: <N>` (N = 1,2,…
   по порядку обхода списка). Без fallback-списка заголовки не выставляются — плоскость
   работает как сегодня (group = request_id).
-- **Registry (expand-only миграция):** `reservations` получает колонки `group_id TEXT NOT
-  NULL DEFAULT request_id`, `attempt INTEGER NOT NULL DEFAULT 1`; новая таблица
+- **Registry (expand-only миграция):** `reservations` получает nullable `group_id TEXT` и
+  `attempt INTEGER NOT NULL DEFAULT 1`. PostgreSQL default не может ссылаться на другую колонку,
+  поэтому `group_id IS NULL` — явное совместимое представление старой/прямой попытки, а effective
+  group в runtime определяется как `COALESCE(group_id, request_id)`. Новая таблица
   `execution_group_winner(group_id TEXT PRIMARY KEY, winner_request_id TEXT NOT NULL,
-  decided_at INTEGER NOT NULL)` — одна строка на группу, insert-first-wins.
+  decided_at BIGINT NOT NULL)` хранит одну insert-first-wins строку на effective group.
 - **Settle path:** nonzero settle (charge > 0) атомарно (в той же БД-транзакции) делает
   `INSERT INTO execution_group_winner … ON CONFLICT DO NOTHING` и читает победителя:
   - winner == мой request_id → обычный settle;
@@ -146,8 +148,9 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   Refund-settle (charge == 0) winner не назначает.
 - **Инвариант exactly-once не ослабляется:** существующий `UNIQUE ledger(kind, request_id)`
   остаётся per-attempt; winner-правило добавляет «ровно один nonzero winner на группу».
-- Миграции — expand-only, двумя коммитами по `AGENTS.md`: сначала схема (колонки с default,
-  новая таблица), код — после зелёных `deploy/migration` + `deploy/watchdog`.
+- Миграции — expand-only, двумя коммитами по `AGENTS.md`: сначала совместимая со старым writer
+  схема (nullable group identity, attempt с default, новая таблица), код — после зелёных
+  `deploy/migration` + `deploy/watchdog`.
 
 ## 5. Routing-интерфейс router (фаза 6.2)
 

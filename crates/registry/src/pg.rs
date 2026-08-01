@@ -119,9 +119,10 @@ const MIGRATION_0017: &str = include_str!("../migrations_pg/0017_policy_runtime_
 const MIGRATION_0018: &str = include_str!("../migrations_pg/0018_codex_credit_calibration.sql");
 const MIGRATION_0019: &str = include_str!("../migrations_pg/0019_provider_turn_calibration.sql");
 const MIGRATION_0020: &str = include_str!("../migrations_pg/0020_anthropic_window_calibration.sql");
+const MIGRATION_0021: &str = include_str!("../migrations_pg/0021_execution_group_fencing.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 20;
+pub const CURRENT_SCHEMA_VERSION: i64 = 21;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -145,6 +146,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (18, MIGRATION_0018),
     (19, MIGRATION_0019),
     (20, MIGRATION_0020),
+    (21, MIGRATION_0021),
 ];
 
 #[cfg(test)]
@@ -7329,6 +7331,19 @@ mod tests {
             .map(|(version, _)| *version)
             .collect();
         assert_eq!(versions, (1..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn execution_group_migration_preserves_old_reservation_writers() {
+        let normalized = MIGRATION_0021
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(normalized.contains("ADD COLUMN IF NOT EXISTS group_id text"));
+        assert!(normalized.contains("ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 1"));
+        assert!(!normalized.contains("group_id text NOT NULL"));
+        assert!(!normalized.contains("DEFAULT request_id"));
+        assert!(normalized.contains("CREATE TABLE IF NOT EXISTS execution_group_winner"));
     }
 
     #[test]

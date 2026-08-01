@@ -94,6 +94,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   replay, reset jitter, one-snapshot lag, plan pooling и delivery retry принадлежат `forward`/`server`.
   PostgreSQL initial CAS insert обязан явно типизировать version placeholder как `bigint`: выражение
   с untyped integer literal иначе выводит параметр как `int4` и блокирует durable FIFO до recovery.
+- Execution-group fencing migration 0021 expand-only добавляет к `reservations` nullable
+  `group_id` и one-based `attempt` с default 1, а также insert-first-wins таблицу
+  `execution_group_winner`. `group_id IS NULL` намеренно сохраняет совместимость со старым writer и
+  означает effective group `request_id`; dependent runtime обязан использовать
+  `COALESCE(group_id, request_id)`. Сама миграция не меняет reserve/settle behavior и не включает
+  router fallback.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed
