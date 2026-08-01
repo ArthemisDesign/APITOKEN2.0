@@ -37,6 +37,39 @@
 - Все тела — **JSON**. Все суммы — целые **нанодоллары**: `1 USD = 1 000 000 000 nano`. Никаких float
   в деньгах — работай в nano, дели на 1e9 только для показа.
 
+### Operator telemetry подписок
+
+Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs` и `GET /gemini-subs`.
+Эти маршруты защищены server-side control/panel auth; браузер получает их только через закрытый
+`admin.apitoken.sale`, а ключи ему не выдаются.
+
+`GET /codex-subs` разделяет два разных понятия:
+
+- `*_nanocredits` — native расход и capacity ChatGPT-подписки; именно в credits сравниваются
+  одинаковые планы;
+- `*_nano` / `*_nanousd` — официальный public API replacement cost фактической или выбранной
+  нагрузки. Он меняется от модели, Standard/Fast, cache mix, output и long context и не является
+  фиксированным номиналом подписки.
+
+У каждого home `calibration_evidence` содержит immutable aggregates по model/effective tier/
+provider-reported tier/tariff schedules: turns, fresh-derived total input, cached input,
+cache-write, output/reasoning, все API legs и все ChatGPT-credit legs. Эта evidence появляется
+после первого успешного turn и не ждёт движения quota. `capacity_nanocredits` остаётся `null`, пока
+не появится подтверждённое положительное `Δquota`; `null` не означает ноль. Integrity поля
+`calibration_pending_events`/`calibration_dropped_events` должны быть `0/0`.
+
+Корень ответа также публикует `conversion_models`: versioned API/credit rates, независимые Fast
+multipliers и long-context modifiers. Все деньги и credits сериализуются decimal strings; токены,
+проценты, timestamps и counters — числа. Email — только bounded mask без домена. UI обязан считать
+workload conversion через BigInt:
+
+```text
+API equivalent nanoUSD = capacity_nanocredits × workload_api_nanousd / workload_nanocredits
+```
+
+Reasoning — diagnostic subset output и не прибавляется второй раз. Cache-write имеет отдельную API
+ставку, но в credit card входит во fresh input.
+
 ---
 
 ## 3. Денежная модель (обязательно понять)

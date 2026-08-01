@@ -19,7 +19,8 @@ use registry::{CodexCalibrationRow, CodexWindowObservation};
 
 pub const FRACTION_SCALE: i64 = 100_000_000;
 const PERCENT_SCALE: i64 = FRACTION_SCALE / 100;
-pub const ESTIMATOR_VERSION: i64 = 8;
+pub const ESTIMATOR_VERSION: i64 = 9;
+const CREDIT_ESTIMATOR_VERSION: i64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacitySource {
@@ -42,6 +43,15 @@ pub struct CapacityEstimate {
     pub confidence_bp: i64,
     pub measured_at: i64,
     pub source: CapacitySource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreditCapacityEstimate {
+    pub capacity_nanocredits: i64,
+    pub low_nanocredits: Option<i64>,
+    pub high_nanocredits: Option<i64>,
+    pub confidence_bp: i64,
+    pub measured_at: i64,
 }
 
 /// Pure estimator state. Persistence and CAS retries live in the billing actor.
@@ -82,6 +92,19 @@ impl WindowCalibration {
                 used_fraction_units: observation.used_fraction_units,
                 observed_fraction_units: 0,
                 observed_spend_nano: 0,
+                anchor_spend_nanocredits: observation.gateway_spend_nanocredits,
+                observed_spend_nanocredits: observation.gateway_spend_nanocredits.map(|_| 0),
+                current_capacity_nanocredits: None,
+                current_low_nanocredits: None,
+                current_high_nanocredits: None,
+                last_capacity_nanocredits: None,
+                last_low_nanocredits: None,
+                last_high_nanocredits: None,
+                credit_samples: observation.gateway_spend_nanocredits.map(|_| 0),
+                credit_estimator_version: observation
+                    .gateway_spend_nanocredits
+                    .map(|_| CREDIT_ESTIMATOR_VERSION),
+                unattributed_fraction_units: observation.gateway_spend_nanocredits.map(|_| 0),
                 estimator_version: ESTIMATOR_VERSION,
                 version: 0,
                 updated_ts: observation.observed_at,
@@ -137,6 +160,40 @@ impl WindowCalibration {
         })
     }
 
+    pub fn credit_estimate(&self) -> Option<CreditCapacityEstimate> {
+        self.row
+            .current_capacity_nanocredits
+            .map(|capacity_nanocredits| CreditCapacityEstimate {
+                capacity_nanocredits,
+                low_nanocredits: self.row.current_low_nanocredits,
+                high_nanocredits: self.row.current_high_nanocredits,
+                confidence_bp: self.row.current_confidence_bp,
+                measured_at: self.row.last_measured_at.unwrap_or(self.row.observed_at),
+            })
+    }
+
+    pub fn remaining_nanocredits(&self, used_fraction_units: i64) -> Option<i64> {
+        self.credit_estimate().and_then(|estimate| {
+            remaining_for_capacity(estimate.capacity_nanocredits, used_fraction_units)
+        })
+    }
+
+    pub fn remaining_low_nanocredits(&self, used_fraction_units: i64) -> Option<i64> {
+        self.credit_estimate().and_then(|estimate| {
+            estimate
+                .low_nanocredits
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
+        })
+    }
+
+    pub fn remaining_high_nanocredits(&self, used_fraction_units: i64) -> Option<i64> {
+        self.credit_estimate().and_then(|estimate| {
+            estimate
+                .high_nanocredits
+                .and_then(|capacity| remaining_for_capacity(capacity, used_fraction_units))
+        })
+    }
+
     fn observe(&mut self, observation: &CodexWindowObservation) -> anyhow::Result<()> {
         validate_observation(observation)?;
         if observation.home_id != self.row.home_id
@@ -149,6 +206,22 @@ impl WindowCalibration {
         }
         if self.row.estimator_version != ESTIMATOR_VERSION {
             anyhow::bail!("Codex calibration estimator version mismatch");
+        }
+
+        // The first credit-bearing observation is a deliberate cutover boundary. Historical API
+        // evidence remains available as the previous estimate, while both current estimators
+        // restart from one identical utilisation anchor. This avoids pretending pre-cutover API
+        // spend had a zero-credit counterpart while preserving one shared exact denominator.
+        if self.row.anchor_spend_nanocredits.is_none()
+            && observation.gateway_spend_nanocredits.is_some()
+        {
+            self.start_credit_tracking(observation);
+            return Ok(());
+        }
+        if self.row.anchor_spend_nanocredits.is_some()
+            && observation.gateway_spend_nanocredits.is_none()
+        {
+            anyhow::bail!("Codex credit tracking regressed to an untracked observation");
         }
 
         let reset_delta = i128::from(observation.resets_at) - i128::from(self.row.resets_at);
@@ -171,6 +244,8 @@ impl WindowCalibration {
             return Ok(());
         }
 
+        let previous_seen_used = self.row.used_fraction_units;
+        let previous_seen_at = self.row.observed_at;
         self.row.observed_at = observation.observed_at;
         self.row.updated_ts = observation.observed_at;
         self.row.used_fraction_units = observation.used_fraction_units;
@@ -183,13 +258,65 @@ impl WindowCalibration {
             return Ok(());
         }
         let delta_spend = observation.gateway_spend_nano - self.row.anchor_spend_nano;
-        // Snapshot and settlement are independent durable streams. Keep the old anchor until
-        // positive spend catches up instead of publishing a transient zero-dollar sample.
-        if delta_spend == 0 {
+        let Some(anchor_nanocredits) = self.row.anchor_spend_nanocredits else {
+            // Historical API-only replay before the dual-ledger cutover.
+            if delta_spend == 0 {
+                return Ok(());
+            }
+            self.update_workload_envelope(delta_used, delta_spend)?;
+            self.row.observed_fraction_units = self
+                .row
+                .observed_fraction_units
+                .checked_add(delta_used)
+                .context("Codex observed fraction overflow")?;
+            self.row.observed_spend_nano = self
+                .row
+                .observed_spend_nano
+                .checked_add(delta_spend)
+                .context("Codex observed spend overflow")?;
+            self.row.observed_points = self.row.observed_fraction_units / PERCENT_SCALE;
+            self.row.samples = self
+                .row
+                .samples
+                .checked_add(1)
+                .context("Codex calibration sample overflow")?;
+            self.advance_anchor(observation);
+            self.row.last_measured_at = Some(observation.observed_at);
+            return self.recompute();
+        };
+        let gateway_nanocredits = observation
+            .gateway_spend_nanocredits
+            .context("tracked Codex observation is missing credits")?;
+        if gateway_nanocredits < anchor_nanocredits {
+            anyhow::bail!("Codex cumulative credits moved backwards");
+        }
+        let delta_nanocredits = gateway_nanocredits - anchor_nanocredits;
+
+        // Event insertion advances both ledgers atomically. A one-snapshot delay with no spend is
+        // ordinary, so retain the anchor once. If the identical higher utilization is observed
+        // again with neither ledger moving, exclude that interval and flag it as possibly
+        // unattributed: provider snapshots cannot prove who generated it.
+        if delta_spend == 0 && delta_nanocredits == 0 {
+            if previous_seen_used == observation.used_fraction_units
+                && previous_seen_at < observation.observed_at
+            {
+                self.row.unattributed_fraction_units = Some(
+                    self.row
+                        .unattributed_fraction_units
+                        .unwrap_or(0)
+                        .checked_add(delta_used)
+                        .context("Codex unattributed fraction overflow")?,
+                );
+                self.advance_anchor(observation);
+            }
             return Ok(());
+        }
+        if delta_spend == 0 || delta_nanocredits == 0 {
+            anyhow::bail!("Codex atomic API/credit ledgers diverged");
         }
 
         self.update_workload_envelope(delta_used, delta_spend)?;
+        self.update_credit_envelope(delta_used, delta_nanocredits)?;
         self.row.observed_fraction_units = self
             .row
             .observed_fraction_units
@@ -200,12 +327,26 @@ impl WindowCalibration {
             .observed_spend_nano
             .checked_add(delta_spend)
             .context("Codex observed spend overflow")?;
+        self.row.observed_spend_nanocredits = Some(
+            self.row
+                .observed_spend_nanocredits
+                .unwrap_or(0)
+                .checked_add(delta_nanocredits)
+                .context("Codex observed credit spend overflow")?,
+        );
         self.row.observed_points = self.row.observed_fraction_units / PERCENT_SCALE;
         self.row.samples = self
             .row
             .samples
             .checked_add(1)
             .context("Codex calibration sample overflow")?;
+        self.row.credit_samples = Some(
+            self.row
+                .credit_samples
+                .unwrap_or(0)
+                .checked_add(1)
+                .context("Codex credit calibration sample overflow")?,
+        );
         self.advance_anchor(observation);
         self.row.last_measured_at = Some(observation.observed_at);
         self.recompute()
@@ -215,6 +356,39 @@ impl WindowCalibration {
         self.row.anchor_used_fraction_units = observation.used_fraction_units;
         self.row.anchor_used_percent = observation.used_percent;
         self.row.anchor_spend_nano = observation.gateway_spend_nano;
+        if let Some(value) = observation.gateway_spend_nanocredits {
+            self.row.anchor_spend_nanocredits = Some(value);
+        }
+    }
+
+    fn start_credit_tracking(&mut self, observation: &CodexWindowObservation) {
+        self.row.last_capacity_nano = self.row.current_capacity_nano;
+        self.row.last_low_nano = self.row.current_low_nano;
+        self.row.last_high_nano = self.row.current_high_nano;
+        self.row.last_confidence_bp = self.row.current_confidence_bp;
+        self.row.current_capacity_nano = None;
+        self.row.current_low_nano = None;
+        self.row.current_high_nano = None;
+        self.row.current_confidence_bp = 0;
+        self.row.observed_fraction_units = 0;
+        self.row.observed_spend_nano = 0;
+        self.row.observed_points = 0;
+        self.row.samples = 0;
+        self.row.last_measured_at = None;
+        self.row.anchor_spend_nanocredits = observation.gateway_spend_nanocredits;
+        self.row.observed_spend_nanocredits = Some(0);
+        self.row.current_capacity_nanocredits = None;
+        self.row.current_low_nanocredits = None;
+        self.row.current_high_nanocredits = None;
+        self.row.credit_samples = Some(0);
+        self.row.credit_estimator_version = Some(CREDIT_ESTIMATOR_VERSION);
+        self.row.unattributed_fraction_units = Some(0);
+        self.row.resets_at = observation.resets_at;
+        self.advance_anchor(observation);
+        self.row.used_fraction_units = observation.used_fraction_units;
+        self.row.used_percent = observation.used_percent;
+        self.row.observed_at = observation.observed_at;
+        self.row.updated_ts = observation.observed_at;
     }
 
     fn begin_window(&mut self, observation: &CodexWindowObservation) {
@@ -265,6 +439,43 @@ impl WindowCalibration {
         Ok(())
     }
 
+    fn update_credit_envelope(
+        &mut self,
+        delta_used: i64,
+        delta_nanocredits: i64,
+    ) -> anyhow::Result<()> {
+        let numerator = i128::from(FRACTION_SCALE)
+            .checked_mul(i128::from(delta_nanocredits))
+            .context("Codex credit envelope numerator overflow")?;
+        let low = checked_i64(
+            numerator
+                .checked_div(i128::from(delta_used) + 1)
+                .context("Codex credit low bound overflow")?,
+        )?;
+        self.row.current_low_nanocredits = Some(
+            self.row
+                .current_low_nanocredits
+                .map_or(low, |existing| existing.min(low)),
+        );
+        let sample_high = if delta_used > 1 {
+            Some(checked_i64(ceil_nonnegative(
+                numerator,
+                i128::from(delta_used) - 1,
+            )?)?)
+        } else {
+            None
+        };
+        self.row.current_high_nanocredits = if self.row.credit_samples.unwrap_or(0) == 0 {
+            sample_high
+        } else {
+            match (self.row.current_high_nanocredits, sample_high) {
+                (Some(existing), Some(sample)) => Some(existing.max(sample)),
+                _ => None,
+            }
+        };
+        Ok(())
+    }
+
     fn recompute(&mut self) -> anyhow::Result<()> {
         let denominator = i128::from(self.row.observed_fraction_units);
         if denominator <= 0 {
@@ -275,6 +486,15 @@ impl WindowCalibration {
             .context("Codex capacity numerator overflow")?;
         self.row.current_capacity_nano =
             Some(checked_i64(round_nonnegative(numerator, denominator)?)?);
+        if let Some(observed_nanocredits) = self.row.observed_spend_nanocredits {
+            let credit_numerator = i128::from(FRACTION_SCALE)
+                .checked_mul(i128::from(observed_nanocredits))
+                .context("Codex credit capacity numerator overflow")?;
+            self.row.current_capacity_nanocredits = Some(checked_i64(round_nonnegative(
+                credit_numerator,
+                denominator,
+            )?)?);
+        }
 
         // Confidence is evidence maturity, not a statistical probability. More samples increase
         // maturity, diverse workload regimes reduce stability, and fine movement reduces endpoint
@@ -282,10 +502,19 @@ impl WindowCalibration {
         let movement = i128::from(self.row.observed_fraction_units);
         let samples = i128::from(self.row.samples);
         let maturity_bp = ratio_bp(samples, samples + 2)?;
-        let stability_bp = match (self.row.current_low_nano, self.row.current_high_nano) {
+        let api_stability_bp = match (self.row.current_low_nano, self.row.current_high_nano) {
             (Some(low), Some(high)) if high > 0 => ratio_bp(i128::from(low), i128::from(high))?,
             _ => 0,
         };
+        let credit_stability_bp = match (
+            self.row.current_low_nanocredits,
+            self.row.current_high_nanocredits,
+        ) {
+            (Some(low), Some(high)) if high > 0 => ratio_bp(i128::from(low), i128::from(high))?,
+            _ if self.row.anchor_spend_nanocredits.is_none() => api_stability_bp,
+            _ => 0,
+        };
+        let stability_bp = api_stability_bp.min(credit_stability_bp);
         let quantisation_bp = ratio_bp(movement, movement + 2 * samples)?;
         let confidence_bp = maturity_bp
             .checked_mul(stability_bp)
@@ -359,6 +588,9 @@ fn validate_observation(observation: &CodexWindowObservation) -> anyhow::Result<
         || !(0..=FRACTION_SCALE).contains(&observation.used_fraction_units)
         || observation.used_percent != rounded_percent(observation.used_fraction_units)
         || observation.gateway_spend_nano < 0
+        || observation
+            .gateway_spend_nanocredits
+            .is_some_and(|value| value < 0)
     {
         anyhow::bail!("invalid Codex calibration observation");
     }
@@ -383,6 +615,23 @@ fn validate_row(row: &CodexCalibrationRow) -> anyhow::Result<()> {
         || row.current_capacity_nano.is_some_and(|value| value < 0)
         || row.current_low_nano.is_some_and(|value| value < 0)
         || row.current_high_nano.is_some_and(|value| value < 0)
+        || row.anchor_spend_nanocredits.is_some_and(|value| value < 0)
+        || row
+            .observed_spend_nanocredits
+            .is_some_and(|value| value < 0)
+        || row
+            .current_capacity_nanocredits
+            .is_some_and(|value| value < 0)
+        || row.current_low_nanocredits.is_some_and(|value| value < 0)
+        || row.current_high_nanocredits.is_some_and(|value| value < 0)
+        || row.last_capacity_nanocredits.is_some_and(|value| value < 0)
+        || row.last_low_nanocredits.is_some_and(|value| value < 0)
+        || row.last_high_nanocredits.is_some_and(|value| value < 0)
+        || row.credit_samples.is_some_and(|value| value < 0)
+        || row.credit_estimator_version.is_some_and(|value| value <= 0)
+        || row
+            .unattributed_fraction_units
+            .is_some_and(|value| value < 0)
         || row
             .current_low_nano
             .zip(row.current_capacity_nano)
@@ -395,11 +644,54 @@ fn validate_row(row: &CodexCalibrationRow) -> anyhow::Result<()> {
             .current_low_nano
             .zip(row.current_high_nano)
             .is_some_and(|(low, high)| low > high)
+        || row
+            .current_low_nanocredits
+            .zip(row.current_capacity_nanocredits)
+            .is_some_and(|(low, capacity)| low > capacity)
+        || row
+            .current_high_nanocredits
+            .zip(row.current_capacity_nanocredits)
+            .is_some_and(|(high, capacity)| high < capacity)
+        || row
+            .current_low_nanocredits
+            .zip(row.current_high_nanocredits)
+            .is_some_and(|(low, high)| low > high)
         || !(0..=10_000).contains(&row.current_confidence_bp)
         || row.last_measured_at.is_some_and(|value| value <= 0)
         || row.estimator_version != ESTIMATOR_VERSION
         || !row.anchor_ready
         || row.version < 0
+        || row.anchor_spend_nanocredits.is_none()
+            && (row.observed_spend_nanocredits.is_some()
+                || row.current_capacity_nanocredits.is_some()
+                || row.current_low_nanocredits.is_some()
+                || row.current_high_nanocredits.is_some()
+                || row.last_capacity_nanocredits.is_some()
+                || row.last_low_nanocredits.is_some()
+                || row.last_high_nanocredits.is_some()
+                || row.credit_samples.is_some()
+                || row.credit_estimator_version.is_some()
+                || row.unattributed_fraction_units.is_some())
+        || row.anchor_spend_nanocredits.is_some()
+            && (row.observed_spend_nanocredits.is_none()
+                || row.credit_samples.is_none()
+                || row.credit_estimator_version != Some(CREDIT_ESTIMATOR_VERSION)
+                || row.unattributed_fraction_units.is_none())
+        || row.credit_samples == Some(0)
+            && (row.observed_spend_nanocredits != Some(0)
+                || row.current_capacity_nanocredits.is_some()
+                || row.current_low_nanocredits.is_some()
+                || row.current_high_nanocredits.is_some())
+        || row.credit_samples.is_some_and(|samples| samples > 0)
+            && (row
+                .observed_spend_nanocredits
+                .is_none_or(|value| value <= 0)
+                || row.current_capacity_nanocredits.is_none()
+                || row.current_low_nanocredits.is_none()
+                || row.current_high_nanocredits.is_none() && row.current_confidence_bp != 0)
+        || row
+            .credit_samples
+            .is_some_and(|credit_samples| credit_samples != row.samples)
         || row.samples == 0
             && (row.observed_fraction_units != 0
                 || row.observed_spend_nano != 0
@@ -480,6 +772,18 @@ mod tests {
         observation_at(RESET, DURATION, used, spend_nano, observed_at)
     }
 
+    fn credit_observation(
+        used: i64,
+        spend_nano: i64,
+        spend_nanocredits: i64,
+        observed_at: i64,
+    ) -> CodexWindowObservation {
+        CodexWindowObservation {
+            gateway_spend_nanocredits: Some(spend_nanocredits),
+            ..observation(used, spend_nano, observed_at)
+        }
+    }
+
     fn observation_at(
         resets_at: i64,
         duration: i64,
@@ -495,6 +799,7 @@ mod tests {
             used_percent: rounded_percent(used),
             used_fraction_units: used,
             gateway_spend_nano: spend_nano,
+            gateway_spend_nanocredits: None,
         }
     }
 
@@ -537,6 +842,53 @@ mod tests {
         assert_eq!(row.sum_used_sq, 0);
         assert_eq!(row.sum_used_spend_nano, 0);
         assert_eq!(estimate.source, CapacitySource::WorkloadBlend);
+    }
+
+    #[test]
+    fn credit_cutover_keeps_old_api_result_but_restarts_both_current_estimators() {
+        let row = next(None, observation(10_000_000, 0, 100));
+        let row = next(Some(row), observation(12_000_000, 40_000_000_000, 101));
+        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
+
+        let row = next(
+            Some(row),
+            credit_observation(12_000_000, 40_000_000_000, 5_000_000_000, 102),
+        );
+        assert_eq!(row.last_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(row.current_capacity_nano, None);
+        assert_eq!(row.current_capacity_nanocredits, None);
+        assert_eq!(row.observed_spend_nano, 0);
+        assert_eq!(row.observed_spend_nanocredits, Some(0));
+        assert_eq!(row.samples, 0);
+        assert_eq!(row.credit_samples, Some(0));
+
+        let row = next(
+            Some(row),
+            credit_observation(14_000_000, 80_000_000_000, 9_000_000_000, 103),
+        );
+        assert_eq!(row.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(row.current_capacity_nanocredits, Some(200_000_000_000));
+        assert_eq!(row.samples, 1);
+        assert_eq!(row.credit_samples, Some(1));
+    }
+
+    #[test]
+    fn repeated_quota_only_movement_is_excluded_as_possibly_unattributed() {
+        let row = next(None, credit_observation(10_000_000, 100_000, 10_000, 100));
+        let row = next(
+            Some(row),
+            credit_observation(12_000_000, 100_000, 10_000, 101),
+        );
+        assert_eq!(row.unattributed_fraction_units, Some(0));
+        assert_eq!(row.anchor_used_fraction_units, 10_000_000);
+        let row = next(
+            Some(row),
+            credit_observation(12_000_000, 100_000, 10_000, 102),
+        );
+        assert_eq!(row.unattributed_fraction_units, Some(2_000_000));
+        assert_eq!(row.anchor_used_fraction_units, 12_000_000);
+        assert_eq!(row.samples, 0);
+        assert_eq!(row.credit_samples, Some(0));
     }
 
     #[test]

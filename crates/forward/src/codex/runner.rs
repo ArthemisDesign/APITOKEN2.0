@@ -269,6 +269,9 @@ impl CodexGateway {
         }
         let fast_model = (request.service_tier.as_deref() == Some("priority"))
             .then(|| request.model.upstream.as_str());
+        // Stable across every home/transport retry of this logical turn and never forwarded
+        // upstream. Registry uses it as the immutable event idempotency boundary.
+        let calibration_request_id = new_id("cal");
         let emitted = Arc::new(AtomicBool::new(false));
         let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
@@ -307,15 +310,23 @@ impl CodexGateway {
                             result.provider_reported_service_tier.as_deref(),
                         );
                     }
-                    home.record_spend(super::billing::price_real_nano(
+                    let completed_at = pool::now();
+                    let fast = result.effective_service_tier.as_deref() == Some("priority");
+                    match super::billing::price_calibration_event(
+                        &calibration_request_id,
+                        home.id(),
                         &request.model,
                         &result.usage,
-                        pool::now(),
-                        result.effective_service_tier.as_deref() == Some("priority"),
-                    ))
-                    .await;
+                        completed_at,
+                        fast,
+                        result.provider_reported_service_tier.as_deref(),
+                    ) {
+                        Ok(event) => home.record_calibration_event(event).await,
+                        Err(error) => home.reject_calibration_event(&error),
+                    }
                     // The served turn's response headers are the freshest window snapshot this
-                    // home will ever publish; feed calibration here, once per turn.
+                    // home will ever publish. Persist the turn first so the quota observation sees
+                    // both cumulative ledgers already settled whenever authority is healthy.
                     home.ingest_turn_snapshot().await;
                     home.mark_turn_healthy();
                     // Pin this conversation's cache lineage to the home that served it, so the next
@@ -605,11 +616,8 @@ impl CodexHome {
                 }
             };
             let effective_service_tier = Some(
-                effective_service_tier(
-                    requested_fast,
-                    provider_reported_service_tier.as_deref(),
-                )
-                .to_string(),
+                effective_service_tier(requested_fast, provider_reported_service_tier.as_deref())
+                    .to_string(),
             );
             Ok(CodexTurnResult {
                 output,

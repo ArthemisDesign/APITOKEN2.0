@@ -67,6 +67,7 @@ export interface CodexHomeWindow {
   used_fraction_units?: number;
   used_fraction?: number;
   window_minutes?: number;
+  resets_at?: number | null;
   source?: string;
   samples?: number;
   confidence?: number;
@@ -82,6 +83,17 @@ export interface CodexHomeWindow {
   high_usd?: number | null;
   remaining_low_usd?: number | null;
   remaining_high_usd?: number | null;
+  /** Native ChatGPT subscription quota. All quantities are decimal nanocredit strings. */
+  capacity_nanocredits?: string | null;
+  remaining_nanocredits?: string | null;
+  low_nanocredits?: string | null;
+  high_nanocredits?: string | null;
+  remaining_low_nanocredits?: string | null;
+  remaining_high_nanocredits?: string | null;
+  observed_spend_nanocredits?: string | null;
+  credit_samples?: number | null;
+  /** Provider movement repeated without either gateway ledger moving; not proof of external use. */
+  unattributed_fraction_units?: number | null;
   observed_spend_nano?: string;
   observed_fraction_units?: number;
   workload_dependent?: boolean;
@@ -111,6 +123,11 @@ export interface CodexHome {
   inflight?: number;
   spend_nano_total?: string;
   spend_usd_total?: number;
+  spend_nanocredits_total?: string | null;
+  credit_tracking_started_ts?: number | null;
+  calibration_pending_events?: number;
+  calibration_dropped_events?: number;
+  calibration_evidence?: CodexCalibrationEvidence[];
   windows?: CodexHomeWindow[];
   rate_limits?: { primary?: CodexRateLimit; secondary?: CodexRateLimit };
 }
@@ -129,12 +146,70 @@ export interface CodexWindowTotal {
   high_usd?: number | null;
   remaining_low_usd?: number | null;
   remaining_high_usd?: number | null;
+  capacity_nanocredits?: string | null;
+  remaining_nanocredits?: string | null;
+  low_nanocredits?: string | null;
+  high_nanocredits?: string | null;
+  remaining_low_nanocredits?: string | null;
+  remaining_high_nanocredits?: string | null;
+  observed_spend_nanocredits?: string;
+  credit_measured_homes?: number;
+  credit_observed_homes?: number;
+  unattributed_fraction_units?: string;
   observed_spend_nano?: string;
   observed_fraction_units?: string;
   source?: string;
   workload_dependent?: boolean;
   observed_homes?: number;
   measured_homes?: number;
+}
+
+export interface CodexCalibrationEvidence {
+  model?: string;
+  service_tier?: string;
+  provider_reported_tier?: string | null;
+  api_tariff_schedule_id?: string;
+  credit_schedule_id?: string;
+  turns?: number;
+  first_completed_at?: number;
+  last_completed_at?: number;
+  input_tokens?: string;
+  cached_input_tokens?: string;
+  cache_write_input_tokens?: string;
+  output_tokens?: string;
+  reasoning_output_tokens?: string;
+  api_input_nanousd?: string;
+  api_cached_input_nanousd?: string;
+  api_cache_write_nanousd?: string;
+  api_output_nanousd?: string;
+  api_total_nanousd?: string;
+  chatgpt_input_nanocredits?: string;
+  chatgpt_cached_input_nanocredits?: string;
+  chatgpt_output_nanocredits?: string;
+  chatgpt_total_nanocredits?: string;
+}
+
+export interface CodexConversionModel {
+  id: string;
+  upstream?: string;
+  api_tariff_schedule_id?: string;
+  credit_schedule_id?: string;
+  api: {
+    input_nanousd_per_token: string;
+    cached_input_nanousd_per_token: string;
+    cache_write_nanousd_per_token: string;
+    output_nanousd_per_token: string;
+    fast_multiplier_basis_points?: number | null;
+    long_context_threshold?: string;
+    long_input_multiplier_basis_points?: number;
+    long_output_multiplier_basis_points?: number;
+  };
+  chatgpt_credits: {
+    input_nanocredits_per_token: string;
+    cached_input_nanocredits_per_token: string;
+    output_nanocredits_per_token: string;
+    fast_multiplier_basis_points?: number | null;
+  };
 }
 
 export interface CodexSubsResponse {
@@ -144,6 +219,9 @@ export interface CodexSubsResponse {
   soonest_ready?: number;
   homes?: CodexHome[];
   window_totals?: CodexWindowTotal[];
+  calibration_evidence_available?: boolean;
+  credit_schedule_id?: string;
+  conversion_models?: CodexConversionModel[];
 }
 
 // GET /gemini-subs — Gemini Code Assist профили

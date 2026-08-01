@@ -18,6 +18,23 @@ export function nanoMoney(value: string | number | bigint | null | undefined): s
   }
 }
 
+// nanoCredits: native ChatGPT quota in 10^-9 credits. Keep up to six fractional digits so the
+// first successful turn remains visible instead of rounding to zero. This is deliberately not a
+// dollar formatter: credits are the stable unit for comparing equal subscriptions.
+export function nanoCredits(value: string | bigint | null | undefined): string {
+  try {
+    let n = BigInt(String(value ?? "0"));
+    const neg = n < 0n;
+    if (neg) n = -n;
+    if (n > 0n && n < 1_000n) return `${neg ? "−" : ""}<0.000001 credits`;
+    const whole = n / NANO;
+    const fraction = ((n % NANO) / 1_000n).toString().padStart(6, "0").replace(/0+$/, "");
+    return `${neg ? "−" : ""}${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""} credits`;
+  } catch {
+    return "0 credits";
+  }
+}
+
 // money: форматирование ЛЕГАСИ-полей коммерции, которые API отдаёт уже в долларах
 // (paid_usd, balance_usd и т.п.). Только для отображения; никакой арифметики над ними.
 export function money(value: number | string | null | undefined): string {

@@ -7,10 +7,11 @@
 import { useMemo, type ReactElement } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
-import { count, duration, formatDate, money, nanoMoney } from "@/lib/format";
+import { count, formatDate, money } from "@/lib/format";
 import { Banner, CardGrid, LoadingGrid, PageHead, Pill, SectionHeader, StatCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
-import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
+import { ClaudeTable, GeminiModelDetails, GeminiTable, TransportDetails } from "./components";
+import { CodexCalibrationLab } from "./codex-calibration-lab";
 import { resolveBanner } from "./logic";
 import type {
   CapacityResponse,
@@ -22,15 +23,6 @@ import type {
 } from "./types";
 
 const POLL_INTERVAL_MS = 10_000;
-
-function sumNano(values: Array<string | null | undefined>): string | null {
-  if (values.some((value) => value == null)) return null;
-  try {
-    return values.reduce((sum, value) => sum + BigInt(value ?? "0"), 0n).toString();
-  } catch {
-    return null;
-  }
-}
 
 interface SubsData {
   subs: SubsResponse | null;
@@ -104,23 +96,6 @@ export default function SubsPage() {
     const homes = codex?.homes ?? [];
     const gptAuthBad = homes.filter((h) => !h.auth_ok).length;
     const gptProcDown = homes.filter((h) => !h.process_live).length;
-    const totals = Array.isArray(codex?.window_totals) ? codex.window_totals : [];
-    const measuredTotals = totals.filter(
-      (item) =>
-        (item.capacity_nano !== null && item.capacity_nano !== undefined) ||
-        (item.cap_usd !== null && item.cap_usd !== undefined),
-    );
-    const gptRemainNano = sumNano(measuredTotals.map((item) => item.remaining_nano));
-    const gptCapNano = sumNano(measuredTotals.map((item) => item.capacity_nano));
-    const gptRemain = measuredTotals.reduce((sum, item) => sum + Number(item.remaining_usd || 0), 0);
-    const gptCap = measuredTotals.reduce((sum, item) => sum + Number(item.cap_usd || 0), 0);
-    const gptUnknown = totals.reduce(
-      (sum, item) => sum + Math.max(0, Number(item.observed_homes || 0) - Number(item.measured_homes || 0)),
-      0,
-    );
-    const gptInflight = homes.reduce((sum, h) => sum + (h.inflight || 0), 0);
-    const gptSpendNano = sumNano(homes.map((home) => home.spend_nano_total));
-    const gptSpend = homes.reduce((sum, h) => sum + (Number(h.spend_usd_total) || 0), 0);
 
     const geminiDown = gemini === null;
     const geminiOff = Boolean(gemini && gemini.enabled === false);
@@ -171,15 +146,6 @@ export default function SubsPage() {
       gptOff,
       gptAuthBad,
       gptProcDown,
-      measuredTotals,
-      gptRemainNano,
-      gptCapNano,
-      gptRemain,
-      gptCap,
-      gptUnknown,
-      gptInflight,
-      gptSpendNano,
-      gptSpend,
       gemini,
       geminiDown,
       geminiOff,
@@ -274,68 +240,10 @@ export default function SubsPage() {
         <ClaudeTable list={derived.list} liveByEmail={derived.liveByEmail} />
       </div>
 
-      <SectionHeader title="GPT" sub="OpenAI Codex · native homes" />
-      <CardGrid>
-        {derived.gptOff ? (
-          <StatCard label="GPT подписки" value="выкл." hint="OpenAI runtime без codex-конфигурации" />
-        ) : (
-          <>
-            <StatCard
-              label="GPT подписки"
-              value={derived.gptDown ? "—" : derived.homes.length}
-              hint={
-                derived.gptDown
-                  ? "источник недоступен"
-                  : `${derived.codex?.available ?? "—"} доступно · ${derived.homes.filter((h) => h.process_live).length} live`
-              }
-            />
-            <StatCard
-              label="GPT · остаток окон"
-              value={
-                derived.gptDown
-                  ? "—"
-                  : derived.measuredTotals.length
-                    ? derived.gptRemainNano != null
-                      ? nanoMoney(derived.gptRemainNano)
-                      : money(derived.gptRemain)
-                    : "ждём Δused"
-              }
-              hint={
-                derived.gptDown
-                  ? ""
-                  : derived.measuredTotals.length
-                    ? `из ${
-                        derived.gptCapNano != null ? nanoMoney(derived.gptCapNano) : money(derived.gptCap)
-                      } realized workload blend${
-                        derived.gptUnknown ? ` · ${derived.gptUnknown} без оценки` : ""
-                      }`
-                    : "первый снимок — только якорь, без прайора"
-              }
-            />
-            <StatCard label="GPT · в работе" value={derived.gptDown ? "—" : derived.gptInflight} hint="inflight turns сейчас" />
-            <StatCard
-              label="GPT · потрачено"
-              value={
-                derived.gptDown
-                  ? "—"
-                  : derived.gptSpendNano != null
-                    ? nanoMoney(derived.gptSpendNano)
-                    : money(derived.gptSpend)
-              }
-              hint="official-price, накопительно"
-              onClick={openSpendStats}
-              title="Разбивка: сутки / 7 дней / 30 дней"
-            />
-            {!derived.gptDown && derived.codex?.soonest_ready ? (
-              <StatCard
-                label="GPT · ближайший home"
-                value={duration(derived.codex.soonest_ready - result.nowMs / 1000)}
-                hint={`освободится ${formatDate(derived.codex.soonest_ready * 1000, true)}`}
-              />
-            ) : null}
-          </>
-        )}
-      </CardGrid>
+      <SectionHeader
+        title="GPT · calibration laboratory"
+        sub="Native ChatGPT credits отдельно от workload-dependent API USD"
+      />
       <div style={{ marginTop: 12 }}>
         {derived.gptDown || derived.gptOff ? (
           <div className="tcard">
@@ -346,7 +254,7 @@ export default function SubsPage() {
             </div>
           </div>
         ) : (
-          <GptTable homes={derived.homes} nowMs={result.nowMs} />
+          <CodexCalibrationLab response={derived.codex!} nowMs={result.nowMs} />
         )}
       </div>
 
@@ -435,11 +343,11 @@ export default function SubsPage() {
       ) : null}
 
       <footer>
-        Обновление каждые 10с, пока вкладка видима · GPT/Gemini: null/«ждём Δused» означает, что есть только якорь
-        или цензурированное первое движение — прайор не подставляется · Gemini workload blend показывает официальный
-        API-$ эквивалент фактически наблюдённой смеси задач; Google прямо указывает, что расход лимита зависит от
-        объёма работы, поэтому фиксированного USD-номинала подписки нет · «пик» и прайор относятся только к
-        отдельному Claude-контуру. Email и Google identity намеренно не выводятся.
+        Обновление каждые 10с, пока вкладка видима · GPT: одинаковые подписки сравниваются в native ChatGPT credits;
+        API USD зависит от выбранной модели, Standard/Fast, cache mix, output и long context · exact turn spend виден
+        сразу, а capacity появляется после подтверждённого движения quota · pending/dropped должны оставаться 0/0 ·
+        почта выводится только маскированной. Gemini workload blend остаётся официальным API-$ эквивалентом
+        фактически наблюдённой смеси задач; Google прямо указывает, что фиксированного USD-номинала подписки нет.
       </footer>
 
       {spendStatsModal}

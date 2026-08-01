@@ -6,6 +6,7 @@ import {
   duration,
   formatDate,
   money,
+  nanoCredits,
   nanoMoney,
   plural,
   ratio,
@@ -33,6 +34,23 @@ describe("nanoMoney", () => {
     expect(nanoMoney(null)).toBe("$0.00");
     expect(nanoMoney(undefined)).toBe("$0.00");
     expect(nanoMoney("abc")).toBe("$0.00");
+  });
+});
+
+describe("nanoCredits", () => {
+  it("форматирует native credits через BigInt и не скрывает первый маленький turn", () => {
+    expect(nanoCredits("1250000000")).toBe("1.25 credits");
+    expect(nanoCredits("387500000")).toBe("0.3875 credits");
+    expect(nanoCredits("12500")).toBe("0.000012 credits");
+    expect(nanoCredits("999")).toBe("<0.000001 credits");
+  });
+
+  it("сохраняет точность больших значений и безопасно обрабатывает мусор", () => {
+    expect(nanoCredits("123456789012345678901234567890")).toBe(
+      "123,456,789,012,345,678,901.234567 credits",
+    );
+    expect(nanoCredits("-2500000000")).toBe("−2.5 credits");
+    expect(nanoCredits("bad")).toBe("0 credits");
   });
 });
 

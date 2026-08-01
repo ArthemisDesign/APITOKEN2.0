@@ -74,3 +74,26 @@ systemctl enable apitoken-admin.service
 same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs` в три
 provider runtime и добавляет серверные ключи; браузер не получает control keys, полный email,
 OAuth, Google project или proxy. Защита относится ко всем страницам, включая `/sales/calculator`.
+
+## Calibration laboratory на странице подписок
+
+GPT-блок страницы `/subscriptions` — операторская лаборатория, а не одна итоговая USD-цифра:
+
+- native ChatGPT credits показаны бирюзовым и служат единственной корректной шкалой сравнения
+  одинаковых подписок;
+- API USD показан фиолетовым и пересчитывается под выбранную модель, Standard/Fast и редактируемый
+  fresh/cache-read/cache-write/output/reasoning mix; деньги и credits считаются только BigInt;
+- модельные API Fast и subscription Fast multipliers независимы (например, GPT-5.6 после
+  2026-07-30 — ×2 и ×2.5 соответственно), long-context modifier применяется ко всему API-request;
+- sticky первый столбец обеих таблиц показывает bounded masked email, затем opaque home id;
+- immutable evidence ledger всегда видим: первый successful turn сразу показывает model/tier,
+  token classes, exact credits, exact API USD и обе schedule identity;
+- native capacity/range появляется отдельно после положительного движения quota. Состояния «нет
+  evidence», «exact spend, ждём Δquota», «созревает», `representative`, persistence queue,
+  dropped/error и `possibly unattributed` выводятся текстом, а не только tooltip;
+- summary отдельно показывает native remaining, exact tracked credits, turns/models, exact
+  accumulated API equivalent и integrity `pending/dropped`.
+
+Разброс одинаковых планов объясняется рядом с таблицей: сначала сравниваются credits, а различие USD
+может быть вызвано моделью, token mix, Fast и long context. Quota movement без движения обоих gateway
+ledger помечается только как «возможно неатрибутировано» — это не доказательство внешнего расхода.

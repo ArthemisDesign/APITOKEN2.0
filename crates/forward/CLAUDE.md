@@ -292,19 +292,24 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    OpenAI-shaped 429 с ближайшим reset. Health — чистая политика в `health.rs` по двум осям
    (account healthy→suspect→dead; transport responsive→degraded→wedged), durable account axis в
    authority.
-6. **Калибровка ёмкости окна — fixed-point workload blend по фактическим данным.** Decimal
-   `used_percent` из `/wham/usage`/headers парсится без `f64` в `10^-8` fraction units; каждый
-   успешный turn durable-кредитует home exact official-price cost в integer nanoUSD. Estimator v8
-   считает `cap=100_000_000*ΣΔspend_nano/ΣΔused_fraction_units`: это API-USD-equivalent реально
-   обслуженного mix моделей/context/reasoning/tools, а не выдуманный номинал подписки. Per-interval
-   ±1-unit envelope даёт low/high, confidence = maturity × workload stability × quantisation.
-   Нет prior/EMA/WLS/float-money. Cold snapshot сам по себе остаётся только anchor, но первое
-   подтверждённое движение с положительным settlement сразу считается complete interval с
-   quantisation envelope; если settlement запаздывает, движение ждёт его catch-up. Raw
-   observations также позволяют распознать rolling weekly reset по совместному сигналу
-   material forward reset-at shift + utilisation rollback, даже если shift меньше пол-окна;
-   bounded reset-at jitter сам по себе окно не форкает. Exact cumulative legs и CAS-state в
-   engine authority переживают restart/blue-green/reset и позволяют replay при смене estimator;
+6. **Калибровка ёмкости окна — native credits отдельно от API USD.** Decimal `used_percent` из
+   `/wham/usage`/headers парсится без `f64` в `10^-8` fraction units. Каждый успешный turn до ingest
+   quota snapshot строит один immutable dual-ledger event: effective Standard/Fast, модель,
+   provider tier, fresh/cache-read/cache-write/output/reasoning counters, exact API nanoUSD и exact
+   ChatGPT nanocredits. Reasoning уже входит в output, cached input — subset total input; повторно
+   они не складываются. Стабильный внутренний `cal_*` request ID создаётся до выбора home и живёт
+   через transport/home retries, но никогда не уходит upstream. Registry атомарно двигает оба
+   cumulative ledger; exact retry идемпотентен.
+
+   Failed events остаются в bounded FIFO (4096) и повторяются перед новыми. Pending/drop видны в
+   `/codex-subs`; overflow не молчит. Permanent immutable replay conflict карантинит только одну
+   строку и не блокирует последующие. Estimator v9 после credit cutover начинает shared anchor для
+   обоих units: `native cap = 100_000_000*ΣΔnanocredits/ΣΔfraction`, API cap остаётся realized
+   workload equivalent по `ΣΔnanoUSD`. Старое API evidence переносится в `last_*`, а не считается
+   нулевым credit spend. Первое quota-only движение ждёт ledger catch-up; повторившееся движение без
+   обоих ledger помечается `possibly unattributed`, но не объявляется внешним использованием.
+   Low/high, samples, confidence и missing-data reason публикуются явно. Нет prior/EMA/WLS/float
+   money. Raw observations переживают restart/blue-green/reset и распознают rolling reset;
    каждое provider-reported duration калибруется независимо.
 7. **Цены — только из `metering::codex`** (audited, effective-dated). Для успешного ChatGPT-auth
    turn effective tier определяется принятым запросом: `priority` = Fast, отсутствие tier =

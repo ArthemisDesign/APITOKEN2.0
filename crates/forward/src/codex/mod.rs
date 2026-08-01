@@ -39,7 +39,7 @@ use crate::billing::AsyncBilling;
 use codex_credential::{CodexCredential, SecretString};
 use futures_util::StreamExt as _;
 use history::HistoryStore;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
@@ -122,6 +122,7 @@ impl TurnRouting {
 
 /// Fallback wait advertised to a client when every home is limited but no window published a reset.
 const DEFAULT_LIMIT_RETRY_SECS: u64 = 60;
+const MAX_PENDING_CALIBRATION_EVENTS: usize = 4_096;
 /// Utilisation below which quota does not influence ordering at all.
 ///
 /// Steering exists to avoid draining a subscription that is near its wall while another has room.
@@ -284,6 +285,10 @@ pub struct CodexHomeStatus {
     /// Cumulative official-price spend this home has served through the gateway.
     pub spend_nano_total: i64,
     pub spend_usd_total: f64,
+    pub spend_nanocredits_total: Option<i64>,
+    pub credit_tracking_started_ts: Option<i64>,
+    pub calibration_pending_events: usize,
+    pub calibration_dropped_events: u64,
     /// False after a persistence failure (or in an explicitly in-memory test gateway).
     pub calibration_persistence_ok: bool,
     /// Capacity estimate per reported window slot (empty until the first snapshot arrives).
@@ -354,6 +359,15 @@ pub struct CodexWindowCapacityReport {
     pub high_usd: Option<f64>,
     pub remaining_low_usd: Option<f64>,
     pub remaining_high_usd: Option<f64>,
+    pub capacity_nanocredits: Option<i64>,
+    pub remaining_nanocredits: Option<i64>,
+    pub low_nanocredits: Option<i64>,
+    pub high_nanocredits: Option<i64>,
+    pub remaining_low_nanocredits: Option<i64>,
+    pub remaining_high_nanocredits: Option<i64>,
+    pub observed_spend_nanocredits: Option<i64>,
+    pub credit_samples: Option<i64>,
+    pub unattributed_fraction_units: Option<i64>,
     pub observed_spend_nano: i64,
     pub observed_fraction_units: i64,
     /// `workload_blend` or `unknown`.
@@ -418,8 +432,13 @@ pub(crate) struct CodexHome {
     /// Last durable cumulative official-price spend returned by the authority (or local total in
     /// an explicitly in-memory test gateway).
     spend_nano_total: AtomicI64,
-    /// Credits that failed persistence are retried with the next successful turn.
-    pending_spend_nano: AtomicI64,
+    spend_nanocredits_total: AtomicI64,
+    credit_tracking_started_ts: AtomicI64,
+    /// Exact failed events are retained in FIFO order; amount-only retries would destroy model and
+    /// token-class evidence and could not be made idempotent across home retries.
+    pending_calibration_events: std::sync::Mutex<VecDeque<registry::CodexTurnCalibrationEvent>>,
+    calibration_flush: tokio::sync::Mutex<()>,
+    calibration_dropped_events: AtomicU64,
     calibration_persistence_ok: AtomicBool,
     billing: Option<Arc<AsyncBilling>>,
     /// Provider slots are presentation only. Estimator identity is the actual duration; a primary
@@ -460,7 +479,11 @@ impl CodexHome {
             turns_idle: Arc::new(Notify::new()),
             health: std::sync::Mutex::new(health::HomeHealth::new()),
             spend_nano_total: AtomicI64::new(0),
-            pending_spend_nano: AtomicI64::new(0),
+            spend_nanocredits_total: AtomicI64::new(0),
+            credit_tracking_started_ts: AtomicI64::new(0),
+            pending_calibration_events: std::sync::Mutex::new(VecDeque::new()),
+            calibration_flush: tokio::sync::Mutex::new(()),
+            calibration_dropped_events: AtomicU64::new(0),
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
             billing,
             calibrations: std::sync::Mutex::new(BTreeMap::new()),
@@ -905,44 +928,138 @@ impl CodexHome {
         Some(at.saturating_sub(pool::now()).clamp(1, 7 * 24 * 3600) as u64)
     }
 
-    /// Credit one completed turn's exact official-price cost to this home's calibration spend.
-    /// Called for every served turn regardless of customer billing (admin turns consume the
-    /// subscription window exactly the same). Failed persistence is retained as a pending delta
-    /// and retried on the next successful turn.
-    pub(crate) async fn record_spend(&self, real_nano: i128) {
-        let nano = real_nano.clamp(0, i64::MAX as i128) as i64;
-        if nano == 0 {
-            return;
+    /// Record one successful turn, retrying exact immutable evidence in FIFO order. Request-id
+    /// idempotency in registry makes a lost writer reply and a home retry safe.
+    pub(crate) async fn record_calibration_event(
+        &self,
+        event: registry::CodexTurnCalibrationEvent,
+    ) {
+        {
+            let mut pending = self
+                .pending_calibration_events
+                .lock()
+                .expect("Codex calibration event queue lock");
+            if pending.len() >= MAX_PENDING_CALIBRATION_EVENTS {
+                self.calibration_dropped_events
+                    .fetch_add(1, Ordering::Relaxed);
+                self.calibration_persistence_ok
+                    .store(false, Ordering::Relaxed);
+                eprintln!("Codex calibration event queue is full; evidence dropped");
+                return;
+            }
+            pending.push_back(event);
         }
+        let _flush = self.calibration_flush.lock().await;
         let Some(billing) = &self.billing else {
-            self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
+            let event = self
+                .pending_calibration_events
+                .lock()
+                .expect("Codex calibration event queue lock")
+                .pop_front();
+            if let Some(event) = event {
+                let api = self.spend_nano_total.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |current| current.checked_add(event.api_total_nanousd),
+                );
+                let credits = self.spend_nanocredits_total.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |current| current.checked_add(event.chatgpt_total_nanocredits),
+                );
+                if api.is_err() || credits.is_err() {
+                    self.calibration_dropped_events
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = self.credit_tracking_started_ts.compare_exchange(
+                    0,
+                    event.completed_at,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
             self.calibration_persistence_ok
                 .store(false, Ordering::Relaxed);
             return;
         };
-        self.pending_spend_nano.fetch_add(nano, Ordering::AcqRel);
-        let pending = self.pending_spend_nano.swap(0, Ordering::AcqRel);
-        match billing
-            .credit_codex_spend(self.id(), pending, pool::now())
-            .await
-        {
-            Ok(total) => {
-                self.spend_nano_total.fetch_max(total, Ordering::Relaxed);
+        loop {
+            let event = self
+                .pending_calibration_events
+                .lock()
+                .expect("Codex calibration event queue lock")
+                .front()
+                .cloned();
+            let Some(event) = event else {
                 self.calibration_persistence_ok.store(
-                    self.pending_spend_nano.load(Ordering::Acquire) == 0,
+                    self.calibration_dropped_events.load(Ordering::Relaxed) == 0,
                     Ordering::Relaxed,
                 );
-            }
-            Err(error) => {
-                self.pending_spend_nano.fetch_add(pending, Ordering::AcqRel);
-                self.calibration_persistence_ok
-                    .store(false, Ordering::Relaxed);
-                eprintln!(
-                    "Codex calibration spend persistence failed [{}]",
-                    error.root_cause()
-                );
+                break;
+            };
+            match billing.record_codex_turn(event.clone()).await {
+                Ok(total) => {
+                    self.spend_nano_total
+                        .store(total.spent_nano, Ordering::Relaxed);
+                    if let Some(credits) = total.spent_nanocredits {
+                        self.spend_nanocredits_total
+                            .store(credits, Ordering::Relaxed);
+                    }
+                    if let Some(started) = total.credit_tracking_started_ts {
+                        self.credit_tracking_started_ts
+                            .store(started, Ordering::Relaxed);
+                    }
+                    let mut pending = self
+                        .pending_calibration_events
+                        .lock()
+                        .expect("Codex calibration event queue lock");
+                    if pending
+                        .front()
+                        .is_some_and(|front| front.request_id == event.request_id)
+                    {
+                        pending.pop_front();
+                    }
+                }
+                Err(error) if registry::is_codex_turn_calibration_replay_conflict(&error) => {
+                    let mut pending = self
+                        .pending_calibration_events
+                        .lock()
+                        .expect("Codex calibration event queue lock");
+                    if pending
+                        .front()
+                        .is_some_and(|front| front.request_id == event.request_id)
+                    {
+                        pending.pop_front();
+                    }
+                    self.calibration_dropped_events
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.calibration_persistence_ok
+                        .store(false, Ordering::Relaxed);
+                    eprintln!(
+                        "Codex calibration event quarantined after immutable replay conflict"
+                    );
+                }
+                Err(error) => {
+                    self.calibration_persistence_ok
+                        .store(false, Ordering::Relaxed);
+                    eprintln!(
+                        "Codex calibration event persistence failed [{}]",
+                        error.root_cause()
+                    );
+                    break;
+                }
             }
         }
+    }
+
+    pub(crate) fn reject_calibration_event(&self, error: &anyhow::Error) {
+        self.calibration_dropped_events
+            .fetch_add(1, Ordering::Relaxed);
+        self.calibration_persistence_ok
+            .store(false, Ordering::Relaxed);
+        eprintln!(
+            "Codex calibration evidence rejected [{}]",
+            error.root_cause()
+        );
     }
 
     fn spend_usd_total(&self) -> f64 {
@@ -975,9 +1092,21 @@ impl CodexHome {
                 None => Err(anyhow::anyhow!("in-memory calibration")),
             };
             match persisted {
-                Ok((spend_nano, row)) => {
+                Ok((spend, row)) => {
                     self.spend_nano_total
-                        .fetch_max(spend_nano, Ordering::Relaxed);
+                        .fetch_max(spend.spent_nano, Ordering::Relaxed);
+                    if let Some(credits) = spend.spent_nanocredits {
+                        self.spend_nanocredits_total
+                            .fetch_max(credits, Ordering::Relaxed);
+                    }
+                    if let Some(started) = spend.credit_tracking_started_ts {
+                        let _ = self.credit_tracking_started_ts.compare_exchange(
+                            0,
+                            started,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                    }
                     match WindowCalibration::from_row(row) {
                         Ok(calibration) => {
                             self.calibrations
@@ -1005,6 +1134,11 @@ impl CodexHome {
                         used_percent: window.used_percent,
                         used_fraction_units: window.used_fraction_units,
                         gateway_spend_nano: spend_nano,
+                        gateway_spend_nanocredits: (self
+                            .credit_tracking_started_ts
+                            .load(Ordering::Relaxed)
+                            > 0)
+                        .then(|| self.spend_nanocredits_total.load(Ordering::Relaxed)),
                     };
                     let mut calibrations = self
                         .calibrations
@@ -1041,7 +1175,13 @@ impl CodexHome {
             }
         }
         self.calibration_persistence_ok.store(
-            all_persisted && self.pending_spend_nano.load(Ordering::Acquire) == 0,
+            all_persisted
+                && self
+                    .pending_calibration_events
+                    .lock()
+                    .expect("Codex calibration event queue lock")
+                    .is_empty()
+                && self.calibration_dropped_events.load(Ordering::Relaxed) == 0,
             Ordering::Relaxed,
         );
     }
@@ -1068,6 +1208,13 @@ impl CodexHome {
             calibration.and_then(|cal| cal.remaining_low_nano(window.used_fraction_units));
         let remaining_high_nano =
             calibration.and_then(|cal| cal.remaining_high_nano(window.used_fraction_units));
+        let credit_estimate = calibration.and_then(WindowCalibration::credit_estimate);
+        let remaining_nanocredits =
+            calibration.and_then(|cal| cal.remaining_nanocredits(window.used_fraction_units));
+        let remaining_low_nanocredits =
+            calibration.and_then(|cal| cal.remaining_low_nanocredits(window.used_fraction_units));
+        let remaining_high_nanocredits =
+            calibration.and_then(|cal| cal.remaining_high_nanocredits(window.used_fraction_units));
         let nano_to_usd = |nano: i64| nano as f64 / 1e9;
         // Keep the timestamp of the latest accepted complete interval instead of making cumulative
         // evidence look fresh merely because the provider emitted another snapshot.
@@ -1095,6 +1242,17 @@ impl CodexHome {
             high_usd: estimate.and_then(|value| value.high_nano).map(nano_to_usd),
             remaining_low_usd: remaining_low_nano.map(nano_to_usd),
             remaining_high_usd: remaining_high_nano.map(nano_to_usd),
+            capacity_nanocredits: credit_estimate.map(|value| value.capacity_nanocredits),
+            remaining_nanocredits,
+            low_nanocredits: credit_estimate.and_then(|value| value.low_nanocredits),
+            high_nanocredits: credit_estimate.and_then(|value| value.high_nanocredits),
+            remaining_low_nanocredits,
+            remaining_high_nanocredits,
+            observed_spend_nanocredits: calibration
+                .and_then(|cal| cal.row().observed_spend_nanocredits),
+            credit_samples: calibration.and_then(|cal| cal.row().credit_samples),
+            unattributed_fraction_units: calibration
+                .and_then(|cal| cal.row().unattributed_fraction_units),
             observed_spend_nano: calibration.map_or(0, |cal| cal.row().observed_spend_nano),
             observed_fraction_units: calibration.map_or(0, |cal| cal.row().observed_fraction_units),
             source: estimate.map_or("unknown", |value| value.source.as_str()),
@@ -1199,6 +1357,18 @@ impl CodexHome {
             rate_limits,
             spend_nano_total: self.spend_nano_total.load(Ordering::Relaxed),
             spend_usd_total: self.spend_usd_total(),
+            spend_nanocredits_total: (self.credit_tracking_started_ts.load(Ordering::Relaxed) > 0)
+                .then(|| self.spend_nanocredits_total.load(Ordering::Relaxed)),
+            credit_tracking_started_ts: {
+                let started = self.credit_tracking_started_ts.load(Ordering::Relaxed);
+                (started > 0).then_some(started)
+            },
+            calibration_pending_events: self
+                .pending_calibration_events
+                .lock()
+                .expect("Codex calibration event queue lock")
+                .len(),
+            calibration_dropped_events: self.calibration_dropped_events.load(Ordering::Relaxed),
             calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
             capacities,
             fast_tiers: self.fast_tier_statuses(),

@@ -5,6 +5,7 @@
 
 use crate::{
     mask_proxy, AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow,
+    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
     CodexWindowObservation, GeminiCalibrationRow, GeminiWindowObservation, KeyAuth,
     KeyPolicyUpdate, KeyRow, LedgerAttribution, LedgerConsumerLag, LedgerFundingAllocation,
     LedgerRow, PoolStateRow, SettlementFailure, SettlementHealth, SpendAccountAgg, SpendModelAgg,
@@ -3715,6 +3716,193 @@ impl PgStore {
             .unwrap_or(0))
     }
 
+    pub fn record_codex_turn_calibration_event(
+        &mut self,
+        event: &CodexTurnCalibrationEvent,
+    ) -> Result<CodexHomeCalibrationSpend> {
+        crate::validate_codex_turn_calibration_event(event)?;
+        let mut tx = self.client.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO codex_turn_calibration_events(\
+               request_id,home_id,model_id,service_tier,provider_reported_tier,\
+               api_tariff_schedule_id,credit_schedule_id,completed_at,input_tokens,\
+               cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,\
+               api_input_nanousd,api_cached_input_nanousd,api_cache_write_nanousd,\
+               api_output_nanousd,api_total_nanousd,chatgpt_input_nanocredits,\
+               chatgpt_cached_input_nanocredits,chatgpt_output_nanocredits,\
+               chatgpt_total_nanocredits) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
+                    $19,$20,$21,$22) ON CONFLICT(request_id) DO NOTHING",
+            &[
+                &event.request_id,
+                &event.home_id,
+                &event.model_id,
+                &event.service_tier,
+                &event.provider_reported_tier,
+                &event.api_tariff_schedule_id,
+                &event.credit_schedule_id,
+                &event.completed_at,
+                &event.input_tokens,
+                &event.cached_input_tokens,
+                &event.cache_write_input_tokens,
+                &event.output_tokens,
+                &event.reasoning_output_tokens,
+                &event.api_input_nanousd,
+                &event.api_cached_input_nanousd,
+                &event.api_cache_write_nanousd,
+                &event.api_output_nanousd,
+                &event.api_total_nanousd,
+                &event.chatgpt_input_nanocredits,
+                &event.chatgpt_cached_input_nanocredits,
+                &event.chatgpt_output_nanocredits,
+                &event.chatgpt_total_nanocredits,
+            ],
+        )? == 1;
+        if inserted {
+            tx.execute(
+                "INSERT INTO codex_home_spend(\
+                   home_id,spent_nano,spent_nanocredits,credit_tracking_started_ts,updated_ts) \
+                 VALUES($1,$2,$3,$4,$4) ON CONFLICT(home_id) DO UPDATE SET \
+                   spent_nano=codex_home_spend.spent_nano+EXCLUDED.spent_nano, \
+                   spent_nanocredits=COALESCE(codex_home_spend.spent_nanocredits,0)\
+                       +EXCLUDED.spent_nanocredits, \
+                   credit_tracking_started_ts=COALESCE(\
+                       codex_home_spend.credit_tracking_started_ts,EXCLUDED.credit_tracking_started_ts), \
+                   updated_ts=GREATEST(codex_home_spend.updated_ts,EXCLUDED.updated_ts)",
+                &[
+                    &event.home_id,
+                    &event.api_total_nanousd,
+                    &event.chatgpt_total_nanocredits,
+                    &event.completed_at,
+                ],
+            )?;
+        } else {
+            let row = tx.query_one(
+                "SELECT request_id,home_id,model_id,service_tier,provider_reported_tier,\
+                   api_tariff_schedule_id,credit_schedule_id,completed_at,input_tokens,\
+                   cached_input_tokens,cache_write_input_tokens,output_tokens,\
+                   reasoning_output_tokens,api_input_nanousd,api_cached_input_nanousd,\
+                   api_cache_write_nanousd,api_output_nanousd,api_total_nanousd,\
+                   chatgpt_input_nanocredits,chatgpt_cached_input_nanocredits,\
+                   chatgpt_output_nanocredits,chatgpt_total_nanocredits \
+                 FROM codex_turn_calibration_events WHERE request_id=$1",
+                &[&event.request_id],
+            )?;
+            let existing = CodexTurnCalibrationEvent {
+                request_id: row.get(0),
+                home_id: row.get(1),
+                model_id: row.get(2),
+                service_tier: row.get(3),
+                provider_reported_tier: row.get(4),
+                api_tariff_schedule_id: row.get(5),
+                credit_schedule_id: row.get(6),
+                completed_at: row.get(7),
+                input_tokens: row.get(8),
+                cached_input_tokens: row.get(9),
+                cache_write_input_tokens: row.get(10),
+                output_tokens: row.get(11),
+                reasoning_output_tokens: row.get(12),
+                api_input_nanousd: row.get(13),
+                api_cached_input_nanousd: row.get(14),
+                api_cache_write_nanousd: row.get(15),
+                api_output_nanousd: row.get(16),
+                api_total_nanousd: row.get(17),
+                chatgpt_input_nanocredits: row.get(18),
+                chatgpt_cached_input_nanocredits: row.get(19),
+                chatgpt_output_nanocredits: row.get(20),
+                chatgpt_total_nanocredits: row.get(21),
+            };
+            if existing != *event {
+                return Err(crate::CodexTurnCalibrationReplayConflict.into());
+            }
+        }
+        let row = tx.query_opt(
+            "SELECT spent_nano,spent_nanocredits,credit_tracking_started_ts \
+             FROM codex_home_spend WHERE home_id=$1",
+            &[&event.home_id],
+        )?;
+        let mut totals = row
+            .map(|row| CodexHomeCalibrationSpend {
+                spent_nano: row.get(0),
+                spent_nanocredits: row.get(1),
+                credit_tracking_started_ts: row.get(2),
+                inserted: false,
+            })
+            .unwrap_or_default();
+        totals.inserted = inserted;
+        tx.commit()?;
+        Ok(totals)
+    }
+
+    pub fn codex_home_calibration_spend(
+        &mut self,
+        home_id: &str,
+    ) -> Result<CodexHomeCalibrationSpend> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT spent_nano,spent_nanocredits,credit_tracking_started_ts \
+                 FROM codex_home_spend WHERE home_id=$1",
+                &[&home_id],
+            )?
+            .map(|row| CodexHomeCalibrationSpend {
+                spent_nano: row.get(0),
+                spent_nanocredits: row.get(1),
+                credit_tracking_started_ts: row.get(2),
+                inserted: false,
+            })
+            .unwrap_or_default())
+    }
+
+    pub fn codex_turn_calibration_report(&mut self) -> Result<Vec<CodexTurnCalibrationAggregate>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT home_id,model_id,service_tier,provider_reported_tier,\
+                   api_tariff_schedule_id,credit_schedule_id,COUNT(*)::bigint,\
+                   MIN(completed_at),MAX(completed_at),SUM(input_tokens)::bigint,\
+                   SUM(cached_input_tokens)::bigint,SUM(cache_write_input_tokens)::bigint,\
+                   SUM(output_tokens)::bigint,SUM(reasoning_output_tokens)::bigint,\
+                   SUM(api_input_nanousd)::bigint,SUM(api_cached_input_nanousd)::bigint,\
+                   SUM(api_cache_write_nanousd)::bigint,SUM(api_output_nanousd)::bigint,\
+                   SUM(api_total_nanousd)::bigint,SUM(chatgpt_input_nanocredits)::bigint,\
+                   SUM(chatgpt_cached_input_nanocredits)::bigint,\
+                   SUM(chatgpt_output_nanocredits)::bigint,SUM(chatgpt_total_nanocredits)::bigint \
+                 FROM codex_turn_calibration_events \
+                 GROUP BY home_id,model_id,service_tier,provider_reported_tier,\
+                   api_tariff_schedule_id,credit_schedule_id \
+                 ORDER BY home_id,model_id,service_tier,provider_reported_tier",
+                &[],
+            )?
+            .into_iter()
+            .map(|row| CodexTurnCalibrationAggregate {
+                home_id: row.get(0),
+                model_id: row.get(1),
+                service_tier: row.get(2),
+                provider_reported_tier: row.get(3),
+                api_tariff_schedule_id: row.get(4),
+                credit_schedule_id: row.get(5),
+                turns: row.get(6),
+                first_completed_at: row.get(7),
+                last_completed_at: row.get(8),
+                input_tokens: row.get(9),
+                cached_input_tokens: row.get(10),
+                cache_write_input_tokens: row.get(11),
+                output_tokens: row.get(12),
+                reasoning_output_tokens: row.get(13),
+                api_input_nanousd: row.get(14),
+                api_cached_input_nanousd: row.get(15),
+                api_cache_write_nanousd: row.get(16),
+                api_output_nanousd: row.get(17),
+                api_total_nanousd: row.get(18),
+                chatgpt_input_nanocredits: row.get(19),
+                chatgpt_cached_input_nanocredits: row.get(20),
+                chatgpt_output_nanocredits: row.get(21),
+                chatgpt_total_nanocredits: row.get(22),
+            })
+            .collect())
+    }
+
     // -- Durable Gemini capacity evidence ----------------------------------------------------
 
     pub fn credit_gemini_profile_spend(
@@ -3812,7 +4000,11 @@ impl PgStore {
                    COALESCE(anchor_used_fraction_units,anchor_used_percent*1000000),\
                    COALESCE(used_fraction_units,used_percent*1000000),\
                    COALESCE(observed_fraction_units,observed_points*1000000),\
-                   COALESCE(observed_spend_nano,0) \
+                   COALESCE(observed_spend_nano,0),anchor_spend_nanocredits,\
+                   observed_spend_nanocredits,current_capacity_nanocredits,\
+                   current_low_nanocredits,current_high_nanocredits,last_capacity_nanocredits,\
+                   last_low_nanocredits,last_high_nanocredits,credit_samples,\
+                   credit_estimator_version,unattributed_fraction_units \
                  FROM codex_window_calibrations WHERE home_id=$1 AND window_duration_mins=$2",
                 &[&home_id, &window_duration_mins],
             )?
@@ -3845,6 +4037,17 @@ impl PgStore {
                 used_fraction_units: row.get(25),
                 observed_fraction_units: row.get(26),
                 observed_spend_nano: row.get(27),
+                anchor_spend_nanocredits: row.get(28),
+                observed_spend_nanocredits: row.get(29),
+                current_capacity_nanocredits: row.get(30),
+                current_low_nanocredits: row.get(31),
+                current_high_nanocredits: row.get(32),
+                last_capacity_nanocredits: row.get(33),
+                last_low_nanocredits: row.get(34),
+                last_high_nanocredits: row.get(35),
+                credit_samples: row.get(36),
+                credit_estimator_version: row.get(37),
+                unattributed_fraction_units: row.get(38),
             }))
     }
 
@@ -3858,7 +4061,8 @@ impl PgStore {
             .client
             .query(
                 "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,\
-                   COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano \
+                   COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano,\
+                   gateway_spend_nanocredits \
                  FROM codex_window_observations \
                  WHERE home_id=$1 AND window_duration_mins=$2 ORDER BY observed_at,id",
                 &[&home_id, &window_duration_mins],
@@ -3872,6 +4076,7 @@ impl PgStore {
                 used_percent: row.get(4),
                 used_fraction_units: row.get(5),
                 gateway_spend_nano: row.get(6),
+                gateway_spend_nanocredits: row.get(7),
             })
             .collect())
     }
@@ -3892,9 +4097,14 @@ impl PgStore {
                    current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                    last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
                    estimator_version,updated_ts,version,anchor_ready,anchor_used_fraction_units,\
-                   used_fraction_units,observed_fraction_units,observed_spend_nano \
+                   used_fraction_units,observed_fraction_units,observed_spend_nano,\
+                   anchor_spend_nanocredits,observed_spend_nanocredits,\
+                   current_capacity_nanocredits,current_low_nanocredits,current_high_nanocredits,\
+                   last_capacity_nanocredits,last_low_nanocredits,last_high_nanocredits,\
+                   credit_samples,credit_estimator_version,unattributed_fraction_units \
                  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
-                          $19,$20,$21,$22,1,$23,$24,$25,$26,$27) \
+                          $19,$20,$21,$22,1,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,\
+                          $34,$35,$36,$37,$38) \
                  ON CONFLICT(home_id,window_duration_mins) DO NOTHING RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -3905,7 +4115,12 @@ impl PgStore {
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
                   &state.updated_ts,&state.anchor_ready,&state.anchor_used_fraction_units,
                   &state.used_fraction_units,&state.observed_fraction_units,
-                  &state.observed_spend_nano],
+                  &state.observed_spend_nano,&state.anchor_spend_nanocredits,
+                  &state.observed_spend_nanocredits,&state.current_capacity_nanocredits,
+                  &state.current_low_nanocredits,&state.current_high_nanocredits,
+                  &state.last_capacity_nanocredits,&state.last_low_nanocredits,
+                  &state.last_high_nanocredits,&state.credit_samples,
+                  &state.credit_estimator_version,&state.unattributed_fraction_units],
             )?
         } else {
             tx.query_opt(
@@ -3917,7 +4132,12 @@ impl PgStore {
                    last_high_nano=$18,last_confidence_bp=$19,last_measured_at=$20,\
                    estimator_version=$21,updated_ts=$22,version=version+1,anchor_ready=$24,\
                    anchor_used_fraction_units=$25,used_fraction_units=$26,\
-                   observed_fraction_units=$27,observed_spend_nano=$28 \
+                   observed_fraction_units=$27,observed_spend_nano=$28,\
+                   anchor_spend_nanocredits=$29,observed_spend_nanocredits=$30,\
+                   current_capacity_nanocredits=$31,current_low_nanocredits=$32,\
+                   current_high_nanocredits=$33,last_capacity_nanocredits=$34,\
+                   last_low_nanocredits=$35,last_high_nanocredits=$36,credit_samples=$37,\
+                   credit_estimator_version=$38,unattributed_fraction_units=$39 \
                  WHERE home_id=$1 AND window_duration_mins=$2 AND version=$23 RETURNING version",
                 &[&state.home_id,&state.window_duration_mins,&state.resets_at,
                   &state.anchor_used_percent,&state.anchor_spend_nano,&state.used_percent,
@@ -3928,7 +4148,13 @@ impl PgStore {
                   &state.last_confidence_bp,&state.last_measured_at,&state.estimator_version,
                   &state.updated_ts,&state.version,&state.anchor_ready,
                   &state.anchor_used_fraction_units,&state.used_fraction_units,
-                  &state.observed_fraction_units,&state.observed_spend_nano],
+                  &state.observed_fraction_units,&state.observed_spend_nano,
+                  &state.anchor_spend_nanocredits,&state.observed_spend_nanocredits,
+                  &state.current_capacity_nanocredits,&state.current_low_nanocredits,
+                  &state.current_high_nanocredits,&state.last_capacity_nanocredits,
+                  &state.last_low_nanocredits,&state.last_high_nanocredits,
+                  &state.credit_samples,&state.credit_estimator_version,
+                  &state.unattributed_fraction_units],
             )?
         };
         let Some(version) = version.map(|row| row.get::<_, i64>(0)) else {
@@ -3937,8 +4163,8 @@ impl PgStore {
         tx.execute(
             "INSERT INTO codex_window_observations( \
                home_id,window_duration_mins,resets_at,observed_at,used_percent,\
-               used_fraction_units,gateway_spend_nano \
-             ) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+               used_fraction_units,gateway_spend_nano,gateway_spend_nanocredits \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING",
             &[
                 &observation.home_id,
                 &observation.window_duration_mins,
@@ -3947,6 +4173,7 @@ impl PgStore {
                 &observation.used_percent,
                 &observation.used_fraction_units,
                 &observation.gateway_spend_nano,
+                &observation.gateway_spend_nanocredits,
             ],
         )?;
         tx.commit()?;
@@ -6739,7 +6966,8 @@ mod tests {
              provider_switch_head,provider_switch_entries,provider_switch_versions, \
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
              gemini_window_observations,gemini_window_calibrations,gemini_profile_spend, \
-             codex_window_observations,codex_window_calibrations,codex_home_spend, \
+             codex_turn_calibration_events,codex_window_observations,\
+             codex_window_calibrations,codex_home_spend, \
              codex_home_health, \
              settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
@@ -6771,6 +6999,17 @@ mod tests {
             observed_points: 0,
             observed_fraction_units: 0,
             observed_spend_nano: 0,
+            anchor_spend_nanocredits: None,
+            observed_spend_nanocredits: None,
+            current_capacity_nanocredits: None,
+            current_low_nanocredits: None,
+            current_high_nanocredits: None,
+            last_capacity_nanocredits: None,
+            last_low_nanocredits: None,
+            last_high_nanocredits: None,
+            credit_samples: None,
+            credit_estimator_version: None,
+            unattributed_fraction_units: None,
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -6794,6 +7033,7 @@ mod tests {
             used_percent: state.used_percent,
             used_fraction_units: state.used_fraction_units,
             gateway_spend_nano: state.anchor_spend_nano,
+            gateway_spend_nanocredits: None,
         };
         assert_eq!(
             pg.save_codex_calibration(&state, &observation).unwrap(),

@@ -60,15 +60,20 @@ side effect. `serve` may only perform the read-only schema verification before c
   spend и CAS-derived state для двух fixed buckets. `observed_spend_nano` добавлен expand-only
   migration 0014 и хранит точный `ΣΔspend` workload estimator v2; смысл blend/envelope/confidence
   остаётся в `forward`, registry только валидирует и атомарно сохраняет примитивы.
-- Codex calibration migration 0015 expand-only добавляет nullable fixed-point fraction evidence и
-  exact cumulative legs. Nullable — намеренно: предыдущий runtime может безопасно пережить
-  migration-first rollout, а следующий estimator восстанавливает отсутствующие значения из
-  legacy whole-percent raw observations. Runtime estimator v8 после cutover и replay атомарно пишет
-  canonical `10^-8` fraction units, legacy whole-percent projection, `ΣΔfraction` и exact
-  `ΣΔspend_nano`; первое complete positive movement уже является sample, а raw observations
-  остаются replay authority, включая восстановление rolling reset по reset-at + usage rollback.
-  Смысл workload
-  blend/envelope/confidence принадлежит `forward`, registry хранит и CAS-обновляет примитивы.
+- Codex calibration migrations 0015/0018 expand-only добавляют fixed-point quota evidence и
+  независимый native ChatGPT-credit ledger. Каждый успешный turn записывается как immutable
+  `CodexTurnCalibrationEvent`: opaque внутренний `request_id`, home/model, effective Standard/Fast,
+  provider-reported tier, обе schedule identity, disjoint token classes, четыре API nanoUSD legs и
+  три ChatGPT nanocredit legs. Insert события и продвижение обоих cumulative ledgers выполняются
+  одной транзакцией. Exact replay возвращает уже сохранённые totals без второго списания; другой
+  semantic payload под тем же request ID даёт typed permanent conflict и не меняет ни один ledger.
+  Aggregate report группирует только immutable rows по home/model/tier/schedules.
+  Nullable credit-колонки намеренны: migration-first rollout переживает старый runtime, а estimator
+  v9 при первом credit-bearing observation сохраняет legacy API estimate в `last_*`, сбрасывает оба
+  current estimate и начинает единый новый anchor. Исторический API spend никогда не становится
+  ложным zero-credit evidence. Raw observations остаются replay authority, включая rolling reset;
+  workload/envelope/confidence и possibly-unattributed semantics принадлежат `forward`, registry
+  только валидирует и CAS-сохраняет exact integer primitives.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

@@ -13,6 +13,7 @@ vi.mock("next/link", () => ({
 
 import SubsPage from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
+import { CodexCalibrationLab } from "./codex-calibration-lab";
 import {
   barFromPercent,
   barFromRemaining,
@@ -130,6 +131,125 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("доверительный интервал");
     expect(html).toContain("Δquota 42.125679%");
     expect(html).toContain("official-price");
+  });
+
+  it("CodexCalibrationLab: почта слева, credits↔USD и immutable evidence видны одновременно", () => {
+    const html = renderToString(
+      <CodexCalibrationLab
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_evidence_available: true,
+          credit_schedule_id: "chatgpt/codex-credits/2026-07-30/v1",
+          conversion_models: [
+            {
+              id: "gpt-5.6-sol",
+              api_tariff_schedule_id: "openai/gpt-5.6-sol/2026-07-30/v2",
+              credit_schedule_id: "chatgpt/codex-credits/2026-07-30/v1",
+              api: {
+                input_nanousd_per_token: "5000",
+                cached_input_nanousd_per_token: "500",
+                cache_write_nanousd_per_token: "6250",
+                output_nanousd_per_token: "30000",
+                fast_multiplier_basis_points: 20000,
+                long_context_threshold: "272000",
+                long_input_multiplier_basis_points: 20000,
+                long_output_multiplier_basis_points: 15000,
+              },
+              chatgpt_credits: {
+                input_nanocredits_per_token: "125000",
+                cached_input_nanocredits_per_token: "12500",
+                output_nanocredits_per_token: "750000",
+                fast_multiplier_basis_points: 25000,
+              },
+            },
+          ],
+          window_totals: [
+            {
+              window_minutes: 300,
+              capacity_nanocredits: "2000000000000",
+              remaining_nanocredits: "1200000000000",
+            },
+          ],
+          homes: [
+            {
+              id: "home-1",
+              email: "owne…",
+              plan: "chatgpt_pro",
+              process_live: true,
+              admitted: true,
+              calibration_persistence_ok: true,
+              calibration_pending_events: 0,
+              calibration_dropped_events: 0,
+              credit_tracking_started_ts: 1_790_000_000,
+              windows: [
+                {
+                  slot: "primary",
+                  window_minutes: 300,
+                  resets_at: 1_800_000_600,
+                  used_fraction_units: 40000000,
+                  capacity_nanocredits: "2000000000000",
+                  remaining_nanocredits: "1200000000000",
+                  low_nanocredits: "1900000000000",
+                  high_nanocredits: "2100000000000",
+                  observed_spend_nanocredits: "800000000000",
+                  observed_fraction_units: 40000000,
+                  credit_samples: 4,
+                  unattributed_fraction_units: 0,
+                },
+              ],
+              calibration_evidence: [
+                {
+                  model: "gpt-5.6-sol",
+                  service_tier: "fast",
+                  provider_reported_tier: "priority",
+                  turns: 3,
+                  first_completed_at: 1_790_000_000,
+                  last_completed_at: 1_790_000_100,
+                  input_tokens: "1000",
+                  cached_input_tokens: "400",
+                  cache_write_input_tokens: "100",
+                  output_tokens: "100",
+                  reasoning_output_tokens: "80",
+                  api_input_nanousd: "5000000",
+                  api_cached_input_nanousd: "400000",
+                  api_cache_write_nanousd: "1250000",
+                  api_output_nanousd: "6000000",
+                  api_total_nanousd: "12650000",
+                  chatgpt_input_nanocredits: "187500000",
+                  chatgpt_cached_input_nanocredits: "12500000",
+                  chatgpt_output_nanocredits: "187500000",
+                  chatgpt_total_nanocredits: "387500000",
+                  api_tariff_schedule_id: "openai/gpt-5.6-sol/2026-07-30/v2",
+                  credit_schedule_id: "chatgpt/codex-credits/2026-07-30/v1",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("ChatGPT credits ↔ API USD");
+    expect(html).toContain("owne…");
+    expect(html).not.toContain("owner@example.com");
+    expect(html.indexOf("почта / home")).toBeLessThan(html.indexOf("состояние evidence"));
+    expect(html).toContain("representative");
+    expect(html).toContain("0.3875 credits");
+    expect(html).toContain("$0.01");
+    expect(plain(html)).toContain("API Fast ×2.0 · subscription Fast ×2.5");
+    expect(plain(html)).toContain("pending 0 · dropped 0");
+    expect(html).toContain("reasoning уже входит в output");
+  });
+
+  it("CodexCalibrationLab: пустой ledger объясняет ожидание первого turn, а не показывает ноль", () => {
+    const html = renderToString(
+      <CodexCalibrationLab
+        nowMs={1_800_000_000_000}
+        response={{ calibration_evidence_available: true, homes: [{ id: "home-1", email: "owne…" }] }}
+      />,
+    );
+    expect(html).toContain("waiting for first turn");
+    expect(html).toContain("Первый точный расход появится здесь сразу");
+    expect(html).toContain("ждёт Δquota");
   });
 
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {

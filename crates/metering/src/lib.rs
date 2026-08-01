@@ -19,7 +19,7 @@ pub use codex::{
     codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
     CodexAdmissionTariffIdentity, CodexContextTier, CodexCreditRates, CodexCreditUsage,
     CodexModelSpec, CodexPriceEpoch, CodexPrices, CodexServiceTier, CodexTariffModifiers,
-    CODEX_ALIAS_GENERATION,
+    CODEX_ALIAS_GENERATION, CODEX_CREDIT_SCHEDULE_ID,
 };
 pub use gemini::{
     gemini_catalog_at, gemini_prices_at, GeminiModelSpec, GeminiPriceEpoch, GeminiPrices,

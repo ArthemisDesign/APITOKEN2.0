@@ -94,6 +94,8 @@ struct IdentifiedCodexPriceEpoch {
 
 /// Version of the audited public-id to canonical-id mapping below.
 pub const CODEX_ALIAS_GENERATION: i64 = 1;
+/// Reviewed identity of the native ChatGPT Codex credit card used by calibration events.
+pub const CODEX_CREDIT_SCHEDULE_ID: &str = "chatgpt/codex-credits/2026-07-30/v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodexServiceTier {

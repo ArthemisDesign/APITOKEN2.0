@@ -9,6 +9,7 @@ use crate::pricing::{
 };
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
+use anyhow::Context as _;
 use axum::http::HeaderMap;
 use registry::pricing::{
     LegacyScalarReserveOutcome, PolicyReserveOutcome, PolicyRuleScope, PricingMode,
@@ -693,6 +694,7 @@ pub(super) fn reserve_cost(
 
 /// Exact official-price cost of one completed turn, used for per-home window-capacity
 /// calibration. Pure pricing only: customer money moves exclusively through `settled_charge`.
+#[cfg(test)]
 pub(crate) fn price_real_nano(
     model: &CodexModel,
     usage: &CodexUsage,
@@ -700,6 +702,80 @@ pub(crate) fn price_real_nano(
     fast: bool,
 ) -> i128 {
     price_usage(model, usage, now, fast).real_nano
+}
+
+/// Build one complete immutable dual-ledger event. Reasoning is a subset of output and cached
+/// input is a subset of input; both are recorded diagnostically but never added twice. Integer
+/// conversions fail closed so hostile counters cannot saturate into plausible evidence.
+pub(crate) fn price_calibration_event(
+    request_id: &str,
+    home_id: &str,
+    model: &CodexModel,
+    usage: &CodexUsage,
+    completed_at: i64,
+    fast: bool,
+    provider_reported_tier: Option<&str>,
+) -> anyhow::Result<registry::CodexTurnCalibrationEvent> {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        anyhow::bail!("Codex turn completed without billable usage evidence");
+    }
+    let priced = price_usage(model, usage, completed_at, fast);
+    let service_tier = if fast {
+        metering::CodexServiceTier::Fast
+    } else {
+        metering::CodexServiceTier::Standard
+    };
+    let tariff = metering::codex_tariff_capability_at(
+        &model.id,
+        completed_at,
+        service_tier,
+        usage.input_tokens,
+    )
+    .map_err(|error| anyhow::anyhow!("Codex tariff identity unavailable: {error:?}"))?;
+    let credits = metering::codex_credit_cost_nano(
+        &model.id,
+        usage.input_tokens,
+        priced.cached_input,
+        usage.output_tokens,
+        fast,
+    )
+    .context("Codex subscription credit rate unavailable")?;
+    let token = |value: u64, name: &'static str| {
+        i64::try_from(value).with_context(|| format!("Codex {name} exceeds bigint"))
+    };
+    let money = |value: i128, name: &'static str| {
+        i64::try_from(value).with_context(|| format!("Codex {name} exceeds bigint"))
+    };
+    Ok(registry::CodexTurnCalibrationEvent {
+        request_id: request_id.to_owned(),
+        home_id: home_id.to_owned(),
+        model_id: model.id.clone(),
+        service_tier: if fast { "fast" } else { "standard" }.to_owned(),
+        provider_reported_tier: provider_reported_tier.map(str::to_owned),
+        api_tariff_schedule_id: tariff.tariff_schedule_id.as_str().to_owned(),
+        credit_schedule_id: metering::CODEX_CREDIT_SCHEDULE_ID.to_owned(),
+        completed_at,
+        input_tokens: token(usage.input_tokens, "input tokens")?,
+        cached_input_tokens: token(priced.cached_input, "cached input tokens")?,
+        cache_write_input_tokens: token(priced.cache_write_input, "cache-write input tokens")?,
+        output_tokens: token(usage.output_tokens, "output tokens")?,
+        reasoning_output_tokens: token(
+            usage.reasoning_output_tokens.min(usage.output_tokens),
+            "reasoning output tokens",
+        )?,
+        api_input_nanousd: money(priced.input_nano, "API input cost")?,
+        api_cached_input_nanousd: money(priced.cached_nano, "API cached-input cost")?,
+        api_cache_write_nanousd: money(priced.cache_write_nano, "API cache-write cost")?,
+        api_output_nanousd: money(priced.output_nano, "API output cost")?,
+        api_total_nanousd: money(priced.real_nano, "API total cost")?,
+        chatgpt_input_nanocredits: money(credits.input_credit_nano, "ChatGPT input credits")?,
+        chatgpt_cached_input_nanocredits: money(
+            credits.cached_input_credit_nano,
+            "ChatGPT cached-input credits",
+        )?,
+        chatgpt_output_nanocredits: money(credits.output_credit_nano, "ChatGPT output credits")?,
+        chatgpt_total_nanocredits: money(credits.total_credit_nano, "ChatGPT total credits")?,
+    })
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1232,6 +1308,48 @@ mod tests {
         assert_eq!(event.input_nano, 100 * 5_000 * 5 / 2);
         assert_eq!(event.output_nano, 10 * 30_000 * 5 / 2);
         assert_eq!(event.real_nano, fast_usage);
+    }
+
+    #[test]
+    fn calibration_event_keeps_exact_api_credit_legs_and_reasoning_as_output_subset() {
+        let usage = CodexUsage {
+            input_tokens: 1_000,
+            cached_input_tokens: 400,
+            cache_write_input_tokens: 100,
+            output_tokens: 100,
+            reasoning_output_tokens: 80,
+            ..CodexUsage::default()
+        };
+        let event = price_calibration_event(
+            "turn-1",
+            "home-1",
+            &model(),
+            &usage,
+            1_785_369_601,
+            true,
+            Some("priority"),
+        )
+        .unwrap();
+        assert_eq!(event.service_tier, "fast");
+        assert_eq!(event.provider_reported_tier.as_deref(), Some("priority"));
+        assert_eq!(
+            event.api_tariff_schedule_id,
+            "openai/gpt-5.6-sol/2026-07-30/v2"
+        );
+        assert_eq!(event.credit_schedule_id, metering::CODEX_CREDIT_SCHEDULE_ID);
+        assert_eq!(event.reasoning_output_tokens, 80);
+        // API Fast is 2x in this epoch.
+        assert_eq!(event.api_input_nanousd, 5_000_000);
+        assert_eq!(event.api_cached_input_nanousd, 400_000);
+        assert_eq!(event.api_cache_write_nanousd, 1_250_000);
+        assert_eq!(event.api_output_nanousd, 6_000_000);
+        assert_eq!(event.api_total_nanousd, 12_650_000);
+        // Subscription Fast is independently 2.5x; cache writes use fresh-input credits and
+        // reasoning is not added again because it is already in output_tokens.
+        assert_eq!(event.chatgpt_input_nanocredits, 187_500_000);
+        assert_eq!(event.chatgpt_cached_input_nanocredits, 12_500_000);
+        assert_eq!(event.chatgpt_output_nanocredits, 187_500_000);
+        assert_eq!(event.chatgpt_total_nanocredits, 387_500_000);
     }
 
     #[test]

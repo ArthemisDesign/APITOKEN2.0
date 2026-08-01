@@ -1593,6 +1593,18 @@ struct CodexWindowTotal {
     observed_homes: usize,
     low_homes: usize,
     high_homes: usize,
+    capacity_nanocredits: i128,
+    remaining_nanocredits: i128,
+    low_nanocredits: i128,
+    high_nanocredits: i128,
+    remaining_low_nanocredits: i128,
+    remaining_high_nanocredits: i128,
+    observed_spend_nanocredits: i128,
+    unattributed_fraction_units: i128,
+    credit_measured_homes: usize,
+    credit_observed_homes: usize,
+    credit_low_homes: usize,
+    credit_high_homes: usize,
 }
 
 fn codex_window_totals(
@@ -1612,6 +1624,12 @@ fn codex_window_totals(
             total.observed_homes += 1;
             total.observed_spend_nano += i128::from(capacity.observed_spend_nano);
             total.observed_fraction_units += i128::from(capacity.observed_fraction_units);
+            if let Some(observed) = capacity.observed_spend_nanocredits {
+                total.observed_spend_nanocredits += i128::from(observed);
+                total.credit_observed_homes += 1;
+            }
+            total.unattributed_fraction_units +=
+                i128::from(capacity.unattributed_fraction_units.unwrap_or(0));
             if let (Some(cap), Some(remaining)) = (capacity.capacity_nano, capacity.remaining_nano)
             {
                 total.capacity_nano += i128::from(cap);
@@ -1630,6 +1648,29 @@ fn codex_window_totals(
                     total.high_nano += i128::from(high);
                     total.remaining_high_nano += i128::from(remaining_high);
                     total.high_homes += 1;
+                }
+            }
+            if let (Some(cap), Some(remaining)) = (
+                capacity.capacity_nanocredits,
+                capacity.remaining_nanocredits,
+            ) {
+                total.capacity_nanocredits += i128::from(cap);
+                total.remaining_nanocredits += i128::from(remaining);
+                total.credit_measured_homes += 1;
+                if let (Some(low), Some(remaining_low)) =
+                    (capacity.low_nanocredits, capacity.remaining_low_nanocredits)
+                {
+                    total.low_nanocredits += i128::from(low);
+                    total.remaining_low_nanocredits += i128::from(remaining_low);
+                    total.credit_low_homes += 1;
+                }
+                if let (Some(high), Some(remaining_high)) = (
+                    capacity.high_nanocredits,
+                    capacity.remaining_high_nanocredits,
+                ) {
+                    total.high_nanocredits += i128::from(high);
+                    total.remaining_high_nanocredits += i128::from(remaining_high);
+                    total.credit_high_homes += 1;
                 }
             }
         }
@@ -2467,7 +2508,20 @@ async fn codex_subs(
         return Json(json!({"now": pool::now(), "enabled": false, "homes": []})).into_response();
     };
     let status = codex.operational_status().await;
-    Json(codex_subs_value(&status, pool::now())).into_response()
+    let now = pool::now();
+    let report = match &app.billing {
+        Some(billing) => match billing.codex_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("Codex calibration report unavailable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    let mut value = codex_subs_value_with_report(&status, now, report.as_deref());
+    value["conversion_models"] = Value::Array(codex_conversion_models(&codex.config().models, now));
+    Json(value).into_response()
 }
 
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
@@ -2495,6 +2549,15 @@ fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
         "high_usd": round_opt(c.high_usd),
         "remaining_low_usd": round_opt(c.remaining_low_usd),
         "remaining_high_usd": round_opt(c.remaining_high_usd),
+        "capacity_nanocredits": nano_opt(c.capacity_nanocredits),
+        "remaining_nanocredits": nano_opt(c.remaining_nanocredits),
+        "low_nanocredits": nano_opt(c.low_nanocredits),
+        "high_nanocredits": nano_opt(c.high_nanocredits),
+        "remaining_low_nanocredits": nano_opt(c.remaining_low_nanocredits),
+        "remaining_high_nanocredits": nano_opt(c.remaining_high_nanocredits),
+        "observed_spend_nanocredits": nano_opt(c.observed_spend_nanocredits),
+        "credit_samples": c.credit_samples,
+        "unattributed_fraction_units": c.unattributed_fraction_units,
         "observed_spend_nano": c.observed_spend_nano.to_string(),
         "observed_fraction_units": c.observed_fraction_units,
         "workload_dependent": true,
@@ -2504,7 +2567,82 @@ fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
     })
 }
 
+fn codex_calibration_aggregate_value(row: &registry::CodexTurnCalibrationAggregate) -> Value {
+    json!({
+        "model": row.model_id,
+        "service_tier": row.service_tier,
+        "provider_reported_tier": row.provider_reported_tier,
+        "api_tariff_schedule_id": row.api_tariff_schedule_id,
+        "credit_schedule_id": row.credit_schedule_id,
+        "turns": row.turns,
+        "first_completed_at": row.first_completed_at,
+        "last_completed_at": row.last_completed_at,
+        "input_tokens": row.input_tokens.to_string(),
+        "cached_input_tokens": row.cached_input_tokens.to_string(),
+        "cache_write_input_tokens": row.cache_write_input_tokens.to_string(),
+        "output_tokens": row.output_tokens.to_string(),
+        "reasoning_output_tokens": row.reasoning_output_tokens.to_string(),
+        "api_input_nanousd": row.api_input_nanousd.to_string(),
+        "api_cached_input_nanousd": row.api_cached_input_nanousd.to_string(),
+        "api_cache_write_nanousd": row.api_cache_write_nanousd.to_string(),
+        "api_output_nanousd": row.api_output_nanousd.to_string(),
+        "api_total_nanousd": row.api_total_nanousd.to_string(),
+        "chatgpt_input_nanocredits": row.chatgpt_input_nanocredits.to_string(),
+        "chatgpt_cached_input_nanocredits": row.chatgpt_cached_input_nanocredits.to_string(),
+        "chatgpt_output_nanocredits": row.chatgpt_output_nanocredits.to_string(),
+        "chatgpt_total_nanocredits": row.chatgpt_total_nanocredits.to_string(),
+    })
+}
+
+fn codex_conversion_models(models: &[forward::codex::CodexModel], now: i64) -> Vec<Value> {
+    models
+        .iter()
+        .filter_map(|model| {
+            let tariff = metering::codex_tariff_capability_at(
+                &model.id,
+                now,
+                metering::CodexServiceTier::Standard,
+                0,
+            )
+            .ok()?;
+            let credits = metering::codex_credit_rates(&model.id)?;
+            let prices = tariff.prices;
+            Some(json!({
+                "id": model.id,
+                "upstream": model.upstream,
+                "api_tariff_schedule_id": tariff.tariff_schedule_id.as_str(),
+                "credit_schedule_id": metering::CODEX_CREDIT_SCHEDULE_ID,
+                "api": {
+                    "input_nanousd_per_token": prices.input.to_string(),
+                    "cached_input_nanousd_per_token": prices.cached_input.to_string(),
+                    "cache_write_nanousd_per_token": prices.cache_write_input.to_string(),
+                    "output_nanousd_per_token": prices.output.to_string(),
+                    "fast_multiplier_basis_points": prices.api_fast_multiplier_basis_points,
+                    "long_context_threshold": prices.long_context_threshold.to_string(),
+                    "long_input_multiplier_basis_points": prices.long_input_basis_points,
+                    "long_output_multiplier_basis_points": prices.long_output_basis_points,
+                },
+                "chatgpt_credits": {
+                    "input_nanocredits_per_token": credits.input.to_string(),
+                    "cached_input_nanocredits_per_token": credits.cached_input.to_string(),
+                    "output_nanocredits_per_token": credits.output.to_string(),
+                    "fast_multiplier_basis_points": model.fast_multiplier_basis_points,
+                },
+            }))
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -> Value {
+    codex_subs_value_with_report(status, now, None)
+}
+
+fn codex_subs_value_with_report(
+    status: &forward::codex::CodexOperationalStatus,
+    now: i64,
+    report: Option<&[registry::CodexTurnCalibrationAggregate]>,
+) -> Value {
     let round = |x: f64| (x * 100.0).round() / 100.0;
     let window = |w: &forward::codex::CodexRateLimitWindow| {
         json!({
@@ -2534,6 +2672,10 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                 "inflight": h.inflight,
                 "limit_reached": h.limit_reached,
                 "spend_usd_total": round(h.spend_usd_total),
+                "spend_nanocredits_total": h.spend_nanocredits_total.map(|value| value.to_string()),
+                "credit_tracking_started_ts": h.credit_tracking_started_ts,
+                "calibration_pending_events": h.calibration_pending_events,
+                "calibration_dropped_events": h.calibration_dropped_events,
                 "calibration_persistence_ok": h.calibration_persistence_ok,
                 "rate_limits": h.rate_limits.as_ref().map(|rl| json!({
                     "reached": rl.reached,
@@ -2551,6 +2693,10 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                     "provider_reported_tier": tier.provider_reported_tier,
                     "observed_at": tier.observed_at,
                 })).collect::<Vec<_>>(),
+                "calibration_evidence": report.unwrap_or_default().iter()
+                    .filter(|row| row.home_id == h.id)
+                    .map(codex_calibration_aggregate_value)
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -2562,6 +2708,11 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
             let measured = total.measured_homes;
             let low_complete = measured > 0 && total.low_homes == measured;
             let high_complete = measured > 0 && total.high_homes == measured;
+            let credit_measured = total.credit_measured_homes;
+            let credit_low_complete = credit_measured > 0
+                && total.credit_low_homes == credit_measured;
+            let credit_high_complete = credit_measured > 0
+                && total.credit_high_homes == credit_measured;
             json!({
                 "window_minutes": duration,
                 "capacity_nano": (measured > 0).then(|| total.capacity_nano.to_string()),
@@ -2582,6 +2733,20 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                     .then(|| round(total.remaining_low_nano as f64 / 1e9)),
                 "remaining_high_usd": high_complete
                     .then(|| round(total.remaining_high_nano as f64 / 1e9)),
+                "capacity_nanocredits": (credit_measured > 0)
+                    .then(|| total.capacity_nanocredits.to_string()),
+                "remaining_nanocredits": (credit_measured > 0)
+                    .then(|| total.remaining_nanocredits.to_string()),
+                "low_nanocredits": credit_low_complete.then(|| total.low_nanocredits.to_string()),
+                "high_nanocredits": credit_high_complete.then(|| total.high_nanocredits.to_string()),
+                "remaining_low_nanocredits": credit_low_complete
+                    .then(|| total.remaining_low_nanocredits.to_string()),
+                "remaining_high_nanocredits": credit_high_complete
+                    .then(|| total.remaining_high_nanocredits.to_string()),
+                "observed_spend_nanocredits": total.observed_spend_nanocredits.to_string(),
+                "credit_measured_homes": credit_measured,
+                "credit_observed_homes": total.credit_observed_homes,
+                "unattributed_fraction_units": total.unattributed_fraction_units.to_string(),
                 "observed_spend_nano": total.observed_spend_nano.to_string(),
                 "observed_fraction_units": total.observed_fraction_units.to_string(),
                 "measured_homes": measured,
@@ -2598,6 +2763,8 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
         "available": status.available,
         "homes_total": status.homes.len(),
         "soonest_ready": status.soonest_ready,
+        "calibration_evidence_available": report.is_some(),
+        "credit_schedule_id": metering::CODEX_CREDIT_SCHEDULE_ID,
         "window_totals": totals,
         "homes": homes,
     })
@@ -2993,6 +3160,10 @@ mod tests {
                 limit_reached: false,
                 spend_nano_total: 12_500_000_000,
                 spend_usd_total: 12.5,
+                spend_nanocredits_total: Some(1_250_000_000),
+                credit_tracking_started_ts: Some(90),
+                calibration_pending_events: 0,
+                calibration_dropped_events: 0,
                 calibration_persistence_ok: true,
                 capacities: vec![forward::codex::CodexWindowCapacityReport {
                     slot: "primary",
@@ -3014,6 +3185,15 @@ mod tests {
                     high_usd: None,
                     remaining_low_usd: None,
                     remaining_high_usd: None,
+                    capacity_nanocredits: None,
+                    remaining_nanocredits: None,
+                    low_nanocredits: None,
+                    high_nanocredits: None,
+                    remaining_low_nanocredits: None,
+                    remaining_high_nanocredits: None,
+                    observed_spend_nanocredits: Some(0),
+                    credit_samples: Some(0),
+                    unattributed_fraction_units: Some(0),
                     observed_spend_nano: 0,
                     observed_fraction_units: 0,
                     source: "unknown",
@@ -3096,6 +3276,11 @@ mod tests {
         assert_eq!(value["homes"][0]["email"], "owne…");
         assert_eq!(value["homes"][0]["plan"], "chatgpt_pro");
         assert_eq!(value["homes"][0]["limit_reached"], false);
+        assert_eq!(value["homes"][0]["spend_nanocredits_total"], "1250000000");
+        assert_eq!(value["homes"][0]["credit_tracking_started_ts"], 90);
+        assert_eq!(value["homes"][0]["calibration_pending_events"], 0);
+        assert_eq!(value["homes"][0]["calibration_dropped_events"], 0);
+        assert_eq!(value["calibration_evidence_available"], false);
 
         // A home the gateway refuses to route to must never read as active on an operator surface.
         status.homes[0].limit_reached = true;
@@ -3168,6 +3353,15 @@ mod tests {
         capacity.remaining_high_usd = Some(1_470.06188);
         capacity.observed_spend_nano = 980_016_752_000;
         capacity.observed_fraction_units = 40_000_000;
+        capacity.capacity_nanocredits = Some(2_000_000_000_000);
+        capacity.remaining_nanocredits = Some(1_200_000_000_000);
+        capacity.low_nanocredits = Some(1_900_000_000_000);
+        capacity.high_nanocredits = Some(2_100_000_000_000);
+        capacity.remaining_low_nanocredits = Some(1_140_000_000_000);
+        capacity.remaining_high_nanocredits = Some(1_260_000_000_000);
+        capacity.observed_spend_nanocredits = Some(800_000_000_000);
+        capacity.credit_samples = Some(4);
+        capacity.unattributed_fraction_units = Some(250_000);
         capacity.source = "workload_blend";
         capacity.confidence = 0.8333;
         capacity.samples = 10;
@@ -3180,6 +3374,11 @@ mod tests {
         assert_eq!(window["remaining_low_nano"], "1469988378000");
         assert_eq!(window["remaining_high_nano"], "1470061880000");
         assert_eq!(window["observed_spend_nano"], "980016752000");
+        assert_eq!(window["capacity_nanocredits"], "2000000000000");
+        assert_eq!(window["remaining_nanocredits"], "1200000000000");
+        assert_eq!(window["observed_spend_nanocredits"], "800000000000");
+        assert_eq!(window["credit_samples"], 4);
+        assert_eq!(window["unattributed_fraction_units"], 250_000);
         assert_eq!(window["observed_fraction_units"], 40_000_000);
         assert_eq!(window["workload_dependent"], true);
         assert_eq!(window["cap_usd"], 2_450.04);
@@ -3187,6 +3386,24 @@ mod tests {
         assert_eq!(window["source"], "workload_blend");
         assert_eq!(window["samples"], 10);
         assert_eq!(value["window_totals"][0]["capacity_nano"], "2450041880000");
+        assert_eq!(
+            value["window_totals"][0]["capacity_nanocredits"],
+            "2000000000000"
+        );
+        assert_eq!(
+            value["window_totals"][0]["remaining_nanocredits"],
+            "1200000000000"
+        );
+        assert_eq!(
+            value["window_totals"][0]["observed_spend_nanocredits"],
+            "800000000000"
+        );
+        assert_eq!(value["window_totals"][0]["credit_measured_homes"], 1);
+        assert_eq!(value["window_totals"][0]["credit_observed_homes"], 1);
+        assert_eq!(
+            value["window_totals"][0]["unattributed_fraction_units"],
+            "250000"
+        );
         assert_eq!(value["window_totals"][0]["source"], "workload_blend");
         assert_eq!(value["window_totals"][0]["measured_homes"], 1);
 
@@ -3204,6 +3421,86 @@ mod tests {
         assert!(metrics.contains(
             "claude_api_codex_home_window_remaining_low_usd{home=\"home-1\",slot=\"primary\",window_minutes=\"300\"} 1469.988378000"
         ));
+    }
+
+    #[test]
+    fn codex_subscription_contract_publishes_immutable_turn_evidence() {
+        let report = vec![registry::CodexTurnCalibrationAggregate {
+            home_id: "home-1".into(),
+            model_id: "gpt-5.6-sol".into(),
+            service_tier: "fast".into(),
+            provider_reported_tier: Some("priority".into()),
+            api_tariff_schedule_id: "openai/gpt-5.6-sol/2026-07-30/v2".into(),
+            credit_schedule_id: metering::CODEX_CREDIT_SCHEDULE_ID.into(),
+            turns: 3,
+            first_completed_at: 100,
+            last_completed_at: 120,
+            input_tokens: 1_000,
+            cached_input_tokens: 400,
+            cache_write_input_tokens: 100,
+            output_tokens: 100,
+            reasoning_output_tokens: 80,
+            api_input_nanousd: 5_000_000,
+            api_cached_input_nanousd: 400_000,
+            api_cache_write_nanousd: 1_250_000,
+            api_output_nanousd: 6_000_000,
+            api_total_nanousd: 12_650_000,
+            chatgpt_input_nanocredits: 187_500_000,
+            chatgpt_cached_input_nanocredits: 12_500_000,
+            chatgpt_output_nanocredits: 187_500_000,
+            chatgpt_total_nanocredits: 387_500_000,
+        }];
+        let value = codex_subs_value_with_report(&unknown_codex_status(), 105, Some(&report));
+        assert_eq!(value["calibration_evidence_available"], true);
+        assert_eq!(
+            value["credit_schedule_id"],
+            metering::CODEX_CREDIT_SCHEDULE_ID
+        );
+        let evidence = &value["homes"][0]["calibration_evidence"][0];
+        assert_eq!(evidence["model"], "gpt-5.6-sol");
+        assert_eq!(evidence["service_tier"], "fast");
+        assert_eq!(evidence["turns"], 3);
+        assert_eq!(evidence["input_tokens"], "1000");
+        assert_eq!(evidence["api_total_nanousd"], "12650000");
+        assert_eq!(evidence["chatgpt_total_nanocredits"], "387500000");
+    }
+
+    #[test]
+    fn codex_conversion_catalogue_keeps_api_and_subscription_fast_independent() {
+        let spec = metering::codex_catalog_at(1_785_369_601)
+            .into_iter()
+            .find(|model| model.id == "gpt-5.6-sol")
+            .unwrap();
+        let model = forward::codex::CodexModel {
+            id: spec.id.into(),
+            upstream: spec.upstream.into(),
+            created: 0,
+            owned_by: "test".into(),
+            max_output_tokens: spec.max_output_tokens,
+            reasoning_efforts: spec
+                .reasoning_efforts
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            fast_multiplier_basis_points: spec.subscription_fast_multiplier_basis_points,
+            prices: spec.prices,
+        };
+        let values = codex_conversion_models(&[model], 1_785_369_601);
+        assert_eq!(values.len(), 1);
+        assert_eq!(
+            values[0]["api_tariff_schedule_id"],
+            "openai/gpt-5.6-sol/2026-07-30/v2"
+        );
+        assert_eq!(values[0]["api"]["input_nanousd_per_token"], "5000");
+        assert_eq!(values[0]["api"]["fast_multiplier_basis_points"], 20_000);
+        assert_eq!(
+            values[0]["chatgpt_credits"]["input_nanocredits_per_token"],
+            "125000"
+        );
+        assert_eq!(
+            values[0]["chatgpt_credits"]["fast_multiplier_basis_points"],
+            25_000
+        );
     }
 
     #[test]

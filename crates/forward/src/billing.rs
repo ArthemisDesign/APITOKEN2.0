@@ -24,9 +24,10 @@ use registry::pricing::{
     ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
-    AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth,
-    KeyPolicyUpdate, KeyRow,
+    AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow,
+    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
+    CodexWindowObservation, GeminiCalibrationRow, GeminiWindowObservation, KeyActivationPolicyAck,
+    KeyAuth, KeyPolicyUpdate, KeyRow,
 };
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -563,11 +564,9 @@ enum WriteCmd {
         observed_at: i64,
         reply: oneshot::Sender<anyhow::Result<(i64, GeminiCalibrationRow)>>,
     },
-    CodexCreditSpend {
-        home_id: String,
-        delta_nano: i64,
-        updated_ts: i64,
-        reply: oneshot::Sender<anyhow::Result<i64>>,
+    CodexRecordTurn {
+        event: CodexTurnCalibrationEvent,
+        reply: oneshot::Sender<anyhow::Result<CodexHomeCalibrationSpend>>,
     },
     CodexLoadHealth {
         home_id: String,
@@ -586,7 +585,7 @@ enum WriteCmd {
         used_percent: i64,
         used_fraction_units: i64,
         observed_at: i64,
-        reply: oneshot::Sender<anyhow::Result<(i64, CodexCalibrationRow)>>,
+        reply: oneshot::Sender<anyhow::Result<(CodexHomeCalibrationSpend, CodexCalibrationRow)>>,
     },
     Reserve {
         request_id: String,
@@ -750,6 +749,7 @@ enum WriteCmd {
 }
 
 enum ReadCmd {
+    CodexCalibrationReport(oneshot::Sender<anyhow::Result<Vec<CodexTurnCalibrationAggregate>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -918,20 +918,14 @@ impl AsyncBilling {
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
-    pub async fn credit_codex_spend(
+    /// Idempotently persist exact API and ChatGPT-credit evidence for a successful Codex turn.
+    pub async fn record_codex_turn(
         &self,
-        home_id: &str,
-        delta_nano: i64,
-        updated_ts: i64,
-    ) -> anyhow::Result<i64> {
+        event: CodexTurnCalibrationEvent,
+    ) -> anyhow::Result<CodexHomeCalibrationSpend> {
         let (reply, result) = oneshot::channel();
         self.writer
-            .send(WriteCmd::CodexCreditSpend {
-                home_id: home_id.into(),
-                delta_nano,
-                updated_ts,
-                reply,
-            })
+            .send(WriteCmd::CodexRecordTurn { event, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result
@@ -993,7 +987,7 @@ impl AsyncBilling {
         used_percent: i64,
         used_fraction_units: i64,
         observed_at: i64,
-    ) -> anyhow::Result<(i64, CodexCalibrationRow)> {
+    ) -> anyhow::Result<(CodexHomeCalibrationSpend, CodexCalibrationRow)> {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::CodexObserveWindow {
@@ -1010,6 +1004,20 @@ impl AsyncBilling {
         result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn codex_calibration_report(
+        &self,
+    ) -> anyhow::Result<Vec<CodexTurnCalibrationAggregate>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::CodexCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
     pub fn start_authority(
@@ -1181,9 +1189,9 @@ impl AsyncBilling {
                         })();
                         let _ = reply.send(result);
                     }
-                    WriteCmd::CodexCreditSpend { home_id, delta_nano, updated_ts, reply } => {
-                        let _ = reply.send(registry::credit_codex_home_spend(
-                            &conn, &home_id, delta_nano, updated_ts,
+                    WriteCmd::CodexRecordTurn { event, reply } => {
+                        let _ = reply.send(registry::record_codex_turn_calibration_event(
+                            &conn, &event,
                         ));
                     }
                     WriteCmd::CodexLoadHealth { home_id, reply } => {
@@ -1204,7 +1212,7 @@ impl AsyncBilling {
                         reply,
                     } => {
                         let result = (|| {
-                            let spend_nano = registry::codex_home_spend(&conn, &home_id)?;
+                            let spend = registry::codex_home_calibration_spend(&conn, &home_id)?;
                             let observation = CodexWindowObservation {
                                 home_id: home_id.clone(),
                                 window_duration_mins,
@@ -1212,7 +1220,8 @@ impl AsyncBilling {
                                 observed_at,
                                 used_percent,
                                 used_fraction_units,
-                                gateway_spend_nano: spend_nano,
+                                gateway_spend_nano: spend.spent_nano,
+                                gateway_spend_nanocredits: spend.spent_nanocredits,
                             };
                             loop {
                                 let existing = registry::load_codex_calibration(
@@ -1226,7 +1235,7 @@ impl AsyncBilling {
                                             && observed_at <= row.observed_at
                                     })
                                 {
-                                    return Ok((spend_nano, existing.clone()));
+                                    return Ok((spend.clone(), existing.clone()));
                                 }
                                 let history = if existing.as_ref().is_some_and(|row| {
                                     row.estimator_version
@@ -1249,7 +1258,7 @@ impl AsyncBilling {
                                     &conn, &state, &observation,
                                 )? {
                                     state.version = version;
-                                    return Ok((spend_nano, state));
+                                    return Ok((spend.clone(), state));
                                 }
                             }
                         })();
@@ -1424,6 +1433,9 @@ impl AsyncBilling {
                 .spawn(move || {
                     while let Some(cmd) = rrx.blocking_recv() {
                         match cmd {
+                            ReadCmd::CodexCalibrationReport(reply) => {
+                                let _ = reply.send(registry::codex_turn_calibration_report(&conn));
+                            }
                             ReadCmd::KeyAuth(k, r) => {
                                 let _ = r.send(registry::key_account(&conn, &k));
                             }
@@ -1655,17 +1667,13 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::CodexCreditSpend {
-                            home_id, delta_nano, updated_ts, reply,
-                        } => {
+                        WriteCmd::CodexRecordTurn { event, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg,
                                 &writer_url,
                                 &writer_owner,
-                                "Codex spend credit",
-                                |pg| pg.credit_codex_home_spend(
-                                    &home_id, delta_nano, updated_ts,
-                                ),
+                                "Codex turn calibration event",
+                                |pg| pg.record_codex_turn_calibration_event(&event),
                             );
                             let _ = reply.send(result);
                         }
@@ -1704,7 +1712,7 @@ impl AsyncBilling {
                                 &writer_owner,
                                 "Codex window observation",
                                 |pg| {
-                                    let spend_nano = pg.codex_home_spend(&home_id)?;
+                                    let spend = pg.codex_home_calibration_spend(&home_id)?;
                                     let observation = CodexWindowObservation {
                                         home_id: home_id.clone(),
                                         window_duration_mins,
@@ -1712,7 +1720,8 @@ impl AsyncBilling {
                                         observed_at,
                                         used_percent,
                                         used_fraction_units,
-                                        gateway_spend_nano: spend_nano,
+                                        gateway_spend_nano: spend.spent_nano,
+                                        gateway_spend_nanocredits: spend.spent_nanocredits,
                                     };
                                     loop {
                                         let existing = pg.load_codex_calibration(
@@ -1726,7 +1735,7 @@ impl AsyncBilling {
                                                     && observed_at <= row.observed_at
                                             })
                                         {
-                                            return Ok((spend_nano, existing.clone()));
+                                            return Ok((spend.clone(), existing.clone()));
                                         }
                                         let history = if existing.as_ref().is_some_and(|row| {
                                             row.estimator_version
@@ -1749,7 +1758,7 @@ impl AsyncBilling {
                                             pg.save_codex_calibration(&state, &observation)?
                                         {
                                             state.version = version;
-                                            return Ok((spend_nano, state));
+                                            return Ok((spend.clone(), state));
                                         }
                                     }
                                 },
@@ -2142,6 +2151,9 @@ impl AsyncBilling {
                             }};
                         }
                         match cmd {
+                            ReadCmd::CodexCalibrationReport(reply) => {
+                                answer!(reply, pg.codex_turn_calibration_report())
+                            }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
                             ReadCmd::Account(id, r) => answer!(r, pg.account_get(&id)),
@@ -3224,6 +3236,38 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn codex_event(
+        request_id: &str,
+        api_total_nanousd: i64,
+        chatgpt_total_nanocredits: i64,
+        completed_at: i64,
+    ) -> CodexTurnCalibrationEvent {
+        CodexTurnCalibrationEvent {
+            request_id: request_id.into(),
+            home_id: "home-a".into(),
+            model_id: "gpt-5.6-terra".into(),
+            service_tier: "standard".into(),
+            provider_reported_tier: Some("default".into()),
+            api_tariff_schedule_id: "openai/test/v1".into(),
+            credit_schedule_id: "chatgpt/test/v1".into(),
+            completed_at,
+            input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            api_input_nanousd: api_total_nanousd,
+            api_cached_input_nanousd: 0,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 0,
+            api_total_nanousd,
+            chatgpt_input_nanocredits: chatgpt_total_nanocredits,
+            chatgpt_cached_input_nanocredits: 0,
+            chatgpt_output_nanocredits: 0,
+            chatgpt_total_nanocredits,
+        }
+    }
+
     fn legacy_snapshot(
         request_id: &str,
         account_id: &str,
@@ -3453,20 +3497,24 @@ mod tests {
         let path_string = path.to_string_lossy().into_owned();
 
         let first = AsyncBilling::start(path_string.clone(), 1).unwrap();
-        assert_eq!(
-            first
-                .credit_codex_spend("home-a", 100_000_000_000, 100)
-                .await
-                .unwrap(),
-            100_000_000_000
-        );
+        let totals = first
+            .record_codex_turn(codex_event(
+                "request-1",
+                100_000_000_000,
+                10_000_000_000,
+                100,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(totals.spent_nano, 100_000_000_000);
+        assert_eq!(totals.spent_nanocredits, Some(10_000_000_000));
         let (_, anchor) = first
             .observe_codex_window("home-a", 300, 2_000_000_000, 10, 10_000_000, 100)
             .await
             .unwrap();
         assert!(anchor.current_capacity_nano.is_none());
         first
-            .credit_codex_spend("home-a", 40_000_000_000, 101)
+            .record_codex_turn(codex_event("request-2", 40_000_000_000, 4_000_000_000, 101))
             .await
             .unwrap();
         let (_, measured) = first
@@ -3474,10 +3522,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(measured.current_capacity_nanocredits, Some(200_000_000_000));
         assert_eq!(measured.samples, 1);
         assert!(measured.anchor_ready);
         first
-            .credit_codex_spend("home-a", 40_000_000_000, 102)
+            .record_codex_turn(codex_event("request-3", 40_000_000_000, 4_000_000_000, 102))
             .await
             .unwrap();
         let (_, measured) = first
@@ -3485,6 +3534,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(measured.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(measured.current_capacity_nanocredits, Some(200_000_000_000));
         assert_eq!(measured.samples, 2);
         let (_, duplicate) = first
             .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 102)
@@ -3514,9 +3564,15 @@ mod tests {
             .observe_codex_window("home-a", 300, 2_000_000_000, 14, 14_000_000, 103)
             .await
             .unwrap();
-        assert_eq!(spend, 180_000_000_000);
+        assert_eq!(spend.spent_nano, 180_000_000_000);
+        assert_eq!(spend.spent_nanocredits, Some(18_000_000_000));
         assert_eq!(restored.estimator_version, crate::codex::ESTIMATOR_VERSION);
         assert_eq!(restored.current_capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(restored.current_capacity_nanocredits, Some(200_000_000_000));
+        let report = restarted.codex_calibration_report().await.unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].turns, 3);
+        assert_eq!(report[0].api_total_nanousd, 180_000_000_000);
         assert!(restored.version > measured.version);
         restarted.flush().await.unwrap();
         drop(restarted);

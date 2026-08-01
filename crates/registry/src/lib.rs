@@ -6004,6 +6004,21 @@ pub struct CodexCalibrationRow {
     /// Exact sufficient statistics of the realized workload blend.
     pub observed_fraction_units: i64,
     pub observed_spend_nano: i64,
+    /// Parallel native ChatGPT-credit estimator. `None` is the explicit pre-cutover state: old
+    /// API-dollar evidence must never be reinterpreted as having consumed zero subscription quota.
+    pub anchor_spend_nanocredits: Option<i64>,
+    pub observed_spend_nanocredits: Option<i64>,
+    pub current_capacity_nanocredits: Option<i64>,
+    pub current_low_nanocredits: Option<i64>,
+    pub current_high_nanocredits: Option<i64>,
+    pub last_capacity_nanocredits: Option<i64>,
+    pub last_low_nanocredits: Option<i64>,
+    pub last_high_nanocredits: Option<i64>,
+    pub credit_samples: Option<i64>,
+    pub credit_estimator_version: Option<i64>,
+    /// Provider quota movement that repeated without either atomic gateway ledger moving. This is
+    /// possibly unattributed, not proof of external use.
+    pub unattributed_fraction_units: Option<i64>,
     pub estimator_version: i64,
     pub version: i64,
     pub updated_ts: i64,
@@ -6019,6 +6034,92 @@ pub struct CodexWindowObservation {
     pub used_percent: i64,
     pub used_fraction_units: i64,
     pub gateway_spend_nano: i64,
+    pub gateway_spend_nanocredits: Option<i64>,
+}
+
+/// One immutable successful Codex turn used as exact calibration evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexTurnCalibrationEvent {
+    pub request_id: String,
+    pub home_id: String,
+    pub model_id: String,
+    pub service_tier: String,
+    pub provider_reported_tier: Option<String>,
+    pub api_tariff_schedule_id: String,
+    pub credit_schedule_id: String,
+    pub completed_at: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub api_input_nanousd: i64,
+    pub api_cached_input_nanousd: i64,
+    pub api_cache_write_nanousd: i64,
+    pub api_output_nanousd: i64,
+    pub api_total_nanousd: i64,
+    pub chatgpt_input_nanocredits: i64,
+    pub chatgpt_cached_input_nanocredits: i64,
+    pub chatgpt_output_nanocredits: i64,
+    pub chatgpt_total_nanocredits: i64,
+}
+
+/// Durable cumulative dual ledger for one opaque Codex home.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodexHomeCalibrationSpend {
+    pub spent_nano: i64,
+    pub spent_nanocredits: Option<i64>,
+    pub credit_tracking_started_ts: Option<i64>,
+    /// True only when this call inserted the immutable event and advanced both ledgers.
+    pub inserted: bool,
+}
+
+/// Exact admin aggregate; every token and monetary quantity stays integer through serialization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexTurnCalibrationAggregate {
+    pub home_id: String,
+    pub model_id: String,
+    pub service_tier: String,
+    pub provider_reported_tier: Option<String>,
+    pub api_tariff_schedule_id: String,
+    pub credit_schedule_id: String,
+    pub turns: i64,
+    pub first_completed_at: i64,
+    pub last_completed_at: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub api_input_nanousd: i64,
+    pub api_cached_input_nanousd: i64,
+    pub api_cache_write_nanousd: i64,
+    pub api_output_nanousd: i64,
+    pub api_total_nanousd: i64,
+    pub chatgpt_input_nanocredits: i64,
+    pub chatgpt_cached_input_nanocredits: i64,
+    pub chatgpt_output_nanocredits: i64,
+    pub chatgpt_total_nanocredits: i64,
+}
+
+/// A request id already names a different immutable Codex turn. This is a permanent integrity
+/// failure, not a transient database error: callers may quarantine the offending event while
+/// continuing to flush later FIFO entries.
+#[derive(Debug)]
+pub struct CodexTurnCalibrationReplayConflict;
+
+impl std::fmt::Display for CodexTurnCalibrationReplayConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex calibration request id replay conflict")
+    }
+}
+
+impl std::error::Error for CodexTurnCalibrationReplayConflict {}
+
+pub fn is_codex_turn_calibration_replay_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<CodexTurnCalibrationReplayConflict>())
 }
 
 /// Primitive durable state for one explicit Antigravity Gemini quota-summary bucket.
@@ -6165,6 +6266,256 @@ pub fn credit_codex_home_spend(
         |row| row.get(0),
     )
     .context("credit SQLite Codex home spend")
+}
+
+pub(crate) fn validate_codex_turn_calibration_event(
+    event: &CodexTurnCalibrationEvent,
+) -> Result<()> {
+    let token_counts = [
+        event.input_tokens,
+        event.cached_input_tokens,
+        event.cache_write_input_tokens,
+        event.output_tokens,
+        event.reasoning_output_tokens,
+    ];
+    let api_legs = [
+        event.api_input_nanousd,
+        event.api_cached_input_nanousd,
+        event.api_cache_write_nanousd,
+        event.api_output_nanousd,
+    ];
+    let credit_legs = [
+        event.chatgpt_input_nanocredits,
+        event.chatgpt_cached_input_nanocredits,
+        event.chatgpt_output_nanocredits,
+    ];
+    let input_subsets = event
+        .cached_input_tokens
+        .checked_add(event.cache_write_input_tokens);
+    let api_total = api_legs.into_iter().try_fold(0i64, i64::checked_add);
+    let credit_total = credit_legs.into_iter().try_fold(0i64, i64::checked_add);
+    if event.request_id.is_empty()
+        || event.home_id.is_empty()
+        || event.model_id.is_empty()
+        || !matches!(event.service_tier.as_str(), "standard" | "fast")
+        || event.api_tariff_schedule_id.is_empty()
+        || event.credit_schedule_id.is_empty()
+        || event.completed_at <= 0
+        || token_counts.into_iter().any(|value| value < 0)
+        || event.input_tokens == 0 && event.output_tokens == 0
+        || input_subsets.is_none_or(|value| value > event.input_tokens)
+        || event.reasoning_output_tokens > event.output_tokens
+        || api_legs.into_iter().any(|value| value < 0)
+        || credit_legs.into_iter().any(|value| value < 0)
+        || api_total != Some(event.api_total_nanousd)
+        || credit_total != Some(event.chatgpt_total_nanocredits)
+    {
+        bail!("invalid Codex turn calibration event");
+    }
+    Ok(())
+}
+
+const CODEX_TURN_EVENT_COLUMNS: &str = "request_id,home_id,model_id,service_tier,\
+    provider_reported_tier,api_tariff_schedule_id,credit_schedule_id,completed_at,\
+    input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,\
+    reasoning_output_tokens,api_input_nanousd,api_cached_input_nanousd,\
+    api_cache_write_nanousd,api_output_nanousd,api_total_nanousd,\
+    chatgpt_input_nanocredits,chatgpt_cached_input_nanocredits,\
+    chatgpt_output_nanocredits,chatgpt_total_nanocredits";
+
+fn sqlite_codex_turn_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexTurnCalibrationEvent> {
+    Ok(CodexTurnCalibrationEvent {
+        request_id: row.get(0)?,
+        home_id: row.get(1)?,
+        model_id: row.get(2)?,
+        service_tier: row.get(3)?,
+        provider_reported_tier: row.get(4)?,
+        api_tariff_schedule_id: row.get(5)?,
+        credit_schedule_id: row.get(6)?,
+        completed_at: row.get(7)?,
+        input_tokens: row.get(8)?,
+        cached_input_tokens: row.get(9)?,
+        cache_write_input_tokens: row.get(10)?,
+        output_tokens: row.get(11)?,
+        reasoning_output_tokens: row.get(12)?,
+        api_input_nanousd: row.get(13)?,
+        api_cached_input_nanousd: row.get(14)?,
+        api_cache_write_nanousd: row.get(15)?,
+        api_output_nanousd: row.get(16)?,
+        api_total_nanousd: row.get(17)?,
+        chatgpt_input_nanocredits: row.get(18)?,
+        chatgpt_cached_input_nanocredits: row.get(19)?,
+        chatgpt_output_nanocredits: row.get(20)?,
+        chatgpt_total_nanocredits: row.get(21)?,
+    })
+}
+
+/// Idempotently insert one immutable turn and advance API-dollar and ChatGPT-credit totals in the
+/// same transaction. An exact replay returns the existing totals; a semantic mismatch for the
+/// same request id fails closed without touching either ledger.
+pub fn record_codex_turn_calibration_event(
+    conn: &Connection,
+    event: &CodexTurnCalibrationEvent,
+) -> Result<CodexHomeCalibrationSpend> {
+    validate_codex_turn_calibration_event(event)?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .context("begin SQLite Codex turn calibration event")?;
+    let inserted = tx.execute(
+        "INSERT INTO codex_turn_calibration_events(\
+           request_id,home_id,model_id,service_tier,provider_reported_tier,\
+           api_tariff_schedule_id,credit_schedule_id,completed_at,input_tokens,\
+           cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,\
+           api_input_nanousd,api_cached_input_nanousd,api_cache_write_nanousd,\
+           api_output_nanousd,api_total_nanousd,chatgpt_input_nanocredits,\
+           chatgpt_cached_input_nanocredits,chatgpt_output_nanocredits,\
+           chatgpt_total_nanocredits) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
+                ?19,?20,?21,?22) ON CONFLICT(request_id) DO NOTHING",
+        rusqlite::params![
+            event.request_id,
+            event.home_id,
+            event.model_id,
+            event.service_tier,
+            event.provider_reported_tier,
+            event.api_tariff_schedule_id,
+            event.credit_schedule_id,
+            event.completed_at,
+            event.input_tokens,
+            event.cached_input_tokens,
+            event.cache_write_input_tokens,
+            event.output_tokens,
+            event.reasoning_output_tokens,
+            event.api_input_nanousd,
+            event.api_cached_input_nanousd,
+            event.api_cache_write_nanousd,
+            event.api_output_nanousd,
+            event.api_total_nanousd,
+            event.chatgpt_input_nanocredits,
+            event.chatgpt_cached_input_nanocredits,
+            event.chatgpt_output_nanocredits,
+            event.chatgpt_total_nanocredits,
+        ],
+    )? == 1;
+    if inserted {
+        tx.execute(
+            "INSERT INTO codex_home_spend(\
+               home_id,spent_nano,spent_nanocredits,credit_tracking_started_ts,updated_ts) \
+             VALUES(?1,?2,?3,?4,?4) ON CONFLICT(home_id) DO UPDATE SET \
+               spent_nano=codex_home_spend.spent_nano+excluded.spent_nano, \
+               spent_nanocredits=COALESCE(codex_home_spend.spent_nanocredits,0)\
+                   +excluded.spent_nanocredits, \
+               credit_tracking_started_ts=COALESCE(\
+                   codex_home_spend.credit_tracking_started_ts,excluded.credit_tracking_started_ts), \
+               updated_ts=MAX(codex_home_spend.updated_ts,excluded.updated_ts)",
+            rusqlite::params![
+                event.home_id,
+                event.api_total_nanousd,
+                event.chatgpt_total_nanocredits,
+                event.completed_at,
+            ],
+        )?;
+    } else {
+        let existing = tx.query_row(
+            &format!(
+                "SELECT {CODEX_TURN_EVENT_COLUMNS} FROM codex_turn_calibration_events \
+                 WHERE request_id=?1"
+            ),
+            rusqlite::params![event.request_id],
+            sqlite_codex_turn_event,
+        )?;
+        if existing != *event {
+            return Err(CodexTurnCalibrationReplayConflict.into());
+        }
+    }
+    let mut totals = tx
+        .query_row(
+            "SELECT spent_nano,spent_nanocredits,credit_tracking_started_ts \
+             FROM codex_home_spend WHERE home_id=?1",
+            rusqlite::params![event.home_id],
+            |row| {
+                Ok(CodexHomeCalibrationSpend {
+                    spent_nano: row.get(0)?,
+                    spent_nanocredits: row.get(1)?,
+                    credit_tracking_started_ts: row.get(2)?,
+                    inserted: false,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default();
+    totals.inserted = inserted;
+    tx.commit()?;
+    Ok(totals)
+}
+
+pub fn codex_home_calibration_spend(
+    conn: &Connection,
+    home_id: &str,
+) -> Result<CodexHomeCalibrationSpend> {
+    Ok(conn
+        .query_row(
+            "SELECT spent_nano,spent_nanocredits,credit_tracking_started_ts \
+             FROM codex_home_spend WHERE home_id=?1",
+            rusqlite::params![home_id],
+            |row| {
+                Ok(CodexHomeCalibrationSpend {
+                    spent_nano: row.get(0)?,
+                    spent_nanocredits: row.get(1)?,
+                    credit_tracking_started_ts: row.get(2)?,
+                    inserted: false,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
+pub fn codex_turn_calibration_report(
+    conn: &Connection,
+) -> Result<Vec<CodexTurnCalibrationAggregate>> {
+    let mut statement = conn.prepare(
+        "SELECT home_id,model_id,service_tier,provider_reported_tier,\
+           api_tariff_schedule_id,credit_schedule_id,COUNT(*),MIN(completed_at),MAX(completed_at),\
+           SUM(input_tokens),SUM(cached_input_tokens),SUM(cache_write_input_tokens),\
+           SUM(output_tokens),SUM(reasoning_output_tokens),SUM(api_input_nanousd),\
+           SUM(api_cached_input_nanousd),SUM(api_cache_write_nanousd),SUM(api_output_nanousd),\
+           SUM(api_total_nanousd),SUM(chatgpt_input_nanocredits),\
+           SUM(chatgpt_cached_input_nanocredits),SUM(chatgpt_output_nanocredits),\
+           SUM(chatgpt_total_nanocredits) FROM codex_turn_calibration_events \
+         GROUP BY home_id,model_id,service_tier,provider_reported_tier,\
+           api_tariff_schedule_id,credit_schedule_id \
+         ORDER BY home_id,model_id,service_tier,provider_reported_tier",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(CodexTurnCalibrationAggregate {
+                home_id: row.get(0)?,
+                model_id: row.get(1)?,
+                service_tier: row.get(2)?,
+                provider_reported_tier: row.get(3)?,
+                api_tariff_schedule_id: row.get(4)?,
+                credit_schedule_id: row.get(5)?,
+                turns: row.get(6)?,
+                first_completed_at: row.get(7)?,
+                last_completed_at: row.get(8)?,
+                input_tokens: row.get(9)?,
+                cached_input_tokens: row.get(10)?,
+                cache_write_input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                reasoning_output_tokens: row.get(13)?,
+                api_input_nanousd: row.get(14)?,
+                api_cached_input_nanousd: row.get(15)?,
+                api_cache_write_nanousd: row.get(16)?,
+                api_output_nanousd: row.get(17)?,
+                api_total_nanousd: row.get(18)?,
+                chatgpt_input_nanocredits: row.get(19)?,
+                chatgpt_cached_input_nanocredits: row.get(20)?,
+                chatgpt_output_nanocredits: row.get(21)?,
+                chatgpt_total_nanocredits: row.get(22)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Atomically credit exact official-price Gemini spend and return the cumulative profile total.
@@ -6316,6 +6667,17 @@ fn sqlite_codex_calibration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cod
         used_fraction_units: row.get(25)?,
         observed_fraction_units: row.get(26)?,
         observed_spend_nano: row.get(27)?,
+        anchor_spend_nanocredits: row.get(28)?,
+        observed_spend_nanocredits: row.get(29)?,
+        current_capacity_nanocredits: row.get(30)?,
+        current_low_nanocredits: row.get(31)?,
+        current_high_nanocredits: row.get(32)?,
+        last_capacity_nanocredits: row.get(33)?,
+        last_low_nanocredits: row.get(34)?,
+        last_high_nanocredits: row.get(35)?,
+        credit_samples: row.get(36)?,
+        credit_estimator_version: row.get(37)?,
+        unattributed_fraction_units: row.get(38)?,
     })
 }
 
@@ -6327,7 +6689,10 @@ const CODEX_CALIBRATION_COLUMNS: &str = "home_id,window_duration_mins,resets_at,
     COALESCE(anchor_used_fraction_units,anchor_used_percent*1000000),\
     COALESCE(used_fraction_units,used_percent*1000000),\
     COALESCE(observed_fraction_units,observed_points*1000000),\
-    COALESCE(observed_spend_nano,0)";
+    COALESCE(observed_spend_nano,0),anchor_spend_nanocredits,observed_spend_nanocredits,\
+    current_capacity_nanocredits,current_low_nanocredits,current_high_nanocredits,\
+    last_capacity_nanocredits,last_low_nanocredits,last_high_nanocredits,credit_samples,\
+    credit_estimator_version,unattributed_fraction_units";
 
 pub fn load_codex_calibration(
     conn: &Connection,
@@ -6357,7 +6722,8 @@ pub fn load_codex_window_observations(
 ) -> Result<Vec<CodexWindowObservation>> {
     let mut statement = conn.prepare(
         "SELECT home_id,window_duration_mins,resets_at,observed_at,used_percent,\
-                COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano \
+                COALESCE(used_fraction_units,used_percent*1000000),gateway_spend_nano,\
+                gateway_spend_nanocredits \
          FROM codex_window_observations WHERE home_id=?1 AND window_duration_mins=?2 \
          ORDER BY observed_at,id",
     )?;
@@ -6371,6 +6737,7 @@ pub fn load_codex_window_observations(
                 used_percent: row.get(4)?,
                 used_fraction_units: row.get(5)?,
                 gateway_spend_nano: row.get(6)?,
+                gateway_spend_nanocredits: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -6418,6 +6785,17 @@ pub fn save_codex_calibration(
         state.used_fraction_units,
         state.observed_fraction_units,
         state.observed_spend_nano,
+        state.anchor_spend_nanocredits,
+        state.observed_spend_nanocredits,
+        state.current_capacity_nanocredits,
+        state.current_low_nanocredits,
+        state.current_high_nanocredits,
+        state.last_capacity_nanocredits,
+        state.last_low_nanocredits,
+        state.last_high_nanocredits,
+        state.credit_samples,
+        state.credit_estimator_version,
+        state.unattributed_fraction_units,
     ];
     let changed = if state.version == 0 {
         tx.execute(
@@ -6427,9 +6805,14 @@ pub fn save_codex_calibration(
                current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
                last_capacity_nano,last_low_nano,last_high_nano,last_confidence_bp,last_measured_at,\
                estimator_version,updated_ts,version,anchor_ready,anchor_used_fraction_units,\
-               used_fraction_units,observed_fraction_units,observed_spend_nano \
+               used_fraction_units,observed_fraction_units,observed_spend_nano,\
+               anchor_spend_nanocredits,observed_spend_nanocredits,\
+               current_capacity_nanocredits,current_low_nanocredits,current_high_nanocredits,\
+               last_capacity_nanocredits,last_low_nanocredits,last_high_nanocredits,\
+               credit_samples,credit_estimator_version,unattributed_fraction_units \
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
-                      ?19,?20,?21,?22,?23+1,?24,?25,?26,?27,?28) \
+                      ?19,?20,?21,?22,?23+1,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,\
+                      ?34,?35,?36,?37,?38,?39) \
              ON CONFLICT(home_id,window_duration_mins) DO NOTHING",
             values,
         )?
@@ -6443,7 +6826,12 @@ pub fn save_codex_calibration(
                last_high_nano=?18,last_confidence_bp=?19,last_measured_at=?20,\
                estimator_version=?21,updated_ts=?22,version=version+1,anchor_ready=?24,\
                anchor_used_fraction_units=?25,used_fraction_units=?26,\
-               observed_fraction_units=?27,observed_spend_nano=?28 \
+               observed_fraction_units=?27,observed_spend_nano=?28,\
+               anchor_spend_nanocredits=?29,observed_spend_nanocredits=?30,\
+               current_capacity_nanocredits=?31,current_low_nanocredits=?32,\
+               current_high_nanocredits=?33,last_capacity_nanocredits=?34,\
+               last_low_nanocredits=?35,last_high_nanocredits=?36,credit_samples=?37,\
+               credit_estimator_version=?38,unattributed_fraction_units=?39 \
              WHERE home_id=?1 AND window_duration_mins=?2 AND version=?23",
             values,
         )?
@@ -6454,8 +6842,8 @@ pub fn save_codex_calibration(
     tx.execute(
         "INSERT INTO codex_window_observations( \
            home_id,window_duration_mins,resets_at,observed_at,used_percent,used_fraction_units,\
-           gateway_spend_nano \
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT DO NOTHING",
+           gateway_spend_nano,gateway_spend_nanocredits \
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT DO NOTHING",
         rusqlite::params![
             observation.home_id,
             observation.window_duration_mins,
@@ -6464,6 +6852,7 @@ pub fn save_codex_calibration(
             observation.used_percent,
             observation.used_fraction_units,
             observation.gateway_spend_nano,
+            observation.gateway_spend_nanocredits,
         ],
     )?;
     tx.commit()?;
@@ -8036,15 +8425,72 @@ mod tests {
     #[test]
     fn codex_spend_and_calibration_are_durable_and_cas_versioned() {
         let c = db();
-        assert_eq!(codex_home_spend(&c, "home-a").unwrap(), 0);
         assert_eq!(
-            credit_codex_home_spend(&c, "home-a", 40_000_000_000, 100).unwrap(),
-            40_000_000_000
+            codex_home_calibration_spend(&c, "home-a").unwrap(),
+            CodexHomeCalibrationSpend::default()
         );
+        let event = |request_id: &str,
+                     api_total_nanousd: i64,
+                     chatgpt_total_nanocredits: i64,
+                     completed_at: i64| {
+            CodexTurnCalibrationEvent {
+                request_id: request_id.into(),
+                home_id: "home-a".into(),
+                model_id: "gpt-5.6-terra".into(),
+                service_tier: "standard".into(),
+                provider_reported_tier: Some("default".into()),
+                api_tariff_schedule_id: "openai/test/v1".into(),
+                credit_schedule_id: "chatgpt/test/v1".into(),
+                completed_at,
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                api_input_nanousd: api_total_nanousd,
+                api_cached_input_nanousd: 0,
+                api_cache_write_nanousd: 0,
+                api_output_nanousd: 0,
+                api_total_nanousd,
+                chatgpt_input_nanocredits: chatgpt_total_nanocredits,
+                chatgpt_cached_input_nanocredits: 0,
+                chatgpt_output_nanocredits: 0,
+                chatgpt_total_nanocredits,
+            }
+        };
+        let first = event("request-1", 40_000_000_000, 4_000_000_000, 100);
+        let totals = record_codex_turn_calibration_event(&c, &first).unwrap();
+        assert!(totals.inserted);
+        assert_eq!(totals.spent_nano, 40_000_000_000);
+        assert_eq!(totals.spent_nanocredits, Some(4_000_000_000));
+        assert_eq!(totals.credit_tracking_started_ts, Some(100));
+        assert!(
+            !record_codex_turn_calibration_event(&c, &first)
+                .unwrap()
+                .inserted
+        );
+        let mut conflict = first.clone();
+        conflict.api_input_nanousd += 1;
+        conflict.api_total_nanousd += 1;
+        let conflict_error = record_codex_turn_calibration_event(&c, &conflict).unwrap_err();
+        assert!(is_codex_turn_calibration_replay_conflict(&conflict_error));
+        let totals = record_codex_turn_calibration_event(
+            &c,
+            &event("request-2", 60_000_000_000, 6_000_000_000, 101),
+        )
+        .unwrap();
+        assert_eq!(totals.spent_nano, 100_000_000_000);
+        assert_eq!(totals.spent_nanocredits, Some(10_000_000_000));
         assert_eq!(
-            credit_codex_home_spend(&c, "home-a", 60_000_000_000, 101).unwrap(),
-            100_000_000_000
+            totals.credit_tracking_started_ts,
+            Some(100),
+            "tracking start stays pinned to the first immutable event"
         );
+        let report = codex_turn_calibration_report(&c).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].turns, 2);
+        assert_eq!(report[0].api_total_nanousd, 100_000_000_000);
+        assert_eq!(report[0].chatgpt_total_nanocredits, 10_000_000_000);
 
         let mut state = CodexCalibrationRow {
             home_id: "home-a".into(),
@@ -8061,6 +8507,17 @@ mod tests {
             observed_points: 0,
             observed_fraction_units: 0,
             observed_spend_nano: 0,
+            anchor_spend_nanocredits: Some(10_000_000_000),
+            observed_spend_nanocredits: Some(0),
+            current_capacity_nanocredits: None,
+            current_low_nanocredits: None,
+            current_high_nanocredits: None,
+            last_capacity_nanocredits: None,
+            last_low_nanocredits: None,
+            last_high_nanocredits: None,
+            credit_samples: Some(0),
+            credit_estimator_version: Some(1),
+            unattributed_fraction_units: Some(0),
             samples: 0,
             current_capacity_nano: None,
             current_low_nano: None,
@@ -8084,6 +8541,7 @@ mod tests {
             used_percent: 10,
             used_fraction_units: 10_000_000,
             gateway_spend_nano: 100_000_000_000,
+            gateway_spend_nanocredits: Some(10_000_000_000),
         };
         assert_eq!(
             save_codex_calibration(&c, &state, &observation).unwrap(),
