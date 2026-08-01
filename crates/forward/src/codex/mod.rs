@@ -446,6 +446,12 @@ pub(crate) struct CodexHome {
     calibrations: std::sync::Mutex<BTreeMap<i64, WindowCalibration>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CalibrationFlushOutcome {
+    queue_empty: bool,
+    dropped_events: u64,
+}
+
 impl CodexHome {
     fn load(
         cfg: Arc<CodexConfig>,
@@ -510,6 +516,20 @@ impl CodexHome {
 
     fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Relaxed)
+    }
+
+    /// New, unpinned conversations should give every healthy home at least one immutable turn.
+    /// This is only a tie-break inside the normal health/Fast/load policy; an established affinity
+    /// remains hard and a broken evidence writer is never preferred merely to generate more loss.
+    fn calibration_seed_rank(&self) -> u8 {
+        if self.calibration_persistence_ok.load(Ordering::Relaxed)
+            && self.calibration_dropped_events.load(Ordering::Relaxed) == 0
+            && self.credit_tracking_started_ts.load(Ordering::Relaxed) == 0
+        {
+            0
+        } else {
+            1
+        }
     }
 
     /// Copy of the current health state. Cheap, and it keeps the lock out of the caller's hands.
@@ -630,6 +650,9 @@ impl CodexHome {
     async fn retire(&self) -> Result<(), ProcessError> {
         self.retired.store(true, Ordering::Release);
         self.wait_for_turns().await;
+        // No new turn can enter after `retired` flips. Flush the last completed turn before this
+        // generation disappears so a blue-green handoff cannot strand evidence in process memory.
+        self.retry_pending_calibration().await;
         Ok(())
     }
 
@@ -929,11 +952,14 @@ impl CodexHome {
     }
 
     /// Record one successful turn, retrying exact immutable evidence in FIFO order. Request-id
-    /// idempotency in registry makes a lost writer reply and a home retry safe.
+    /// idempotency in registry makes a lost writer reply and a home retry safe. `true` means the
+    /// exact cumulative ledgers already include this turn, so a quota snapshot may safely consume
+    /// them; `false` deliberately keeps that snapshot out of the estimator until background retry.
     pub(crate) async fn record_calibration_event(
         &self,
         event: registry::CodexTurnCalibrationEvent,
-    ) {
+    ) -> bool {
+        let dropped_before = self.calibration_dropped_events.load(Ordering::Relaxed);
         {
             let mut pending = self
                 .pending_calibration_events
@@ -945,18 +971,29 @@ impl CodexHome {
                 self.calibration_persistence_ok
                     .store(false, Ordering::Relaxed);
                 eprintln!("Codex calibration event queue is full; evidence dropped");
-                return;
+                return false;
             }
             pending.push_back(event);
         }
+        let outcome = self.flush_pending_calibration_events().await;
+        outcome.queue_empty && outcome.dropped_events == dropped_before
+    }
+
+    /// Drain exact turn evidence without requiring another customer request. A transient authority
+    /// outage must not strand one home in `calibration storage` forever merely because affinity
+    /// sends its next turn elsewhere.
+    async fn flush_pending_calibration_events(&self) -> CalibrationFlushOutcome {
         let _flush = self.calibration_flush.lock().await;
         let Some(billing) = &self.billing else {
-            let event = self
-                .pending_calibration_events
-                .lock()
-                .expect("Codex calibration event queue lock")
-                .pop_front();
-            if let Some(event) = event {
+            loop {
+                let event = self
+                    .pending_calibration_events
+                    .lock()
+                    .expect("Codex calibration event queue lock")
+                    .pop_front();
+                let Some(event) = event else {
+                    break;
+                };
                 let api = self.spend_nano_total.fetch_update(
                     Ordering::AcqRel,
                     Ordering::Acquire,
@@ -980,7 +1017,10 @@ impl CodexHome {
             }
             self.calibration_persistence_ok
                 .store(false, Ordering::Relaxed);
-            return;
+            return CalibrationFlushOutcome {
+                queue_empty: true,
+                dropped_events: self.calibration_dropped_events.load(Ordering::Relaxed),
+            };
         };
         loop {
             let event = self
@@ -1048,6 +1088,33 @@ impl CodexHome {
                     break;
                 }
             }
+        }
+        CalibrationFlushOutcome {
+            queue_empty: self
+                .pending_calibration_events
+                .lock()
+                .expect("Codex calibration event queue lock")
+                .is_empty(),
+            dropped_events: self.calibration_dropped_events.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Retry a failed exact event first and only then replay the cached post-turn quota snapshot.
+    /// This ordering prevents a database hiccup from permanently classifying real gateway spend as
+    /// foreign usage.
+    async fn retry_pending_calibration(&self) {
+        let had_pending = !self
+            .pending_calibration_events
+            .lock()
+            .expect("Codex calibration event queue lock")
+            .is_empty();
+        if !had_pending {
+            return;
+        }
+        let dropped_before = self.calibration_dropped_events.load(Ordering::Relaxed);
+        let outcome = self.flush_pending_calibration_events().await;
+        if outcome.queue_empty && outcome.dropped_events == dropped_before {
+            self.ingest_turn_snapshot().await;
         }
     }
 
@@ -1396,6 +1463,14 @@ impl CodexHome {
         if self.retired.load(Ordering::Acquire) {
             return false;
         }
+        // A transient window-observation failure gets another real provider snapshot on the next
+        // sweep. Permanent quarantined/dropped evidence remains visible to operators without
+        // turning the health loop into an endless upstream hot poll.
+        if !self.calibration_persistence_ok.load(Ordering::Relaxed)
+            && self.calibration_dropped_events.load(Ordering::Relaxed) == 0
+        {
+            return true;
+        }
         let health = self.health();
         if health.wants_probe() {
             return true;
@@ -1713,6 +1788,795 @@ mod admission_tests {
             a5 != b5 || a7 != b7,
             "jitter spreads thresholds across homes"
         );
+    }
+}
+
+#[cfg(test)]
+mod calibration_integration_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct TestFleet {
+        gateway: Arc<CodexGateway>,
+        billing: Arc<AsyncBilling>,
+        root: PathBuf,
+        database: PathBuf,
+    }
+
+    impl TestFleet {
+        async fn close(self) {
+            self.gateway.shutdown().await;
+            self.billing.flush().await.unwrap();
+            drop(self.gateway);
+            drop(self.billing);
+            let _ = std::fs::remove_dir_all(self.root);
+            let _ = std::fs::remove_file(self.database);
+        }
+    }
+
+    fn test_models() -> Vec<CodexModel> {
+        let advertised = [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+        ];
+        metering::codex_catalog_at(i64::MAX)
+            .into_iter()
+            .filter(|model| advertised.contains(&model.id))
+            .map(|model| CodexModel {
+                id: model.id.to_string(),
+                upstream: model.upstream.to_string(),
+                created: 0,
+                owned_by: "test".to_string(),
+                max_output_tokens: model.max_output_tokens,
+                reasoning_efforts: model
+                    .reasoning_efforts
+                    .iter()
+                    .map(|effort| (*effort).to_string())
+                    .collect(),
+                fast_multiplier_basis_points: model.subscription_fast_multiplier_basis_points,
+                prices: model.prices,
+            })
+            .collect()
+    }
+
+    fn test_fleet(home_count: usize, base_url: &str) -> TestFleet {
+        static TEST_FLEET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = TEST_FLEET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "claude-api-codex-calibration-fleet-{}-{unique}-{sequence}",
+            std::process::id(),
+        ));
+        let credentials = root.join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        let keyring =
+            codex_credential::CredentialKeyring::parse(&format!("current:{}", "ab".repeat(32)))
+                .unwrap();
+        let mut profiles = Vec::new();
+        for index in 0..home_count {
+            let id = format!("home-{index}");
+            let credential = codex_credential::CodexCredential {
+                version: 1,
+                access_token: format!("test-access-{index}"),
+                refresh_token: format!("test-refresh-{index}"),
+                expires_at: i64::MAX / 2,
+                oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.to_string(),
+                token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.to_string(),
+                account_id: format!("acct_test_{index}"),
+                email: format!("owner{index}@example.test"),
+                plan: "chatgpt_pro".to_string(),
+                proxy: String::new(),
+                proxy_order_id: 0,
+                issued_at: 1,
+            };
+            let envelope = keyring.seal("current", &id, &credential).unwrap();
+            let path = credentials.join(format!("{id}.json"));
+            std::fs::write(&path, codex_credential::encode_envelope(&envelope).unwrap()).unwrap();
+            profiles.push(serde_json::json!({
+                "id": id,
+                "credential_file": path.to_str().unwrap(),
+            }));
+        }
+        let roster = root.join("profiles.json");
+        std::fs::write(
+            &roster,
+            serde_json::to_vec(&serde_json::json!({"profiles": profiles})).unwrap(),
+        )
+        .unwrap();
+        let database = root.with_extension("sqlite");
+        let billing =
+            Arc::new(AsyncBilling::start(database.to_string_lossy().into_owned(), 1).unwrap());
+        let gateway = Arc::new(
+            CodexGateway::new_with_calibration(
+                CodexConfig {
+                    enabled: true,
+                    base_url: base_url.to_string(),
+                    profiles_file: roster.to_string_lossy().into_owned(),
+                    credential_keys: keyring,
+                    cli_version: codex_credential::CODEX_CLI_VERSION.to_string(),
+                    request_timeout_ms: 5_000,
+                    turn_timeout_ms: 5_000,
+                    turn_silence_timeout_ms: 5_000,
+                    health_probe_interval_secs: 10,
+                    reserve_5h: 0.10,
+                    reserve_7d: 0.03,
+                    reserve_jitter: 0.0,
+                    reserve_overhead_tokens: 0,
+                    history_ttl_secs: 60,
+                    history_local_cap: 16,
+                    history_redis_url: None,
+                    history_secret: Some("test-history-secret".to_string()),
+                    history_redis_timeout_ms: 10,
+                    default_proxy_env: BTreeMap::new(),
+                    models: test_models(),
+                },
+                Some(billing.clone()),
+            )
+            .unwrap(),
+        );
+        TestFleet {
+            gateway,
+            billing,
+            root,
+            database,
+        }
+    }
+
+    fn calibration_event(
+        request_id: &str,
+        home_id: &str,
+        api_total_nanousd: i64,
+        chatgpt_total_nanocredits: i64,
+        completed_at: i64,
+    ) -> registry::CodexTurnCalibrationEvent {
+        registry::CodexTurnCalibrationEvent {
+            request_id: request_id.to_string(),
+            home_id: home_id.to_string(),
+            model_id: "gpt-5.6-terra".to_string(),
+            service_tier: "standard".to_string(),
+            provider_reported_tier: Some("default".to_string()),
+            api_tariff_schedule_id: "openai/test/v1".to_string(),
+            credit_schedule_id: "chatgpt/test/v1".to_string(),
+            completed_at,
+            input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            api_input_nanousd: api_total_nanousd,
+            api_cached_input_nanousd: 0,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 0,
+            api_total_nanousd,
+            chatgpt_input_nanocredits: chatgpt_total_nanocredits,
+            chatgpt_cached_input_nanocredits: 0,
+            chatgpt_output_nanocredits: 0,
+            chatgpt_total_nanocredits,
+        }
+    }
+
+    fn limits(used_percent: i64, observed_at: i64) -> CodexRateLimits {
+        CodexRateLimits {
+            primary: Some(CodexRateLimitWindow {
+                used_fraction_units: used_percent * 1_000_000,
+                used_percent,
+                window_duration_mins: Some(300),
+                resets_at: Some(4_102_444_800),
+            }),
+            secondary: None,
+            reached: false,
+            observed_at,
+        }
+    }
+
+    fn expected_turn_prices(model: &str, tier: &str) -> ([i64; 4], [i64; 3]) {
+        let (api, credits, api_fast_bp, credit_fast_bp) = match model {
+            "gpt-5.6-sol" => (
+                [350_000, 10_000, 62_500, 600_000],
+                [10_000_000, 250_000, 15_000_000],
+                20_000,
+                25_000,
+            ),
+            "gpt-5.6-terra" => (
+                [140_000, 4_000, 25_000, 240_000],
+                [4_000_000, 100_000, 6_000_000],
+                20_000,
+                25_000,
+            ),
+            "gpt-5.6-luna" => (
+                [14_000, 400, 2_500, 24_000],
+                [400_000, 10_000, 600_000],
+                20_000,
+                25_000,
+            ),
+            "gpt-5.5" => (
+                [350_000, 10_000, 50_000, 600_000],
+                [10_000_000, 250_000, 15_000_000],
+                25_000,
+                25_000,
+            ),
+            "gpt-5.4" => (
+                [175_000, 5_000, 25_000, 300_000],
+                [5_000_000, 125_000, 7_500_000],
+                20_000,
+                20_000,
+            ),
+            other => panic!("missing independent price fixture for {other}"),
+        };
+        let (api_multiplier, credit_multiplier) = if tier == "fast" {
+            (api_fast_bp, credit_fast_bp)
+        } else {
+            (10_000, 10_000)
+        };
+        (
+            api.map(|value| value * api_multiplier / 10_000),
+            credits.map(|value| value * credit_multiplier / 10_000),
+        )
+    }
+
+    async fn mock_turn_upstream_with_usage(
+        zero_usage: bool,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accounts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = accounts.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 4_096];
+                    let header_end = loop {
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if let Some(offset) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break offset + 4;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    let account = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("chatgpt-account-id")
+                                .then(|| value.trim().to_string())
+                        })
+                        .unwrap_or_else(|| "missing-account".to_string());
+                    while request.len() < header_end.saturating_add(content_length) {
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                    }
+                    seen.lock().unwrap().push(account);
+                    // Keep the turn in flight briefly so concurrent-selection regressions are
+                    // observable instead of being hidden by an immediate response.
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    let body = if zero_usage {
+                        concat!(
+                            "event: response.output_text.delta\n",
+                            "data: {\"item_id\":\"msg_1\",\"delta\":\"ok\"}\n\n",
+                            "event: response.output_item.done\n",
+                            "data: {\"item\":{\"type\":\"message\",\"id\":\"msg_1\",",
+                            "\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",",
+                            "\"text\":\"ok\"}]}}\n\n",
+                            "event: response.completed\n",
+                            "data: {\"response\":{\"service_tier\":\"default\",\"usage\":{",
+                            "\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n"
+                        )
+                    } else {
+                        concat!(
+                            "event: response.output_text.delta\n",
+                            "data: {\"item_id\":\"msg_1\",\"delta\":\"ok\"}\n\n",
+                            "event: response.output_item.done\n",
+                            "data: {\"item\":{\"type\":\"message\",\"id\":\"msg_1\",",
+                            "\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",",
+                            "\"text\":\"ok\"}]}}\n\n",
+                            "event: response.completed\n",
+                            "data: {\"response\":{\"service_tier\":\"default\",\"usage\":{",
+                            "\"input_tokens\":100,\"input_tokens_details\":{",
+                            "\"cached_tokens\":20,\"cache_write_tokens\":10},",
+                            "\"output_tokens\":20,\"output_tokens_details\":{",
+                            "\"reasoning_tokens\":5},\"total_tokens\":120}}}\n\n"
+                        )
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{address}/codex"), accounts)
+    }
+
+    async fn mock_turn_upstream() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        mock_turn_upstream_with_usage(false).await
+    }
+
+    fn install_calibration_write_failure(database: &std::path::Path) {
+        let connection = registry::open(database.to_str().unwrap()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_codex_calibration_test \
+                 BEFORE INSERT ON codex_turn_calibration_events \
+                 BEGIN SELECT RAISE(FAIL, 'injected calibration write failure'); END;",
+            )
+            .unwrap();
+    }
+
+    fn remove_calibration_write_failure(database: &std::path::Path) {
+        let connection = registry::open(database.to_str().unwrap()).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER reject_codex_calibration_test")
+            .unwrap();
+    }
+
+    async fn turn_routing(
+        store: Arc<AffinityStore>,
+        model: &CodexModel,
+        session_id: &str,
+    ) -> TurnRouting {
+        let input = store
+            .infer_codex(
+                "calibration-test-tenant",
+                &axum::http::HeaderMap::new(),
+                &model.id,
+                None,
+                &[],
+                &[serde_json::json!({"type": "text", "text": "measure"})],
+                Some(session_id),
+            )
+            .unwrap();
+        let resolution = store.resolve(&input).await;
+        let warm = if resolution.is_none() {
+            store.warm_homes(&input).await
+        } else {
+            Vec::new()
+        };
+        TurnRouting::new(store, input, resolution, warm)
+    }
+
+    fn turn(model: CodexModel, fast: bool, sequence: usize) -> CodexTurnRequest {
+        CodexTurnRequest {
+            model,
+            prompt_cache_key: Some(format!("calibration-integration-{sequence}")),
+            base_instructions: None,
+            developer_instructions: None,
+            injected_items: Vec::new(),
+            turn_input: vec![serde_json::json!({"type": "text", "text": "measure"})],
+            dynamic_tools: Vec::new(),
+            service_tier: fast.then(|| "priority".to_string()),
+            reasoning_effort: Some("none".to_string()),
+            reasoning_summary: None,
+            output_schema: None,
+            verbosity: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn real_turns_seed_every_home_and_persist_every_model_tier_and_usage_leg() {
+        let (base_url, accounts) = mock_turn_upstream().await;
+        let fleet = test_fleet(4, &base_url);
+        let models = fleet.gateway.config().models.clone();
+        assert_eq!(models.len(), 5);
+
+        let mut sequence = 0usize;
+        for model in &models {
+            for fast in [false, true] {
+                // Sequential first turns are intentional: the test proves evidence seeding, not
+                // accidental fan-out caused only by concurrent in-flight load.
+                for _ in 0..4 {
+                    fleet
+                        .gateway
+                        .run_turn(turn(model.clone(), fast, sequence), None, None)
+                        .await
+                        .unwrap();
+                    sequence += 1;
+                }
+            }
+        }
+
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        assert_eq!(report.len(), 4 * 5 * 2);
+        assert_eq!(report.iter().map(|row| row.turns).sum::<i64>(), 40);
+        for home_index in 0..4 {
+            let home_id = format!("home-{home_index}");
+            let rows: Vec<_> = report.iter().filter(|row| row.home_id == home_id).collect();
+            assert_eq!(rows.len(), 10, "{home_id} must see every model/tier");
+            for model in &models {
+                for tier in ["standard", "fast"] {
+                    let row = rows
+                        .iter()
+                        .find(|row| row.model_id == model.id && row.service_tier == tier)
+                        .unwrap_or_else(|| panic!("missing {home_id} {} {tier}", model.id));
+                    assert_eq!(row.turns, 1);
+                    assert_eq!(row.input_tokens, 100);
+                    assert_eq!(row.cached_input_tokens, 20);
+                    assert_eq!(row.cache_write_input_tokens, 10);
+                    assert_eq!(row.output_tokens, 20);
+                    assert_eq!(row.reasoning_output_tokens, 5);
+                    let (api, credits) = expected_turn_prices(&model.id, tier);
+                    assert_eq!(row.api_input_nanousd, api[0]);
+                    assert_eq!(row.api_cached_input_nanousd, api[1]);
+                    assert_eq!(row.api_cache_write_nanousd, api[2]);
+                    assert_eq!(row.api_output_nanousd, api[3]);
+                    assert_eq!(row.api_total_nanousd, api.into_iter().sum::<i64>());
+                    assert_eq!(row.chatgpt_input_nanocredits, credits[0]);
+                    assert_eq!(row.chatgpt_cached_input_nanocredits, credits[1]);
+                    assert_eq!(row.chatgpt_output_nanocredits, credits[2]);
+                    assert_eq!(
+                        row.chatgpt_total_nanocredits,
+                        credits.into_iter().sum::<i64>()
+                    );
+                }
+            }
+        }
+
+        let account_counts = accounts.lock().unwrap().iter().cloned().fold(
+            BTreeMap::<String, usize>::new(),
+            |mut counts, account| {
+                *counts.entry(account).or_default() += 1;
+                counts
+            },
+        );
+        assert_eq!(account_counts.len(), 4);
+        assert!(account_counts.values().all(|count| *count == 10));
+
+        let status = fleet.gateway.operational_status().await;
+        assert_eq!(status.homes.len(), 4);
+        assert!(status.homes.iter().all(|home| {
+            home.credit_tracking_started_ts.is_some()
+                && home.calibration_pending_events == 0
+                && home.calibration_dropped_events == 0
+                && home.calibration_persistence_ok
+        }));
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn downstream_disconnect_still_persists_authoritative_turn_evidence() {
+        let (base_url, _) = mock_turn_upstream().await;
+        let fleet = test_fleet(1, &base_url);
+        let (updates, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let result = fleet
+            .gateway
+            .run_turn(
+                turn(fleet.gateway.config().models[0].clone(), false, 0),
+                Some(updates),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 100);
+        assert_eq!(result.usage.cache_write_input_tokens, 10);
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].turns, 1);
+        assert_eq!(report[0].api_total_nanousd, 1_022_500);
+        assert_eq!(report[0].chatgpt_total_nanocredits, 25_250_000);
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn pending_turn_recovery_persists_spend_before_replaying_quota() {
+        let fleet = test_fleet(1, "http://127.0.0.1:1/codex");
+        let home = fleet.gateway.homes().await.into_iter().next().unwrap();
+
+        assert!(
+            home.record_calibration_event(calibration_event(
+                "anchor-turn",
+                home.id(),
+                10_000_000_000,
+                1_000_000_000,
+                100,
+            ))
+            .await
+        );
+        home.note_rate_limits(&limits(10, 100)).await;
+
+        // Model the exact production failure: the successful turn is queued, while its freshest
+        // provider snapshot already sits in memory. The retry must never observe 12% against the
+        // old cumulative spend.
+        home.pending_calibration_events
+            .lock()
+            .unwrap()
+            .push_back(calibration_event(
+                "recovered-turn",
+                home.id(),
+                40_000_000_000,
+                4_000_000_000,
+                101,
+            ));
+        home.calibration_persistence_ok
+            .store(false, Ordering::Relaxed);
+        *home.rate_limits.lock().await = Some(limits(12, 101));
+
+        home.retry_pending_calibration().await;
+
+        let status = home.status().await;
+        assert_eq!(status.calibration_pending_events, 0);
+        assert_eq!(status.calibration_dropped_events, 0);
+        assert!(status.calibration_persistence_ok);
+        assert_eq!(status.spend_nano_total, 50_000_000_000);
+        assert_eq!(status.spend_nanocredits_total, Some(5_000_000_000));
+        let primary = status
+            .capacities
+            .iter()
+            .find(|window| window.slot == "primary")
+            .unwrap();
+        assert_eq!(primary.observed_fraction_units, 2_000_000);
+        assert_eq!(primary.observed_spend_nano, 40_000_000_000);
+        assert_eq!(primary.observed_spend_nanocredits, Some(4_000_000_000));
+        assert_eq!(primary.capacity_nano, Some(2_000_000_000_000));
+        assert_eq!(primary.capacity_nanocredits, Some(200_000_000_000));
+
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        assert_eq!(report.iter().map(|row| row.turns).sum::<i64>(), 2);
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn health_probe_retries_transient_writer_failure_without_customer_traffic() {
+        let fleet = test_fleet(1, "http://127.0.0.1:1/codex");
+        let home = fleet.gateway.homes().await.into_iter().next().unwrap();
+        let now = pool::now();
+
+        assert!(
+            home.record_calibration_event(calibration_event(
+                "probe-anchor",
+                home.id(),
+                10_000_000_000,
+                1_000_000_000,
+                now,
+            ))
+            .await
+        );
+        home.note_rate_limits(&limits(10, now)).await;
+
+        install_calibration_write_failure(&fleet.database);
+        assert!(
+            !home
+                .record_calibration_event(calibration_event(
+                    "probe-retry",
+                    home.id(),
+                    40_000_000_000,
+                    4_000_000_000,
+                    now.saturating_add(1),
+                ))
+                .await
+        );
+        *home.rate_limits.lock().await = Some(limits(12, now.saturating_add(1)));
+        let failed = home.status().await;
+        assert_eq!(failed.calibration_pending_events, 1);
+        assert!(!failed.calibration_persistence_ok);
+        remove_calibration_write_failure(&fleet.database);
+
+        // No second customer request is made. The ordinary health sweep must drain local
+        // authority work even though the home has a fresh, healthy provider snapshot.
+        fleet.gateway.probe_health().await;
+
+        let recovered = home.status().await;
+        assert_eq!(recovered.calibration_pending_events, 0);
+        assert_eq!(recovered.calibration_dropped_events, 0);
+        assert!(recovered.calibration_persistence_ok);
+        let primary = recovered
+            .capacities
+            .iter()
+            .find(|window| window.slot == "primary")
+            .unwrap();
+        assert_eq!(primary.observed_spend_nano, 40_000_000_000);
+        assert_eq!(primary.observed_spend_nanocredits, Some(4_000_000_000));
+        assert_eq!(
+            fleet
+                .billing
+                .codex_calibration_report()
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.turns)
+                .sum::<i64>(),
+            2
+        );
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn retire_flushes_last_pending_event_after_writer_recovers() {
+        let fleet = test_fleet(1, "http://127.0.0.1:1/codex");
+        let home = fleet.gateway.homes().await.into_iter().next().unwrap();
+        install_calibration_write_failure(&fleet.database);
+        assert!(
+            !home
+                .record_calibration_event(calibration_event(
+                    "retire-retry",
+                    home.id(),
+                    7_000_000_000,
+                    700_000_000,
+                    pool::now(),
+                ))
+                .await
+        );
+        assert_eq!(home.status().await.calibration_pending_events, 1);
+        remove_calibration_write_failure(&fleet.database);
+
+        home.retire().await.unwrap();
+
+        let retired = home.status().await;
+        assert_eq!(retired.calibration_pending_events, 0);
+        assert!(retired.calibration_persistence_ok);
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        assert_eq!(report.iter().map(|row| row.turns).sum::<i64>(), 1);
+        assert_eq!(report[0].api_total_nanousd, 7_000_000_000);
+        assert_eq!(report[0].chatgpt_total_nanocredits, 700_000_000);
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn exact_replay_is_idempotent_and_conflict_does_not_block_later_turns() {
+        let fleet = test_fleet(1, "http://127.0.0.1:1/codex");
+        let home = fleet.gateway.homes().await.into_iter().next().unwrap();
+        let first = calibration_event(
+            "immutable-turn",
+            home.id(),
+            11_000_000_000,
+            1_100_000_000,
+            100,
+        );
+        assert!(home.record_calibration_event(first.clone()).await);
+        assert!(home.record_calibration_event(first.clone()).await);
+
+        let mut conflict = first;
+        conflict.api_input_nanousd = conflict.api_input_nanousd.saturating_add(1);
+        conflict.api_total_nanousd = conflict.api_total_nanousd.saturating_add(1);
+        assert!(!home.record_calibration_event(conflict).await);
+        assert!(
+            home.record_calibration_event(calibration_event(
+                "after-conflict",
+                home.id(),
+                13_000_000_000,
+                1_300_000_000,
+                101,
+            ))
+            .await
+        );
+
+        let status = home.status().await;
+        assert_eq!(status.calibration_pending_events, 0);
+        assert_eq!(status.calibration_dropped_events, 1);
+        assert!(!status.calibration_persistence_ok);
+        assert_eq!(status.spend_nano_total, 24_000_000_000);
+        assert_eq!(status.spend_nanocredits_total, Some(2_400_000_000));
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        assert_eq!(report.iter().map(|row| row.turns).sum::<i64>(), 2);
+        assert_eq!(
+            report.iter().map(|row| row.api_total_nanousd).sum::<i64>(),
+            24_000_000_000
+        );
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn failed_and_zero_usage_turns_never_create_calibration_evidence() {
+        let failed_fleet = test_fleet(1, "http://127.0.0.1:1/codex");
+        assert!(failed_fleet
+            .gateway
+            .run_turn(
+                turn(failed_fleet.gateway.config().models[0].clone(), false, 0),
+                None,
+                None,
+            )
+            .await
+            .is_err());
+        assert!(failed_fleet
+            .billing
+            .codex_calibration_report()
+            .await
+            .unwrap()
+            .is_empty());
+        failed_fleet.close().await;
+
+        let (base_url, _) = mock_turn_upstream_with_usage(true).await;
+        let zero_fleet = test_fleet(1, &base_url);
+        let result = zero_fleet
+            .gateway
+            .run_turn(
+                turn(zero_fleet.gateway.config().models[0].clone(), false, 0),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.usage, CodexUsage::default());
+        assert!(zero_fleet
+            .billing
+            .codex_calibration_report()
+            .await
+            .unwrap()
+            .is_empty());
+        let status = zero_fleet.gateway.operational_status().await;
+        assert_eq!(status.homes[0].calibration_pending_events, 0);
+        assert_eq!(status.homes[0].calibration_dropped_events, 1);
+        assert!(!status.homes[0].calibration_persistence_ok);
+        zero_fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn resolved_affinity_stays_on_its_home_while_new_sessions_seed_every_home() {
+        let (base_url, accounts) = mock_turn_upstream().await;
+        let fleet = test_fleet(4, &base_url);
+        let model = fleet.gateway.config().models[0].clone();
+        let store = Arc::new(
+            AffinityStore::new(None, Some("calibration-affinity-secret"), 60, 60, 10).unwrap(),
+        );
+
+        for sequence in 0..4 {
+            let session = format!("new-session-{sequence}");
+            let routing = turn_routing(store.clone(), &model, &session).await;
+            fleet
+                .gateway
+                .run_turn(turn(model.clone(), false, sequence), None, Some(routing))
+                .await
+                .unwrap();
+        }
+        let seeded = accounts.lock().unwrap().clone();
+        assert_eq!(seeded.len(), 4);
+        assert_eq!(seeded.iter().collect::<HashSet<_>>().len(), 4);
+
+        let routing = turn_routing(store, &model, "new-session-0").await;
+        fleet
+            .gateway
+            .run_turn(turn(model, false, 4), None, Some(routing))
+            .await
+            .unwrap();
+        let served = accounts.lock().unwrap().clone();
+        assert_eq!(served.len(), 5);
+        assert_eq!(served[4], served[0]);
+
+        let report = fleet.billing.codex_calibration_report().await.unwrap();
+        let home_turns = report.iter().fold(BTreeMap::new(), |mut turns, row| {
+            *turns.entry(row.home_id.clone()).or_insert(0i64) += row.turns;
+            turns
+        });
+        assert_eq!(home_turns.len(), 4);
+        assert_eq!(home_turns.values().copied().sum::<i64>(), 5);
+        assert_eq!(home_turns.values().filter(|turns| **turns == 2).count(), 1);
+        assert_eq!(home_turns.values().filter(|turns| **turns == 1).count(), 3);
+        fleet.close().await;
     }
 }
 
@@ -2166,7 +3030,7 @@ impl CodexGateway {
         now: i64,
         reserve: &WindowReserve,
         fast_model: Option<&str>,
-    ) -> (Vec<(u8, bool, usize, i64, Arc<CodexHome>)>, Option<i64>) {
+    ) -> (Vec<(u8, bool, usize, u8, i64, Arc<CodexHome>)>, Option<i64>) {
         let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
         for home in pool_homes {
@@ -2200,6 +3064,7 @@ impl CodexGateway {
                         fast_rank,
                         snapshot_stale,
                         home.inflight(),
+                        home.calibration_seed_rank(),
                         used,
                         home.clone(),
                     ));
@@ -2262,8 +3127,8 @@ impl CodexGateway {
         } as usize
             % width;
         candidates.sort_by(
-            |(fast_a, stale_a, inflight_a, used_a, home_a),
-             (fast_b, stale_b, inflight_b, used_b, home_b)| {
+            |(fast_a, stale_a, inflight_a, seed_a, used_a, home_a),
+             (fast_b, stale_b, inflight_b, seed_b, used_b, home_b)| {
                 let rotated_a = (home_a.order() + width - cursor) % width;
                 let rotated_b = (home_b.order() + width - cursor) % width;
                 // Fast capability is a service-quality boundary, not a small balancing hint.
@@ -2283,6 +3148,16 @@ impl CodexGateway {
                     // Quota steering is bucketed and only engages near the wall, so comparable homes stay
                     // tied and the rotation cursor keeps spreading them.
                     .then_with(|| inflight_a.cmp(inflight_b))
+                    // A new conversation seeds exact evidence on every home before revisiting an
+                    // already-observed peer. Never apply this to resolved affinity: conversation
+                    // continuity and cache ownership remain stronger than calibration coverage.
+                    .then_with(|| {
+                        if preferred.is_none() {
+                            seed_a.cmp(seed_b)
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
                     .then_with(|| used_a.cmp(used_b))
                     .then_with(|| rotated_a.cmp(&rotated_b))
             },
@@ -2293,35 +3168,35 @@ impl CodexGateway {
         // affinity only inside the best currently known Fast-capability class.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, _, _, _, home)) = candidates
+            if let Some((_, _, _, _, _, home)) = candidates
                 .iter()
-                .find(|(fast, _, _, _, home)| *fast == best_fast_rank && home.id() == id)
+                .find(|(fast, _, _, _, _, home)| *fast == best_fast_rank && home.id() == id)
             {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
             let warm_count = candidates
                 .iter()
-                .filter(|(fast, _, _, _, home)| {
+                .filter(|(fast, _, _, _, _, home)| {
                     *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
                 })
                 .count();
             let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
-                candidates.iter().position(|(fast, _, _, _, home)| {
+                candidates.iter().position(|(fast, _, _, _, _, home)| {
                     *fast == best_fast_rank && !warm.iter().any(|id| id == home.id())
                 })
             } else {
-                candidates.iter().position(|(fast, _, _, _, home)| {
+                candidates.iter().position(|(fast, _, _, _, _, home)| {
                     *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
                 })
             }
             .unwrap_or(0);
-            ordered.push(candidates[primary].4.clone());
+            ordered.push(candidates[primary].5.clone());
         }
         // If the primary choice is currently sampling, another warm copy is the next best spill;
         // remaining candidates stay in global capacity order.
         if place_cache_root {
-            for (fast, _, _, _, home) in &candidates {
+            for (fast, _, _, _, _, home) in &candidates {
                 if *fast == best_fast_rank
                     && warm.iter().any(|id| id == home.id())
                     && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
@@ -2330,7 +3205,7 @@ impl CodexGateway {
                 }
             }
         }
-        for (_, _, _, _, home) in candidates {
+        for (_, _, _, _, _, home) in candidates {
             if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
                 ordered.push(home);
             }
@@ -2430,6 +3305,16 @@ impl CodexGateway {
             return;
         }
         self.take_probe_requests().await;
+        let homes = self.homes().await;
+        // Exact event retry is local authority work, not an upstream probe. Run it for every home,
+        // including busy/healthy ones that the network sweep correctly skips. If the FIFO drains,
+        // the home replays its cached post-turn quota only after the durable spend ledger catches up.
+        futures_util::stream::iter(homes.iter().cloned().map(|home| async move {
+            home.retry_pending_calibration().await;
+        }))
+        .buffer_unordered(SWEEP_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
         // Probe only the homes that are due. Live traffic keeps busy homes' snapshots fresh, so
         // sweeping them again on every tick would multiply upstream calls without learning
         // anything: at fleet scale the sweep itself becomes the load problem and a ban signal.
@@ -2437,9 +3322,7 @@ impl CodexGateway {
         // already suspicious is probed every tick. Concurrency is bounded so one sick egress
         // cannot stretch the sweep, and so the fleet never fans out an upstream burst.
         let now = pool::now();
-        let due: Vec<Arc<CodexHome>> = self
-            .homes()
-            .await
+        let due: Vec<Arc<CodexHome>> = homes
             .into_iter()
             .filter(|home| home.probe_due(now))
             .collect();

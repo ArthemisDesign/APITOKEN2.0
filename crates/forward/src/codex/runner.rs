@@ -312,7 +312,7 @@ impl CodexGateway {
                     }
                     let completed_at = pool::now();
                     let fast = result.effective_service_tier.as_deref() == Some("priority");
-                    match super::billing::price_calibration_event(
+                    let spend_ready = match super::billing::price_calibration_event(
                         &calibration_request_id,
                         home.id(),
                         &request.model,
@@ -322,12 +322,18 @@ impl CodexGateway {
                         result.provider_reported_service_tier.as_deref(),
                     ) {
                         Ok(event) => home.record_calibration_event(event).await,
-                        Err(error) => home.reject_calibration_event(&error),
-                    }
+                        Err(error) => {
+                            home.reject_calibration_event(&error);
+                            false
+                        }
+                    };
                     // The served turn's response headers are the freshest window snapshot this
-                    // home will ever publish. Persist the turn first so the quota observation sees
-                    // both cumulative ledgers already settled whenever authority is healthy.
-                    home.ingest_turn_snapshot().await;
+                    // home will ever publish. Persist the exact turn first so the quota observation
+                    // cannot classify its provider movement as foreign usage. A failed writer keeps
+                    // the snapshot cached; the health sweep drains the FIFO and replays it later.
+                    if spend_ready {
+                        home.ingest_turn_snapshot().await;
+                    }
                     home.mark_turn_healthy();
                     // Pin this conversation's cache lineage to the home that served it, so the next
                     // request in the conversation reuses its warm prompt cache.

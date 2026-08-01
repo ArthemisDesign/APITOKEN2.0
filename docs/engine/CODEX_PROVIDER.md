@@ -101,9 +101,11 @@ token on every refresh with strict family reuse detection. The pool therefore:
   stream is translated into the same internal event vocabulary the public adapters always
   consumed, so the public streaming contract is byte-identical to the app-server era.
 - **Selection** mirrors the Claude fleet: conversation affinity first, then freshness of quota
-  evidence, in-flight envelope, bucketed quota steering above 50% utilisation, and an atomic
-  rotation cursor for ties. Cache stickiness is deliberate: tenant-scoped affinity derives stable
-  opaque prompt-cache/session/thread/window identities, so one conversation reads as one
+  evidence and in-flight envelope. Within that normal health/load class, a new unpinned conversation
+  first seeds every home that has no immutable calibration turn; bucketed quota steering above 50%
+  utilisation and an atomic rotation cursor resolve the remaining ties. Seeding never overrides a
+  resolved conversation affinity. Cache stickiness is deliberate: tenant-scoped affinity derives
+  stable opaque prompt-cache/session/thread/window identities, so one conversation reads as one
   continuous session across pool rotation without exposing the customer key. A home leaves
   rotation on an explicit provider `reached` verdict or
   an explicit provider `limit_reached`/`allowed: false` verdict, and returns a single
@@ -134,14 +136,20 @@ token on every refresh with strict family reuse detection. The pool therefore:
   percent and does not look like an automaton maxing quota to zero. A home past its cap returns at
   that window's reset; under peak, when every home is past its soft cap, the filter relaxes to the
   provider's own wall (fail open: serving beats a synthetic 429).
-- **Capacity calibration is an evidence-backed workload blend.** `/wham/usage`, live response
-  headers and SSE report decimal percentage utilisation. The gateway parses it without binary
-  floating point into `10^-8` fraction units (one unit is `10^-6` percentage point), and every
-  served turn credits the profile's exact audited API-catalog cost in integer nanoUSD. Estimator
-  v8 calculates
-  `capacity_nano = 100_000_000 × ΣΔspend_nano / ΣΔused_fraction_units`. This is the API-dollar
-  equivalent of the workload actually served — not the subscription purchase price and not a
-  permanent nominal for a plan. That distinction is required by the
+- **Capacity calibration is an evidence-backed dual-ledger workload blend.** `/wham/usage`, live
+  response headers and SSE report decimal percentage utilisation. The gateway parses it without
+  binary floating point into `10^-8` fraction units (one unit is `10^-6` percentage point). Every
+  successful billable turn creates one immutable event for the exact home that served it, model,
+  effective Standard/Fast tier, provider-reported tier and all token legs. Registry advances in one
+  transaction both exact cumulative ledgers: API replacement cost in integer nanoUSD and native
+  ChatGPT subscription consumption in integer nanocredits. Estimator v9 calculates
+  `native_capacity_nanocredits = 100_000_000 × ΣΔnanocredits / ΣΔused_fraction_units`; separately,
+  `capacity_nano = 100_000_000 × ΣΔnanoUSD / ΣΔused_fraction_units` remains the API-dollar
+  equivalent of the workload actually served. Native capacity is the like-for-like unit for
+  comparing equal subscriptions; API USD per native credit is the profitability metric by model
+  and tier. API USD capacity is not the subscription purchase price and cannot be a fixed nominal
+  for a plan, because two identical plans serving different model/token mixes correctly produce
+  different API-dollar equivalents. That distinction is required by the
   [official Codex pricing documentation](https://learn.chatgpt.com/docs/pricing): consumption
   varies by model, context, reasoning and tools.
   Each complete interval also contributes a conservative ±1-fraction-unit low/high workload
@@ -150,15 +158,24 @@ token on every refresh with strict family reuse detection. The pool therefore:
   is no configured prior, EMA, WLS, float-money arithmetic or hidden fallback nominal.
   A cold snapshot alone remains an unpublished anchor, while the first confirmed positive
   utilisation movement is already counted as a complete interval with its quantisation envelope.
-  A movement without positive settled spend waits for settlement catch-up. Real resets retain
+  A movement without positive settled spend waits for settlement catch-up. The credit cutover
+  starts one shared anchor for both ledgers; pre-cutover API evidence is retained as historical
+  state and is never reinterpreted as zero native-credit spend. Real resets retain
   accumulated evidence and make the first complete movement of the new window immediately
   eligible. A rolling weekly reset is recognized by the joint signal of a material forward
   reset-at shift and utilisation rollback even when the shift is below half the nominal window;
   bounded reset timestamp jitter alone cannot fork a window, and rollback snapshots cannot erase
-  or duplicate a high-water interval. Raw observations, exact cumulative legs and CAS state live in
-  the engine authority, survive restart/blue-green and are replayed on estimator upgrades.
-  Calibration is fed only by wire events — reads never write — and each provider-reported duration
-  (normally 5h and weekly) calibrates independently.
+  or duplicate a high-water interval. Raw observations, immutable turn rows, exact cumulative legs
+  and CAS state live in the engine authority, survive restart/blue-green and are replayed on
+  estimator upgrades. Exact event retry is idempotent by an internal request id stable across
+  home/transport retries. A semantic replay conflict quarantines that row without blocking later
+  FIFO entries. Calibration is fed only by wire events — reads never write — and each
+  provider-reported duration (normally 5h and weekly) calibrates independently. A transient writer
+  failure leaves the event in a bounded FIFO, which every health sweep retries even when no new
+  customer request reaches that home. On recovery the event and cumulative ledgers are persisted
+  before the cached post-turn quota snapshot is replayed; retire also performs a final flush.
+  Pending, dropped and persistence state are explicit in `/codex-subs`. Usage accepts current
+  `cache_write_tokens` and legacy `cache_creation_tokens` as aliases and never adds both.
   The control-authenticated `/codex-subs` projection includes the reviewed non-secret paid-plan
   identity (`chatgpt_plus|chatgpt_pro|chatgpt_business`) so the admin sales calculator can aggregate
   like-for-like profiles. Full email, account id, OAuth and proxy remain sealed.

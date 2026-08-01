@@ -3580,6 +3580,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identical_plan_credits_converge_while_api_usd_remains_workload_dependent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-codex-like-for-like-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let billing = AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap();
+        let mut native_capacities = Vec::new();
+        let mut api_capacities = Vec::new();
+        for (index, interval_api_nano) in [
+            40_000_000_000,
+            20_000_000_000,
+            80_000_000_000,
+            10_000_000_000,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let home_id = format!("pro-home-{index}");
+            let mut anchor = codex_event(
+                &format!("anchor-{index}"),
+                10_000_000_000,
+                1_000_000_000,
+                100,
+            );
+            anchor.home_id = home_id.clone();
+            billing.record_codex_turn(anchor).await.unwrap();
+            billing
+                .observe_codex_window(&home_id, 300, 2_000_000_000, 10, 10_000_000, 100)
+                .await
+                .unwrap();
+
+            let mut measured = codex_event(
+                &format!("measured-{index}"),
+                interval_api_nano,
+                4_000_000_000,
+                101,
+            );
+            measured.home_id = home_id.clone();
+            billing.record_codex_turn(measured).await.unwrap();
+            let (_, row) = billing
+                .observe_codex_window(&home_id, 300, 2_000_000_000, 12, 12_000_000, 101)
+                .await
+                .unwrap();
+            native_capacities.push(row.current_capacity_nanocredits.unwrap());
+            api_capacities.push(row.current_capacity_nano.unwrap());
+        }
+
+        assert_eq!(native_capacities, vec![200_000_000_000; 4]);
+        assert_eq!(
+            api_capacities,
+            vec![
+                2_000_000_000_000,
+                1_000_000_000_000,
+                4_000_000_000_000,
+                500_000_000_000,
+            ]
+        );
+        assert_eq!(
+            billing
+                .codex_calibration_report()
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.turns)
+                .sum::<i64>(),
+            8
+        );
+        billing.flush().await.unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn gemini_calibration_credits_admin_spend_and_keeps_windows_independent() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -334,18 +334,26 @@ cap; его bounded background semaphore — только shutdown barrier и п
    ChatGPT nanocredits. Reasoning уже входит в output, cached input — subset total input; повторно
    они не складываются. Стабильный внутренний `cal_*` request ID создаётся до выбора home и живёт
    через transport/home retries, но никогда не уходит upstream. Registry атомарно двигает оба
-   cumulative ledger; exact retry идемпотентен.
+   cumulative ledger; exact retry идемпотентен. Для новых unpinned-разговоров normal selection
+   сначала seed'ит каждый здоровый home без единого immutable turn; это только tie-break после
+   Fast/freshness/in-flight и никогда не перебивает уже resolved affinity.
 
-   Failed events остаются в bounded FIFO (4096) и повторяются перед новыми. Pending/drop видны в
-   `/codex-subs`; overflow не молчит. Permanent immutable replay conflict карантинит только одну
-   строку и не блокирует последующие. Estimator v9 после credit cutover начинает shared anchor для
+   Failed events остаются в bounded FIFO (4096), повторяются перед новыми и независимо дренируются
+   каждым health sweep даже без нового customer turn; retire делает последний flush после закрытия
+   входа новым turn. После writer recovery сначала durable становятся exact events и оба cumulative
+   ledger, и только затем повторяется cached post-turn quota snapshot — обратный порядок ложно
+   превращал реальный gateway spend во внешний. Pending/drop видны в `/codex-subs`; overflow не
+   молчит. Permanent immutable replay conflict карантинит только одну строку и не блокирует
+   последующие. Estimator v9 после credit cutover начинает shared anchor для
    обоих units: `native cap = 100_000_000*ΣΔnanocredits/ΣΔfraction`, API cap остаётся realized
    workload equivalent по `ΣΔnanoUSD`. Старое API evidence переносится в `last_*`, а не считается
    нулевым credit spend. Первое quota-only движение ждёт ledger catch-up; повторившееся движение без
    обоих ledger помечается `possibly unattributed`, но не объявляется внешним использованием.
    Low/high, samples, confidence и missing-data reason публикуются явно. Нет prior/EMA/WLS/float
    money. Raw observations переживают restart/blue-green/reset и распознают rolling reset;
-   каждое provider-reported duration калибруется независимо.
+   каждое provider-reported duration калибруется независимо. Usage translation принимает оба
+   реально встречающихся alias (`cache_write_tokens` и legacy `cache_creation_tokens`), предпочитая
+   current spelling и никогда не складывая их дважды.
 7. **Цены — только из `metering::codex`** (audited, effective-dated). Для успешного ChatGPT-auth
    turn effective tier определяется принятым запросом: `priority` = Fast, отсутствие tier =
    Standard. Completed `response.service_tier` хранится только как provider-reported диагностика:

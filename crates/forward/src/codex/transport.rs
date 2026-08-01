@@ -860,10 +860,21 @@ fn translate_usage(usage: &Value) -> Value {
         .get("output_tokens_details")
         .cloned()
         .unwrap_or(Value::Null);
+    // Native deployments have used both spellings. They are aliases for one subset, never two
+    // additive buckets; prefer the current public spelling when both appear during a rollout.
+    let cache_write_tokens = input_details
+        .get("cache_write_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            input_details
+                .get("cache_creation_tokens")
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0);
     json!({
         "inputTokens": details(usage, "input_tokens"),
         "cachedInputTokens": details(&input_details, "cached_tokens"),
-        "cacheWriteInputTokens": details(&input_details, "cache_creation_tokens"),
+        "cacheWriteInputTokens": cache_write_tokens,
         "outputTokens": details(usage, "output_tokens"),
         "reasoningOutputTokens": details(&output_details, "reasoning_tokens"),
         "totalTokens": details(usage, "total_tokens"),
@@ -1160,7 +1171,7 @@ mod tests {
     fn usage_translation_keeps_the_runner_vocabulary() {
         let upstream = json!({
             "input_tokens": 100,
-            "input_tokens_details": {"cached_tokens": 40},
+            "input_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 11},
             "output_tokens": 20,
             "output_tokens_details": {"reasoning_tokens": 5},
             "total_tokens": 120,
@@ -1168,9 +1179,30 @@ mod tests {
         let translated = translate_usage(&upstream);
         assert_eq!(translated["inputTokens"], 100);
         assert_eq!(translated["cachedInputTokens"], 40);
+        assert_eq!(translated["cacheWriteInputTokens"], 11);
         assert_eq!(translated["outputTokens"], 20);
         assert_eq!(translated["reasoningOutputTokens"], 5);
         assert_eq!(translated["totalTokens"], 120);
+    }
+
+    #[test]
+    fn usage_translation_accepts_legacy_cache_creation_without_double_counting_aliases() {
+        let legacy = translate_usage(&json!({
+            "input_tokens": 10,
+            "input_tokens_details": {"cache_creation_tokens": 3},
+            "output_tokens": 1,
+        }));
+        assert_eq!(legacy["cacheWriteInputTokens"], 3);
+
+        let overlap = translate_usage(&json!({
+            "input_tokens": 10,
+            "input_tokens_details": {
+                "cache_write_tokens": 4,
+                "cache_creation_tokens": 99
+            },
+            "output_tokens": 1,
+        }));
+        assert_eq!(overlap["cacheWriteInputTokens"], 4);
     }
 
     #[test]
