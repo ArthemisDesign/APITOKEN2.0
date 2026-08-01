@@ -28,16 +28,6 @@ if ! cmp -s "$RUNNER" "$FIXTURE/deploy/typescript-build-contexts.sh"; then
   git -C "$FIXTURE" -c user.name=test -c user.email=test@example.invalid \
     commit --quiet -m 'test current artifact cache helper'
 fi
-# The clone contains only committed files. While the devbot workspace package is still uncommitted
-# in the working tree, mirror its manifest into the fixture so the runner's fail-closed workspace
-# policy sees the same package set as the real tree. Once committed, this is a no-op.
-if [[ ! -f $FIXTURE/apps/devbot/package.json && -f $ROOT/apps/devbot/package.json ]]; then
-  mkdir -p "$FIXTURE/apps/devbot"
-  cp "$ROOT/apps/devbot/package.json" "$FIXTURE/apps/devbot/package.json"
-  git -C "$FIXTURE" add apps/devbot/package.json
-  git -C "$FIXTURE" -c user.name=test -c user.email=test@example.invalid \
-    commit --quiet -m 'test with the devbot workspace package'
-fi
 
 mkdir -p "$TEMP/bin" "$STATE"
 cat >"$TEMP/bin/pnpm" <<'STUB'
