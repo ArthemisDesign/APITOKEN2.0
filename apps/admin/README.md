@@ -51,6 +51,9 @@ Next.js 16 / React 19 (App Router), порт 3700. Замена однофайл
   `{spendStatsModal}` — в конец страницы. Типы `SpendStatsResponse`, `SpendPeriod`
   и хелпер `isOpenkeys` экспортированы.
 - `src/app/page.tsx` — Сводка (эталонная страница; портируйте остальные по ней).
+- `src/app/subscriptions/codex-capacity-board.tsx` — компактная GPT-сводка shared-plan capacity,
+  token-only вместимости, убывающей `$ / native credit` матрицы и masked-email homes. Raw calibration
+  ledger и ручной workload builder намеренно не выводятся в операторский UI.
 - `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` для watchdog.
 
 ## Конвенции страниц

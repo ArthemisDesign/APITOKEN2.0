@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  codexApiValueForCredits,
+  codexTokenEconomics,
+  codexTokensForCapacity,
+  compareCodexEfficiency,
   creditsToApiNanousd,
+  formatCodexUsdPerCredit,
   priceCodexWorkload,
   type CodexWorkloadInput,
 } from "./codex-calibration";
@@ -90,5 +95,32 @@ describe("Codex workload conversion", () => {
     if (!result.ok) throw new Error(result.error);
     expect(creditsToApiNanousd("387500000000", result.value)).toBe(12_650_000_000n);
     expect(creditsToApiNanousd(null, result.value)).toBeNull();
+  });
+
+  it("строит точную убывающую экономику token kinds без float", () => {
+    const shortFresh = codexTokenEconomics(MODEL, "standard", "short", "fresh");
+    const shortCached = codexTokenEconomics(MODEL, "standard", "short", "cached");
+    const shortWrite = codexTokenEconomics(MODEL, "standard", "short", "write");
+    const longWrite = codexTokenEconomics(MODEL, "standard", "long", "write");
+    const fastFresh = codexTokenEconomics(MODEL, "fast", "short", "fresh");
+    expect(formatCodexUsdPerCredit(shortFresh)).toBe("$0.040");
+    expect(formatCodexUsdPerCredit(shortCached)).toBe("$0.040");
+    expect(formatCodexUsdPerCredit(shortWrite)).toBe("$0.050");
+    expect(formatCodexUsdPerCredit(longWrite)).toBe("$0.100");
+    expect(formatCodexUsdPerCredit(fastFresh)).toBe("$0.032");
+    expect(compareCodexEfficiency(longWrite!, shortWrite!)).toBe(1);
+    expect(compareCodexEfficiency(shortFresh!, shortCached!)).toBe(0);
+  });
+
+  it("показывает токеновую вместимость всего окна для каждого native bucket", () => {
+    const capacity = "62327321317308";
+    expect(codexTokensForCapacity(capacity, MODEL, "standard", "fresh")).toBe(498_618_570n);
+    expect(codexTokensForCapacity(capacity, MODEL, "standard", "cached")).toBe(4_986_185_705n);
+    expect(codexTokensForCapacity(capacity, MODEL, "standard", "write")).toBe(498_618_570n);
+    expect(codexTokensForCapacity(capacity, MODEL, "standard", "output")).toBe(83_103_095n);
+    expect(codexTokensForCapacity(capacity, MODEL, "fast", "cached")).toBe(1_994_474_282n);
+    expect(codexApiValueForCredits(capacity, codexTokenEconomics(MODEL, "standard", "long", "write"))).toBe(
+      6_232_732_131_731n,
+    );
   });
 });

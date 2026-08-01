@@ -104,25 +104,25 @@ engine ACK; usable key до подтверждения policy не выдаёт�
 из имён. Пока catalog/policy foundation отсутствует, соответствующие редакторы fail closed и явно
 показывают, что materialization ещё не выполнена.
 
-## Calibration laboratory на странице подписок
+## GPT capacity board на странице подписок
 
-GPT-блок страницы `/subscriptions` — операторская лаборатория, а не одна итоговая USD-цифра:
+GPT-блок `/subscriptions` — компактная операторская сводка, полностью рассчитанная из backend
+`/codex-subs` без собственной денежной authority:
 
-- native ChatGPT credits показаны бирюзовым и служат единственной корректной шкалой сравнения
-  одинаковых подписок;
-- API USD показан фиолетовым и пересчитывается под выбранную модель, Standard/Fast и редактируемый
-  fresh/cache-read/cache-write/output/reasoning mix; деньги и credits считаются только BigInt;
-- модельные API Fast и subscription Fast multipliers независимы (например, GPT-5.6 после
-  2026-07-30 — ×2 и ×2.5 соответственно), long-context modifier применяется ко всему API-request;
-- sticky первый столбец обеих таблиц показывает bounded masked email, затем opaque home id;
-- immutable evidence ledger всегда видим: первый successful turn сразу показывает model/tier,
-  token classes, exact credits, exact API USD и обе schedule identity;
-- native capacity/range появляется отдельно после положительного движения quota. Состояния «нет
-  evidence», «exact spend, ждём Δquota», «созревает», `representative`, persistence queue,
-  dropped/error и `possibly unattributed` выводятся текстом, а не только tooltip;
-- summary отдельно показывает native remaining, exact tracked credits, turns/models, exact
-  accumulated API equivalent и integrity `pending/dropped`.
-
-Разброс одинаковых планов объясняется рядом с таблицей: сначала сравниваются credits, а различие USD
-может быть вызвано моделью, token mix, Fast и long context. Quota movement без движения обоих gateway
-ledger помечается только как «возможно неатрибутировано» — это не доказательство внешнего расхода.
+- главный strip суммирует `fleet_capacity_nanocredits`/`fleet_remaining_nanocredits` всех plan cohorts самого длинного
+  доступного положительного окна, показывает использованную долю, обычный Standard API-equivalent
+  и максимальный тарифный API-equivalent; оба сценария подписаны моделью/tier/context/token kind.
+  Если хотя бы одна cohort ещё не измерена, общий номинал остаётся неизвестным, а не превращается
+  в заниженную частичную сумму;
+- таблица token capacity отвечает, сколько fresh, cache-read, cache-write либо output/reasoning
+  токенов можно обслужить текущим остатком всего пула для каждой модели и Standard/Fast. Cache write
+  расходует native fresh-input credits; reasoning уже входит в output;
+- profitability matrix выбирает самый выгодный short/long-контекст для каждой пары модель ×
+  Standard/Fast, показывает exact `$ API-equivalent / native credit` по четырём token kinds и
+  сортирует строки по лучшему значению убыванию. Все деньги и credits считаются только BigInt;
+- home-таблица показывает только bounded masked email, runtime/integrity state, quota с progress-bar
+  и reset, shared-cohort remaining credits и обычный/максимальный API-equivalent. Для разных paid
+  plans каждая почта получает pooled capacity только своей cohort. Opaque UUID, raw immutable ledger,
+  schedules и индивидуальная noisy capacity в основной UI не выводятся;
+- provider placeholder с неположительным окном игнорируется. До появления положительного движения
+  quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.

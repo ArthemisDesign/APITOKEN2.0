@@ -164,6 +164,29 @@ export interface CodexWindowTotal {
   measured_homes?: number;
 }
 
+/** Shared native-credit capacity for homes with the exact same paid plan and provider window. */
+export interface CodexPlanCohort {
+  plan?: string;
+  window_minutes?: number;
+  homes_total?: number;
+  measured_homes?: number;
+  measurement_resolution_fraction_units?: number;
+  observed_fraction_units?: string;
+  observed_spend_nanocredits?: string;
+  capacity_per_home_nanocredits?: string | null;
+  capacity_per_home_low_nanocredits?: string | null;
+  capacity_per_home_high_nanocredits?: string | null;
+  fleet_capacity_nanocredits?: string | null;
+  fleet_capacity_low_nanocredits?: string | null;
+  fleet_capacity_high_nanocredits?: string | null;
+  fleet_remaining_nanocredits?: string | null;
+  fleet_remaining_low_nanocredits?: string | null;
+  fleet_remaining_high_nanocredits?: string | null;
+  source?: string;
+  same_plan_capacity?: boolean;
+  workload_dependent?: boolean;
+}
+
 export interface CodexCalibrationEvidence {
   model?: string;
   service_tier?: string;
@@ -219,6 +242,7 @@ export interface CodexSubsResponse {
   soonest_ready?: number;
   homes?: CodexHome[];
   window_totals?: CodexWindowTotal[];
+  plan_cohorts?: CodexPlanCohort[];
   calibration_evidence_available?: boolean;
   credit_schedule_id?: string;
   conversion_models?: CodexConversionModel[];

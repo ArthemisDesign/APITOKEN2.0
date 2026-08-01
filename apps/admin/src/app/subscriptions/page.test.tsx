@@ -13,7 +13,7 @@ vi.mock("next/link", () => ({
 
 import SubsPage from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
-import { CodexCalibrationLab } from "./codex-calibration-lab";
+import { CodexCapacityBoard } from "./codex-capacity-board";
 import {
   barFromPercent,
   barFromRemaining,
@@ -133,14 +133,33 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("official-price");
   });
 
-  it("CodexCalibrationLab: почта слева, credits↔USD и immutable evidence видны одновременно", () => {
+  it("CodexCapacityBoard: компактно показывает токены, выгодность и shared home capacity", () => {
     const html = renderToString(
-      <CodexCalibrationLab
+      <CodexCapacityBoard
         nowMs={1_800_000_000_000}
         response={{
           calibration_evidence_available: true,
           credit_schedule_id: "chatgpt/codex-credits/2026-07-30/v1",
           conversion_models: [
+            {
+              id: "gpt-5.4",
+              api: {
+                input_nanousd_per_token: "2500",
+                cached_input_nanousd_per_token: "250",
+                cache_write_nanousd_per_token: "2500",
+                output_nanousd_per_token: "15000",
+                fast_multiplier_basis_points: 20000,
+                long_context_threshold: "272000",
+                long_input_multiplier_basis_points: 20000,
+                long_output_multiplier_basis_points: 15000,
+              },
+              chatgpt_credits: {
+                input_nanocredits_per_token: "62500",
+                cached_input_nanocredits_per_token: "6250",
+                output_nanocredits_per_token: "375000",
+                fast_multiplier_basis_points: 20000,
+              },
+            },
             {
               id: "gpt-5.6-sol",
               api_tariff_schedule_id: "openai/gpt-5.6-sol/2026-07-30/v2",
@@ -168,6 +187,17 @@ describe("таблицы флотов (smoke render с данными)", () => {
               window_minutes: 300,
               capacity_nanocredits: "2000000000000",
               remaining_nanocredits: "1200000000000",
+            },
+          ],
+          plan_cohorts: [
+            {
+              plan: "chatgpt_pro",
+              window_minutes: 300,
+              homes_total: 1,
+              measured_homes: 1,
+              capacity_per_home_nanocredits: "2000000000000",
+              fleet_capacity_nanocredits: "2000000000000",
+              fleet_remaining_nanocredits: "1200000000000",
             },
           ],
           homes: [
@@ -228,28 +258,88 @@ describe("таблицы флотов (smoke render с данными)", () => {
         }}
       />,
     );
-    expect(html).toContain("ChatGPT credits ↔ API USD");
+    expect(html).toContain("Сколько токенов доступно");
+    expect(html).toContain("Выгодность по убыванию");
+    expect(html).toContain("Доступная ёмкость по home");
     expect(html).toContain("owne…");
+    expect(html).not.toContain("home-1");
     expect(html).not.toContain("owner@example.com");
-    expect(html.indexOf("почта / home")).toBeLessThan(html.indexOf("состояние evidence"));
-    expect(html).toContain("representative");
-    expect(html).toContain("0.3875 credits");
-    expect(html).toContain("$0.01");
-    expect(plain(html)).toContain("API Fast ×2.0 · subscription Fast ×2.5");
-    expect(plain(html)).toContain("pending 0 · dropped 0");
-    expect(html).toContain("reasoning уже входит в output");
+    expect(plain(html)).toContain("96M");
+    expect(plain(html)).toContain("$0.100");
+    expect(plain(html)).toContain("$48.00");
+    expect(plain(html)).toContain("$120.00");
+    expect(plain(html)).toContain("gpt-5.6-sol · short");
+    expect(plain(html)).toContain("gpt-5.6-sol · standard/long/write");
+    const ranking = plain(html).slice(plain(html).indexOf("Выгодность по убыванию"));
+    expect(ranking.indexOf("gpt-5.6-sol")).toBeLessThan(ranking.indexOf("gpt-5.4"));
+    expect(html).toContain("codex-quota-meter");
+    expect(plain(html)).toContain("сброс 10м");
+    expect(html).not.toContain("Immutable evidence ledger");
+    expect(html).not.toContain("api_tariff_schedule_id");
   });
 
-  it("CodexCalibrationLab: пустой ledger объясняет ожидание первого turn, а не показывает ноль", () => {
+  it("CodexCapacityBoard: пустая калибровка остаётся коротким направляющим состоянием", () => {
     const html = renderToString(
-      <CodexCalibrationLab
+      <CodexCapacityBoard
         nowMs={1_800_000_000_000}
         response={{ calibration_evidence_available: true, homes: [{ id: "home-1", email: "owne…" }] }}
       />,
     );
-    expect(html).toContain("waiting for first turn");
-    expect(html).toContain("Первый точный расход появится здесь сразу");
-    expect(html).toContain("ждёт Δquota");
+    expect(html).toContain("ждём Δquota");
+    expect(html).toContain("Тарифный каталог недоступен");
+    expect(html).toContain("owne…");
+    expect(html).not.toContain("Первый точный расход появится здесь сразу");
+  });
+
+  it("CodexCapacityBoard: суммирует весь пул, но применяет capacity своего тарифа к каждой почте", () => {
+    const html = renderToString(
+      <CodexCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          plan_cohorts: [
+            {
+              plan: "chatgpt_pro",
+              window_minutes: 10080,
+              homes_total: 1,
+              measured_homes: 1,
+              capacity_per_home_nanocredits: "2000000000000",
+              fleet_capacity_nanocredits: "2000000000000",
+              fleet_remaining_nanocredits: "1200000000000",
+            },
+            {
+              plan: "chatgpt_plus",
+              window_minutes: 10080,
+              homes_total: 1,
+              measured_homes: 1,
+              capacity_per_home_nanocredits: "1000000000000",
+              fleet_capacity_nanocredits: "1000000000000",
+              fleet_remaining_nanocredits: "750000000000",
+            },
+          ],
+          homes: [
+            {
+              id: "pro",
+              email: "pro…",
+              plan: "chatgpt_pro",
+              process_live: true,
+              windows: [{ window_minutes: 10080, used_fraction_units: 40000000 }],
+            },
+            {
+              id: "plus",
+              email: "plus…",
+              plan: "chatgpt_plus",
+              process_live: true,
+              windows: [{ window_minutes: 10080, used_fraction_units: 25000000 }],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("весь пул");
+    expect(plain(html)).toContain("1,950 credits");
+    expect(plain(html)).toContain("3,000 credits");
+    expect(plain(html)).toContain("1,200 credits");
+    expect(plain(html)).toContain("750 credits");
   });
 
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {

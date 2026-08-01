@@ -1,6 +1,15 @@
 import type { CodexConversionModel } from "./types";
 
 export type CodexServiceTier = "standard" | "fast";
+export type CodexContextTier = "short" | "long";
+export type CodexTokenKind = "fresh" | "cached" | "write" | "output";
+
+export const CODEX_TOKEN_KINDS: CodexTokenKind[] = ["fresh", "cached", "write", "output"];
+
+export interface CodexTokenEconomics {
+  apiNanousdPerToken: bigint;
+  creditNanocreditsPerToken: bigint;
+}
 
 export interface CodexWorkloadInput {
   freshInputTokens: string;
@@ -219,4 +228,102 @@ export function formatCodexTokenCount(value: string | bigint | null | undefined)
   } catch {
     return "—";
   }
+}
+
+function modelTokenRates(
+  model: CodexConversionModel,
+  tokenKind: CodexTokenKind,
+): { api: bigint; credits: bigint } | null {
+  const api = parseRate(
+    tokenKind === "fresh"
+      ? model.api.input_nanousd_per_token
+      : tokenKind === "cached"
+        ? model.api.cached_input_nanousd_per_token
+        : tokenKind === "write"
+          ? model.api.cache_write_nanousd_per_token
+          : model.api.output_nanousd_per_token,
+  );
+  // The native card has no cache-write bucket: writes consume fresh-input credits.
+  const credits = parseRate(
+    tokenKind === "cached"
+      ? model.chatgpt_credits.cached_input_nanocredits_per_token
+      : tokenKind === "output"
+        ? model.chatgpt_credits.output_nanocredits_per_token
+        : model.chatgpt_credits.input_nanocredits_per_token,
+  );
+  return api == null || credits == null ? null : { api, credits };
+}
+
+/** Exact one-token economics used by the compact capacity and profitability tables. */
+export function codexTokenEconomics(
+  model: CodexConversionModel,
+  tier: CodexServiceTier,
+  context: CodexContextTier,
+  tokenKind: CodexTokenKind,
+): CodexTokenEconomics | null {
+  const rates = modelTokenRates(model, tokenKind);
+  if (!rates) return null;
+  const apiTierBp = tier === "fast" ? model.api.fast_multiplier_basis_points : 10_000;
+  const creditTierBp = tier === "fast" ? model.chatgpt_credits.fast_multiplier_basis_points : 10_000;
+  if (apiTierBp == null || creditTierBp == null) return null;
+  const contextBp =
+    context === "long"
+      ? tokenKind === "output"
+        ? (model.api.long_output_multiplier_basis_points ?? 10_000)
+        : (model.api.long_input_multiplier_basis_points ?? 10_000)
+      : 10_000;
+  const api = multiplyLeg(rates.api, contextBp, apiTierBp);
+  const credits = applyCodexBasisPoints(rates.credits, creditTierBp);
+  if (api == null || credits == null || credits <= 0n) return null;
+  return { apiNanousdPerToken: api, creditNanocreditsPerToken: credits };
+}
+
+export function codexTokensForCapacity(
+  capacityNanocredits: string | bigint | null | undefined,
+  model: CodexConversionModel,
+  tier: CodexServiceTier,
+  tokenKind: CodexTokenKind,
+): bigint | null {
+  if (capacityNanocredits == null) return null;
+  try {
+    const capacity = BigInt(capacityNanocredits);
+    const economics = codexTokenEconomics(model, tier, "short", tokenKind);
+    if (capacity < 0n || !economics) return null;
+    return capacity / economics.creditNanocreditsPerToken;
+  } catch {
+    return null;
+  }
+}
+
+export function compareCodexEfficiency(a: CodexTokenEconomics, b: CodexTokenEconomics): number {
+  const left = a.apiNanousdPerToken * b.creditNanocreditsPerToken;
+  const right = b.apiNanousdPerToken * a.creditNanocreditsPerToken;
+  return left === right ? 0 : left > right ? 1 : -1;
+}
+
+export function codexApiValueForCredits(
+  capacityNanocredits: string | bigint | null | undefined,
+  economics: CodexTokenEconomics | null,
+): bigint | null {
+  if (capacityNanocredits == null || !economics) return null;
+  try {
+    const capacity = BigInt(capacityNanocredits);
+    if (capacity < 0n) return null;
+    return (
+      capacity * economics.apiNanousdPerToken + economics.creditNanocreditsPerToken / 2n
+    ) / economics.creditNanocreditsPerToken;
+  } catch {
+    return null;
+  }
+}
+
+export function formatCodexUsdPerCredit(economics: CodexTokenEconomics | null): string {
+  if (!economics) return "—";
+  const scale = 1_000n;
+  const scaled =
+    (economics.apiNanousdPerToken * scale + economics.creditNanocreditsPerToken / 2n) /
+    economics.creditNanocreditsPerToken;
+  const whole = scaled / scale;
+  const fraction = (scaled % scale).toString().padStart(3, "0");
+  return `$${whole}.${fraction}`;
 }

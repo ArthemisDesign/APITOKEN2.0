@@ -11,7 +11,7 @@ import { count, formatDate, money } from "@/lib/format";
 import { Banner, CardGrid, LoadingGrid, PageHead, Pill, SectionHeader, StatCard } from "@/components/ui";
 import { useSpendStatsModal } from "@/components/spend-stats-modal";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, TransportDetails } from "./components";
-import { CodexCalibrationLab } from "./codex-calibration-lab";
+import { CodexCapacityBoard } from "./codex-capacity-board";
 import { resolveBanner } from "./logic";
 import type {
   CapacityResponse,
@@ -241,8 +241,8 @@ export default function SubsPage() {
       </div>
 
       <SectionHeader
-        title="GPT · calibration laboratory"
-        sub="Native ChatGPT credits отдельно от workload-dependent API USD"
+        title="GPT · ёмкость"
+        sub="Credits, доступные токены и выгодность моделей"
       />
       <div style={{ marginTop: 12 }}>
         {derived.gptDown || derived.gptOff ? (
@@ -254,7 +254,7 @@ export default function SubsPage() {
             </div>
           </div>
         ) : (
-          <CodexCalibrationLab response={derived.codex!} nowMs={result.nowMs} />
+          <CodexCapacityBoard response={derived.codex!} nowMs={result.nowMs} />
         )}
       </div>
 
@@ -343,9 +343,8 @@ export default function SubsPage() {
       ) : null}
 
       <footer>
-        Обновление каждые 10с, пока вкладка видима · GPT: одинаковые подписки сравниваются в native ChatGPT credits;
-        API USD зависит от выбранной модели, Standard/Fast, cache mix, output и long context · exact turn spend виден
-        сразу, а capacity появляется после подтверждённого движения quota · pending/dropped должны оставаться 0/0 ·
+        Обновление каждые 10с, пока вкладка видима · GPT: shared plan capacity показывает единый номинал одинаковых
+        подписок, токеновая вместимость считается из текущего остатка, а модели сортируются по API-$ на native credit ·
         почта выводится только маскированной. Gemini workload blend остаётся официальным API-$ эквивалентом
         фактически наблюдённой смеси задач; Google прямо указывает, что фиксированного USD-номинала подписки нет.
       </footer>
