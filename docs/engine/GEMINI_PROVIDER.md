@@ -597,18 +597,22 @@ clients use stable origin 8794 (or the public hostname), never a runtime port. D
 candidate must pass exact-release/provider/readiness gates before the old slot returns 503 and stops
 accepting new requests; its established SSE requests may finish during bounded asynchronous drain.
 
-`/gemini-subs` is read-only-key protected and exposes only opaque profile ids, model availability,
+`/gemini-subs` is read-only-key protected and exposes opaque profile ids plus a bounded operator
+email hint (at most four local-part characters, never the domain), model availability,
 sanitized quota/cooling timestamps, independent 5h/weekly fractions and workload-dependent
 official-API-dollar blend/remaining/envelope/confidence plus the exact spend/fraction evidence,
 calibration persistence health, generation failure
 streak/timestamps/classes, low-cardinality transport/backend/malformed/stream-start counters,
 affinity counters, missing-usage count and pinned HTTPS/Undici transport versions/hashes. Unknown
-capacity stays JSON `null`; measured fleet totals include only profiles with evidence. The response
+capacity stays JSON `null`; measured fleet totals include only profiles with evidence and publish
+canonical decimal `*_nano` strings beside display-only USD compatibility fields. The response
 marks this explicitly as `realized_workload_api_equivalent` with
 `fixed_subscription_nominal=false`. It also carries the reviewed non-secret paid-plan identity
 (`google_ai_pro|google_ai_ultra|code_assist_standard|code_assist_enterprise|workspace_ai_ultra`)
-for like-for-like admin sales aggregation. Subject, email, project, private tier, proxy and OAuth
-material are never serialized. Caddy maps the same endpoint into the unified
+for like-for-like admin sales aggregation, the paid-tier `metering::gemini` conversion catalogue,
+and the exact public-model → private quota-bucket mapping. `remaining_amount` is a decimal string;
+when Google publishes only a fraction, consumers must leave token amount unknown. Subject, full
+email, domain, project, private tier, proxy and OAuth material are never serialized. Caddy maps the same endpoint into the unified
 `admin.apitoken.sale` subscription and calculator pages through stable origin `127.0.0.1:8794`.
 
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject

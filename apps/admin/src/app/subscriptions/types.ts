@@ -38,6 +38,8 @@ export interface CapacitySub {
   reset7d_in?: number;
   cap5h_nano?: string;
   cap7d_nano?: string;
+  rem5h_nano?: string;
+  rem7d_nano?: string;
   cap5h_usd?: number;
   cap7d_usd?: number;
   rem5h_usd?: number;
@@ -47,9 +49,43 @@ export interface CapacitySub {
   avail_1d_usd?: number;
   avail_7d_usd?: number;
   routable?: boolean;
+  auth_state?: string;
+  dead_reason?: string;
+  dead_since?: number;
+}
+
+export interface ClaudeWindowTotal {
+  window_minutes?: number;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  routable_subs?: number;
+  calibrated_subs?: number;
+  source?: string;
+  workload_dependent?: boolean;
+}
+
+export interface ClaudeRateTier {
+  id: "standard" | "fast";
+  tariff_schedule_id?: string;
+  input_nanousd_per_token: string;
+  cache_read_nanousd_per_token: string;
+  cache_write_5m_nanousd_per_token: string;
+  cache_write_1h_nanousd_per_token: string;
+  output_nanousd_per_token: string;
+}
+
+export interface ClaudeConversionModel {
+  id: string;
+  display_name?: string;
+  alias_generation?: number;
+  web_search_nanousd_per_request?: string;
+  us_inference_basis_points?: number;
+  tiers: ClaudeRateTier[];
 }
 
 export interface CapacityResponse {
+  now?: number;
+  calibrated?: boolean;
   per_sub?: CapacitySub[];
   available_usd?: {
     next_7d?: number;
@@ -57,6 +93,14 @@ export interface CapacityResponse {
     next_5h?: number;
     next_1d?: number;
   };
+  available_nano?: {
+    next_7d?: string;
+    next_1h?: string;
+    next_5h?: string;
+    next_1d?: string;
+  };
+  window_totals?: ClaudeWindowTotal[];
+  conversion_models?: ClaudeConversionModel[];
 }
 
 // GET /codex-subs — GPT/Codex native homes (OpenAI-runtime).
@@ -251,6 +295,7 @@ export interface CodexSubsResponse {
 // GET /gemini-subs — Gemini Code Assist профили
 export interface GeminiModel {
   id?: string;
+  quota_model_ids?: string[];
   available?: number;
   healthy?: number;
   degraded?: number;
@@ -287,6 +332,8 @@ export interface GeminiProfileWindow {
   remaining_low_nano?: string | null;
   remaining_high_nano?: string | null;
   remaining_fraction?: number | null;
+  remaining_fraction_units?: number;
+  used_fraction_units?: number;
   remaining_usd?: number | null;
   cap_usd?: number | null;
   low_usd?: number | null;
@@ -300,6 +347,8 @@ export interface GeminiProfileWindow {
 
 export interface GeminiProfile {
   id?: string;
+  /** Маскированная подсказка аккаунта; полный Google email не покидает runtime. */
+  email?: string;
   plan?: string;
   authenticated?: boolean;
   inflight?: number;
@@ -315,11 +364,44 @@ export interface GeminiProfile {
 
 export interface GeminiWindowTotal {
   window_minutes?: number;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
   cap_usd?: number | null;
   remaining_usd?: number | null;
   low_usd?: number | null;
   high_usd?: number | null;
   measured_profiles?: number;
+  observed_profiles?: number;
+}
+
+export interface GeminiConversionModel {
+  id: string;
+  display_name?: string;
+  input_token_limit?: string;
+  output_token_limit?: string;
+  quota_model_ids?: string[];
+  rates: {
+    input_nanousd_per_token: string;
+    audio_input_nanousd_per_token: string;
+    cached_input_nanousd_per_token: string;
+    cached_audio_input_nanousd_per_token: string;
+    output_nanousd_per_token: string;
+    image_output_nanousd_per_token: string;
+    long_context_threshold?: string;
+    long_input_nanousd_per_token: string;
+    long_audio_input_nanousd_per_token: string;
+    long_cached_input_nanousd_per_token: string;
+    long_cached_audio_input_nanousd_per_token: string;
+    long_output_nanousd_per_token: string;
+  };
+  search?: {
+    billing_unit?: "query" | "grounded_prompt" | string;
+    nanousd_per_unit?: string;
+  };
 }
 
 export interface GeminiTransport {
@@ -363,6 +445,7 @@ export interface GeminiSubsResponse {
   models?: GeminiModel[];
   profiles?: GeminiProfile[];
   window_totals?: GeminiWindowTotal[];
+  conversion_models?: GeminiConversionModel[];
   transport?: GeminiTransport;
   affinity?: GeminiAffinity;
   failures?: GeminiFailures;

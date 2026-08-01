@@ -43,6 +43,12 @@ Same-origin админка дополнительно читает `GET /capacit
 Эти маршруты защищены server-side control/panel auth; браузер получает их только через закрытый
 `admin.apitoken.sale`, а ключи ему не выдаются.
 
+`GET /capacity` дополнительно публикует Claude `window_totals`, horizon `available_nano` и
+`conversion_models`. Денежные поля для расчётов — decimal nanoUSD strings. Каталог берётся из
+`metering` и разделяет Standard/Fast input, cache-read, cache-write 5м/1ч и output; Web Search имеет
+отдельную per-request ставку. Per-sub `rem5h_nano`/`rem7d_nano` и email mask позволяют панели
+рисовать компактные окна без float money и без раскрытия аккаунта.
+
 `GET /codex-subs` разделяет два разных понятия:
 
 - `*_nanocredits` — native расход и capacity ChatGPT-подписки; именно в credits сравниваются
@@ -91,6 +97,13 @@ API equivalent nanoUSD = capacity_nanocredits × workload_api_nanousd / workload
 
 Reasoning — diagnostic subset output и не прибавляется второй раз. Cache-write имеет отдельную API
 ставку, но в credit card входит во fresh input.
+
+`GET /gemini-subs` публикует canonical `capacity_nano`/`remaining_nano` fleet totals,
+`conversion_models` из `metering::gemini` и `quota_model_ids` для join публичной модели с её
+Antigravity effort buckets. `remaining_amount` сериализуется decimal string; если Google отдаёт
+только `remaining_fraction`, количество токенов/units остаётся неизвестным и не выводится из
+workload-dollar blend. Профиль содержит только bounded email hint (четыре символа local-part без
+домена); full email, subject, project, private tier, proxy и OAuth не сериализуются.
 
 ---
 

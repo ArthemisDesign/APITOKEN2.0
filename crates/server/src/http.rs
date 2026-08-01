@@ -1396,8 +1396,8 @@ async fn metrics(
                     body,
                     "claude_api_gemini_window_capacity_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
                      claude_api_gemini_window_remaining_usd{{window_minutes=\"{duration}\"}} {:.6}",
-                    total.cap_usd,
-                    total.remaining_usd,
+                    total.capacity_nano as f64 / 1e9,
+                    total.remaining_nano as f64 / 1e9,
                 );
             }
             if total.low_profiles == total.measured_profiles && total.measured_profiles > 0 {
@@ -1405,8 +1405,8 @@ async fn metrics(
                     body,
                     "claude_api_gemini_window_capacity_low_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
                      claude_api_gemini_window_remaining_low_usd{{window_minutes=\"{duration}\"}} {:.6}",
-                    total.low_usd,
-                    total.remaining_low_usd,
+                    total.low_nano as f64 / 1e9,
+                    total.remaining_low_nano as f64 / 1e9,
                 );
             }
             if total.high_profiles == total.measured_profiles && total.measured_profiles > 0 {
@@ -1414,8 +1414,8 @@ async fn metrics(
                     body,
                     "claude_api_gemini_window_capacity_high_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
                      claude_api_gemini_window_remaining_high_usd{{window_minutes=\"{duration}\"}} {:.6}",
-                    total.high_usd,
-                    total.remaining_high_usd,
+                    total.high_nano as f64 / 1e9,
+                    total.remaining_high_nano as f64 / 1e9,
                 );
             }
         }
@@ -1828,12 +1828,12 @@ fn codex_plan_cohorts(status: &forward::codex::CodexOperationalStatus) -> Vec<Va
 
 #[derive(Default)]
 struct GeminiWindowTotal {
-    cap_usd: f64,
-    remaining_usd: f64,
-    low_usd: f64,
-    high_usd: f64,
-    remaining_low_usd: f64,
-    remaining_high_usd: f64,
+    capacity_nano: i128,
+    remaining_nano: i128,
+    low_nano: i128,
+    high_nano: i128,
+    remaining_low_nano: i128,
+    remaining_high_nano: i128,
     measured_profiles: usize,
     observed_profiles: usize,
     low_profiles: usize,
@@ -1848,28 +1848,128 @@ fn gemini_window_totals(
         for capacity in &profile.capacities {
             let total = totals.entry(capacity.window_minutes).or_default();
             total.observed_profiles += 1;
-            if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
-                total.cap_usd += cap;
-                total.remaining_usd += remaining;
+            if let (Some(cap), Some(remaining)) = (capacity.capacity_nano, capacity.remaining_nano)
+            {
+                total.capacity_nano += i128::from(cap);
+                total.remaining_nano += i128::from(remaining);
                 total.measured_profiles += 1;
                 if let (Some(low), Some(remaining_low)) =
-                    (capacity.low_usd, capacity.remaining_low_usd)
+                    (capacity.low_nano, capacity.remaining_low_nano)
                 {
-                    total.low_usd += low;
-                    total.remaining_low_usd += remaining_low;
+                    total.low_nano += i128::from(low);
+                    total.remaining_low_nano += i128::from(remaining_low);
                     total.low_profiles += 1;
                 }
                 if let (Some(high), Some(remaining_high)) =
-                    (capacity.high_usd, capacity.remaining_high_usd)
+                    (capacity.high_nano, capacity.remaining_high_nano)
                 {
-                    total.high_usd += high;
-                    total.remaining_high_usd += remaining_high;
+                    total.high_nano += i128::from(high);
+                    total.remaining_high_nano += i128::from(remaining_high);
                     total.high_profiles += 1;
                 }
             }
         }
     }
     totals
+}
+
+fn usd_to_nano(value: f64) -> i128 {
+    (value.max(0.0) * 1e9).round() as i128
+}
+
+fn mask_claude_email(email: &str) -> String {
+    let local = email.split_once('@').map_or(email, |(local, _)| local);
+    let head: String = local.chars().take(4).collect();
+    format!("{head}…")
+}
+
+fn anthropic_conversion_models(now: i64) -> Vec<Value> {
+    const MODELS: [(&str, &str); 5] = [
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-sonnet-5", "Claude Sonnet 5"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5"),
+    ];
+
+    MODELS
+        .into_iter()
+        .filter_map(|(id, display_name)| {
+            let tier = |speed, name| {
+                let capability = metering::anthropic_tariff_capability_at(
+                    id,
+                    now,
+                    metering::AnthropicAdmissionModifiers {
+                        speed,
+                        inference_geo: metering::AnthropicInferenceGeo::Global,
+                    },
+                )
+                .ok()?;
+                let prices = capability.effective_reserve_prices;
+                Some(json!({
+                    "id": name,
+                    "tariff_schedule_id": capability.tariff_schedule_id.as_str(),
+                    "input_nanousd_per_token": prices.input.to_string(),
+                    "cache_read_nanousd_per_token": prices.cache_read.to_string(),
+                    "cache_write_5m_nanousd_per_token": prices.cache_write_5m.to_string(),
+                    "cache_write_1h_nanousd_per_token": prices.cache_write_1h.to_string(),
+                    "output_nanousd_per_token": prices.output.to_string(),
+                }))
+            };
+            Some(json!({
+                "id": id,
+                "display_name": display_name,
+                "alias_generation": metering::ANTHROPIC_ALIAS_GENERATION,
+                "web_search_nanousd_per_request": metering::WEB_SEARCH_NANO.to_string(),
+                "us_inference_basis_points": 11_000,
+                "tiers": [
+                    tier(metering::AnthropicSpeed::Standard, "standard")?,
+                    tier(metering::AnthropicSpeed::Fast, "fast")?,
+                ],
+            }))
+        })
+        .collect()
+}
+
+fn claude_window_totals(caps: &[pool::Cap]) -> Vec<Value> {
+    let routable = caps.iter().filter(|cap| cap.routable).collect::<Vec<_>>();
+    let measured = routable.iter().filter(|cap| cap.calibrated).count();
+    let total = routable.len();
+    let window =
+        |minutes: i64, capacity: fn(&pool::Cap) -> f64, remaining: fn(&pool::Cap) -> f64| {
+            let capacity_nano = routable
+                .iter()
+                .map(|cap| usd_to_nano(capacity(cap)))
+                .sum::<i128>();
+            let remaining_nano = routable
+                .iter()
+                .map(|cap| usd_to_nano(remaining(cap)))
+                .sum::<i128>();
+            json!({
+                "window_minutes": minutes,
+                "capacity_nano": capacity_nano.to_string(),
+                "remaining_nano": remaining_nano.to_string(),
+                "routable_subs": total,
+                "calibrated_subs": measured,
+                "source": if total > 0 && measured == total {
+                    "calibrated_api_equivalent"
+                } else {
+                    "prior_or_calibrated_api_equivalent"
+                },
+                "workload_dependent": true,
+            })
+        };
+    vec![
+        window(300, |cap| cap.cap5h_usd, |cap| cap.rem5h_usd),
+        window(10_080, |cap| cap.cap7d_usd, |cap| cap.rem7d_usd),
+    ]
+}
+
+fn claude_available_nano(caps: &[pool::Cap], value: fn(&pool::Cap) -> f64) -> i128 {
+    caps.iter()
+        .filter(|cap| cap.routable)
+        .map(|cap| usd_to_nano(value(cap)))
+        .sum()
 }
 
 /// Доступная ёмкость пула в USD real-API-эквиваленте на горизонты 1ч/5ч/1д/7д.
@@ -1914,26 +2014,30 @@ fn routable_capacity_summary(caps: &[pool::Cap]) -> ([f64; 4], bool) {
 /// Вычисление ёмкости пула (per-sub + агрегат) — для `/capacity` и TTL-кэша. Синхронно.
 fn capacity_value(app: &AppState) -> serde_json::Value {
     let caps = app.pool.capacity();
+    let now = pool::now();
     let round = |x: f64| (x * 100.0).round() / 100.0;
-    let nano = |x: f64| ((x.max(0.0) * 1e9).round() as i64).to_string();
+    let nano = |x: f64| usd_to_nano(x).to_string();
     // Маскируем email подписки: панельному (read-only) ключу не отдаём реальные адреса пула — это
     // операционно чувствительно (реселлимые Claude-аккаунты; полный email помогает корреляции/бану).
-    let mask_email = |e: &str| -> String {
-        let head: String = e.chars().take(4).collect();
-        format!("{head}…")
-    };
     let ([a1, a5, a1d, a7d], all_calibrated) = routable_capacity_summary(&caps);
+    let available_nano = [
+        claude_available_nano(&caps, |cap| cap.avail_1h_usd),
+        claude_available_nano(&caps, |cap| cap.avail_5h_usd),
+        claude_available_nano(&caps, |cap| cap.avail_1d_usd),
+        claude_available_nano(&caps, |cap| cap.avail_7d_usd),
+    ];
     let subs: Vec<_> = caps
         .iter()
         .map(|c| {
             json!({
-                "email": mask_email(&c.email),
+                "email": mask_claude_email(&c.email),
                 "plan": c.plan,
                 "calibrated": c.calibrated,
                 "routable": c.routable,
                 "util5h": round(c.util5h), "util7d": round(c.util7d),
                 "reset5h_in": c.reset5h_in, "reset7d_in": c.reset7d_in,
                 "cap5h_nano": nano(c.cap5h_usd), "cap7d_nano": nano(c.cap7d_usd),
+                "rem5h_nano": nano(c.rem5h_usd), "rem7d_nano": nano(c.rem7d_usd),
                 "cap5h_usd": round(c.cap5h_usd), "cap7d_usd": round(c.cap7d_usd),
                 "rem5h_usd": round(c.rem5h_usd), "rem7d_usd": round(c.rem7d_usd),
                 "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
@@ -1949,7 +2053,7 @@ fn capacity_value(app: &AppState) -> serde_json::Value {
     let dead_count = caps.iter().filter(|c| c.auth_dead).count();
     let suspect_count = caps.iter().filter(|c| c.auth_state == "suspect").count();
     json!({
-        "now": pool::now(),
+        "now": now,
         "subs": subs.len(),
         "dead": dead_count,             // >0 → есть мёртвые токены (401/403): вне ротации, нужна замена
         "suspect": suspect_count,       // auth падает, под наблюдением (ещё не приговор)
@@ -1957,6 +2061,19 @@ fn capacity_value(app: &AppState) -> serde_json::Value {
         "available_usd": {              // суммарно по флоту, USD real-API-эквивалента
             "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
         },
+        "available_nano": {
+            "next_1h": available_nano[0].to_string(),
+            "next_5h": available_nano[1].to_string(),
+            "next_1d": available_nano[2].to_string(),
+            "next_7d": available_nano[3].to_string(),
+        },
+        "capacity_semantics": {
+            "kind": "calibrated_api_equivalent",
+            "fixed_subscription_nominal": false,
+            "source": "provider_utilization_and_gateway_spend",
+        },
+        "window_totals": claude_window_totals(&caps),
+        "conversion_models": anthropic_conversion_models(now),
         "per_sub": subs,
     })
 }
@@ -2493,7 +2610,6 @@ async fn subs(
     let list: Vec<_> = rows
         .iter()
         .map(|s| {
-            let head: String = s.email.chars().take(4).collect();
             let sub_expire = if s.added_ts > 0 {
                 s.added_ts + lifetime
             } else {
@@ -2501,7 +2617,7 @@ async fn subs(
             };
             let (pk5, pk7) = peak.get(&s.email).copied().unwrap_or((0.0, 0.0));
             json!({
-                "email": format!("{head}…"),
+                "email": mask_claude_email(&s.email),
                 "status": s.status, "fleet": s.fleet, "added": s.added, "has_token": s.has_token,
                 "sub_expire_ts": sub_expire,
                 "sub_days_left": if sub_expire > 0 { days(sub_expire - now) } else { 0.0 },
@@ -2920,9 +3036,50 @@ fn codex_subs_value_with_report(
     })
 }
 
+fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Value> {
+    models
+        .iter()
+        .filter_map(|model| {
+            let prices = metering::gemini_prices_at(&model.id, now)?;
+            let (search_unit, search_nano) = match prices.search {
+                metering::GeminiSearchBilling::PerQuery { nano } => ("query", nano),
+                metering::GeminiSearchBilling::PerGroundedPrompt { nano } => {
+                    ("grounded_prompt", nano)
+                }
+            };
+            Some(json!({
+                "id": model.id,
+                "display_name": model.display_name,
+                "input_token_limit": model.input_token_limit.to_string(),
+                "output_token_limit": model.output_token_limit.to_string(),
+                "quota_model_ids": model.quota_model_ids(),
+                "rates": {
+                    "input_nanousd_per_token": prices.input.to_string(),
+                    "audio_input_nanousd_per_token": prices.audio_input.to_string(),
+                    "cached_input_nanousd_per_token": prices.cached_input.to_string(),
+                    "cached_audio_input_nanousd_per_token": prices.cached_audio_input.to_string(),
+                    "output_nanousd_per_token": prices.output.to_string(),
+                    "image_output_nanousd_per_token": prices.image_output.to_string(),
+                    "long_context_threshold": prices.long_context_threshold.to_string(),
+                    "long_input_nanousd_per_token": prices.long_input.to_string(),
+                    "long_audio_input_nanousd_per_token": prices.long_audio_input.to_string(),
+                    "long_cached_input_nanousd_per_token": prices.long_cached_input.to_string(),
+                    "long_cached_audio_input_nanousd_per_token": prices.long_cached_audio_input.to_string(),
+                    "long_output_nanousd_per_token": prices.long_output.to_string(),
+                },
+                "search": {
+                    "billing_unit": search_unit,
+                    "nanousd_per_unit": search_nano.to_string(),
+                },
+            }))
+        })
+        .collect()
+}
+
 /// Gemini paid-subscription fleet status for the unified panel. This route exists only on the
 /// fixed Gemini runtime and contains opaque profile ids plus sanitized quota/transport metadata;
-/// Google subject, email, project, OAuth and proxy values never enter the response.
+/// Google subject, full email, project, OAuth and proxy values never enter the response. A bounded
+/// four-character local-part hint is included for operator matching, like `/codex-subs`.
 async fn gemini_subs(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -2947,8 +3104,16 @@ async fn gemini_subs(
         .models
         .iter()
         .map(|model| {
+            let quota_model_ids = gemini
+                .config()
+                .models
+                .iter()
+                .find(|configured| configured.id == model.id)
+                .map(|configured| configured.quota_model_ids())
+                .unwrap_or_default();
             json!({
                 "id": model.id,
+                "quota_model_ids": quota_model_ids,
                 "available": model.available,
                 "healthy": model.healthy,
                 "degraded": model.degraded,
@@ -2972,6 +3137,7 @@ async fn gemini_subs(
             "source": "workload_blend",
         },
         "window_totals": window_totals,
+        "conversion_models": gemini_conversion_models(&gemini.config().models, now),
         "models": models,
         "profiles": profiles,
         "transport": {
@@ -3021,6 +3187,7 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
         .map(|profile| {
             json!({
                 "id": profile.id,
+                "email": profile.masked_email,
                 "plan": profile.plan,
                 "authenticated": profile.authenticated,
                 "cooling_until": profile.cooling_until,
@@ -3070,7 +3237,7 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
                 })).collect::<Vec<_>>(),
                 "quotas": profile.quotas.iter().map(|quota| json!({
                     "model_id": quota.model_id,
-                    "remaining_amount": quota.remaining_amount,
+                    "remaining_amount": quota.remaining_amount.map(|value| value.to_string()),
                     "remaining_fraction": quota.remaining_fraction,
                     "reset_time": quota.reset_time,
                     "token_type": quota.token_type,
@@ -3082,22 +3249,29 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
 
 fn gemini_window_total_values(status: &forward::GeminiOperationalStatus) -> Vec<Value> {
     let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
+    let usd = |nano: i128| round(nano as f64 / 1e9);
     gemini_window_totals(status)
         .into_iter()
         .map(|(duration, total)| {
             let measured = total.measured_profiles;
+            let low_complete = measured > 0 && total.low_profiles == measured;
+            let high_complete = measured > 0 && total.high_profiles == measured;
             json!({
                 "window_minutes": duration,
-                "cap_usd": (measured > 0).then(|| round(total.cap_usd)),
-                "remaining_usd": (measured > 0).then(|| round(total.remaining_usd)),
-                "low_usd": (measured > 0 && total.low_profiles == measured)
-                    .then(|| round(total.low_usd)),
-                "high_usd": (measured > 0 && total.high_profiles == measured)
-                    .then(|| round(total.high_usd)),
-                "remaining_low_usd": (measured > 0 && total.low_profiles == measured)
-                    .then(|| round(total.remaining_low_usd)),
-                "remaining_high_usd": (measured > 0 && total.high_profiles == measured)
-                    .then(|| round(total.remaining_high_usd)),
+                "capacity_nano": (measured > 0).then(|| total.capacity_nano.to_string()),
+                "remaining_nano": (measured > 0).then(|| total.remaining_nano.to_string()),
+                "low_nano": low_complete.then(|| total.low_nano.to_string()),
+                "high_nano": high_complete.then(|| total.high_nano.to_string()),
+                "remaining_low_nano": low_complete
+                    .then(|| total.remaining_low_nano.to_string()),
+                "remaining_high_nano": high_complete
+                    .then(|| total.remaining_high_nano.to_string()),
+                "cap_usd": (measured > 0).then(|| usd(total.capacity_nano)),
+                "remaining_usd": (measured > 0).then(|| usd(total.remaining_nano)),
+                "low_usd": low_complete.then(|| usd(total.low_nano)),
+                "high_usd": high_complete.then(|| usd(total.high_nano)),
+                "remaining_low_usd": low_complete.then(|| usd(total.remaining_low_nano)),
+                "remaining_high_usd": high_complete.then(|| usd(total.remaining_high_nano)),
                 "measured_profiles": measured,
                 "observed_profiles": total.observed_profiles,
                 "source": if measured > 0 { "workload_blend" } else { "unknown" },
@@ -3398,6 +3572,7 @@ mod tests {
         forward::GeminiOperationalStatus {
             profiles: vec![forward::GeminiProfileStatus {
                 id: "profile-opaque".to_string(),
+                masked_email: "owne…".to_string(),
                 plan: "google_ai_pro".to_string(),
                 authenticated: true,
                 cooling_until: 0,
@@ -3786,6 +3961,56 @@ mod tests {
     }
 
     #[test]
+    fn claude_conversion_catalogue_publishes_every_metered_token_bucket() {
+        let values = anthropic_conversion_models(1_785_369_601);
+        assert_eq!(values.len(), 5);
+        let opus = values
+            .iter()
+            .find(|value| value["id"] == "claude-opus-4-8")
+            .unwrap();
+        assert_eq!(opus["tiers"][0]["id"], "standard");
+        assert_eq!(opus["tiers"][0]["input_nanousd_per_token"], "5000");
+        assert_eq!(
+            opus["tiers"][0]["cache_write_1h_nanousd_per_token"],
+            "10000"
+        );
+        assert_eq!(opus["tiers"][0]["output_nanousd_per_token"], "25000");
+        assert_eq!(opus["tiers"][1]["id"], "fast");
+        assert_eq!(opus["tiers"][1]["output_nanousd_per_token"], "50000");
+        assert_eq!(opus["web_search_nanousd_per_request"], "10000000");
+    }
+
+    #[test]
+    fn claude_email_hint_never_includes_the_domain_for_a_short_local_part() {
+        assert_eq!(mask_claude_email("a@example.com"), "a…");
+        assert_eq!(mask_claude_email("owner.account@example.com"), "owne…");
+    }
+
+    #[test]
+    fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
+        let spec = metering::gemini_catalog_at(1_785_369_601)
+            .into_iter()
+            .find(|model| model.id == "gemini-3.1-pro-preview")
+            .unwrap();
+        let model = forward::GeminiModel {
+            id: spec.id.into(),
+            display_name: spec.display_name.into(),
+            input_token_limit: spec.input_token_limit,
+            output_token_limit: spec.output_token_limit,
+            prices: spec.prices,
+        };
+        let values = gemini_conversion_models(&[model], 1_785_369_601);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "2000");
+        assert_eq!(values[0]["rates"]["long_output_nanousd_per_token"], "18000");
+        assert_eq!(values[0]["search"]["billing_unit"], "query");
+        assert_eq!(
+            values[0]["quota_model_ids"],
+            json!(["gemini-3.1-pro-low", "gemini-pro-agent"])
+        );
+    }
+
+    #[test]
     fn prometheus_omits_unmeasured_codex_dollar_series() {
         let home = &unknown_codex_status().homes[0];
         let mut body = String::new();
@@ -3804,6 +4029,7 @@ mod tests {
     fn gemini_subscription_contract_keeps_five_hour_and_weekly_unknown_independently() {
         let mut status = unknown_gemini_status();
         let profiles = gemini_profile_values(&status);
+        assert_eq!(profiles[0]["email"], "owne…");
         assert_eq!(profiles[0]["plan"], "google_ai_pro");
         assert_eq!(profiles[0]["windows"][0]["bucket_id"], "gemini-5h");
         assert_eq!(profiles[0]["windows"][1]["bucket_id"], "gemini-weekly");
@@ -3848,6 +4074,8 @@ mod tests {
         assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
         let totals = gemini_window_total_values(&status);
         assert_eq!(totals[0]["measured_profiles"], 1);
+        assert_eq!(totals[0]["capacity_nano"], "36515628714");
+        assert_eq!(totals[0]["remaining_nano"], "27386721535");
         assert_eq!(totals[0]["low_usd"], 20.000244);
         assert_eq!(totals[0]["high_usd"], 81.204167);
         assert_eq!(totals[0]["source"], "workload_blend");
@@ -4433,6 +4661,40 @@ mod tests {
         assert_eq!(
             routable_capacity_summary(&[capacity("dead", 50.0, false, true)]),
             ([0.0; 4], false)
+        );
+    }
+
+    #[test]
+    fn claude_window_totals_publish_integer_money_and_calibration_coverage() {
+        let mut measured = capacity("measured", 12.34, true, true);
+        measured.rem5h_usd = 8.75;
+        measured.rem7d_usd = 7.25;
+        let mut prior = capacity("prior", 3.0, true, false);
+        prior.rem5h_usd = 2.5;
+        prior.rem7d_usd = 2.0;
+        let totals =
+            claude_window_totals(&[measured, prior, capacity("cooling", 50.0, false, true)]);
+        assert_eq!(totals[0]["window_minutes"], 300);
+        assert_eq!(totals[0]["capacity_nano"], "15340000000");
+        assert_eq!(totals[0]["remaining_nano"], "11250000000");
+        assert_eq!(totals[0]["routable_subs"], 2);
+        assert_eq!(totals[0]["calibrated_subs"], 1);
+        assert_eq!(totals[1]["window_minutes"], 10_080);
+        assert_eq!(totals[1]["remaining_nano"], "9250000000");
+    }
+
+    #[test]
+    fn claude_horizon_totals_sum_each_subscription_as_integer_money() {
+        let mut first = capacity("first", 10.0, true, true);
+        first.avail_7d_usd = 1.000_000_000_4;
+        let mut second = capacity("second", 10.0, true, true);
+        second.avail_7d_usd = 2.000_000_000_4;
+        let mut excluded = capacity("cooling", 10.0, false, true);
+        excluded.avail_7d_usd = 100.0;
+
+        assert_eq!(
+            claude_available_nano(&[first, second, excluded], |cap| cap.avail_7d_usd),
+            3_000_000_000
         );
     }
 

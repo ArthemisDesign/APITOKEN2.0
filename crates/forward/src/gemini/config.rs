@@ -114,6 +114,25 @@ impl GeminiModel {
         self.wire_model_id(None)
             .expect("every configured Gemini model must have a reviewed default wire route")
     }
+
+    /// Exact private quota buckets that can serve this public model. Antigravity encodes
+    /// reasoning effort in the bucket id for a few model families, while billing and the public
+    /// API deliberately retain one canonical model id. The control plane publishes this bounded
+    /// mapping so the admin UI can join official quota rows without guessing private aliases.
+    pub fn quota_model_ids(&self) -> Vec<&str> {
+        match self.id.as_str() {
+            "gemini-3.6-flash" => vec![
+                "gemini-3.6-flash-low",
+                "gemini-3.6-flash-medium",
+                "gemini-3.6-flash-high",
+            ],
+            "gemini-3.5-flash" => vec!["gemini-3.5-flash-extra-low", "gemini-3.5-flash-low"],
+            "gemini-3.1-pro-preview" => {
+                vec!["gemini-3.1-pro-low", "gemini-pro-agent"]
+            }
+            _ => vec![self.id.as_str()],
+        }
+    }
 }
 
 /// Product access is intentionally narrower than the global Developer API price catalogue. These

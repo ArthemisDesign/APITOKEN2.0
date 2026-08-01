@@ -92,7 +92,9 @@
   символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy. Окна явно
   публикуют provider measurement resolution, а `plan_cohorts` объединяет только exact paid plan +
   duration в общий native-credit capacity per home/fleet; per-home evidence и workload-dependent
-  API USD не заменяются этим агрегатом.
+  API USD не заменяются этим агрегатом. `/capacity` публикует Claude 5ч/7д и horizon money как
+  decimal nanoUSD strings, per-sub remaining и authoritative Standard/Fast conversion catalogue из
+  `metering`; float USD остаётся только display compatibility.
   `/fleet-history` читает историю metrics.db
   (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
   per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
@@ -108,9 +110,11 @@
   `to` зажимается до now+1); `custom` считается на каждый запрос мимо TTL-кэша, в котором лежат
   только стандартные окна d1/d7/d30. Range-агрегации — через registry `spend_by_*_range`. `/gemini-subs` существует
   только в fixed Gemini runtime, гейтится
-  `readonly_authed` и сериализует opaque ids/quota/cooling, per-model generation health и
-  low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
-  Antigravity version без Google identity, project/proxy/OAuth.
+  `readonly_authed` и сериализует opaque ids, bounded email hint, quota/cooling, per-model
+  generation health и low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
+  Antigravity version без Google subject/full email/domain, project/proxy/OAuth. Ответ также
+  публикует exact nanoUSD fleet totals, paid-tier conversion catalogue из `metering::gemini` и
+  canonical-model → private quota-bucket mapping; отсутствующий provider amount остаётся `null`.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂

@@ -28,6 +28,14 @@ const CACHE_ROOT_MIN_WARM_PROFILES: usize = 2;
 const QUOTA_STEER_FLOOR_USED_PERCENT: i64 = 50;
 const QUOTA_STEER_BUCKET_PERCENT: i64 = 10;
 
+/// Operator-facing account hint for the protected control plane. The full Google identity remains
+/// inside the sealed credential and never reaches status JSON, logs or metrics.
+fn mask_gemini_email(email: &str) -> String {
+    let local = email.split_once('@').map_or(email, |(local, _)| local);
+    let head: String = local.chars().take(4).collect();
+    format!("{head}…")
+}
+
 /// Coarse near-wall quota rank. Lower is preferred; zero deliberately keeps healthy profiles tied
 /// so in-flight load and the rotating cursor can spread ordinary traffic.
 fn quota_rank(remaining_fraction: Option<f64>) -> i64 {
@@ -43,6 +51,8 @@ fn quota_rank(remaining_fraction: Option<f64>) -> i64 {
 #[derive(Clone, Debug)]
 pub struct GeminiProfileStatus {
     pub id: String,
+    /// Privacy-safe operator hint: at most four characters from the email local-part.
+    pub masked_email: String,
     /// Reviewed paid-plan identity from the sealed credential; contains no Google identity.
     pub plan: String,
     pub authenticated: bool,
@@ -141,6 +151,7 @@ pub(crate) struct GeminiProfile {
     source: GeminiProfileSpec,
     fingerprint: [u8; 32],
     id: String,
+    masked_email: String,
     plan: String,
     oauth_kind: OAuthKind,
     credential: tokio::sync::Mutex<GeminiCredential>,
@@ -197,6 +208,7 @@ impl GeminiProfile {
     ) -> anyhow::Result<Self> {
         gemini_credential::validate_profile_id(&loaded.source.id)?;
         let oauth_kind = loaded.credential.oauth_kind()?;
+        let masked_email = mask_gemini_email(&loaded.credential.email);
         let plan = loaded.credential.plan.clone();
         if loaded.credential.proxy.trim().is_empty() && cfg.upstream.starts_with("https://") {
             bail!("Gemini production profile requires a dedicated proxy");
@@ -208,6 +220,7 @@ impl GeminiProfile {
             ProfileTransport::new(cfg, proxy).context("build Gemini OAuth HTTP transport")?;
         Ok(Self {
             id: loaded.source.id.clone(),
+            masked_email,
             plan,
             source: loaded.source,
             fingerprint: loaded.fingerprint,
@@ -824,6 +837,7 @@ impl GeminiProfile {
             .collect();
         GeminiProfileStatus {
             id: self.id.clone(),
+            masked_email: self.masked_email.clone(),
             plan: self.plan.clone(),
             authenticated: self.authenticated.load(Ordering::Acquire),
             cooling_until: self.cooling_until.load(Ordering::Acquire),
@@ -2053,6 +2067,14 @@ mod tests {
             proxy_order_id: 0,
             issued_at: 1,
         }
+    }
+
+    #[test]
+    fn operator_email_hint_never_exposes_the_full_google_identity() {
+        let masked = mask_gemini_email("owner.account@example.com");
+        assert_eq!(masked, "owne…");
+        assert!(!masked.contains('@'));
+        assert!(!masked.contains("example.com"));
     }
 
     fn write_credential(dir: &Path, ring: &CredentialKeyring, id: &str, subject: &str) -> PathBuf {

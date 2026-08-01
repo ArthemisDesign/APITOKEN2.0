@@ -427,7 +427,9 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    строго `<roster>/credentials/<id>.json`; symlink/другой path/duplicate Google subject запрещены.
    Runtime повторно проверяет official OAuth client/token endpoint, exact plan↔tier-label mapping,
    paid-plan allowlist и canonical proxy uniqueness (включая equivalent percent encoding).
-   Tokens/email/project/tier/proxy дешифруются только в память и не попадают в log/metric/response.
+   Tokens/full email/domain/project/tier/proxy дешифруются только в память и не попадают в
+   log/metric/response; protected `/gemini-subs` получает только заранее выведенный bounded hint из
+   четырёх символов local-part.
 2. `GeminiGateway` обслуживается только startup-fixed `ProviderMode::Gemini`. Native allowlist:
    models get/list, generateContent, streamGenerateContent, countTokens. Клиентский `x-goog-api-key`
    (как и x-api-key/Bearer) авторизует наш ключ, но никогда не уходит Google; query `key`/`api_key`,
@@ -498,8 +500,8 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    service floor fail-open до explicit zero. Локальное saturation никогда не становится public
    ошибкой; native RetryInfo остаётся только для реальной provider quota/cooling.
    `/gemini-subs` отделяет quota presence от generation health через failure streak и last
-   success/failure evidence и отдаёт reviewed paid-plan identity без Google subject/email/project
-   или private tier.
+   success/failure evidence, отдаёт reviewed paid-plan identity и bounded email hint (первые четыре
+   символа local-part без домена), но никогда Google subject/full email/project или private tier.
 6. Reserve/mark-delivering/settle durable; до upstream `maxOutputTokens` урезается под полный
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future

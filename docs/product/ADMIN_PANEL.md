@@ -126,3 +126,35 @@ GPT-блок `/subscriptions` — компактная операторская 
   schedules и индивидуальная noisy capacity в основной UI не выводятся;
 - provider placeholder с неположительным окном игнорируется. До появления положительного движения
   quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.
+
+## Claude и Gemini capacity boards
+
+Claude- и Gemini-блоки `/subscriptions` используют ту же компактную операторскую композицию:
+одна строка ёмкости, таблицы токенов/тарифов и аккаунты с quota progress-bar и reset. Старые
+StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране не
+выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
+символа local-part без домена.
+
+Claude строится из `/capacity`:
+
+- `window_totals` и `available_nano` — decimal nanoUSD strings; 5ч/7д strip и token-only capacity
+  считаются через BigInt. `conversion_models` содержит authoritative Standard/Fast ставки metering
+  для input, cache read, cache write 5м/1ч и output плюс отдельный Web Search SKU;
+- строки profitability сортируются по максимальному официальному `$ / 1M токенов`. Это рейтинг
+  выручки на токен при продаже по API-тарифу, а не обещание разной маржи на один и тот же доллар
+  откалиброванной ёмкости;
+- per-sub таблица оставляет только masked email/plan, routing state, окна 5ч/7д и текущий 7д
+  API-dollar remaining. Prior явно помечается и не выдаётся за завершённую калибровку.
+
+Gemini строится из `/gemini-subs` и сохраняет provider-specific семантику:
+
+- workload 5ч/weekly API-$ — realized blend наблюдённой смеси, не фиксированный номинал Google AI
+  подписки. Fleet totals имеют canonical `*_nano` strings; float-поля остаются только display
+  compatibility;
+- `conversion_models` публикует paid-tier ставки для uncached/audio/cached input,
+  output+thinking, image output, long context и Search. Profitability сортируется по токеновому
+  тарифу; Search показывается отдельно, потому что его единица — query или grounded prompt;
+- official quota join использует backend-публикуемый список private quota bucket ids каждой
+  canonical модели. Если Google прислал `remaining_amount`, UI суммирует только эти целые значения.
+  Если опубликована лишь fraction, token amount остаётся `—`: workload-$ никогда не делится на
+  цену токена для выдумывания Gemini capacity.

@@ -13,7 +13,9 @@ vi.mock("next/link", () => ({
 
 import SubsPage from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
+import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
+import { GeminiCapacityBoard } from "./gemini-capacity-board";
 import {
   barFromPercent,
   barFromRemaining,
@@ -340,6 +342,201 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html)).toContain("3,000 credits");
     expect(plain(html)).toContain("1,200 credits");
     expect(plain(html)).toContain("750 credits");
+  });
+
+  it("ClaudeCapacityBoard: показывает токены, тарифный рейтинг, sliders и почту", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          calibrated: true,
+          window_totals: [
+            {
+              window_minutes: 300,
+              capacity_nano: "60000000000",
+              remaining_nano: "45000000000",
+              routable_subs: 1,
+              calibrated_subs: 1,
+            },
+            {
+              window_minutes: 10080,
+              capacity_nano: "200000000000",
+              remaining_nano: "120000000000",
+              routable_subs: 1,
+              calibrated_subs: 1,
+            },
+          ],
+          conversion_models: [
+            {
+              id: "claude-opus-4-8",
+              web_search_nanousd_per_request: "10000000",
+              tiers: [
+                {
+                  id: "standard",
+                  input_nanousd_per_token: "5000",
+                  cache_read_nanousd_per_token: "500",
+                  cache_write_5m_nanousd_per_token: "6250",
+                  cache_write_1h_nanousd_per_token: "10000",
+                  output_nanousd_per_token: "25000",
+                },
+                {
+                  id: "fast",
+                  input_nanousd_per_token: "10000",
+                  cache_read_nanousd_per_token: "1000",
+                  cache_write_5m_nanousd_per_token: "12500",
+                  cache_write_1h_nanousd_per_token: "20000",
+                  output_nanousd_per_token: "50000",
+                },
+              ],
+            },
+          ],
+          per_sub: [
+            {
+              email: "owne…",
+              plan: "max20",
+              routable: true,
+              calibrated: true,
+              auth_state: "healthy",
+              util5h: 0.25,
+              util7d: 0.4,
+              reset5h_in: 600,
+              reset7d_in: 3600,
+              rem7d_nano: "120000000000",
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("Сколько токенов доступно");
+    expect(html).toContain("Выгодность по убыванию");
+    expect(html).toContain("Окна по аккаунтам");
+    expect(html).toContain("owne…");
+    expect(html).not.toContain("owner@example.com");
+    expect(plain(html)).toContain("240M");
+    expect(plain(html)).toContain("$50.00");
+    expect(plain(html)).toContain("40%");
+    expect(plain(html)).toContain("сброс 1ч 0м");
+    expect(html).toContain("provider-quota-meter");
+  });
+
+  it("GeminiCapacityBoard: не выдумывает amount, выводит exact quota, тариф и masked email", () => {
+    const nowMs = 1_800_000_000_000;
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={nowMs}
+        response={{
+          now: nowMs / 1000,
+          available: 1,
+          window_totals: [
+            {
+              window_minutes: 300,
+              capacity_nano: "50000000000",
+              remaining_nano: "30000000000",
+              measured_profiles: 1,
+              observed_profiles: 1,
+            },
+            {
+              window_minutes: 10080,
+              capacity_nano: "200000000000",
+              remaining_nano: "150000000000",
+              measured_profiles: 1,
+              observed_profiles: 1,
+            },
+          ],
+          models: [
+            { id: "gemini-3.1-flash-image", quota_model_ids: ["gemini-3.1-flash-image"] },
+            { id: "gemini-3.6-flash", quota_model_ids: ["gemini-3.6-flash-medium"] },
+          ],
+          conversion_models: [
+            {
+              id: "gemini-3.1-flash-image",
+              quota_model_ids: ["gemini-3.1-flash-image"],
+              rates: {
+                input_nanousd_per_token: "500",
+                audio_input_nanousd_per_token: "500",
+                cached_input_nanousd_per_token: "500",
+                cached_audio_input_nanousd_per_token: "500",
+                output_nanousd_per_token: "3000",
+                image_output_nanousd_per_token: "60000",
+                long_input_nanousd_per_token: "500",
+                long_audio_input_nanousd_per_token: "500",
+                long_cached_input_nanousd_per_token: "500",
+                long_cached_audio_input_nanousd_per_token: "500",
+                long_output_nanousd_per_token: "3000",
+              },
+              search: { billing_unit: "query", nanousd_per_unit: "14000000" },
+            },
+            {
+              id: "gemini-3.6-flash",
+              quota_model_ids: ["gemini-3.6-flash-medium"],
+              rates: {
+                input_nanousd_per_token: "1500",
+                audio_input_nanousd_per_token: "1500",
+                cached_input_nanousd_per_token: "150",
+                cached_audio_input_nanousd_per_token: "150",
+                output_nanousd_per_token: "7500",
+                image_output_nanousd_per_token: "0",
+                long_input_nanousd_per_token: "1500",
+                long_audio_input_nanousd_per_token: "1500",
+                long_cached_input_nanousd_per_token: "150",
+                long_cached_audio_input_nanousd_per_token: "150",
+                long_output_nanousd_per_token: "7500",
+              },
+              search: { billing_unit: "query", nanousd_per_unit: "14000000" },
+            },
+          ],
+          profiles: [
+            {
+              id: "opaque-profile-id",
+              email: "gemi…",
+              plan: "google_ai_pro",
+              authenticated: true,
+              model_cooling: [{ model_id: "gemini-3.1-flash-image", cooling_until: 0 }],
+              quotas: [
+                {
+                  model_id: "gemini-3.1-flash-image",
+                  remaining_amount: "1250000",
+                  remaining_fraction: 0.5,
+                  token_type: "tokens",
+                  reset_time: new Date(nowMs + 3600_000).toISOString(),
+                },
+                {
+                  model_id: "gemini-3.6-flash-medium",
+                  remaining_amount: null,
+                  remaining_fraction: 0.75,
+                  token_type: "antigravity_model",
+                  reset_time: new Date(nowMs + 7200_000).toISOString(),
+                },
+              ],
+              windows: [
+                {
+                  window_kind: "5h",
+                  used_fraction_units: 40_000_000,
+                  remaining_nano: "30000000000",
+                  resets_at: nowMs / 1000 + 600,
+                },
+                {
+                  window_kind: "weekly",
+                  used_fraction_units: 25_000_000,
+                  remaining_nano: "150000000000",
+                  resets_at: nowMs / 1000 + 3600,
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("Доступная квота по моделям");
+    expect(html).toContain("Выгодность по убыванию");
+    expect(html).toContain("gemi…");
+    expect(html).not.toContain("opaque-profile-id");
+    expect(plain(html)).toContain("1.3M");
+    expect(html).toContain("Google даёт только %");
+    expect(plain(html)).toContain("$60.00");
+    const ranking = plain(html).slice(plain(html).indexOf("Выгодность по убыванию"));
+    expect(ranking.indexOf("gemini-3.1-flash-image")).toBeLessThan(ranking.indexOf("gemini-3.6-flash"));
+    expect(plain(html)).toContain("25%");
+    expect(html).toContain("provider-quota-meter");
   });
 
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {
