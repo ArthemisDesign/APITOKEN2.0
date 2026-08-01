@@ -870,6 +870,7 @@ CREATE TABLE IF NOT EXISTS reservation_funding_allocations (
     reserved_nano INTEGER NOT NULL CHECK (reserved_nano >= 0),
     charged_nano INTEGER CHECK (charged_nano IS NULL OR charged_nano >= 0),
     released_nano INTEGER CHECK (released_nano IS NULL OR released_nano >= 0),
+    allocation_order INTEGER CHECK (allocation_order IS NULL OR allocation_order > 0),
     PRIMARY KEY (request_id, bucket_id),
     FOREIGN KEY (request_id, account_id)
         REFERENCES pricing_admission_snapshots(request_id, account_id) ON DELETE CASCADE,
@@ -952,6 +953,13 @@ const SQLITE_ATTRIBUTION_COLUMNS: &[(&str, &str)] = &[
     ("retention_eligible", "INTEGER"),
     ("commission_eligible", "INTEGER"),
     ("snapshot_digest", "TEXT"),
+    ("source_policy_digest", "TEXT"),
+    ("admission_catalog_generation", "INTEGER"),
+    ("admission_catalog_digest", "TEXT"),
+    ("admission_switch_generation", "INTEGER"),
+    ("admission_switch_digest", "TEXT"),
+    ("runtime_manifest_generation", "INTEGER"),
+    ("runtime_manifest_digest", "TEXT"),
 ];
 
 pub fn open(path: &str) -> Result<Connection> {
@@ -1344,6 +1352,30 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
         "TEXT",
     )?;
     ensure_sqlite_column(conn, "account_policy_versions", "account_class", "TEXT")?;
+    for (name, column_type) in [
+        ("source_policy_digest", "TEXT"),
+        ("admission_catalog_generation", "INTEGER"),
+        ("admission_catalog_digest", "TEXT"),
+        ("admission_switch_generation", "INTEGER"),
+        ("admission_switch_digest", "TEXT"),
+        ("runtime_manifest_generation", "INTEGER"),
+        ("runtime_manifest_digest", "TEXT"),
+    ] {
+        ensure_sqlite_column(conn, "pricing_admission_snapshots", name, column_type)?;
+    }
+    ensure_sqlite_column(
+        conn,
+        "reservation_funding_allocations",
+        "allocation_order",
+        "INTEGER",
+    )?;
+    for (name, column_type) in [
+        ("activation_policy_effective_version", "INTEGER"),
+        ("activation_policy_digest", "TEXT"),
+        ("activation_policy_ack_ts", "INTEGER"),
+    ] {
+        ensure_sqlite_column(conn, "api_keys", name, column_type)?;
+    }
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS pricing_catalog_versions_shadow_identity
              ON pricing_catalog_versions(
@@ -1359,7 +1391,10 @@ fn install_pricing_policy_schema(conn: &Connection) -> Result<()> {
                  account_id,effective_version,policy_id,policy_version,source_policy_digest,
                  product_id,account_class,schema_version,catalog_generation,switch_generation,
                  content_digest
-             );",
+             );
+         CREATE UNIQUE INDEX IF NOT EXISTS reservation_funding_allocations_request_order
+             ON reservation_funding_allocations(request_id, allocation_order)
+             WHERE allocation_order IS NOT NULL;",
     )
     .context("install SQLite shadow attribution identity indexes")?;
     install_sqlite_runtime_pin_guards(conn)?;
@@ -4863,6 +4898,26 @@ mod tests {
             ("account_policy_versions", "switch_generation"),
             ("account_policy_versions", "source_policy_digest"),
             ("account_policy_versions", "account_class"),
+            ("pricing_admission_snapshots", "source_policy_digest"),
+            (
+                "pricing_admission_snapshots",
+                "admission_catalog_generation",
+            ),
+            ("pricing_admission_snapshots", "admission_catalog_digest"),
+            ("pricing_admission_snapshots", "admission_switch_generation"),
+            ("pricing_admission_snapshots", "admission_switch_digest"),
+            ("pricing_admission_snapshots", "runtime_manifest_generation"),
+            ("pricing_admission_snapshots", "runtime_manifest_digest"),
+            ("reservation_funding_allocations", "allocation_order"),
+            ("api_keys", "activation_policy_effective_version"),
+            ("api_keys", "activation_policy_digest"),
+            ("api_keys", "activation_policy_ack_ts"),
+            ("billing_settlement_outbox", "source_policy_digest"),
+            ("billing_settlement_outbox", "runtime_manifest_digest"),
+            ("usage_events", "source_policy_digest"),
+            ("usage_events", "runtime_manifest_digest"),
+            ("ledger", "source_policy_digest"),
+            ("ledger", "runtime_manifest_digest"),
         ] {
             let present: bool = c
                 .query_row(

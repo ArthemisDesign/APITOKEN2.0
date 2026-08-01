@@ -32,9 +32,11 @@ const MIGRATION_0013: &str = include_str!("../migrations_pg/0013_gemini_window_c
 const MIGRATION_0014: &str = include_str!("../migrations_pg/0014_gemini_workload_calibration.sql");
 const MIGRATION_0015: &str =
     include_str!("../migrations_pg/0015_codex_fractional_calibration.sql");
+const MIGRATION_0016: &str =
+    include_str!("../migrations_pg/0016_multi_discount_strict_enforcement.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 15;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -53,6 +55,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (13, MIGRATION_0013),
     (14, MIGRATION_0014),
     (15, MIGRATION_0015),
+    (16, MIGRATION_0016),
 ];
 
 #[cfg(test)]
@@ -3324,6 +3327,21 @@ impl PgStore {
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    fn assert_postgres_batch_rejected(client: &mut Client, sql: &str, expected_message: &str) {
+        let error = client
+            .batch_execute(sql)
+            .expect_err("PostgreSQL batch unexpectedly committed");
+        let message = error
+            .as_db_error()
+            .map(|error| error.message())
+            .unwrap_or("non-database PostgreSQL error");
+        assert!(
+            message.contains(expected_message),
+            "unexpected PostgreSQL error: {message}"
+        );
+        let _ = client.batch_execute("ROLLBACK");
+    }
 
     fn legacy_snapshot(
         request_id: &str,
@@ -6987,6 +7005,649 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(bucket_count, 0);
+
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Real PostgreSQL proof that the Stage 9 expansion fences scalar money writers and unsafe
+    /// key/cutover transitions before the policy-aware runtime is activated.
+    #[test]
+    fn postgres_stage9_strict_enforcement_guards() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL Stage 9 strict guards: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE accounts RESTART IDENTITY CASCADE;
+                 TRUNCATE pricing_catalog_versions,provider_switch_versions
+                 RESTART IDENTITY CASCADE;
+                 INSERT INTO accounts(
+                     id,balance_nano,reserved_nano,mult_bp,status,created_ts,created
+                 ) VALUES
+                     ('stage9-strict',1000,0,2000,'active',1,''),
+                     ('stage9-cutover',1000,0,2000,'active',1,'');
+                 INSERT INTO pricing_catalog_versions(
+                     product_id,generation,schema_version,capability_generation,
+                     capability_digest,content_digest,created_ts
+                 ) VALUES('stage9-product',1,1,1,'stage9-capability','stage9-catalog-v1',1);
+                 INSERT INTO pricing_catalog_entries(
+                     product_id,generation,provider_id,canonical_model_id,enabled
+                 ) VALUES('stage9-product',1,'anthropic','claude-stage9',true);
+                 INSERT INTO provider_switch_versions(
+                     generation,schema_version,capability_generation,capability_digest,
+                     content_digest,created_ts
+                 ) VALUES(1,1,1,'stage9-capability','stage9-switch-v1',1);
+                 INSERT INTO provider_switch_entries(
+                     generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+                 ) VALUES(1,'anthropic','segment','stage9-product','b2c',1,true);
+                 INSERT INTO account_policy_versions(
+                     account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                     owner_type,owner_id,account_class,product_id,schema_version,
+                     catalog_generation,switch_generation,content_digest,replacement_locked,created_ts
+                 ) VALUES
+                     (
+                         'stage9-strict',1,'stage9-policy',1,'stage9-source-strict-v1',
+                         'global_b2c','global','b2c','stage9-product',1,1,1,
+                         'stage9-policy-strict-v1',false,1
+                     ),
+                     (
+                         'stage9-cutover',1,'stage9-policy',1,'stage9-source-cutover-v1',
+                         'global_b2c','global','b2c','stage9-product',1,1,1,
+                         'stage9-policy-cutover-v1',false,1
+                     ),
+                     (
+                         'stage9-cutover',2,'stage9-policy',2,'stage9-source-cutover-v2',
+                         'global_b2c','global','b2c','stage9-product',1,1,1,
+                         'stage9-policy-cutover-v2',false,2
+                     );
+                 INSERT INTO account_policy_rules(
+                     account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,track_eligible,retention_eligible,commission_eligible
+                 ) VALUES
+                     (
+                         'stage9-strict',1,'stage9-rule','stage9-rule-strict-v1','provider',
+                         'anthropic',NULL,'track','managed',NULL,10000,true,true,false
+                     ),
+                     (
+                         'stage9-cutover',1,'stage9-rule','stage9-rule-cutover-v1','provider',
+                         'anthropic',NULL,'track','managed',NULL,10000,true,true,false
+                     ),
+                     (
+                         'stage9-cutover',2,'stage9-rule','stage9-rule-cutover-v2','provider',
+                         'anthropic',NULL,'track','managed',NULL,10000,true,true,false
+                     );
+                 INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     (
+                         'stage9-strict-paid','stage9-strict','paid','primary','any',
+                         1000,0,0,1,'active',1,1
+                     ),
+                     (
+                         'stage9-cutover-paid','stage9-cutover','paid','primary','any',
+                         1000,0,0,1,'active',1,1
+                     );
+                 INSERT INTO api_keys(
+                     key,key_id,account_id,status,created_ts,created,
+                     activation_policy_effective_version,activation_policy_digest,
+                     activation_policy_ack_ts
+                 ) VALUES
+                     (
+                         'stage9-strict-key','key_stage9_strict','stage9-strict','active',1,'',
+                         1,'stage9-policy-strict-v1',1
+                     ),
+                     (
+                         'stage9-cutover-key','key_stage9_cutover','stage9-cutover','active',1,'',
+                         NULL,NULL,NULL
+                     );
+                 INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES
+                     (
+                         'stage9-strict','stage9-product','b2c',1,
+                         'strict','strict','verified',1
+                     ),
+                     (
+                         'stage9-cutover','stage9-product','b2c',1,
+                         'shadow','legacy_single','verified',1
+                     );",
+            )
+            .unwrap();
+
+        // Deferred parity allows one atomic policy-aware transaction to move both aggregates.
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 UPDATE accounts SET balance_nano=balance_nano+25
+                 WHERE id='stage9-strict';
+                 UPDATE funding_buckets
+                 SET balance_nano=balance_nano+25,version=version+1
+                 WHERE bucket_id='stage9-strict-paid';
+                 COMMIT;",
+            )
+            .unwrap();
+        let parity: (i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT a.balance_nano,b.balance_nano
+                     FROM accounts a
+                     JOIN funding_buckets b ON b.account_id=a.id
+                     WHERE a.id='stage9-strict'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1))
+        };
+        assert_eq!(parity, (1025, 1025));
+
+        assert_postgres_batch_rejected(
+            &mut pg.client,
+            "BEGIN;
+             UPDATE funding_buckets SET balance_nano=balance_nano+1
+             WHERE bucket_id='stage9-strict-paid';
+             COMMIT;",
+            "strict funding buckets do not match account aggregates",
+        );
+        let bucket_balance: i64 = pg
+            .client
+            .query_one(
+                "SELECT balance_nano FROM funding_buckets
+                 WHERE bucket_id='stage9-strict-paid'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(bucket_balance, 1025);
+
+        // The old scalar top-up cannot commit against a strict funding binding.
+        assert!(pg
+            .account_topup("stage9-strict", 1, Some("stage9-scalar-topup"))
+            .is_err());
+        let scalar_topup_state: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT
+                         (SELECT balance_nano FROM accounts WHERE id='stage9-strict'),
+                         (SELECT balance_nano FROM funding_buckets
+                          WHERE bucket_id='stage9-strict-paid'),
+                         (SELECT COUNT(*)::bigint FROM ledger
+                          WHERE ref='stage9-scalar-topup')",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(scalar_topup_state, (1025, 1025, 0));
+
+        let owner = pg.claim_instance("stage9-guard-engine", 600).unwrap();
+        let scalar_snapshot = legacy_snapshot("stage9-scalar-reserve", "stage9-strict", 100, 20);
+        assert!(
+            pg.reserve_request_with_legacy_snapshot(
+                &owner,
+                "stage9-strict-key",
+                60,
+                &scalar_snapshot,
+            )
+            .is_err()
+        );
+        let scalar_reserve_state: (i64, i64, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT
+                         (SELECT balance_nano FROM accounts WHERE id='stage9-strict'),
+                         (SELECT reserved_nano FROM accounts WHERE id='stage9-strict'),
+                         (SELECT reserved_nano FROM api_keys WHERE key='stage9-strict-key'),
+                         (SELECT COUNT(*)::bigint FROM reservations
+                          WHERE request_id='stage9-scalar-reserve'),
+                         (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots
+                          WHERE request_id='stage9-scalar-reserve')",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+        };
+        assert_eq!(scalar_reserve_state, (1025, 0, 0, 0, 0));
+
+        // Seed a valid strict reservation atomically, then prove the scalar settlement path cannot
+        // move aggregate money without terminalizing the exact source-bucket allocation.
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 UPDATE accounts
+                 SET balance_nano=balance_nano-100,reserved_nano=reserved_nano+100
+                 WHERE id='stage9-strict';
+                 UPDATE api_keys SET reserved_nano=reserved_nano+100
+                 WHERE key='stage9-strict-key';
+                 UPDATE funding_buckets
+                 SET balance_nano=balance_nano-100,reserved_nano=reserved_nano+100,
+                     version=version+1
+                 WHERE bucket_id='stage9-strict-paid';
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'stage9-strict-request','stage9-strict','stage9-strict-key',100,925,
+                     'stage9-guard-engine',1,9999999999,'reserved',1,1
+                 );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,product_id,
+                     account_class,requested_model_id,canonical_model_id,alias_generation,
+                     rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,policy_id,policy_version,effective_policy_version,
+                     policy_digest,catalog_generation,switch_generation,tariff_schedule_id,
+                     tariff_priced_ts,admission_ts,official_hold_nano,charged_hold_nano,
+                     track_eligible,retention_eligible,commission_eligible,premium_modifiers,
+                     snapshot_digest,source_policy_digest,admission_catalog_generation,
+                     admission_catalog_digest,admission_switch_generation,
+                     admission_switch_digest,runtime_manifest_generation,runtime_manifest_digest
+                 ) VALUES(
+                     'stage9-strict-request','stage9-strict','policy_v1',1,'anthropic',
+                     'stage9-product','b2c','claude-stage9','claude-stage9',1,
+                     'stage9-rule','stage9-rule-strict-v1','provider','track','managed',NULL,
+                     10000,'stage9-policy',1,1,'stage9-policy-strict-v1',1,1,
+                     'stage9-tariff-v1',1,1,100,100,true,true,false,'{}'::jsonb,
+                     'stage9-snapshot-v1','stage9-source-strict-v1',1,'stage9-catalog-v1',
+                     1,'stage9-switch-v1',1,'stage9-runtime-v1'
+                 );
+                 INSERT INTO reservation_funding_allocations(
+                     request_id,account_id,bucket_id,bucket_version,reserved_nano,
+                     charged_nano,released_nano,allocation_order
+                 )
+                 SELECT
+                     'stage9-strict-request','stage9-strict',bucket_id,version,100,NULL,NULL,1
+                 FROM funding_buckets WHERE bucket_id='stage9-strict-paid';
+                 COMMIT;",
+            )
+            .unwrap();
+        assert!(pg
+            .settle_request(
+                "stage9-strict-request",
+                60,
+                Some("stage9-scalar-settle"),
+                None
+            )
+            .is_err());
+        let scalar_settlement_state: (i64, i64, i64, i64, i64, String, Option<i64>, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT
+                         a.balance_nano,a.reserved_nano,
+                         b.balance_nano,b.reserved_nano,
+                         k.reserved_nano,r.state,r.actual_nano,
+                         (SELECT COUNT(*)::bigint FROM ledger
+                          WHERE request_id='stage9-strict-request')
+                     FROM accounts a
+                     JOIN funding_buckets b ON b.account_id=a.id
+                     JOIN api_keys k ON k.account_id=a.id
+                     JOIN reservations r ON r.account_id=a.id
+                     WHERE a.id='stage9-strict'
+                       AND b.bucket_id='stage9-strict-paid'
+                       AND k.key='stage9-strict-key'
+                       AND r.request_id='stage9-strict-request'",
+                    &[],
+                )
+                .unwrap();
+            (
+                row.get(0),
+                row.get(1),
+                row.get(2),
+                row.get(3),
+                row.get(4),
+                row.get(5),
+                row.get(6),
+                row.get(7),
+            )
+        };
+        assert_eq!(
+            scalar_settlement_state,
+            (
+                925,
+                100,
+                925,
+                100,
+                100,
+                "settlement_pending".into(),
+                Some(60),
+                0,
+            )
+        );
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 UPDATE accounts
+                 SET balance_nano=balance_nano+40,reserved_nano=reserved_nano-100,
+                     spent_nano=spent_nano+60
+                 WHERE id='stage9-strict';
+                 UPDATE api_keys
+                 SET reserved_nano=reserved_nano-100,spent_nano=spent_nano+60
+                 WHERE key='stage9-strict-key';
+                 UPDATE funding_buckets
+                 SET balance_nano=balance_nano+40,reserved_nano=reserved_nano-100,
+                     spent_nano=spent_nano+60,version=version+1
+                 WHERE bucket_id='stage9-strict-paid';
+                 UPDATE reservation_funding_allocations
+                 SET charged_nano=60,released_nano=40
+                 WHERE request_id='stage9-strict-request';
+                 UPDATE reservations
+                 SET state='settled',actual_nano=60,settled_ts=2,updated_ts=2
+                 WHERE request_id='stage9-strict-request';
+                 UPDATE settlement_outbox
+                 SET state='done',committed_ts=2,updated_ts=2,
+                     source_policy_digest='stage9-source-strict-v1',
+                     admission_catalog_generation=1,
+                     admission_catalog_digest='stage9-catalog-v1',
+                     admission_switch_generation=1,
+                     admission_switch_digest='stage9-switch-v1',
+                     runtime_manifest_generation=1,
+                     runtime_manifest_digest='stage9-runtime-v1'
+                 WHERE request_id='stage9-strict-request';
+                 INSERT INTO ledger(
+                     account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,
+                     source_policy_digest,admission_catalog_generation,
+                     admission_catalog_digest,admission_switch_generation,
+                     admission_switch_digest,runtime_manifest_generation,
+                     runtime_manifest_digest
+                 ) VALUES(
+                     'stage9-strict','stage9-strict-key','charge','stage9-strict-request',60,
+                     'stage9-policy-settle',965,2,'stage9-source-strict-v1',1,
+                     'stage9-catalog-v1',1,'stage9-switch-v1',1,'stage9-runtime-v1'
+                 );
+                 COMMIT;",
+            )
+            .unwrap();
+        let policy_settlement_state: (i64, i64, i64, i64, i64, i64, i64, String) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT
+                         a.balance_nano,a.reserved_nano,
+                         b.balance_nano,b.reserved_nano,
+                         allocation.charged_nano,allocation.released_nano,
+                         (SELECT COUNT(*)::bigint FROM ledger
+                          WHERE request_id='stage9-strict-request'),
+                         reservation.state
+                     FROM accounts a
+                     JOIN funding_buckets b ON b.account_id=a.id
+                     JOIN reservations reservation ON reservation.account_id=a.id
+                     JOIN reservation_funding_allocations allocation
+                       ON allocation.request_id=reservation.request_id
+                     WHERE a.id='stage9-strict'
+                       AND b.bucket_id='stage9-strict-paid'
+                       AND reservation.request_id='stage9-strict-request'",
+                    &[],
+                )
+                .unwrap();
+            (
+                row.get(0),
+                row.get(1),
+                row.get(2),
+                row.get(3),
+                row.get(4),
+                row.get(5),
+                row.get(6),
+                row.get(7),
+            )
+        };
+        assert_eq!(
+            policy_settlement_state,
+            (965, 0, 965, 0, 60, 40, 1, "settled".into())
+        );
+
+        // First strict cutover fails with an unstamped active key.
+        let cutover_error = pg
+            .client
+            .execute(
+                "UPDATE account_policy_bindings
+                 SET policy_enforcement='strict',funding_enforcement='strict',updated_ts=2
+                 WHERE account_id='stage9-cutover'",
+                &[],
+            )
+            .expect_err("unstamped key unexpectedly allowed strict cutover");
+        assert_eq!(
+            cutover_error.as_db_error().unwrap().message(),
+            "strict binding activation requires every active key to carry the exact policy ACK"
+        );
+        pg.client
+            .execute(
+                "UPDATE api_keys
+                 SET activation_policy_effective_version=1,
+                     activation_policy_digest='stage9-policy-cutover-v1',
+                     activation_policy_ack_ts=1
+                 WHERE key='stage9-cutover-key'",
+                &[],
+            )
+            .unwrap();
+
+        // Even with keys stamped, an active legacy reservation must drain before strict cutover.
+        pg.client
+            .batch_execute(
+                "INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'stage9-cutover-legacy','stage9-cutover','stage9-cutover-key',10,990,
+                     'stage9-guard-engine',1,9999999999,'reserved',1,1
+                 );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,
+                     requested_model_id,canonical_model_id,alias_generation,pricing_mode,
+                     rule_origin,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+                     admission_ts,official_hold_nano,charged_hold_nano,premium_modifiers,
+                     snapshot_digest
+                 ) VALUES(
+                     'stage9-cutover-legacy','stage9-cutover','legacy_scalar',1,'anthropic',
+                     'claude-stage9','claude-stage9',1,'legacy_scalar','legacy',2000,
+                     'stage9-tariff-v1',1,1,50,10,'{}'::jsonb,'stage9-legacy-snapshot'
+                 );",
+            )
+            .unwrap();
+        let legacy_error = pg
+            .client
+            .execute(
+                "UPDATE account_policy_bindings
+                 SET policy_enforcement='strict',funding_enforcement='strict',updated_ts=3
+                 WHERE account_id='stage9-cutover'",
+                &[],
+            )
+            .expect_err("legacy reservation unexpectedly allowed strict cutover");
+        assert_eq!(
+            legacy_error.as_db_error().unwrap().message(),
+            "strict binding activation requires legacy reservations to drain"
+        );
+        pg.client
+            .execute(
+                "DELETE FROM reservations WHERE request_id='stage9-cutover-legacy'",
+                &[],
+            )
+            .unwrap();
+
+        // A dormant policy snapshot is not enough: cutover also verifies its exact allocation.
+        pg.client
+            .batch_execute(
+                "INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'stage9-cutover-incomplete','stage9-cutover','stage9-cutover-key',10,990,
+                     'stage9-guard-engine',1,9999999999,'reserved',1,1
+                 );
+                 INSERT INTO pricing_admission_snapshots(
+                     request_id,account_id,snapshot_kind,schema_version,provider_id,product_id,
+                     account_class,requested_model_id,canonical_model_id,alias_generation,
+                     rule_id,rule_digest,rule_scope,pricing_mode,rule_origin,discount_bps,
+                     payable_multiplier_bp,policy_id,policy_version,effective_policy_version,
+                     policy_digest,catalog_generation,switch_generation,tariff_schedule_id,
+                     tariff_priced_ts,admission_ts,official_hold_nano,charged_hold_nano,
+                     track_eligible,retention_eligible,commission_eligible,premium_modifiers,
+                     snapshot_digest,source_policy_digest,admission_catalog_generation,
+                     admission_catalog_digest,admission_switch_generation,
+                     admission_switch_digest,runtime_manifest_generation,runtime_manifest_digest
+                 ) VALUES(
+                     'stage9-cutover-incomplete','stage9-cutover','policy_v1',1,'anthropic',
+                     'stage9-product','b2c','claude-stage9','claude-stage9',1,
+                     'stage9-rule','stage9-rule-cutover-v1','provider','track','managed',NULL,
+                     10000,'stage9-policy',1,1,'stage9-policy-cutover-v1',1,1,
+                     'stage9-tariff-v1',1,1,50,10,true,true,false,'{}'::jsonb,
+                     'stage9-incomplete-snapshot','stage9-source-cutover-v1',1,
+                     'stage9-catalog-v1',1,'stage9-switch-v1',1,'stage9-runtime-v1'
+                 );",
+            )
+            .unwrap();
+        let incomplete_error = pg
+            .client
+            .execute(
+                "UPDATE account_policy_bindings
+                 SET policy_enforcement='strict',funding_enforcement='strict',updated_ts=4
+                 WHERE account_id='stage9-cutover'",
+                &[],
+            )
+            .expect_err("incomplete policy allocation unexpectedly allowed strict cutover");
+        assert_eq!(
+            incomplete_error.as_db_error().unwrap().message(),
+            "strict reservation funding allocation is incomplete or ineligible"
+        );
+        pg.client
+            .execute(
+                "DELETE FROM reservations WHERE request_id='stage9-cutover-incomplete'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE account_policy_bindings
+                     SET policy_enforcement='strict',funding_enforcement='strict',updated_ts=5
+                     WHERE account_id='stage9-cutover'",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+
+        // New issue/reactivation requires the exact active policy ACK.
+        assert!(pg
+            .key_issue("stage9-unstamped-key", "stage9-cutover", None)
+            .is_err());
+        let unstamped_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM api_keys WHERE key='stage9-unstamped-key'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(unstamped_count, 0);
+        pg.client
+            .execute(
+                "INSERT INTO api_keys(key,key_id,account_id,status,created_ts,created)
+                 VALUES(
+                     'stage9-reactivate-key','key_stage9_reactivate','stage9-cutover',
+                     'inactive',1,''
+                 )",
+                &[],
+            )
+            .unwrap();
+        let wrong_ack = pg
+            .client
+            .execute(
+                "UPDATE api_keys
+                 SET status='active',activation_policy_effective_version=1,
+                     activation_policy_digest='wrong-policy-digest',activation_policy_ack_ts=1
+                 WHERE key='stage9-reactivate-key'",
+                &[],
+            )
+            .expect_err("wrong policy ACK unexpectedly activated a strict key");
+        assert_eq!(
+            wrong_ack.as_db_error().unwrap().message(),
+            "strict key activation requires the exact active policy ACK"
+        );
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE api_keys
+                     SET status='active',activation_policy_effective_version=1,
+                         activation_policy_digest='stage9-policy-cutover-v1',
+                         activation_policy_ack_ts=1
+                     WHERE key='stage9-reactivate-key'",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+
+        // Strict-to-strict policy replacement leaves already-active keys usable, while their next
+        // activation must acknowledge the new exact policy.
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE account_policy_bindings
+                     SET active_effective_version=2,updated_ts=6
+                     WHERE account_id='stage9-cutover'",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+        pg.client
+            .execute(
+                "UPDATE api_keys SET status='inactive' WHERE key='stage9-reactivate-key'",
+                &[],
+            )
+            .unwrap();
+        let stale_ack = pg
+            .client
+            .execute(
+                "UPDATE api_keys SET status='active' WHERE key='stage9-reactivate-key'",
+                &[],
+            )
+            .expect_err("stale policy ACK unexpectedly reactivated a strict key");
+        assert_eq!(
+            stale_ack.as_db_error().unwrap().message(),
+            "strict key activation requires the exact active policy ACK"
+        );
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE api_keys
+                     SET status='active',activation_policy_effective_version=2,
+                         activation_policy_digest='stage9-policy-cutover-v2',
+                         activation_policy_ack_ts=2
+                     WHERE key='stage9-reactivate-key'",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
 
         pg.client
             .query_one(
