@@ -1775,7 +1775,7 @@ async fn prepare_gemini_account(
         return;
     }
     let fixed_proxy = !gemini_job_accepts_proxy_input(store, &expected_job, effective_order);
-    let effective_proxy = match gemini_oauth::probe_proxy(effective_proxy).await {
+    let effective_proxy = match gemini_oauth::probe_proxy(effective_proxy, chat).await {
         Ok(proxy) => proxy,
         Err(error) => {
             let (retry_proxy, retry_order) = if fixed_proxy {

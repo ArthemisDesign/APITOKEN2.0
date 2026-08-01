@@ -435,7 +435,8 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
    group и может restart-нуться только до upstream headers. Outbound frames, inbound NDJSON/base64
    staging, OAuth response collections и short-lived header/form strings zeroized. Loopback mocks
-   остаются на `wreq`.
+   остаются на `wreq`. Helper различает bounded transport-классы `timeout`/`proxy`/`tls`/`network`;
+   runtime сводит proxy/TLS к существующей network policy, не принимая их за IPC protocol corruption.
 4. Профиль владеет отдельным transport/proxy/inflight/cooling/auth и single-flight token refresh.
    Первый 401 → один refresh+retry того же profile; повторный 401/403 → auth quarantine. 429 →
    model-specific profile cooling по Retry-After/RetryInfo/quota reset и ротация без

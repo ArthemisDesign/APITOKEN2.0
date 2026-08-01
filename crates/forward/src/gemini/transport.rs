@@ -868,12 +868,8 @@ async fn dispatch_frame(
             }
         }
         "error" => {
-            let error = match value.error_kind.as_deref() {
-                Some("timeout") => TransportError::Timeout,
-                Some("network") => TransportError::Network,
-                Some("protocol") => TransportError::Protocol,
-                _ => return Err(TransportError::Protocol),
-            };
+            let error =
+                helper_error_kind(value.error_kind.as_deref()).ok_or(TransportError::Protocol)?;
             let mut request = shared
                 .pending
                 .lock()
@@ -889,6 +885,15 @@ async fn dispatch_frame(
         _ => return Err(TransportError::Protocol),
     }
     Ok(())
+}
+
+fn helper_error_kind(kind: Option<&str>) -> Option<TransportError> {
+    match kind {
+        Some("timeout") => Some(TransportError::Timeout),
+        Some("proxy" | "tls" | "network") => Some(TransportError::Network),
+        Some("protocol") => Some(TransportError::Protocol),
+        _ => None,
+    }
 }
 
 async fn read_bounded_line<R>(reader: &mut R, line: &mut Vec<u8>) -> Result<bool, TransportError>
@@ -1128,5 +1133,22 @@ mod tests {
         }
         assert!(HELPER_SOURCE.contains("tls.connect"));
         assert!(HELPER_SOURCE.contains("gzip, deflate, br"));
+    }
+
+    #[test]
+    fn helper_proxy_and_tls_failures_keep_runtime_network_policy() {
+        assert_eq!(
+            helper_error_kind(Some("timeout")),
+            Some(TransportError::Timeout)
+        );
+        for kind in ["proxy", "tls", "network"] {
+            assert_eq!(helper_error_kind(Some(kind)), Some(TransportError::Network));
+        }
+        assert_eq!(
+            helper_error_kind(Some("protocol")),
+            Some(TransportError::Protocol)
+        );
+        assert_eq!(helper_error_kind(Some("secret detail")), None);
+        assert_eq!(helper_error_kind(None), None);
     }
 }

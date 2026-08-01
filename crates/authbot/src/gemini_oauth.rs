@@ -48,6 +48,9 @@ const ANTIGRAVITY_CLIENT_SECRET: &str = gemini_credential::ANTIGRAVITY_OAUTH_CLI
 const ANTIGRAVITY_REDIRECT_URI: &str = gemini_credential::ANTIGRAVITY_REDIRECT_URI;
 const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
+const PROXY_PROBE_ATTEMPTS: usize = 3;
+const PROXY_PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const PROXY_PROBE_RETRY_DELAY: Duration = Duration::from_millis(300);
 
 const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
 
@@ -345,16 +348,59 @@ impl ProxyProbeError {
             Self::Transport(kind) => kind,
         }
     }
+
+    fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Transport("timeout" | "proxy" | "tls" | "network")
+        )
+    }
 }
 
 /// Verify the exact server-side egress before the seller creates an account or spends a one-use
 /// Google authorization code. Any HTTP response proves that CONNECT/TLS to the token endpoint
-/// works; response semantics are intentionally irrelevant to this credential-free GET probe.
-pub(crate) async fn probe_proxy(proxy: &str) -> Result<String, ProxyProbeError> {
+/// works; response semantics are intentionally irrelevant to this credential-free GET probe. Each
+/// transient attempt owns a fresh helper so a poisoned CONNECT socket cannot reject a valid proxy.
+pub(crate) async fn probe_proxy(proxy: &str, chat_id: i64) -> Result<String, ProxyProbeError> {
     let proxy = normalize_proxy_url(proxy).map_err(|_| ProxyProbeError::Invalid)?;
-    let mut client = GeminiHttpClient::connect(&proxy).await.map_err(|error| {
-        ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
-    })?;
+    for attempt in 1..=PROXY_PROBE_ATTEMPTS {
+        let result = tokio::time::timeout(PROXY_PROBE_ATTEMPT_TIMEOUT, probe_proxy_once(&proxy))
+            .await
+            .unwrap_or(Err(ProxyProbeError::Transport("timeout")));
+        match result {
+            Ok(()) => {
+                if attempt > 1 {
+                    eprintln!(
+                        "[gemini-oauth] chat={} proxy preflight recovered on attempt {}/{}",
+                        chat_id, attempt, PROXY_PROBE_ATTEMPTS
+                    );
+                }
+                return Ok(proxy);
+            }
+            Err(error) => {
+                eprintln!(
+                    "[gemini-oauth] chat={} proxy preflight attempt {}/{} failed: {}",
+                    chat_id,
+                    attempt,
+                    PROXY_PROBE_ATTEMPTS,
+                    error.diagnostic_kind(),
+                );
+                if attempt == PROXY_PROBE_ATTEMPTS || !error.retryable() {
+                    return Err(error);
+                }
+                tokio::time::sleep(PROXY_PROBE_RETRY_DELAY).await;
+            }
+        }
+    }
+    unreachable!("bounded Gemini proxy probe loop always returns")
+}
+
+async fn probe_proxy_once(proxy: &str) -> Result<(), ProxyProbeError> {
+    let mut client = GeminiHttpClient::connect_for_probe(proxy)
+        .await
+        .map_err(|error| {
+            ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
+        })?;
     client
         .request(
             GeminiHttpMethod::Get,
@@ -366,7 +412,7 @@ pub(crate) async fn probe_proxy(proxy: &str) -> Result<String, ProxyProbeError> 
         .map_err(|error| {
             ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
         })?;
-    Ok(proxy)
+    Ok(())
 }
 
 fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
@@ -1878,6 +1924,21 @@ mod tests {
                 normalize_proxy_url(invalid).is_err(),
                 "accepted {invalid:?}"
             );
+        }
+    }
+
+    #[test]
+    fn proxy_probe_retries_only_transient_egress_failures() {
+        for kind in ["timeout", "proxy", "tls", "network"] {
+            assert!(ProxyProbeError::Transport(kind).retryable(), "kind={kind}");
+        }
+        for error in [
+            ProxyProbeError::Invalid,
+            ProxyProbeError::Transport("protocol"),
+            ProxyProbeError::Transport("helper"),
+            ProxyProbeError::Transport("startup_or_ipc"),
+        ] {
+            assert!(!error.retryable(), "error={error:?}");
         }
     }
 

@@ -118,9 +118,10 @@ seller lock освобождается, response становится `cancelled
 7. После неуспешного OAuth retry сохраняет владельца egress: buyer/IPRoyal proxy остаётся
    закреплённым за позицией, а seller-proxy очищается и следующее сообщение продавца действительно
    заменяет его. До инструкции по созданию аккаунта exact Node transport делает credential-free
-   preflight к Google token endpoint: нерабочий прокси отклоняется до выдачи одноразового кода.
-   Transport-журнал содержит только bounded-класс (`timeout`, `network`, `protocol`), никогда не
-   URL/credentials прокси.
+   preflight к Google token endpoint: transient `timeout`/`proxy`/`tls`/`network` получает до трёх
+   независимых helper-попыток в общем bounded-окне около 30 секунд, а protocol/helper/startup failure
+   завершается сразу. Только после исчерпания попыток прокси отклоняется до выдачи одноразового кода.
+   Transport-журнал содержит только номер попытки и bounded-класс, никогда не URL/credentials прокси.
 **Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
 `authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
 

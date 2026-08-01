@@ -20,11 +20,18 @@ const PROTOCOL: u8 = 1;
 const MAX_LINE_BYTES: usize = 48 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const OAUTH_CONNECT_TIMEOUT_MS: u64 = 30_000;
+const OAUTH_READ_TIMEOUT_MS: u64 = 90_000;
+const PROBE_CONNECT_TIMEOUT_MS: u64 = 8_000;
+const PROBE_READ_TIMEOUT_MS: u64 = 8_000;
+const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const HELPER_SOURCE: &str = include_str!("../../forward/src/gemini/node_transport.cjs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequestFailureKind {
     Timeout,
+    Proxy,
+    Tls,
     Network,
     Protocol,
     Helper,
@@ -34,6 +41,8 @@ impl RequestFailureKind {
     fn from_helper(kind: Option<&str>) -> Self {
         match kind {
             Some("timeout") => Self::Timeout,
+            Some("proxy") => Self::Proxy,
+            Some("tls") => Self::Tls,
             Some("network") => Self::Network,
             Some("protocol") => Self::Protocol,
             _ => Self::Helper,
@@ -43,6 +52,8 @@ impl RequestFailureKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::Timeout => "timeout",
+            Self::Proxy => "proxy",
+            Self::Tls => "tls",
             Self::Network => "network",
             Self::Protocol => "protocol",
             Self::Helper => "helper",
@@ -95,6 +106,7 @@ pub struct Client {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    request_timeout: Duration,
 }
 
 #[derive(Serialize)]
@@ -149,6 +161,32 @@ struct InboundFrame {
 
 impl Client {
     pub async fn connect(proxy: &str) -> anyhow::Result<Self> {
+        Self::connect_with_timeouts(
+            proxy,
+            OAUTH_CONNECT_TIMEOUT_MS,
+            OAUTH_READ_TIMEOUT_MS,
+            REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Start an independent helper with short bounds suitable for a credential-free egress probe.
+    pub async fn connect_for_probe(proxy: &str) -> anyhow::Result<Self> {
+        Self::connect_with_timeouts(
+            proxy,
+            PROBE_CONNECT_TIMEOUT_MS,
+            PROBE_READ_TIMEOUT_MS,
+            PROBE_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn connect_with_timeouts(
+        proxy: &str,
+        connect_timeout_ms: u64,
+        read_timeout_ms: u64,
+        request_timeout: Duration,
+    ) -> anyhow::Result<Self> {
         attest_node_binary()?;
         let mut child = Command::new(gemini_credential::GEMINI_NODE_BINARY)
             .arg("--expose-internals")
@@ -174,17 +212,22 @@ impl Client {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
+            request_timeout,
         };
         client
             .write_frame(&ConfigureFrame {
                 r#type: "configure",
                 protocol: PROTOCOL,
                 proxy,
-                connect_timeout_ms: 30_000,
-                read_timeout_ms: 90_000,
+                connect_timeout_ms,
+                read_timeout_ms,
             })
             .await?;
-        let ready = tokio::time::timeout(Duration::from_secs(30), client.read_frame()).await??;
+        let ready = tokio::time::timeout(
+            Duration::from_millis(connect_timeout_ms),
+            client.read_frame(),
+        )
+        .await??;
         if ready.frame_type != "ready"
             || ready.protocol != Some(PROTOCOL)
             || ready.node.as_deref() != Some(gemini_credential::GEMINI_NODE_VERSION)
@@ -244,13 +287,16 @@ impl Client {
 
         let mut status = None;
         let mut response_body = Zeroizing::new(Vec::new());
-        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                anyhow::bail!("Gemini OAuth Node request timed out");
+                return Err(RequestFailure(RequestFailureKind::Timeout).into());
             }
-            let frame = tokio::time::timeout(remaining, self.read_frame()).await??;
+            let frame = match tokio::time::timeout(remaining, self.read_frame()).await {
+                Ok(frame) => frame?,
+                Err(_) => return Err(RequestFailure(RequestFailureKind::Timeout).into()),
+            };
             if frame.id != Some(id) {
                 anyhow::bail!("Gemini OAuth Node returned an unexpected request id");
             }
@@ -367,6 +413,8 @@ mod tests {
     fn helper_failures_become_bounded_secret_free_diagnostics() {
         for (input, expected) in [
             (Some("timeout"), "timeout"),
+            (Some("proxy"), "proxy"),
+            (Some("tls"), "tls"),
             (Some("network"), "network"),
             (Some("protocol"), "protocol"),
             (Some("proxy-password"), "helper"),

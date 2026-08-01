@@ -44,6 +44,14 @@ function fail(id, kind) {
   emit({type: 'error', id, kind});
 }
 
+function requestFailureKind(error) {
+  const message = error && typeof error.message === 'string' ? error.message : '';
+  if (message === 'timeout') return 'timeout';
+  if (message === 'proxy') return 'proxy';
+  if (message === 'tls') return 'tls';
+  return 'network';
+}
+
 function boundedInteger(value, minimum, maximum) {
   return Number.isInteger(value) && value >= minimum && value <= maximum;
 }
@@ -335,7 +343,7 @@ function startRequest(frame) {
     request.setTimeout(readTimeoutMs, () => request.destroy(new Error('timeout')));
     request.once('error', error => {
       if (!active.delete(id)) return;
-      fail(id, error && error.message === 'timeout' ? 'timeout' : 'network');
+      fail(id, requestFailureKind(error));
     });
     request.end(body.length ? body : undefined);
   } catch (_) {
@@ -352,7 +360,7 @@ lines.on('line', line => {
   if (!configured) {
     if (!frame || frame.type !== 'configure' || frame.protocol !== PROTOCOL ||
         !boundedInteger(frame.connectTimeoutMs, 1000, 120000) ||
-        !boundedInteger(frame.readTimeoutMs, 15000, 600000)) process.exit(70);
+        !boundedInteger(frame.readTimeoutMs, 1000, 600000)) process.exit(70);
     try {
       proxyAgent = frame.proxy ? new GeminiProxyAgent(frame.proxy) : undefined;
       if (frame.proxy) {
