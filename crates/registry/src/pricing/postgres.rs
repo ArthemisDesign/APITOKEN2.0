@@ -3243,14 +3243,15 @@ mod tests {
                 ReconciliationState::Verified,
             ),
         );
-        assert!(matches!(
-            postgres_activate_account_policy(
+        // Strict is now a valid dormant binding, but it cannot activate before the exact
+        // catalog and switch dependencies are active.
+        assert!(is_missing(
+            &postgres_activate_account_policy(
                 &mut client,
                 &strict,
                 &PolicyActiveExpectation::Inactive(inactive.clone())
             )
-            .unwrap(),
-            PricingMutation::Rejected(PricingRejection::Invalid { .. })
+            .unwrap()
         ));
         assert!(is_missing(
             &postgres_activate_account_policy(

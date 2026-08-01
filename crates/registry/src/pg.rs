@@ -309,9 +309,9 @@ fn postgres_write_policy_attribution(
     disposition: &str,
     funding: &crate::PolicyFundingEvidence,
 ) -> Result<()> {
-    let predicate = match table {
-        "settlement_outbox" | "usage_events" => "request_id=$1",
-        "ledger" => "kind='charge' AND request_id=$1",
+    let (predicate, priced_ts_assignment) = match table {
+        "settlement_outbox" | "usage_events" => ("request_id=$1", "priced_ts=$25,"),
+        "ledger" => ("kind='charge' AND request_id=$1", ""),
         _ => bail!("unsupported PostgreSQL policy attribution target"),
     };
     let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
@@ -334,7 +334,8 @@ fn postgres_write_policy_attribution(
              rule_id=$11,rule_digest=$12,rule_scope=$13,pricing_mode=$14,rule_origin=$15,
              discount_bps=$16,payable_multiplier_bp=$17,policy_id=$18,policy_version=$19,
              effective_policy_version=$20,policy_digest=$21,catalog_generation=$22,
-             switch_generation=$23,tariff_schedule_id=$24,tariff_priced_ts=$25,
+             switch_generation=$23,tariff_schedule_id=$24,{priced_ts_assignment}
+             tariff_priced_ts=$25,
              official_cost_json=$26::text::jsonb,paid_funded_nano=$27,bonus_funded_nano=$28,
              other_funded_nano=$29,funding_allocation_json=$30::text::jsonb,track_eligible=$31,
              retention_eligible=$32,commission_eligible=$33,snapshot_digest=$34,
@@ -2621,7 +2622,8 @@ impl PgStore {
                      bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
                      reserved_nano,spent_nano,version,status,created_ts,updated_ts)
                  VALUES('fund_' || md5(random()::text || clock_timestamp()::text),$1,'paid',$2,
-                        'any',$3,0,0,1,CASE WHEN $3>0 THEN 'active' ELSE 'exhausted' END,$4,$4)
+                        'any',$3::bigint,0,0,1,
+                        CASE WHEN $3::bigint>0 THEN 'active' ELSE 'exhausted' END,$4,$4)
                  ON CONFLICT(account_id,source_type,source_ref) DO UPDATE SET
                      balance_nano=funding_buckets.balance_nano+EXCLUDED.balance_nano,
                      version=funding_buckets.version+1,updated_ts=EXCLUDED.updated_ts,

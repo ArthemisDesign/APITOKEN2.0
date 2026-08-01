@@ -3952,9 +3952,10 @@ fn sqlite_write_policy_attribution(
     disposition: &str,
     funding: &PolicyFundingEvidence,
 ) -> Result<()> {
-    let predicate = match table {
-        "billing_settlement_outbox" | "usage_events" => "request_id=?1",
-        "ledger" => "kind='charge' AND request_id=?1",
+    let (predicate, priced_ts_assignment) = match table {
+        "billing_settlement_outbox" => ("request_id=?1", ""),
+        "usage_events" => ("request_id=?1", "priced_ts=?25,"),
+        "ledger" => ("kind='charge' AND request_id=?1", ""),
         _ => anyhow::bail!("unsupported SQLite policy attribution target"),
     };
     let (rule_scope, _, _) = snapshot.rule_scope.db_parts();
@@ -3977,7 +3978,8 @@ fn sqlite_write_policy_attribution(
              rule_id=?11,rule_digest=?12,rule_scope=?13,pricing_mode=?14,rule_origin=?15,
              discount_bps=?16,payable_multiplier_bp=?17,policy_id=?18,policy_version=?19,
              effective_policy_version=?20,policy_digest=?21,catalog_generation=?22,
-             switch_generation=?23,tariff_schedule_id=?24,tariff_priced_ts=?25,
+             switch_generation=?23,tariff_schedule_id=?24,{priced_ts_assignment}
+             tariff_priced_ts=?25,
              official_cost_json=?26,paid_funded_nano=?27,bonus_funded_nano=?28,
              other_funded_nano=?29,funding_allocation_json=?30,track_eligible=?31,
              retention_eligible=?32,commission_eligible=?33,snapshot_digest=?34,
