@@ -349,6 +349,10 @@ cap; его bounded background semaphore — только shutdown barrier и п
    workload equivalent по `ΣΔnanoUSD`. Старое API evidence переносится в `last_*`, а не считается
    нулевым credit spend. Первое quota-only движение ждёт ledger catch-up; повторившееся движение без
    обоих ledger помечается `possibly unattributed`, но не объявляется внешним использованием.
+   При одноразовом replay новой версии estimator legacy API-only snapshot, ошибочно появившийся
+   после credit cutover, остаётся в raw authority, но пропускается как неполный: следующий tracked
+   cumulative snapshot безопасно охватывает этот интервал. Live tracked→untracked regression
+   по-прежнему fail-closed.
    Low/high, samples, confidence и missing-data reason публикуются явно. Нет prior/EMA/WLS/float
    money. Raw observations переживают restart/blue-green/reset и распознают rolling reset;
    каждое provider-reported duration калибруется независимо. Usage translation принимает оба

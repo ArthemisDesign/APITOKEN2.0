@@ -169,7 +169,11 @@ token on every refresh with strict family reuse detection. The pool therefore:
   and CAS state live in the engine authority, survive restart/blue-green and are replayed on
   estimator upgrades. Exact event retry is idempotent by an internal request id stable across
   home/transport retries. A semantic replay conflict quarantines that row without blocking later
-  FIFO entries. Calibration is fed only by wire events — reads never write — and each
+  FIFO entries. During an estimator rebuild, an incomplete legacy API-only raw snapshot found after
+  native-credit cutover remains in authority but is skipped because it has no authoritative credit
+  denominator; the next tracked cumulative snapshot safely spans it. A tracked-to-untracked
+  regression on the live incremental path still fails closed. Calibration is fed only by wire
+  events — reads never write — and each
   provider-reported duration (normally 5h and weekly) calibrates independently. A transient writer
   failure leaves the event in a bounded FIFO, which every health sweep retries even when no new
   customer request reaches that home. On recovery the event and cumulative ledgers are persisted

@@ -3557,6 +3557,18 @@ mod tests {
                 [],
             )
             .unwrap();
+        // Migration-first blue-green overlap once allowed an old runtime to append an API-only
+        // observation after native-credit tracking had started. The immutable residue must remain
+        // auditable, but it must not permanently block a v9 history rebuild.
+        connection
+            .execute(
+                "INSERT INTO codex_window_observations(\
+                   home_id,window_duration_mins,resets_at,observed_at,used_percent,\
+                   used_fraction_units,gateway_spend_nano,gateway_spend_nanocredits) \
+                 VALUES('home-a',300,2000000000,103,14,14000000,180000000000,NULL)",
+                [],
+            )
+            .unwrap();
         drop(connection);
 
         let restarted = AsyncBilling::start(path_string, 1).unwrap();
@@ -3569,6 +3581,7 @@ mod tests {
         assert_eq!(restored.estimator_version, crate::codex::ESTIMATOR_VERSION);
         assert_eq!(restored.current_capacity_nano, Some(2_000_000_000_000));
         assert_eq!(restored.current_capacity_nanocredits, Some(200_000_000_000));
+        assert_eq!(restored.observed_at, 103);
         let report = restarted.codex_calibration_report().await.unwrap();
         assert_eq!(report.len(), 1);
         assert_eq!(report[0].turns, 3);

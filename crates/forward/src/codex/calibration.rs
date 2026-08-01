@@ -558,6 +558,18 @@ fn replay_observations(
         if observation.home_id == first.home_id
             && observation.window_duration_mins == first.window_duration_mins
         {
+            validate_observation(observation)?;
+            // Migration-first rollout allowed an older binary to append API-only raw snapshots
+            // after a newer binary had already started the native-credit ledger. Such a row has
+            // no authoritative cumulative-credit value and therefore cannot delimit a dual-ledger
+            // interval. Ignore only that incomplete historical point: the next tracked cumulative
+            // snapshot safely spans it, while the live incremental path still rejects any actual
+            // regression from tracked credits back to `None`.
+            if calibration.row.anchor_spend_nanocredits.is_some()
+                && observation.gateway_spend_nanocredits.is_none()
+            {
+                continue;
+            }
             calibration.observe(observation)?;
         }
     }
@@ -1035,6 +1047,46 @@ mod tests {
             calibration.remaining_nano(12_000_000),
             Some(1_697_813_333_333)
         );
+    }
+
+    #[test]
+    fn estimator_upgrade_skips_legacy_untracked_points_after_credit_cutover() {
+        let history = vec![
+            observation(4_000_000, 57_430_898_100, 100),
+            credit_observation(4_000_000, 57_536_525_100, 1_249_775_000, 101),
+            credit_observation(4_000_000, 57_600_891_100, 2_858_925_000, 102),
+            credit_observation(4_000_000, 57_651_156_100, 4_115_550_000, 103),
+            // Exact production-shaped legacy residue: an older runtime appended a later API-only
+            // snapshot after the dual ledger had already started. It is immutable but incomplete.
+            observation(4_000_000, 57_651_156_100, 104),
+        ];
+        let current = credit_observation(5_000_000, 59_244_826_300, 45_908_787_500, 105);
+        let mut poisoned = WindowCalibration::anchor(&history[0]).unwrap().into_row();
+        poisoned.estimator_version = ESTIMATOR_VERSION - 1;
+        poisoned.version = 1_200;
+
+        let rebuilt = apply_observation_with_history(Some(poisoned), &history, &current).unwrap();
+        assert_eq!(rebuilt.version, 1_200);
+        assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
+        assert_eq!(rebuilt.observed_at, current.observed_at);
+        assert_eq!(
+            rebuilt.anchor_spend_nanocredits,
+            current.gateway_spend_nanocredits
+        );
+        assert_eq!(rebuilt.samples, 1);
+        assert_eq!(rebuilt.credit_samples, Some(1));
+        assert!(rebuilt.current_capacity_nano.is_some());
+        assert!(rebuilt.current_capacity_nanocredits.is_some());
+    }
+
+    #[test]
+    fn incremental_credit_regression_still_fails_closed() {
+        let row = next(None, credit_observation(4_000_000, 100_000, 10_000, 100));
+        let error =
+            apply_observation(Some(row), &observation(4_000_100, 110_000, 101)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("credit tracking regressed to an untracked observation"));
     }
 
     #[test]
