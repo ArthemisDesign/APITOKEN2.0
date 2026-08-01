@@ -1,7 +1,7 @@
 //! Логика бота: команды, машина создания оффера, флоу продавца. Состояние — в SQLite (db).
 //! Выплаты (Фаза 2) и выпуск setup-token (Фаза 3) пока заглушены — помечены TODO.
 
-use crate::db::{AdminState, PurchaseBatch, SellerJob, SellerJobRef, Store};
+use crate::db::{AdminState, BatchOverview, PurchaseBatch, SellerJob, SellerJobRef, Store};
 use crate::gemini_oauth;
 use crate::setup_token::{self, Outcome};
 use crate::tg::{Bot, CallbackQuery, Keyboard};
@@ -215,54 +215,135 @@ async fn show_admin_home(bot: &Bot, store: &Store, chat: i64) {
     }
 }
 
-fn active_job_kb(job: &SellerJob) -> Option<Keyboard> {
-    if job.reference.kind != "batch" || job.phase != "processing" || job.reference.item_no <= 1 {
-        return None;
+fn batch_status_label(batch: &PurchaseBatch) -> &'static str {
+    match batch.status.as_str() {
+        "offered" => "📨 ожидает решения продавца",
+        "accepted" => "💳 принят, ожидает общей оплаты",
+        "paying" => "🔒 выплата проверяется",
+        "paid" => "✅ оплачен, запускается",
+        "processing" => "▶️ выполняется",
+        "paused" => "⏸ на паузе",
+        _ => "неизвестный статус",
     }
-    Some(vec![vec![(
-        format!(
-            "↩️ Вернуть позицию {}/{}",
-            job.reference.item_no - 1,
-            job.total
-        ),
-        format!(
-            "batchrewind:{}:{}:ask",
-            job.reference.batch_id,
-            job.reference.item_no - 1
-        ),
-    )]])
 }
 
-async fn show_active_jobs(bot: &Bot, store: &Store, chat: i64) {
-    let jobs = store.active_seller_jobs().unwrap_or_default();
-    if jobs.is_empty() {
-        let _ = bot
-            .send(
-                chat,
-                "📋 <b>Активных сделок нет.</b> Все продавцы свободны.",
-            )
-            .await;
+fn progress_bar(completed: i64, total: i64) -> String {
+    let filled = if total > 0 {
+        (completed.clamp(0, total) * 10 / total) as usize
+    } else {
+        0
+    };
+    format!("{}{}", "▓".repeat(filled), "░".repeat(10 - filled))
+}
+
+fn batch_jobs_text(store: &Store, overview: &BatchOverview, admin: bool) -> String {
+    let batch = &overview.batch;
+    let current = if matches!(batch.status.as_str(), "processing" | "paused") {
+        format!(
+            "\n🎯 Текущая позиция: <b>{}/{}</b>",
+            batch.current_item, batch.quantity
+        )
+    } else {
+        String::new()
+    };
+    let seller = if admin {
+        format!("\n👤 Продавец: {}", seller_label(store, batch.seller_chat))
+    } else {
+        String::new()
+    };
+    format!(
+        "🧺 <b>Batch #{} · {}</b>\n{}\n\n<code>{}</code>  <b>{}/{}</b>\n✅ Выполнено: <b>{}</b>\n⏳ Осталось: <b>{}</b>{current}\n💵 Общая выплата: <b>{}</b>\n🌐 Прокси: {}{seller}",
+        batch.id,
+        esc(&batch.product),
+        batch_status_label(batch),
+        progress_bar(overview.completed, batch.quantity),
+        overview.completed,
+        batch.quantity,
+        overview.completed,
+        overview.remaining,
+        esc(&batch.total_price),
+        proxy_source_label(&batch.proxy_source),
+    )
+}
+
+fn batch_jobs_kb(overview: &BatchOverview, admin: bool) -> Option<Keyboard> {
+    let batch = &overview.batch;
+    let mut keyboard = Vec::new();
+    if batch.status == "processing" {
+        keyboard.push(vec![(
+            "⏸ Поставить на паузу".into(),
+            format!("batchpause:{}:ask", batch.id),
+        )]);
+        if admin && batch.current_item > 1 {
+            keyboard.push(vec![(
+                format!(
+                    "↩️ Вернуть позицию {}/{}",
+                    batch.current_item - 1,
+                    batch.quantity
+                ),
+                format!("batchrewind:{}:{}:ask", batch.id, batch.current_item - 1),
+            )]);
+        }
+    } else if batch.status == "paused" {
+        keyboard.push(vec![(
+            "▶️ Продолжить batch".into(),
+            format!("batchresume:{}", batch.id),
+        )]);
+    }
+    if admin && batch.status != "paying" {
+        keyboard.push(vec![(
+            "🗑 Удалить batch".into(),
+            format!("batchdelete:{}:ask", batch.id),
+        )]);
+    }
+    (!keyboard.is_empty()).then_some(keyboard)
+}
+
+async fn show_jobs(bot: &Bot, store: &Store, chat: i64, admin: bool) {
+    let singles = store
+        .active_seller_jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|job| job.reference.kind == "offer" && (admin || job.seller_chat == chat))
+        .collect::<Vec<_>>();
+    let batches = store
+        .open_batch_overviews(if admin { 0 } else { chat })
+        .unwrap_or_default();
+    if singles.is_empty() && batches.is_empty() {
+        let message = if admin {
+            "📋 <b>Активных сделок и batch на паузе нет.</b> Все продавцы свободны."
+        } else {
+            "📋 <b>У тебя нет активных сделок или batch на паузе.</b>"
+        };
+        let _ = bot.send(chat, message).await;
         return;
     }
     let _ = bot
         .send(
             chat,
-            &format!(
-                "📋 <b>Активные сделки: {}</b>\nSingle и batch у одного продавца никогда не выполняются одновременно.",
-                jobs.len()
-            ),
+            if admin {
+                "📋 <b>Сделки и batch</b>\n\nЗдесь можно контролировать прогресс, паузу и продолжение. Удаление сохраняет финансовую историю в архиве."
+            } else {
+                "📋 <b>Мои сделки</b>\n\nBatch можно поставить на паузу, выполнить одиночный заказ и затем продолжить с той же незавершённой позиции."
+            },
         )
         .await;
-    for job in jobs {
-        let keyboard = active_job_kb(&job);
+    for job in singles {
+        let seller = if admin {
+            format!("\n👤 Продавец: {}", seller_label(store, job.seller_chat))
+        } else {
+            String::new()
+        };
+        let _ = bot
+            .send(chat, &format!("{}{}", seller_job_label(&job), seller))
+            .await;
+    }
+    for overview in batches {
+        let keyboard = batch_jobs_kb(&overview, admin);
         let _ = bot
             .send_kb(
                 chat,
-                &format!(
-                    "{}\nПродавец: {}",
-                    seller_job_label(&job),
-                    seller_label(store, job.seller_chat)
-                ),
+                &batch_jobs_text(store, &overview, admin),
                 keyboard.as_ref(),
             )
             .await;
@@ -512,7 +593,7 @@ fn seller_label(store: &Store, seller_chat: i64) -> String {
 }
 
 /// Клавиатура выбора продавца-адресата (по одному в строке).
-fn seller_pick_kb(store: &Store, sellers: &[crate::db::UserRow]) -> Keyboard {
+fn seller_pick_kb(store: &Store, sellers: &[crate::db::UserRow], mode: &str) -> Keyboard {
     sellers
         .iter()
         .map(|s| {
@@ -535,6 +616,15 @@ fn seller_pick_kb(store: &Store, sellers: &[crate::db::UserRow]) -> Keyboard {
                     format!("оффер #{}", job.reference.offer_id)
                 };
                 label = format!("🟠 {label} — занят: {active}");
+            } else if let Some(paused) = store.paused_batch_for_seller(s.chat_id).ok().flatten() {
+                label = if mode == "batch" {
+                    format!("⏸ {label} — batch #{} на паузе", paused.id)
+                } else {
+                    format!(
+                        "🔵 {label} — batch #{} на паузе, single доступен",
+                        paused.id
+                    )
+                };
             } else {
                 label = format!("🟢 {label} — свободен");
             }
@@ -564,7 +654,7 @@ async fn start_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &str) {
                 "📦 Продукт: <b>{}</b>\n\nКому отправить оффер? Выбери продавца:",
                 esc(product)
             ),
-            Some(&seller_pick_kb(store, &sellers)),
+            Some(&seller_pick_kb(store, &sellers, "single")),
         )
         .await;
 }
@@ -600,7 +690,7 @@ async fn start_batch_seller_pick(bot: &Bot, store: &Store, chat: i64, product: &
                 "🧺 Продукт: <b>{}</b>\n\nКому отправить batch? Выбери продавца:",
                 esc(product)
             ),
-            Some(&seller_pick_kb(store, &sellers)),
+            Some(&seller_pick_kb(store, &sellers, "batch")),
         )
         .await;
 }
@@ -683,6 +773,18 @@ async fn publish_batch(
                 &format!(
                     "🟠 Batch не создан: продавец успел занять другую сделку.\n\n<b>{}</b>",
                     seller_job_label(&job)
+                ),
+            )
+            .await;
+        return;
+    }
+    if let Some(paused) = store.paused_batch_for_seller(seller_chat).ok().flatten() {
+        let _ = bot
+            .send(
+                admin_chat,
+                &format!(
+                    "⏸ Batch не создан: у продавца уже стоит на паузе batch #{}. Пока он не продолжен или не удалён, этому продавцу можно направлять только одиночные офферы.",
+                    paused.id
                 ),
             )
             .await;
@@ -793,7 +895,7 @@ pub async fn on_message(
             return;
         }
         if text == "📋 Активные сделки" {
-            show_active_jobs(bot, store, chat).await;
+            show_jobs(bot, store, chat, true).await;
             return;
         }
         if text == "🛠 Панель" {
@@ -1038,6 +1140,17 @@ pub async fn on_message(
                             ),
                         )
                         .await;
+                } else if let Some(paused) = store.paused_batch_for_seller(chat).ok().flatten() {
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "👋 <b>Ты продавец.</b>\n\n⏸ Batch #{} стоит на паузе. Пока можешь принять одиночный оффер; чтобы вернуться к batch, открой /jobs и нажми «Продолжить».\n\n💼 Адрес выплат:\n<code>{}</code>",
+                                paused.id,
+                                esc(&rec.address)
+                            ),
+                        )
+                        .await;
                 } else {
                     let _ = bot
                         .send(
@@ -1077,8 +1190,18 @@ pub async fn on_message(
         start_batch_product_pick(bot, chat).await;
         return;
     }
-    if admin && text == "/jobs" {
-        show_active_jobs(bot, store, chat).await;
+    if text == "/jobs" {
+        let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
+        if admin || rec.status == "approved" {
+            show_jobs(bot, store, chat, admin).await;
+        } else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Команда /jobs доступна администратору и одобренным продавцам.",
+                )
+                .await;
+        }
         return;
     }
 
@@ -2703,6 +2826,20 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                     .await;
                 return;
             }
+            if flow.mode == "batch" {
+                if let Some(paused) = store.paused_batch_for_seller(seller_chat).ok().flatten() {
+                    let _ = bot
+                        .send(
+                            chat,
+                            &format!(
+                                "⏸ У продавца уже есть batch #{} на паузе. Ему можно создать одиночный оффер, но новый batch — только после продолжения или удаления старого.",
+                                paused.id
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            }
             let who = seller_label(store, seller_chat);
             flow.seller_chat = seller_chat;
             if flow.mode == "batch" {
@@ -2814,6 +2951,229 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
                 )
                 .await;
             }
+        }
+        return;
+    }
+
+    // Продавец и админ могут немедленно освободить продавца от текущего batch. Завершённые
+    // позиции остаются завершёнными; текущая попытка инвалидируется и при resume начнётся заново.
+    if let Some(rest) = data.strip_prefix("batchpause:") {
+        let mut parts = rest.split(':');
+        let batch_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let action = parts.next().unwrap_or_default();
+        let expected_item = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        if !admin && batch.seller_chat != chat {
+            return;
+        }
+        if action == "ask" {
+            if batch.status != "processing" || batch.current_item <= 0 {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Batch уже не выполняется; старая кнопка паузы неактивна.",
+                    )
+                    .await;
+                return;
+            }
+            let confirm = vec![vec![(
+                "⏸ Да, поставить на паузу".into(),
+                format!("batchpause:{}:confirm:{}", batch.id, batch.current_item),
+            )]];
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "⏸ <b>Поставить batch #{} на паузу?</b>\n\n✅ Уже выполненные позиции сохранятся.\n🔄 Текущая позиция <b>{}/{}</b> будет сброшена и при продолжении начнётся заново.\n📦 После паузы продавцу можно выдать одиночный оффер.",
+                        batch.id, batch.current_item, batch.quantity
+                    ),
+                    Some(&confirm),
+                )
+                .await;
+            return;
+        }
+        if action == "confirm" {
+            if batch.status != "processing" || batch.current_item != expected_item {
+                let _ = bot
+                    .send(chat, "Batch уже изменился; подтверждение паузы устарело.")
+                    .await;
+                return;
+            }
+            let Some(paused_item) = store
+                .pause_batch(batch.id, batch.seller_chat)
+                .ok()
+                .flatten()
+            else {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Не удалось поставить batch на паузу: его состояние изменилось.",
+                    )
+                    .await;
+                return;
+            };
+            setup_token::kill(batch.seller_chat);
+            crate::codex_login::cancel(batch.seller_chat);
+            let message = format!(
+                "⏸ <b>Batch #{} поставлен на паузу.</b>\nВыполнено: <b>{}</b> из <b>{}</b>. Позиция <b>{}/{}</b> начнётся заново после продолжения. Теперь продавцу можно выдать одиночный оффер.",
+                batch.id,
+                paused_item - 1,
+                batch.quantity,
+                paused_item,
+                batch.quantity
+            );
+            let _ = bot.send(chat, &message).await;
+            if chat != batch.seller_chat {
+                let _ = bot.send(batch.seller_chat, &message).await;
+            } else {
+                notify_admins(bot, cfg, &message, None).await;
+            }
+            return;
+        }
+        return;
+    }
+
+    // Resume не вытесняет одиночную работу: если продавец занят, batch остаётся paused.
+    if let Some(rest) = data.strip_prefix("batchresume:") {
+        let batch_id = rest.parse::<i64>().unwrap_or(0);
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        if !admin && batch.seller_chat != chat {
+            return;
+        }
+        if let Some(job) = store.active_seller_job(batch.seller_chat).ok().flatten() {
+            let _ = bot
+                .send(
+                    chat,
+                    &format!(
+                        "⛔ Batch #{} пока нельзя продолжить: продавец занят.\n\n<b>{}</b>",
+                        batch.id,
+                        seller_job_label(&job)
+                    ),
+                )
+                .await;
+            return;
+        }
+        let Some(item_no) = store
+            .resume_paused_batch(batch.id, batch.seller_chat)
+            .ok()
+            .flatten()
+        else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Не удалось продолжить batch: он уже изменился или продавец занят.",
+                )
+                .await;
+            return;
+        };
+        let message = format!(
+            "▶️ <b>Batch #{} продолжен.</b> Возвращаемся к позиции <b>{}/{}</b>.",
+            batch.id, item_no, batch.quantity
+        );
+        let _ = bot.send(chat, &message).await;
+        if chat != batch.seller_chat {
+            let _ = bot.send(batch.seller_chat, &message).await;
+        } else {
+            notify_admins(bot, cfg, &message, None).await;
+        }
+        start_batch_item(bot, store, cfg, batch.id, item_no, None).await;
+        return;
+    }
+
+    // Удаление доступно только администратору и является audit-safe soft delete. Paying batch
+    // намеренно нельзя удалить, пока не проверена неопределённая blockchain-транзакция.
+    if let Some(rest) = data.strip_prefix("batchdelete:") {
+        if !admin {
+            return;
+        }
+        let mut parts = rest.splitn(3, ':');
+        let batch_id = parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let expected_status = parts.next().unwrap_or_default();
+        let action = parts.next().unwrap_or_default();
+        let Some(batch) = store.get_batch(batch_id).ok().flatten() else {
+            return;
+        };
+        if expected_status == "ask" && action.is_empty() {
+            if batch.status == "paying" {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Этот batch сейчас в неопределённой фазе выплаты. Сначала проверь транзакцию и разблокируй её через payment review.",
+                    )
+                    .await;
+                return;
+            }
+            let confirm = vec![vec![(
+                "⚠️ Да, удалить из очереди".into(),
+                format!("batchdelete:{}:{}:confirm", batch.id, batch.status),
+            )]];
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "🗑 <b>Удалить batch #{}?</b>\n\nОн исчезнет из рабочей очереди, незавершённая позиция будет остановлена. Данные выплаты и прогресса сохранятся в архиве для аудита. Автоматически восстановить batch после подтверждения нельзя.",
+                        batch.id
+                    ),
+                    Some(&confirm),
+                )
+                .await;
+            return;
+        }
+        if action == "confirm" {
+            if batch.status != expected_status {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Batch уже изменился; подтверждение удаления устарело.",
+                    )
+                    .await;
+                return;
+            }
+            let Some(released_job) = store.archive_batch(batch.id).ok().flatten() else {
+                let _ = bot
+                    .send(
+                        chat,
+                        "Не удалось удалить batch: его состояние уже изменилось.",
+                    )
+                    .await;
+                return;
+            };
+            if released_job {
+                setup_token::kill(batch.seller_chat);
+                crate::codex_login::cancel(batch.seller_chat);
+            }
+            let _ = bot
+                .send(
+                    chat,
+                    &format!(
+                        "🗑 Batch #{} удалён из рабочей очереди. Финансовая история сохранена в архиве.",
+                        batch.id
+                    ),
+                )
+                .await;
+            let _ = bot
+                .send(
+                    batch.seller_chat,
+                    &format!(
+                        "🗑 Администратор удалил batch #{} из рабочей очереди. Выполнять оставшиеся позиции больше не нужно.",
+                        batch.id
+                    ),
+                )
+                .await;
+            return;
         }
         return;
     }
@@ -3662,6 +4022,52 @@ mod tests {
         assert_eq!(parse_quantity("10.0"), None);
         assert_eq!(parse_quantity("10 подписок"), None);
         assert_eq!(parse_quantity(""), None);
+    }
+
+    #[test]
+    fn jobs_card_exposes_progress_and_role_safe_batch_controls() {
+        let mut overview = BatchOverview {
+            batch: PurchaseBatch {
+                id: 7,
+                product: "Google AI Pro".into(),
+                unit_price: "$20".into(),
+                quantity: 5,
+                total_price: "$100".into(),
+                created_by: 1,
+                seller_chat: 42,
+                proxy_source: PROXY_SOURCE_BUYER.into(),
+                status: "processing".into(),
+                payment_tx: "0xtx".into(),
+                current_item: 3,
+            },
+            completed: 2,
+            remaining: 3,
+        };
+        assert_eq!(progress_bar(2, 5), "▓▓▓▓░░░░░░");
+        let seller = batch_jobs_kb(&overview, false).unwrap();
+        assert_eq!(seller.len(), 1);
+        assert_eq!(seller[0][0].1, "batchpause:7:ask");
+        let admin = batch_jobs_kb(&overview, true).unwrap();
+        assert!(admin
+            .iter()
+            .flatten()
+            .any(|button| button.1 == "batchpause:7:ask"));
+        assert!(admin
+            .iter()
+            .flatten()
+            .any(|button| button.1 == "batchrewind:7:2:ask"));
+        assert!(admin
+            .iter()
+            .flatten()
+            .any(|button| button.1 == "batchdelete:7:ask"));
+
+        overview.batch.status = "paused".into();
+        let seller = batch_jobs_kb(&overview, false).unwrap();
+        assert_eq!(seller[0][0].1, "batchresume:7");
+        assert!(!seller
+            .iter()
+            .flatten()
+            .any(|button| button.1.contains("delete")));
     }
 
     #[test]

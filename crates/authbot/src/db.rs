@@ -60,9 +60,16 @@ pub struct PurchaseBatch {
     pub created_by: i64,
     pub seller_chat: i64,
     pub proxy_source: String, // buyer | seller
-    pub status: String, // offered | accepted | paying | paid | processing | completed | rejected
+    pub status: String, // offered | accepted | paying | paid | processing | paused | completed | rejected | cancelled
     pub payment_tx: String,
     pub current_item: i64, // 1-based; 0 until payment
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchOverview {
+    pub batch: PurchaseBatch,
+    pub completed: i64,
+    pub remaining: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -1409,6 +1416,74 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
+    /// Open batches for `/jobs`. Completed/rejected/cancelled history stays in SQLite but does not
+    /// clutter the operational queue. `seller_chat=0` returns the admin-wide view.
+    pub fn open_batch_overviews(&self, seller_chat: i64) -> Result<Vec<BatchOverview>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT b.id,b.product,b.unit_price,b.quantity,b.total_price,b.created_by,
+                    b.seller_chat,b.proxy_source,b.status,COALESCE(b.payment_tx,''),
+                    COALESCE(b.current_item,0),
+                    SUM(CASE WHEN i.status='completed' THEN 1 ELSE 0 END)
+             FROM purchase_batches b
+             JOIN batch_items i ON i.batch_id=b.id
+             WHERE b.status IN ('offered','accepted','paying','paid','processing','paused')
+               AND (?1=0 OR b.seller_chat=?1)
+             GROUP BY b.id
+             ORDER BY CASE b.status WHEN 'processing' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                      b.ts,b.id",
+        )?;
+        let rows = statement.query_map(rusqlite::params![seller_chat], |row| {
+            let quantity = row.get::<_, i64>(3)?;
+            let completed = row.get::<_, i64>(11)?;
+            Ok(BatchOverview {
+                batch: PurchaseBatch {
+                    id: row.get(0)?,
+                    product: row.get(1)?,
+                    unit_price: row.get(2)?,
+                    quantity,
+                    total_price: row.get(4)?,
+                    created_by: row.get(5)?,
+                    seller_chat: row.get(6)?,
+                    proxy_source: row.get(7)?,
+                    status: row.get(8)?,
+                    payment_tx: row.get(9)?,
+                    current_item: row.get(10)?,
+                },
+                completed,
+                remaining: quantity - completed,
+            })
+        })?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    pub fn paused_batch_for_seller(&self, seller_chat: i64) -> Result<Option<PurchaseBatch>> {
+        let c = self.c.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT id,product,unit_price,quantity,total_price,created_by,seller_chat,
+                        proxy_source,status,COALESCE(payment_tx,''),COALESCE(current_item,0)
+                 FROM purchase_batches
+                 WHERE seller_chat=?1 AND status='paused' ORDER BY id LIMIT 1",
+            rusqlite::params![seller_chat],
+            |row| {
+                Ok(PurchaseBatch {
+                    id: row.get(0)?,
+                    product: row.get(1)?,
+                    unit_price: row.get(2)?,
+                    quantity: row.get(3)?,
+                    total_price: row.get(4)?,
+                    created_by: row.get(5)?,
+                    seller_chat: row.get(6)?,
+                    proxy_source: row.get(7)?,
+                    status: row.get(8)?,
+                    payment_tx: row.get(9)?,
+                    current_item: row.get(10)?,
+                })
+            },
+        )
+        .optional()?)
+    }
+
     pub fn accept_batch(&self, batch_id: i64, seller_chat: i64) -> Result<bool> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
@@ -1432,7 +1507,7 @@ impl Store {
                AND NOT EXISTS (
                    SELECT 1 FROM purchase_batches
                    WHERE seller_chat=?1 AND id<>?2
-                     AND status IN ('accepted','paying','paid','processing'))
+                     AND status IN ('accepted','paying','paid','processing','paused'))
                AND NOT EXISTS (
                    SELECT 1 FROM responses r
                    JOIN users u ON u.uid=r.uid
@@ -1506,7 +1581,7 @@ impl Store {
                    AND NOT EXISTS (
                        SELECT 1 FROM purchase_batches
                        WHERE seller_chat=?1 AND id<>?2
-                         AND status IN ('accepted','paying','paid','processing'))
+                         AND status IN ('accepted','paying','paid','processing','paused'))
                    AND NOT EXISTS (
                        SELECT 1 FROM responses r
                        JOIN users u ON u.uid=r.uid
@@ -1846,6 +1921,214 @@ impl Store {
             total,
             completed: false,
         }))
+    }
+
+    /// Pause an in-progress batch immediately. Completed items stay completed; the current
+    /// unfinished item goes back to `pending`, and the seller lock is released for a single job.
+    /// Every in-flight callback is invalidated by deleting its exact seller job generation.
+    pub fn pause_batch(&self, batch_id: i64, seller_chat: i64) -> Result<Option<i64>> {
+        let mut connection = self.c.lock().unwrap();
+        let transaction = connection.transaction()?;
+        let current_item = transaction
+            .query_row(
+                "SELECT current_item FROM purchase_batches
+                 WHERE id=?1 AND seller_chat=?2 AND status='processing' AND current_item>0",
+                rusqlite::params![batch_id, seller_chat],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(current_item) = current_item else {
+            transaction.rollback()?;
+            return Ok(None);
+        };
+        let item_status = transaction
+            .query_row(
+                "SELECT status FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+                rusqlite::params![batch_id, current_item],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if !matches!(item_status.as_deref(), Some("pending" | "processing")) {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        let job_changed = transaction.execute(
+            "DELETE FROM seller_jobs
+             WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2
+               AND item_no=?3 AND phase='processing'",
+            rusqlite::params![seller_chat, batch_id, current_item],
+        )?;
+        if job_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        transaction.execute(
+            "UPDATE batch_items SET status='pending'
+             WHERE batch_id=?1 AND item_no=?2 AND status='processing'",
+            rusqlite::params![batch_id, current_item],
+        )?;
+        let batch_changed = transaction.execute(
+            "UPDATE purchase_batches SET status='paused',ts=?3
+             WHERE id=?1 AND seller_chat=?2 AND status='processing'",
+            rusqlite::params![batch_id, seller_chat, now()],
+        )?;
+        if batch_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        transaction.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.commit()?;
+        Ok(Some(current_item))
+    }
+
+    /// Resume the exact pending position only when the seller is currently free. The new seller
+    /// job receives a fresh generation before any Telegram instruction is sent.
+    pub fn resume_paused_batch(&self, batch_id: i64, seller_chat: i64) -> Result<Option<i64>> {
+        let mut connection = self.c.lock().unwrap();
+        let transaction = connection.transaction()?;
+        let batch = transaction
+            .query_row(
+                "SELECT current_item,product FROM purchase_batches
+                 WHERE id=?1 AND seller_chat=?2 AND status='paused' AND current_item>0",
+                rusqlite::params![batch_id, seller_chat],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((current_item, product)) = batch else {
+            transaction.rollback()?;
+            return Ok(None);
+        };
+        let item_pending = transaction.query_row(
+            "SELECT status='pending' FROM batch_items WHERE batch_id=?1 AND item_no=?2",
+            rusqlite::params![batch_id, current_item],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !item_pending {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        let job_changed = transaction.execute(
+            "INSERT INTO seller_jobs(
+                seller_chat,kind,offer_id,batch_id,item_no,job_token,product,phase,ts)
+             SELECT ?1,'batch',0,?2,?3,lower(hex(randomblob(16))),?4,'processing',?5
+             WHERE NOT EXISTS (SELECT 1 FROM seller_jobs WHERE seller_chat=?1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM purchase_batches
+                   WHERE seller_chat=?1 AND id<>?2
+                     AND status IN ('accepted','paying','paid','processing'))
+               AND NOT EXISTS (
+                   SELECT 1 FROM responses r
+                   JOIN users u ON u.uid=r.uid
+                   WHERE u.chat_id=?1 AND r.status IN ('accepted','paying'))",
+            rusqlite::params![seller_chat, batch_id, current_item, product, now()],
+        )?;
+        if job_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        let batch_changed = transaction.execute(
+            "UPDATE purchase_batches SET status='processing',ts=?3
+             WHERE id=?1 AND seller_chat=?2 AND status='paused'",
+            rusqlite::params![batch_id, seller_chat, now()],
+        )?;
+        if batch_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        transaction.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.execute(
+            "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        transaction.commit()?;
+        Ok(Some(current_item))
+    }
+
+    /// Remove a batch from the operational queue without destroying payment/audit history.
+    /// Returns whether this action released the seller's active batch job.
+    pub fn archive_batch(&self, batch_id: i64) -> Result<Option<bool>> {
+        let mut connection = self.c.lock().unwrap();
+        let transaction = connection.transaction()?;
+        let batch = transaction
+            .query_row(
+                "SELECT seller_chat,status,current_item FROM purchase_batches
+                 WHERE id=?1 AND status IN
+                    ('offered','accepted','paid','processing','paused','rejected')",
+                rusqlite::params![batch_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((seller_chat, status, current_item)) = batch else {
+            transaction.rollback()?;
+            return Ok(None);
+        };
+        let active_job = transaction
+            .query_row(
+                "SELECT kind,batch_id FROM seller_jobs WHERE seller_chat=?1",
+                rusqlite::params![seller_chat],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let releases_job = active_job
+            .as_ref()
+            .is_some_and(|(kind, active_batch)| kind == "batch" && *active_batch == batch_id);
+        if active_job.is_some() && !releases_job && status != "paused" && status != "offered" {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        if current_item > 0 {
+            transaction.execute(
+                "UPDATE batch_items SET status='pending'
+                 WHERE batch_id=?1 AND item_no=?2 AND status='processing'",
+                rusqlite::params![batch_id, current_item],
+            )?;
+        }
+        let batch_changed = transaction.execute(
+            "UPDATE purchase_batches SET status='cancelled',ts=?2
+             WHERE id=?1 AND status=?3",
+            rusqlite::params![batch_id, now(), status],
+        )?;
+        if batch_changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        if releases_job {
+            let job_changed = transaction.execute(
+                "DELETE FROM seller_jobs
+                 WHERE seller_chat=?1 AND kind='batch' AND batch_id=?2",
+                rusqlite::params![seller_chat, batch_id],
+            )?;
+            if job_changed != 1 {
+                transaction.rollback()?;
+                return Ok(None);
+            }
+            transaction.execute(
+                "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+                rusqlite::params![seller_chat],
+            )?;
+            transaction.execute(
+                "UPDATE users SET want='',hproxy='',hproxy_order=0 WHERE chat_id=?1",
+                rusqlite::params![seller_chat],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(Some(releases_job))
     }
 
     /// Admin-only recovery primitive for a position that an older bot version marked complete
@@ -2316,6 +2599,155 @@ mod tests {
     }
 
     #[test]
+    fn paused_batch_allows_one_single_then_resumes_the_exact_item() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 3, "$60", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let first = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert!(s
+            .finish_batch_item(batch, 1, &first.token)
+            .unwrap()
+            .is_some());
+        assert!(s.start_batch_item(batch, 2).unwrap());
+        let interrupted = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert!(s
+            .set_handoff_state_for_seller_job(
+                111,
+                &interrupted,
+                "gm_ready",
+                "http://buyer:proxy@1.2.3.4:8080",
+                0,
+            )
+            .unwrap());
+
+        assert_eq!(s.pause_batch(batch, 111).unwrap(), Some(2));
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().status, "paused");
+        assert_eq!(
+            s.get_batch_item(batch, 2).unwrap().unwrap().status,
+            "pending"
+        );
+        assert!(s.active_seller_job(111).unwrap().is_none());
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "");
+        assert!(s
+            .finish_batch_item(batch, 2, &interrupted.token)
+            .unwrap()
+            .is_none());
+
+        let second_batch = s
+            .create_batch("Claude Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(!s.accept_batch(second_batch, 111).unwrap());
+        let offer = s
+            .create_offer_with_proxy("ChatGPT Plus", "$20", 999, 111, "seller", "")
+            .unwrap();
+        assert!(s.accept_offer(offer, 111, 111).unwrap());
+        assert!(s.resume_paused_batch(batch, 111).unwrap().is_none());
+        assert!(s.claim_offer_payment(offer, 111).unwrap());
+        assert!(s.mark_offer_paid(offer, 111).unwrap());
+        let single = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert!(s.finish_offer_job(111, offer, &single.token).unwrap());
+
+        assert_eq!(s.resume_paused_batch(batch, 111).unwrap(), Some(2));
+        let resumed = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(resumed.reference.kind, "batch");
+        assert_eq!(resumed.reference.batch_id, batch);
+        assert_eq!(resumed.reference.item_no, 2);
+        assert_ne!(resumed.reference.token, interrupted.token);
+        assert!(s.start_batch_item(batch, 2).unwrap());
+        let overview = s.open_batch_overviews(111).unwrap();
+        let overview = overview
+            .iter()
+            .find(|overview| overview.batch.id == batch)
+            .unwrap();
+        assert_eq!(overview.completed, 1);
+        assert_eq!(overview.remaining, 2);
+        assert_eq!(s.archive_batch(batch).unwrap(), Some(true));
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().status, "cancelled");
+        assert_eq!(
+            s.get_batch_item(batch, 2).unwrap().unwrap().status,
+            "pending"
+        );
+        assert!(s.active_seller_job(111).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn archiving_a_paused_batch_does_not_clear_the_active_single() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        assert_eq!(s.pause_batch(batch, 111).unwrap(), Some(1));
+
+        let offer = s
+            .create_offer_with_proxy("Claude Pro", "$20", 999, 111, "seller", "")
+            .unwrap();
+        assert!(s.accept_offer(offer, 111, 111).unwrap());
+        assert!(s.claim_offer_payment(offer, 111).unwrap());
+        assert!(s.mark_offer_paid(offer, 111).unwrap());
+        let single = s.active_seller_job(111).unwrap().unwrap().job_ref();
+        assert!(s
+            .set_handoff_state_for_seller_job(
+                111,
+                &single,
+                "ho_email",
+                "http://seller:proxy@1.2.3.4:8080",
+                0,
+            )
+            .unwrap());
+
+        assert_eq!(s.archive_batch(batch).unwrap(), Some(false));
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().status, "cancelled");
+        let still_single = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(still_single.reference.kind, "offer");
+        assert_eq!(still_single.reference.offer_id, offer);
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "ho_email");
+        assert!(s.open_batch_overviews(111).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
+    fn paused_batch_survives_restart_without_relocking_the_seller() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let batch;
+        {
+            let s = Store::open(&p).unwrap();
+            s.register_user(111, 111, "seller").unwrap();
+            batch = s
+                .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+                .unwrap();
+            assert!(s.accept_batch(batch, 111).unwrap());
+            assert!(s.claim_batch_payment(batch).unwrap());
+            assert!(s.mark_batch_paid(batch, "0xbatch").unwrap());
+            assert!(s.start_batch_item(batch, 1).unwrap());
+            assert_eq!(s.pause_batch(batch, 111).unwrap(), Some(1));
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.recover_seller_jobs().unwrap(), 0);
+        assert!(s.active_seller_job(111).unwrap().is_none());
+        assert_eq!(s.get_batch(batch).unwrap().unwrap().status, "paused");
+        assert_eq!(s.resume_paused_batch(batch, 111).unwrap(), Some(1));
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    #[test]
     fn admin_can_rewind_only_the_previous_batch_position() {
         let p = tmp();
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
@@ -2499,6 +2931,7 @@ mod tests {
         let review = s.batches_needing_payment_review().unwrap();
         assert_eq!(review.len(), 1);
         assert_eq!(review[0].status, "paying");
+        assert!(s.archive_batch(review[0].id).unwrap().is_none());
         assert!(s.reset_batch_payment(review[0].id).unwrap());
         assert_eq!(
             s.get_batch(review[0].id).unwrap().unwrap().status,
