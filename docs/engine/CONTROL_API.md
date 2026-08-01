@@ -104,15 +104,20 @@ Reasoning — diagnostic subset output и не прибавляется втор
 
 ### B. Оплата → зачисление (ИДЕМПОТЕНТНО!)
 1. Юзер платит → твой платёжный провайдер шлёт тебе **вебхук**.
-2. Ты валидируешь вебхук и зовёшь `POST /admin/account/{id}/credit` с `ref` = **id транзакции платежа**.
+2. Ты валидируешь вебхук и зовёшь `POST /admin/account/{id}/credit` с `amount_nano` (строка) и
+   `ref` = **provider-qualified id транзакции** вида `<provider>:<transaction-id>`
+   (например, `stripe:pi_123`).
 3. Движок зачислит **идемпотентно по `ref`**: если провайдер доставит вебхук дважды — второй раз
-   **НЕ задвоит** (вернёт тот же баланс). Всегда передавай `ref` = уникальный id платежа.
+   **НЕ задвоит** (вернёт тот же баланс). Положительное зачисление БЕЗ provider-qualified `ref`
+   отклоняется с `400` — это гарантия, что одинаковые transaction id разных провайдеров не
+   столкнутся в глобальном UNIQUE-индексе.
 
 ### C. Личный кабинет (баланс/ключи/история)
 - Баланс/траты: `GET /admin/account/{id}` → `balance_nano`, `spent_nano`, `reserved_nano`.
 - Список ключей юзера: `GET /admin/account/{id}/keys` (не-секретный `key_id`, маска,
   label/status/расход).
 - История платежей/трат: `GET /admin/account/{id}/ledger?limit=50` (топапы/списания сверху).
+- Разбивка расхода по моделям/токенам: `GET /admin/account/{id}/usage?window=30d` (для дашборда).
 
 ### D. Как клиент ПОЛЬЗУЕТСЯ (что показать ему в доке)
 Клиент наводит любой Anthropic-совместимый инструмент на нашу базу и свой `sk-pool-` ключ:
@@ -132,22 +137,47 @@ curl https://<база>/v1/messages \
 ### Аккаунты
 ```
 POST /admin/account                     {"handle"?, "mult_bp"?}      → 200 {account, mult_bp, handle}
-POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[...]} (max 500)
-GET  /admin/account/{id}                                             → 200 {balance_nano, spent_nano,
+POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[{account,
+                                                                            balance_nano,spent_nano,
+                                                                            reserved_nano,balance,mult_bp,
+                                                                            status,handle}]} (1..500 id;
+                                                                            400 при пустом/невалидном списке)
+GET  /admin/account/{id}                                             → 200 {account, balance_nano, spent_nano,
                                                                             reserved_nano, balance, mult_bp, status, handle,
                                                                             funding:{...}} | 404
-POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 {balance_nano, balance} | 404
-                                        (идемпотентно по ref; usd отрицательный = коррекция)
-POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {updated} | 404
+POST /admin/account/{id}/credit         {"amount_nano": "25000000000",
+                                         "ref": "<provider>:<tx>"}   → 200 {account, balance_nano, balance} | 400 | 404 | 409
+                                        (только amount_nano — десятичная строка i64 в nano;
+                                         неизвестные поля отклоняются 422. Идемпотентно по ref;
+                                         для положительной суммы ref ОБЯЗАТЕЛЕН в формате
+                                         <provider>:<transaction-id>; сумма < 0 = debit/коррекция,
+                                         ref для неё необязателен; 409 — ref уже использован
+                                         другим платежом)
+POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {account,status,updated} | 404
 POST /admin/account/{id}/pricing        {"mult_bp":0..10000}             → 200 {account,mult_bp,updated} | 404
 GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,
-                                                                            spent_nano,reserved_nano,
+                                                                            spent_nano,spent,reserved_nano,
                                                                             spend_limit_nano,expires_ts,
                                                                             created_ts,last_used_ts}]}
 GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,request_id,
                                                                             amount_nano,ref,ts,provider,
                                                                             official_nano,attribution,
                                                                             funding_allocations,...}]}
+POST /admin/account/{id}/ledger/ack     {"last_id": "12345"}          → 200 {account, consumer:"pricing",
+                                                                            last_id} | 400
+                                        (durable watermark для consumer="pricing": десятичная строка
+                                         неотрицательного integer; retention удаляет старую
+                                         charge-детализацию только ниже watermark'а)
+GET  /admin/account/{id}/usage?window=30d                            → 200 {account, window, since_ts,
+                                                                            until_ts, requests,
+                                                                            total_official_nano,
+                                                                            total_charged_nano,
+                                                                            buckets:{...}, models:[...],
+                                                                            daily:[...],
+                                                                            daily_providers:[...],
+                                                                            keys:[...]} | 404
+                                        (window = <n>d | <n>h | all; по умолчанию и при
+                                         нераспознанном значении — 30d)
 ```
 
 Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
@@ -169,6 +199,15 @@ optional `allocation_order`); старые строки честно возвр�
 IDs и generations остаются integer JSON values; `packages/contracts` нормализует их в decimal
 strings до попадания в JavaScript business logic.
 
+`GET /admin/account/{id}/usage` агрегирует сохранённые immutable компоненты settlement за
+фиксированный полуинтервал `[since_ts, until_ts)` — это НЕ пересчёт по текущему прайсу. Все
+`*_nano` в ответе — decimal strings; токены, requests и timestamps — числа. `buckets` раскладывает
+official-стоимость на `input`, `output`, `cache_read`, `cache_write`, `web_search`; строки, которые
+нельзя честно разнести по компонентам (legacy), попадают в `unattributed_legacy`, и сумма всех
+buckets всегда равна `total_official_nano`. `total_charged_nano` — сколько фактически списано с
+аккаунта после мультипликатора. `models`, `daily`, `daily_providers` и `keys` дают ту же разбивку
+по моделям, дням, провайдерам и маскированным ключам.
+
 ### Ключи доступа
 ```
 POST /admin/key                         {"account_id", "label"?,
@@ -178,13 +217,15 @@ POST /admin/key                         {"account_id", "label"?,
                                            "policy_digest": string
                                          }}
                                                                      → 200 {key:"sk-pool-…", key_id:"key_…", account,
-                                                                            spend_limit_nano,expires_ts}
+                                                                            label,spend_limit_nano,expires_ts}
                                                                        | 400 | 409  (key виден 1 раз!)
 POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled",
                                          "activation_policy_ack"?: {
                                            "effective_policy_version": integer,
                                            "policy_digest": string
-                                         }} → 200 {updated} | 400 | 404 | 409 (рекомендуется)
+                                         }} → 200 {key_id,status,updated} | 400 | 404 | 409 (рекомендуется)
+POST /admin/key-id/{key_id}/label       {"label":"…"}                → 200 {key_id,label,updated} | 400 | 404
+                                        (1..64 символа после trim)
 POST /admin/account/{id}/key-id/{key_id}/policy
                                         {"spend_limit_nano":string|null,
                                          "expires_ts":integer|null}
@@ -287,9 +328,11 @@ admission catalog/switches in one database snapshot. Stage 3C does not backfill 
 enable strict enforcement, or bypass the catalog → switches → policy order.
 
 ### Коды ошибок
-`400` неверное тело · `401` нет/неверный control-ключ · `404` аккаунт/ключ/версия не найдены ·
-`409` CAS/версионный конфликт или лимит ниже уже списанного+зарезервированного · `423` immutable
-pricing policy locked · `503` биллинг выключен.
+`400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`
+аккаунт/ключ/версия не найдены · `409` CAS/версионный конфликт или лимит ниже уже
+списанного+зарезервированного · `422` JSON синтаксически валиден, но не соответствует схеме тела
+(неизвестное поле под `deny_unknown_fields`, неверный тип) · `423` immutable
+pricing policy locked · `503` биллинг выключен или billing authority недоступен.
 На клиентском `/v1`: `402` баланс ≤ 0.
 
 ### Пример: полный цикл (bash)
@@ -298,7 +341,7 @@ CTL=<CONTROL_KEY>; B=http://127.0.0.1:8790
 AID=$(curl -s -XPOST $B/admin/account -H "x-api-key: $CTL" -H 'content-type: application/json' \
       -d '{"handle":"acme","mult_bp":2000}' | jq -r .account)
 curl -s -XPOST $B/admin/account/$AID/credit -H "x-api-key: $CTL" -H 'content-type: application/json' \
-     -d '{"usd":25,"ref":"stripe_pi_123"}'                       # зачислить $25 (идемпотентно)
+     -d '{"amount_nano":"25000000000","ref":"stripe:pi_123"}'        # зачислить $25 (идемпотентно)
 KEY=$(curl -s -XPOST $B/admin/key -H "x-api-key: $CTL" -H 'content-type: application/json' \
       -d "{\"account_id\":\"$AID\",\"label\":\"prod\"}" | jq -r .key)   # выдать клиенту
 curl -s $B/admin/account/$AID -H "x-api-key: $CTL"               # баланс для кабинета
@@ -310,7 +353,8 @@ curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # истори�
 ## 6. Чего пока НЕТ (не блокирует старт)
 
 - **Push-поток usage** движок→твой сервис отсутствует. Коммерческий worker опрашивает cursor-based
-  `GET /admin/account/{id}/ledger?after_id=...`; доставка при этом идемпотентна.
+  `GET /admin/account/{id}/ledger?after_id=...` и подтверждает обработанный курсор через
+  `POST /admin/account/{id}/ledger/ack`; доставка при этом идемпотентна.
 - **Cross-host TLS/private networking** остаётся частью Фазы 3. Текущий HTTP Control origin доступен
   только через loopback на том же host и не публикуется Caddy наружу.
 - Ротация `CONTROL_KEY` требует согласованно обновить engine, API и worker env, затем провести
