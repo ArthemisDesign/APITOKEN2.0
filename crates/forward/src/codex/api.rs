@@ -2271,7 +2271,7 @@ async fn stream_responses(
     created_at: i64,
     routing: Option<super::TurnRouting>,
 ) -> Response {
-    let task_permit = match gateway.track_background_task().await {
+    let task_permit = match gateway.track_background_task() {
         Ok(permit) => permit,
         Err(error) => return ApiError::from(error).into_response(),
     };

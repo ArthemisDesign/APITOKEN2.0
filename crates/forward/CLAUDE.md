@@ -190,7 +190,7 @@ conversation. Pool сначала прогревает два конкурент
 Local L1 всегда включён; optional Redis L2 делит TTL-привязки и ZSET тёплых homes между slots. Redis
 хранит только keyed digests tenant/native/transcript/subscription и fail-open: сеть/timeout/eviction не
 участвуют в auth, money или capacity. Первая попытка = `pool.route_affinity`
-(place/pin/brief wait/spill/rebind), ретраи = `pool.pick`. PostgreSQL capacity lease ниже остаётся
+(place/pin/immediate spill/rebind), ретраи = `pool.pick`. PostgreSQL capacity lease ниже остаётся
 авторитетным. SSE по-прежнему byte-for-byte.
 In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
 снимает слот на завершении/обрыве; 4xx → `mark_ok`.
@@ -228,16 +228,15 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 что и бой). Identity/beta/anthropic-version НЕ варьируем — они корректностные (нет ground-truth на
 правдоподобные альтернативы). Env: `CLAUDE_API_UA` (один или список), `CLAUDE_API_UA_SPREAD`.
 
-**Неограниченный client admission:** Claude и Gemini больше не возвращают локальный `429/503` из-за
-числа одновременных запросов, а per-account fair-share gate удалён. Memory-safe process envelope
-ограничивает только число тяжёлых обработчиков/response buffers: лишний запрос остаётся лёгким async
-waiter ДО auth, чтения body и денежного reserve, затем автоматически продолжает по освобождению.
-Wait future отменяется при disconnect/shutdown; метрики `admission_waiters`, `admission_waits_total`,
-`admission_wait_canceled_total`, `admission_wait_seconds_total` показывают очередь без client/account
-labels. Защитный per-subscription/profile upstream envelope сохраняется: throughput растёт вместе с
-флотом, а не ценой бан-сигнала одной подписки. Codex не имеет process/per-home/per-account request
-cap; его bounded background semaphore — только shutdown barrier и при заполнении тоже ждёт, не
-отказывает. Provider quota/cooling по-прежнему честно дают native `429 + Retry-After`.
+**Неограниченный client dispatch:** Claude, Codex и Gemini не имеют process/per-account/per-profile
+request semaphore, локальной concurrency-очереди или concurrency-отказа. Каждый прошедший auth/money
+admission запрос сразу выбирает профиль и запускает upstream attempt. In-flight счётчики живут всю
+жизнь стрима, но используются только для балансировки и observability; мягкий Claude threshold
+spill-ит на менее загруженную подписку и fail-open выбирает доступную подписку, если весь флот выше
+порога. Безлимитный RAII task tracker нужен только для graceful shutdown: он мгновенно регистрирует
+любое число уже запущенных задач, закрывает вход лишь при retirement процесса и дожидается их drain.
+Provider quota/cooling по-прежнему честно дают native `429 + Retry-After`; retry/rotation разрешены
+только до первого публичного байта, после него повторный upstream запуск запрещён.
 
 **RAII-гарды на отмену запроса (критично):** клиент рвёт соединение → future хендлера дропается на
 `await`; без гардов `mark_used(+1)` и `reserve(hold)` НЕ откатывались бы (утечка ёмкости персоны +
@@ -443,12 +442,11 @@ cap; его bounded background semaphore — только shutdown barrier и п
    time/bytes/chunks, а после первого public event ограничено число подряд идущих private/accounting
    events. После возврата Response disconnect клиента отключает downstream delivery, но task
    продолжает drain до финального usageMetadata. Shutdown deadline обязан abort-ить upstream read,
-   settle-ить последний snapshot и только потом отпустить background semaphore permit для
+   settle-ить последний snapshot и только потом отпустить background task guard для
    последующего billing flush.
-   Per-profile inflight атомарно ограничен (default 6). Resolved conversation affinity — hard first
-   choice до этого потолка; насыщенный home временно spill-ит без потери binding. Если весь eligible
-   fleet занят, запрос событийно ждёт release/reload/probe без polling и без денежного reserve;
-   disconnect отменяет waiter, shutdown будит его. Новая shared
+   Per-profile in-flight не имеет потолка и служит только сигналом балансировки. Resolved
+   conversation affinity — hard first choice при любой локальной нагрузке; unbound fan-out сразу
+   распределяется по наименее загруженным eligible profiles. Новая shared
    system/tools cache-root сначала прогревает два конкурентных profile, затем предпочитает warm
    copy. Unbound routing ставит fresh quota evidence перед stale, затем inflight, coarse quota
    steering только выше 50% used и rotating cursor: exact fractions не herd-ят бёрст на один

@@ -736,7 +736,6 @@ enum WriteCmd {
         request_id: String,
         email: String,
         lease_secs: i64,
-        max_inflight: i64,
         util_cap: f64,
         reply: oneshot::Sender<anyhow::Result<Option<registry::pg::CapacityLease>>>,
     },
@@ -2005,11 +2004,11 @@ impl AsyncBilling {
                             let _ = reply.send(result);
                         }
                         WriteCmd::AcquireCapacity { lease_id, request_id, email, lease_secs,
-                                                    max_inflight, util_cap, reply } => {
+                                                    util_cap, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "capacity acquisition",
                                 |pg| pg.acquire_capacity(
-                                    &writer_owner,&lease_id,&request_id,&email,lease_secs,max_inflight,util_cap,
+                                    &writer_owner,&lease_id,&request_id,&email,lease_secs,util_cap,
                                 ),
                             );
                             let _ = reply.send(result);
@@ -2857,7 +2856,6 @@ impl AsyncBilling {
         request_id: &str,
         email: &str,
         lease_secs: i64,
-        max_inflight: i64,
         util_cap: f64,
     ) -> anyhow::Result<Option<registry::pg::CapacityLease>> {
         let (reply, rx) = oneshot::channel();
@@ -2867,7 +2865,6 @@ impl AsyncBilling {
                 request_id: request_id.into(),
                 email: email.into(),
                 lease_secs,
-                max_inflight,
                 util_cap,
                 reply,
             })

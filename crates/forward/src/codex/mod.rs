@@ -36,13 +36,14 @@ pub use transport::{CodexRateLimitWindow, CodexRateLimits, ProcessError};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use crate::billing::AsyncBilling;
+use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 use codex_credential::{CodexCredential, SecretString};
 use futures_util::StreamExt as _;
 use history::HistoryStore;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 /// Cache-first routing context for one turn, mirroring the Claude fleet's affinity flow.
 ///
@@ -158,9 +159,6 @@ fn fast_route_rank(catalog_available: Option<bool>, catalog_fast_supported: Opti
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
 /// two competitive homes so independent sessions do not collapse onto the first subscription.
 const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
-/// Detached public stream tasks are bounded by the server-wide admission limit in practice. This
-/// larger private semaphore provides a quiescence barrier without imposing a lower runtime cap.
-const MAX_BACKGROUND_TASKS: u32 = 1_000_000;
 /// Bounded concurrency for startup preflight and the health sweep: at fleet scale (hundreds of
 /// profiles) an unbounded burst of upstream calls is itself an outage and a ban signal.
 const PREFLIGHT_CONCURRENCY: usize = 16;
@@ -2657,7 +2655,7 @@ pub struct CodexGateway {
     /// outcome on the data path immediately queues a control-plane check instead of waiting a full
     /// interval for the background loop to notice.
     probe_poke: Notify,
-    background_tasks: Arc<Semaphore>,
+    background_tasks: Arc<ActiveTaskTracker>,
     rediscover_lock: Mutex<()>,
     /// Rediscovered on every health tick, so an account the authbot finishes buying joins the pool
     /// without a restart. Readers take a snapshot; the lock is never held across a turn.
@@ -2715,7 +2713,7 @@ impl CodexGateway {
             model_catalog_cursor: AtomicU64::new(0),
             abort_notify: Notify::new(),
             probe_poke: Notify::new(),
-            background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
+            background_tasks: Arc::new(ActiveTaskTracker::default()),
             rediscover_lock: Mutex::new(()),
             homes: RwLock::new(homes),
             model_catalog: RwLock::new(None),
@@ -2917,22 +2915,12 @@ impl CodexGateway {
         &self.history
     }
 
-    /// Reserve one detached stream task in the shutdown barrier. The second shutdown check closes
-    /// the race where shutdown starts after the first check but before the permit is acquired.
-    pub(crate) async fn track_background_task(&self) -> Result<OwnedSemaphorePermit, ProcessError> {
+    /// Register one detached stream task in the shutdown barrier without a semaphore or wait.
+    pub(crate) fn track_background_task(&self) -> Result<ActiveTaskGuard, ProcessError> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(ProcessError::Closed);
         }
-        let permit = self
-            .background_tasks
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| ProcessError::Closed)?;
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(ProcessError::Closed);
-        }
-        Ok(permit)
+        self.background_tasks.track().ok_or(ProcessError::Closed)
     }
 
     async fn turn_abort_requested(&self) {
@@ -2958,27 +2946,25 @@ impl CodexGateway {
 
     pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
         self.shutting_down.store(true, Ordering::Release);
+        self.background_tasks.close();
         let cleanup_deadline = deadline.map(|deadline| deadline + FORCED_SHUTDOWN_CLEANUP_GRACE);
-        let barrier = self
-            .background_tasks
-            .clone()
-            .acquire_many_owned(MAX_BACKGROUND_TASKS);
-        let _background_barrier = match deadline {
-            Some(deadline) => match tokio::time::timeout_at(deadline, barrier).await {
-                Ok(permit) => permit.ok(),
-                Err(_) => {
+        match deadline {
+            Some(deadline) => {
+                if tokio::time::timeout_at(deadline, self.background_tasks.wait_idle())
+                    .await
+                    .is_err()
+                {
                     self.abort_active_turns();
                     // A task can be stuck on downstream backpressure or in cancellation cleanup.
-                    // Waiting for its semaphore permit again without a deadline recreated the
-                    // ten-minute singleton outage this deadline exists to prevent.
+                    // Waiting again without a deadline recreated the ten-minute singleton outage
+                    // this deadline exists to prevent.
                     eprintln!(
                         "Codex forced shutdown: abandoning residual tracked tasks after deadline"
                     );
-                    None
                 }
-            },
-            None => barrier.await.ok(),
-        };
+            }
+            None => self.background_tasks.wait_idle().await,
+        }
         // Also cancel an untracked provider operation such as a health probe before retirement.
         self.abort_active_turns();
         let _reconcile = match cleanup_deadline {

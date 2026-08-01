@@ -20,19 +20,20 @@ pool не знает Redis/секретов и получает только opa
 read-only hint до distributed claim; `route_affinity` повторно валидирует его и атомарно занимает слот:
 - **пин** — свежая привязка к здоровому дому → та же подписка (кэш тёплый, паттерн одного юзера);
 - **спилл** — дом «ещё наш» (кэш не остыл, не глубокий бан, под потолком), но временно занят
-  (бёрст-cooling < `REBIND_AFTER` или `inflight ≥ MAX_INFLIGHT`) → один запрос уходит на пул через
-  `select_best`, **привязка сохраняется** (следующий запрос вернётся на тёплый дом);
+  (бёрст-cooling < `REBIND_AFTER` или `inflight ≥ MAX_INFLIGHT`) → запрос немедленно уходит на менее
+  загруженный профиль через `select_best`, **привязка сохраняется**; если здоровый home единственный,
+  load-threshold fail-open оставляет запрос на нём без ожидания/отказа;
 - **(пере)привязка** — дома нет / дом dead, ≥100% hard cap или глубоко недоступен →
-  `place_best`: capacity-weighted placement (макс свободной USD-ёмкости) среди персон под конвертом
-  конкуррентности (`inflight < MAX_INFLIGHT`); caller атомарно меняет shared binding.
+  `place_best`: capacity-weighted placement (макс свободной USD-ёмкости), где `MAX_INFLIGHT` — лишь
+  мягкий routing threshold; если весь флот выше него, выбор продолжается по минимальному in-flight.
 
 Shared cache-root НЕ lineage: `peek_affinity_home_with_warm` получает несколько opaque warm homes,
 прогревает минимум два конкурентных дома (если второй имеет ≥70% лучшей свободной ёмкости), затем
 предпочитает лучший тёплый. Сильно более свободная холодная персона побеждает и сама становится тёплой
 после успешного ответа. Это soft hint; все обычные health/reserve/inflight проверки остаются теми же.
 
-Continuation использует hard 100% cap, а новый placement — мягкий `Reserve`; ценный большой префикс
-может один раз кратко подождать busy/cooling дом до spill. Legacy `route(u64)` и bounded `bindings`
+Continuation использует hard 100% provider cap, а новый placement — мягкий `Reserve`; busy home
+spill-ится немедленно, без локального ожидания. Legacy `route(u64)` и bounded `bindings`
 оставлены для совместимости тестов/внутренних callers. Сетей, env и persistence в pool нет.
 
 **Персист (переживание рестарта):** `export_state`/`import_state` (через `registry::PoolStateRow`)
@@ -50,11 +51,12 @@ poke персиста. Калибровка хук НЕ дёргает (част
 per-email потолком; ослабление «не зависать» использует `Reserve::FULL` (под пиком дотянем до 100%,
 чем 429 клиенту). Тюн env `CLAUDE_API_RESERVE_5H/7D/JITTER`; в тестах — jitter=0 для детерминизма.
 
-**In-flight = слот конкуррентности на всю жизнь стрима:** `mark_used` (+1 на pick) → на успехе
+**In-flight = наблюдаемый счётчик на всю жизнь стрима:** `mark_used` (+1 на pick) → на успехе
 `mark_healthy` (снять cooling, in-flight НЕ трогать) → `end_stream` (−1) из tee-метеринга forward на
 завершении/обрыве стрима. 4xx → `mark_ok` (−1 сразу). Так `place_best`/`select_best` видят реальную
 параллельную нагрузку персоны (а не «0 сразу после заголовков») → не наваливают лишние стримы на
-один аккаунт (и лимит-риск, и аномалия).
+один аккаунт (и лимит-риск, и аномалия). Это не admission cap: все candidates выше мягкого порога
+выбираются fail-open и продолжают параллельно.
 
 **Durable auth-health (детект забаненного токена — Claude банит подписки):** `AuthState`
 (`Healthy`→`Suspect`→`Dead`) на `Live`, персист в `subs.auth_state` (переживает рестарт/blue-green —

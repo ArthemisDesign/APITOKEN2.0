@@ -1647,7 +1647,7 @@ mod tests {
         let hinted = pool.peek_affinity_home().unwrap();
         let resolution = store.claim(&first, &store.home_id(&hinted.email)).await;
         let first_home =
-            match pool.route_affinity(&resolution.home, 0, true, |email| store.home_id(email)) {
+            match pool.route_affinity(&resolution.home, true, |email| store.home_id(email)) {
                 pool::AffinityRoute::Selected { sub, .. } => sub.email,
                 other => panic!("unexpected first route: {other:?}"),
             };
@@ -1665,7 +1665,7 @@ mod tests {
             )
             .unwrap();
         let resolved = store.resolve(&continued).await.unwrap();
-        match pool.route_affinity(&resolved.home, 0, false, |email| store.home_id(email)) {
+        match pool.route_affinity(&resolved.home, false, |email| store.home_id(email)) {
             pool::AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(sub.email, first_home);
                 assert_eq!(disposition, pool::AffinityDisposition::Pinned);

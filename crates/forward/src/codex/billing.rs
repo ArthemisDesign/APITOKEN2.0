@@ -912,8 +912,6 @@ mod tests {
             util_cap: 1.0,
             cool_secs: 60,
             smooth_wait_ms: 0,
-            affinity_wait_ms: 0,
-            affinity_wait_min_bytes: 0,
             poll: false,
             inject_identity: false,
             identity: String::new(),
@@ -956,7 +954,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,
         }

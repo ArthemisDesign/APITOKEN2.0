@@ -25,10 +25,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-// A non-SSE response may require a 32 MiB usage document copy. Keep the aggregate heavy-processing
-// envelope comfortably below systemd MemoryMax=2G. This is not a client admission cap: additional
-// requests wait asynchronously before auth/body/reservation and are resumed as permits are released.
-const MAX_CONCURRENT: usize = 24;
 const LEDGER_RETENTION_DAYS: i64 = 30;
 /// Terminal reservations and their actual/shadow children outlive the maximum supported replay
 /// age by a wide margin. Keep this independent from analytics retention.
@@ -1116,8 +1112,8 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
     let serves_anthropic = s.provider.serves_anthropic();
-    // Потолок параллельных запросов на подписку (env CLAUDE_API_MAX_INFLIGHT) — ставим ДО
-    // создания пула, чтобы route/pick/capacity видели актуальное значение.
+    // Мягкий routing/spill threshold (env CLAUDE_API_MAX_INFLIGHT) ставим ДО создания пула.
+    // Он балансирует нагрузку, но не является admission cap и никогда не блокирует dispatch.
     if serves_anthropic {
         pool::set_max_inflight(s.max_inflight);
     }
@@ -1371,18 +1367,6 @@ async fn serve() -> Result<()> {
     } else {
         eprintln!("pricing shadow: disabled (default-off)");
     }
-    let provider_parallelism = match s.provider {
-        forward::ProviderMode::Anthropic | forward::ProviderMode::Combined => {
-            fleet_size.saturating_mul(s.max_inflight.max(1) as usize)
-        }
-        forward::ProviderMode::Gemini => gemini
-            .as_ref()
-            .map(|gateway| gateway.admission_capacity())
-            .unwrap_or(1),
-        // Codex does not enter this semaphore; per-home parallelism is intentionally unbounded.
-        forward::ProviderMode::OpenAi => MAX_CONCURRENT,
-    };
-    let active_processing_slots = provider_parallelism.clamp(1, MAX_CONCURRENT);
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1404,9 +1388,6 @@ async fn serve() -> Result<()> {
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
         metrics,
-        // The active envelope follows protected provider capacity up to the memory-safe ceiling.
-        // Requests beyond it queue instead of receiving a synthetic concurrency error.
-        concurrency: Arc::new(tokio::sync::Semaphore::new(active_processing_slots)),
         probe_poke: if s.proxy.poll {
             Some(poke.clone())
         } else {

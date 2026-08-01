@@ -4,7 +4,7 @@ use super::calibration::{self, WindowCalibration, FRACTION_SCALE};
 use super::config::{GeminiConfig, GeminiProfileSpec, GeminiProfilesFile};
 use super::transport::{attest_node_binary, ProfileTransport, TransportRequest, TransportResponse};
 use crate::billing::AsyncBilling;
-use crate::metrics::Metrics;
+use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 use anyhow::{bail, Context};
 use futures_util::StreamExt;
 use gemini_credential::{decode_envelope, GeminiCredential, OAuthKind, SecretString};
@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex, RwLock};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const MAX_BACKGROUND_TASKS: u32 = 4_096;
 const HEALTH_PROBE_CONCURRENCY: usize = 16;
 const ACCESS_TOKEN_SKEW_SECS: i64 = 120;
 /// Match the Claude/Codex shared-root discipline: independent sessions with the same large
@@ -25,7 +24,7 @@ const ACCESS_TOKEN_SKEW_SECS: i64 = 120;
 const CACHE_ROOT_MIN_WARM_PROFILES: usize = 2;
 /// Quota steering is intentionally dormant while a profile has at least half of its model window.
 /// Exact fractions below this boundary would otherwise herd a burst onto the mathematically
-/// emptiest subscription instead of spreading it across the available concurrency envelope.
+/// emptiest subscription instead of spreading it across the available profile set.
 const QUOTA_STEER_FLOOR_USED_PERCENT: i64 = 50;
 const QUOTA_STEER_BUCKET_PERCENT: i64 = 10;
 
@@ -1438,24 +1437,17 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
 
 pub(crate) struct GeminiLease {
     profile: Arc<GeminiProfile>,
-    preserve_affinity_home: bool,
-    capacity_notify: Arc<tokio::sync::Notify>,
 }
 
 impl GeminiLease {
     pub(crate) fn profile(&self) -> &Arc<GeminiProfile> {
         &self.profile
     }
-
-    pub(crate) fn preserves_affinity_home(&self) -> bool {
-        self.preserve_affinity_home
-    }
 }
 
 impl Drop for GeminiLease {
     fn drop(&mut self) {
         self.profile.inflight.fetch_sub(1, Ordering::AcqRel);
-        self.capacity_notify.notify_one();
     }
 }
 
@@ -1471,8 +1463,7 @@ pub struct GeminiGateway {
     shutting_down: AtomicBool,
     abort_streams: AtomicBool,
     abort_notify: tokio::sync::Notify,
-    capacity_notify: Arc<tokio::sync::Notify>,
-    background_tasks: Arc<tokio::sync::Semaphore>,
+    background_tasks: Arc<ActiveTaskTracker>,
 }
 
 impl GeminiGateway {
@@ -1490,15 +1481,14 @@ impl GeminiGateway {
         if cfg.models.is_empty() {
             bail!("Gemini model allowlist is empty");
         }
-        if cfg.max_inflight_per_profile == 0
-            || cfg.model_failure_cool_secs <= 0
+        if cfg.model_failure_cool_secs <= 0
             || cfg.model_failure_max_cool_secs < cfg.model_failure_cool_secs
             || !cfg.quota_reserve_fraction.is_finite()
             || !(0.0..=1.0).contains(&cfg.quota_reserve_fraction)
             || !cfg.quota_reserve_jitter.is_finite()
             || !(0.0..=1.0).contains(&cfg.quota_reserve_jitter)
         {
-            bail!("Gemini pool admission configuration is invalid");
+            bail!("Gemini pool routing configuration is invalid");
         }
         if cfg.upstream.starts_with("https://") {
             if cfg.antigravity_version != gemini_credential::ANTIGRAVITY_VERSION
@@ -1529,22 +1519,12 @@ impl GeminiGateway {
             shutting_down: AtomicBool::new(false),
             abort_streams: AtomicBool::new(false),
             abort_notify: tokio::sync::Notify::new(),
-            capacity_notify: Arc::new(tokio::sync::Notify::new()),
-            background_tasks: Arc::new(tokio::sync::Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
+            background_tasks: Arc::new(ActiveTaskTracker::default()),
         })
     }
 
     pub fn config(&self) -> &GeminiConfig {
         &self.cfg
-    }
-
-    /// Aggregate protected upstream parallelism. Client admission may exceed this number: excess
-    /// requests remain lightweight waiters and resume when a lease is released.
-    pub fn admission_capacity(&self) -> usize {
-        self.profiles_snapshot()
-            .len()
-            .saturating_mul(self.cfg.max_inflight_per_profile)
-            .max(1)
     }
 
     fn profiles_snapshot(&self) -> Vec<Arc<GeminiProfile>> {
@@ -1591,7 +1571,6 @@ impl GeminiGateway {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
-        self.capacity_notify.notify_waiters();
         Ok(true)
     }
 
@@ -1667,17 +1646,6 @@ impl GeminiGateway {
             .health_probe_interval_secs
             .saturating_mul(2)
             .clamp(60, 3_600) as i64;
-        // A healthy preferred home that is only at its atomic in-flight ceiling is a temporary
-        // spill, not a reason to move the conversation. Deeper cooling/auth/quota rejection still
-        // permits a successful alternate to become the new home.
-        let mut preserve_preferred = preferred_id
-            .and_then(|id| profiles.iter().find(|profile| profile.id() == id))
-            .is_some_and(|profile| {
-                !excluded.contains(profile.id())
-                    && profile.authenticated.load(Ordering::Acquire)
-                    && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
-                    && profile.inflight.load(Ordering::Acquire) >= self.cfg.max_inflight_per_profile
-            });
         let mut candidates = profiles
             .iter()
             .enumerate()
@@ -1685,7 +1653,6 @@ impl GeminiGateway {
                 !excluded.contains(profile.id())
                     && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
                     && profile.authenticated.load(Ordering::Acquire)
-                    && profile.inflight.load(Ordering::Acquire) < self.cfg.max_inflight_per_profile
             })
             .map(|(index, profile)| {
                 let (snapshot_stale, remaining) = if generation {
@@ -1780,92 +1747,9 @@ impl GeminiGateway {
                 ordered.push(candidate.1);
             }
         }
-        for profile in ordered {
-            let is_preferred = preferred_id == Some(profile.id());
-            let acquired = profile
-                .inflight
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    (current < self.cfg.max_inflight_per_profile).then_some(current + 1)
-                })
-                .is_ok();
-            if acquired {
-                return Some(GeminiLease {
-                    profile,
-                    preserve_affinity_home: preserve_preferred && !is_preferred,
-                    capacity_notify: self.capacity_notify.clone(),
-                });
-            }
-            if is_preferred {
-                // The read-side candidate check raced another admission. Treat the fallback exactly
-                // like a profile observed at its cap before sorting: spill this request only.
-                preserve_preferred = true;
-            }
-        }
-        None
-    }
-
-    fn locally_saturated(
-        &self,
-        model_id: &str,
-        excluded: &HashSet<String>,
-        generation: bool,
-    ) -> bool {
-        let now = pool::now();
-        self.profiles_snapshot().iter().any(|profile| {
-            !excluded.contains(profile.id())
-                && profile.authenticated.load(Ordering::Acquire)
-                && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
-                && profile.inflight.load(Ordering::Acquire) >= self.cfg.max_inflight_per_profile
-        })
-    }
-
-    /// Wait only for process-local saturation. Provider quota/auth/cooling remains a terminal
-    /// selection result so callers can return the honest native 429/503 with its reset evidence.
-    /// Registering the notification before rechecking selection closes the release-before-wait race.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn select_routed_wait(
-        &self,
-        model_id: &str,
-        excluded: &HashSet<String>,
-        preferred_id: Option<&str>,
-        warm_profile_ids: &HashSet<String>,
-        place_cache_root: bool,
-        generation: bool,
-        metrics: &Metrics,
-    ) -> Option<GeminiLease> {
-        let mut wait: Option<crate::metrics::AdmissionWaitGuard<'_>> = None;
-        loop {
-            let notified = self.capacity_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            if let Some(lease) = self.select_routed(
-                model_id,
-                excluded,
-                preferred_id,
-                warm_profile_ids,
-                place_cache_root,
-                generation,
-            ) {
-                if let Some(guard) = wait.take() {
-                    guard.complete();
-                }
-                return Some(lease);
-            }
-            if self.shutting_down.load(Ordering::Acquire) {
-                return None;
-            }
-            if !self.locally_saturated(model_id, excluded, generation) {
-                if let Some(guard) = wait.take() {
-                    guard.complete();
-                }
-                return None;
-            }
-            if wait.is_none() {
-                wait = Some(metrics.admission_wait());
-            }
-            notified.await;
-        }
+        let profile = ordered.into_iter().next()?;
+        profile.inflight.fetch_add(1, Ordering::AcqRel);
+        Some(GeminiLease { profile })
     }
 
     pub(crate) fn profile_id_for_home(
@@ -1920,22 +1804,13 @@ impl GeminiGateway {
             .any(|profile| profile.authenticated.load(Ordering::Acquire))
     }
 
-    pub(crate) async fn track_background_task(
-        &self,
-    ) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+    pub(crate) fn track_background_task(&self) -> anyhow::Result<ActiveTaskGuard> {
         if self.shutting_down.load(Ordering::Acquire) {
             bail!("Gemini provider is shutting down");
         }
-        let permit = self
-            .background_tasks
-            .clone()
-            .acquire_owned()
-            .await
-            .context("Gemini background task barrier closed")?;
-        if self.shutting_down.load(Ordering::Acquire) {
-            bail!("Gemini provider is shutting down");
-        }
-        Ok(permit)
+        self.background_tasks
+            .track()
+            .ok_or_else(|| anyhow::anyhow!("Gemini provider is shutting down"))
     }
 
     pub(crate) async fn stream_abort_requested(&self) {
@@ -2110,31 +1985,24 @@ impl GeminiGateway {
                 }
             }
         }
-        self.capacity_notify.notify_waiters();
         healthy
     }
 
     pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
         self.shutting_down.store(true, Ordering::Release);
-        self.capacity_notify.notify_waiters();
-        let barrier = self
-            .background_tasks
-            .clone()
-            .acquire_many_owned(MAX_BACKGROUND_TASKS);
-        let _background_barrier = match deadline {
-            Some(deadline) => match tokio::time::timeout_at(deadline, barrier).await {
-                Ok(permit) => permit.ok(),
-                Err(_) => {
+        self.background_tasks.close();
+        match deadline {
+            Some(deadline) => {
+                if tokio::time::timeout_at(deadline, self.background_tasks.wait_idle())
+                    .await
+                    .is_err()
+                {
                     self.abort_active_streams();
-                    self.background_tasks
-                        .clone()
-                        .acquire_many_owned(MAX_BACKGROUND_TASKS)
-                        .await
-                        .ok()
+                    self.background_tasks.wait_idle().await;
                 }
-            },
-            None => barrier.await.ok(),
-        };
+            }
+            None => self.background_tasks.wait_idle().await,
+        }
         self.abort_active_streams();
         let profiles = self.profiles_snapshot();
         futures_util::stream::iter(profiles)
@@ -2251,7 +2119,6 @@ mod tests {
             connect_timeout_secs: 1,
             read_timeout_secs: 1,
             max_transport_retries: 1,
-            max_inflight_per_profile: 6,
             auth_quarantine_secs: 900,
             transport_cool_secs: 5,
             model_failure_cool_secs: 15,
@@ -2603,24 +2470,32 @@ mod tests {
     }
 
     #[test]
-    fn per_profile_concurrency_cap_is_atomic_and_reopens_when_the_lease_drops() {
+    fn one_profile_accepts_ten_thousand_immediate_leases() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
         let roster = dir.join("profiles.json");
         write_roster(&roster, &[("profile_a", &first)]);
-        let mut cfg = config(&roster, ring);
-        cfg.max_inflight_per_profile = 1;
-        let gateway = GeminiGateway::new(cfg).unwrap();
-        let lease = gateway
-            .select("gemini-test", &HashSet::new(), None, true)
-            .unwrap();
-        assert!(gateway
-            .select("gemini-test", &HashSet::new(), None, true)
-            .is_none());
-        drop(lease);
-        assert!(gateway
-            .select("gemini-test", &HashSet::new(), None, true)
-            .is_some());
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let leases = (0..10_000)
+            .map(|_| {
+                gateway
+                    .select("gemini-test", &HashSet::new(), None, true)
+                    .expect("profile load must never reject local admission")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            gateway.profiles_snapshot()[0]
+                .inflight
+                .load(Ordering::Acquire),
+            10_000
+        );
+        drop(leases);
+        assert_eq!(
+            gateway.profiles_snapshot()[0]
+                .inflight
+                .load(Ordering::Acquire),
+            0
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2677,7 +2552,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_conversation_stays_sticky_inside_the_concurrency_envelope() {
+    fn resolved_conversation_stays_sticky_while_inflight_is_only_a_load_signal() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
         let second = write_credential(&dir, &ring, "profile_b", "subject-b");
@@ -2697,37 +2572,32 @@ mod tests {
     }
 
     #[test]
-    fn saturated_affinity_spills_temporarily_then_returns_to_its_home() {
+    fn preferred_profile_stays_sticky_at_any_inflight_depth() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
         let second = write_credential(&dir, &ring, "profile_b", "subject-b");
         let roster = dir.join("profiles.json");
         write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
-        let mut cfg = config(&roster, ring);
-        cfg.max_inflight_per_profile = 1;
-        let gateway = GeminiGateway::new(cfg).unwrap();
-
-        let occupied_home = gateway
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let occupied = (0..1_000)
+            .map(|_| {
+                gateway
+                    .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(occupied
+            .iter()
+            .all(|lease| lease.profile().id() == "profile_a"));
+        let next = gateway
             .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
             .unwrap();
-        assert_eq!(occupied_home.profile().id(), "profile_a");
-        let spill = gateway
-            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
-            .unwrap();
-        assert_eq!(spill.profile().id(), "profile_b");
-        assert!(spill.preserves_affinity_home());
-
-        drop(occupied_home);
-        let returned = gateway
-            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
-            .unwrap();
-        assert_eq!(returned.profile().id(), "profile_a");
-        assert!(!returned.preserves_affinity_home());
+        assert_eq!(next.profile().id(), "profile_a");
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn concurrent_admission_never_oversubscribes_any_profile() {
+    fn concurrent_admission_accepts_every_request_without_a_profile_cap() {
         let (dir, ring) = fixture();
         let credentials = (0..4)
             .map(|index| {
@@ -2743,9 +2613,7 @@ mod tests {
             .map(|(id, path)| (id.as_str(), path.as_path()))
             .collect::<Vec<_>>();
         write_roster(&roster, &roster_entries);
-        let mut cfg = config(&roster, ring);
-        cfg.max_inflight_per_profile = 3;
-        let gateway = Arc::new(GeminiGateway::new(cfg).unwrap());
+        let gateway = Arc::new(GeminiGateway::new(config(&roster, ring)).unwrap());
         let workers = 64usize;
         let start = Arc::new(std::sync::Barrier::new(workers + 1));
         let release = Arc::new(AtomicBool::new(false));
@@ -2779,9 +2647,13 @@ mod tests {
             thread.join().unwrap();
         }
 
-        assert_eq!(counts.values().sum::<usize>(), 12);
+        assert_eq!(counts.values().sum::<usize>(), workers);
         assert_eq!(counts.len(), 4);
-        assert!(counts.values().all(|count| *count == 3));
+        assert!(counts.values().all(|count| *count > 0));
+        assert!(gateway
+            .profiles_snapshot()
+            .iter()
+            .all(|profile| profile.inflight.load(Ordering::Acquire) == 0));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2827,17 +2699,19 @@ mod tests {
     }
 
     #[test]
-    fn saturated_profile_does_not_publish_a_fake_provider_reset() {
+    fn high_inflight_does_not_publish_a_fake_provider_reset() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
         let roster = dir.join("profiles.json");
         write_roster(&roster, &[("profile_a", &first)]);
-        let mut cfg = config(&roster, ring);
-        cfg.max_inflight_per_profile = 1;
-        let gateway = GeminiGateway::new(cfg).unwrap();
-        let _lease = gateway
-            .select("gemini-test", &HashSet::new(), None, true)
-            .unwrap();
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let _leases = (0..1_000)
+            .map(|_| {
+                gateway
+                    .select("gemini-test", &HashSet::new(), None, true)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
         assert!(gateway
             .soonest_ready("gemini-test", &HashSet::new(), true)
             .is_none());

@@ -110,9 +110,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
   rotation on an explicit provider `reached` verdict or
   an explicit provider `limit_reached`/`allowed: false` verdict, and returns a single
   OpenAI-shaped `429 + Retry-After` at the soonest window reset.
-- **Concurrency.** User turns have no process, per-home or per-account request ceiling. In-flight is
-  only a load-balancing signal. The bounded detached-task semaphore exists solely as the shutdown
-  drain barrier; if it is ever full, admission waits instead of returning a local concurrency error.
+- **Concurrency.** User turns have no process, per-home or per-account request ceiling or wait path.
+  In-flight is only a load-balancing signal. An unlimited RAII task tracker registers every detached
+  turn immediately and is closed only during graceful shutdown, when it becomes the drain barrier.
 - **Blame classification.** 429/usage-limit → account fault (cooling until reset, rotation does
   not spend the transport budget); first 401 → one forced refresh + one retry on the same
   profile, second → auth quarantine; timeout/5xx/EOF → transport axis
@@ -223,7 +223,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
 - Retry is permitted only before the first translated native SSE event reaches the client.
 - Client disconnect detaches the upstream read; the turn drains to its authoritative final
   usage before settlement, and the shutdown deadline aborts the read, settles the last snapshot
-  and only then releases the background semaphore permit.
+  and only then releases the background task guard.
 - Public errors are OpenAI-shaped and carry no pool/profile/proxy/upstream internals; the
   regression gate is `codex::api::tests::public_errors_never_leak_internal_architecture`.
 - Blue-green is trivial compared to the app-server era: generations own no children and no

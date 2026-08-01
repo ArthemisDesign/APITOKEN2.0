@@ -26,12 +26,10 @@ struct Reservation {
 }
 
 pub(crate) struct GeminiAdmission {
-    _request_permit: tokio::sync::OwnedSemaphorePermit,
     reservation: Option<Reservation>,
 }
 
 pub(crate) struct PendingGeminiAdmission {
-    request_permit: tokio::sync::OwnedSemaphorePermit,
     authz: Authz,
 }
 
@@ -41,10 +39,7 @@ impl PendingGeminiAdmission {
     }
 
     pub(crate) fn without_reserve(self) -> GeminiAdmission {
-        GeminiAdmission {
-            _request_permit: self.request_permit,
-            reservation: None,
-        }
+        GeminiAdmission { reservation: None }
     }
 
     pub(crate) async fn reserve(
@@ -111,13 +106,7 @@ impl PendingGeminiAdmission {
             }
             _ => None,
         };
-        Ok((
-            GeminiAdmission {
-                _request_permit: self.request_permit,
-                reservation,
-            },
-            effective_output_tokens,
-        ))
+        Ok((GeminiAdmission { reservation }, effective_output_tokens))
     }
 }
 
@@ -206,9 +195,6 @@ pub(crate) async fn begin_admission(
     if !app.authority_ready.load(Ordering::Acquire) {
         return Err(AdmissionError::Unavailable);
     }
-    let request_permit = crate::state::acquire_processing_permit(app)
-        .await
-        .map_err(|()| AdmissionError::Unavailable)?;
     let authz = authorize(app, headers, peer).await;
     match &authz {
         Authz::Admin { .. } => {}
@@ -232,10 +218,7 @@ pub(crate) async fn begin_admission(
     }
     Metrics::inc(&app.metrics.requests);
 
-    Ok(PendingGeminiAdmission {
-        request_permit,
-        authz,
-    })
+    Ok(PendingGeminiAdmission { authz })
 }
 
 fn reserve_cost(
@@ -456,8 +439,6 @@ mod tests {
             util_cap: 1.0,
             cool_secs: 1,
             smooth_wait_ms: 0,
-            affinity_wait_ms: 0,
-            affinity_wait_min_bytes: 0,
             poll: false,
             inject_identity: false,
             identity: String::new(),
@@ -500,7 +481,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,
         }

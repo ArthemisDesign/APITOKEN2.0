@@ -48,7 +48,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   персистит готовую строку. `subs_admin` отдаёт вердикт панели. `add`/`add_file` сбрасывают health в
   healthy при (пере)выпуске токена (авто-ревайв). PostgreSQL — authority; SQLite-зеркало лишь для сборки.
 - **Персист состояния пула (таблица `pool_state`)** — CAS-versioned and owner-epoch fenced. Atomic
-  `capacity_leases` validate cooldown/utilization/inflight and increment inflight in one transaction.
+  `capacity_leases` validate cooldown/utilization and atomically track inflight without rejecting
+  concurrent work; release/renew/reconciliation remain durable and owner-fenced.
   `leader_leases` elect exactly one poller. `PoolStateRow` (примитивы, registry
   не знает типов `pool`) + `save_pool_state`/`load_pool_state`. Хранит durable-состояние (cooling/
   калибровка/spent/util/reset) для переживания рестарта. Логику решает `pool` (export/import), registry

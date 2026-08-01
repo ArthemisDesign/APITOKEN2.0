@@ -26,7 +26,7 @@ pub struct Settings {
     pub reserve_jitter: f64, // ± разброс порога между подписками (антифингерпринт; деф 0.02)
     pub readiness_delay_secs: u64, // задержка после снятия readiness перед дренажем (деф 3с)
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва
-    pub max_inflight: i64, // потолок параллельных запросов на подписку (деф 6; выше = больше параллели, риск бана)
+    pub max_inflight: i64, // мягкий Claude spill/load threshold; не admission cap
     /// Optional shared L2 for ephemeral cache affinity. PostgreSQL remains authoritative.
     pub redis_url: Option<String>,
     pub affinity_secret: Option<String>,
@@ -433,12 +433,6 @@ fn gemini_config() -> Option<GeminiConfig> {
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
         max_transport_retries: bounded_usize("CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES", 1, 0, 5),
-        max_inflight_per_profile: bounded_usize(
-            "CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE",
-            6,
-            1,
-            64,
-        ),
         auth_quarantine_secs: bounded_i64(
             "CLAUDE_API_GEMINI_AUTH_QUARANTINE_SECS",
             900,
@@ -841,8 +835,8 @@ impl Settings {
                 provider,
                 bounded_u64("CLAUDE_API_DRAIN_DEADLINE_SECS", 540, 5, 595),
             ),
-            // Потолок параллельных запросов на подписку. Дефолт 6 (человеческий конверт/анти-бан).
-            // Высокое значение снимает потолок concurrency — больше параллели ценой риска бан-сигнала.
+            // Мягкий порог spill/балансировки по подпискам. Он не ждёт и не отклоняет запросы:
+            // весь флот выше порога обслуживается fail-open по минимальному in-flight.
             max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
             redis_url,
             affinity_secret,
@@ -883,18 +877,6 @@ impl Settings {
                 cool_secs: bounded_i64("CLAUDE_API_COOL_SECS", 300, 1, 8 * 24 * 3600),
                 // Гладкий UX: тихий wait+retry ротации при транзиентной нехватке (деф 8с). 0 = выкл.
                 smooth_wait_ms: bounded_u64("CLAUDE_API_SMOOTH_WAIT_MS", 8_000, 0, 60_000),
-                affinity_wait_ms: bounded_u64(
-                    "CLAUDE_API_AFFINITY_WAIT_MS",
-                    250,
-                    0,
-                    2_000,
-                ),
-                affinity_wait_min_bytes: bounded_usize(
-                    "CLAUDE_API_AFFINITY_WAIT_MIN_BYTES",
-                    16 * 1024,
-                    0,
-                    32 * 1024 * 1024,
-                ),
                 poll: ev_bool("CLAUDE_API_POLL", true),
                 inject_identity: ev_bool("CLAUDE_API_INJECT_IDENTITY", true),
                 identity: ev_or("CLAUDE_API_IDENTITY", CLAUDE_CODE_IDENTITY),

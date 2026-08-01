@@ -37,7 +37,6 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 const CACHE_ROOT_MIN_WARM_HOMES: usize = 2;
 const CACHE_ROOT_MIN_CAPACITY_RATIO: f64 = 0.70;
@@ -138,46 +137,6 @@ impl Drop for HoldGuard {
 
 type ResponseByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
 
-/// Держит слот тяжёлой обработки до EOF/ошибки/Drop response body, а не только до возврата
-/// HTTP-заголовков. Поэтому длинные SSE и максимальные JSON-ответы входят в общий memory envelope,
-/// а дополнительные принятые запросы остаются лёгкими отменяемыми waiters.
-struct ProcessingPermitStream {
-    inner: ResponseByteStream,
-    request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-}
-impl ProcessingPermitStream {
-    fn new(
-        inner: ResponseByteStream,
-        request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Self {
-        Self {
-            inner,
-            request_permit,
-        }
-    }
-
-    fn release(&mut self) {
-        self.request_permit.take();
-    }
-}
-impl Stream for ProcessingPermitStream {
-    type Item = Result<bytes::Bytes, std::io::Error>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let me = self.get_mut();
-        match me.inner.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Err(e))) => {
-                me.release();
-                Poll::Ready(Some(Err(e)))
-            }
-            Poll::Ready(None) => {
-                me.release();
-                Poll::Ready(None)
-            }
-            other => other,
-        }
-    }
-}
-
 // Anthropic Messages принимает тела до 32 МиБ. Держим тот же публичный предел; точное различение
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
@@ -187,7 +146,10 @@ pub(crate) enum BodyReadError {
     Read,
 }
 
-pub(crate) async fn read_body_limited(body: Body, limit: usize) -> Result<bytes::Bytes, BodyReadError> {
+pub(crate) async fn read_body_limited(
+    body: Body,
+    limit: usize,
+) -> Result<bytes::Bytes, BodyReadError> {
     let mut stream = body.into_data_stream();
     let mut out = bytes::BytesMut::new();
     while let Some(chunk) = stream.next().await {
@@ -835,15 +797,6 @@ pub async fn forward(
             Some(2),
         );
     }
-    // Занимаем тяжёлый слот ДО авторизации и чтения тела. Когда envelope заполнен, запрос остаётся
-    // лёгким отменяемым waiter и продолжает сам после освобождения — локального concurrency 429/503
-    // больше нет. Permit передаётся response body и живёт до EOF/drop клиента.
-    let mut request_permit = Some(match crate::state::acquire_processing_permit(&app).await {
-        Ok(permit) => permit,
-        Err(()) => {
-            return local_err_for(LocalErr::Overloaded, "request_admission_closed", Some(2));
-        }
-    });
     let (parts, body) = req.into_parts();
     let billable = parts.method == Method::POST && parts.uri.path() == "/v1/messages";
     let authz = authorize(&app, &parts.headers, &peer).await;
@@ -1564,9 +1517,6 @@ pub async fn forward(
         Err(()) => return local_err(LocalErr::BadBeta, None),
     };
 
-    let mut affinity_wait_available = affinity_input.as_ref().is_some_and(|input| {
-        app.cfg.affinity_wait_ms > 0 && input.cacheable_bytes >= app.cfg.affinity_wait_min_bytes
-    });
     let mut affinity_newly_claimed = false;
 
     // Гладкий UX: транзиентную нехватку ёмкости (все подписки cooling/за util_cap / breaker /
@@ -1631,35 +1581,21 @@ pub async fn forward(
 
                     let mut selected = None;
                     if let Some(resolution) = affinity_resolution.as_mut() {
-                        loop {
-                            let wait_ms = if affinity_wait_available {
-                                app.cfg.affinity_wait_ms
-                            } else {
-                                0
-                            };
-                            match app.pool.route_affinity(
-                                &resolution.home,
-                                wait_ms,
-                                affinity_newly_claimed,
-                                |email| app.affinity.home_id(email),
-                            ) {
-                                pool::AffinityRoute::Wait { millis } => {
-                                    affinity_wait_available = false;
-                                    tokio::time::sleep(std::time::Duration::from_millis(millis))
-                                        .await;
+                        match app.pool.route_affinity(
+                            &resolution.home,
+                            affinity_newly_claimed,
+                            |email| app.affinity.home_id(email),
+                        ) {
+                            pool::AffinityRoute::Selected { sub, disposition } => {
+                                if disposition == pool::AffinityDisposition::Rebound {
+                                    let new_home = app.affinity.home_id(&sub.email);
+                                    app.affinity.rebind(resolution, &new_home).await;
                                 }
-                                pool::AffinityRoute::Selected { sub, disposition } => {
-                                    if disposition == pool::AffinityDisposition::Rebound {
-                                        let new_home = app.affinity.home_id(&sub.email);
-                                        app.affinity.rebind(resolution, &new_home).await;
-                                    }
-                                    app.affinity.remember(input, resolution).await;
-                                    affinity_newly_claimed = false;
-                                    selected = Some((sub, disposition));
-                                    break;
-                                }
-                                pool::AffinityRoute::Exhausted => break,
+                                app.affinity.remember(input, resolution).await;
+                                affinity_newly_claimed = false;
+                                selected = Some((sub, disposition));
                             }
+                            pool::AffinityRoute::Exhausted => {}
                         }
                     }
                     selected
@@ -1707,7 +1643,6 @@ pub async fn forward(
                         &engine_request_id,
                         &sub.email,
                         3600,
-                        pool::max_inflight(),
                         authority_util_cap,
                     )
                     .await
@@ -1898,7 +1833,7 @@ pub async fn forward(
                 }
                 // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
                 // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
-                return stream_back(st, resp, None, request_permit.take());
+                return stream_back(st, resp, None);
             }
             if st.is_server_error() || code == 408 || code == 409 || code == 425 {
                 // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -2008,7 +1943,7 @@ pub async fn forward(
                 app.pool.mark_healthy(&sub.email);
                 None
             };
-            return stream_back(st, resp, meter, request_permit.take());
+            return stream_back(st, resp, meter);
         }
         // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
         // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
@@ -2038,7 +1973,7 @@ pub async fn forward(
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
         if let Some((st, resp)) = last_upstream {
-            return stream_back(st, resp, None, request_permit.take());
+            return stream_back(st, resp, None);
         }
         if backend_exhausted || tried.is_empty() {
             return last_local;
@@ -2201,12 +2136,7 @@ impl Stream for SseErrorTail {
     }
 }
 
-fn stream_back(
-    st: StatusCode,
-    resp: wreq::Response,
-    meter: Option<MeterCtx>,
-    request_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-) -> Response {
+fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) -> Response {
     let mut builder = Response::builder().status(st);
     for (name, value) in resp.headers().iter() {
         if !skip_resp_header(name.as_str()) {
@@ -2217,10 +2147,7 @@ fn stream_back(
     let stream = resp
         .bytes_stream()
         .map(|chunk| chunk.map_err(std::io::Error::other));
-    let mut stream: ResponseByteStream = Box::pin(stream);
-    if request_permit.is_some() {
-        stream = Box::pin(ProcessingPermitStream::new(stream, request_permit));
-    }
+    let stream: ResponseByteStream = Box::pin(stream);
     let mut stream: ResponseByteStream = match meter {
         Some(ctx) => Box::pin(TeeMeter::new(stream, ctx)),
         None => stream,
@@ -2328,8 +2255,6 @@ mod tests {
             util_cap: 1.0,
             cool_secs: 1,
             smooth_wait_ms: 0,
-            affinity_wait_ms: 0,
-            affinity_wait_min_bytes: 0,
             poll: false,
             inject_identity: false,
             identity: String::new(),
@@ -2375,7 +2300,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            concurrency: Arc::new(tokio::sync::Semaphore::new(10)),
             probe_poke: None,
             cfg,
         }

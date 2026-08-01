@@ -197,7 +197,6 @@ Gemini runtime (`config.env` or `server.env`):
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
 CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
-CLAUDE_API_GEMINI_MAX_INFLIGHT_PER_PROFILE=6
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
@@ -273,11 +272,10 @@ CORS headers so a browser SDK can call the gateway. Balance exhaustion remains t
 
 For every request the runtime:
 
-- resolves opaque tenant-bound prompt affinity and prefers the same subscription while its
-  concurrency slot is available. Saturation spills only the current request; the binding remains,
-  so the next turn returns to the warm home. If every eligible profile is busy, the accepted request
-  waits on release/reload/probe events without polling, reading another large body or reserving
-  customer balance; disconnect cancels the waiter and shutdown wakes it. Independent sessions with the same large
+- resolves opaque tenant-bound prompt affinity and always keeps a routable resolved conversation on
+  the same subscription, regardless of local in-flight depth. Independent unbound requests dispatch
+  immediately and use in-flight only to spread load; there is no per-profile concurrency cap or
+  local wait/reject path. Independent sessions with the same large
   system/tools cache root deliberately seed two competitive subscriptions before a warm copy is
   preferred, preventing one common prefix from collapsing the fleet onto its first home;
 - for text generation, derives a UUID-shaped upstream `request.sessionId` from the keyed affinity
@@ -321,9 +319,8 @@ For every request the runtime:
   sample until the next complete interval; a later reset preserves the already measured blend and
   envelope while rearming the safe anchor. Cumulative spend, CAS state and raw replay evidence live
   in the engine authority and survive blue-green deploys and estimator rebuilds;
-- limits each paid profile to a bounded number of upstream requests while client admission itself
-  is unbounded: excess fan-out queues instead of receiving a synthetic local concurrency error.
-  For unbound work, fresh
+- immediately dispatches every paid-profile request with no local concurrency ceiling. For unbound
+  work, fresh
   quota evidence wins over stale evidence, then current in-flight load spreads the burst, and only
   coarse 10-point quota buckets above 50% used steer near the wall; an atomic cursor rotates equal
   candidates. Never-arrived quota evidence is neutral, while stale evidence remains fail-open but
@@ -519,7 +516,7 @@ Official evidence reviewed on 2026-07-31:
 | network/token refresh, `408`, `409`, `425` | short profile cooldown | bounded rotation |
 | generation `5xx` or malformed wrapper/stream | exponential model cooldown | bounded rotation without disabling other models |
 | other deterministic `4xx` | keep profile healthy | return a synthetic native-shaped error |
-| all eligible profiles at local concurrency cap | keep bindings and profiles healthy | wait for a release/reload/probe event; no local `429`, no balance reservation while waiting |
+| high local in-flight on every eligible profile | keep bindings and profiles healthy | dispatch immediately; use in-flight only to choose the least-loaded unbound profile |
 
 Private error bodies are never returned verbatim. They may contain account, project, tier or private
 endpoint details. Public errors retain only a generic Google-shaped status.
@@ -617,7 +614,7 @@ material are never serialized. Caddy maps the same endpoint into the unified
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster
 reload, query/header credential stripping, Code Assist wrapper/credit removal, bounded response
-parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh, sticky/spill affinity,
-two-copy shared-root warming, stale-quota ordering, queued concurrent admission and cancellation,
-large saturated fan-out without local rejection, split SSE translation,
+parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh and sticky affinity,
+two-copy shared-root warming, stale-quota ordering, 10,000 immediate leases and concurrent fan-out
+that reaches upstream without a release event, split SSE translation,
 no post-event retry, disconnect drain and shutdown settlement.

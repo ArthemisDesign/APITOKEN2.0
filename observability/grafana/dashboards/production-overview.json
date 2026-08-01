@@ -462,9 +462,7 @@
         { "expr": "rate(claude_api_upstream_auth_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI auth fail", "refId": "K" },
         { "expr": "rate(claude_api_upstream_auth_total{provider=\"gemini\"}[5m])", "legendFormat": "Gemini auth fail", "refId": "L" },
         { "expr": "rate(claude_api_exhausted_total[5m])", "legendFormat": "Pool exhausted", "refId": "M" },
-        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "N" },
-        { "expr": "rate(claude_api_admission_waits_total[5m])", "legendFormat": "Admission queued", "refId": "O" },
-        { "expr": "rate(claude_api_admission_wait_canceled_total[5m])", "legendFormat": "Admission canceled", "refId": "P" }
+        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "N" }
       ],
       "title": "Provider traffic & failure modes",
       "type": "timeseries"

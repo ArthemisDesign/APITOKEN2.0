@@ -85,11 +85,10 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
-- **Client admission без concurrency-отказов.** Claude и Gemini принимают любой fan-out: безопасный
-  тяжёлый envelope и Gemini per-profile envelope превращают избыток в отменяемых async waiters, а не
-  в локальный `429/503`. До получения capacity waiter не читает большое тело и не резервирует деньги.
-  Codex уже работает без process/per-home/per-account request cap. Реальный provider quota остаётся
-  отдельным честным `429 + Retry-After`; защитный upstream envelope не снимается.
+- **Client dispatch без concurrency wait/reject.** Claude, Codex и Gemini принимают любой fan-out и
+  сразу запускают независимые upstream attempts: process/per-account/per-profile request semaphore
+  отсутствует. In-flight — только routing/observability signal и durable lifecycle accounting, не
+  admission cap. Реальный provider quota/cooling остаётся отдельным честным `429 + Retry-After`.
 - **env только в server** — нижние слои чисто-функциональны и тестируемы без окружения.
 - **Redis — только shared cache-affinity.** Никакого client-supplied session ID: native harness ID
   используется автоматически, обычный API связывается rolling-хэшами канонических префиксов истории.
@@ -103,7 +102,8 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
   source and rollback-era audit snapshot.
 - **Fencing, not distributed hope.** Every engine process holds a monotonic PostgreSQL owner epoch;
   stale epochs cannot reserve money, persist pool state, or acquire capacity. Subscription admission
-  is one transaction (cooldown/utilization/inflight validation + lease + increment). Polling uses one
+  is one transaction (cooldown/utilization validation + durable lease/inflight increment); tracked
+  in-flight не ограничивает параллельность. Polling uses one
   PostgreSQL lease-epoch leader; there is no Redlock path.
 - **Proven overlap gate.** Real-PostgreSQL fault injection and a two-owner end-to-end test gate the
   blue/green path. PostgreSQL mode may overlap two engine slots because money, delivery, capacity,

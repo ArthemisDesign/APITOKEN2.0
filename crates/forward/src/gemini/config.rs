@@ -144,10 +144,7 @@ pub struct GeminiConfig {
     pub connect_timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub max_transport_retries: usize,
-    /// Hard per-profile admission bound. A paid interactive subscription is not an unbounded
-    /// server connection pool; limiting concurrent generations also prevents one hot affinity key
-    /// from monopolising the only healthy identity.
-    pub max_inflight_per_profile: usize,
+    /// Quarantine after a terminal OAuth/auth rejection before the profile can re-enter rotation.
     pub auth_quarantine_secs: i64,
     pub transport_cool_secs: i64,
     pub model_failure_cool_secs: i64,

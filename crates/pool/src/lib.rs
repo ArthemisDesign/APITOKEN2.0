@@ -84,11 +84,11 @@ const AFFINITY_TTL: i64 = 3600;
 /// Дом остывает дольше этого → сессию ПЕРЕ-привязываем (глубокий бан/лимит: держаться нет смысла).
 /// Короче (бёрст-cooling) или просто занят → спилл ОДНОГО запроса, дом за сессией СОХРАНЯЕМ.
 const REBIND_AFTER: i64 = 60;
-/// Потолок параллельных запросов на персону — «человеческий конверт» (живой юзер не крутит 20
-/// стримов разом) + защита аккаунта от загона в лимит. Гейтит placement и переводит пин в спилл.
+/// Мягкий порог параллельной нагрузки на персону. Он направляет новый placement и spill на менее
+/// загруженные подписки, но никогда не блокирует и не отклоняет запрос: если весь доступный флот
+/// выше порога, выбор fail-open продолжается по минимальному in-flight.
 /// Настраивается через env `CLAUDE_API_MAX_INFLIGHT` (`server::config` → `set_max_inflight` при
-/// старте, ДО создания пула). Дефолт 6. Высокое значение снимает потолок concurrency на подписку
-/// (больше параллели, но выше риск бан-сигнала — держать осознанно).
+/// старте, ДО создания пула). Дефолт 6.
 static MAX_INFLIGHT_CELL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(6);
 #[inline]
 pub fn max_inflight() -> i64 {
@@ -490,10 +490,6 @@ pub enum AffinityRoute {
         sub: Sub,
         disposition: AffinityDisposition,
     },
-    /// A valuable warm lineage may briefly wait for its home before asking again with no wait.
-    Wait {
-        millis: u64,
-    },
     Exhausted,
 }
 
@@ -575,8 +571,9 @@ fn select_best_with_policy(
                 return cooling_order;
             }
 
-            // Конверт — полноценный tier: пока есть кандидат ниже MAX_INFLIGHT, перегруженный не
-            // выбирается. Если весь доступный tier уже переполнен, сначала берём минимальный inflight,
+            // Мягкий threshold — полноценный routing tier: пока есть кандидат ниже него,
+            // более загруженный не выбирается. Если весь доступный tier уже выше threshold,
+            // сначала берём минимальный inflight,
             // а лишь затем сравниваем небольшие различия util.
             let a_over = over_envelope(a);
             let b_over = over_envelope(b);
@@ -937,12 +934,11 @@ impl Pool {
     /// this pure scheduler about secrets or network storage.
     ///
     /// Continuations use a hard 100% utilization cap rather than the softer new-placement reserve.
-    /// Short cooling or a full concurrency envelope can briefly wait once, then spill while keeping
-    /// the home. Missing/dead/deep-cooling/hard-capped homes are permanently rebound.
+    /// Short cooling or a busy home spills immediately while keeping the binding.
+    /// Missing/dead/deep-cooling/hard-capped homes are permanently rebound.
     pub fn route_affinity<F>(
         &self,
         preferred_home: &str,
-        max_wait_ms: u64,
         newly_claimed: bool,
         identify: F,
     ) -> AffinityRoute
@@ -975,17 +971,6 @@ impl Pool {
 
             if !permanently_unavailable {
                 let busy = cooling_for > 0 || inflight_of(&g, &home) >= max_inflight();
-                if busy && max_wait_ms > 0 {
-                    let millis = if cooling_for > 0 {
-                        (cooling_for as u64)
-                            .saturating_mul(1000)
-                            .min(max_wait_ms)
-                            .max(1)
-                    } else {
-                        max_wait_ms.clamp(1, 50)
-                    };
-                    return AffinityRoute::Wait { millis };
-                }
                 if !busy {
                     if newly_claimed {
                         g.route_place += 1;
@@ -1005,7 +990,7 @@ impl Pool {
                     };
                 }
 
-                let exclude: HashSet<String> = std::iter::once(home).collect();
+                let exclude: HashSet<String> = std::iter::once(home.clone()).collect();
                 if let Some(sub) = select_best_non_cooling(&g, &exclude, now, &self.reserve, p5, p7)
                 {
                     g.route_spill += 1;
@@ -1015,6 +1000,27 @@ impl Pool {
                     return AffinityRoute::Selected {
                         sub,
                         disposition: AffinityDisposition::Spilled,
+                    };
+                }
+                // Local load alone must never turn a healthy one-profile fleet into Exhausted.
+                // Keep the resolved home sticky and account the real parallelism; provider
+                // cooling remains an honest availability condition rather than being bypassed.
+                if cooling_for <= 0 {
+                    if newly_claimed {
+                        g.route_place += 1;
+                    } else {
+                        g.route_pin += 1;
+                    }
+                    let live = g.live.entry(home.clone()).or_default();
+                    live.last_used = now;
+                    live.inflight = live.inflight.saturating_add(1);
+                    return AffinityRoute::Selected {
+                        sub: home_sub,
+                        disposition: if newly_claimed {
+                            AffinityDisposition::Placed
+                        } else {
+                            AffinityDisposition::Pinned
+                        },
                     };
                 }
                 return AffinityRoute::Exhausted;
@@ -1170,7 +1176,7 @@ impl Pool {
             // Не скрываем реальную нагрузку клампом: попытка уже выбрана и forward сейчас её пошлёт.
             // Лог без email/токена делает окно гонки наблюдаемым до атомарной lease-миграции.
             eprintln!(
-                "pool: in-flight envelope oversubscribed (current={})",
+                "pool: in-flight soft threshold exceeded (current={})",
                 l.inflight
             );
         }
@@ -2141,7 +2147,7 @@ mod tests {
         assert_eq!(hinted.email, "a");
         let identify = |email: &str| format!("opaque-{email}");
 
-        let first = p.route_affinity(&identify(&hinted.email), 0, true, identify);
+        let first = p.route_affinity(&identify(&hinted.email), true, identify);
         let first_email = match first {
             AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(disposition, AffinityDisposition::Placed);
@@ -2152,7 +2158,7 @@ mod tests {
         assert_eq!(first_email, "a");
         p.mark_done(&first_email);
 
-        match p.route_affinity("opaque-a", 0, false, identify) {
+        match p.route_affinity("opaque-a", false, identify) {
             AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(sub.email, "a");
                 assert_eq!(disposition, AffinityDisposition::Pinned);
@@ -2162,7 +2168,7 @@ mod tests {
         }
 
         p.mark_cooling("a", REBIND_AFTER + 1);
-        match p.route_affinity("opaque-a", 0, false, identify) {
+        match p.route_affinity("opaque-a", false, identify) {
             AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(sub.email, "b");
                 assert_eq!(disposition, AffinityDisposition::Rebound);
@@ -2220,12 +2226,12 @@ mod tests {
     }
 
     #[test]
-    fn shared_affinity_waits_once_then_spills_without_rebind() {
+    fn shared_affinity_spills_immediately_without_rebind() {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.05), Some(0.05), None, None, None);
         p.set_util("b", Some(0.30), Some(0.30), None, None, None);
         let identify = |email: &str| format!("opaque-{email}");
-        let home = match p.route_affinity("opaque-a", 0, true, identify) {
+        let home = match p.route_affinity("opaque-a", true, identify) {
             AffinityRoute::Selected { sub, .. } => sub.email,
             other => panic!("unexpected placement: {other:?}"),
         };
@@ -2233,11 +2239,7 @@ mod tests {
             p.mark_used(&home);
         }
 
-        assert!(matches!(
-            p.route_affinity("opaque-a", 200, false, identify),
-            AffinityRoute::Wait { millis: 50 }
-        ));
-        match p.route_affinity("opaque-a", 0, false, identify) {
+        match p.route_affinity("opaque-a", false, identify) {
             AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(sub.email, "b");
                 assert_eq!(disposition, AffinityDisposition::Spilled);
@@ -2249,13 +2251,47 @@ mod tests {
         for _ in 0..max_inflight() {
             p.mark_done(&home);
         }
-        match p.route_affinity("opaque-a", 0, false, identify) {
+        match p.route_affinity("opaque-a", false, identify) {
             AffinityRoute::Selected { sub, disposition } => {
                 assert_eq!(sub.email, "a");
                 assert_eq!(disposition, AffinityDisposition::Pinned);
                 p.mark_done(&sub.email);
             }
             other => panic!("unexpected return home: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_affinity_single_home_fails_open_above_the_soft_threshold() {
+        let p = pool(&["a"]);
+        p.set_util("a", Some(0.05), Some(0.05), None, None, None);
+        let identify = |email: &str| format!("opaque-{email}");
+        let first = p.route_affinity("opaque-a", true, identify);
+        assert!(matches!(
+            first,
+            AffinityRoute::Selected {
+                ref sub,
+                disposition: AffinityDisposition::Placed,
+            } if sub.email == "a"
+        ));
+        for _ in 1..max_inflight() {
+            p.mark_used("a");
+        }
+        {
+            let state = p.inner.read().unwrap();
+            assert_eq!(inflight_of(&state, "a"), max_inflight());
+            assert!(!is_dead(&state, "a"));
+            assert_eq!(state.live["a"].cooling_until, 0);
+            assert!(live_util(&state, "a", plan_scale("max20"), 5, now(), 50.0, 1500.0) < 1.0);
+            assert!(live_util(&state, "a", plan_scale("max20"), 7, now(), 50.0, 1500.0) < 1.0);
+        }
+
+        match p.route_affinity("opaque-a", false, identify) {
+            AffinityRoute::Selected { sub, disposition } => {
+                assert_eq!(sub.email, "a");
+                assert_eq!(disposition, AffinityDisposition::Pinned);
+            }
+            other => panic!("local load must not exhaust the only healthy home: {other:?}"),
         }
     }
 
@@ -2268,9 +2304,9 @@ mod tests {
         assert_eq!(p.route(555).unwrap().email, "b");
     }
 
-    /// Конверт конкуррентности: эмптейший дом упёрся в MAX_INFLIGHT → новая сессия уходит на другой.
+    /// Мягкий threshold: эмптейший дом достиг MAX_INFLIGHT → новая сессия уходит на другой.
     #[test]
-    fn route_placement_respects_concurrency_envelope() {
+    fn route_placement_uses_the_soft_inflight_threshold() {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.05), Some(0.05), None, None, None); // эмптейший…
         p.set_util("b", Some(0.20), Some(0.20), None, None, None);
@@ -2547,9 +2583,9 @@ mod tests {
         assert!(p.snapshot()[0].1.cooling_until >= long);
     }
 
-    /// Retry/pick не льёт в аккаунт за MAX_INFLIGHT, пока есть кандидат под конвертом.
+    /// Retry/pick не льёт в аккаунт выше MAX_INFLIGHT, пока есть кандидат ниже soft threshold.
     #[test]
-    fn retry_selection_respects_concurrency_envelope() {
+    fn retry_selection_uses_the_soft_inflight_threshold() {
         let p = pool(&["a", "b"]);
         p.set_util("a", Some(0.10), Some(0.10), None, None, None);
         p.set_util("b", Some(0.00), Some(0.11), None, None, None);

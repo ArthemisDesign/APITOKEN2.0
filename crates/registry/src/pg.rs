@@ -2205,7 +2205,6 @@ impl PgStore {
         request_id: &str,
         email: &str,
         lease_secs: i64,
-        max_inflight: i64,
         util_cap: f64,
     ) -> Result<Option<CapacityLease>> {
         let ts = now();
@@ -2245,7 +2244,7 @@ impl PgStore {
             )?;
         }
         let Some(state) = tx.query_opt(
-            "SELECT cooling_until,util5,util7,reset5,reset7,inflight FROM pool_state WHERE email=$1 FOR UPDATE",
+            "SELECT cooling_until,util5,util7,reset5,reset7 FROM pool_state WHERE email=$1 FOR UPDATE",
             &[&email],
         )? else {
             tx.rollback()?;
@@ -2256,7 +2255,6 @@ impl PgStore {
         let util7: f64 = state.get(2);
         let reset5: i64 = state.get(3);
         let reset7: i64 = state.get(4);
-        let inflight: i64 = state.get(5);
         let effective5 = if reset5 > 0 && reset5 <= ts {
             0.0
         } else {
@@ -2267,11 +2265,7 @@ impl PgStore {
         } else {
             util7
         };
-        if cooling_until > ts
-            || effective5 >= util_cap
-            || effective7 >= util_cap
-            || inflight >= max_inflight.max(1)
-        {
+        if cooling_until > ts || effective5 >= util_cap || effective7 >= util_cap {
             tx.rollback()?;
             return Ok(None);
         }
@@ -8435,7 +8429,7 @@ mod tests {
         state[0].version = versions[0].1;
         assert!(pg.save_pool_state(&owner2, &state).is_ok());
 
-        // Atomic capacity transaction: concurrent contenders cannot exceed the envelope.
+        // Atomic capacity transaction: every concurrent contender receives a tracked lease.
         let barrier = Arc::new(Barrier::new(9));
         let mut joins = Vec::new();
         for n in 0..8 {
@@ -8451,7 +8445,6 @@ mod tests {
                     &format!("capacity-{n}"),
                     "sub@test",
                     60,
-                    3,
                     0.95,
                 )
                 .unwrap()
@@ -8462,8 +8455,12 @@ mod tests {
             .into_iter()
             .filter_map(|j| j.join().unwrap())
             .collect();
-        assert_eq!(leases.len(), 3, "atomic capacity lease must not oversell");
-        assert_eq!(pg.pool_inflight("sub@test").unwrap(), Some(3));
+        assert_eq!(
+            leases.len(),
+            8,
+            "capacity tracking must not reject concurrency"
+        );
+        assert_eq!(pg.pool_inflight("sub@test").unwrap(), Some(8));
         for lease in &leases {
             assert!(pg.release_capacity(&owner2, &lease.lease_id).unwrap());
         }

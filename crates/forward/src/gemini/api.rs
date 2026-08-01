@@ -1724,7 +1724,6 @@ async fn stream_response(
     // this narrow await window. No downstream byte is exposed until both steps have succeeded.
     let background = gateway
         .track_background_task()
-        .await
         .map_err(|_| ApiError::unavailable("gemini_shutdown"))?;
     admission.mark_delivering().await?;
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
@@ -1915,7 +1914,6 @@ async fn record_affinity_success(
     input: Option<&AffinityInput>,
     resolution: &mut Option<AffinityResolution>,
     warm_homes: &[String],
-    preserve_affinity_home: bool,
     profile_id: &str,
 ) {
     let Some(input) = input else {
@@ -1926,7 +1924,7 @@ async fn record_affinity_success(
     let reused_warm_root = warm_homes.iter().any(|home| home == &served_home);
     match resolution {
         Some(resolution) => {
-            if resolution.home != served_home && !preserve_affinity_home {
+            if resolution.home != served_home {
                 store.rebind(resolution, &served_home).await;
             }
             store.remember(input, resolution).await;
@@ -2136,9 +2134,9 @@ async fn api_inner(
     // multiple logical agent turns. Generate it once before selecting the first subscription.
     let upstream_request_id =
         generation.then(|| fresh_antigravity_request_id(model.is_image_generation()));
-    // Capacity is selected before reserving customer money. If every healthy profile is busy the
-    // request waits without holding a balance reservation; the first real upstream attempt starts
-    // the normal reserve/delivery/settlement lifecycle exactly once across all profile retries.
+    // Routing precedes customer reserve, but local in-flight depth never waits or rejects. Every
+    // eligible request gets an immediate profile lease; the normal reserve/delivery/settlement
+    // lifecycle still runs exactly once across all pre-byte profile retries.
     let generation_budget = generation
         .then(|| generation_controls(&value, &model, gateway.config().reserve_overhead_tokens));
     let mut pending = Some(pending);
@@ -2159,18 +2157,14 @@ async fn api_inner(
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway
-            .select_routed_wait(
-                &wire_model_id,
-                &excluded,
-                preferred_id.as_deref(),
-                &warm_profile_ids,
-                place_cache_root,
-                generation,
-                &app.metrics,
-            )
-            .await
-        else {
+        let Some(lease) = gateway.select_routed(
+            &wire_model_id,
+            &excluded,
+            preferred_id.as_deref(),
+            &warm_profile_ids,
+            place_cache_root,
+            generation,
+        ) else {
             Metrics::inc(&app.metrics.exhausted);
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
@@ -2213,7 +2207,6 @@ async fn api_inner(
             admission = Some(ready);
         }
         let profile = lease.profile().clone();
-        let preserve_affinity_home = lease.preserves_affinity_home();
         let oauth_kind = profile.oauth_kind();
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
         let mut url = format!(
@@ -2324,7 +2317,7 @@ async fn api_inner(
             // Do not return 200 until at least one public native event exists, because retries are
             // forbidden after delivery. Bound this private prelude independently from per-event
             // framing: an upstream that emits endless credit/accounting events (or empty chunks)
-            // must not hold a lease, customer reserve and global admission forever.
+            // must not hold a lease, customer reserve and request lifecycle forever.
             let startup = tokio::time::timeout(STREAM_START_TIMEOUT, async {
                 let mut observed_bytes = 0usize;
                 let mut observed_chunks = 0usize;
@@ -2440,7 +2433,6 @@ async fn api_inner(
                 affinity_input.as_ref(),
                 &mut affinity_resolution,
                 &affinity_warm_homes,
-                preserve_affinity_home,
                 profile.id(),
             )
             .await;
@@ -2556,7 +2548,6 @@ async fn api_inner(
                     affinity_input.as_ref(),
                     &mut affinity_resolution,
                     &affinity_warm_homes,
-                    preserve_affinity_home,
                     profile.id(),
                 )
                 .await;
@@ -3076,7 +3067,6 @@ mod tests {
                 connect_timeout_secs: 1,
                 read_timeout_secs: 5,
                 max_transport_retries,
-                max_inflight_per_profile: 6,
                 auth_quarantine_secs: 900,
                 transport_cool_secs: 30,
                 model_failure_cool_secs: 15,
@@ -3118,8 +3108,6 @@ mod tests {
             util_cap: 1.0,
             cool_secs: 60,
             smooth_wait_ms: 0,
-            affinity_wait_ms: 0,
-            affinity_wait_min_bytes: 0,
             poll: false,
             inject_identity: false,
             identity: String::new(),
@@ -3162,7 +3150,6 @@ mod tests {
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
-            concurrency: Arc::new(tokio::sync::Semaphore::new(100)),
             probe_poke: None,
             cfg,
         }
@@ -3888,7 +3875,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_profile_saturation_waits_and_resumes_without_a_local_429() {
+    async fn existing_profile_load_never_delays_a_new_request() {
         let success = MockReply::json(
             StatusCode::OK,
             json!({"candidates": [], "usageMetadata": {}}),
@@ -3896,7 +3883,7 @@ mod tests {
         let server = start_mock(MockState::with_replies([(PROFILE_A_KEY, vec![success])])).await;
         let fixture = gateway_fixture(&server.upstream, &[None], 1);
         let mut leases = Vec::new();
-        for _ in 0..fixture.gateway.config().max_inflight_per_profile {
+        for _ in 0..1_000 {
             leases.push(
                 fixture
                     .gateway
@@ -3905,74 +3892,23 @@ mod tests {
             );
         }
         let app = app_state(fixture.gateway.clone(), None);
-        let metrics = app.metrics.clone();
-        let request = tokio::spawn(invoke(
-            app,
-            json!({"contents": [{"parts": [{"text": "queued turn"}]}]}),
-            false,
-        ));
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert_eq!(
-            Metrics::get(&metrics.admission_waiters),
-            1,
-            "the accepted request must wait without reaching upstream"
-        );
-        assert!(!request.is_finished());
-        assert!(server.state.seen().is_empty());
-        drop(leases);
-        let response = tokio::time::timeout(Duration::from_secs(2), request)
-            .await
-            .expect("capacity release wakes the waiter")
-            .expect("request task");
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            invoke(
+                app,
+                json!({"contents": [{"parts": [{"text": "queued turn"}]}]}),
+                false,
+            ),
+        )
+        .await
+        .expect("existing load must not gate upstream dispatch");
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
-        assert_eq!(Metrics::get(&metrics.admission_waits), 1);
-        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 0);
-    }
-
-    #[tokio::test]
-    async fn saturated_wait_is_canceled_with_the_client_future() {
-        let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
-        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
-            .map(|_| {
-                fixture
-                    .gateway
-                    .select("gemini-integration-model", &HashSet::new(), None, true)
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        let metrics = Arc::new(Metrics::new());
-        let gateway = fixture.gateway.clone();
-        let waiter_metrics = metrics.clone();
-        let waiter = tokio::spawn(async move {
-            gateway
-                .select_routed_wait(
-                    "gemini-integration-model",
-                    &HashSet::new(),
-                    None,
-                    &HashSet::new(),
-                    false,
-                    true,
-                    &waiter_metrics,
-                )
-                .await
-        });
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert_eq!(Metrics::get(&metrics.admission_waiters), 1);
-        waiter.abort();
-        let canceled = waiter.await;
-        assert!(matches!(canceled, Err(error) if error.is_cancelled()));
-        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
-        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 1);
+        assert_eq!(server.state.seen().len(), 1);
         drop(leases);
-        assert!(fixture
-            .gateway
-            .select("gemini-integration-model", &HashSet::new(), None, true)
-            .is_some());
     }
 
     #[tokio::test]
-    async fn large_saturated_fanout_queues_every_request_without_local_rejection() {
+    async fn large_fanout_reaches_upstream_without_waiting_for_existing_leases() {
         const FANOUT: usize = 32;
         let success = MockReply::json(
             StatusCode::OK,
@@ -3984,7 +3920,7 @@ mod tests {
         )]))
         .await;
         let fixture = gateway_fixture(&server.upstream, &[None], 1);
-        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
+        let leases = (0..1_000)
             .map(|_| {
                 fixture
                     .gateway
@@ -3993,7 +3929,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let app = app_state(fixture.gateway.clone(), None);
-        let metrics = app.metrics.clone();
         let requests = (0..FANOUT)
             .map(|index| {
                 tokio::spawn(invoke(
@@ -4003,21 +3938,15 @@ mod tests {
                 ))
             })
             .collect::<Vec<_>>();
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert_eq!(Metrics::get(&metrics.admission_waiters), FANOUT as u64);
-        assert!(server.state.seen().is_empty());
-        drop(leases);
-
         for request in requests {
             let response = tokio::time::timeout(Duration::from_secs(5), request)
                 .await
-                .expect("fanout drains after capacity release")
+                .expect("fanout dispatch is independent of existing leases")
                 .expect("request task");
             assert_eq!(response.status(), StatusCode::OK);
         }
         assert_eq!(server.state.seen().len(), FANOUT);
-        assert_eq!(Metrics::get(&metrics.admission_waiters), 0);
-        assert_eq!(Metrics::get(&metrics.admission_wait_canceled), 0);
+        drop(leases);
     }
 
     #[test]
@@ -4069,9 +3998,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capacity_wait_does_not_reserve_customer_balance() {
+    async fn immediate_transport_failure_releases_customer_reservation() {
         let fixture = gateway_fixture("http://127.0.0.1:1", &[None], 1);
-        let leases = (0..fixture.gateway.config().max_inflight_per_profile)
+        let leases = (0..1_000)
             .map(|_| {
                 fixture
                     .gateway
@@ -4080,21 +4009,19 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let (app, billing, path) = billed_app(fixture.gateway.clone()).await;
-        let metrics = app.metrics.clone();
-        let request = tokio::spawn(invoke_with_identity(
-            app,
-            json!({"contents": [{"parts": [{"text": "wait without money"}]}]}),
-            false,
-            CUSTOMER_KEY,
-            None,
-        ));
-
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert_eq!(Metrics::get(&metrics.admission_waiters), 1);
-        assert_eq!(billing.totals().await.unwrap().reserved_nano, 0);
-        request.abort();
-        let canceled = request.await;
-        assert!(matches!(canceled, Err(error) if error.is_cancelled()));
+        let response = tokio::time::timeout(
+            Duration::from_secs(3),
+            invoke_with_identity(
+                app,
+                json!({"contents": [{"parts": [{"text": "fail without leaking money"}]}]}),
+                false,
+                CUSTOMER_KEY,
+                None,
+            ),
+        )
+        .await
+        .expect("local load must not delay the transport attempt");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         drop(leases);
         billing.flush().await.unwrap();
         assert_eq!(billing.totals().await.unwrap().reserved_nano, 0);
@@ -4657,14 +4584,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saturated_affinity_spill_does_not_move_the_conversation_binding() {
+    async fn affinity_remains_sticky_under_arbitrary_parallel_load() {
         let success = MockReply::json(
             StatusCode::OK,
             json!({"candidates": [], "usageMetadata": {}}),
         );
         let server = start_mock(MockState::with_replies([
-            (PROFILE_A_KEY, vec![success.clone(), success.clone()]),
-            (PROFILE_B_KEY, vec![success]),
+            (
+                PROFILE_A_KEY,
+                vec![success.clone(), success.clone(), success.clone()],
+            ),
+            (PROFILE_B_KEY, vec![]),
         ]))
         .await;
         let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
@@ -4687,11 +4617,10 @@ mod tests {
             StatusCode::OK
         );
 
-        // Occupy every slot on the bound home without touching the shared affinity store. The
-        // public request must spill to profile_b, but that transient load condition must not move
-        // the conversation's durable preference away from profile_a.
+        // Existing work on the bound home is only an observability/balancing signal. A resolved
+        // conversation remains on its home and starts immediately, with no local cap or wait.
         let mut occupied = Vec::new();
-        for _ in 0..fixture.gateway.config().max_inflight_per_profile {
+        for _ in 0..1_000 {
             let lease = fixture
                 .gateway
                 .select(
@@ -4730,7 +4659,7 @@ mod tests {
             .into_iter()
             .map(|request| request.credential)
             .collect::<Vec<_>>();
-        assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_B_KEY, PROFILE_A_KEY]);
+        assert_eq!(credentials, [PROFILE_A_KEY, PROFILE_A_KEY, PROFILE_A_KEY]);
         assert_eq!(affinity.stats().rebinds, 0);
     }
 
