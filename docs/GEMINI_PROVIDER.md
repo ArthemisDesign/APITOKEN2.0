@@ -273,7 +273,11 @@ CORS headers so a browser SDK can call the gateway. Balance exhaustion remains t
 
 For every request the runtime:
 
-- resolves opaque tenant-bound prompt affinity and prefers the same subscription;
+- resolves opaque tenant-bound prompt affinity and prefers the same subscription while its
+  concurrency slot is available. Saturation spills only the current request; the binding remains,
+  so the next turn returns to the warm home. Independent sessions with the same large
+  system/tools cache root deliberately seed two competitive subscriptions before a warm copy is
+  preferred, preventing one common prefix from collapsing the fleet onto its first home;
 - for text generation, derives a UUID-shaped upstream `request.sessionId` from the keyed affinity
   lineage: it stays stable across a growing conversation, changes for another explicit session or
   tenant, and never exposes a raw tenant/session value; one `agent-<uuid>` request id is created
@@ -315,10 +319,13 @@ For every request the runtime:
   sample until the next complete interval; a later reset preserves the already measured blend and
   envelope while rearming the safe anchor. Cumulative spend, CAS state and raw replay evidence live
   in the engine authority and survive blue-green deploys and estimator rebuilds;
-- limits each paid profile to a bounded number of concurrent requests and routes new work toward
-  profiles with more per-model quota headroom. A small deterministic per-profile reserve prevents
-  synchronized draining, but remains soft: if all eligible profiles are below reserve, the final
-  working subscription continues serving until Google reports an explicit zero;
+- limits each paid profile to a bounded number of concurrent requests. For unbound work, fresh
+  quota evidence wins over stale evidence, then current in-flight load spreads the burst, and only
+  coarse 10-point quota buckets above 50% used steer near the wall; an atomic cursor rotates equal
+  candidates. Never-arrived quota evidence is neutral, while stale evidence remains fail-open but
+  cannot look like an artificial 100%-remaining winner. A small deterministic per-profile reserve
+  prevents synchronized draining, but remains soft: if all eligible profiles are below reserve,
+  the final working subscription continues serving until Google reports an explicit zero;
 - records generation-specific failure streaks, last success/failure timestamps and an exponential
   per-model cooldown. HTTP 5xx/malformed generation failures therefore degrade only that model;
   proxy/network/token-refresh failures still cool the complete profile. `countTokens` remains a
@@ -500,7 +507,7 @@ Official evidence reviewed on 2026-07-31:
 
 ## Failure and stream safety
 
-| Upstream result | Profile action | Request action |
+| Condition/result | Profile action | Request action |
 |---|---|---|
 | first `401` | compare rejected bearer, single-flight refresh | retry once on the same profile |
 | repeated `401` or `403` | auth quarantine | rotate to another profile |
@@ -508,6 +515,7 @@ Official evidence reviewed on 2026-07-31:
 | network/token refresh, `408`, `409`, `425` | short profile cooldown | bounded rotation |
 | generation `5xx` or malformed wrapper/stream | exponential model cooldown | bounded rotation without disabling other models |
 | other deterministic `4xx` | keep profile healthy | return a synthetic native-shaped error |
+| all eligible profiles at local concurrency cap | keep bindings and profiles healthy | native `429` with a short `RetryInfo` |
 
 Private error bodies are never returned verbatim. They may contain account, project, tier or private
 endpoint details. Public errors retain only a generic Google-shaped status.
@@ -522,7 +530,8 @@ tasks, aborts at the deadline and settles the last known usage before exit.
 Antigravity health probes call `loadCodeAssist` with `metadata.ideType=ANTIGRAVITY` and do not spend
 a model request. Empty
 rosters may boot so Auth Bot can publish the first profile. Bad reloads leave the current pool intact.
-Probe success does not clear a generation model's independent 429 cooling. A fresh official quota
+A successful probe/turn clears stale global auth/transport quarantine, including a concurrent stale-
+token race, but never clears a generation model's independent 429 cooling. A fresh official quota
 snapshot is authoritative for catalogued models; a stale/missing bucket fails open, while an explicit
 zero blocks that model until its parsed RFC3339 reset. Legacy Gemini CLI profiles keep their former
 `HEALTH_CHECK`, `retrieveUserQuota`, `request.session_id`, `user_prompt_id` and Google library
@@ -560,5 +569,6 @@ page through stable origin `127.0.0.1:8794`.
 Expected safety properties are covered by tests for envelope AAD/key rotation, duplicate subject
 rejection, in-place legacy-to-Antigravity migration with proxy/lifecycle preservation, hot roster
 reload, query/header credential stripping, Code Assist wrapper/credit removal, bounded response
-parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh, affinity, split SSE
-translation, no post-event retry, disconnect drain and shutdown settlement.
+parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh, sticky/spill affinity,
+two-copy shared-root warming, stale-quota ordering, concurrent admission caps, split SSE translation,
+no post-event retry, disconnect drain and shutdown settlement.

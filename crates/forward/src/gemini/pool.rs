@@ -19,6 +19,26 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 const MAX_BACKGROUND_TASKS: u32 = 4_096;
 const HEALTH_PROBE_CONCURRENCY: usize = 16;
 const ACCESS_TOKEN_SKEW_SECS: i64 = 120;
+/// Match the Claude/Codex shared-root discipline: independent sessions with the same large
+/// system/tools prefix seed two competitive profiles before warmth becomes the preferred hint.
+const CACHE_ROOT_MIN_WARM_PROFILES: usize = 2;
+/// Quota steering is intentionally dormant while a profile has at least half of its model window.
+/// Exact fractions below this boundary would otherwise herd a burst onto the mathematically
+/// emptiest subscription instead of spreading it across the available concurrency envelope.
+const QUOTA_STEER_FLOOR_USED_PERCENT: i64 = 50;
+const QUOTA_STEER_BUCKET_PERCENT: i64 = 10;
+
+/// Coarse near-wall quota rank. Lower is preferred; zero deliberately keeps healthy profiles tied
+/// so in-flight load and the rotating cursor can spread ordinary traffic.
+fn quota_rank(remaining_fraction: Option<f64>) -> i64 {
+    let used_percent = remaining_fraction
+        .map(|remaining| ((1.0 - remaining.clamp(0.0, 1.0)) * 100.0).floor() as i64)
+        .unwrap_or(0);
+    used_percent
+        .saturating_sub(QUOTA_STEER_FLOOR_USED_PERCENT)
+        .max(0)
+        / QUOTA_STEER_BUCKET_PERCENT
+}
 
 #[derive(Clone, Debug)]
 pub struct GeminiProfileStatus {
@@ -378,7 +398,7 @@ impl GeminiProfile {
     }
 
     pub(crate) fn mark_model_success(&self, model_id: &str) {
-        self.authenticated.store(true, Ordering::Release);
+        self.mark_authenticated();
         let mut health = self
             .model_health
             .lock()
@@ -392,9 +412,12 @@ impl GeminiProfile {
 
     pub(crate) fn mark_authenticated(&self) {
         // A quota-free liveness probe proves the bearer but must not erase a generation 429.
-        // Otherwise the next five-minute health cycle would prematurely reopen a daily/model
-        // quota window whose RetryInfo is still in the future.
+        // Generation quota/model failures live in the independent model-health axis below, so a
+        // concrete successful request is free to clear stale auth/transport/global-probe cooling.
+        // This matters when a concurrent stale-token 401 races with a successful refreshed turn:
+        // verified success must not leave the profile quarantined for the full auth timeout.
         self.authenticated.store(true, Ordering::Release);
+        self.cooling_until.store(0, Ordering::Release);
     }
 
     pub(crate) fn cool_until(&self, until: i64) {
@@ -465,20 +488,29 @@ impl GeminiProfile {
         )
     }
 
-    fn quota_remaining_fraction(&self, model_id: &str, now: i64, stale_secs: i64) -> Option<f64> {
+    /// Return `(snapshot_stale, remaining_fraction)` for soft steering. Never-arrived evidence is
+    /// neutral rather than stale; a genuinely stale snapshot stays fail-open but loses a tie to a
+    /// fresh profile so an old optimistic fraction cannot absorb the fleet.
+    fn quota_steering(&self, model_id: &str, now: i64, stale_secs: i64) -> (bool, Option<f64>) {
         let quota = self
             .quota
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if quota.updated_at <= 0 || quota.updated_at.saturating_add(stale_secs) <= now {
-            return None;
+        if quota.updated_at <= 0 {
+            return (false, None);
         }
-        quota
-            .buckets
-            .iter()
-            .filter(|bucket| bucket.model_id == model_id)
-            .filter_map(|bucket| bucket.remaining_fraction)
-            .min_by(f64::total_cmp)
+        if quota.updated_at.saturating_add(stale_secs) <= now {
+            return (true, None);
+        }
+        (
+            false,
+            quota
+                .buckets
+                .iter()
+                .filter(|bucket| bucket.model_id == model_id)
+                .filter_map(|bucket| bucket.remaining_fraction)
+                .min_by(f64::total_cmp),
+        )
     }
 
     fn quota_reserve_for(&self, model_id: &str, cfg: &GeminiConfig) -> f64 {
@@ -1385,11 +1417,16 @@ fn load_profiles(cfg: &GeminiConfig) -> anyhow::Result<Vec<LoadedProfile>> {
 
 pub(crate) struct GeminiLease {
     profile: Arc<GeminiProfile>,
+    preserve_affinity_home: bool,
 }
 
 impl GeminiLease {
     pub(crate) fn profile(&self) -> &Arc<GeminiProfile> {
         &self.profile
+    }
+
+    pub(crate) fn preserves_affinity_home(&self) -> bool {
+        self.preserve_affinity_home
     }
 }
 
@@ -1403,6 +1440,10 @@ pub struct GeminiGateway {
     cfg: Arc<GeminiConfig>,
     calibration_store: Option<Arc<AsyncBilling>>,
     profiles: RwLock<Vec<Arc<GeminiProfile>>>,
+    /// Process-local reverse index for the affinity store's keyed opaque home ids. The key is
+    /// secret-dependent, so it is built lazily once the shared AffinityStore is available and
+    /// invalidated atomically with every roster generation change.
+    affinity_profiles: RwLock<HashMap<String, String>>,
     cursor: AtomicU64,
     shutting_down: AtomicBool,
     abort_streams: AtomicBool,
@@ -1459,6 +1500,7 @@ impl GeminiGateway {
             cfg,
             calibration_store,
             profiles: RwLock::new(profiles),
+            affinity_profiles: RwLock::new(HashMap::new()),
             cursor: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             abort_streams: AtomicBool::new(false),
@@ -1511,14 +1553,73 @@ impl GeminiGateway {
             .profiles
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        self.affinity_profiles
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         Ok(true)
     }
 
+    fn affinity_profile_map(
+        &self,
+        affinity: &crate::AffinityStore,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, String>> {
+        let needs_build = self
+            .affinity_profiles
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
+        if needs_build {
+            // Keep the roster read guard until the reverse index is published. Reload takes the
+            // write side first and clears the index afterwards, so either this complete old map is
+            // cleared by reload or the complete new generation is built—never a stale map after a
+            // newer roster won the race.
+            let profiles = self
+                .profiles
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let next = profiles
+                .iter()
+                .map(|profile| (affinity.home_id(profile.id()), profile.id().to_string()))
+                .collect();
+            let mut cache = self
+                .affinity_profiles
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.is_empty() {
+                *cache = next;
+            }
+        }
+        self.affinity_profiles
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
     pub(crate) fn select(
         &self,
         model_id: &str,
         excluded: &HashSet<String>,
         preferred_id: Option<&str>,
+        generation: bool,
+    ) -> Option<GeminiLease> {
+        self.select_routed(
+            model_id,
+            excluded,
+            preferred_id,
+            &HashSet::new(),
+            false,
+            generation,
+        )
+    }
+
+    pub(crate) fn select_routed(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        preferred_id: Option<&str>,
+        warm_profile_ids: &HashSet<String>,
+        place_cache_root: bool,
         generation: bool,
     ) -> Option<GeminiLease> {
         if self.shutting_down.load(Ordering::Acquire) {
@@ -1531,6 +1632,17 @@ impl GeminiGateway {
             .health_probe_interval_secs
             .saturating_mul(2)
             .clamp(60, 3_600) as i64;
+        // A healthy preferred home that is only at its atomic in-flight ceiling is a temporary
+        // spill, not a reason to move the conversation. Deeper cooling/auth/quota rejection still
+        // permits a successful alternate to become the new home.
+        let mut preserve_preferred = preferred_id
+            .and_then(|id| profiles.iter().find(|profile| profile.id() == id))
+            .is_some_and(|profile| {
+                !excluded.contains(profile.id())
+                    && profile.authenticated.load(Ordering::Acquire)
+                    && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
+                    && profile.inflight.load(Ordering::Acquire) >= self.cfg.max_inflight_per_profile
+            });
         let mut candidates = profiles
             .iter()
             .enumerate()
@@ -1541,13 +1653,21 @@ impl GeminiGateway {
                     && profile.inflight.load(Ordering::Acquire) < self.cfg.max_inflight_per_profile
             })
             .map(|(index, profile)| {
-                let remaining = generation
-                    .then(|| profile.quota_remaining_fraction(model_id, now, quota_stale_secs))
-                    .flatten();
+                let (snapshot_stale, remaining) = if generation {
+                    profile.quota_steering(model_id, now, quota_stale_secs)
+                } else {
+                    (false, None)
+                };
                 let protected = remaining.is_none_or(|fraction| {
                     fraction > profile.quota_reserve_for(model_id, &self.cfg)
                 });
-                (index, profile.clone(), remaining, protected)
+                (
+                    index,
+                    profile.clone(),
+                    snapshot_stale,
+                    quota_rank(remaining),
+                    protected,
+                )
             })
             .collect::<Vec<_>>();
         if candidates.is_empty() {
@@ -1556,8 +1676,8 @@ impl GeminiGateway {
         // Preserve a configurable reserve only while at least one profile has safe headroom. If
         // every profile is below reserve, retain the single-profile service floor and use what is
         // left instead of inventing an outage before Google reports an explicit zero.
-        if candidates.iter().any(|candidate| candidate.3) {
-            candidates.retain(|candidate| candidate.3);
+        if candidates.iter().any(|candidate| candidate.4) {
+            candidates.retain(|candidate| candidate.4);
         }
         let offset = self.cursor.fetch_add(1, Ordering::Relaxed) as usize;
         candidates.sort_by(|left, right| {
@@ -1565,13 +1685,18 @@ impl GeminiGateway {
             let right_preferred = usize::from(preferred_id == Some(right.1.id()));
             right_preferred
                 .cmp(&left_preferred)
-                .then_with(|| right.2.unwrap_or(1.0).total_cmp(&left.2.unwrap_or(1.0)))
+                // Resolved conversation affinity remains the hard first choice. For unbound work,
+                // fresh evidence wins, then the live load envelope, then only a coarse near-wall
+                // quota rank. Exact fraction-first sorting caused one slightly emptier profile to
+                // absorb every concurrent request until its quota caught up.
+                .then_with(|| left.2.cmp(&right.2))
                 .then_with(|| {
                     left.1
                         .inflight
                         .load(Ordering::Acquire)
                         .cmp(&right.1.inflight.load(Ordering::Acquire))
                 })
+                .then_with(|| left.3.cmp(&right.3))
                 .then_with(|| {
                     let len = profiles.len();
                     let left_order = (left.0 + len - offset % len) % len;
@@ -1579,7 +1704,49 @@ impl GeminiGateway {
                     left_order.cmp(&right_order)
                 })
         });
-        for (_, profile, _, _) in candidates {
+
+        // A new shared cache root seeds two profiles before reusing warmth. This keeps independent
+        // sessions from collapsing onto the first subscription while still preserving cache reuse
+        // once two competitive copies exist. Conversation affinity above remains stronger.
+        let preferred_is_routable = preferred_id
+            .is_some_and(|id| candidates.iter().any(|candidate| candidate.1.id() == id));
+        let mut ordered = Vec::with_capacity(candidates.len());
+        if !preferred_is_routable && place_cache_root {
+            let warm_count = candidates
+                .iter()
+                .filter(|candidate| warm_profile_ids.contains(candidate.1.id()))
+                .count();
+            let primary = if warm_count < CACHE_ROOT_MIN_WARM_PROFILES {
+                candidates
+                    .iter()
+                    .position(|candidate| !warm_profile_ids.contains(candidate.1.id()))
+            } else {
+                candidates
+                    .iter()
+                    .position(|candidate| warm_profile_ids.contains(candidate.1.id()))
+            }
+            .unwrap_or(0);
+            ordered.push(candidates[primary].1.clone());
+            for candidate in &candidates {
+                if warm_profile_ids.contains(candidate.1.id())
+                    && !ordered
+                        .iter()
+                        .any(|profile: &Arc<GeminiProfile>| Arc::ptr_eq(profile, &candidate.1))
+                {
+                    ordered.push(candidate.1.clone());
+                }
+            }
+        }
+        for candidate in candidates {
+            if !ordered
+                .iter()
+                .any(|profile: &Arc<GeminiProfile>| Arc::ptr_eq(profile, &candidate.1))
+            {
+                ordered.push(candidate.1);
+            }
+        }
+        for profile in ordered {
+            let is_preferred = preferred_id == Some(profile.id());
             let acquired = profile
                 .inflight
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -1587,7 +1754,15 @@ impl GeminiGateway {
                 })
                 .is_ok();
             if acquired {
-                return Some(GeminiLease { profile });
+                return Some(GeminiLease {
+                    profile,
+                    preserve_affinity_home: preserve_preferred && !is_preferred,
+                });
+            }
+            if is_preferred {
+                // The read-side candidate check raced another admission. Treat the fallback exactly
+                // like a profile observed at its cap before sorting: spill this request only.
+                preserve_preferred = true;
             }
         }
         None
@@ -1598,10 +1773,22 @@ impl GeminiGateway {
         affinity: &crate::AffinityStore,
         home: &str,
     ) -> Option<String> {
-        self.profiles_snapshot()
+        self.affinity_profile_map(affinity).get(home).cloned()
+    }
+
+    pub(crate) fn profile_ids_for_homes(
+        &self,
+        affinity: &crate::AffinityStore,
+        homes: &[String],
+    ) -> HashSet<String> {
+        if homes.is_empty() {
+            return HashSet::new();
+        }
+        let profiles = self.affinity_profile_map(affinity);
+        homes
             .iter()
-            .find(|profile| affinity.home_id(profile.id()) == home)
-            .map(|profile| profile.id().to_string())
+            .filter_map(|home| profiles.get(home).cloned())
+            .collect()
     }
 
     pub(crate) fn soonest_ready(
@@ -1616,8 +1803,20 @@ impl GeminiGateway {
             .filter(|profile| {
                 !excluded.contains(profile.id()) && profile.authenticated.load(Ordering::Acquire)
             })
-            .map(|profile| profile.cooling_until_for(model_id, &self.cfg, now, generation))
-            .filter(|until| *until > now)
+            .filter_map(|profile| {
+                let until = profile.cooling_until_for(model_id, &self.cfg, now, generation);
+                if until > now {
+                    Some(until)
+                } else if profile.inflight.load(Ordering::Acquire)
+                    >= self.cfg.max_inflight_per_profile
+                {
+                    // No provider reset applies to a transient local concurrency envelope. Give
+                    // SDKs a short native RetryInfo instead of a headerless synthetic 429.
+                    Some(now.saturating_add(1))
+                } else {
+                    None
+                }
+            })
             .min()
     }
 
@@ -1983,6 +2182,22 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
+    fn set_model_quota(profile: &GeminiProfile, updated_at: i64, remaining_fraction: f64) {
+        *profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSnapshot {
+            updated_at,
+            buckets: vec![GeminiQuotaBucketStatus {
+                model_id: "gemini-test".to_string(),
+                remaining_amount: None,
+                remaining_fraction: Some(remaining_fraction),
+                reset_time: None,
+                token_type: Some("antigravity_model".to_string()),
+            }],
+        };
+    }
+
     #[test]
     fn duplicate_accounts_are_rejected_even_with_different_projects_or_files() {
         let (dir, ring) = fixture();
@@ -2313,6 +2528,252 @@ mod tests {
     }
 
     #[test]
+    fn unbound_bursts_spread_by_live_load_before_exact_quota_headroom() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profiles = gateway.profiles_snapshot();
+        // Both profiles are far from the quota wall. Exact fraction-first sorting used to send
+        // both concurrent turns to profile_a merely because 0.90 > 0.80.
+        set_model_quota(&profiles[0], pool::now(), 0.90);
+        set_model_quota(&profiles[1], pool::now(), 0.80);
+
+        let first = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        let second = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert_eq!(first.profile().id(), "profile_a");
+        assert_eq!(second.profile().id(), "profile_b");
+        drop((first, second));
+
+        // Once load is equal again, the atomic cursor—not a tiny fraction difference—rotates the
+        // next idle choice instead of permanently herding onto one profile.
+        let next = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert_eq!(next.profile().id(), "profile_a");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_quota_is_fail_open_but_never_beats_fresh_evidence() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profiles = gateway.profiles_snapshot();
+        set_model_quota(&profiles[0], pool::now() - 10_000, 0.99);
+        set_model_quota(&profiles[1], pool::now(), 0.80);
+
+        let lease = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert_eq!(lease.profile().id(), "profile_b");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolved_conversation_stays_sticky_inside_the_concurrency_envelope() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let occupied = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        assert_eq!(occupied.profile().id(), "profile_a");
+
+        let sticky = gateway
+            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+            .unwrap();
+        assert_eq!(sticky.profile().id(), "profile_a");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saturated_affinity_spills_temporarily_then_returns_to_its_home() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let mut cfg = config(&roster, ring);
+        cfg.max_inflight_per_profile = 1;
+        let gateway = GeminiGateway::new(cfg).unwrap();
+
+        let occupied_home = gateway
+            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+            .unwrap();
+        assert_eq!(occupied_home.profile().id(), "profile_a");
+        let spill = gateway
+            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+            .unwrap();
+        assert_eq!(spill.profile().id(), "profile_b");
+        assert!(spill.preserves_affinity_home());
+
+        drop(occupied_home);
+        let returned = gateway
+            .select("gemini-test", &HashSet::new(), Some("profile_a"), true)
+            .unwrap();
+        assert_eq!(returned.profile().id(), "profile_a");
+        assert!(!returned.preserves_affinity_home());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_admission_never_oversubscribes_any_profile() {
+        let (dir, ring) = fixture();
+        let credentials = (0..4)
+            .map(|index| {
+                let id = format!("profile_{index}");
+                let subject = format!("subject-{index}");
+                let path = write_credential(&dir, &ring, &id, &subject);
+                (id, path)
+            })
+            .collect::<Vec<_>>();
+        let roster = dir.join("profiles.json");
+        let roster_entries = credentials
+            .iter()
+            .map(|(id, path)| (id.as_str(), path.as_path()))
+            .collect::<Vec<_>>();
+        write_roster(&roster, &roster_entries);
+        let mut cfg = config(&roster, ring);
+        cfg.max_inflight_per_profile = 3;
+        let gateway = Arc::new(GeminiGateway::new(cfg).unwrap());
+        let workers = 64usize;
+        let start = Arc::new(std::sync::Barrier::new(workers + 1));
+        let release = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut threads = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let gateway = gateway.clone();
+            let start = start.clone();
+            let release = release.clone();
+            let sender = sender.clone();
+            threads.push(std::thread::spawn(move || {
+                start.wait();
+                let lease = gateway.select("gemini-test", &HashSet::new(), None, true);
+                sender
+                    .send(lease.as_ref().map(|lease| lease.profile().id().to_string()))
+                    .unwrap();
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                drop(lease);
+            }));
+        }
+        drop(sender);
+        start.wait();
+        let mut counts = HashMap::new();
+        for selected in receiver.iter().take(workers).flatten() {
+            *counts.entry(selected).or_insert(0usize) += 1;
+        }
+        release.store(true, Ordering::Release);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(counts.values().sum::<usize>(), 12);
+        assert_eq!(counts.len(), 4);
+        assert!(counts.values().all(|count| *count == 3));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_cache_root_seeds_two_profiles_then_reuses_warmth() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let third = write_credential(&dir, &ring, "profile_c", "subject-c");
+        let roster = dir.join("profiles.json");
+        write_roster(
+            &roster,
+            &[
+                ("profile_a", &first),
+                ("profile_b", &second),
+                ("profile_c", &third),
+            ],
+        );
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let mut warm = HashSet::new();
+
+        let first = gateway
+            .select_routed("gemini-test", &HashSet::new(), None, &warm, true, true)
+            .unwrap();
+        assert_eq!(first.profile().id(), "profile_a");
+        warm.insert(first.profile().id().to_string());
+        drop(first);
+
+        let second = gateway
+            .select_routed("gemini-test", &HashSet::new(), None, &warm, true, true)
+            .unwrap();
+        assert_eq!(second.profile().id(), "profile_b");
+        warm.insert(second.profile().id().to_string());
+        drop(second);
+
+        // The rotating global order now points at cold profile_c. With two warm copies present,
+        // cache-root placement deliberately stays on one of those copies instead.
+        let reused = gateway
+            .select_routed("gemini-test", &HashSet::new(), None, &warm, true, true)
+            .unwrap();
+        assert!(warm.contains(reused.profile().id()));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saturated_profile_publishes_a_short_retry_hint() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let mut cfg = config(&roster, ring);
+        cfg.max_inflight_per_profile = 1;
+        let gateway = GeminiGateway::new(cfg).unwrap();
+        let _lease = gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .unwrap();
+        let now = pool::now();
+        let ready = gateway
+            .soonest_ready("gemini-test", &HashSet::new(), true)
+            .unwrap();
+        assert!((1..=2).contains(&ready.saturating_sub(now)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verified_success_clears_global_quarantine_but_not_model_cooling() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        let now = pool::now();
+        profile.mark_auth_failed(now + 600);
+        profile.cool_model_until("gemini-test", now + 300);
+
+        profile.mark_authenticated();
+
+        assert!(profile.authenticated.load(Ordering::Acquire));
+        assert_eq!(profile.cooling_until.load(Ordering::Acquire), 0);
+        assert!(profile.cooling_until_for("gemini-test", gateway.config(), now, true) > now);
+        assert_eq!(
+            profile.cooling_until_for("gemini-test", gateway.config(), now, false),
+            0
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn quota_headroom_protects_a_low_profile_but_preserves_the_single_profile_floor() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
@@ -2441,12 +2902,28 @@ mod tests {
         let roster = dir.join("profiles.json");
         write_roster(&roster, &[("profile_a", &first)]);
         let gateway = GeminiGateway::new(config(&roster, ring.clone())).unwrap();
+        let affinity =
+            crate::AffinityStore::new(None, Some("test-affinity-secret"), 3_600, 60, 10).unwrap();
+        let first_home = affinity.home_id("profile_a");
+        assert_eq!(
+            gateway
+                .profile_id_for_home(&affinity, &first_home)
+                .as_deref(),
+            Some("profile_a")
+        );
         let second = write_credential(&dir, &ring, "profile_b", "subject-b");
         let staging = dir.join(".profiles.pending");
         write_roster(&staging, &[("profile_a", &first), ("profile_b", &second)]);
         fs::rename(staging, &roster).unwrap();
         assert!(gateway.reload_profiles().unwrap());
         assert_eq!(gateway.operational_status().await.profiles.len(), 2);
+        let second_home = affinity.home_id("profile_b");
+        assert_eq!(
+            gateway
+                .profile_id_for_home(&affinity, &second_home)
+                .as_deref(),
+            Some("profile_b")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
