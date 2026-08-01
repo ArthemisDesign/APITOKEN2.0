@@ -4,9 +4,10 @@
 весь публичный native-контракт через процесс `claude-router` (singleton `127.0.0.1:8798`):
 native lanes трёх плоскостей по форме пути и единый агрегированный каталог `GET /v1/models{,/{id}}`
 с namespaced ID и политикой деградации. Universal lane пока не существует — `/v1/chat/completions`
-обслуживает только OpenAI plane. Документ фиксирует целевую картину, публичный контракт,
-инварианты и этапный план; каждый этап при реализации обновляет этот документ и смежные
-инструкции в том же коммите.
+обслуживает только OpenAI plane; его архитектурные решения зафиксированы (раздел «Решения
+universal lanes») и реализуются по подпакетам этапа 3. Документ фиксирует целевую картину,
+публичный контракт, инварианты и этапный план; каждый этап при реализации обновляет этот
+документ и смежные инструкции в том же коммите.
 
 ## Контекст и цель
 
@@ -235,6 +236,48 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
   получает честную ошибку и решает сам; молчаливый retry на timeout — путь к двойному
   списанию.
 
+## Решения universal lanes (зафиксированы 2026-08-01, перед этапом 3)
+
+Обсуждены с владельцем продукта и утверждены; реализация этапов 3–6 следует им, а отклонение
+требует пересмотра этого раздела.
+
+1. **Перевод живёт в плоскостях, не в router.** Universal-входы реализуются адаптерами внутри
+   каждой плоскости (этап 3: chat→Messages в Anthropic plane, chat→generateContent в Gemini
+   plane; этап 4: Responses→native; этап 5: Messages→native). Router получает ровно одну новую
+   способность — model-based routing: распарсить тело запроса, извлечь `model`, выбрать
+   плоскость по namespace (`anthropic/`→8790, `openai/`→8792, `google/`→8794) или alias из
+   собственного кэшированного каталога; тело дальше проксируется без изменений, namespaced ID
+   резолвит admission плоскости. Перевод в router отвергнут: он дублирует provider-логику вне
+   `forward`, отрывает биллинг (reserve/settle) от плоскости и раздувает router до второго
+   движка.
+2. **Без единого IR-типа.** «Canonical IR» из этапного плана означает контракт событий —
+   типизированный словарь (text delta, tool_call delta, reasoning delta, usage, finish) —
+   который каждый per-plane адаптер обязан воспроизводить и который закреплён contract-тестами
+   плоскости. Общий IR-структ, в который переводятся все провайдеры, отвергнут: это путь к
+   наименьшему общему знаменателю и молчаливой потере специфики (сценарий OpenRouter).
+3. **Capability matrix + fail-closed с поправкой на defaults.** У каждой плоскости — явная
+   матрица параметров universal-входа: honored / unsupported. Unsupported-параметр с
+   не-дефолтным значением → `400 unsupported_parameter`; с дефолтным значением — принимается
+   (stock SDK шлют дефолты пачками, совместимость сохраняется). Неизвестные поля проксируются
+   (открытый список). Это легализует leniency существующего `crates/forward/src/codex/chat.rs`
+   как «lenient для defaults» и делает её политикой всех адаптеров.
+4. **Reasoning.** `reasoning_effort` мапится на native thinking-конфиг провайдера; поток
+   reasoning отдаётся дельтами в задокументированном расширении `reasoning_content`
+   (конвенция DeepSeek/OpenRouter). Подписи/encrypted reasoning в universal lanes **не
+   выставляются** — задокументированное ограничение: harness-клиенты используют native lanes.
+5. **Stored responses (этап 4) — только для `openai/*`.** `store:true` и
+   `GET/DELETE /v1/responses/{id}` работают только для OpenAI-моделей; для остальных →
+   `400 documented_limitation`. Кросс-провайдерное хранилище ответов не строится.
+6. **Этап 5 зеркалит 3–4.** `/v1/messages` для `openai/*` и `google/*` — адаптеры
+   Messages→native в соответствующих плоскостях с той же capability matrix; thinking-дельты
+   без подписей; реплей thinking-блоков для non-Claude моделей не поддерживается.
+7. **Этап 6: сейчас — принципы, детали — после 3–5.** Фундамент уже есть в
+   `crates/registry/src/pricing.rs` (versioned catalog, provider switches, account policy).
+   Attempt fencing: execution group, единственный billable winner, retry только после явного
+   `execution_state=not_started` от плоскости (контракт добавляется в плоскости на этапе 6).
+   Детальный дизайн routing'а — первым пакетом после зелёных этапов 3–5, на живой телеметрии
+   universal lanes.
+
 ## Существующая база (что переиспользуем)
 
 Проверено аудитом кода 2026-08-01; всё перечисленное реально существует:
@@ -289,14 +332,22 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `/v1/models*`) в router на `127.0.0.1:8798`; раздельные шаги (процесс, затем переворот)
    исключили окно 502 между установкой Caddyfile и запуском router'а.
 3. **Universal Chat (2–4 недели).** `/v1/chat/completions` для всех моделей каталога:
-   text, images, tools, structured output, streaming через canonical IR.
+   text, images, tools, structured output, streaming. Реализуется по решениям 1–4 раздела
+   «Решения universal lanes»: адаптеры в плоскостях, router — только model-based routing,
+   контракт событий вместо IR-структа, capability matrix. Подпакеты: **3.0** — фиксация
+   решений в этом документе; **3.1** — router model-routing + адаптер Anthropic plane
+   (text, streaming, usage); **3.2** — tools/tool_choice + contract-тесты словаря событий;
+   **3.3** — адаптер Gemini plane; **3.4** — images, structured output, `reasoning_content`.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
-   reasoning events, usage; stored-response semantics либо явные ограничения.
+   reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
+   явный `400 documented_limitation`).
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
-   beta fields, tool streaming, thinking, error recovery, token counting.
+   beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
+   (зеркало решений 3–4, thinking без подписей).
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,
-   см. «Семантика fallback»), per-account policy, telemetry, presets. Отдельно —
+   см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым
+   пакетом этапа идёт детальный дизайн на живой телеметрии этапов 3–5. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).
