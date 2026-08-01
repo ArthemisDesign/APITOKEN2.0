@@ -242,11 +242,59 @@ as a rollback input, when any of these stop criteria occurs:
 - an actual snapshot reference or resolved lineage cannot be proven from durable rows.
 
 An eligible atomic-bridge DB/constraint failure is a separate bridge stop condition: disable the
-bridge rather than falling back to a second reserve. Queue full/closed, rate/size/balance-cap drops,
-shadow timeouts, and shadow read/write failures remain metrics-only and must not alter customer
-traffic or money. Use the `claude_api_pricing_shadow_*` bounded series and the single runtime
-manifest info sample for rollout evidence; account, key, request, and model identities belong only
-in protected durable attribution, never metric labels or error storms.
+bridge rather than falling back to a second reserve. Queue full/closed, rate/size drops, shadow
+timeouts, and shadow read/write failures remain metrics-only and must not alter customer traffic or
+money. A funding-capped actual remains eligible and applies the same immutable ceiling to the policy
+candidate; an actual above the checked scalar quote is an invariant failure. Use the
+`claude_api_pricing_shadow_*` bounded series and the single runtime manifest info sample for rollout
+evidence; account, key, request, and model identities belong only in protected durable attribution,
+never metric labels or error storms.
+
+## Stage 8 synchronization evidence
+
+Stage 8 is a read-only evidence checkpoint, not permission to seed assignments, change heads, enable
+strict enforcement, migrate data, or deploy manually. Do not start the production window until the
+reviewed B2B/service/OpenKeys assignment matrix exists and the corresponding Stage 5 catalog/policy
+and Stage 6 funding applications are complete. Never infer protected assignments from neighboring
+accounts or naming conventions.
+
+Choose a `window_start_ts` after the last catalog, switch, policy, or binding update. Freeze those
+authority updates through report capture, keep bridge and shadow coverage at the approved target,
+observe at least one complete peak interval, and choose its exclusive `window_end_ts`. Traffic and
+money continue normally. An authority update after `window_end_ts` but before report capture still
+invalidates the evidence and requires a new window.
+
+Run the commerce report with the normal protected commerce database environment:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage8-evidence > stage8-commerce-evidence.json
+```
+
+Run the engine report from the exact deployed application with the normal protected engine
+environment. Every argument is explicit; `gemini-client-admissions` is the independently aggregated
+client-edge observation for the same half-open window and must never contain identities:
+
+```bash
+claude-api db stage8-evidence \
+  --window-start-ts <inclusive-epoch-seconds> \
+  --window-end-ts <exclusive-epoch-seconds> \
+  --min-samples-per-provider <reviewed-minimum> \
+  --financial-sample-size <reviewed-size-1-to-1000> \
+  --gemini-client-admissions <aggregate-count> \
+  > stage8-engine-evidence.json
+```
+
+Both commands use one `REPEATABLE READ READ ONLY` snapshot, print JSON before returning a non-zero
+exit on blockers, hash account/request/binding subjects, and never print a database DSN. Store both
+reports in the protected release evidence location and record their `sha256:v1` digests. Stop the
+cutover on any blocker, including stale/missing heads or ACKs, an unclassified account, funding
+reconciliation mismatch, control-job backlog, insufficient provider samples, missing/late/non-
+resolved shadow rows, runtime/lineage drift, nanoUSD mismatch, canonical sample failure, or any
+Gemini observation. Do not edit rows to make a report green.
+
+Immediately before Stage 9, rerun both reports and require fresh `passed=true` results under the
+same no-drift rule. A previously green report is historical evidence, not authorization after an
+authority change.
 
 ## Local pre-push test gate
 

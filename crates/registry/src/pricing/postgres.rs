@@ -301,7 +301,7 @@ fn postgres_shadow_storage_row<C: GenericClient>(
     }))
 }
 
-fn postgres_shadow_evaluation_in_transaction<C: GenericClient>(
+pub(crate) fn postgres_shadow_evaluation_in_transaction<C: GenericClient>(
     client: &mut C,
     request_id: &str,
     key_share: bool,

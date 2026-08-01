@@ -3145,6 +3145,13 @@ impl PgStore {
 }
 
 impl PgStore {
+    pub fn stage8_engine_evidence(
+        &mut self,
+        request: &crate::stage8::Stage8EngineEvidenceRequest,
+    ) -> Result<crate::stage8::Stage8EngineEvidenceReport> {
+        crate::stage8::postgres_stage8_engine_evidence(&mut self.client, request)
+    }
+
     pub fn pricing_shadow_admission_evaluation(
         &mut self,
         request_id: &str,
@@ -4205,6 +4212,467 @@ mod tests {
             crate::pricing::ShadowDiagnosticContext::new(diagnostic).unwrap(),
         )
         .unwrap()
+    }
+
+    fn stage8_pg_manifest() -> crate::pricing::PricingRuntimeManifestEvidence {
+        crate::pricing::PricingRuntimeManifestEvidence::new(
+            1,
+            vec![crate::pricing::PricingRuntimeCapabilityEvidence::new(
+                crate::pricing::PRICING_SCHEMA_VERSION,
+                1,
+                "stage8-capability-1",
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn stage8_pg_catalog(product_id: &str) -> crate::pricing::PricingCatalogSpec {
+        crate::pricing::PricingCatalogSpec {
+            product_id: product_id.into(),
+            generation: 1,
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            content_digest: format!("stage8-{product_id}-catalog-1"),
+            entries: vec![
+                crate::pricing::PricingCatalogEntrySpec {
+                    provider_id: "anthropic".into(),
+                    canonical_model_id: "claude-sonnet-5".into(),
+                    enabled: true,
+                },
+                crate::pricing::PricingCatalogEntrySpec {
+                    provider_id: "openai".into(),
+                    canonical_model_id: "gpt-5.6-sol".into(),
+                    enabled: true,
+                },
+            ],
+        }
+    }
+
+    fn stage8_pg_switches() -> crate::pricing::ProviderSwitchSpec {
+        use crate::pricing::{PolicySegment, ProviderSwitchEntrySpec, ProviderSwitchScope};
+
+        let mut entries = Vec::new();
+        for provider_id in ["anthropic", "openai"] {
+            entries.push(ProviderSwitchEntrySpec {
+                provider_id: provider_id.into(),
+                scope: ProviderSwitchScope::Master,
+                catalog_generation: None,
+                enabled: true,
+            });
+            for product_id in ["main", "openkeys"] {
+                entries.push(ProviderSwitchEntrySpec {
+                    provider_id: provider_id.into(),
+                    scope: ProviderSwitchScope::Product {
+                        product_id: product_id.into(),
+                    },
+                    catalog_generation: Some(1),
+                    enabled: true,
+                });
+            }
+            for segment in [PolicySegment::B2c, PolicySegment::B2b] {
+                entries.push(ProviderSwitchEntrySpec {
+                    provider_id: provider_id.into(),
+                    scope: ProviderSwitchScope::Segment {
+                        product_id: "main".into(),
+                        segment,
+                    },
+                    catalog_generation: Some(1),
+                    enabled: true,
+                });
+            }
+        }
+        crate::pricing::ProviderSwitchSpec {
+            generation: 1,
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            content_digest: "stage8-switches-1".into(),
+            entries,
+        }
+    }
+
+    fn stage8_pg_rule(
+        provider_id: &str,
+        payable_multiplier_bp: i64,
+    ) -> crate::pricing::AccountPolicyRuleSpec {
+        crate::pricing::AccountPolicyRuleSpec {
+            rule_id: format!("stage8-{provider_id}-discount"),
+            rule_digest: format!("stage8-{provider_id}-discount-digest"),
+            scope: crate::pricing::PolicyRuleScope::Provider {
+                provider_id: provider_id.into(),
+            },
+            pricing_mode: crate::pricing::PricingMode::Discount,
+            rule_origin: crate::pricing::RuleOrigin::Managed,
+            discount_bps: Some(10_000 - payable_multiplier_bp),
+            payable_multiplier_bp,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+        }
+    }
+
+    fn stage8_pg_policy() -> crate::pricing::AccountPolicySpec {
+        crate::pricing::AccountPolicySpec {
+            account_id: "stage8-account".into(),
+            effective_version: 1,
+            policy_id: "b2b:stage8-account".into(),
+            policy_version: 1,
+            source_policy_digest: "stage8-source-policy-1".into(),
+            owner_type: crate::pricing::PolicyOwnerType::B2bClient,
+            owner_id: "stage8-account".into(),
+            account_class: crate::pricing::AccountClass::B2b,
+            product_id: "main".into(),
+            schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            catalog_generation: 1,
+            switch_generation: 1,
+            content_digest: "stage8-policy-1".into(),
+            replacement_locked: false,
+            rules: vec![
+                stage8_pg_rule("anthropic", 2_000),
+                stage8_pg_rule("openai", 3_000),
+            ],
+        }
+    }
+
+    fn stage8_pg_snapshot(
+        request_id: &str,
+        provider_id: &str,
+        admission_ts: i64,
+        charged_hold_nano: i64,
+    ) -> crate::pricing::LegacyScalarAdmissionSnapshot {
+        let (provider, requested_model_id, canonical_model_id, tariff_schedule_id, premium) =
+            match provider_id {
+                "anthropic" => (
+                    crate::pricing::SnapshotProvider::Anthropic,
+                    "claude-sonnet-5",
+                    "claude-sonnet-5",
+                    "anthropic/standard/sonnet-current/v1",
+                    crate::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                        speed: crate::pricing::SnapshotAnthropicSpeed::Standard,
+                        inference_geo: crate::pricing::SnapshotAnthropicInferenceGeo::Global,
+                        inference_geo_basis_points: 10_000,
+                    },
+                ),
+                "openai" => (
+                    crate::pricing::SnapshotProvider::OpenAi,
+                    "gpt-5.6",
+                    "gpt-5.6-sol",
+                    "openai/gpt-5.6-sol/epoch-0/v1",
+                    crate::pricing::LegacyPremiumModifiers::OpenAiV1 {
+                        service_tier: crate::pricing::SnapshotOpenAiServiceTier::Standard,
+                        service_tier_multiplier_basis_points: 10_000,
+                        context_tier: crate::pricing::SnapshotOpenAiContextTier::Standard,
+                        input_multiplier_basis_points: 10_000,
+                        output_multiplier_basis_points: 10_000,
+                    },
+                ),
+                other => panic!("unsupported Stage 8 test provider {other}"),
+            };
+        crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: request_id.into(),
+                account_id: "stage8-account".into(),
+                provider,
+                requested_model_id: requested_model_id.into(),
+                canonical_model_id: canonical_model_id.into(),
+                alias_generation: 1,
+                tariff_schedule_id: tariff_schedule_id.into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 2_000,
+                official_hold_nano: 500_000_000,
+                charged_hold_nano,
+                premium_modifiers: premium,
+            },
+        )
+        .unwrap()
+    }
+
+    fn stage8_pg_shadow_input(
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        provider_id: &str,
+    ) -> crate::pricing::PricingShadowAdmissionEvaluationInput {
+        let actual = crate::pricing::ShadowActualSnapshotRef::from_snapshot(snapshot).unwrap();
+        let dependency_catalog = crate::pricing::PricingShadowDependency {
+            target: crate::pricing::VersionTarget::new(1, "stage8-main-catalog-1"),
+            pricing_schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+        };
+        let dependency_switches = crate::pricing::PricingShadowDependency {
+            target: crate::pricing::VersionTarget::new(1, "stage8-switches-1"),
+            pricing_schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+        };
+        let outcome = crate::pricing::PricingShadowEvaluationOutcome::Resolved(Box::new(
+            crate::pricing::PricingShadowResolved::new(
+                &actual,
+                crate::pricing::PricingShadowResolvedInput {
+                    observed_multiplier_bp: 2_000,
+                    product_id: "main".into(),
+                    account_class: crate::pricing::AccountClass::B2b,
+                    policy: crate::pricing::PricingShadowPolicyIdentity {
+                        target: crate::pricing::VersionTarget::new(1, "stage8-policy-1"),
+                        policy_id: "b2b:stage8-account".into(),
+                        policy_version: 1,
+                        source_policy_digest: "stage8-source-policy-1".into(),
+                        schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+                    },
+                    policy_lineage: crate::pricing::PricingShadowLineage {
+                        catalog: dependency_catalog.clone(),
+                        switches: dependency_switches.clone(),
+                    },
+                    admission_lineage: crate::pricing::PricingShadowLineage {
+                        catalog: dependency_catalog,
+                        switches: dependency_switches,
+                    },
+                    rule: stage8_pg_rule(
+                        provider_id,
+                        if provider_id == "anthropic" { 2_000 } else { 3_000 },
+                    ),
+                },
+            )
+            .unwrap(),
+        ));
+        crate::pricing::PricingShadowAdmissionEvaluationInput::new(
+            actual,
+            crate::pricing::PRICING_SCHEMA_VERSION,
+            stage8_pg_manifest(),
+            snapshot.admission_ts() + 1,
+            snapshot.admission_ts() + 2,
+            outcome,
+            crate::pricing::ShadowDiagnosticContext::new(serde_json::json!({})).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::postgres_stage8_engine_evidence_contract`
+    #[test]
+    fn postgres_stage8_engine_evidence_contract() {
+        use crate::pricing::{
+            AccountPolicyActivationSpec, AccountPolicyBindingSpec, ActiveExpectation,
+            FundingEnforcement, LegacyScalarReserveOutcome, PolicyActiveExpectation,
+            PolicyEnforcement, PricingMutation, ReconciliationState,
+        };
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL Stage 8 evidence contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg.claim_instance("stage8-engine", 600).unwrap();
+        pg.account_create("stage8-account", None, 2_000).unwrap();
+        pg.account_topup("stage8-account", 190_000_000, None)
+            .unwrap();
+        pg.key_issue("stage8-key", "stage8-account", None)
+            .unwrap();
+
+        for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
+            assert_eq!(
+                pg.prepare_pricing_catalog(&catalog).unwrap(),
+                PricingMutation::Stored
+            );
+            assert_eq!(
+                pg.activate_pricing_catalog(
+                    &catalog.product_id,
+                    &catalog.target(),
+                    &ActiveExpectation::Absent,
+                )
+                .unwrap(),
+                PricingMutation::Applied
+            );
+        }
+        let switches = stage8_pg_switches();
+        assert_eq!(
+            pg.prepare_provider_switches(&switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.activate_provider_switches(&switches.target(), &ActiveExpectation::Absent)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+        let policy = stage8_pg_policy();
+        assert_eq!(
+            pg.prepare_account_policy(&policy).unwrap(),
+            PricingMutation::Stored
+        );
+        let binding = AccountPolicyBindingSpec {
+            policy_enforcement: PolicyEnforcement::Shadow,
+            funding_enforcement: FundingEnforcement::Shadow,
+            reconciliation_state: ReconciliationState::Verified,
+        };
+        let activation = AccountPolicyActivationSpec {
+            account_id: policy.account_id.clone(),
+            effective_version: policy.effective_version,
+            content_digest: policy.content_digest.clone(),
+            binding,
+        };
+        assert_eq!(
+            pg.activate_account_policy(&activation, &PolicyActiveExpectation::Unbound)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+
+        let window_end_ts = now() - 2;
+        let window_start_ts = window_end_ts - 100;
+        let authority_ts = window_start_ts - 10;
+        for statement in [
+            "UPDATE accounts SET created_ts=$1 WHERE id='stage8-account'",
+            "UPDATE pricing_catalog_versions SET created_ts=$1",
+            "UPDATE pricing_catalog_heads SET updated_ts=$1",
+            "UPDATE provider_switch_versions SET created_ts=$1",
+            "UPDATE provider_switch_head SET updated_ts=$1",
+            "UPDATE account_policy_versions SET created_ts=$1",
+            "UPDATE account_policy_bindings SET updated_ts=$1",
+        ] {
+            pg.client.execute(statement, &[&authority_ts]).unwrap();
+        }
+
+        let snapshots = [
+            stage8_pg_snapshot(
+                "stage8-anthropic-request",
+                "anthropic",
+                window_start_ts + 10,
+                100_000_000,
+            ),
+            stage8_pg_snapshot(
+                "stage8-openai-request",
+                "openai",
+                window_start_ts + 20,
+                90_000_000,
+            ),
+        ];
+        for (snapshot, provider_id) in snapshots.iter().zip(["anthropic", "openai"]) {
+            assert!(matches!(
+                pg.reserve_request_with_legacy_snapshot(&owner, "stage8-key", 600, snapshot)
+                    .unwrap(),
+                LegacyScalarReserveOutcome::Inserted(_)
+            ));
+            assert!(matches!(
+                pg.insert_pricing_shadow_admission_evaluation(&stage8_pg_shadow_input(
+                    snapshot,
+                    provider_id,
+                ))
+                .unwrap(),
+                crate::pricing::PricingShadowEvaluationWrite::Inserted(_)
+            ));
+        }
+        let totals = pg
+            .client
+            .query_one(
+                "SELECT balance_nano,reserved_nano,spent_nano FROM accounts \
+                 WHERE id='stage8-account'",
+                &[],
+            )
+            .unwrap();
+        let balance_nano: i64 = totals.get(0);
+        let reserved_nano: i64 = totals.get(1);
+        let spent_nano: i64 = totals.get(2);
+        pg.client
+            .execute(
+                "INSERT INTO funding_buckets( \
+                   bucket_id,account_id,source_type,source_ref,eligibility,balance_nano, \
+                   reserved_nano,spent_nano,version,status,created_ts,updated_ts \
+                 ) VALUES( \
+                   'stage8-paid','stage8-account','paid','fixture','any',$1,$2,$3,1,'active',$4,$4)",
+                &[&balance_nano, &reserved_nano, &spent_nano, &authority_ts],
+            )
+            .unwrap();
+
+        let durable_before: (i64, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots), \
+                            (SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations), \
+                            (SELECT balance_nano FROM accounts WHERE id='stage8-account'), \
+                            (SELECT reserved_nano FROM accounts WHERE id='stage8-account')",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        let request = crate::stage8::Stage8EngineEvidenceRequest {
+            window_start_ts,
+            window_end_ts,
+            min_samples_per_provider: 1,
+            financial_sample_size: 2,
+            gemini_client_admissions: 0,
+            runtime_manifest: stage8_pg_manifest(),
+        };
+        let report = pg.stage8_engine_evidence(&request).unwrap();
+        assert!(report.passed, "unexpected blockers: {:?}", report.blockers);
+        assert_eq!(report.counts.active_accounts, 1);
+        assert_eq!(report.counts.reconciled_accounts, 1);
+        assert_eq!(report.counts.scalar_parity_rows, 1);
+        assert_eq!(report.counts.policy_divergence_rows, 1);
+        assert_eq!(report.financial_samples.len(), 2);
+        assert!(report.evidence_digest.starts_with("sha256:v1:"));
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("stage8-account"));
+        assert!(!serialized.contains("stage8-anthropic-request"));
+        assert!(!serialized.contains("stage8-openai-request"));
+
+        let mut blocked_request = request.clone();
+        blocked_request.gemini_client_admissions = 1;
+        let blocked = pg.stage8_engine_evidence(&blocked_request).unwrap();
+        assert!(!blocked.passed);
+        assert!(blocked
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "gemini_client_admissions_nonzero"));
+        let durable_after: (i64, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT (SELECT COUNT(*)::bigint FROM pricing_admission_snapshots), \
+                            (SELECT COUNT(*)::bigint FROM pricing_shadow_admission_evaluations), \
+                            (SELECT balance_nano FROM accounts WHERE id='stage8-account'), \
+                            (SELECT reserved_nano FROM accounts WHERE id='stage8-account')",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(durable_after, durable_before);
+
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 
     /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \

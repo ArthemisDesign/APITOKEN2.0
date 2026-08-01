@@ -74,6 +74,21 @@ version streams cannot alter current users. Provisioning becomes policy-before-k
 Stage 5 seed/backfill has created and delivered the relevant account policy; OpenKeys follows its
 separate Stage 7 cutover.
 
+Stage 8 adds a read-only synchronization report for the commerce side:
+
+```bash
+DATABASE_URL=postgresql://... pnpm --filter @claude-api/db pricing:stage8-evidence
+```
+
+The command observes one `REPEATABLE READ READ ONLY` snapshot and prints a canonical JSON report.
+It verifies latest capability/catalog/switch heads, the complete Anthropic/OpenAI graph without
+Gemini, every active account classification, desired/applied policy parity, exact durable ACKs,
+invitation-policy heads, stale generations and the absence of pending/processing/retry/dead control
+jobs. Account and binding subjects are emitted only as SHA-256 digests. A report with blockers is
+still printed and exits non-zero. This command never seeds policies, advances a head, retries a job,
+or substitutes for the reviewed Stage 5 assignment matrix; inject the DSN through the usual
+protected environment rather than placing production credentials in shell history.
+
 ## Authenticated client API
 
 All private routes use the HttpOnly session cookie and derive the owner from that session. Engine

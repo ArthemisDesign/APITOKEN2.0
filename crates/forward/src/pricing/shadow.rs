@@ -37,6 +37,7 @@ pub enum PricingShadowWorkItemError {
     InvalidEnqueueTimestamp,
     EnqueuedBeforeAdmission,
     InvalidActualAmount,
+    /// Compatibility-only mapping for the retired first-rollout funding-cap rejection.
     BalanceCappedActual,
 }
 
@@ -610,13 +611,16 @@ mod tests {
     }
 
     #[test]
-    fn work_item_rejects_early_timestamps_and_balance_capped_actual() {
+    fn work_item_rejects_early_timestamps_and_accepts_exact_funding_cap() {
         let valid = snapshot("claude-sonnet-4", "claude-sonnet-4", 8_000, 1_000, 800);
         assert!(PricingShadowWorkItem::new(&valid, evidence(), ADMISSION_TS - 1).is_err());
         assert!(PricingShadowWorkItem::new(&valid, evidence(), 0).is_err());
 
         let capped = snapshot("claude-sonnet-4", "claude-sonnet-4", 8_000, 1_000, 799);
-        assert!(PricingShadowWorkItem::new(&capped, evidence(), ENQUEUED_TS).is_err());
+        assert!(PricingShadowWorkItem::new(&capped, evidence(), ENQUEUED_TS).is_ok());
+
+        let overstated = snapshot("claude-sonnet-4", "claude-sonnet-4", 8_000, 1_000, 801);
+        assert!(PricingShadowWorkItem::new(&overstated, evidence(), ENQUEUED_TS).is_err());
 
         let half_up = snapshot("claude-sonnet-4", "claude-sonnet-4", 5_000, 3, 2);
         assert!(PricingShadowWorkItem::new(&half_up, evidence(), ENQUEUED_TS).is_ok());

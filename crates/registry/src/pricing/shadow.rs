@@ -46,10 +46,11 @@ pub struct ShadowActualSnapshotRef {
     actual_snapshot_digest: String,
 }
 
-/// Stable producer-facing classification for the first shadow rollout eligibility gate.
+/// Stable producer-facing classification for the shadow eligibility gate.
 ///
-/// The producer must distinguish a balance-capped actual from malformed evidence without
-/// duplicating the registry-owned checked nanoUSD calculation or parsing error strings.
+/// `BalanceCappedActual` is retained as a wire/metrics compatibility value for binaries from the
+/// first rollout. Current snapshots with a lower, balance-capped actual are eligible and use the
+/// exact cap-aware comparison below; the variant is no longer emitted by this implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShadowEligibilityError {
     InvalidActualSnapshot,
@@ -69,7 +70,7 @@ impl std::fmt::Display for ShadowEligibilityError {
             }
             Self::InvalidActualAmount => "shadow actual amount cannot be represented exactly",
             Self::BalanceCappedActual => {
-                "balance-capped legacy holds are not eligible for the first shadow rollout"
+                "balance-capped legacy hold was rejected by an older shadow contract"
             }
         })
     }
@@ -137,8 +138,9 @@ impl ShadowActualSnapshotRef {
 
     /// Validate the immutable actual reference before a future producer may enqueue shadow work.
     ///
-    /// This is the single registry-owned gate for timestamp ordering and the first-rollout rule
-    /// that excludes balance-capped legacy holds. It performs no reads or writes.
+    /// This is the single registry-owned gate for timestamp ordering and exact actual-amount
+    /// classification. A legacy hold below its uncapped scalar quote is a proven funding cap and
+    /// remains eligible; a hold above that quote is malformed. This performs no reads or writes.
     pub fn validate_shadow_eligibility(
         &self,
         enqueued_ts: i64,
@@ -184,10 +186,10 @@ fn validate_shadow_eligibility_fields(
     if enqueued_ts < admission_ts {
         return Err(ShadowEligibilityError::EnqueuedBeforeAdmission);
     }
-    let expected = apply_multiplier_nano(official_hold_nano, authorized_multiplier_bp)
+    let uncapped = apply_multiplier_nano(official_hold_nano, authorized_multiplier_bp)
         .map_err(|_| ShadowEligibilityError::InvalidActualAmount)?;
-    if expected != legacy_hold_nano {
-        return Err(ShadowEligibilityError::BalanceCappedActual);
+    if legacy_hold_nano > uncapped {
+        return Err(ShadowEligibilityError::InvalidActualAmount);
     }
     Ok(())
 }
@@ -417,8 +419,7 @@ impl PricingShadowResolved {
         input: PricingShadowResolvedInput,
     ) -> Result<Self> {
         validate_rule(actual, &input.rule)?;
-        let policy_hold_nano =
-            apply_multiplier_nano(actual.official_hold_nano, input.rule.payable_multiplier_bp)?;
+        let policy_hold_nano = policy_hold_nano(actual, input.rule.payable_multiplier_bp)?;
         let comparison = if policy_hold_nano == actual.legacy_hold_nano {
             PricingShadowComparison::Equal
         } else {
@@ -483,8 +484,7 @@ impl PricingShadowResolved {
             false,
         )?;
         validate_rule(actual, &self.rule)?;
-        let expected_hold =
-            apply_multiplier_nano(actual.official_hold_nano, self.rule.payable_multiplier_bp)?;
+        let expected_hold = policy_hold_nano(actual, self.rule.payable_multiplier_bp)?;
         if self.policy_hold_nano != expected_hold {
             bail!("stored shadow policy hold does not match the selected rule");
         }
@@ -1676,6 +1676,21 @@ fn apply_multiplier_nano(amount: i64, multiplier_bp: i64) -> Result<i64> {
     i64::try_from(multiplied).context("shadow hold does not fit integer nanodollars")
 }
 
+/// Resolve the policy hold against the same immutable funding ceiling that constrained the actual
+/// legacy reserve. When the stored actual is below the checked scalar quote, the admission balance
+/// was exactly that stored hold: both scalar and policy candidates therefore share
+/// `min(candidate, legacy_hold_nano)`. An uncapped actual leaves the policy candidate unchanged.
+fn policy_hold_nano(actual: &ShadowActualSnapshotRef, multiplier_bp: i64) -> Result<i64> {
+    let policy_uncapped = apply_multiplier_nano(actual.official_hold_nano, multiplier_bp)?;
+    let scalar_uncapped =
+        apply_multiplier_nano(actual.official_hold_nano, actual.authorized_multiplier_bp)?;
+    Ok(if actual.legacy_hold_nano < scalar_uncapped {
+        policy_uncapped.min(actual.legacy_hold_nano)
+    } else {
+        policy_uncapped
+    })
+}
+
 fn require_shadow_id(label: &str, value: &str) -> Result<()> {
     require_id(label, value)?;
     if value.as_bytes().contains(&0) {
@@ -1955,6 +1970,43 @@ mod tests {
     }
 
     #[test]
+    fn funding_cap_is_applied_exactly_to_scalar_and_policy_candidates() {
+        let mut input = LegacyScalarAdmissionSnapshotInput {
+            request_id: "shadow-capped-request".into(),
+            account_id: "shadow-account-1".into(),
+            provider: SnapshotProvider::Anthropic,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 7,
+            tariff_schedule_id: "anthropic/standard/sonnet-5/v1".into(),
+            tariff_priced_ts: 1_788_220_799,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano: 500_000_000,
+            charged_hold_nano: 100_000_000,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: SnapshotAnthropicSpeed::Standard,
+                inference_geo: SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        };
+        input.charged_hold_nano = 90_000_000;
+        let capped = LegacyScalarAdmissionSnapshot::new(input).unwrap();
+        let actual = ShadowActualSnapshotRef::from_snapshot(&capped).unwrap();
+
+        assert!(actual.validate_shadow_eligibility(1_788_220_801).is_ok());
+        assert_eq!(policy_hold_nano(&actual, 1_000).unwrap(), 50_000_000);
+        assert_eq!(policy_hold_nano(&actual, 2_000).unwrap(), 90_000_000);
+        assert_eq!(policy_hold_nano(&actual, 3_000).unwrap(), 90_000_000);
+
+        let PricingShadowEvaluationOutcome::Resolved(resolved) = resolved(&actual) else {
+            panic!("expected resolved comparison")
+        };
+        assert_eq!(resolved.policy_hold_nano(), 90_000_000);
+        assert_eq!(resolved.comparison(), PricingShadowComparison::Equal);
+    }
+
+    #[test]
     fn evaluation_digest_covers_every_semantic_group() {
         let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot()).unwrap();
         let base = evaluation(resolved(&actual));
@@ -2162,7 +2214,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_manifest_member_and_balance_capped_actual_fail_closed() {
+    fn missing_manifest_member_and_overstated_actual_fail_closed() {
         let snapshot = snapshot();
         let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
         let only_policy_capability =
@@ -2178,7 +2230,7 @@ mod tests {
         )
         .is_err());
 
-        let mut capped_input = LegacyScalarAdmissionSnapshotInput {
+        let mut overstated_input = LegacyScalarAdmissionSnapshotInput {
             request_id: "capped".into(),
             account_id: "shadow-account-1".into(),
             provider: SnapshotProvider::Anthropic,
@@ -2190,17 +2242,17 @@ mod tests {
             admission_ts: 1_788_220_800,
             payable_multiplier_bp: 2_000,
             official_hold_nano: 500_000_000,
-            charged_hold_nano: 99_999_999,
+            charged_hold_nano: 100_000_001,
             premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
                 speed: SnapshotAnthropicSpeed::Standard,
                 inference_geo: SnapshotAnthropicInferenceGeo::Global,
                 inference_geo_basis_points: 10_000,
             },
         };
-        let capped = LegacyScalarAdmissionSnapshot::new(capped_input.clone()).unwrap();
-        let capped_actual = ShadowActualSnapshotRef::from_snapshot(&capped).unwrap();
+        let overstated = LegacyScalarAdmissionSnapshot::new(overstated_input.clone()).unwrap();
+        let overstated_actual = ShadowActualSnapshotRef::from_snapshot(&overstated).unwrap();
         assert!(PricingShadowAdmissionEvaluationInput::new(
-            capped_actual,
+            overstated_actual,
             PRICING_SCHEMA_VERSION,
             manifest(),
             1_788_220_801,
@@ -2212,8 +2264,8 @@ mod tests {
         )
         .is_err());
 
-        capped_input.charged_hold_nano = 100_000_000;
-        assert!(LegacyScalarAdmissionSnapshot::new(capped_input).is_ok());
+        overstated_input.charged_hold_nano = 100_000_000;
+        assert!(LegacyScalarAdmissionSnapshot::new(overstated_input).is_ok());
 
         assert!(ShadowDiagnosticContext::new(json!({"bad": "contains\u{0}nul"})).is_err());
         let mut nul_key = serde_json::Map::new();

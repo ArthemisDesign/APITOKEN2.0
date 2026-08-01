@@ -16,6 +16,7 @@ export * from "./payments.js";
 export * from "./pricing.js";
 export * from "./pricing-control-jobs.js";
 export * from "./multi-discount-backfill.js";
+export * from "./multi-discount-stage8-evidence.js";
 export * from "./totp.js";
 export * from "./sales-feed.js";
 export * from "./content-studio.js";

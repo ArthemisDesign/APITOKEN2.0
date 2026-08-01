@@ -133,9 +133,11 @@ side effect. `serve` may only perform the read-only schema verification before c
 - **Stage 3B1c shadow evaluation persistence:** `ShadowActualSnapshotRef` строится
   только из validated actual snapshot; fixed-plane identity, scalar и holds нельзя независимо
   подменить caller-ом. Registry вычисляет policy hold checked integer half-up, сам выводит
-  `equal|different` и отклоняет balance-capped actual hold, для которого первый shadow rollout ещё
-  не определяет comparison semantics. Resolved outcome хранит exact immutable policy/rule и обе
-  lineage-пары; rejected требует observed scalar, read-error его не допускает. Diagnostic JSON
+  `equal|different`. Actual ниже checked scalar quote считается exact funding ceiling, который
+  одинаково ограничивает policy candidate; actual выше scalar quote fail closed. Compatibility
+  enum старого balance-cap drop больше не эмитится. Resolved outcome хранит exact immutable
+  policy/rule и обе lineage-пары; rejected требует observed scalar, read-error его не допускает.
+  Diagnostic JSON
   неавторитетен, исключён из digest и ограничен одинаковым для SQLite/JSONB контрактом по compact
   bytes, NUL, depth и items. PostgreSQL сериализует request через отдельный advisory namespace и
   держит parent actual `FOR KEY SHARE` до immutable insert; SQLite использует `BEGIN IMMEDIATE`.
@@ -145,6 +147,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   не выполняет persistence. Timed PostgreSQL wrappers set transaction-local statement/lock timeout;
   live reads use a separate bounded actor budget, while inserts pass through the existing billing
   writer without transient retry. SQLite APIs remain for parity/tests and have no live producer.
+- **Stage 8 engine evidence:** PostgreSQL-only read report материализуется в одной
+  `REPEATABLE READ READ ONLY` транзакции. Он проверяет active main/openkeys graph, runtime
+  capability, classifications/funding parity, frozen policy lineage, полное actual→shadow покрытие,
+  exact integer nanoUSD и canonical typed sample; внешний Gemini admission aggregate сверяется с
+  durable provider=`google` usage/outbox. Subject identities выходят только как SHA-256 digests.
+  Report ничего не активирует и не исправляет; любой blocker должен остановить Stage 9.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

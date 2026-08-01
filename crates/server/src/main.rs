@@ -183,6 +183,24 @@ enum DbOp {
     VerifyPostgres,
     /// Print a deterministic Stage 6 funding-bucket migration plan as JSON. Read-only.
     PlanFundingReconciliation,
+    /// Print read-only Stage 8 engine synchronization and shadow evidence as JSON.
+    Stage8Evidence {
+        /// Frozen authority window start, inclusive, as Unix epoch seconds.
+        #[arg(long)]
+        window_start_ts: i64,
+        /// Frozen evidence window end, exclusive, as Unix epoch seconds.
+        #[arg(long)]
+        window_end_ts: i64,
+        /// Required actual-snapshot count for each of Anthropic and OpenAI.
+        #[arg(long)]
+        min_samples_per_provider: i64,
+        /// Deterministic typed financial rows to revalidate and include in the report.
+        #[arg(long)]
+        financial_sample_size: usize,
+        /// Aggregated client-side Gemini admissions observed in the same window.
+        #[arg(long)]
+        gemini_client_admissions: i64,
+    },
     /// Apply one previously reviewed exact plan. Requires a drained maintenance window.
     ApplyFundingReconciliation {
         /// Exact `plan_digest` printed by `plan-funding-reconciliation`.
@@ -544,6 +562,28 @@ fn db_cmd(op: DbOp) -> Result<()> {
             pg.verify_schema()?;
             let plan = pg.funding_reconciliation_plan()?;
             println!("{}", serde_json::to_string_pretty(&plan)?);
+        }
+        DbOp::Stage8Evidence {
+            window_start_ts,
+            window_end_ts,
+            min_samples_per_provider,
+            financial_sample_size,
+            gemini_client_admissions,
+        } => {
+            pg.verify_schema()?;
+            let request = registry::stage8::Stage8EngineEvidenceRequest {
+                window_start_ts,
+                window_end_ts,
+                min_samples_per_provider,
+                financial_sample_size,
+                gemini_client_admissions,
+                runtime_manifest: s.pricing_shadow_manifest,
+            };
+            let report = pg.stage8_engine_evidence(&request)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.passed {
+                bail!("Stage 8 engine evidence contains blockers");
+            }
         }
         DbOp::ApplyFundingReconciliation {
             plan_digest,

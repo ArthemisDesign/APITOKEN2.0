@@ -1577,7 +1577,8 @@ shadow insert/read с lost-ACK replay/conflict и digest verification.
 
 Доставленный pure `forward` checkpoint добавляет `PricingShadowWorkItem`, который строится только из
 validated actual snapshot, полного canonical manifest evidence и явного `enqueued_ts`. Он до
-будущего enqueue отклоняет timestamp-before-admission и balance-capped actual, сам выводит resolver
+будущего enqueue отклоняет timestamp-before-admission и actual hold выше checked scalar quote, а
+точный funding-capped hold ниже quote принимает как immutable ceiling. Work item сам выводит resolver
 request из exact actual reference и resolver manifest из registry-owned canonical evidence. Builder
 вызывает resolver ровно один раз на одном переданном coherent `PricingReadBundle`, явно сверяет
 manifest/provider/requested/canonical identities, переносит обе lineage-пары и исчерпывающе
@@ -1598,9 +1599,11 @@ builder получает resolved evidence только из одного cohere
 проверяет binding/gates до формирования write input и historical row не re-resolve-ится по более
 новым heads.
 
-Первый shadow rollout не принимает balance-capped actual hold: если `charged_hold_nano` не равен
-checked half-up применению legacy multiplier к `official_hold_nano`, typed input отклоняется до
-write. Funding-cap comparison остаётся отдельным более поздним контрактом, как описано в 3B1c.3.
+Funding-cap contract теперь точный: checked scalar quote задаёт верхнюю границу actual. Значение
+`charged_hold_nano` выше неё невалидно и fail closed, равное ей означает uncapped actual, а меньшее
+является доказанным funding ceiling. Для capped actual policy candidate считается как
+`min(checked policy quote, charged_hold_nano)`; поэтому scalar и policy сравниваются в одной
+immutable funding envelope без float и без ложного mismatch.
 
 Состояние prerequisites и оставшиеся ограничения перед live bridge:
 
@@ -1754,10 +1757,11 @@ Worker не репарсит request и не репрайсит его по те
 integer/nanoUSD helper с тем же rounding contract, что admission. Overflow или невалидная сумма —
 typed evaluation error, а не приблизительный float-результат.
 
-Если `charged_hold_nano` был ограничен доступным balance и поэтому не равен обычному применению
-scalar multiplier к `official_hold_nano`, первый rollout не enqueue-ит такой запрос, учитывает его
-отдельным typed counter и не записывает ложный policy rejection/mismatch. Точная funding-cap
-comparison semantics добавляется отдельным checkpoint до Stage 8.
+Если `charged_hold_nano` был ограничен доступным balance и поэтому меньше обычного применения
+scalar multiplier к `official_hold_nano`, producer enqueue-ит запрос на общих bounded условиях.
+Resolver применяет тот же immutable funding ceiling к policy candidate. Actual выше checked scalar
+quote остаётся invariant error до enqueue. Старый `BalanceCappedActual` сохраняется только как
+wire/metrics compatibility value для прежних бинарей и текущим кодом больше не эмитится.
 
 Этот shadow отражает policy/head state на `evaluated_ts`, а не гарантированно на `admission_ts`.
 Queue age/lag наблюдается явно; строки, пересекающие activation window, не используются как
@@ -1787,7 +1791,8 @@ activation:
   Gemini и live SQLite composition fail closed до запуска worker;
 - producer использует SHA-256 v1 sampling по fixed provider и внутреннему canonical UUIDv4,
   проверяет каждое поле и полный work-item до clone, применяет integer token bucket и выполняет
-  ровно один `try_send`; full/closed/rate/size/balance-cap drop остаётся metrics-only;
+  ровно один `try_send`; full/closed/rate/size drop остаётся metrics-only, а funding-capped actual
+  проходит обычный bounded enqueue path;
 - очередь истекает до authority access. Concurrency ограничена, read выполняется отдельным
   PostgreSQL actor budget, insert проходит через существующего single writer без обычного
   пятисекундного retry money-operation, а обе DB-транзакции получают transaction-local
@@ -1966,6 +1971,27 @@ Policy-before-key gate нельзя включать раньше seed/backfill:
 - Проверить все account classifications.
 - Проверить, что Gemini admissions равны нулю.
 - Провести финансовую выборочную сверку до nanoUSD.
+
+Application checkpoint Stage 8 добавляет два read-only evidence report и не включает strict:
+
+- commerce report `pnpm --filter @claude-api/db pricing:stage8-evidence` читает один
+  `REPEATABLE READ READ ONLY` snapshot, сверяет latest capability/catalog/switch heads, полный
+  Anthropic/OpenAI graph без Gemini, classification каждого active account, desired/applied/ACK
+  identity, stale generations, invitation policies и отсутствие pending/processing/retry/dead jobs;
+- engine report `claude-api db stage8-evidence` читает один PostgreSQL
+  `REPEATABLE READ READ ONLY` snapshot, принимает явное frozen half-open окно и внешний агрегат
+  Gemini client admissions, проверяет active heads/runtime capability, account/funding
+  reconciliation, 100% actual→shadow coverage, frozen lineage, exact integer nanoUSD formula и
+  повторно валидирует deterministic financial sample через canonical typed reader;
+- оба отчёта хэшируют subject identities до вывода, возвращают stable blocker codes и canonical
+  `sha256:v1` evidence digest. Любой blocker даёт non-zero CLI exit; отчёт при этом печатается для
+  аудита;
+- authority updates catalog/switch/policy/binding должны быть заморожены с `window_start_ts` до
+  захвата engine report. `window_end_ts` закрывает traffic sample, но update после него до report
+  также блокирует evidence. Stage 9 обязан повторно получить evidence под тем же no-drift gate;
+- production evidence и переход к Stage 9 заблокированы, пока нет reviewed фактической
+  B2B/service/OpenKeys assignment matrix и не завершены соответствующие Stage 5/6 data application.
+  Кодовый checkpoint не выводит assignments по аналогии и ничего не применяет в production.
 
 ### Этап 9. Strict enforcement
 

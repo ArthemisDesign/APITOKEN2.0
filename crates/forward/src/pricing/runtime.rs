@@ -216,6 +216,7 @@ pub enum PricingShadowEnqueueResult {
     OversizedItem,
     InvalidActual,
     InvalidTimestamp,
+    /// Compatibility-only metric value for older producer binaries; current funding caps enqueue.
     BalanceCapped,
     QueueFull,
     QueueClosed,
@@ -998,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_applies_sample_rate_size_and_balance_cap_before_enqueue() {
+    fn producer_applies_sample_rate_size_and_accepts_funding_cap_before_enqueue() {
         let base_snapshot = snapshot(
             "123e4567-e89b-42d3-a456-426614174000",
             "account",
@@ -1078,7 +1079,7 @@ mod tests {
         );
         assert_eq!(
             runtime.try_enqueue(&capped),
-            PricingShadowEnqueueResult::BalanceCapped
+            PricingShadowEnqueueResult::Accepted
         );
     }
 
@@ -1117,8 +1118,8 @@ mod tests {
         );
         assert_eq!(
             runtime.try_enqueue(&capped),
-            PricingShadowEnqueueResult::BalanceCapped,
-            "typed eligibility failures must not be masked by an exhausted rate budget"
+            PricingShadowEnqueueResult::RateLimited,
+            "funding-capped snapshots remain eligible and consume the ordinary rate budget"
         );
     }
 

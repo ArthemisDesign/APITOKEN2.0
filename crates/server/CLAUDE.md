@@ -51,7 +51,8 @@
   изменившийся вердикт персистится owner-fenced (`save_sub_health`); suspect/dead probe-ятся НЕЗАВИСИМО
   от cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`), чтобы добрать корроборацию/ресуррекцию. На
   старте `serve` сеет вердикт через `pool.import_health` (мёртвые сразу вне ротации, переживают рестарт).
-- `main.rs` — clap CLI: `serve` и `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`.
+- `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
+  и PostgreSQL-only read evidence `db stage8-evidence`.
 
 **Инварианты:**
 - При старте PostgreSQL authority только read-only проверяет применённую схему; DDL выполняется
@@ -69,6 +70,9 @@
   Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI plane. Server собирает fixed
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
   FIFO flush.
+- `db stage8-evidence` получает тот же compile-fixed runtime manifest из `Settings`, требует явное
+  frozen window/sample limits и внешний агрегат Gemini admissions, печатает read-only JSON и
+  возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
   `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/fleet-history` читает историю metrics.db

@@ -11,6 +11,7 @@ pub mod authority;
 pub mod funding;
 pub mod pg;
 pub mod pricing;
+pub mod stage8;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
