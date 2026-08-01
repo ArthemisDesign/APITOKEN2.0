@@ -38,6 +38,11 @@ policy-before-key lifecycle. Он материализует и требует e
 уже существует, поэтому rolling deploy до Stage 5 не меняет legacy accounts без policy authority.
 Checkpoint не создаёт production assignment matrix, не применяет Stage 5/6 data и сам по себе не
 включает strict runtime либо публичный запуск.
+Текущий Stage 7 inventory checkpoint устраняет расхождение identity между Stage 5 и новым выпуском
+OpenKeys: official 1:1 payload теперь строится одним canonical builder в `packages/engine-client`,
+а `apps/openkeys` получает fail-closed batch CLI для exact Stage 5 dry-run/matrix, preflight всего
+инвентаря и prepare → CAS activate → readback. Он не меняет balances, ключи, статусы или историю и
+сам по себе не является production application Stage 7.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -1978,7 +1983,9 @@ OpenKeys/product scopes копируются в новую generation без п�
 - Global B2C: Anthropic `track`, OpenAI `track`.
 - Existing B2B: текущая скидка только в Anthropic provider-rule.
 - Unconsumed invitations: отдельная Anthropic-only snapshot.
-- Existing OpenKeys: immutable legacy policy с текущей экономикой.
+- Existing legacy OpenKeys: source-specific immutable locked policy с текущей экономикой.
+- Existing `official_1_to_1` OpenKeys: та же canonical policy identity и digest domain, что у
+  нового выпуска; OpenKeys source ID не создаёт вторую official policy identity.
 - OpenKeys current catalog: все текущие представленные Anthropic/OpenAI models.
 - Service accounts: только по утверждённой матрице.
 
@@ -1999,6 +2006,13 @@ OpenKeys/product scopes копируются в новую generation без п�
 - Проверить, что legacy rows по-прежнему читаются.
 - Проверить, что новый account получает policy ACK до выдачи секрета.
 - Запретить любой обходной non-1:1 выпуск.
+- Перед strict/shadow evidence применить exact OpenKeys references из утверждённой Stage 5 matrix
+  ко всему OpenKeys inventory, включая disabled accounts. Batch обязан сначала проверить digest
+  matrix, plan/reference equality и active catalog/switch authority, затем показать
+  `unbound`/`exact`/`conflict`; apply разрешён только после conflict-free полного preflight.
+- Для каждого `unbound` account выполнить только versioned Control API prepare → activation CAS →
+  exact readback. Exact replay не пишет повторно; partial transport failure продолжается тем же
+  artifact. Batch не меняет scalar multiplier, balance, key status или historical rows.
 
 ### Этап 8. Полная синхронизация и shadow validation
 

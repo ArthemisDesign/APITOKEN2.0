@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3410",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --no-file-parallelism"
+    "test": "vitest run --no-file-parallelism",
+    "pricing:stage7": "tsx src/lib/openkeys-stage7-backfill-cli.ts"
   },
   "dependencies": {
     "@claude-api/contracts": "workspace:*",
@@ -18,13 +19,15 @@
     "pg": "^8.16.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "vitest": "^3.2.0"
   }

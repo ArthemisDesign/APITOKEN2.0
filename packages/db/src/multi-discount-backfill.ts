@@ -14,6 +14,7 @@ import {
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
 } from "@claude-api/contracts";
+import { buildOfficialOpenKeysPolicy } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Database } from "./client.js";
@@ -575,7 +576,9 @@ function buildInvitationPlan(invite: Stage5InvitationSnapshot): Stage5Invitation
   return { invite_id: invite.invite_id, source_multiplier_bp: invite.multiplier_bp, policy };
 }
 
-function buildOpenKeysPlan(account: Stage5Inventory["openkeys_accounts"][number]): Stage5OpenKeysPlan {
+export function buildStage5OpenKeysPlan(
+  account: Stage5Inventory["openkeys_accounts"][number],
+): Stage5OpenKeysPlan {
   let exceptionCode: string | null = null;
   if (account.pricing_contract === "legacy" && !(account.multiplier_bp >= 1 && account.multiplier_bp <= 10_000)) {
     exceptionCode = "legacy_openkeys_multiplier_unrepresentable";
@@ -593,7 +596,22 @@ function buildOpenKeysPlan(account: Stage5Inventory["openkeys_accounts"][number]
       exception_code: exceptionCode,
     };
   }
-  const origin = account.pricing_contract === "legacy" ? "legacy" : "managed";
+  if (account.pricing_contract === "official_1_to_1") {
+    return {
+      source_id: account.source_id,
+      account_id: account.account_id,
+      status: account.status,
+      pricing_contract: account.pricing_contract,
+      source_multiplier_bp: account.multiplier_bp,
+      effective_policy: buildOfficialOpenKeysPolicy(account.account_id, {
+        catalog: buildCatalog(STAGE5_OPENKEYS_PRODUCT_ID),
+        switches: buildSwitches(),
+      }),
+      exception_code: null,
+    };
+  }
+
+  const origin = "legacy" as const;
   const policyId = `policy:openkeys:${account.pricing_contract}:${account.source_id}`;
   const sourceRules = [
     discountSourceRule("anthropic", account.multiplier_bp, origin),
@@ -778,7 +796,7 @@ function buildStage5Plan(snapshot: SnapshotRows, rawInventory: Stage5Inventory):
   }
 
   const openKeysPlans = inventory.openkeys_accounts
-    .map(buildOpenKeysPlan)
+    .map(buildStage5OpenKeysPlan)
     .sort((left, right) => compareUtf8(left.account_id, right.account_id));
   for (const plan of openKeysPlans) {
     const engine = engineById.get(plan.account_id);

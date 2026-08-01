@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   CURRENT_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_CAPABILITY_DIGEST,
@@ -20,6 +21,16 @@ import {
   resolveOpenKeysPricingAuthority,
   type OpenKeysPricingAuthority,
 } from "./openkeys-pricing";
+
+const officialPolicyFixture = JSON.parse(readFileSync(
+  new URL("../../../../docs/commerce/fixtures/openkeys-official-policy-v1.json", import.meta.url),
+  "utf8",
+)) as {
+  account_id: string;
+  policy_id: string;
+  owner_id: string;
+  content_digest: string;
+};
 
 type PricingEngine = Parameters<typeof resolveOpenKeysPricingAuthority>[0];
 
@@ -134,6 +145,11 @@ describe("OpenKeys official 1:1 pricing", () => {
         commission_eligible: false,
       });
     }
+  });
+
+  it("matches the shared fixed official policy identity used by Stage 5", () => {
+    const policy = buildOfficialOpenKeysPolicy(officialPolicyFixture.account_id, authority());
+    expect(policy).toMatchObject(officialPolicyFixture);
   });
 
   it("fails closed until the exact active catalog and switches are available", async () => {

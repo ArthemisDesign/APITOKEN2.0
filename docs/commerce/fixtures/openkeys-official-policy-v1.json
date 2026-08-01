@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "account_id": "acct_79239716e435a7e772749b97",
+  "policy_id": "policy:openkeys:official-1-to-1",
+  "owner_id": "official-1-to-1",
+  "catalog_generation": 1,
+  "switch_generation": 1,
+  "content_digest": "sha256:v1:79e20b3d9a3f9f23a686dab2bea4006e65d57e10d81867615704ca42ada358f0"
+}

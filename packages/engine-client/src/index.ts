@@ -33,6 +33,20 @@ import {
 } from "@claude-api/contracts";
 import { z } from "zod";
 
+export {
+  assertOpenKeysCatalog,
+  assertOpenKeysSwitches,
+  buildOfficialOpenKeysPolicy,
+  canonicalPricingJson,
+  OFFICIAL_ONE_TO_ONE_CONTRACT,
+  OFFICIAL_ONE_TO_ONE_MULT_BP,
+  officialOpenKeysBinding,
+  OPENKEYS_POLICY_PROVIDERS,
+  OpenKeysPolicyError,
+  stage7OpenKeysDigest,
+  type OpenKeysPricingAuthority,
+} from "./openkeys-policy.js";
+
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
 
 export class EngineClientError extends Error {

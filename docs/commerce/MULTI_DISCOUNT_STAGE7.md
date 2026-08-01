@@ -39,3 +39,42 @@ The Stage 7 binding remains `policy_enforcement=shadow`,
 shadow/strict runtime transition. If the reviewed Stage 5 catalog/switch authority has not yet been
 activated, new issuance deliberately returns unavailable rather than falling back to scalar
 pricing. Existing inventory remains readable and usable under its immutable legacy contract.
+
+## Existing inventory policy cutover
+
+`@claude-api/openkeys` exposes the bounded-context batch command that consumes the exact retained
+Stage 5 dry-run result and its approved assignment matrix:
+
+```text
+ENGINE_BASE_URL=... ENGINE_CONTROL_KEY=... \
+pnpm --filter @claude-api/openkeys pricing:stage7 -- \
+  dry_run <stage5-dry-run.json> <assignment-matrix.json>
+```
+
+The command rejects any invalid matrix/draft digest, stale plan identity, changed OpenKeys
+reference, duplicate account/source, non-canonical official policy, malformed legacy policy, or
+active engine catalog/switch authority different from the Stage 5 artifact. It inventories every
+OpenKeys account from the artifact, including disabled rows, and reports each as `unbound`, `exact`,
+or `conflict`. Dry-run performs no prepare or activation call. A conflict blocks the complete apply
+before its first write.
+
+After retaining the conflict-free report, apply uses the same two immutable artifacts:
+
+```text
+ENGINE_BASE_URL=... ENGINE_CONTROL_KEY=... \
+pnpm --filter @claude-api/openkeys pricing:stage7 -- \
+  apply <stage5-dry-run.json> <assignment-matrix.json>
+```
+
+For each `unbound` account it prepares the exact candidate, rechecks the CAS precondition,
+activates from `unbound`, and requires exact active policy/binding readback. Accounts already exact
+are left untouched, so a complete replay returns `unchanged`; an interrupted run is resumed with
+the same artifacts. A final full-inventory readback must still find every account exact before the
+report succeeds. The command calls only versioned pricing endpoints. It never edits OpenKeys rows,
+scalar multipliers, balances, keys, statuses, or history.
+
+Legacy policy IDs remain `policy:openkeys:legacy:<source-id>` with source-specific locked digests.
+All `official_1_to_1` rows use `policy:openkeys:official-1-to-1`, owner `official-1-to-1`, and the
+same Stage 7 digest domain as live issuance. The fixed production digest test vector is retained in
+`docs/commerce/fixtures/openkeys-official-policy-v1.json` and exercised from both Stage 5 and
+OpenKeys tests.

@@ -47,7 +47,8 @@ Dry run opens a PostgreSQL `REPEATABLE READ READ ONLY` transaction and emits:
   provider rules;
 - independent Anthropic-only snapshots for every unconsumed, non-revoked, non-superseded invitation;
 - protected B2B candidates with Anthropic-only static rules;
-- protected OpenKeys candidates with two immutable legacy provider rules;
+- protected OpenKeys candidates: source-specific locked legacy rules for `legacy` rows and the one
+  shared Stage 7 canonical identity for `official_1_to_1` rows;
 - every engine identity not claimed by commerce or OpenKeys;
 - typed blockers, the source/inventory/plan digests, and an assignment-matrix draft.
 
@@ -76,6 +77,12 @@ pnpm --filter @claude-api/db pricing:stage5 -- approved <inventory.json> <assign
 OpenKeys account-policy writes remain outside commerce and are consumed by the Stage 7 OpenKeys
 cutover. Their exact candidates are nevertheless part of the approved matrix so the two bounded
 contexts cannot silently classify the same engine account differently.
+
+The official 1:1 candidate is built by `buildOfficialOpenKeysPolicy` from
+`packages/engine-client`, the same pure builder used by live OpenKeys issuance and the Stage 7
+batch. Its policy ID, owner, rules, source digest, and effective digest are therefore byte-for-byte
+identical across both stages. Legacy candidates deliberately remain source-specific and
+`replacement_locked=true`.
 
 Every apply holds source-table share locks inside one `SERIALIZABLE` transaction. The transaction
 stores and verifies immutable versions, moves only monotonic desired heads, and inserts the catalog

@@ -66,6 +66,13 @@ $50 получает ровно $50 engine balance, а $1 полной офиц�
 ровно 1:1 и сохраняется как `official_1_to_1`. Старые `legacy`-ключи продолжают читаться с их
 историческим множителем, но этот контракт нельзя выбрать для новой партии.
 
+Stage 7 policy backfill существующего inventory запускается только явной командой
+`pnpm --filter @claude-api/openkeys pricing:stage7` с сохранёнными Stage 5 dry-run и approved
+matrix. Сначала обязателен `dry_run`, затем `apply` с теми же файлами. Команда включает disabled
+accounts, применяет только versioned policy Control API и не меняет OpenKeys rows, balances,
+multiplier, key status или history. Полный fail-closed протокол и replay semantics описаны в
+`docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
+
 ## Административные интерфейсы
 
 Собственная `/admin` построена вокруг партий, а не номиналов. Список партий имеет серверный поиск

@@ -20,7 +20,7 @@
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
-| `packages/engine-client` | TS-клиент `EngineClient`, zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками | `apps/api`, `apps/worker`, `apps/openkeys` (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` у каждого) | `docs/engine/CONTROL_API.md` |
+| `packages/engine-client` | TS-клиент `EngineClient`, zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; canonical pure OpenKeys policy builder общий для Stage 5/7 | `apps/api`, `apps/worker`, `apps/openkeys` (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` у runtime-потребителей), `packages/db` (только pure Stage 5 policy construction, без HTTP) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md` |
 | `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`) | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
@@ -91,8 +91,9 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.
 - `apps/web/src/lib/pricing-tiers.ts` — витринная B2C-скидка (хардкод).
-- `apps/openkeys/src/lib/openkeys-pricing.ts` — сверяет каталог движка с
-  `CURRENT_PRODUCT_CATALOG_ENTRIES` из `packages/contracts` (fail closed при расхождении).
+- `packages/engine-client/src/openkeys-policy.ts` — canonical OpenKeys policy identity/digest и
+  сверка каталога с `CURRENT_PRODUCT_CATALOG_ENTRIES`; `apps/openkeys` и Stage 5 planner используют
+  один builder (fail closed при расхождении).
 - `apps/admin/src/app/sales/calculator/calculation.ts` — захардкоженный `PRODUCT_CATALOG`
   подписочных продуктов (nanoUSD, bigint).
 - Политика включения новых моделей: `docs/commerce/MULTI-DISCOUNT.md` §7 (каталоги), §15
