@@ -19,6 +19,15 @@ export const UNIVERSAL_CONNECTIONS = {
     apiKeyVariable: "OPENAI_API_KEY",
     authHeader: "Authorization: Bearer",
   },
+  gemini: {
+    label: "Gemini / Google Gemini API",
+    shortLabel: "Gemini",
+    baseUrl: "https://gemini.api.apitoken.sale",
+    docsPath: "/docs",
+    baseUrlVariable: "GOOGLE_GEMINI_BASE_URL",
+    apiKeyVariable: "GEMINI_API_KEY",
+    authHeader: "x-goog-api-key",
+  },
 } as const;
 
 export interface UniversalKeyHandover {
@@ -27,15 +36,16 @@ export interface UniversalKeyHandover {
   viewUrl: string;
 }
 
-/** Один самодостаточный текст выдачи: тот же ключ сразу готов для обоих API. */
+/** Один самодостаточный текст выдачи: тот же ключ сразу готов для всех трёх API. */
 export function universalKeyHandoverText(key: UniversalKeyHandover): string {
   const secret = key.secret ?? "";
   const claude = UNIVERSAL_CONNECTIONS.claude;
   const openai = UNIVERSAL_CONNECTIONS.openai;
+  const gemini = UNIVERSAL_CONNECTIONS.gemini;
 
   return [
     `Баланс ключа: ${key.faceValue} по официальным прайсам используемых моделей`,
-    "Один ключ и общий баланс работают для Claude и GPT.",
+    "Один ключ и общий баланс работают для Claude, GPT и Gemini.",
     "",
     "Claude / Anthropic API",
     `${claude.baseUrlVariable}=${claude.baseUrl}`,
@@ -46,6 +56,11 @@ export function universalKeyHandoverText(key: UniversalKeyHandover): string {
     `${openai.baseUrlVariable}=${openai.baseUrl}`,
     `${openai.apiKeyVariable}=${secret}`,
     `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${openai.docsPath}`,
+    "",
+    "Gemini / Google Gemini API",
+    `${gemini.baseUrlVariable}=${gemini.baseUrl}`,
+    `${gemini.apiKeyVariable}=${secret}`,
+    `Инструкция: ${OPENKEYS_PUBLIC_ORIGIN}${gemini.docsPath}`,
     "",
     `Остаток и расход: ${key.viewUrl}`,
   ].join("\n");

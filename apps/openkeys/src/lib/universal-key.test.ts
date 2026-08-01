@@ -26,9 +26,10 @@ describe("универсальный ключ OpenKeys", () => {
       viewUrl: `${OPENKEYS_PUBLIC_ORIGIN}/profile/test-token`,
     });
 
-    expect(text.match(/sk-pool-test-secret/g)).toHaveLength(2);
+    expect(text.match(/sk-pool-test-secret/g)).toHaveLength(3);
     expect(text).toContain("ANTHROPIC_BASE_URL=https://api.apitoken.sale");
     expect(text).toContain("OPENAI_BASE_URL=https://openai.api.apitoken.sale/v1");
+    expect(text).toContain("GOOGLE_GEMINI_BASE_URL=https://gemini.api.apitoken.sale");
     expect(text).toContain(`${OPENKEYS_PUBLIC_ORIGIN}/docs/claude`);
     expect(text).toContain(`${OPENKEYS_PUBLIC_ORIGIN}/docs/openai`);
     expect(text.match(/Остаток и расход:/g)).toHaveLength(1);

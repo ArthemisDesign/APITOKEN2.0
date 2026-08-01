@@ -30,20 +30,20 @@ import { PROVIDER_COLORS, PROVIDER_REGISTRY, type ProviderDescriptor } from "@/l
 
 const copy = {
   en: {
-    titleBar: "Key usage", eyebrow: "CLAUDE + GPT · SHARED BALANCE", title: "Universal API key",
-    lead: "One key and one balance work across Claude API and the GPT/OpenAI-compatible API. Usage is combined below, while every request keeps the official price of the model that served it.",
+    titleBar: "Key usage", eyebrow: "CLAUDE + GPT + GEMINI · SHARED BALANCE", title: "Universal API key",
+    lead: "One key and one balance work across the Claude, GPT/OpenAI-compatible, and Google Gemini APIs. Usage is combined below, while every request keeps the official price of the model that served it.",
     offline: "Offline — waiting for connection", syncing: "Syncing", updated: "Updated", loaded: "Data loaded",
     automatic: "automatically every 6 seconds", refresh: "Refresh usage now", copy: "Copy", copied: "Copied",
     balance: "Key balance", faceValue: "face value", remainingCompleted: "Remaining after completed requests",
     spent: "Actually spent", reserved: "Temporarily reserved", available: "Available for new requests",
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
     key: "Key", active: "active", disabled: "disabled", issued: "issued", connectClaude: "Connect Claude",
-    connectGpt: "Connect GPT", signOut: "Sign out", connections: "Two connections", oneKey: "one key", yourKey: "Your key",
-    providersTitle: "Connected providers", providersDesc: "Both APIs run on this one key — point each tool at its endpoint and every request shows up here.",
+    connectGpt: "Connect GPT", connectGemini: "Connect Gemini", signOut: "Sign out", connections: "Three connections", oneKey: "one key", yourKey: "Your key",
+    providersTitle: "Connected providers", providersDesc: "All three APIs run on this one key — point each tool at its endpoint and every request shows up here.",
     statusReady: "ready", guide: "Setup guide", noUsageYet: "No usage yet — connect it to start",
     officialCost: "Official cost", officialPrices: "at official prices of the models used", chargedKey: "Charged to key",
     last30: "last 30 days", requests: "Requests", processing: "Processing now", processingNote: "temporary hold for active requests",
-    apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude and GPT/OpenAI usage shown separately for the last 30 days.",
+    apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude, GPT/OpenAI, and Gemini usage shown separately for the last 30 days.",
     requestWord: "requests", tokenWord: "tokens", chargedLower: "charged", spendByDay: "Daily usage",
     noSpend: "No charges in this period yet", periodSummary: "Period summary", charged: "Charged", peakDay: "Peak day",
     dailyAverage: "Daily average", tokensModels: "Tokens and models", tokensModelsDesc: "How the cost was formed: input, output, and cache are billed at their own rates.",
@@ -55,20 +55,20 @@ const copy = {
     remaining: "Remaining",
   },
   ru: {
-    titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
-    lead: "Один ключ и один баланс работают на Claude API и GPT/OpenAI-совместимом API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
+    titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT + GEMINI · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
+    lead: "Один ключ и один баланс работают на Claude, GPT/OpenAI-совместимом и Google Gemini API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
     offline: "Нет сети — ждём подключения", syncing: "Синхронизация", updated: "Обновлено", loaded: "Данные загружены",
     automatic: "автоматически каждые 6 секунд", refresh: "Обновить расход сейчас", copy: "Скопировать", copied: "Скопировано",
     balance: "Баланс ключа", faceValue: "номинал", remainingCompleted: "Остаток после завершённых запросов",
     spent: "Фактически потрачено", reserved: "Временно в обработке", available: "Доступно новым запросам",
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
     key: "Ключ", active: "активен", disabled: "отключён", issued: "выпущен", connectClaude: "Подключить Claude",
-    connectGpt: "Подключить GPT", signOut: "Выйти", connections: "Два подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
-    providersTitle: "Подключённые провайдеры", providersDesc: "Оба API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
+    connectGpt: "Подключить GPT", connectGemini: "Подключить Gemini", signOut: "Выйти", connections: "Три подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
+    providersTitle: "Подключённые провайдеры", providersDesc: "Все три API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
     statusReady: "готов", guide: "Инструкция", noUsageYet: "Пока нет расхода — подключите, чтобы начать",
     officialCost: "Официальная стоимость", officialPrices: "по официальным прайсам использованных моделей", chargedKey: "Списано с ключа",
     last30: "за 30 дней", requests: "Запросов", processing: "Сейчас в обработке", processingNote: "временный резерв активных запросов",
-    apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude и GPT/OpenAI за последние 30 дней.",
+    apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude, GPT/OpenAI и Gemini за последние 30 дней.",
     requestWord: "запросов", tokenWord: "токенов", chargedLower: "списано", spendByDay: "Расход по дням",
     noSpend: "За этот период списаний ещё не было", periodSummary: "Сводка за период", charged: "Списано", peakDay: "Пиковый день",
     dailyAverage: "В среднем в день", tokensModels: "Токены и модели", tokensModelsDesc: "Из чего сложился расход: вход, выход и кэш считаются по своим ставкам.",
@@ -364,6 +364,9 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                   <Link className="btn btn-ghost btn-sm" href={UNIVERSAL_CONNECTIONS.openai.docsPath}>
                     {t.connectGpt}
                   </Link>
+                  <Link className="btn btn-ghost btn-sm" href="/docs">
+                    {t.connectGemini}
+                  </Link>
                   {showSignOut ? (
                     <button
                       type="button"
@@ -466,9 +469,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
               <div className="usage-chart-legend" aria-label={t.apiSpend}>
                 <span><i style={{ background: PROVIDER_COLORS.anthropic }} />Claude</span>
                 <span><i style={{ background: PROVIDER_COLORS.openai }} />GPT / OpenAI</span>
-                {series.some((point) => point.gemini > 0n) && (
-                  <span><i style={{ background: PROVIDER_COLORS.gemini }} />Gemini</span>
-                )}
+                <span><i style={{ background: PROVIDER_COLORS.gemini }} />Gemini</span>
                 {series.some((point) => point.unattributed > 0n) && (
                   <span><i style={{ background: PROVIDER_COLORS.unattributed }} />{t.unattributed}</span>
                 )}

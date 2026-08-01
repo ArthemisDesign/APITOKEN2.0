@@ -78,6 +78,15 @@ describe("integration builder guide", () => {
       modelId: "not-a-real-model",
       language: "en",
     })).toThrow("Unknown openai model");
+
+    // Antigravity has no bring-your-own-endpoint, so it can never build a guide.
+    expect(() => buildIntegrationGuide({
+      provider: "gemini",
+      tool: "antigravity",
+      os: "unix",
+      modelId: INTEGRATION_MODELS.gemini[0].id,
+      language: "en",
+    })).toThrow("Antigravity does not support gemini");
   });
 
   it("emits parseable OpenCode and Pi configs without embedding a secret", () => {
@@ -128,6 +137,11 @@ describe("integration builder guide", () => {
     expect(geminiCli.steps[0].code).toContain('export GEMINI_API_KEY="sk-pool-•••"');
     expect(geminiCli.steps[1].code).toBe("gemini --model gemini-3.6-flash");
     expect(geminiCli.requirement).toContain("/auth");
+    // The two failure modes the user hit live: doubled /v1beta and the default
+    // auto model — the guide must warn about both explicitly.
+    expect(geminiCli.requirement).toContain("without /v1beta");
+    expect(geminiCli.requirement).toContain("not available");
+    expect(geminiCli.steps[1].text).toContain("auto");
 
     const geminiCliWindows = buildIntegrationGuide({ provider: "gemini", tool: "gemini-cli", os: "powershell", modelId: "gemini-3.6-flash", language: "en" });
     expect(geminiCliWindows.steps[0].code).toContain(`$env:GOOGLE_GEMINI_BASE_URL = "${GEMINI_BASE_URL}"`);

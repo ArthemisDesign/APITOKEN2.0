@@ -430,7 +430,7 @@ export default function AdminPage() {
 
         {showIssueForm ? (
           <form className="card openkeys-issue-card" onSubmit={issue}>
-            <div className="overview-card-head"><div><span className="overview-card-label">Новая партия</span><p className="field-hint">Метка обязательна в интерфейсе: по ней продавец находит выпуск среди сотен других.</p></div><span className="chip">1:1 official · Claude + GPT</span></div>
+            <div className="overview-card-head"><div><span className="overview-card-label">Новая партия</span><p className="field-hint">Метка обязательна в интерфейсе: по ней продавец находит выпуск среди сотен других.</p></div><span className="chip">1:1 official · Claude + GPT + Gemini</span></div>
             <div className="banner openkeys-universal-banner">
               <b>Фиксированная экономика: 1:1 по официальной цене</b>
               <span>Номинал равен фактическому engine balance. Скидка и множитель не настраиваются.</span>

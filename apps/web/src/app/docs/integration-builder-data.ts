@@ -6,7 +6,7 @@ export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
 
 export type IntegrationProvider = "anthropic" | "openai" | "gemini";
-export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "opencode" | "pi" | "hermes";
+export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "antigravity" | "opencode" | "pi" | "hermes";
 export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
 
@@ -63,6 +63,9 @@ export const TOOL_COMPATIBILITY: Record<IntegrationTool, readonly IntegrationPro
   "claude-code": ["anthropic"],
   codex: ["openai"],
   "gemini-cli": ["gemini"],
+  // Antigravity has no bring-your-own-key/endpoint (Google account only),
+  // so it stays listed but deliberately incompatible with every provider.
+  antigravity: [],
   opencode: ["anthropic", "openai", "gemini"],
   pi: ["anthropic", "openai", "gemini"],
   hermes: ["openai"],
@@ -72,6 +75,7 @@ const TOOL_NAMES: Record<IntegrationTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   "gemini-cli": "Gemini CLI",
+  antigravity: "Antigravity",
   opencode: "OpenCode",
   pi: "Pi",
   hermes: "Hermes",
@@ -192,17 +196,23 @@ function geminiCliGuide(model: IntegrationModel, os: IntegrationOs, language: In
     title: `Gemini CLI · ${model.name}`,
     summary: localize(language, "Native Gemini coding agent through the Google Gemini API.", "Нативный coding agent Gemini через Google Gemini API."),
     endpoint: GEMINI_BASE_URL,
-    requirement: localize(language, "If you previously signed in with a Google account, run /auth inside Gemini CLI and switch to the API key — a saved OAuth login can take precedence.", "Если раньше входили через Google-аккаунт, выполните /auth внутри Gemini CLI и переключитесь на API key — сохранённый OAuth-логин может иметь приоритет."),
+    requirement: localize(language,
+      "Two things make or break the connection: the base URL must be set exactly as shown — the bare host, without /v1beta (the SDK appends it itself, a doubled prefix ends in 404) — and the model must always be passed explicitly, because the CLI's default auto model is not served by the gateway and answers \"not available\". If you previously signed in with a Google account, run /auth inside Gemini CLI and switch to the API key — a saved OAuth login can take precedence.",
+      "Две вещи решают всё: base URL строго как показано — голый хост, без /v1beta (SDK добавляет его сам, удвоенный префикс даёт 404) — и модель всегда передавайте явно: дефолтная auto-модель CLI шлюзом не обслуживается и отвечает \"not available\". Если раньше входили через Google-аккаунт, выполните /auth внутри Gemini CLI и переключитесь на API key — сохранённый OAuth-логин может иметь приоритет."),
     steps: [
       {
         title: localize(language, "Set the connection", "Задайте подключение"),
-        text: localize(language, "Run in the terminal that will start Gemini CLI. The key lives only in this session and is sent as x-goog-api-key.", "Выполните в терминале, из которого запустите Gemini CLI. Ключ останется только в этой сессии и отправляется как x-goog-api-key."),
+        text: localize(language,
+          "Run in the terminal that will start Gemini CLI. The endpoint is mandatory — without it the CLI talks to Google, not to your balance. The key lives only in this session and is sent as x-goog-api-key.",
+          "Выполните в терминале, из которого запустите Gemini CLI. Endpoint обязателен — без него CLI ходит в Google, а не в ваш баланс. Ключ останется только в этой сессии и отправляется как x-goog-api-key."),
         code: connection,
         codeLabel: localize(language, "Terminal", "Терминал"),
       },
       {
-        title: localize(language, "Start Gemini CLI", "Запустите Gemini CLI"),
-        text: localize(language, "The explicit model flag avoids inheriting a model from an old login or project setting.", "Явный model flag не даст подхватить модель из старого логина или настроек проекта."),
+        title: localize(language, "Start Gemini CLI with an explicit model", "Запустите Gemini CLI с явной моделью"),
+        text: localize(language,
+          `Do not run a bare \`gemini\`: its default auto model is not served by the gateway and fails as "not available". Pass one of the available model IDs — ${model.id} here; the full list is in Models & pricing.`,
+          `Не запускайте просто \`gemini\`: дефолтная auto-модель шлюзом не обслуживается и падает как "not available". Передавайте один из доступных ID моделей — здесь ${model.id}; полный список в разделе «Модели и цены».`),
         code: `gemini --model ${model.id}`,
         codeLabel: localize(language, "Run", "Запуск"),
       },

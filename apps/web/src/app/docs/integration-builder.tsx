@@ -26,6 +26,7 @@ const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }
   { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },
   { id: "codex", name: "Codex", en: "Responses API agent", ru: "Агент Responses API" },
   { id: "gemini-cli", name: "Gemini CLI", en: "Native Gemini agent", ru: "Нативный агент Gemini" },
+  { id: "antigravity", name: "Antigravity", en: "Google login only", ru: "Только Google-логин" },
   { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал" },
   { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness" },
   { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced" },
@@ -55,6 +56,7 @@ const PROVIDER_SHORT_NAMES: Record<IntegrationProvider, string> = {
 
 function compatibilityTag(language: IntegrationLanguage, tool: IntegrationTool): string {
   const names = TOOL_COMPATIBILITY[tool].map((candidate) => PROVIDER_SHORT_NAMES[candidate]);
+  if (names.length === 0) return tr(language, "No custom endpoint", "Нет своего endpoint");
   if (names.length === 1) return tr(language, `${names[0]} only`, `Только ${names[0]}`);
   return names.join(" · ");
 }
