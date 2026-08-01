@@ -1,4 +1,4 @@
-//! Universal Responses → Anthropic Messages адаптер — этап 4.1
+//! Universal Responses → Anthropic Messages адаптер — этапы 4.1–4.2
 //! docs/engine/UNIFIED_ROUTER.md (решения 1–5).
 //!
 //! `POST /v1/responses` на Anthropic-плоскости. Поток запроса повторяет
@@ -17,7 +17,15 @@
 //! подряд идущие одноролевые склеиваются); content parts `input_text` и
 //! `output_text` → text-блоки, `input_image` → image-блоки (общий с
 //! chat-адаптером перевод: data: → base64 source, http(s) → url source,
-//! `detail` != auto → 400); Responses `tools` → Messages `tools[]`
+//! `detail` != auto → 400); replay tool-истории (4.2): function_call item →
+//! assistant `tool_use`-блок (`call_id` → `id`, `arguments` JSON-строка
+//! парсится в `input` — невалидный JSON и не-object →
+//! `400 invalid_request`), function_call_output item → user
+//! `tool_result`-блок (`call_id` → `tool_use_id`; `output` строка → text
+//! content как есть, массив text-партов склеивается через \n, нетекстовые
+//! части → 400); pairing tool_use/tool_result не валидируется — Messages сам
+//! честно отвечает 400 на битую историю (как chat-адаптер 3.2); Responses
+//! `tools` → Messages `tools[]`
 //! (`parameters`→`input_schema`, `strict` снимается — общий перевод
 //! function-дескриптора); `tool_choice` auto/required/none/именная функция →
 //! Messages `tool_choice`, `parallel_tool_calls:false` →
@@ -38,38 +46,46 @@
 //! принимаются (stock SDK шлют дефолты пачками). Неизвестные поля
 //! проксируются в Messages тело (открытый список; валидация — на апстриме).
 //!
-//! Временные ограничения 4.1 (задокументированы в UNIFIED_ROUTER.md, п. 4):
-//! - `function_call`/`function_call_output` items во входе →
-//!   `400 unsupported_parameter` (replay истории tool calls — этап 4.2);
-//!   tools в запросе и function_call items в ОТВЕТЕ при этом поддержаны;
+//! Временные ограничения (после 4.2; задокументированы в UNIFIED_ROUTER.md,
+//! п. 4):
 //! - `reasoning` items во входе принимаются и выбрасываются (подписи и
 //!   encrypted content в universal lanes не выставляются — решение 4,
-//!   реплеить нечего); thinking-блоки ответа пропускаются без
-//!   reasoning-событий (output reasoning item — этап 4.2);
+//!   реплеить нечего);
 //! - `store:true`, `previous_response_id` и `item_reference` →
 //!   `400 documented_limitation` (stored responses — только `openai/*`,
 //!   решение 5); `POST /v1/responses/input_tokens` остаётся openai-only и
 //!   этим адаптером не обслуживается.
 //!
-//! Перевод ответа — словарь 4.1. Non-stream: Response object `{id: "resp_*",
-//! object: "response", created_at, status, model, output, usage, error,
-//! incomplete_details}`; text-блоки склеиваются в ОДИН message item с одним
-//! output_text part (без текста item не создаётся), tool_use-блоки →
+//! Перевод ответа — словарь 4.1 + reasoning (4.2). Non-stream: Response
+//! object `{id: "resp_*", object: "response", created_at, status, model,
+//! output, usage, error, incomplete_details}`; text-блоки склеиваются в ОДИН
+//! message item с одним output_text part на позиции первого text-блока (без
+//! текста item не создаётся), thinking-блоки → reasoning items (`rs_*`, один
+//! `summary_text` part с текстом блока; пустой thinking — item не создаётся,
+//! redacted_thinking пропускается — решение 4), tool_use-блоки →
 //! function_call items (`fc_*`, `call_id` = tool_use id, arguments — JSON
-//! строка `input`) в порядке появления. Stream (Messages SSE → Responses
-//! SSE, транслятор СНАРУЖИ forward() как у chat-адаптера):
+//! строка `input`); items — в порядке появления блоков. Stream (Messages SSE
+//! → Responses SSE, транслятор СНАРУЖИ forward() как у chat-адаптера):
 //! - `message_start` → `response.created` + `response.in_progress` (shell:
 //!   status "in_progress", output [], error/incomplete_details null);
 //! - text-блок: `response.output_item.added` (message item, content []) →
 //!   `response.content_part.added` (output_text part, content_index 0) →
 //!   `response.output_text.delta`* → `response.output_text.done` →
 //!   `response.content_part.done` → `response.output_item.done`;
+//! - thinking-блок (4.2): `response.output_item.added` (reasoning item,
+//!   summary []) → `response.reasoning_summary_part.added` (summary_index 0,
+//!   пустой `summary_text` part) → `response.reasoning_summary_text.delta`*
+//!   (из thinking_delta; пустые дельты и signature_delta дропаются —
+//!   решение 4) → `response.reasoning_summary_text.done` →
+//!   `response.reasoning_summary_part.done` → `response.output_item.done`
+//!   (item с полной summary);
 //! - tool_use-блок: `response.output_item.added` (function_call item,
 //!   arguments "") → `response.function_call_arguments.delta`*
 //!   (input_json_delta) → `response.function_call_arguments.done` →
 //!   `response.output_item.done`;
 //! - `message_stop` → `response.completed` с полным Response object (output
-//!   собран полностью, usage из message_start+message_delta, status по
+//!   собран полностью, usage из message_start+message_delta
+//!   (output_tokens_details проксируются — reasoning_tokens), status по
 //!   stop_reason — как non-stream);
 //! - `event: ping` → SSE comment-кадр `: ping` (heartbeat без событийной
 //!   семантики);
@@ -78,10 +94,11 @@
 //!   chat-адаптера, только в событийной форме) и завершение стрима; чистый
 //!   EOF до `message_stop` и транспортный сбой — тоже `response.failed`,
 //!   клиент не висит. Неразборчивые кадры пропускаются;
-//! - output_index — плотный собственный счётчик: thinking/redacted_thinking
-//!   блоки Messages позицию НЕ занимают (пропускаются до этапа 4.2);
-//!   content_index всегда 0 (один output_text part на message item).
-//!   Item-scoped события несут `item_id`; `sequence_number` не выставляется.
+//! - output_index — плотный собственный счётчик: text/thinking/tool_use
+//!   блоки Messages позицию занимают, redacted_thinking и неизвестные —
+//!   пропускаются без позиции (решение 4); content_index всегда 0 (один
+//!   output_text part на message item). Item-scoped события несут `item_id`;
+//!   `sequence_number` не выставляется.
 //! usage всегда в `response.completed` (include-флага в Responses нет).
 //!
 //! Все ответы этого пути — OpenAI-совместимый конверт, включая ошибки:
@@ -472,10 +489,17 @@ fn translate_input_items(
             None if object.contains_key("role") => {
                 translate_message_item(object, system, &mut conversation)?
             }
-            // Replay истории tool calls — этап 4.2 (временное ограничение 4.1).
-            Some("function_call") | Some("function_call_output") => {
-                return Err(unsupported_parameter("input"))
+            // Replay истории tool calls (этап 4.2): pairing tool_use/
+            // tool_result не валидируем — Messages сам честно отвечает 400
+            // (то же поведение у chat-адаптера 3.2).
+            Some("function_call") => {
+                merge_or_push(&mut conversation, "assistant", vec![function_call_block(object)?])
             }
+            Some("function_call_output") => merge_or_push(
+                &mut conversation,
+                "user",
+                vec![function_call_output_block(object)?],
+            ),
             // Подписи/encrypted reasoning в universal lanes не выставляются
             // (решение 4): реплеить нечего — item принимается и выбрасывается.
             Some("reasoning") => {}
@@ -487,7 +511,7 @@ fn translate_input_items(
             }
             _ => {
                 return Err(invalid_request(
-                    "Invalid input item: expected a message or reasoning item.",
+                    "Invalid input item: expected a message, function_call, function_call_output or reasoning item.",
                     Some("input"),
                 ))
             }
@@ -642,6 +666,95 @@ fn input_image_block(part: &Value) -> Result<Value, Response> {
         image["detail"] = Value::String(detail.to_string());
     }
     image_block(&json!({"type": "image_url", "image_url": image}), "input")
+}
+
+/// Replay function_call item'а (этап 4.2) → assistant `tool_use`-блок:
+/// `call_id` → `id`, `arguments` (JSON-строка) парсится в `input` — как
+/// `parse_tool_arguments` chat-адаптера (отсутствующая/пустая строка — `{}`,
+/// невалидный JSON и не-object → `400 invalid_request`). Отсутствующие и
+/// пустые `call_id`/`name` — 400.
+fn function_call_block(object: &Map<String, Value>) -> Result<Value, Response> {
+    let call_id = required_string(object, "call_id")?;
+    let name = required_string(object, "name")?;
+    let input = match object.get("arguments") {
+        None | Some(Value::Null) => json!({}),
+        Some(Value::String(raw)) if raw.is_empty() => json!({}),
+        Some(Value::String(raw)) => match serde_json::from_str(raw) {
+            Ok(Value::Object(arguments)) => Value::Object(arguments),
+            _ => {
+                return Err(invalid_request(
+                    "Invalid function_call arguments: expected a JSON object string.",
+                    Some("input"),
+                ))
+            }
+        },
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid function_call arguments: expected a JSON string.",
+                Some("input"),
+            ))
+        }
+    };
+    Ok(json!({"type": "tool_use", "id": call_id, "name": name, "input": input}))
+}
+
+/// Обязательное непустое строковое поле replay item'а.
+fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str, Response> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            invalid_request(
+                &format!("Invalid input item: expected a non-empty {field} string."),
+                Some("input"),
+            )
+        })
+}
+
+/// Replay function_call_output item'а (этап 4.2) → user `tool_result`-блок
+/// (зеркало `tool_result_block` chat-адаптера): `call_id` → `tool_use_id`,
+/// `output` строка → text content как есть.
+fn function_call_output_block(object: &Map<String, Value>) -> Result<Value, Response> {
+    let call_id = required_string(object, "call_id")?;
+    let text = function_call_output_text(object.get("output"))?;
+    Ok(json!({"type": "tool_result", "tool_use_id": call_id, "content": text}))
+}
+
+/// `output` function_call_output item'а: строка либо массив text-партов
+/// (`input_text`/`output_text`, склеиваются через \n — по образцу
+/// `message_text` chat-адаптера). Нетекстовые части — 400.
+fn function_call_output_text(output: Option<&Value>) -> Result<String, Response> {
+    match output {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(text)) => Ok(text.clone()),
+        Some(Value::Array(parts)) => {
+            let mut texts = Vec::with_capacity(parts.len());
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("input_text") | Some("output_text") => {
+                        texts.push(
+                            part.get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                    _ => {
+                        return Err(invalid_request(
+                            "Invalid function_call_output output: expected text parts only.",
+                            Some("input"),
+                        ))
+                    }
+                }
+            }
+            Ok(texts.join("\n"))
+        }
+        _ => Err(invalid_request(
+            "Invalid function_call_output output: expected a string or an array of parts.",
+            Some("input"),
+        )),
+    }
 }
 
 /// Responses `tools[]` → Messages `tools[]`. Поддерживается только function
@@ -838,23 +951,48 @@ fn function_call_item(call_id: &str, name: &str, arguments: &str, status: &str) 
     })
 }
 
-/// Messages content-блоки → Responses output items (non-stream): text-блоки
-/// склеиваются в ОДИН message item (без текста item не создаётся), tool_use
-/// → function_call items в порядке появления, thinking/redacted_thinking и
-/// неизвестные блоки пропускаются (reasoning items — этап 4.2).
+/// reasoning output item (4.2): один `summary_text` part с текстом
+/// thinking-блока. encrypted_content не выставляется (решение 4).
+fn reasoning_item(text: &str) -> Value {
+    json!({
+        "type": "reasoning",
+        "id": new_id("rs"),
+        "summary": [{"type": "summary_text", "text": text}],
+    })
+}
+
+/// Messages content-блоки → Responses output items (non-stream): thinking →
+/// reasoning items (пустой thinking — item не создаётся; redacted_thinking
+/// пропускается — решение 4), text-блоки склеиваются в ОДИН message item
+/// (без текста item не создаётся) на позиции первого text-блока, tool_use →
+/// function_call items. Items идут в порядке появления блоков; неизвестные
+/// блоки пропускаются.
 fn output_items(blocks: Option<&Vec<Value>>) -> Vec<Value> {
-    let mut output = Vec::new();
+    let mut output: Vec<Value> = Vec::new();
     let mut text = String::new();
-    let mut calls = Vec::new();
+    // Позиция message item — позиция первого text-блока среди остальных items.
+    let mut text_at: Option<usize> = None;
     for block in blocks.into_iter().flatten() {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
+                if text_at.is_none() {
+                    text_at = Some(output.len());
+                }
                 if let Some(t) = block.get("text").and_then(Value::as_str) {
                     text.push_str(t);
                 }
             }
+            Some("thinking") => {
+                let thinking = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !thinking.is_empty() {
+                    output.push(reasoning_item(thinking));
+                }
+            }
             Some("tool_use") => {
-                calls.push(function_call_item(
+                output.push(function_call_item(
                     block.get("id").and_then(Value::as_str).unwrap_or_default(),
                     block.get("name").and_then(Value::as_str).unwrap_or_default(),
                     &block
@@ -868,9 +1006,11 @@ fn output_items(blocks: Option<&Vec<Value>>) -> Vec<Value> {
         }
     }
     if !text.is_empty() {
-        output.push(message_item(&text, "completed"));
+        match text_at {
+            Some(at) => output.insert(at, message_item(&text, "completed")),
+            None => output.push(message_item(&text, "completed")),
+        }
     }
-    output.extend(calls);
     output
 }
 
@@ -970,6 +1110,11 @@ enum OpenBlock {
         item_id: String,
         text: String,
     },
+    Reasoning {
+        output_index: u64,
+        item_id: String,
+        text: String,
+    },
     FunctionCall {
         output_index: u64,
         item_id: String,
@@ -997,10 +1142,14 @@ struct ResponsesSseTranslator {
     /// usage из `message_start` (input-сторона + cache поля).
     start_usage: Option<Value>,
     output_tokens: Option<u64>,
+    /// `output_tokens_details` из `message_delta` (thinking-токены —
+    /// reasoning_tokens в Responses usage).
+    output_tokens_details: Option<Value>,
     stop_reason: Option<String>,
     /// Messages block index → незакрытый output item.
     blocks: std::collections::HashMap<u64, OpenBlock>,
-    /// Плотный счётчик output_index: thinking-блоки позицию не занимают.
+    /// Плотный счётчик output_index: text/thinking/tool_use блоки позицию
+    /// занимают, redacted_thinking и неизвестные — нет.
     next_output_index: u64,
     /// Финализированные output items — для output в response.completed/failed.
     completed_items: Vec<Value>,
@@ -1021,6 +1170,7 @@ impl ResponsesSseTranslator {
             started: false,
             start_usage: None,
             output_tokens: None,
+            output_tokens_details: None,
             stop_reason: None,
             blocks: std::collections::HashMap::new(),
             next_output_index: 0,
@@ -1190,9 +1340,39 @@ impl ResponsesSseTranslator {
                             },
                         );
                     }
-                    // thinking/redacted_thinking и неизвестные блоки
-                    // пропускаются (reasoning-события — этап 4.2); позицию
-                    // output_index они НЕ занимают (плотный счётчик).
+                    Some("thinking") => {
+                        let output_index = self.next_output_index;
+                        self.next_output_index += 1;
+                        let item_id = new_id("rs");
+                        self.push_event(
+                            "response.output_item.added",
+                            json!({
+                                "output_index": output_index,
+                                "item": {"type": "reasoning", "id": item_id,
+                                    "summary": []},
+                            }),
+                        );
+                        self.push_event(
+                            "response.reasoning_summary_part.added",
+                            json!({
+                                "output_index": output_index,
+                                "item_id": item_id,
+                                "summary_index": 0,
+                                "part": {"type": "summary_text", "text": ""},
+                            }),
+                        );
+                        self.blocks.insert(
+                            block_index,
+                            OpenBlock::Reasoning {
+                                output_index,
+                                item_id,
+                                text: String::new(),
+                            },
+                        );
+                    }
+                    // redacted_thinking и неизвестные блоки пропускаются
+                    // (решение 4); позицию output_index они НЕ занимают
+                    // (плотный счётчик).
                     _ => {}
                 }
             }
@@ -1250,8 +1430,34 @@ impl ResponsesSseTranslator {
                             );
                         }
                     }
-                    // thinking_delta/signature_delta и дельты пропущенных
-                    // блоков выбрасываются (решение 4, этап 4.2).
+                    Some(OpenBlock::Reasoning {
+                        output_index,
+                        item_id,
+                        text,
+                    }) if delta.get("type").and_then(Value::as_str)
+                        == Some("thinking_delta") =>
+                    {
+                        if let Some(segment) = delta
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.is_empty())
+                        {
+                            text.push_str(segment);
+                            let (output_index, item_id) = (*output_index, item_id.clone());
+                            self.push_event(
+                                "response.reasoning_summary_text.delta",
+                                json!({
+                                    "output_index": output_index,
+                                    "item_id": item_id,
+                                    "summary_index": 0,
+                                    "delta": segment,
+                                }),
+                            );
+                        }
+                    }
+                    // signature_delta дропается (решение 4), дельты
+                    // пропущенных блоков (redacted_thinking, неизвестные)
+                    // выбрасываются.
                     _ => {}
                 }
             }
@@ -1294,6 +1500,39 @@ impl ResponsesSseTranslator {
                         );
                         self.completed_items.push(item);
                     }
+                    Some(OpenBlock::Reasoning {
+                        output_index,
+                        item_id,
+                        text,
+                    }) => {
+                        self.push_event(
+                            "response.reasoning_summary_text.done",
+                            json!({
+                                "output_index": output_index,
+                                "item_id": item_id,
+                                "summary_index": 0,
+                                "text": text,
+                            }),
+                        );
+                        self.push_event(
+                            "response.reasoning_summary_part.done",
+                            json!({
+                                "output_index": output_index,
+                                "item_id": item_id,
+                                "summary_index": 0,
+                                "part": {"type": "summary_text", "text": text},
+                            }),
+                        );
+                        let item = json!({
+                            "type": "reasoning", "id": item_id,
+                            "summary": [{"type": "summary_text", "text": text}],
+                        });
+                        self.push_event(
+                            "response.output_item.done",
+                            json!({"output_index": output_index, "item": item}),
+                        );
+                        self.completed_items.push(item);
+                    }
                     Some(OpenBlock::FunctionCall {
                         output_index,
                         item_id,
@@ -1323,12 +1562,15 @@ impl ResponsesSseTranslator {
                 }
             }
             "message_delta" => {
-                if let Some(output) = data
-                    .get("usage")
-                    .and_then(|u| u.get("output_tokens"))
-                    .and_then(Value::as_u64)
-                {
-                    self.output_tokens = Some(output);
+                if let Some(usage) = data.get("usage") {
+                    if let Some(output) = usage.get("output_tokens").and_then(Value::as_u64) {
+                        self.output_tokens = Some(output);
+                    }
+                    // thinking-токены стрима (reasoning 4.2) — проксируются в
+                    // Responses usage (reasoning_tokens), как в non-stream.
+                    if let Some(details) = usage.get("output_tokens_details") {
+                        self.output_tokens_details = Some(details.clone());
+                    }
                 }
                 if let Some(stop_reason) = data
                     .get("delta")
@@ -1347,6 +1589,9 @@ impl ResponsesSseTranslator {
                 let mut usage = self.start_usage.take().unwrap_or_else(|| json!({}));
                 if let Some(output) = self.output_tokens {
                     usage["output_tokens"] = Value::from(output);
+                }
+                if let Some(details) = self.output_tokens_details.take() {
+                    usage["output_tokens_details"] = details;
                 }
                 let response = json!({
                     "id": self.id,
@@ -1911,7 +2156,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    // ---------- временные ограничения 4.1 ----------
+    // ---------- временные ограничения (stored — решение 5) ----------
 
     #[tokio::test]
     async fn stored_responses_are_documented_limitation() {
@@ -1966,14 +2211,105 @@ mod tests {
         );
     }
 
+    // ---------- replay tool-истории (4.2) ----------
+
+    #[test]
+    fn function_call_items_replay_to_tool_use_and_tool_result_blocks() {
+        // Stored history шлёт message assistant + function_call подряд —
+        // одноролевая склейка собирает один assistant message с text+tool_use;
+        // function_call_output склеивается со следующим user message.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "input": [
+                {"type": "message", "role": "user", "content": "weather?"},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "Let me check."}
+                ]},
+                {"type": "function_call", "call_id": "call_1", "name": "get_weather",
+                 "arguments": "{\"city\":\"Paris\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                {"type": "message", "role": "user", "content": "thanks?"}
+            ]
+        }));
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([
+                {"role": "user", "content": [{"type": "text", "text": "weather?"}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {"type": "tool_use", "id": "call_1", "name": "get_weather",
+                     "input": {"city": "Paris"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"},
+                    {"type": "text", "text": "thanks?"}
+                ]}
+            ])
+        );
+    }
+
+    #[test]
+    fn function_call_output_parts_glue_and_first_item_assistant_is_allowed() {
+        // output массивом text-партов — склейка через \n; отсутствующая и
+        // пустая строка arguments — `{}`; история может начинаться с
+        // assistant (function_call первым item'ом) — Messages это принимает.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "f", "arguments": ""},
+                {"type": "function_call", "call_id": "call_2", "name": "g"},
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "input_text", "text": "line one"},
+                    {"type": "output_text", "text": "line two"}
+                ]}
+            ]
+        }));
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_1", "name": "f", "input": {}},
+                    {"type": "tool_use", "id": "call_2", "name": "g", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1",
+                     "content": "line one\nline two"}
+                ]}
+            ])
+        );
+    }
+
     #[tokio::test]
-    async fn function_call_items_in_input_are_400_until_4_2() {
-        // Временное ограничение 4.1: replay истории tool calls — этап 4.2.
+    async fn function_call_invalid_arguments_and_missing_fields_are_400() {
+        // Невалидный JSON, не-object JSON и не-строка arguments → 400
+        // invalid_request (param input).
+        for arguments in [
+            serde_json::json!("not json"),
+            serde_json::json!("[1]"),
+            serde_json::json!({"x": 1}),
+        ] {
+            let (status, json) = expect_err(serde_json::json!({
+                "model": "claude-opus-4-8",
+                "input": [
+                    {"type": "message", "role": "user", "content": "hi"},
+                    {"type": "function_call", "call_id": "call_1", "name": "f",
+                     "arguments": arguments}
+                ],
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{arguments}");
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{arguments}");
+            assert_eq!(json["error"]["param"], "input", "{arguments}");
+        }
+        // Отсутствующие/пустые call_id и name → 400.
         for item in [
-            serde_json::json!({"type": "function_call", "call_id": "call_1",
-                "name": "f", "arguments": "{}"}),
-            serde_json::json!({"type": "function_call_output", "call_id": "call_1",
-                "output": "done"}),
+            serde_json::json!({"type": "function_call", "name": "f", "arguments": "{}"}),
+            serde_json::json!({"type": "function_call", "call_id": "", "name": "f",
+                "arguments": "{}"}),
+            serde_json::json!({"type": "function_call", "call_id": "call_1", "arguments": "{}"}),
+            serde_json::json!({"type": "function_call", "call_id": "call_1", "name": "",
+                "arguments": "{}"}),
+            serde_json::json!({"type": "function_call_output", "output": "done"}),
         ] {
             let (status, json) = expect_err(serde_json::json!({
                 "model": "claude-opus-4-8",
@@ -1984,9 +2320,21 @@ mod tests {
             }))
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{item}");
-            assert_eq!(json["error"]["code"], "unsupported_parameter", "{item}");
             assert_eq!(json["error"]["param"], "input", "{item}");
         }
+        // Нетекстовые части output — 400.
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "input_image", "image_url": "https://x/y.png"}
+                ]}
+            ],
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "input");
     }
 
     // ---------- capability matrix ----------
@@ -2330,28 +2678,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_stream_thinking_blocks_are_skipped() {
-        // thinking-блоки в 4.1 пропускаются (reasoning items — этап 4.2).
+    async fn non_stream_thinking_blocks_become_reasoning_items() {
+        // thinking-блоки → reasoning items (4.2): каждый блок — отдельный
+        // item в порядке появления среди остальных items; пустой thinking и
+        // redacted_thinking item не порождают (решение 4).
         let upstream = upstream_json(serde_json::json!({
             "id": "msg_1", "type": "message", "role": "assistant",
             "model": "claude-opus-4-8-20260101",
             "content": [
-                {"type": "thinking", "thinking": "Let me think.", "signature": "sig_1"},
+                {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
+                {"type": "text", "text": "Answer."},
+                {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
+                {"type": "thinking", "thinking": "", "signature": "sig_3"},
                 {"type": "redacted_thinking", "data": "opaque"},
-                {"type": "text", "text": "Answer."}
+                {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}}
             ],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 3, "output_tokens": 9}
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 3, "output_tokens": 9,
+                "output_tokens_details": {"thinking_tokens": 7}}
         }));
         let response = json_responses_response(upstream, "claude-opus-4-8".into()).await;
         let (_, json) = err_parts(response).await;
         let output = json["output"].as_array().unwrap();
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0]["type"], "message");
-        assert_eq!(output[0]["content"][0]["text"], "Answer.");
+        // [reasoning, message, reasoning, function_call] — порядок блоков.
+        assert_eq!(output.len(), 4, "{json}");
+        assert_eq!(output[0]["type"], "reasoning");
+        assert!(output[0]["id"].as_str().unwrap().starts_with("rs_"));
+        assert_eq!(
+            output[0]["summary"],
+            serde_json::json!([{"type": "summary_text", "text": "First thought."}])
+        );
+        // Подписи и encrypted_content не выставляются (решение 4).
+        assert!(output[0].get("encrypted_content").is_none());
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["content"][0]["text"], "Answer.");
+        assert_eq!(output[2]["type"], "reasoning");
+        assert_eq!(output[2]["summary"][0]["text"], "Second thought.");
+        assert_eq!(output[3]["type"], "function_call");
+        assert!(!json.to_string().contains("sig_"), "{json}");
+        assert_eq!(json["usage"]["output_tokens_details"]["reasoning_tokens"], 7);
     }
 
-    // ---------- SSE-транслятор: contract-тесты словаря событий 4.1 ----------
+    // ---------- SSE-транслятор: contract-тесты словаря событий 4.1–4.2 ----------
     //
     // Каноническая последовательность Messages-событий → точная
     // последовательность Responses SSE. Это и есть контракт событий universal
@@ -2545,10 +2913,12 @@ data: {"type":"message_stop"}"#;
     }
 
     #[tokio::test]
-    async fn contract_thinking_blocks_are_skipped_without_output_index_holes() {
-        // thinking-блок (Messages index 0) пропускается: событий не порождает
-        // и позицию output_index НЕ занимает — text item получает 0 (плотный
-        // счётчик; reasoning-события — этап 4.2).
+    async fn contract_thinking_block_reasoning_event_dictionary() {
+        // thinking-блок (4.2): item.added (reasoning, summary []) →
+        // reasoning_summary_part.added (summary_index 0) → text.delta* →
+        // text.done → part.done → item.done. Пустые thinking_delta и
+        // signature_delta дропаются (решение 4). output_index: reasoning = 0,
+        // message = 1 (плотный счётчик включает thinking-блоки).
         let events = concat!(
             "event: message_start\n",
             "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
@@ -2556,6 +2926,10 @@ data: {"type":"message_stop"}"#;
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
             "event: content_block_delta\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think.\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" Done.\"}}\n\n",
             "event: content_block_delta\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}\n\n",
             "event: content_block_stop\n",
@@ -2567,14 +2941,97 @@ data: {"type":"message_stop"}"#;
             "event: content_block_stop\n",
             "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
             "event: message_delta\n",
-            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8,\"output_tokens_details\":{\"thinking_tokens\":5}}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}"
         );
         let translator = ResponsesSseTranslator::new(sse_bytes(events), "m".into());
         let output = collect_stream(translator).await;
+        assert!(!output.contains("sig_1"), "{output}");
         let frames = event_frames(&output);
-        assert!(!output.contains("Let me think."), "{output}");
+        assert_eq!(
+            event_names(&frames),
+            [
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.reasoning_summary_part.added",
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_summary_text.done",
+                "response.reasoning_summary_part.done",
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.completed",
+            ],
+            "{output}"
+        );
+        // Reasoning item lifecycle: output_index 0, summary_index 0, item_id
+        // стабилен внутри блока.
+        assert_eq!(frames[2].1["output_index"], 0);
+        assert_eq!(frames[2].1["item"]["type"], "reasoning");
+        assert!(frames[2].1["item"]["id"].as_str().unwrap().starts_with("rs_"));
+        assert_eq!(frames[2].1["item"]["summary"], serde_json::json!([]));
+        let item_id = frames[2].1["item"]["id"].clone();
+        assert_eq!(frames[3].1["item_id"], item_id);
+        assert_eq!(frames[3].1["output_index"], 0);
+        assert_eq!(frames[3].1["summary_index"], 0);
+        assert_eq!(
+            frames[3].1["part"],
+            serde_json::json!({"type": "summary_text", "text": ""})
+        );
+        assert_eq!(frames[4].1["delta"], "Let me think.");
+        assert_eq!(frames[4].1["summary_index"], 0);
+        assert_eq!(frames[5].1["delta"], " Done.");
+        assert_eq!(frames[6].1["text"], "Let me think. Done.");
+        assert_eq!(frames[7].1["part"]["text"], "Let me think. Done.");
+        assert_eq!(frames[8].1["item"]["id"], item_id);
+        assert_eq!(frames[8].1["item"]["summary"][0]["text"], "Let me think. Done.");
+        // Message item — output_index 1 (плотный счётчик, дыр нет).
+        assert_eq!(frames[9].1["output_index"], 1);
+        assert_eq!(frames[9].1["item"]["type"], "message");
+        // Финал: reasoning item в completed output, thinking-токены
+        // message_delta → reasoning_tokens.
+        let completed = &frames[15].1;
+        assert_eq!(completed["status"], "completed");
+        let items = completed["output"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "{output}");
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[0]["summary"][0]["text"], "Let me think. Done.");
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(completed["usage"]["output_tokens_details"]["reasoning_tokens"], 5);
+        assert_eq!(completed["usage"]["output_tokens"], 8);
+    }
+
+    #[tokio::test]
+    async fn contract_redacted_thinking_is_skipped_without_output_index_holes() {
+        // redacted_thinking (решение 4) событий не порождает и позицию
+        // output_index НЕ занимает.
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer.\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
+        let translator = ResponsesSseTranslator::new(sse_bytes(events), "m".into());
+        let output = collect_stream(translator).await;
+        assert!(!output.contains("opaque"), "{output}");
+        let frames = event_frames(&output);
         let added: Vec<&Value> = frames
             .iter()
             .filter(|(event, _)| event == "response.output_item.added")

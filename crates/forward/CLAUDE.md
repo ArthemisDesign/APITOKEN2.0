@@ -146,31 +146,41 @@ Thinking-блоки/thinking_delta ответа → `message.reasoning_content`/
 (signature/redacted_thinking не выставляются).
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
-`anthropic_responses.rs` — universal Responses→Messages адаптер (этап 4.1
+`anthropic_responses.rs` — universal Responses→Messages адаптер (этапы 4.1–4.2
 docs/engine/UNIFIED_ROUTER.md, роут `POST /v1/responses` в `ProviderMode::Anthropic`)
 по той же схеме, что chat-адаптер: Responses-запрос переводится в Messages JSON
 (`instructions`/system/developer items → top-level `system`, input items → сообщения со
 склейкой одноролевых, `input_text`/`output_text` → text-блоки, `input_image` →
-image-блоки общим переводом, `tools` → `input_schema` (не-function tool → 400),
+image-блоки общим переводом, replay tool-истории (4.2): function_call items →
+assistant `tool_use`-блоки (`call_id` → `id`, `arguments` JSON-строка парсится в
+`input`, невалидный → `400 invalid_request`), function_call_output items → user
+`tool_result`-блоки (`call_id` → `tool_use_id`; output строка как есть либо склейка
+text-партов через \n, нетекстовые части → 400), pairing tool_use/tool_result не
+валидируется — как chat-адаптер 3.2, `tools` → `input_schema` (не-function tool → 400),
 `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
 `max_tokens` дефолт 4096, `reasoning.effort` → `output_config.effort` + инжект
 `thinking: {type:"adaptive", display:"summarized"}` как 3.4c, `text.format` json_schema
 → `output_config.format`, capability matrix из 9 правил + open list) и вызывает общий
 `forward()` без изменений; ответ переводится СНАРУЖИ — Messages SSE → Responses SSE
-словаря 4.1 (`response.created`/`in_progress` → per-block item/part/text|arguments
-дельты → `response.completed`, ping → `: ping`, `event: error`/преждевременный EOF →
-`response.failed`, output_index — плотный счётчик без thinking-блоков), JSON message →
-Response object (text в один message item, tool_use → function_call items, usage с
+словаря 4.1 + reasoning 4.2 (`response.created`/`in_progress` → per-block
+item/part/text|arguments дельты; thinking-блок → reasoning item `rs_*` +
+`response.reasoning_summary_part.added` → `response.reasoning_summary_text.delta`*
+(signature и пустые дельты дропаются) → `…_text.done`/`…_part.done` → item.done →
+`response.completed`; ping → `: ping`; `event: error`/преждевременный EOF →
+`response.failed`; output_index — плотный счётчик, включающий thinking-блоки,
+redacted_thinking — без позиции; `output_tokens_details` message_delta проксируются),
+JSON message → Response object (text в один message item на позиции первого
+text-блока, thinking → reasoning items `rs_*` в порядке блоков (пустой thinking — без
+item, redacted_thinking пропускается), tool_use → function_call items, usage с
 cache/reasoning details, status по stop_reason); ошибки — общий с chat-адаптером
 `convert_error_response` (OpenAI-конверт, статус 402 и `Retry-After` сохраняются).
 Общие хелперы (`chat_error`, `invalid_request`, `unsupported_parameter`,
 `convert_error_response`, `image_block` и `translate_reasoning_effort` с именем
 параметра, `translate_tool_function`, `merge_or_push`, константы лимитов) —
-`pub(crate)` в `anthropic.rs`. Временные ограничения 4.1: function_call/
-function_call_output items во входе → `400 unsupported_parameter` (replay — 4.2),
-reasoning items входа выбрасываются (подписи не выставляются), thinking-блоки ответа
-пропускаются, `store:true`/`previous_response_id`/`item_reference` →
-`400 documented_limitation` (stored responses — только openai/*, решение 5).
+`pub(crate)` в `anthropic.rs`. Временные ограничения (после 4.2): reasoning items
+входа выбрасываются (подписи и encrypted content не выставляются — решение 4),
+`store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`
+(stored responses — только openai/*, решение 5).
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
 Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
 events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и

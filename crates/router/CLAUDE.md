@@ -37,17 +37,20 @@
 - `proxy.rs` — байт-в-байт прокси native lanes + auth passthrough.
 - `chat.rs` — model-based dispatch `POST /v1/chat/completions` (этап 3.1):
   буферизует только тело ЗАПРОСА (32 MiB), извлекает `model`, выбирает
-  плоскость по namespace-префиксу без опроса каталога либо по alias через
-  кэшированный каталог; тело проксируется без изменений (namespaced ID
-  резолвит admission плоскости), ошибки dispatch — в OpenAI-конверте.
+  плоскость по namespace-префиксу без опроса каталога (общий
+  `catalog::namespace_lane`) либо по alias через кэшированный каталог; тело
+  проксируется без изменений (namespaced ID резолвит admission плоскости),
+  ошибки dispatch — в OpenAI-конверте.
 - `responses.rs` — model-based dispatch `POST /v1/responses` (этап 4.1) по
-  тем же правилам, что `chat.rs`. Stored responses endpoints
-  (`/v1/responses/input_tokens`, `/v1/responses/{id}`, `.../input_items`)
-  dispatch не используют — они остаются native OpenAI lane (stored responses
-  только `openai/*`, решение 5).
+  тем же правилам, что `chat.rs` (та же `catalog::namespace_lane`). Stored
+  responses endpoints (`/v1/responses/input_tokens`, `/v1/responses/{id}`,
+  `.../input_items`) dispatch не используют — они остаются native OpenAI lane
+  (stored responses только `openai/*`, решение 5).
 - `catalog.rs` — единый `/v1/models`: агрегация трёх плоскостей, namespaced ID
   + aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
-  `x-apitoken-catalog-degraded`.
+  `x-apitoken-catalog-degraded`. Здесь же — общий для universal dispatch'ей
+  `pub(crate) namespace_lane` (выбор плоскости по namespace-префиксу модели;
+  правила обеих lanes обязаны совпадать).
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.

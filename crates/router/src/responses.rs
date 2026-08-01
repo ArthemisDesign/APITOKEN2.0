@@ -63,7 +63,7 @@ pub async fn proxy_responses(State(state): State<Arc<AppState>>, req: Request) -
         Err(_) => return error::invalid_chat_request("Invalid JSON in request body.", None),
     };
 
-    let lane = match namespace_lane(&model) {
+    let lane = match catalog::namespace_lane(&model) {
         Some(lane) => lane,
         None => {
             // Alias: плоскость определяет единый каталог (TTL-кэш + last-good,
@@ -103,47 +103,4 @@ pub async fn proxy_responses(State(state): State<Arc<AppState>>, req: Request) -
     // Lane::OpenAi задаёт только форму router-local 502: на universal-пути она
     // OpenAI-совместима независимо от выбранной плоскости.
     proxy::proxy_request(&state.client, origin, Lane::OpenAi, req).await
-}
-
-/// Плоскость по явному namespace-префиксу модели. Каталог не опрашивается:
-/// admission плоскости сам резолвит namespaced ID (решение 1). Модель без
-/// префикса или с неизвестным префиксом уходит в alias-поиск по каталогу.
-/// Локальная копия `chat::namespace_lane` (там приватная): dispatch-правила
-/// обеих universal lanes обязаны совпадать.
-fn namespace_lane(model: &str) -> Option<Lane> {
-    let (prefix, native) = model.split_once('/')?;
-    if native.is_empty() {
-        return None;
-    }
-    match prefix {
-        NS_ANTHROPIC => Some(Lane::Anthropic),
-        NS_OPENAI => Some(Lane::OpenAi),
-        NS_GOOGLE => Some(Lane::Gemini),
-        _ => None,
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn namespace_lane_maps_known_prefixes() {
-        assert_eq!(namespace_lane("anthropic/claude-opus-4-8"), Some(Lane::Anthropic));
-        assert_eq!(namespace_lane("openai/gpt-5.6"), Some(Lane::OpenAi));
-        assert_eq!(namespace_lane("google/gemini-2.5-pro"), Some(Lane::Gemini));
-    }
-
-    #[test]
-    fn namespace_lane_falls_through_to_alias_lookup() {
-        // Нативные alias'ы и неизвестные префиксы решает каталог.
-        assert_eq!(namespace_lane("claude-opus-4-8"), None);
-        assert_eq!(namespace_lane("gpt-5.6"), None);
-        assert_eq!(namespace_lane("cohere/command-x"), None);
-        // Пустой native ID после префикса — не namespaced модель, а 404 через
-        // alias-поиск (каталог такой записи не содержит).
-        assert_eq!(namespace_lane("anthropic/"), None);
-        assert_eq!(namespace_lane(""), None);
-    }
 }

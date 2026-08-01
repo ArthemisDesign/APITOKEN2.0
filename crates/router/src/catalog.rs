@@ -42,6 +42,24 @@ pub const NS_ANTHROPIC: &str = "anthropic";
 pub const NS_OPENAI: &str = "openai";
 pub const NS_GOOGLE: &str = "google";
 
+/// Плоскость по явному namespace-префиксу модели — общая для обоих universal
+/// dispatch'ей (`chat.rs`, `responses.rs`; их dispatch-правила обязаны
+/// совпадать). Каталог не опрашивается: admission плоскости сам резолвит
+/// namespaced ID (решение 1). Модель без префикса или с неизвестным префиксом
+/// уходит в alias-поиск по каталогу.
+pub(crate) fn namespace_lane(model: &str) -> Option<Lane> {
+    let (prefix, native) = model.split_once('/')?;
+    if native.is_empty() {
+        return None;
+    }
+    match prefix {
+        NS_ANTHROPIC => Some(Lane::Anthropic),
+        NS_OPENAI => Some(Lane::OpenAi),
+        NS_GOOGLE => Some(Lane::Gemini),
+        _ => None,
+    }
+}
+
 /// Одна модель единого каталога.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogEntry {
@@ -362,6 +380,25 @@ pub fn find<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespace_lane_maps_known_prefixes() {
+        assert_eq!(namespace_lane("anthropic/claude-opus-4-8"), Some(Lane::Anthropic));
+        assert_eq!(namespace_lane("openai/gpt-5.6"), Some(Lane::OpenAi));
+        assert_eq!(namespace_lane("google/gemini-2.5-pro"), Some(Lane::Gemini));
+    }
+
+    #[test]
+    fn namespace_lane_falls_through_to_alias_lookup() {
+        // Нативные alias'ы и неизвестные префиксы решает каталог.
+        assert_eq!(namespace_lane("claude-opus-4-8"), None);
+        assert_eq!(namespace_lane("gpt-5.6"), None);
+        assert_eq!(namespace_lane("cohere/command-x"), None);
+        // Пустой native ID после префикса — не namespaced модель, а 404 через
+        // alias-поиск (каталог такой записи не содержит).
+        assert_eq!(namespace_lane("anthropic/"), None);
+        assert_eq!(namespace_lane(""), None);
+    }
 
     #[test]
     fn anthropic_envelope_maps_to_namespaced_entries() {

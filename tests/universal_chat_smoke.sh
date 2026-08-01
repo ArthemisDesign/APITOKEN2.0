@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E smoke universal lanes — этапы 3.1–3.2 (chat) и 4.1 (responses)
+# E2E smoke universal lanes — этапы 3.1–3.2 (chat) и 4.1–4.2 (responses)
 # docs/engine/UNIFIED_ROUTER.md.
 # Прогоняет ПОЛНУЮ цепочку без живых подписок и квоты (мок-апстрим):
 #   клиент → claude-router (model-based dispatch) → claude-api (Anthropic
@@ -9,8 +9,13 @@
 # namespaced и alias dispatch в router, capability matrix (400
 # unsupported_parameter), конверт ошибок (401 → OpenAI authentication_error),
 # 404 неизвестной модели; для /v1/responses — Response object, Responses SSE
-# (response.created/…/completed, ping comment), function_call items и
-# store:true → 400 documented_limitation. Ничего не тарифицирует, `claude` не зовёт.
+# (response.created/…/completed, ping comment), function_call items,
+# store:true → 400 documented_limitation, replay tool-истории во входе (4.2:
+# function_call/function_call_output items → 200, невалидные arguments → 400
+# invalid_request) и reasoning summary (4.2): non-stream reasoning item +
+# reasoning_tokens, stream response.reasoning_summary_* события с плотным
+# output_index (reasoning=0, message=1) и дропом signature_delta.
+# Ничего не тарифицирует, `claude` не зовёт.
 #
 # Запуск:  cargo build && bash tests/universal_chat_smoke.sh
 # Требует: python3, curl, собранные debug-бинари target/debug/claude-api и
@@ -256,6 +261,60 @@ check_code "$C" 200 "router responses namespaced" && check_body '"object":"respo
 echo "[19] router: alias responses dispatch через единый каталог"
 C=$(reqr "$ROUTER" '{"model":"claude-haiku-4-5","input":"hi"}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "router responses alias" && check_body '"object":"response"' "router responses alias object"
+
+echo "[20] engine: responses replay tool-истории (function_call + function_call_output) → 200"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":[{"type":"message","role":"user","content":"weather?"},{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}"},{"type":"function_call_output","call_id":"call_1","output":"sunny"},{"type":"message","role":"user","content":"and now?"}]}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses replay" && check_body '"object":"response"' "responses replay object"
+
+echo "[21] engine: невалидные arguments function_call → 400 invalid_request"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":[{"type":"message","role":"user","content":"hi"},{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"not json"}]}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 400 "responses bad arguments" && {
+  check_body '"type":"invalid_request_error"' "bad arguments type"
+  check_body '"param":"input"' "bad arguments param"
+}
+
+echo "[22] engine: reasoning non-stream → reasoning item + message item + reasoning_tokens"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"hi","reasoning":{"effort":"low"}}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses reasoning" && {
+  check_body '"type":"reasoning"' "reasoning item type"
+  check_body '"id":"rs_' "reasoning item id"
+  check_body '"type":"summary_text"' "summary part type"
+  check_body '"text":"mock think full"' "summary text"
+  check_body '"type":"message"' "message item present"
+  check_body '"reasoning_tokens":5' "reasoning tokens"
+  grep -qF "sig_mock" "$RESP" && { say "✗ signature утекла в non-stream ответ"; FAIL=1; }
+}
+
+echo "[23] engine: reasoning stream → reasoning_summary события + output_index reasoning=0/message=1"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","stream":true,"input":"hi","reasoning":{"effort":"low"}}' -N -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses reasoning stream" && {
+  check_body 'event: response.reasoning_summary_part.added' "reasoning part added"
+  check_body 'event: response.reasoning_summary_text.delta' "reasoning text delta"
+  check_body '"delta":"mock think 1"' "reasoning delta 1"
+  check_body '"delta":" mock think 2"' "reasoning delta 2"
+  check_body 'event: response.reasoning_summary_text.done' "reasoning text done"
+  check_body '"text":"mock think 1 mock think 2"' "reasoning done text"
+  check_body 'event: response.reasoning_summary_part.done' "reasoning part done"
+  check_body '"id":"rs_' "reasoning item id"
+  check_body '"reasoning_tokens":5' "stream reasoning tokens"
+  grep -qF "sig_mock" "$RESP" && { say "✗ signature_delta не дропнута"; FAIL=1; }
+  python3 - "$RESP" <<'PY' || { say "✗ output_index reasoning=0/message=1"; FAIL=1; }
+import json, sys
+added = []
+for frame in open(sys.argv[1]).read().split("\n\n"):
+    event, data = None, None
+    for line in frame.split("\n"):
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data = line[5:].strip()
+    if event == "response.output_item.added":
+        added.append(json.loads(data))
+assert [a["output_index"] for a in added] == [0, 1], added
+assert added[0]["item"]["type"] == "reasoning", added
+assert added[1]["item"]["type"] == "message", added
+PY
+}
 
 if [ "$FAIL" = 0 ]; then
   echo "✓ SMOKE OK: universal lanes (chat + responses: router dispatch + адаптеры + стриминг + конверты)"

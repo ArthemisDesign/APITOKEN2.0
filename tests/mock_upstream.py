@@ -7,6 +7,13 @@ util — доля 0..1, reset — epoch). РЕАЛИСТИЧНО растит ut
 Логирует хвост Bearer-токена каждого запроса в $SRV_LOG → видно распределение по флоту.
 
 Запуск: SRV_LOG=/tmp/hits.log python3 mock_upstream.py [PORT]
+
+Если в теле Messages-запроса есть ключ "thinking" (universal адаптеры инжектят
+его при reasoning effort, этапы 3.4c/4.2) — отвечает thinking-блоками:
+non-stream content [thinking, text] с usage.output_tokens_details.thinking_tokens,
+stream — content_block_start(thinking) → 2 thinking_delta → signature_delta →
+content_block_stop, затем обычный text-диалог. Триггер строго по ключу,
+чтобы остальные cases не менялись.
 """
 import json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,8 +41,11 @@ class H(BaseHTTPRequestHandler):
             request = {}
         want_stream = bool(request.get("stream"))
         want_tools = bool(request.get("tools"))
+        want_thinking = "thinking" in request
         if want_stream:
-            self._sse(tools=want_tools)
+            self._sse(tools=want_tools, thinking=want_thinking)
+        elif want_thinking:
+            self._thinking_json()
         elif want_tools:
             self._tool_json()
         else:
@@ -76,14 +86,62 @@ class H(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-    def _sse(self, tools=False):
+    def _thinking_json(self):
+        # Reasoning-ответ (4.2): thinking-блок с подписью (она наружу не
+        # выставляется) + text; thinking-токены в output_tokens_details.
+        body = json.dumps({
+            "id": "msg_mock", "type": "message", "role": "assistant",
+            "model": "claude-haiku-4-5-20251001",
+            "content": [
+                {"type": "thinking", "thinking": "mock think full", "signature": "sig_mock"},
+                {"type": "text", "text": "ok"},
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 7,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                      "output_tokens_details": {"thinking_tokens": 5}},
+        }).encode()
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def _sse(self, tools=False, thinking=False):
         # Мини-диалог Messages SSE: message_start → ping → 2 text-дельты →
         # message_delta(stop) → message_stop. Для e2e проверки universal chat
         # streaming (tests/universal_chat_smoke.sh). При tools=True — tool_use
         # диалог: content_block_start(tool_use) → 2 input_json_delta →
-        # message_delta(tool_use).
+        # message_delta(tool_use). При thinking=True — reasoning-диалог (4.2):
+        # thinking-блок (2 thinking_delta + signature_delta, которая должна
+        # дропаться) → обычный text-блок следующим index.
         model = "claude-haiku-4-5-20251001"
-        if tools:
+        if thinking:
+            frames = [
+                ("message_start", {"type": "message_start", "message": {
+                    "id": "msg_mock", "type": "message", "role": "assistant",
+                    "model": model, "content": [], "stop_reason": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 1,
+                              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}),
+                ("content_block_start", {"type": "content_block_start", "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "mock think 1"}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": " mock think 2"}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "signature_delta", "signature": "sig_mock"}}),
+                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                ("content_block_start", {"type": "content_block_start", "index": 1,
+                    "content_block": {"type": "text", "text": ""}}),
+                ("content_block_delta", {"type": "content_block_delta", "index": 1,
+                    "delta": {"type": "text_delta", "text": "mock"}}),
+                ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+                ("message_delta", {"type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": 7,
+                              "output_tokens_details": {"thinking_tokens": 5}}}),
+                ("message_stop", {"type": "message_stop"}),
+            ]
+        elif tools:
             frames = [
                 ("message_start", {"type": "message_start", "message": {
                     "id": "msg_mock", "type": "message", "role": "assistant",

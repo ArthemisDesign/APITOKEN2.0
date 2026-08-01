@@ -503,9 +503,33 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    tool calls — 4.2), `reasoning` items во входе принимаются и выбрасываются (подписи не
    выставляются — решение 4), thinking-блоки ответа пропускаются без reasoning-событий,
    `store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`;
-   **4.2** — replay tool-истории во входе (function_call/function_call_output items →
-   tool_use/tool_result блоки) и reasoning summary события (output reasoning item +
-   `response.reasoning_summary_text.delta` из thinking-блоков); **4.3** — Gemini-зеркало
+   **4.2** — replay tool-истории во входе + reasoning summary события — **РЕАЛИЗОВАН**:
+   входные `function_call` items → assistant `tool_use`-блоки Messages (`call_id` → `id`,
+   `arguments` JSON-строка парсится в `input` — невалидный JSON/не-object →
+   `400 invalid_request`, отсутствующая/пустая строка — `{}`; отсутствующие/пустые
+   `call_id`/`name` → 400), входные `function_call_output` items → user
+   `tool_result`-блоки (`call_id` → `tool_use_id`; `output` строка → text content как
+   есть, массив text-партов склеивается через \n, нетекстовые части → 400); склейка с
+   соседними message items — общая одноролевая, pairing tool_use/tool_result адаптером
+   не валидируется (апстрим Messages честно отвечает 400, как в chat-адаптере 3.2).
+   Thinking-блоки ответа переводятся в reasoning-словарь Responses: non-stream —
+   reasoning item `{"type":"reasoning","id":"rs_*","summary":[{"type":"summary_text",
+   "text":<текст блока>}]}` в output в порядке появления блоков (каждый thinking-блок —
+   отдельный item; пустой thinking item не порождает; message item — на позиции первого
+   text-блока); stream — `response.output_item.added` (reasoning, summary []) →
+   `response.reasoning_summary_part.added` (summary_index 0, пустой summary_text part) →
+   `response.reasoning_summary_text.delta`* из thinking_delta (пустые дельты и
+   signature_delta дропаются) → `response.reasoning_summary_text.done` →
+   `response.reasoning_summary_part.done` → `response.output_item.done`; output_index —
+   плотный счётчик, теперь включающий thinking-блоки (redacted_thinking пропускается
+   без позиции — решение 4), reasoning item попадает в completed output;
+   `output_tokens_details` из message_delta проксируются в usage (reasoning_tokens, как
+   non-stream). Подписи/encrypted_content по-прежнему не выставляются (решение 4).
+   Временные ограничения после 4.2: `store:true`/`previous_response_id`/`item_reference`
+   → `400 documented_limitation` и `POST /v1/responses/input_tokens` openai-only
+   (решение 5), `reasoning` items во входе принимаются и выбрасываются. В router
+   продублированный `namespace_lane` chat/responses dispatch'ей вынесен в общий
+   `pub(crate)` в `crates/router/src/catalog.rs`; **4.3** — Gemini-зеркало
    (Responses→generateContent в Gemini plane по образцу 3.3).
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
    beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
