@@ -101,13 +101,13 @@ Codex stream даже 200 не означает billable. Без явного с
   non-stream не-успех — header; после первого public event — без.
 - Единый unit-контракт на плоскость: «ответ с header ⇒ ledger не содержит и не будет
   содержать charge по request_id» (проверяется на уровне settle-итогов в тестах ветки).
-- Адаптеры universal lanes (`anthropic.rs`/`anthropic_responses.rs`,
-  `gemini/chat.rs`/`gemini/responses.rs`) пересобирают upstream-ошибки и заголовок сегодня
-  не пробрасывают — fail-closed деградация (нет заголовка = retry запрещён, §3.3), а не
-  нарушение контракта. Gemini Messages skin (`gemini/skin.rs`) покрыт: pre-delivery
-  не-2xx сохраняют `not_started`, а ошибки пересборки уже после 2xx явно снимают сигнал,
-  потому что charge возможен. Остальные adapter-поверхности закрываются точечно до
-  включения fallback в 6.2.
+- Universal Chat/Responses-адаптеры (`anthropic.rs`/`anthropic_responses.rs`,
+  `gemini/chat.rs`/`gemini/responses.rs`) покрыты с 2026-08-02: локальные pre-request
+  отказы получают `not_started`, пересборка не-2xx сохраняет только точный авторитетный
+  сигнал плоскости, а ошибки разбора/сборки после 2xx явно снимают его, потому что charge
+  уже возможен. Gemini Messages skin (`gemini/skin.rs`) следует тому же правилу для своей
+  поверхности. Отсутствующий либо неизвестный сигнал остаётся fail-closed: retry запрещён
+  (§3.3).
 
 ### 3.3. Обязанности router (фаза 6.2)
 
@@ -185,8 +185,8 @@ MVP-контракт §3 закрывает гонку «вторая попыт
    router для транзитных ответов даже без fallback, unit/contract-тесты веток с реальным
    reserve, документация `crates/forward/CLAUDE.md` + `crates/router/CLAUDE.md`). Выкат
    при выключенном fallback безопасен: клиент заголовок не видит. Gemini Messages skin
-   уже покрыт; известный fail-closed зазор остаётся в остальных universal adapters (§3.2)
-   и закрывается follow-up пакетами до включения fallback в 6.2.
+   и четыре universal Chat/Responses adapter-поверхности покрыты правилами §3.2; signal-
+   propagation зазор закрыт до включения fallback в 6.2.
 2. **6.2 — router fallback engine:** поле `models`, retry matrix §3.3, логирование попыток,
    feature-flag off-by-default, интеграционные тесты с двумя mock-плоскостями.
 3. **6.3 — group identity в registry/billing:** expand-only миграции, winner-правило в

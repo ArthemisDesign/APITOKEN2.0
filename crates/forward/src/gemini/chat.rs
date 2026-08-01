@@ -52,7 +52,10 @@ use serde_json::{json, Map, Value};
 
 use super::gemini_api;
 use crate::codex::new_id;
-use crate::proxy::{read_body_limited, BodyReadError, TerminalErrorReason};
+use crate::proxy::{
+    read_body_limited, with_not_started, without_not_started, BodyReadError,
+    TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+};
 use crate::state::AppState;
 
 /// Лимит тела chat-запроса — как у нативного text-пути плоскости
@@ -1070,7 +1073,10 @@ pub(crate) fn chat_error(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(reason));
-    response
+    // Direct adapter errors happen before the native request starts. Call sites which
+    // rebuild a failure after a successful 2xx must explicitly remove the signal because
+    // the plane may already have charged that request.
+    with_not_started(response)
 }
 
 pub(crate) fn invalid_request(message: &str, param: Option<&str>) -> Response {
@@ -1101,6 +1107,11 @@ pub(crate) fn unsupported_parameter(param: &str) -> Response {
 /// этапа 4.3 (`responses.rs`).
 pub(crate) async fn convert_error_response(upstream: Response) -> Response {
     let status = upstream.status();
+    let not_started = !status.is_success()
+        && upstream
+            .headers()
+            .get(EXECUTION_STATE_HEADER)
+            .is_some_and(|value| value == EXECUTION_STATE_NOT_STARTED);
     let reason = upstream
         .extensions()
         .get::<TerminalErrorReason>()
@@ -1130,6 +1141,9 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
     if let Some(retry_after) = retry_after {
         response.headers_mut().insert(header::RETRY_AFTER, retry_after);
     }
+    if !not_started {
+        response = without_not_started(response);
+    }
     response
 }
 
@@ -1141,25 +1155,25 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
     let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return chat_error(
+            return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned an unreadable response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
-            return chat_error(
+            return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned a malformed response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         }
     };
     let model = value
@@ -1303,13 +1317,13 @@ fn stream_chat_response(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(translator))
         .unwrap_or_else(|_| {
-            chat_error(
+            without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         });
     if let Some(request_id) = request_id {
         response.headers_mut().insert("request-id", request_id);
@@ -2402,6 +2416,7 @@ mod tests {
             .body(Body::from("not json"))
             .unwrap();
         let response = json_chat_response(upstream, "gemini-2.5-flash".to_string()).await;
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
         let (status, body) = err_parts(response).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["type"], "server_error");
@@ -2433,6 +2448,7 @@ mod tests {
             "low_balance",
         );
         let response = convert_error_response(upstream).await;
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
         let (status, body) = err_parts(response).await;
         assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
         assert_eq!(body["error"]["type"], "invalid_request_error");
@@ -2450,10 +2466,18 @@ mod tests {
             header::RETRY_AFTER,
             HeaderValue::from_static("7"),
         );
+        upstream.headers_mut().insert(
+            EXECUTION_STATE_HEADER,
+            HeaderValue::from_static(EXECUTION_STATE_NOT_STARTED),
+        );
         let response = convert_error_response(upstream).await;
         assert_eq!(
             response.headers().get(header::RETRY_AFTER).unwrap(),
             "7"
+        );
+        assert_eq!(
+            response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
+            EXECUTION_STATE_NOT_STARTED
         );
         let (status, body) = err_parts(response).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
@@ -2470,6 +2494,15 @@ mod tests {
         assert_eq!(body["error"]["type"], "server_error");
         assert_eq!(body["error"]["message"], "The provider returned an error.");
         assert!(body["error"]["code"].is_null());
+    }
+
+    #[test]
+    fn local_adapter_errors_mark_execution_not_started() {
+        let response = invalid_request("bad request", Some("model"));
+        assert_eq!(
+            response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
+            EXECUTION_STATE_NOT_STARTED
+        );
     }
 
     // ---------- ответ: stream ----------

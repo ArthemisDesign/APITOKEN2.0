@@ -85,11 +85,12 @@ Control API движка использует только на чтение. С
   выбирается по `model`: Anthropic native, локальный reserve-grade подсчёт Codex или
   quota-free Gemini `:countTokens`. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
 - **Контракт `x-apitoken-execution-state` (плоскости → router, этап 6.1).** Производители —
-  `crates/forward` (`proxy.rs`, `codex/api.rs`, `codex/skin.rs`, `gemini/api.rs`,
+  `crates/forward` (`proxy.rs`, `anthropic.rs`, `anthropic_responses.rs`, `codex/api.rs`,
+  `codex/skin.rs`, `gemini/api.rs`, `gemini/chat.rs`, `gemini/responses.rs`,
   `gemini/skin.rs`): заголовок
-  `not_started` на не-2xx отказах до границы started при гарантии refund/cancel reserve
-  (`gemini/skin.rs` снимает его с ошибок после 2xx; fail-closed зазор остаётся в остальных
-  universal adapters, см. контракт §3.2). Потребитель —
+  `not_started` на не-2xx отказах до границы started при гарантии refund/cancel reserve;
+  universal adapters сохраняют только точный сигнал плоскости и снимают его с ошибок после
+  2xx. Потребитель —
   `crates/router`: обязан снимать заголовок со всех транзитных ответов; retry по сигналу —
   фаза 6.2. Документ контракта — `docs/engine/ROUTING_FENCING.md` §3.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.

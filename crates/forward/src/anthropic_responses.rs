@@ -125,7 +125,7 @@ use crate::anthropic::{
     CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
 };
 use crate::codex::new_id;
-use crate::proxy::{forward, read_body_limited, BodyReadError};
+use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
 
 /// Хендлер `POST /v1/responses` (роут регистрируется в server только в
@@ -1020,25 +1020,25 @@ async fn json_responses_response(upstream: Response, requested_model: String) ->
     let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return chat_error(
+            return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned an unreadable response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
-            return chat_error(
+            return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned a malformed response.",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         }
     };
     let model = value
@@ -1088,13 +1088,13 @@ fn stream_responses_response(upstream: Response, requested_model: String) -> Res
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(translator))
         .unwrap_or_else(|_| {
-            chat_error(
+            without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error",
                 None,
                 Value::Null,
                 "internal_response_error",
-            )
+            ))
         });
     if let Some(request_id) = request_id {
         response.headers_mut().insert("request-id", request_id);
@@ -2717,6 +2717,34 @@ mod tests {
         assert_eq!(output[3]["type"], "function_call");
         assert!(!json.to_string().contains("sig_"), "{json}");
         assert_eq!(json["usage"]["output_tokens_details"]["reasoning_tokens"], 7);
+    }
+
+    #[test]
+    fn local_adapter_errors_mark_execution_not_started() {
+        let response = translate_responses_request(serde_json::json!({})).unwrap_err();
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::proxy::EXECUTION_STATE_HEADER)
+                .unwrap(),
+            crate::proxy::EXECUTION_STATE_NOT_STARTED
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_2xx_response_does_not_mark_execution_not_started() {
+        let upstream = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("not json"))
+            .unwrap();
+        let response = json_responses_response(upstream, "claude-opus-4-8".into()).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            response
+                .headers()
+                .get(crate::proxy::EXECUTION_STATE_HEADER)
+                .is_none()
+        );
     }
 
     // ---------- SSE-транслятор: contract-тесты словаря событий 4.1–4.2 ----------
