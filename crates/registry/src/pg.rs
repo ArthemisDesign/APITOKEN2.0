@@ -30,9 +30,11 @@ const MIGRATION_0011: &str =
 const MIGRATION_0012: &str = include_str!("../migrations_pg/0012_codex_home_health.sql");
 const MIGRATION_0013: &str = include_str!("../migrations_pg/0013_gemini_window_calibration.sql");
 const MIGRATION_0014: &str = include_str!("../migrations_pg/0014_gemini_workload_calibration.sql");
+const MIGRATION_0015: &str =
+    include_str!("../migrations_pg/0015_codex_fractional_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_SCHEMA_VERSION: i64 = 15;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -50,6 +52,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (12, MIGRATION_0012),
     (13, MIGRATION_0013),
     (14, MIGRATION_0014),
+    (15, MIGRATION_0015),
 ];
 
 #[cfg(test)]

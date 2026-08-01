@@ -56,6 +56,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   spend и CAS-derived state для двух fixed buckets. `observed_spend_nano` добавлен expand-only
   migration 0014 и хранит точный `ΣΔspend` workload estimator v2; смысл blend/envelope/confidence
   остаётся в `forward`, registry только валидирует и атомарно сохраняет примитивы.
+- Codex calibration migration 0015 expand-only добавляет nullable fixed-point fraction evidence и
+  exact cumulative legs. Nullable — намеренно: предыдущий runtime может безопасно пережить
+  migration-first rollout, а следующий estimator восстанавливает отсутствующие значения из
+  legacy whole-percent raw observations и после cutover пишет обе проекции атомарно.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed
