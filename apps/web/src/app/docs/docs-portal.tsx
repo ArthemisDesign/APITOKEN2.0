@@ -52,6 +52,7 @@ const copy = {
     title: "Connect any model",
     lead: "One API key for every available model. Your AI agent configures and verifies the connection.",
     agentPrompt: `Read ${AGENT_GUIDE_URL} and follow the instructions to connect this project to apiToken.sale.`,
+    agentLabel: "For your agent",
     copyAgent: "Copy instruction",
     agentCopied: "Instruction copied",
     openAgentGuide: "Open the guide",
@@ -112,6 +113,7 @@ const copy = {
     title: "Подключение моделей",
     lead: "Один API‑ключ — все доступные модели. AI‑агент сам настроит и проверит подключение.",
     agentPrompt: `Прочитай ${AGENT_GUIDE_URL} и следуй инструкциям, чтобы подключить этот проект к apiToken.sale.`,
+    agentLabel: "Для вашего AI‑агента",
     copyAgent: "Скопировать",
     agentCopied: "Инструкция скопирована",
     openAgentGuide: "Открыть инструкцию",
@@ -217,6 +219,7 @@ export function DocsPortal() {
         <section className="docs-hero" id="overview"><div><h1>{t.title}</h1><p>{t.lead}</p></div><CopyPageButton label={t.copyPage} copiedLabel={t.copied} /></section>
 
         <section className="docs-section docs-connect-section" id="agent-setup">
+          <h2 className="docs-agent-label">{t.agentLabel}</h2>
           <article className="docs-agent-card ym-hide-content">
             <InfoCircleIcon />
             <div className="docs-agent-chip">

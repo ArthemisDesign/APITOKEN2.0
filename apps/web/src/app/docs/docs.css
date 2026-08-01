@@ -39,6 +39,7 @@
    a compact callout: info icon + dark chip with the one-line prompt and small
    copy / guide icon buttons. The full setup lives in the skill repo it references. */
 .docs-connect-section{margin-bottom:16px!important}
+.docs-agent-label{margin:0 0 12px;font-family:var(--font-ui);font-size:21px;font-weight:680;letter-spacing:-.02em;color:var(--txt)}
 .docs-agent-card{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--accent-line);border-radius:16px;
   background:var(--accent-soft);box-shadow:var(--shadow)}
 .docs-agent-card>svg{flex:none;width:20px;height:20px;color:var(--accent)}

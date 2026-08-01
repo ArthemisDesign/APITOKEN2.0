@@ -14,7 +14,7 @@ export type ClaudeModel = {
   /** Exact API model ID. */
   id: string;
   name: string;
-  tier: "Opus" | "Sonnet" | "Haiku";
+  tier: "Mythos" | "Opus" | "Sonnet" | "Haiku";
   /** <title> without brand suffix. */
   title: string;
   description: string;
@@ -82,6 +82,72 @@ export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 
 export const claudeModels: ClaudeModel[] = [
+  {
+    provider: "anthropic",
+    slug: "claude-opus-5",
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    tier: "Opus",
+    title: "Claude Opus 5 API — Price per Token & Access",
+    description: "Claude Opus 5 API pricing: official $5/$25 per 1M tokens, $2.50/$12.50 with the flat 50% apiToken.sale discount. The newest Opus on the same Anthropic API.",
+    keywords: ["claude opus 5 api", "claude opus 5 price", "claude opus 5 api cost", "opus 5 token pricing", "claude-opus-5", "buy claude opus api"],
+    dek: "Claude Opus 5 is Anthropic's newest Opus — the July 2026 flagship for agentic coding, long-horizon tasks and hard reasoning, at the same token price as Opus 4.8.",
+    inputPerM: 5,
+    outputPerM: 25,
+    cacheReadPerM: 0.5,
+    cacheWrite5mPerM: 6.25,
+    context: "1M tokens",
+    maxOutput: "128K tokens",
+    bestFor: [
+      "Agentic coding in Claude Code, Cursor and Cline — the new default.",
+      "Long-horizon autonomous tasks and complex refactors.",
+      "The hardest reasoning, planning and review work.",
+    ],
+    notes: [
+      "Same $5/$25 tariff as Opus 4.8 — a capability upgrade at no price change.",
+      "Fast mode (research preview, ~2.5× speed) bills $10/$50 per 1M on requests that use it.",
+      "Adaptive thinking is the recommended mode; thinking tokens bill as output.",
+    ],
+    faq: [
+      { q: "How much does the Claude Opus 5 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens — unchanged from Opus 4.8. On apiToken.sale the same requests cost 50% less: $2.50/$12.50 at the flat discount applied to every call." },
+      { q: "What is the model ID for Claude Opus 5?", a: "claude-opus-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "Opus 5 or Fable 5?", a: "Opus 5 is the default for almost everything — top-tier agentic quality at half the Fable token price. Route to Fable 5 only the longest-horizon runs where its edge is worth 2× the tokens." },
+    ],
+    related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
+  },
+  {
+    provider: "anthropic",
+    slug: "claude-fable-5",
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    tier: "Mythos",
+    title: "Claude Fable 5 API — Price per Token & Access",
+    description: "Claude Fable 5 API pricing: official $10/$50 per 1M tokens, $5/$25 with the flat 50% apiToken.sale discount. Mythos-class — the strongest Claude tier.",
+    keywords: ["claude fable 5 api", "claude fable 5 price", "fable 5 api cost", "claude-fable-5", "mythos class model", "fable 5 token pricing"],
+    dek: "Claude Fable 5 is Anthropic's Mythos-class model — a tier above Opus for the longest-horizon agentic work, at double the Opus token price.",
+    inputPerM: 10,
+    outputPerM: 50,
+    cacheReadPerM: 1,
+    cacheWrite5mPerM: 12.5,
+    context: "1M tokens",
+    maxOutput: "128K tokens",
+    bestFor: [
+      "The longest-horizon autonomous runs where failure costs more than tokens.",
+      "The hardest software tasks — it leads SWE-bench Pro.",
+      "An orchestrator or advisor role reviewing and steering cheaper models.",
+    ],
+    notes: [
+      "Mythos class sits above Opus: $10/$50 vs the Opus $5/$25 tariff.",
+      "Safety classifiers may reroute sensitive requests to Opus.",
+      "Adaptive thinking is the recommended mode; thinking tokens bill as output.",
+    ],
+    faq: [
+      { q: "How much does the Claude Fable 5 API cost?", a: "Officially $10 per 1M input tokens and $50 per 1M output tokens — double the Opus tariff. On apiToken.sale the flat 50% discount applies to every call: $5/$25." },
+      { q: "What is the model ID for Claude Fable 5?", a: "claude-fable-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "Fable 5 or Mythos 5?", a: "They share weights and price; Mythos 5 stays restricted to Project Glasswing partners. Fable 5 is the publicly available model, and the one served here." },
+    ],
+    related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
+  },
   {
     provider: "anthropic",
     slug: "claude-opus-4-8",
