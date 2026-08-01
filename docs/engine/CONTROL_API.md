@@ -49,6 +49,37 @@ Same-origin админка дополнительно читает `GET /capacit
 отдельную per-request ставку. Per-sub `rem5h_nano`/`rem7d_nano` и email mask позволяют панели
 рисовать компактные окна без float money и без раскрытия аккаунта.
 
+Claude capacity — exact realized API-dollar equivalent фактически обслуженной смеси, а не цена
+Max/Pro и не обещание фиксированного числа токенов. Каждый успешный turn (customer или admin)
+сохраняет immutable model/tier/geo/tariff event с отдельными token и API nanoUSD legs; бесплатный
+poll сохраняет только quota observation. Для каждого exact plan и окна независимо:
+
+```text
+capacity_per_subscription_nano =
+  100_000_000 × Σobserved_spend_nano / Σobserved_fraction_units
+```
+
+5h (`300` минут) и 7d (`10080` минут) не делят anchor/history. `plan_cohorts` объединяет evidence
+только одинакового `plan + window_minutes`, поэтому все routable подписки одного плана получают
+одну pooled оценку; `window_totals` суммирует её по routable fleet. Другой план без собственного
+положительного evidence делает fleet total `null`, а не частичной суммой. Номинал подписки,
+configured prior, EMA/WLS и float money в authority не участвуют.
+
+Текущий remaining требует quota snapshot не старше 900 секунд. Историческая full-window capacity
+может оставаться известной при stale/missing snapshot, но remaining/horizon тогда `null` с точным
+`missing_reason`. То же fail-closed правило действует, пока FIFO-доставка exact turn evidence имеет
+pending event или degraded integrity. `calibration_delivery` публикует `pending_events`,
+`dropped_events`, `persistence_ok` и `queue_limit`; нормальное состояние — `0/0/true`. Failed head
+переживает transient authority outage в памяти и повторяется раньше более поздних events/snapshots;
+immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
+`calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
+token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
+
+`GET /overview` сохраняет прежние округлённые `supply.*_usd` display-поля для панели, но их источник
+теперь тот же exact report. Канонические значения находятся рядом в `supply.avail_nano`,
+`cap_nano`, `consumed_nano`; `supply.legacy_pool_prior_authoritative=false`. При отсутствии exact
+evidence capacity-facing поля fail-closed в `null`, а не возвращаются из старого pool prior/EMA.
+
 `GET /codex-subs` разделяет два разных понятия:
 
 - `*_nanocredits` — native расход и capacity ChatGPT-подписки; именно в credits сравниваются

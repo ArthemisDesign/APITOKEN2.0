@@ -97,6 +97,17 @@ groups:
           description: 'Shared affinity operations are failing; requests remain available on local fail-open affinity.'
           runbook: 'docs/ops/MONITORING.md#engineaffinityrediserrors'
 
+      - alert: AnthropicCalibrationPersistenceFailed
+        expr: claude_api_anthropic_calibration_persistence_ok{provider="anthropic"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude exact calibration evidence is not durable'
+          description: 'Turn evidence is pending, was quarantined/dropped, or the calibration authority cannot be read. Current API-dollar remaining is intentionally fail-closed.'
+          runbook: 'docs/ops/MONITORING.md#anthropiccalibrationpersistencefailed'
+
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
   # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
   - name: codex-provider

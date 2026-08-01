@@ -5,6 +5,7 @@
 //! парсим `usage` (SSE — из накопленного текста, не-стрим — из полного JSON), считаем стоимость
 //! через `metering` и списываем с баланса ключа. Метерим ТОЛЬКО успешный ответ (см. proxy.rs).
 
+use crate::billing::AnthropicQuotaSnapshot;
 use crate::billing::AsyncBilling;
 use bytes::Bytes;
 use futures_util::Stream;
@@ -34,6 +35,15 @@ pub struct BillCtx {
     pub reference: Option<String>,
 }
 
+/// Provider-capacity evidence is independent of customer billing, so admin traffic carries this
+/// context even when `BillCtx` is absent.
+pub struct CalibrationCtx {
+    pub billing: Arc<AsyncBilling>,
+    pub request_id: String,
+    pub plan: String,
+    pub quota_snapshots: Vec<AnthropicQuotaSnapshot>,
+}
+
 /// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
 /// (для калибровки ёмкости окна нужен расход ЛЮБОГО запроса, включая админский), а списание
 /// с баланса — опционально (`bill`), только для метерных ключей.
@@ -43,6 +53,7 @@ pub struct MeterCtx {
     pub model: String,
     pub is_sse: bool,
     pub bill: Option<BillCtx>,
+    pub calibration: Option<CalibrationCtx>,
     /// Durable capacity lease transferred from the attempt guard to the response stream.
     pub capacity: Option<(Arc<AsyncBilling>, String)>,
 }
@@ -241,44 +252,51 @@ impl TeeMeter {
         if let Some((billing, lease_id)) = &ctx.capacity {
             billing.release_capacity(lease_id);
         }
-        let (usage, served_model, incomplete_non_sse, us_inference, speed) = if ctx.is_sse {
-            let s = String::from_utf8_lossy(&self.acc);
-            let mut usage = metering::usage_from_sse(&s);
-            usage.web_search_requests = usage.web_search_requests.max(self.sse_web_search_requests);
-            if let Some(output_tokens) = self.sse_output_tokens {
-                usage.output_tokens = output_tokens;
+        let (usage, served_model, incomplete_non_sse, authoritative_usage, us_inference, speed) =
+            if ctx.is_sse {
+                let s = String::from_utf8_lossy(&self.acc);
+                let mut usage = metering::usage_from_sse(&s);
+                usage.web_search_requests =
+                    usage.web_search_requests.max(self.sse_web_search_requests);
+                if let Some(output_tokens) = self.sse_output_tokens {
+                    usage.output_tokens = output_tokens;
+                } else {
+                    usage.output_tokens = usage.output_tokens.max(self.sse_delta_bytes);
+                }
+                // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
+                // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
+                if metering::sse_has_error(&s) {
+                    eprintln!(
+                        "⚠ SSE-error после 200 на {} — стрим нёс error-евент",
+                        ctx.email
+                    );
+                }
+                (
+                    usage,
+                    metering::model_from_sse(&s),
+                    false,
+                    self.sse_output_tokens.is_some(),
+                    sse_has_us_inference(&s),
+                    metering::speed_from_sse(&s),
+                )
             } else {
-                usage.output_tokens = usage.output_tokens.max(self.sse_delta_bytes);
-            }
-            // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
-            // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
-            if metering::sse_has_error(&s) {
-                eprintln!(
-                    "⚠ SSE-error после 200 на {} — стрим нёс error-евент",
-                    ctx.email
-                );
-            }
-            (
-                usage,
-                metering::model_from_sse(&s),
-                false,
-                sse_has_us_inference(&s),
-                metering::speed_from_sse(&s),
-            )
-        } else {
-            let response = serde_json::from_slice::<serde_json::Value>(&self.acc).ok();
-            let us_inference = response
-                .as_ref()
-                .and_then(|value| value.get("usage"))
-                .is_some_and(usage_has_us_inference);
-            (
-                metering::usage_from_response_json(&self.acc),
-                metering::model_from_response_json(&self.acc),
-                response.is_none(),
-                us_inference,
-                metering::speed_from_response_json(&self.acc),
-            )
-        };
+                let response = serde_json::from_slice::<serde_json::Value>(&self.acc).ok();
+                let us_inference = response
+                    .as_ref()
+                    .and_then(|value| value.get("usage"))
+                    .is_some_and(usage_has_us_inference);
+                (
+                    metering::usage_from_response_json(&self.acc),
+                    metering::model_from_response_json(&self.acc),
+                    response.is_none(),
+                    response
+                        .as_ref()
+                        .and_then(|value| value.get("usage"))
+                        .is_some(),
+                    us_inference,
+                    metering::speed_from_response_json(&self.acc),
+                )
+            };
         // Тарифицируем по МОДЕЛИ ИЗ ОТВЕТА (авторитетный сервёный id): клиент мог прислать алиас или
         // `-latest`, апстрим резолвит в конкретную датированную модель — считать надо по НЕЙ. Фолбэк —
         // модель запроса (ctx.model), если ответ модель не отдал.
@@ -328,6 +346,118 @@ impl TeeMeter {
         // расход в пул только когда он реально был (0 калибровку не двигает)
         if real > 0 {
             ctx.pool.record_spend(&ctx.email, real);
+        }
+
+        // Capacity calibration records the official-price workload before applying any customer
+        // markup. Response quota snapshots travel in the same ordered writer command, so they can
+        // only observe cumulative spend after the immutable turn insert wins.
+        if authoritative_usage && real > 0 {
+            if let Some(calibration) = &ctx.calibration {
+                let to_i64 = |value: u64| i64::try_from(value).ok();
+                let cost_i64 = |value: i128| i64::try_from(value).ok();
+                let modifiers = metering::AnthropicAdmissionModifiers {
+                    speed: if fast {
+                        metering::AnthropicSpeed::Fast
+                    } else {
+                        metering::AnthropicSpeed::Standard
+                    },
+                    inference_geo: if us_inference {
+                        metering::AnthropicInferenceGeo::Us
+                    } else {
+                        metering::AnthropicInferenceGeo::Global
+                    },
+                };
+                let tariff_schedule_id =
+                    metering::anthropic_tariff_capability_at(price_model, priced_ts, modifiers)
+                        .map(|identity| identity.tariff_schedule_id.as_str().to_owned())
+                        .unwrap_or_else(|_| {
+                            // Legacy dated model ids use the same audited metering table but are outside
+                            // the narrow strict-pricing identity allowlist. Persist the exact resolved
+                            // base rates so this event still has an immutable, unambiguous tariff identity.
+                            format!(
+                                "anthropic/calibration-rates/v1/i{}-cr{}-cw5{}-cw1{}-o{}-ws{}",
+                                prices.input,
+                                prices.cache_read,
+                                prices.cache_write_5m,
+                                prices.cache_write_1h,
+                                prices.output,
+                                metering::WEB_SEARCH_NANO,
+                            )
+                        });
+                let event = match (
+                    to_i64(usage.input_tokens),
+                    to_i64(usage.cache_read_tokens),
+                    to_i64(usage.cache_write_5m_tokens),
+                    to_i64(usage.cache_write_1h_tokens),
+                    to_i64(usage.output_tokens),
+                    to_i64(usage.web_search_requests),
+                    cost_i64(breakdown.input),
+                    cost_i64(breakdown.cache_read),
+                    cost_i64(breakdown.cache_write_5m),
+                    cost_i64(breakdown.cache_write_1h),
+                    cost_i64(breakdown.output),
+                    cost_i64(breakdown.web_search),
+                    cost_i64(real),
+                ) {
+                    (
+                        Some(input_tokens),
+                        Some(cache_read_tokens),
+                        Some(cache_write_5m_tokens),
+                        Some(cache_write_1h_tokens),
+                        Some(output_tokens),
+                        Some(search_queries),
+                        Some(api_input_nanousd),
+                        Some(api_cache_read_nanousd),
+                        Some(api_cache_write_5m_nanousd),
+                        Some(api_cache_write_1h_nanousd),
+                        Some(api_output_nanousd),
+                        Some(api_search_nanousd),
+                        Some(api_total_nanousd),
+                    ) => Some(registry::ProviderTurnCalibrationEvent {
+                        provider: registry::PROVIDER_ANTHROPIC.to_owned(),
+                        request_id: calibration.request_id.clone(),
+                        subject_id: ctx.email.clone(),
+                        model_id: price_model.to_owned(),
+                        service_tier: if fast { "fast" } else { "standard" }.to_owned(),
+                        inference_geo: if us_inference { "us" } else { "global" }.to_owned(),
+                        tariff_schedule_id,
+                        priced_ts,
+                        completed_at: now_unix,
+                        input_tokens,
+                        audio_input_tokens: 0,
+                        cache_read_tokens,
+                        cached_audio_input_tokens: 0,
+                        cache_write_5m_tokens,
+                        cache_write_1h_tokens,
+                        output_tokens,
+                        thinking_output_tokens: 0,
+                        image_output_tokens: 0,
+                        tool_prompt_tokens: 0,
+                        search_queries,
+                        grounded_search_prompts: 0,
+                        api_input_nanousd,
+                        api_audio_input_nanousd: 0,
+                        api_cache_read_nanousd,
+                        api_cached_audio_input_nanousd: 0,
+                        api_cache_write_5m_nanousd,
+                        api_cache_write_1h_nanousd,
+                        api_output_nanousd,
+                        api_image_output_nanousd: 0,
+                        api_search_nanousd,
+                        api_total_nanousd,
+                    }),
+                    _ => None,
+                };
+                if let Some(event) = event {
+                    calibration.billing.record_anthropic_turn_detached(
+                        event,
+                        &calibration.plan,
+                        calibration.quota_snapshots.clone(),
+                    );
+                } else {
+                    eprintln!("Anthropic calibration event exceeds durable bigint bounds");
+                }
+            }
         }
 
         // Резерв метерного ключа закрываем ВСЕГДА: actual = charge (0 при usage=0 → полный возврат
@@ -526,6 +656,7 @@ mod tests {
                     request_id: "request".into(),
                     reference: None,
                 }),
+                calibration: None,
                 capacity: None,
             },
         );

@@ -10,6 +10,7 @@
 
 mod affinity;
 mod anthropic;
+mod anthropic_calibration;
 pub mod anthropic_responses;
 mod billing;
 mod breaker;
@@ -29,7 +30,7 @@ pub use affinity::{
 };
 pub use anthropic::anthropic_chat_completions;
 pub use anthropic_responses::anthropic_responses;
-pub use billing::AsyncBilling;
+pub use billing::{AnthropicCalibrationDeliveryStatus, AsyncBilling};
 pub use breaker::Breaker;
 pub use codex::{
     codex_messages_count_tokens, codex_messages_skin, openai_chat_completions,
@@ -70,5 +71,5 @@ pub use state::{AppState, ProviderMode};
 pub use upstream::{
     detect_plan, fresh_request_id, limits_from_headers, persona_ccbuild, persona_cch,
     persona_session_id, persona_ua, persona_user_id, poll_sub, Clients, Limits, PlanDetect,
-    PollResult,
+    PollResult, QuotaFraction,
 };

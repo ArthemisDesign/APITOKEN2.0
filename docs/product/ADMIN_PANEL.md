@@ -40,6 +40,10 @@ Ultra; дополнительные недельные ограничения и
   контекст `admin` с корнем `apps/admin` (как `web` → `apps/web`).
 - Health endpoint: `GET /api/health` → 200 `{"ok":true}`.
 
+Страница `/system` получает supply из `/overview`, который использует ту же exact Claude authority,
+что `/capacity`. Если canonical remaining недоступен, UI показывает `—` и warning, а не `$0` и не
+старый pool prior/EMA; отдельный дублирующий browser-запрос `/capacity` удалён.
+
 ## Релизный цикл (watchdog lane `admin`)
 
 - Классификация путей: `wd_path_is_admin` в `deploy/watchdog-lib.sh` (`apps/admin/**` плюс общие
@@ -135,6 +139,12 @@ StatCard-наборы, proxy/transport details и длинные calibration exp
 выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
 символа local-part без домена.
 
+Над деталями расположен единый control-room из трёх карточек Claude/GPT/Gemini. В каждой только
+два одинаково читаемых rail: `5ч` и `7д`, current remaining / full-window API-$, использованная доля,
+число routable identities и coverage. Это главный экран сравнения продаваемой ёмкости; подробности
+cache/model/token идут ниже. Claude-карточка вместо ложных денег немедленно показывает
+`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`.
+
 Claude строится из `/capacity`:
 
 - `window_totals` и `available_nano` — decimal nanoUSD strings; 5ч/7д strip и token-only capacity
@@ -146,7 +156,12 @@ Claude строится из `/capacity`:
 - 5ч API-dollar remaining — главный показатель strip и отдельный акцентный столбец каждой
   подписки рядом с 5ч quota/reset; полная ёмкость окна выводится компактной строкой `из $…`.
   7д remaining/ёмкость остаются соседним сравнительным столбцом. Таблица также оставляет masked
-  email/plan и routing state. Prior явно помечается и не выдаётся за завершённую калибровку.
+  email/plan и routing state. Никакой prior не подставляется: до exact evidence выводится
+  `ждём данные`, при stale/missing snapshot или pending/degraded FIFO remaining остаётся `—`;
+- сразу после аккаунтов идёт фактическая workload-таблица Claude: masked email, model/tier/geo,
+  request count, input/cache-read/cache-write/output/search tokens и exact API-$ contribution.
+  Строки сортируются по `api_total_nanousd` убыванию. Затем показываются token-only capacity и
+  profitability, также по убыванию официальной продажной ставки.
 
 Gemini строится из `/gemini-subs` и сохраняет provider-specific семантику:
 

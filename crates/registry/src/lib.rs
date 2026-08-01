@@ -11,7 +11,10 @@ pub mod authority;
 pub mod funding;
 pub mod pg;
 pub mod pricing;
+mod provider_calibration;
 pub mod stage8;
+
+pub use provider_calibration::*;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};

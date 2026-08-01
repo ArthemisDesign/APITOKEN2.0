@@ -232,6 +232,27 @@ Infrastructure delivery preserves a healthy Redis container unless
 sysctl definition also keeps `vm.overcommit_memory=1`, allowing Redis background persistence to fork
 without a false allocation refusal; verify it with `sysctl vm.overcommit_memory`.
 
+## AnthropicCalibrationPersistenceFailed
+
+`claude_api_anthropic_calibration_persistence_ok` becomes zero when the exact turn FIFO has a
+pending head, any event was quarantined/dropped, or the PostgreSQL calibration report cannot be
+read. Customer traffic remains available, but `/capacity` deliberately returns `null` for current
+remaining/horizons; do not fall back to pool prior/EMA or enter a nominal subscription value.
+
+Inspect `claude_api_anthropic_calibration_pending_events`,
+`claude_api_anthropic_calibration_dropped_events_total` and
+`claude_api_anthropic_calibration_authority_available`, then check the Anthropic slot journal,
+PostgreSQL reachability, owner fencing and migrations 0019/0020. A transient pending queue drains in
+FIFO order automatically on the next turn/poll and is retried during graceful shutdown. A nonzero
+dropped counter means overflow or immutable request-id conflict: preserve the logs and event rows,
+verify request-id uniqueness, and restart only after the cause is understood. Restarting merely
+clears process diagnostics and can hide an evidence gap; it is not a calibration repair.
+
+Fleet planning uses `claude_api_anthropic_window_capacity_usd` and
+`..._remaining_usd{window_minutes="300|10080"}`. Capacity may remain present while remaining is
+omitted: full-window historical evidence is still valid, but the current snapshot/delivery is not.
+Coverage is visible through routable/calibrated/snapshot subscription gauges and confidence ratio.
+
 ## CodexProviderDown
 
 Only the OpenAI-compatible surface is affected; Claude routing is independent. Check

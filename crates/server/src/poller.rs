@@ -226,14 +226,46 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
             }
         }; // тот же агрегат, что и /overview
         let now = pool::now();
-        // Пер-подписочный снапшот ёмкости: на дистанции даёт истинный ПИК (max cap5h/cap7d), которого
-        // текущая EMA-калибровка не показывает (она усредняет). Полный email — metrics.db не публичен.
-        let subs: Vec<(String, f64, f64, f64, f64)> = app
-            .pool
-            .capacity()
-            .into_iter()
-            .map(|c| (c.email, c.cap5h_usd, c.cap7d_usd, c.util5h, c.util7d))
-            .collect();
+        // Per-sub history must use the same exact authority as `/capacity` and `/overview`. The old
+        // pool::Cap EMA/prior floats are routing hints and must never create a second peak history.
+        // Full email remains local to metrics.db; Control API values are still bounded masks.
+        let caps = app.pool.capacity();
+        let subs: Vec<(String, f64, f64, f64, f64)> = match &app.billing {
+            Some(billing) => match billing.anthropic_calibration_report().await {
+                Ok(report) => {
+                    let exact = crate::http::capacity_value(
+                        &caps,
+                        Some(&report),
+                        Some(billing.anthropic_calibration_delivery_status()),
+                        now,
+                    );
+                    let rows = exact["per_sub"].as_array().cloned().unwrap_or_default();
+                    caps.iter()
+                        .zip(rows)
+                        .filter_map(|(cap, row)| {
+                            let dollars = |field: &str| {
+                                row[field]
+                                    .as_str()
+                                    .and_then(|value| value.parse::<i128>().ok())
+                                    .map(|value| value as f64 / 1e9)
+                            };
+                            Some((
+                                cap.email.clone(),
+                                dollars("cap5h_nano")?,
+                                dollars("cap7d_nano")?,
+                                row["util5h"].as_f64()?,
+                                row["util7d"].as_f64()?,
+                            ))
+                        })
+                        .collect()
+                }
+                Err(error) => {
+                    eprintln!("⚠ exact per-sub metrics snapshot skipped: {error:#}");
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
         let db = metrics_db.clone();
         let cutoff = if retention_days > 0 {
             now - retention_days * 86400
@@ -396,6 +428,40 @@ async fn probe(
                 r.reset5h,
                 r.reset7d,
             );
+            if let Some(billing) = &app.billing {
+                let observed_at = pool::now();
+                let plan = if sub.plan.trim().is_empty() {
+                    "unknown"
+                } else {
+                    &sub.plan
+                };
+                for (kind, duration, quota, resets_at) in [
+                    ("5h", 300, r.quota5h, r.reset5h),
+                    ("7d", 10_080, r.quota7d, r.reset7d),
+                ] {
+                    let (Some(quota), Some(resets_at)) = (quota, resets_at) else {
+                        continue;
+                    };
+                    if let Err(error) = billing
+                        .observe_anthropic_window(
+                            &sub.email,
+                            plan,
+                            kind,
+                            duration,
+                            resets_at,
+                            quota.used_fraction_units,
+                            quota.measurement_resolution_fraction_units,
+                            observed_at,
+                        )
+                        .await
+                    {
+                        eprintln!(
+                            "Anthropic poll calibration failed for {} {kind}: {error:#}",
+                            sub.email
+                        );
+                    }
+                }
+            }
             match r.http {
                 429 => {
                     // AUDIT-TODO(C59): expose claim/Retry-After and one public 429-cooling helper from

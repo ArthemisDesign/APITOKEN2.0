@@ -89,6 +89,31 @@ fail-closed деградация: нет заголовка = нет retry (ROUT
 поверхностей — отдельная правка. Router обязан снимать заголовок с транзитных ответов
 (см. crates/router/CLAUDE.md).
 
+**Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** каждый
+успешный Anthropic turn, включая неметеренный admin traffic, после authoritative usage строит один
+immutable event с внутренним request ID, subject/email, model, Standard/Fast, inference geography,
+tariff schedule, exact input/cache-read/cache-write-5m/cache-write-1h/output/search counters и
+соответствующими API nanoUSD legs. Событие сначала продвигает cumulative subject spend и только
+затем response quota snapshots наблюдают новый total. Poll snapshots бесплатны: они читают durable
+spend, но никогда его не увеличивают. Decimal quota fractions парсятся в `10^-8` units без float;
+реальное разрешение каждого endpoint хранится отдельно.
+
+Окна 5h и 7d имеют независимые identity/history/reset и оцениваются без номинала подписки,
+prior/EMA/WLS: `capacity_nano = 100_000_000 × Σobserved_spend_nano /
+Σobserved_fraction_units`. Первое quota-only движение ждёт один snapshot ledger catch-up; повтор
+без spend становится unattributed и не раздувает ёмкость. Raw history полностью replay-ится при
+смене estimator version. Runtime не усредняет noisy аккаунт как коммерческий номинал: server
+pool-ит exact evidence только внутри одинакового plan + duration.
+
+Доставка turn evidence — bounded FIFO 4096 в состоянии `AsyncBilling`, которую последовательно
+дренирует billing writer. После исчерпания PostgreSQL operation retry голова остаётся pending и
+блокирует более поздние Claude events и poll snapshots; следующий event/poll либо graceful
+`AsyncBilling::flush` сначала повторяет её. Exact request replay
+безопасен; permanent semantic conflict карантинит только конфликтную строку и не блокирует очередь.
+Overflow/conflict увеличивают dropped counter. `pending_events`, `dropped_events` и
+`persistence_ok` публикуются через `/capacity` и Prometheus; при pending/degraded доставке текущий
+remaining fail-closed, а накопленная историческая capacity evidence остаётся видимой.
+
 **Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** отдельный
 `ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned
 typed snapshot как единственный источник request/account/hold и вызывает guarded registry commit.

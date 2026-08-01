@@ -15,6 +15,7 @@ import SubsPage from "./page";
 import { ClaudeTable, GeminiModelDetails, GeminiTable, GptTable, TransportDetails } from "./components";
 import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
+import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
 import {
   barFromPercent,
@@ -50,6 +51,81 @@ const OK_BANNER = {
 const plain = (html: string): string => html.replace(/<!-- -->/g, "");
 
 describe("таблицы флотов (smoke render с данными)", () => {
+  it("FleetCapacityOverview: сверху сопоставляет 5ч и 7д API-$ всех трёх пулов", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: true,
+          per_sub: [{ routable: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "60000000000", remaining_nano: "45000000000", routable_subs: 1, calibrated_subs: 1 },
+            { window_minutes: 10_080, capacity_nano: "200000000000", remaining_nano: "120000000000" },
+          ],
+        }}
+        gpt={{
+          enabled: true,
+          available: 1,
+          homes: [{ process_live: true, admitted: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "80000000000", remaining_nano: "40000000000", measured_homes: 1, observed_homes: 1 },
+            { window_minutes: 10_080, capacity_nano: "300000000000", remaining_nano: "210000000000" },
+          ],
+        }}
+        gemini={{
+          enabled: true,
+          available: 1,
+          profiles: [{ authenticated: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
+            { window_minutes: 10_080, capacity_nano: "250000000000", remaining_nano: "150000000000" },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain("Ёмкость пулов");
+    expect(html).toContain("Claude");
+    expect(html).toContain("GPT");
+    expect(html).toContain("Gemini");
+    expect(plain(html)).toContain("$45.00");
+    expect(plain(html)).toContain("$210.00");
+    expect(plain(html)).toContain("$150.00");
+    expect(html.match(/fleet-window-rail/g)).toHaveLength(6);
+    expect(plain(html)).toContain("25%");
+    expect(plain(html)).toContain("50%");
+  });
+
+  it("FleetCapacityOverview: сразу показывает очередь или потерю Claude-калибровки", () => {
+    const pending = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: false,
+          calibration_delivery: { pending_events: 2, dropped_events: 0, persistence_ok: false },
+          per_sub: [{ routable: true }],
+          window_totals: [{ window_minutes: 300, capacity_nano: "60000000000", remaining_nano: null }],
+        }}
+        gpt={null}
+        gemini={null}
+      />,
+    );
+    expect(plain(pending)).toContain("2 сохраняется");
+    expect(pending).toContain("fleet-claude");
+
+    const dropped = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: false,
+          calibration_delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false },
+          per_sub: [{ routable: true }],
+          window_totals: [{ window_minutes: 300, capacity_nano: "60000000000", remaining_nano: null }],
+        }}
+        gpt={null}
+        gemini={null}
+      />,
+    );
+    expect(plain(dropped)).toContain("1 потеряно");
+    expect(dropped).toContain("fleet-state bad");
+  });
+
   it("ClaudeTable: dead-подписка с пилюлей и live-окнами, пустой список → empty-row", () => {
     const html = renderToString(
       <ClaudeTable
@@ -389,6 +465,28 @@ describe("таблицы флотов (smoke render с данными)", () => {
               ],
             },
           ],
+          calibration_evidence: [
+            {
+              email: "owne…",
+              model: "claude-opus-4-8",
+              service_tier: "standard",
+              inference_geo: "global",
+              turns: 3,
+              input_tokens: "1000000",
+              cache_read_tokens: "2000000",
+              cache_write_5m_tokens: "300000",
+              cache_write_1h_tokens: "100000",
+              output_tokens: "500000",
+              search_queries: "2",
+              api_input_nanousd: "5000000000",
+              api_cache_read_nanousd: "1000000000",
+              api_cache_write_5m_nanousd: "1875000000",
+              api_cache_write_1h_nanousd: "1000000000",
+              api_output_nanousd: "12500000000",
+              api_search_nanousd: "20000000",
+              api_total_nanousd: "21395000000",
+            },
+          ],
           per_sub: [
             {
               email: "owne…",
@@ -411,11 +509,13 @@ describe("таблицы флотов (smoke render с данными)", () => {
     );
     expect(html).toContain("Сколько токенов доступно");
     expect(html).toContain("Выгодность по убыванию");
+    expect(html).toContain("Фактическая смесь калибровки");
     expect(html).toContain("Окна по аккаунтам");
     expect(html).toContain("owne…");
     expect(html).not.toContain("owner@example.com");
     expect(plain(html)).toContain("240M");
     expect(plain(html)).toContain("$50.00");
+    expect(plain(html)).toContain("$21.39");
     expect(html).toContain("Доступно $ · 5ч");
     expect(html).toContain('provider-usd-ink provider-five-hour-money"><b>$45.00</b><small>из $60.00</small>');
     expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));

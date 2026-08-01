@@ -1074,6 +1074,97 @@ async fn metrics(
             m.pricing_shadow_queue_age_sum_seconds(provider),
         );
     }
+    let anthropic_delivery = app
+        .billing
+        .as_ref()
+        .map(|billing| billing.anthropic_calibration_delivery_status());
+    let anthropic_report = if let Some(billing) = &app.billing {
+        billing.anthropic_calibration_report().await.ok()
+    } else {
+        None
+    };
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_anthropic_calibration_authority_available gauge\n\
+         claude_api_anthropic_calibration_authority_available {}\n\
+         # TYPE claude_api_anthropic_calibration_pending_events gauge\n\
+         claude_api_anthropic_calibration_pending_events {}\n\
+         # TYPE claude_api_anthropic_calibration_dropped_events_total counter\n\
+         claude_api_anthropic_calibration_dropped_events_total {}\n\
+         # TYPE claude_api_anthropic_calibration_persistence_ok gauge\n\
+         claude_api_anthropic_calibration_persistence_ok {}",
+        u8::from(anthropic_report.is_some()),
+        anthropic_delivery.map_or(0, |status| status.pending_events),
+        anthropic_delivery.map_or(0, |status| status.dropped_events),
+        u8::from(
+            anthropic_delivery.is_some_and(|status| status.persistence_ok)
+                && anthropic_report.is_some()
+        ),
+    );
+    if let Some(report) = anthropic_report.as_ref() {
+        let capacity = capacity_value(
+            &app.pool.capacity(),
+            Some(report),
+            anthropic_delivery,
+            pool::now(),
+        );
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_anthropic_window_capacity_usd gauge\n\
+             # TYPE claude_api_anthropic_window_remaining_usd gauge\n\
+             # TYPE claude_api_anthropic_window_routable_subscriptions gauge\n\
+             # TYPE claude_api_anthropic_window_calibrated_subscriptions gauge\n\
+             # TYPE claude_api_anthropic_window_snapshot_subscriptions gauge\n\
+             # TYPE claude_api_anthropic_window_confidence_ratio gauge\n\
+             # TYPE claude_api_anthropic_window_estimate_available gauge"
+        );
+        if let Some(windows) = capacity["window_totals"].as_array() {
+            for window in windows {
+                let Some(duration) = window["window_minutes"].as_i64() else {
+                    continue;
+                };
+                let estimate_available = window["capacity_nano"].is_string();
+                let _ = writeln!(
+                    body,
+                    "claude_api_anthropic_window_routable_subscriptions{{window_minutes=\"{duration}\"}} {}\n\
+                     claude_api_anthropic_window_calibrated_subscriptions{{window_minutes=\"{duration}\"}} {}\n\
+                     claude_api_anthropic_window_snapshot_subscriptions{{window_minutes=\"{duration}\"}} {}\n\
+                     claude_api_anthropic_window_estimate_available{{window_minutes=\"{duration}\"}} {}",
+                    window["routable_subs"].as_u64().unwrap_or(0),
+                    window["calibrated_subs"].as_u64().unwrap_or(0),
+                    window["snapshot_subs"].as_u64().unwrap_or(0),
+                    u8::from(estimate_available),
+                );
+                if let Some(value) = window["capacity_nano"]
+                    .as_str()
+                    .and_then(|value| value.parse::<i128>().ok())
+                {
+                    let _ = writeln!(
+                        body,
+                        "claude_api_anthropic_window_capacity_usd{{window_minutes=\"{duration}\"}} {:.9}",
+                        value as f64 / 1e9,
+                    );
+                }
+                if let Some(value) = window["remaining_nano"]
+                    .as_str()
+                    .and_then(|value| value.parse::<i128>().ok())
+                {
+                    let _ = writeln!(
+                        body,
+                        "claude_api_anthropic_window_remaining_usd{{window_minutes=\"{duration}\"}} {:.9}",
+                        value as f64 / 1e9,
+                    );
+                }
+                if let Some(value) = window["confidence_bp"].as_i64() {
+                    let _ = writeln!(
+                        body,
+                        "claude_api_anthropic_window_confidence_ratio{{window_minutes=\"{duration}\"}} {:.4}",
+                        value as f64 / 10_000.0,
+                    );
+                }
+            }
+        }
+    }
     let _ = writeln!(
         body,
         "# TYPE claude_api_codex_enabled gauge\nclaude_api_codex_enabled {}",
@@ -1896,10 +1987,6 @@ fn gemini_window_totals(
     totals
 }
 
-fn usd_to_nano(value: f64) -> i128 {
-    (value.max(0.0) * 1e9).round() as i128
-}
-
 fn mask_claude_email(email: &str) -> String {
     let local = email.split_once('@').map_or(email, |(local, _)| local);
     let head: String = local.chars().take(4).collect();
@@ -1954,49 +2041,452 @@ fn anthropic_conversion_models(now: i64) -> Vec<Value> {
         .collect()
 }
 
-fn claude_window_totals(caps: &[pool::Cap]) -> Vec<Value> {
-    let routable = caps.iter().filter(|cap| cap.routable).collect::<Vec<_>>();
-    let measured = routable.iter().filter(|cap| cap.calibrated).count();
-    let total = routable.len();
-    let window =
-        |minutes: i64, capacity: fn(&pool::Cap) -> f64, remaining: fn(&pool::Cap) -> f64| {
-            let capacity_nano = routable
-                .iter()
-                .map(|cap| usd_to_nano(capacity(cap)))
-                .sum::<i128>();
-            let remaining_nano = routable
-                .iter()
-                .map(|cap| usd_to_nano(remaining(cap)))
-                .sum::<i128>();
+const CLAUDE_FRACTION_SCALE: i128 = 100_000_000;
+const CLAUDE_WINDOWS: [(&str, i64); 2] = [("5h", 300), ("7d", 10_080)];
+/// Idle healthy subscriptions are probed every 5–7.5 minutes. Twice that upper cadence is a
+/// conservative boundary: capacity evidence remains valid, but current remaining supply does not.
+const CLAUDE_SNAPSHOT_MAX_AGE_SECS: i64 = 900;
+
+#[derive(Default)]
+struct ClaudePlanWindowCohort {
+    subs_total: usize,
+    routable_subs: usize,
+    snapshot_subs: usize,
+    routable_snapshot_subs: usize,
+    measured_subs: usize,
+    observed_fraction_units: i128,
+    observed_spend_nano: i128,
+    samples: i128,
+    unattributed_fraction_units: i128,
+    unused_routable_fraction_units: i128,
+    measurement_resolution_fraction_units: i64,
+    low_nano: Option<i64>,
+    low_subs: usize,
+    high_nano: Option<i64>,
+    high_subs: usize,
+    confidence_bp: Option<i64>,
+    last_observed_at: Option<i64>,
+    last_measured_at: Option<i64>,
+}
+
+#[derive(Clone, Default)]
+struct ClaudeCohortEstimate {
+    capacity_per_sub_nano: Option<i128>,
+    low_per_sub_nano: Option<i128>,
+    high_per_sub_nano: Option<i128>,
+    fleet_capacity_nano: Option<i128>,
+    fleet_low_nano: Option<i128>,
+    fleet_high_nano: Option<i128>,
+    fleet_remaining_nano: Option<i128>,
+    fleet_remaining_low_nano: Option<i128>,
+    fleet_remaining_high_nano: Option<i128>,
+}
+
+fn claude_row<'a>(
+    rows: &'a [registry::AnthropicCalibrationRow],
+    email: &str,
+    plan: &str,
+    window_kind: &str,
+) -> Option<&'a registry::AnthropicCalibrationRow> {
+    rows.iter()
+        .find(|row| row.subject_id == email && row.plan == plan && row.window_kind == window_kind)
+}
+
+fn claude_plan_window_cohorts(
+    caps: &[pool::Cap],
+    rows: &[registry::AnthropicCalibrationRow],
+    now: i64,
+) -> BTreeMap<(String, i64), ClaudePlanWindowCohort> {
+    let mut cohorts = BTreeMap::new();
+    for cap in caps {
+        for (window_kind, duration) in CLAUDE_WINDOWS {
+            let cohort = cohorts
+                .entry((cap.plan.clone(), duration))
+                .or_insert_with(ClaudePlanWindowCohort::default);
+            cohort.subs_total += 1;
+            cohort.routable_subs += usize::from(cap.routable);
+
+            let Some(row) = claude_row(rows, &cap.email, &cap.plan, window_kind) else {
+                continue;
+            };
+            cohort.last_observed_at = Some(
+                cohort
+                    .last_observed_at
+                    .map_or(row.observed_at, |value| value.max(row.observed_at)),
+            );
+            cohort.measurement_resolution_fraction_units = cohort
+                .measurement_resolution_fraction_units
+                .max(row.measurement_resolution_fraction_units);
+            cohort.unattributed_fraction_units += i128::from(row.unattributed_fraction_units);
+            let fresh = row.observed_at <= now.saturating_add(30)
+                && now.saturating_sub(row.observed_at) <= CLAUDE_SNAPSHOT_MAX_AGE_SECS;
+            if fresh {
+                cohort.snapshot_subs += 1;
+                if cap.routable {
+                    cohort.routable_snapshot_subs += 1;
+                    cohort.unused_routable_fraction_units += i128::from(
+                        100_000_000i64
+                            .saturating_sub(row.used_fraction_units.clamp(0, 100_000_000)),
+                    );
+                }
+            }
+
+            if row.current_capacity_nano.is_none()
+                || row.samples <= 0
+                || row.observed_fraction_units <= 0
+                || row.observed_spend_nano <= 0
+            {
+                continue;
+            }
+            cohort.measured_subs += 1;
+            cohort.observed_fraction_units += i128::from(row.observed_fraction_units);
+            cohort.observed_spend_nano += i128::from(row.observed_spend_nano);
+            cohort.samples += i128::from(row.samples);
+            cohort.confidence_bp = Some(
+                cohort
+                    .confidence_bp
+                    .map_or(row.current_confidence_bp, |value| {
+                        value.min(row.current_confidence_bp)
+                    }),
+            );
+            cohort.last_measured_at = row.last_measured_at.map(|measured_at| {
+                cohort
+                    .last_measured_at
+                    .map_or(measured_at, |value| value.max(measured_at))
+            });
+            if let Some(low) = row.current_low_nano {
+                cohort.low_nano = Some(cohort.low_nano.map_or(low, |value| value.min(low)));
+                cohort.low_subs += 1;
+            }
+            if let Some(high) = row.current_high_nano {
+                cohort.high_nano = Some(cohort.high_nano.map_or(high, |value| value.max(high)));
+                cohort.high_subs += 1;
+            }
+        }
+    }
+    cohorts
+}
+
+fn claude_cohort_estimate(cohort: &ClaudePlanWindowCohort) -> ClaudeCohortEstimate {
+    let capacity = (cohort.observed_fraction_units > 0 && cohort.observed_spend_nano > 0)
+        .then(|| {
+            cohort
+                .observed_spend_nano
+                .checked_mul(CLAUDE_FRACTION_SCALE)
+                .and_then(|numerator| {
+                    numerator
+                        .checked_add(cohort.observed_fraction_units / 2)
+                        .and_then(|rounded| rounded.checked_div(cohort.observed_fraction_units))
+                })
+        })
+        .flatten();
+    let low = (cohort.measured_subs > 0 && cohort.low_subs == cohort.measured_subs)
+        .then(|| cohort.low_nano.map(i128::from))
+        .flatten();
+    let high = (cohort.measured_subs > 0 && cohort.high_subs == cohort.measured_subs)
+        .then(|| cohort.high_nano.map(i128::from))
+        .flatten();
+    let multiplier = i128::try_from(cohort.routable_subs).expect("usize fits i128");
+    let fleet = |value: Option<i128>| {
+        (cohort.routable_subs > 0)
+            .then(|| value.and_then(|value| value.checked_mul(multiplier)))
+            .flatten()
+    };
+    let remaining = |value: Option<i128>| {
+        (cohort.routable_subs > 0 && cohort.routable_snapshot_subs == cohort.routable_subs)
+            .then(|| {
+                value
+                    .and_then(|value| value.checked_mul(cohort.unused_routable_fraction_units))
+                    .and_then(|numerator| {
+                        numerator
+                            .checked_add(CLAUDE_FRACTION_SCALE / 2)
+                            .and_then(|rounded| rounded.checked_div(CLAUDE_FRACTION_SCALE))
+                    })
+            })
+            .flatten()
+    };
+    ClaudeCohortEstimate {
+        capacity_per_sub_nano: capacity,
+        low_per_sub_nano: low,
+        high_per_sub_nano: high,
+        fleet_capacity_nano: fleet(capacity),
+        fleet_low_nano: fleet(low),
+        fleet_high_nano: fleet(high),
+        fleet_remaining_nano: remaining(capacity),
+        fleet_remaining_low_nano: remaining(low),
+        fleet_remaining_high_nano: remaining(high),
+    }
+}
+
+fn nano_string(value: Option<i128>) -> Option<String> {
+    value.map(|value| value.to_string())
+}
+
+fn claude_plan_cohort_values(
+    cohorts: &BTreeMap<(String, i64), ClaudePlanWindowCohort>,
+) -> Vec<Value> {
+    cohorts
+        .iter()
+        .map(|((plan, duration), cohort)| {
+            let estimate = claude_cohort_estimate(cohort);
+            let missing_reason = if estimate.capacity_per_sub_nano.is_none() {
+                Some("awaiting_positive_spend_fraction_interval")
+            } else if cohort.routable_subs > cohort.routable_snapshot_subs {
+                Some("missing_current_quota_snapshot")
+            } else {
+                None
+            };
             json!({
-                "window_minutes": minutes,
-                "capacity_nano": capacity_nano.to_string(),
-                "remaining_nano": remaining_nano.to_string(),
-                "routable_subs": total,
-                "calibrated_subs": measured,
-                "source": if total > 0 && measured == total {
-                    "calibrated_api_equivalent"
+                "plan": plan,
+                "window_kind": if *duration == 300 { "5h" } else { "7d" },
+                "window_minutes": duration,
+                "subs_total": cohort.subs_total,
+                "routable_subs": cohort.routable_subs,
+                "snapshot_subs": cohort.snapshot_subs,
+                "routable_snapshot_subs": cohort.routable_snapshot_subs,
+                "measured_subs": cohort.measured_subs,
+                "observed_fraction_units": cohort.observed_fraction_units.to_string(),
+                "observed_spend_nano": cohort.observed_spend_nano.to_string(),
+                "samples": cohort.samples.to_string(),
+                "unattributed_fraction_units": cohort.unattributed_fraction_units.to_string(),
+                "measurement_resolution_fraction_units": cohort.measurement_resolution_fraction_units,
+                "confidence_bp": cohort.confidence_bp,
+                "last_observed_at": cohort.last_observed_at,
+                "last_measured_at": cohort.last_measured_at,
+                "capacity_per_sub_nano": nano_string(estimate.capacity_per_sub_nano),
+                "low_per_sub_nano": nano_string(estimate.low_per_sub_nano),
+                "high_per_sub_nano": nano_string(estimate.high_per_sub_nano),
+                "fleet_capacity_nano": nano_string(estimate.fleet_capacity_nano),
+                "fleet_low_nano": nano_string(estimate.fleet_low_nano),
+                "fleet_high_nano": nano_string(estimate.fleet_high_nano),
+                "fleet_remaining_nano": nano_string(estimate.fleet_remaining_nano),
+                "fleet_remaining_low_nano": nano_string(estimate.fleet_remaining_low_nano),
+                "fleet_remaining_high_nano": nano_string(estimate.fleet_remaining_high_nano),
+                "source": if estimate.capacity_per_sub_nano.is_some() {
+                    "plan_pooled_workload_api_equivalent"
                 } else {
-                    "prior_or_calibrated_api_equivalent"
+                    "unknown"
+                },
+                "same_plan_capacity": true,
+                "workload_dependent": true,
+                "missing_reason": missing_reason,
+            })
+        })
+        .collect()
+}
+
+fn claude_window_total_values(
+    cohorts: &BTreeMap<(String, i64), ClaudePlanWindowCohort>,
+    authority_available: bool,
+    delivery_missing_reason: Option<&str>,
+) -> Vec<Value> {
+    CLAUDE_WINDOWS
+        .iter()
+        .map(|(window_kind, duration)| {
+            let selected = cohorts
+                .iter()
+                .filter(|((_, cohort_duration), cohort)| {
+                    cohort_duration == duration && cohort.routable_subs > 0
+                })
+                .collect::<Vec<_>>();
+            let routable_subs = selected
+                .iter()
+                .map(|(_, cohort)| cohort.routable_subs)
+                .sum::<usize>();
+            let calibrated_subs = selected
+                .iter()
+                .filter(|(_, cohort)| claude_cohort_estimate(cohort).capacity_per_sub_nano.is_some())
+                .map(|(_, cohort)| cohort.routable_subs)
+                .sum::<usize>();
+            let plans_total = selected.len();
+            let calibrated_plans = selected
+                .iter()
+                .filter(|(_, cohort)| claude_cohort_estimate(cohort).capacity_per_sub_nano.is_some())
+                .count();
+            let snapshot_subs = selected
+                .iter()
+                .map(|(_, cohort)| cohort.routable_snapshot_subs)
+                .sum::<usize>();
+            let complete_capacity = authority_available
+                && routable_subs > 0
+                && calibrated_plans == plans_total;
+            let complete_remaining = complete_capacity
+                && delivery_missing_reason.is_none()
+                && snapshot_subs == routable_subs;
+            let complete_low = complete_capacity
+                && selected
+                    .iter()
+                    .all(|(_, cohort)| claude_cohort_estimate(cohort).fleet_low_nano.is_some());
+            let complete_high = complete_capacity
+                && selected
+                    .iter()
+                    .all(|(_, cohort)| claude_cohort_estimate(cohort).fleet_high_nano.is_some());
+            let sum = |pick: fn(&ClaudeCohortEstimate) -> Option<i128>| {
+                selected.iter().try_fold(0i128, |total, (_, cohort)| {
+                    pick(&claude_cohort_estimate(cohort)).and_then(|value| total.checked_add(value))
+                })
+            };
+            let capacity = complete_capacity
+                .then(|| sum(|estimate| estimate.fleet_capacity_nano))
+                .flatten();
+            let remaining = complete_remaining
+                .then(|| sum(|estimate| estimate.fleet_remaining_nano))
+                .flatten();
+            let low = complete_low
+                .then(|| sum(|estimate| estimate.fleet_low_nano))
+                .flatten();
+            let high = complete_high
+                .then(|| sum(|estimate| estimate.fleet_high_nano))
+                .flatten();
+            let remaining_low = (complete_low && complete_remaining)
+                .then(|| sum(|estimate| estimate.fleet_remaining_low_nano))
+                .flatten();
+            let remaining_high = (complete_high && complete_remaining)
+                .then(|| sum(|estimate| estimate.fleet_remaining_high_nano))
+                .flatten();
+            let missing_reason = if !authority_available {
+                Some("calibration_authority_unavailable")
+            } else if routable_subs == 0 {
+                Some("no_routable_subscriptions")
+            } else if !complete_capacity {
+                Some("missing_plan_evidence")
+            } else if let Some(reason) = delivery_missing_reason {
+                Some(reason)
+            } else if !complete_remaining {
+                Some("missing_current_quota_snapshot")
+            } else {
+                None
+            };
+            let confidence_bp = selected
+                .iter()
+                .filter_map(|(_, cohort)| cohort.confidence_bp)
+                .min();
+            json!({
+                "window_kind": window_kind,
+                "window_minutes": duration,
+                "capacity_nano": nano_string(capacity),
+                "remaining_nano": nano_string(remaining),
+                "low_nano": nano_string(low),
+                "high_nano": nano_string(high),
+                "remaining_low_nano": nano_string(remaining_low),
+                "remaining_high_nano": nano_string(remaining_high),
+                "routable_subs": routable_subs,
+                "calibrated_subs": calibrated_subs,
+                "snapshot_subs": snapshot_subs,
+                "plans_total": plans_total,
+                "calibrated_plans": calibrated_plans,
+                "confidence_bp": confidence_bp,
+                "samples": selected.iter().map(|(_, cohort)| cohort.samples).sum::<i128>().to_string(),
+                "observed_fraction_units": selected.iter().map(|(_, cohort)| cohort.observed_fraction_units).sum::<i128>().to_string(),
+                "observed_spend_nano": selected.iter().map(|(_, cohort)| cohort.observed_spend_nano).sum::<i128>().to_string(),
+                "unattributed_fraction_units": selected.iter().map(|(_, cohort)| cohort.unattributed_fraction_units).sum::<i128>().to_string(),
+                "source": if capacity.is_some() {
+                    "plan_pooled_workload_api_equivalent"
+                } else {
+                    "unknown"
                 },
                 "workload_dependent": true,
+                "fail_closed": true,
+                "missing_reason": missing_reason,
             })
-        };
-    vec![
-        window(300, |cap| cap.cap5h_usd, |cap| cap.rem5h_usd),
-        window(10_080, |cap| cap.cap7d_usd, |cap| cap.rem7d_usd),
-    ]
+        })
+        .collect()
 }
 
-fn claude_available_nano(caps: &[pool::Cap], value: fn(&pool::Cap) -> f64) -> i128 {
-    caps.iter()
-        .filter(|cap| cap.routable)
-        .map(|cap| usd_to_nano(value(cap)))
-        .sum()
+fn claude_reset_count(now: i64, reset_at: i64, window_secs: i64, horizon_secs: i64) -> i128 {
+    let next = if reset_at > now {
+        reset_at
+    } else {
+        reset_at.saturating_add(
+            ((now.saturating_sub(reset_at)) / window_secs + 1).saturating_mul(window_secs),
+        )
+    };
+    if next > now.saturating_add(horizon_secs) {
+        0
+    } else {
+        i128::from(1 + (now.saturating_add(horizon_secs) - next) / window_secs)
+    }
 }
 
-/// Доступная ёмкость пула в USD real-API-эквиваленте на горизонты 1ч/5ч/1д/7д.
-/// По каждой подписке + суммарно по флоту. Считается на лету (без обращений к Anthropic).
+fn claude_sub_horizon_available(
+    cap: &pool::Cap,
+    rows: &[registry::AnthropicCalibrationRow],
+    cohorts: &BTreeMap<(String, i64), ClaudePlanWindowCohort>,
+    now: i64,
+    horizon_secs: i64,
+) -> Option<i128> {
+    if !cap.routable {
+        return Some(0);
+    }
+    let availability = CLAUDE_WINDOWS
+        .iter()
+        .map(|(window_kind, duration)| {
+            let row = claude_row(rows, &cap.email, &cap.plan, window_kind)?;
+            if row.observed_at > now.saturating_add(30)
+                || now.saturating_sub(row.observed_at) > CLAUDE_SNAPSHOT_MAX_AGE_SECS
+            {
+                return None;
+            }
+            let cohort = cohorts.get(&(cap.plan.clone(), *duration))?;
+            let capacity = claude_cohort_estimate(cohort).capacity_per_sub_nano?;
+            let unused = i128::from(
+                100_000_000i64.saturating_sub(row.used_fraction_units.clamp(0, 100_000_000)),
+            );
+            let remaining = capacity
+                .checked_mul(unused)?
+                .checked_add(CLAUDE_FRACTION_SCALE / 2)?
+                .checked_div(CLAUDE_FRACTION_SCALE)?;
+            let reset_capacity = capacity.checked_mul(claude_reset_count(
+                now,
+                row.resets_at,
+                duration.saturating_mul(60),
+                horizon_secs,
+            ))?;
+            remaining.checked_add(reset_capacity)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    availability.into_iter().min()
+}
+
+fn anthropic_calibration_aggregate_value(
+    row: &registry::ProviderTurnCalibrationAggregate,
+) -> Value {
+    json!({
+        "email": mask_claude_email(&row.subject_id),
+        "model": row.model_id,
+        "service_tier": row.service_tier,
+        "inference_geo": row.inference_geo,
+        "tariff_schedule_id": row.tariff_schedule_id,
+        "turns": row.turns,
+        "first_completed_at": row.first_completed_at,
+        "last_completed_at": row.last_completed_at,
+        "input_tokens": row.input_tokens.to_string(),
+        "audio_input_tokens": row.audio_input_tokens.to_string(),
+        "cache_read_tokens": row.cache_read_tokens.to_string(),
+        "cached_audio_input_tokens": row.cached_audio_input_tokens.to_string(),
+        "cache_write_5m_tokens": row.cache_write_5m_tokens.to_string(),
+        "cache_write_1h_tokens": row.cache_write_1h_tokens.to_string(),
+        "output_tokens": row.output_tokens.to_string(),
+        "thinking_output_tokens": row.thinking_output_tokens.to_string(),
+        "image_output_tokens": row.image_output_tokens.to_string(),
+        "tool_prompt_tokens": row.tool_prompt_tokens.to_string(),
+        "search_queries": row.search_queries.to_string(),
+        "grounded_search_prompts": row.grounded_search_prompts.to_string(),
+        "api_input_nanousd": row.api_input_nanousd.to_string(),
+        "api_audio_input_nanousd": row.api_audio_input_nanousd.to_string(),
+        "api_cache_read_nanousd": row.api_cache_read_nanousd.to_string(),
+        "api_cached_audio_input_nanousd": row.api_cached_audio_input_nanousd.to_string(),
+        "api_cache_write_5m_nanousd": row.api_cache_write_5m_nanousd.to_string(),
+        "api_cache_write_1h_nanousd": row.api_cache_write_1h_nanousd.to_string(),
+        "api_output_nanousd": row.api_output_nanousd.to_string(),
+        "api_image_output_nanousd": row.api_image_output_nanousd.to_string(),
+        "api_search_nanousd": row.api_search_nanousd.to_string(),
+        "api_total_nanousd": row.api_total_nanousd.to_string(),
+    })
+}
+
+/// Exact Claude capacity from durable request spend and fixed-point provider quota observations.
+/// No old pool prior, EMA or floating-point calibration is allowed into this response.
 async fn capacity(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -2013,90 +2503,217 @@ async fn capacity(
     if let Some(v) = cache_get(&CAPACITY_CACHE) {
         return Json(v).into_response();
     }
-    let v = capacity_value(&app);
+    let report = match &app.billing {
+        Some(billing) => match billing.anthropic_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("Anthropic calibration report unavailable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    let delivery = app
+        .billing
+        .as_ref()
+        .map(|billing| billing.anthropic_calibration_delivery_status());
+    let caps = app.pool.capacity();
+    let v = capacity_value(&caps, report.as_ref(), delivery, pool::now());
     cache_put(&CAPACITY_CACHE, &v);
     Json(v).into_response()
 }
 
-/// Cooling/dead subscriptions remain visible per-sub but must never inflate sellable supply.
-fn routable_capacity_summary(caps: &[pool::Cap]) -> ([f64; 4], bool) {
-    let mut available = [0.0; 4];
-    let mut routable = 0usize;
-    let mut all_calibrated = true;
-    for cap in caps.iter().filter(|cap| cap.routable) {
-        available[0] += cap.avail_1h_usd;
-        available[1] += cap.avail_5h_usd;
-        available[2] += cap.avail_1d_usd;
-        available[3] += cap.avail_7d_usd;
-        routable += 1;
-        all_calibrated &= cap.calibrated;
-    }
-    (available, routable > 0 && all_calibrated)
-}
-
-/// Вычисление ёмкости пула (per-sub + агрегат) — для `/capacity` и TTL-кэша. Синхронно.
-fn capacity_value(app: &AppState) -> serde_json::Value {
-    let caps = app.pool.capacity();
-    let now = pool::now();
-    let round = |x: f64| (x * 100.0).round() / 100.0;
-    let nano = |x: f64| usd_to_nano(x).to_string();
-    // Маскируем email подписки: панельному (read-only) ключу не отдаём реальные адреса пула — это
-    // операционно чувствительно (реселлимые Claude-аккаунты; полный email помогает корреляции/бану).
-    let ([a1, a5, a1d, a7d], all_calibrated) = routable_capacity_summary(&caps);
-    let available_nano = [
-        claude_available_nano(&caps, |cap| cap.avail_1h_usd),
-        claude_available_nano(&caps, |cap| cap.avail_5h_usd),
-        claude_available_nano(&caps, |cap| cap.avail_1d_usd),
-        claude_available_nano(&caps, |cap| cap.avail_7d_usd),
-    ];
-    let subs: Vec<_> = caps
+pub(crate) fn capacity_value(
+    caps: &[pool::Cap],
+    report: Option<&(
+        Vec<registry::AnthropicCalibrationRow>,
+        Vec<registry::ProviderTurnCalibrationAggregate>,
+    )>,
+    delivery: Option<forward::AnthropicCalibrationDeliveryStatus>,
+    now: i64,
+) -> serde_json::Value {
+    let rows = report.map_or(&[][..], |(rows, _)| rows.as_slice());
+    let delivery_missing_reason = match delivery {
+        Some(status) if status.pending_events > 0 => Some("calibration_delivery_pending"),
+        Some(status) if !status.persistence_ok => Some("calibration_delivery_degraded"),
+        Some(_) => None,
+        None => Some("calibration_delivery_unavailable"),
+    };
+    let delivery_ready = delivery_missing_reason.is_none();
+    let cohorts = claude_plan_window_cohorts(caps, rows, now);
+    let horizons = [3_600, 18_000, 86_400, 604_800];
+    let available = horizons.map(|horizon| {
+        let routable = caps.iter().filter(|cap| cap.routable).collect::<Vec<_>>();
+        if report.is_none() || !delivery_ready || routable.is_empty() {
+            return None;
+        }
+        routable.iter().try_fold(0i128, |total, cap| {
+            claude_sub_horizon_available(cap, rows, &cohorts, now, horizon)
+                .and_then(|value| total.checked_add(value))
+        })
+    });
+    let subs = caps
         .iter()
-        .map(|c| {
+        .map(|cap| {
+            let window = |window_kind: &str, duration: i64| {
+                let row = claude_row(rows, &cap.email, &cap.plan, window_kind);
+                let fresh_row = row.filter(|row| {
+                    delivery_ready
+                        && row.observed_at <= now.saturating_add(30)
+                        && now.saturating_sub(row.observed_at)
+                            <= CLAUDE_SNAPSHOT_MAX_AGE_SECS
+                });
+                let cohort = cohorts.get(&(cap.plan.clone(), duration));
+                let estimate = cohort.map(claude_cohort_estimate).unwrap_or_default();
+                let remaining = fresh_row.and_then(|row| {
+                    estimate.capacity_per_sub_nano.and_then(|capacity| {
+                        capacity
+                            .checked_mul(i128::from(100_000_000i64.saturating_sub(
+                                row.used_fraction_units.clamp(0, 100_000_000),
+                            )))
+                            .and_then(|value| value.checked_add(CLAUDE_FRACTION_SCALE / 2))
+                            .and_then(|value| value.checked_div(CLAUDE_FRACTION_SCALE))
+                    })
+                });
+                let remaining_bound = |bound: Option<i128>| {
+                    fresh_row.and_then(|row| {
+                        bound.and_then(|capacity| {
+                            capacity
+                                .checked_mul(i128::from(100_000_000i64.saturating_sub(
+                                    row.used_fraction_units.clamp(0, 100_000_000),
+                                )))
+                                .and_then(|value| value.checked_add(CLAUDE_FRACTION_SCALE / 2))
+                                .and_then(|value| value.checked_div(CLAUDE_FRACTION_SCALE))
+                        })
+                    })
+                };
+                let missing_reason = if report.is_none() {
+                    Some("calibration_authority_unavailable")
+                } else if estimate.capacity_per_sub_nano.is_none() {
+                    Some("awaiting_plan_evidence")
+                } else if let Some(reason) = delivery_missing_reason {
+                    Some(reason)
+                } else if row.is_none() {
+                    Some("missing_current_quota_snapshot")
+                } else if fresh_row.is_none() {
+                    Some("stale_current_quota_snapshot")
+                } else {
+                    None
+                };
+                json!({
+                    "window_kind": window_kind,
+                    "window_minutes": duration,
+                    "resets_at": row.map(|row| row.resets_at),
+                    "observed_at": row.map(|row| row.observed_at),
+                    "data_age_seconds": row.map(|row| now.saturating_sub(row.observed_at).max(0)),
+                    "snapshot_fresh": fresh_row.is_some(),
+                    "used_fraction_units": row.map(|row| row.used_fraction_units),
+                    "measurement_resolution_fraction_units": row.map(|row| row.measurement_resolution_fraction_units),
+                    "capacity_nano": nano_string(estimate.capacity_per_sub_nano),
+                    "remaining_nano": nano_string(remaining),
+                    "low_nano": nano_string(estimate.low_per_sub_nano),
+                    "high_nano": nano_string(estimate.high_per_sub_nano),
+                    "remaining_low_nano": nano_string(remaining_bound(estimate.low_per_sub_nano)),
+                    "remaining_high_nano": nano_string(remaining_bound(estimate.high_per_sub_nano)),
+                    "confidence_bp": cohort.and_then(|cohort| cohort.confidence_bp),
+                    "cohort_samples": cohort.map(|cohort| cohort.samples.to_string()),
+                    "cohort_observed_fraction_units": cohort.map(|cohort| cohort.observed_fraction_units.to_string()),
+                    "cohort_observed_spend_nano": cohort.map(|cohort| cohort.observed_spend_nano.to_string()),
+                    "account_samples": row.map(|row| row.samples),
+                    "account_observed_fraction_units": row.map(|row| row.observed_fraction_units),
+                    "account_observed_spend_nano": row.map(|row| row.observed_spend_nano.to_string()),
+                    "unattributed_fraction_units": row.map(|row| row.unattributed_fraction_units),
+                    "source": if estimate.capacity_per_sub_nano.is_some() {
+                        "plan_pooled_workload_api_equivalent"
+                    } else {
+                        "unknown"
+                    },
+                    "same_plan_capacity": true,
+                    "missing_reason": missing_reason,
+                })
+            };
+            let five = window("5h", 300);
+            let weekly = window("7d", 10_080);
+            let capacity_nano = |value: &Value| value["capacity_nano"].as_str().map(str::to_owned);
+            let remaining_nano = |value: &Value| value["remaining_nano"].as_str().map(str::to_owned);
+            let five_capacity = capacity_nano(&five);
+            let weekly_capacity = capacity_nano(&weekly);
+            let five_remaining = remaining_nano(&five);
+            let weekly_remaining = remaining_nano(&weekly);
+            let five_row = claude_row(rows, &cap.email, &cap.plan, "5h");
+            let weekly_row = claude_row(rows, &cap.email, &cap.plan, "7d");
+            let sub_available = horizons.map(|horizon| {
+                claude_sub_horizon_available(cap, rows, &cohorts, now, horizon)
+            });
             json!({
-                "email": mask_claude_email(&c.email),
-                "plan": c.plan,
-                "calibrated": c.calibrated,
-                "routable": c.routable,
-                "util5h": round(c.util5h), "util7d": round(c.util7d),
-                "reset5h_in": c.reset5h_in, "reset7d_in": c.reset7d_in,
-                "cap5h_nano": nano(c.cap5h_usd), "cap7d_nano": nano(c.cap7d_usd),
-                "rem5h_nano": nano(c.rem5h_usd), "rem7d_nano": nano(c.rem7d_usd),
-                "cap5h_usd": round(c.cap5h_usd), "cap7d_usd": round(c.cap7d_usd),
-                "rem5h_usd": round(c.rem5h_usd), "rem7d_usd": round(c.rem7d_usd),
-                "avail_1h_usd": round(c.avail_1h_usd), "avail_5h_usd": round(c.avail_5h_usd),
-                "avail_1d_usd": round(c.avail_1d_usd), "avail_7d_usd": round(c.avail_7d_usd),
-                "status": c.status, "cooling": c.cooling,
-                "dead": c.auth_dead,   // токен отвергнут Anthropic (корроборированно) → «мёртвая» подписка
-                "auth_state": c.auth_state,       // "healthy" | "suspect" | "dead" (durable)
-                "dead_reason": c.dead_reason,     // "authentication_error" (re-auth) | "permission_error" (banned)
-                "dead_since": c.dead_since_ts,    // когда стала dead (0 = нет)
+                "email": mask_claude_email(&cap.email),
+                "plan": cap.plan,
+                "calibrated": five_capacity.is_some() && weekly_capacity.is_some(),
+                "calibration_source": "durable_plan_pooled_workload",
+                "routable": cap.routable,
+                "util5h": five_row.map_or(cap.util5h, |row| row.used_fraction_units as f64 / 100_000_000.0),
+                "util7d": weekly_row.map_or(cap.util7d, |row| row.used_fraction_units as f64 / 100_000_000.0),
+                "reset5h_in": five_row.map_or(cap.reset5h_in, |row| row.resets_at.saturating_sub(now).max(0)),
+                "reset7d_in": weekly_row.map_or(cap.reset7d_in, |row| row.resets_at.saturating_sub(now).max(0)),
+                "cap5h_nano": five_capacity,
+                "cap7d_nano": weekly_capacity,
+                "rem5h_nano": five_remaining,
+                "rem7d_nano": weekly_remaining,
+                "available_nano": {
+                    "next_1h": nano_string(sub_available[0]),
+                    "next_5h": nano_string(sub_available[1]),
+                    "next_1d": nano_string(sub_available[2]),
+                    "next_7d": nano_string(sub_available[3]),
+                },
+                "windows": [five, weekly],
+                "status": cap.status,
+                "cooling": cap.cooling,
+                "dead": cap.auth_dead,
+                "auth_state": cap.auth_state,
+                "dead_reason": cap.dead_reason,
+                "dead_since": cap.dead_since_ts,
             })
         })
-        .collect();
-    let dead_count = caps.iter().filter(|c| c.auth_dead).count();
-    let suspect_count = caps.iter().filter(|c| c.auth_state == "suspect").count();
+        .collect::<Vec<_>>();
+    let window_totals =
+        claude_window_total_values(&cohorts, report.is_some(), delivery_missing_reason);
+    let fully_calibrated = window_totals
+        .iter()
+        .all(|window| window["capacity_nano"].is_string() && window["remaining_nano"].is_string());
     json!({
         "now": now,
         "subs": subs.len(),
-        "dead": dead_count,             // >0 → есть мёртвые токены (401/403): вне ротации, нужна замена
-        "suspect": suspect_count,       // auth падает, под наблюдением (ещё не приговор)
-        "calibrated": all_calibrated,   // false → хотя бы одна подписка ещё на прайоре
-        "available_usd": {              // суммарно по флоту, USD real-API-эквивалента
-            "next_1h": round(a1), "next_5h": round(a5), "next_1d": round(a1d), "next_7d": round(a7d),
-        },
+        "dead": caps.iter().filter(|cap| cap.auth_dead).count(),
+        "suspect": caps.iter().filter(|cap| cap.auth_state == "suspect").count(),
+        "calibrated": fully_calibrated,
+        "calibration_authority_available": report.is_some(),
+        "calibration_delivery": delivery.map(|status| json!({
+            "pending_events": status.pending_events,
+            "dropped_events": status.dropped_events,
+            "persistence_ok": status.persistence_ok,
+            "queue_limit": status.queue_limit,
+        })),
         "available_nano": {
-            "next_1h": available_nano[0].to_string(),
-            "next_5h": available_nano[1].to_string(),
-            "next_1d": available_nano[2].to_string(),
-            "next_7d": available_nano[3].to_string(),
+            "next_1h": nano_string(available[0]),
+            "next_5h": nano_string(available[1]),
+            "next_1d": nano_string(available[2]),
+            "next_7d": nano_string(available[3]),
         },
         "capacity_semantics": {
-            "kind": "calibrated_api_equivalent",
+            "kind": "plan_pooled_realized_workload_api_equivalent",
+            "formula": "100000000 * sum(observed_spend_nano) / sum(observed_fraction_units)",
             "fixed_subscription_nominal": false,
-            "source": "provider_utilization_and_gateway_spend",
+            "legacy_pool_prior_authoritative": false,
+            "same_plan_capacity": true,
+            "fleet_totals_fail_closed": true,
+            "source": "durable_provider_turns_and_exact_quota_fractions",
         },
-        "window_totals": claude_window_totals(&caps),
+        "plan_cohorts": claude_plan_cohort_values(&cohorts),
+        "window_totals": window_totals,
         "conversion_models": anthropic_conversion_models(now),
+        "calibration_evidence": report.map_or_else(Vec::new, |(_, evidence)| {
+            evidence.iter().map(anthropic_calibration_aggregate_value).collect::<Vec<_>>()
+        }),
         "per_sub": subs,
     })
 }
@@ -2479,23 +3096,8 @@ pub(crate) async fn overview_value(app: &AppState) -> anyhow::Result<serde_json:
     let caps = app.pool.capacity();
     let n = caps.len();
     let usable = caps.iter().filter(|cap| cap.routable).count();
-    let (mut a1, mut a5, mut a1d, mut a7d) = (0.0, 0.0, 0.0, 0.0);
-    let (mut cap5, mut cap7, mut rem5, mut rem7) = (0.0, 0.0, 0.0, 0.0);
-    let (mut u5, mut u7) = (0.0, 0.0);
-    let (mut cooling, mut dead, mut suspect, mut all_cal) = (0usize, 0usize, 0usize, usable > 0);
+    let (mut cooling, mut dead, mut suspect) = (0usize, 0usize, 0usize);
     for c in &caps {
-        if c.routable {
-            a1 += c.avail_1h_usd;
-            a5 += c.avail_5h_usd;
-            a1d += c.avail_1d_usd;
-            a7d += c.avail_7d_usd;
-            cap5 += c.cap5h_usd;
-            cap7 += c.cap7d_usd;
-            rem5 += c.rem5h_usd;
-            rem7 += c.rem7d_usd;
-            u5 += c.util5h;
-            u7 += c.util7d;
-        }
         if c.auth_dead {
             dead += 1;
         } else if c.cooling {
@@ -2503,45 +3105,71 @@ pub(crate) async fn overview_value(app: &AppState) -> anyhow::Result<serde_json:
         } else if c.auth_state == "suspect" {
             suspect += 1;
         }
-        if c.routable && !c.calibrated {
-            all_cal = false;
-        }
     }
-    let cons5 = (cap5 - rem5).max(0.0); // real-API-$ потрачено в текущем 5h окне (по всему флоту)
-    let cons7 = (cap7 - rem7).max(0.0);
-    let head5 = if cons5 > 0.01 {
-        a5 / cons5
-    } else {
-        f64::INFINITY
-    }; // «во сколько раз ещё выдержим»
-    let head7 = if cons7 > 0.01 {
-        a7d / cons7
-    } else {
-        f64::INFINITY
+
+    // `/overview` used to sum pool::Cap EMA/prior floats. It now derives every capacity-facing
+    // field from the exact `/capacity` authority; the old pool values remain routing hints only.
+    let (calibration_report, delivery) = match &app.billing {
+        Some(billing) => (
+            match billing.anthropic_calibration_report().await {
+                Ok(report) => Some(report),
+                Err(error) => {
+                    eprintln!("Anthropic overview calibration report unavailable: {error:#}");
+                    None
+                }
+            },
+            Some(billing.anthropic_calibration_delivery_status()),
+        ),
+        None => (None, None),
     };
-    // Рекомендация: сколько подписок держать под target_headroom относительно текущего потребления.
-    let per_sub_5h = if usable > 0 {
-        cap5 / usable as f64
-    } else {
-        0.0
+    let exact = capacity_value(&caps, calibration_report.as_ref(), delivery, pool::now());
+    let nano = |pointer: &str| {
+        exact
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<i128>().ok())
     };
-    let per_sub_7d = if usable > 0 {
-        cap7 / usable as f64
-    } else {
-        0.0
+    let a1 = nano("/available_nano/next_1h");
+    let a5 = nano("/available_nano/next_5h");
+    let a1d = nano("/available_nano/next_1d");
+    let a7d = nano("/available_nano/next_7d");
+    let cap5 = nano("/window_totals/0/capacity_nano");
+    let rem5 = nano("/window_totals/0/remaining_nano");
+    let cap7 = nano("/window_totals/1/capacity_nano");
+    let rem7 = nano("/window_totals/1/remaining_nano");
+    let consumed = |capacity: Option<i128>, remaining: Option<i128>| {
+        capacity
+            .zip(remaining)
+            .and_then(|(capacity, remaining)| capacity.checked_sub(remaining))
+            .map(|value| value.max(0))
     };
-    let need5 = if per_sub_5h > 0.0 {
-        (cons5 * TARGET_HEADROOM / per_sub_5h).ceil() as i64
-    } else {
-        0
+    let cons5 = consumed(cap5, rem5);
+    let cons7 = consumed(cap7, rem7);
+    let usd = |value: Option<i128>| value.map(|value| value as f64 / 1e9);
+    let rounded_usd = |value: Option<i128>| usd(value).map(r2);
+    let nano_json = |value: Option<i128>| value.map(|value| value.to_string());
+    let utilization = |capacity: Option<i128>, remaining: Option<i128>| {
+        capacity.zip(remaining).and_then(|(capacity, remaining)| {
+            (capacity > 0).then(|| r2((capacity - remaining).max(0) as f64 / capacity as f64))
+        })
     };
-    let need7 = if per_sub_7d > 0.0 {
-        (cons7 * TARGET_HEADROOM / per_sub_7d).ceil() as i64
-    } else {
-        0
+    let headroom = |available: Option<i128>, consumed: Option<i128>| {
+        available.zip(consumed).and_then(|(available, consumed)| {
+            (consumed > 10_000_000).then(|| r2(available as f64 / consumed as f64))
+        })
     };
-    let need = need5.max(need7).max(usable.min(1) as i64);
-    let gap = need - usable as i64;
+    let need_for_window = |capacity: Option<i128>, consumed: Option<i128>| {
+        capacity.zip(consumed).and_then(|(capacity, consumed)| {
+            (usable > 0 && capacity > 0).then(|| {
+                let per_sub = capacity as f64 / usable as f64;
+                (consumed as f64 * TARGET_HEADROOM / per_sub).ceil() as i64
+            })
+        })
+    };
+    let need = need_for_window(cap5, cons5)
+        .zip(need_for_window(cap7, cons7))
+        .map(|(five, weekly)| five.max(weekly).max(usable.min(1) as i64));
+    let gap = need.map(|need| need - usable as i64);
     // Спрос (деньги клиентов) — только при включённом биллинге.
     let (bal, res, spent, keys) = match &app.billing {
         Some(b) => {
@@ -2556,30 +3184,30 @@ pub(crate) async fn overview_value(app: &AppState) -> anyhow::Result<serde_json:
         None => (0.0, 0.0, 0.0, 0),
     };
     let real_demand = if REF_MULT > 0.0 { bal / REF_MULT } else { 0.0 }; // потенц. real-API из балансов
-    let coverage7 = if a7d > 0.01 { real_demand / a7d } else { 0.0 }; // >1 = потенциально перепродали
-    let jinf = |x: f64| {
-        if x.is_finite() {
-            json!(r2(x))
-        } else {
-            json!(null)
-        }
-    }; // null = ∞ (нет спроса)
+    let coverage7 =
+        usd(a7d).and_then(|available| (available > 0.01).then(|| r2(real_demand / available))); // >1 = потенциально перепродали
     Ok(json!({
-        "now": pool::now(),
-        "subs": n, "calibrated": all_cal, "ref_mult": REF_MULT, "target_headroom": TARGET_HEADROOM,
+        "now": exact["now"],
+        "subs": n, "calibrated": exact["calibrated"], "ref_mult": REF_MULT, "target_headroom": TARGET_HEADROOM,
         "supply": {
-            "avail_usd":    {"1h": r2(a1), "5h": r2(a5), "1d": r2(a1d), "7d": r2(a7d)},
-            "cap_usd":      {"5h": r2(cap5), "7d": r2(cap7)},
-            "consumed_usd": {"5h": r2(cons5), "7d": r2(cons7)},
-            "util":         {"5h": r2(if usable>0 {u5/usable as f64} else {0.0}), "7d": r2(if usable>0 {u7/usable as f64} else {0.0})},
+            "authority": "exact_provider_turns_and_quota_fractions",
+            "legacy_pool_prior_authoritative": false,
+            "calibration_delivery": exact["calibration_delivery"],
+            "avail_nano":   {"1h": nano_json(a1), "5h": nano_json(a5), "1d": nano_json(a1d), "7d": nano_json(a7d)},
+            "cap_nano":     {"5h": nano_json(cap5), "7d": nano_json(cap7)},
+            "consumed_nano":{"5h": nano_json(cons5), "7d": nano_json(cons7)},
+            "avail_usd":    {"1h": rounded_usd(a1), "5h": rounded_usd(a5), "1d": rounded_usd(a1d), "7d": rounded_usd(a7d)},
+            "cap_usd":      {"5h": rounded_usd(cap5), "7d": rounded_usd(cap7)},
+            "consumed_usd": {"5h": rounded_usd(cons5), "7d": rounded_usd(cons7)},
+            "util":         {"5h": utilization(cap5, rem5), "7d": utilization(cap7, rem7)},
             "health":       {"healthy": caps.iter().filter(|c| c.routable && c.auth_state == "healthy").count(),
                                "suspect": suspect, "cooling": cooling, "dead": dead,
                                "usable": usable, "total": n},
         },
         "demand": {"balance_usd": r2(bal), "reserved_usd": r2(res), "spent_usd": r2(spent), "active_accounts": keys,
                    "potential_realapi_usd": r2(real_demand)},
-        "headroom": {"5h": jinf(head5), "7d": jinf(head7)},
-        "coverage": {"7d": r2(coverage7)},
+        "headroom": {"5h": headroom(a5, cons5), "7d": headroom(a7d, cons7)},
+        "coverage": {"7d": coverage7},
         "recommend": {"subs_needed": need, "gap": gap},
     }))
 }
@@ -4673,51 +5301,176 @@ mod tests {
         }
     }
 
+    fn claude_calibration(
+        email: &str,
+        window_kind: &str,
+        used_fraction_units: i64,
+        observed_fraction_units: i64,
+        observed_spend_nano: i64,
+    ) -> registry::AnthropicCalibrationRow {
+        let duration = if window_kind == "5h" { 300 } else { 10_080 };
+        let capacity = i64::try_from(
+            i128::from(observed_spend_nano) * CLAUDE_FRACTION_SCALE
+                / i128::from(observed_fraction_units),
+        )
+        .unwrap();
+        registry::AnthropicCalibrationRow {
+            subject_id: email.to_owned(),
+            plan: "max20".to_owned(),
+            window_kind: window_kind.to_owned(),
+            window_duration_mins: duration,
+            resets_at: 2_000_000_000 + duration * 60,
+            anchor_used_fraction_units: used_fraction_units,
+            anchor_resolution_fraction_units: 100_000,
+            anchor_spend_nano: observed_spend_nano,
+            used_fraction_units,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: 100,
+            observed_fraction_units,
+            observed_spend_nano,
+            samples: 2,
+            unattributed_fraction_units: 0,
+            current_capacity_nano: Some(capacity),
+            current_low_nano: Some(capacity - 1),
+            current_high_nano: Some(capacity + 1),
+            current_confidence_bp: 8_000,
+            last_measured_at: Some(100),
+            estimator_version: 1,
+            version: 1,
+            updated_ts: 100,
+        }
+    }
+
+    fn claude_delivery(
+        pending_events: usize,
+    ) -> Option<forward::AnthropicCalibrationDeliveryStatus> {
+        Some(forward::AnthropicCalibrationDeliveryStatus {
+            pending_events,
+            dropped_events: 0,
+            persistence_ok: pending_events == 0,
+            queue_limit: 4_096,
+        })
+    }
+
     #[test]
-    fn capacity_aggregate_excludes_unroutable_supply() {
+    fn claude_same_plan_capacity_is_pooled_and_unroutable_supply_is_excluded() {
         let caps = vec![
-            capacity("healthy", 12.0, true, true),
-            capacity("cooling", 50.0, false, true),
-            capacity("uncalibrated", 3.0, true, false),
+            capacity("first@example.test", 1.0, true, false),
+            capacity("second@example.test", 999.0, true, true),
+            capacity("cooling@example.test", 50_000.0, false, true),
         ];
-        assert_eq!(routable_capacity_summary(&caps), ([15.0; 4], false));
+        let rows = vec![
+            claude_calibration(
+                "first@example.test",
+                "5h",
+                10_000_000,
+                10_000_000,
+                1_000_000_000,
+            ),
+            claude_calibration(
+                "second@example.test",
+                "5h",
+                50_000_000,
+                20_000_000,
+                4_000_000_000,
+            ),
+            claude_calibration(
+                "first@example.test",
+                "7d",
+                20_000_000,
+                10_000_000,
+                10_000_000_000,
+            ),
+            claude_calibration(
+                "second@example.test",
+                "7d",
+                30_000_000,
+                20_000_000,
+                20_000_000_000,
+            ),
+        ];
+        let report = (rows, Vec::new());
+        let value = capacity_value(&caps, Some(&report), claude_delivery(0), 100);
+
+        assert_eq!(value["per_sub"][0]["cap5h_nano"], "16666666667");
+        assert_eq!(value["per_sub"][1]["cap5h_nano"], "16666666667");
+        assert_eq!(value["per_sub"][2]["cap5h_nano"], "16666666667");
+        assert_eq!(value["window_totals"][0]["capacity_nano"], "33333333334");
+        assert_eq!(value["window_totals"][0]["remaining_nano"], "23333333334");
+        assert_eq!(value["window_totals"][0]["routable_subs"], 2);
+        assert_eq!(value["window_totals"][0]["calibrated_subs"], 2);
+        assert_eq!(value["window_totals"][1]["capacity_nano"], "200000000000");
+        assert_eq!(value["window_totals"][1]["remaining_nano"], "150000000000");
+        assert_eq!(value["plan_cohorts"][0]["same_plan_capacity"], true);
         assert_eq!(
-            routable_capacity_summary(&[capacity("dead", 50.0, false, true)]),
-            ([0.0; 4], false)
+            value["capacity_semantics"]["legacy_pool_prior_authoritative"],
+            false
         );
     }
 
     #[test]
-    fn claude_window_totals_publish_integer_money_and_calibration_coverage() {
-        let mut measured = capacity("measured", 12.34, true, true);
-        measured.rem5h_usd = 8.75;
-        measured.rem7d_usd = 7.25;
-        let mut prior = capacity("prior", 3.0, true, false);
-        prior.rem5h_usd = 2.5;
-        prior.rem7d_usd = 2.0;
-        let totals =
-            claude_window_totals(&[measured, prior, capacity("cooling", 50.0, false, true)]);
-        assert_eq!(totals[0]["window_minutes"], 300);
-        assert_eq!(totals[0]["capacity_nano"], "15340000000");
-        assert_eq!(totals[0]["remaining_nano"], "11250000000");
-        assert_eq!(totals[0]["routable_subs"], 2);
-        assert_eq!(totals[0]["calibrated_subs"], 1);
-        assert_eq!(totals[1]["window_minutes"], 10_080);
-        assert_eq!(totals[1]["remaining_nano"], "9250000000");
-    }
+    fn claude_fleet_totals_fail_closed_for_missing_plan_or_authority_evidence() {
+        let mut caps = vec![capacity("first@example.test", 999.0, true, true)];
+        let report = (
+            vec![
+                claude_calibration(
+                    "first@example.test",
+                    "5h",
+                    10_000_000,
+                    10_000_000,
+                    1_000_000_000,
+                ),
+                claude_calibration(
+                    "first@example.test",
+                    "7d",
+                    20_000_000,
+                    10_000_000,
+                    10_000_000_000,
+                ),
+            ],
+            Vec::new(),
+        );
+        let measured = capacity_value(&caps, Some(&report), claude_delivery(0), 100);
+        assert!(measured["window_totals"][0]["capacity_nano"].is_string());
 
-    #[test]
-    fn claude_horizon_totals_sum_each_subscription_as_integer_money() {
-        let mut first = capacity("first", 10.0, true, true);
-        first.avail_7d_usd = 1.000_000_000_4;
-        let mut second = capacity("second", 10.0, true, true);
-        second.avail_7d_usd = 2.000_000_000_4;
-        let mut excluded = capacity("cooling", 10.0, false, true);
-        excluded.avail_7d_usd = 100.0;
-
+        let stale = capacity_value(&caps, Some(&report), claude_delivery(0), 2_000);
+        assert!(stale["window_totals"][0]["capacity_nano"].is_string());
+        assert!(stale["window_totals"][0]["remaining_nano"].is_null());
         assert_eq!(
-            claude_available_nano(&[first, second, excluded], |cap| cap.avail_7d_usd),
-            3_000_000_000
+            stale["per_sub"][0]["windows"][0]["missing_reason"],
+            "stale_current_quota_snapshot"
+        );
+
+        let mut uncovered = capacity("other@example.test", 50_000.0, true, true);
+        uncovered.plan = "max5".to_owned();
+        caps.push(uncovered);
+        let missing_plan = capacity_value(&caps, Some(&report), claude_delivery(0), 100);
+        assert!(missing_plan["window_totals"][0]["capacity_nano"].is_null());
+        assert_eq!(
+            missing_plan["window_totals"][0]["missing_reason"],
+            "missing_plan_evidence"
+        );
+
+        let missing_authority = capacity_value(&caps[..1], None, None, 100);
+        assert!(missing_authority["window_totals"][0]["capacity_nano"].is_null());
+        assert!(missing_authority["available_nano"]["next_5h"].is_null());
+        assert_eq!(missing_authority["per_sub"][0]["cap5h_nano"], Value::Null);
+        assert_eq!(
+            missing_authority["window_totals"][0]["missing_reason"],
+            "calibration_authority_unavailable"
+        );
+
+        let pending_delivery = capacity_value(&caps[..1], Some(&report), claude_delivery(2), 100);
+        assert!(pending_delivery["window_totals"][0]["capacity_nano"].is_string());
+        assert!(pending_delivery["window_totals"][0]["remaining_nano"].is_null());
+        assert!(pending_delivery["available_nano"]["next_5h"].is_null());
+        assert_eq!(
+            pending_delivery["per_sub"][0]["windows"][0]["missing_reason"],
+            "calibration_delivery_pending"
+        );
+        assert_eq!(
+            pending_delivery["calibration_delivery"]["pending_events"],
+            2
         );
     }
 
@@ -4892,6 +5645,10 @@ mod tests {
         .unwrap();
 
         for sample in [
+            "claude_api_anthropic_calibration_authority_available 0",
+            "claude_api_anthropic_calibration_pending_events 0",
+            "claude_api_anthropic_calibration_dropped_events_total 0",
+            "claude_api_anthropic_calibration_persistence_ok 0",
             "claude_api_pricing_shadow_enabled 0",
             "claude_api_pricing_shadow_sample_basis_points 0",
             "claude_api_pricing_shadow_queue_capacity 256",

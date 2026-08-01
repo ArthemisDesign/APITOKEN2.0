@@ -86,7 +86,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   и optional request ID, а CAS-state — exact observed spend/fraction, low/high/confidence и
   unattributed movement. Номинала подписки, prior/EMA и float money в таблицах нет. Старый runtime
   их не читает и не пишет; dependent release должен сначала durable записать turn из migration 0019,
-  затем связать quota snapshot с полученным cumulative subject spend.
+  затем связать quota snapshot с полученным cumulative subject spend. Event insert + subject spend
+  advance — одна транзакция: exact request replay возвращает существующий total и не списывает
+  повторно, отличный semantic payload даёт typed permanent conflict без изменения ledger.
+  Observation immutable-keyed по subject/plan/window/reset/time/source; 5h и 7d никогда не делят
+  anchor/history. Registry хранит и валидирует только integer evidence/CAS primitives; estimator
+  replay, reset jitter, one-snapshot lag, plan pooling и delivery retry принадлежат `forward`/`server`.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

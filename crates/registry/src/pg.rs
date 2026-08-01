@@ -4,18 +4,84 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow,
-    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
-    CodexWindowObservation, GeminiCalibrationRow, GeminiWindowObservation, KeyAuth,
-    KeyPolicyUpdate, KeyRow, LedgerAttribution, LedgerConsumerLag, LedgerFundingAllocation,
-    LedgerRow, PoolStateRow, SettlementFailure, SettlementHealth, SpendAccountAgg, SpendModelAgg,
-    SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg, UsageDailyProviderAgg,
-    UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    mask_proxy, AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow,
+    AnthropicWindowObservation, BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend,
+    CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
+    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
+    LedgerAttribution, LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
+    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
+    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
+    UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
 use postgres::{Client, IsolationLevel, Row, Transaction};
 use tokio_postgres_rustls::MakeRustlsConnect;
+
+fn pg_provider_turn_event(row: &Row) -> ProviderTurnCalibrationEvent {
+    ProviderTurnCalibrationEvent {
+        provider: row.get(0),
+        request_id: row.get(1),
+        subject_id: row.get(2),
+        model_id: row.get(3),
+        service_tier: row.get(4),
+        inference_geo: row.get(5),
+        tariff_schedule_id: row.get(6),
+        priced_ts: row.get(7),
+        completed_at: row.get(8),
+        input_tokens: row.get(9),
+        audio_input_tokens: row.get(10),
+        cache_read_tokens: row.get(11),
+        cached_audio_input_tokens: row.get(12),
+        cache_write_5m_tokens: row.get(13),
+        cache_write_1h_tokens: row.get(14),
+        output_tokens: row.get(15),
+        thinking_output_tokens: row.get(16),
+        image_output_tokens: row.get(17),
+        tool_prompt_tokens: row.get(18),
+        search_queries: row.get(19),
+        grounded_search_prompts: row.get(20),
+        api_input_nanousd: row.get(21),
+        api_audio_input_nanousd: row.get(22),
+        api_cache_read_nanousd: row.get(23),
+        api_cached_audio_input_nanousd: row.get(24),
+        api_cache_write_5m_nanousd: row.get(25),
+        api_cache_write_1h_nanousd: row.get(26),
+        api_output_nanousd: row.get(27),
+        api_image_output_nanousd: row.get(28),
+        api_search_nanousd: row.get(29),
+        api_total_nanousd: row.get(30),
+    }
+}
+
+fn pg_anthropic_calibration_row(row: &Row) -> AnthropicCalibrationRow {
+    AnthropicCalibrationRow {
+        subject_id: row.get(0),
+        plan: row.get(1),
+        window_kind: row.get(2),
+        window_duration_mins: row.get(3),
+        resets_at: row.get(4),
+        anchor_used_fraction_units: row.get(5),
+        anchor_resolution_fraction_units: row.get(6),
+        anchor_spend_nano: row.get(7),
+        used_fraction_units: row.get(8),
+        measurement_resolution_fraction_units: row.get(9),
+        observed_at: row.get(10),
+        observed_fraction_units: row.get(11),
+        observed_spend_nano: row.get(12),
+        samples: row.get(13),
+        unattributed_fraction_units: row.get(14),
+        current_capacity_nano: row.get(15),
+        current_low_nano: row.get(16),
+        current_high_nano: row.get(17),
+        current_confidence_bp: row.get(18),
+        last_measured_at: row.get(19),
+        estimator_version: row.get(20),
+        version: row.get(21),
+        updated_ts: row.get(22),
+    }
+}
 
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
@@ -3678,6 +3744,364 @@ impl PgStore {
             reserved_nano: row.get(2),
             active_accounts: row.get(3),
         })
+    }
+
+    // -- Durable provider-turn and Claude capacity evidence ----------------------------------
+
+    pub fn record_provider_turn_calibration_event(
+        &mut self,
+        event: &ProviderTurnCalibrationEvent,
+    ) -> Result<ProviderCalibrationSubjectSpend> {
+        crate::validate_provider_turn_calibration_event(event)?;
+        let mut tx = self.client.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO provider_turn_calibration_events(\
+               provider,request_id,subject_id,model_id,service_tier,inference_geo,\
+               tariff_schedule_id,priced_ts,completed_at,input_tokens,audio_input_tokens,\
+               cache_read_tokens,cached_audio_input_tokens,cache_write_5m_tokens,\
+               cache_write_1h_tokens,output_tokens,thinking_output_tokens,image_output_tokens,\
+               tool_prompt_tokens,search_queries,grounded_search_prompts,api_input_nanousd,\
+               api_audio_input_nanousd,api_cache_read_nanousd,api_cached_audio_input_nanousd,\
+               api_cache_write_5m_nanousd,api_cache_write_1h_nanousd,api_output_nanousd,\
+               api_image_output_nanousd,api_search_nanousd,api_total_nanousd) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,\
+                    $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) \
+             ON CONFLICT(provider,request_id) DO NOTHING",
+            &[
+                &event.provider,
+                &event.request_id,
+                &event.subject_id,
+                &event.model_id,
+                &event.service_tier,
+                &event.inference_geo,
+                &event.tariff_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.input_tokens,
+                &event.audio_input_tokens,
+                &event.cache_read_tokens,
+                &event.cached_audio_input_tokens,
+                &event.cache_write_5m_tokens,
+                &event.cache_write_1h_tokens,
+                &event.output_tokens,
+                &event.thinking_output_tokens,
+                &event.image_output_tokens,
+                &event.tool_prompt_tokens,
+                &event.search_queries,
+                &event.grounded_search_prompts,
+                &event.api_input_nanousd,
+                &event.api_audio_input_nanousd,
+                &event.api_cache_read_nanousd,
+                &event.api_cached_audio_input_nanousd,
+                &event.api_cache_write_5m_nanousd,
+                &event.api_cache_write_1h_nanousd,
+                &event.api_output_nanousd,
+                &event.api_image_output_nanousd,
+                &event.api_search_nanousd,
+                &event.api_total_nanousd,
+            ],
+        )? == 1;
+        if inserted {
+            tx.execute(
+                "INSERT INTO provider_calibration_subject_spend(\
+                   provider,subject_id,spent_nano,tracking_started_ts,updated_ts) \
+                 VALUES($1,$2,$3,$4,$4) ON CONFLICT(provider,subject_id) DO UPDATE SET \
+                   spent_nano=provider_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano, \
+                   tracking_started_ts=LEAST(\
+                       provider_calibration_subject_spend.tracking_started_ts,\
+                       EXCLUDED.tracking_started_ts), \
+                   updated_ts=GREATEST(\
+                       provider_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
+                &[
+                    &event.provider,
+                    &event.subject_id,
+                    &event.api_total_nanousd,
+                    &event.completed_at,
+                ],
+            )?;
+        } else {
+            let row = tx.query_one(
+                &format!(
+                    "SELECT {} FROM provider_turn_calibration_events \
+                     WHERE provider=$1 AND request_id=$2",
+                    crate::PROVIDER_TURN_EVENT_COLUMNS
+                ),
+                &[&event.provider, &event.request_id],
+            )?;
+            if pg_provider_turn_event(&row) != *event {
+                return Err(crate::ProviderTurnCalibrationReplayConflict.into());
+            }
+        }
+        let row = tx.query_one(
+            "SELECT spent_nano,tracking_started_ts,updated_ts \
+             FROM provider_calibration_subject_spend WHERE provider=$1 AND subject_id=$2",
+            &[&event.provider, &event.subject_id],
+        )?;
+        let spend = ProviderCalibrationSubjectSpend {
+            spent_nano: row.get(0),
+            tracking_started_ts: Some(row.get(1)),
+            updated_ts: Some(row.get(2)),
+            inserted,
+        };
+        tx.commit()?;
+        Ok(spend)
+    }
+
+    pub fn provider_calibration_subject_spend(
+        &mut self,
+        provider: &str,
+        subject_id: &str,
+    ) -> Result<ProviderCalibrationSubjectSpend> {
+        if !matches!(provider, crate::PROVIDER_ANTHROPIC | crate::PROVIDER_GOOGLE)
+            || subject_id.is_empty()
+        {
+            bail!("invalid provider calibration subject");
+        }
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT spent_nano,tracking_started_ts,updated_ts \
+                 FROM provider_calibration_subject_spend WHERE provider=$1 AND subject_id=$2",
+                &[&provider, &subject_id],
+            )?
+            .map(|row| ProviderCalibrationSubjectSpend {
+                spent_nano: row.get(0),
+                tracking_started_ts: Some(row.get(1)),
+                updated_ts: Some(row.get(2)),
+                inserted: false,
+            })
+            .unwrap_or_default())
+    }
+
+    pub fn provider_turn_calibration_report(
+        &mut self,
+        provider: &str,
+    ) -> Result<Vec<ProviderTurnCalibrationAggregate>> {
+        if !matches!(provider, crate::PROVIDER_ANTHROPIC | crate::PROVIDER_GOOGLE) {
+            bail!("invalid provider calibration report provider");
+        }
+        Ok(self
+            .client
+            .query(
+                "SELECT provider,subject_id,model_id,service_tier,inference_geo,\
+                   tariff_schedule_id,COUNT(*)::bigint,MIN(completed_at),MAX(completed_at),\
+                   SUM(input_tokens)::bigint,SUM(audio_input_tokens)::bigint,\
+                   SUM(cache_read_tokens)::bigint,SUM(cached_audio_input_tokens)::bigint,\
+                   SUM(cache_write_5m_tokens)::bigint,SUM(cache_write_1h_tokens)::bigint,\
+                   SUM(output_tokens)::bigint,SUM(thinking_output_tokens)::bigint,\
+                   SUM(image_output_tokens)::bigint,SUM(tool_prompt_tokens)::bigint,\
+                   SUM(search_queries)::bigint,SUM(grounded_search_prompts)::bigint,\
+                   SUM(api_input_nanousd)::bigint,SUM(api_audio_input_nanousd)::bigint,\
+                   SUM(api_cache_read_nanousd)::bigint,\
+                   SUM(api_cached_audio_input_nanousd)::bigint,\
+                   SUM(api_cache_write_5m_nanousd)::bigint,\
+                   SUM(api_cache_write_1h_nanousd)::bigint,SUM(api_output_nanousd)::bigint,\
+                   SUM(api_image_output_nanousd)::bigint,SUM(api_search_nanousd)::bigint,\
+                   SUM(api_total_nanousd)::bigint FROM provider_turn_calibration_events \
+                 WHERE provider=$1 \
+                 GROUP BY provider,subject_id,model_id,service_tier,inference_geo,\
+                   tariff_schedule_id \
+                 ORDER BY subject_id,model_id,service_tier,inference_geo,tariff_schedule_id",
+                &[&provider],
+            )?
+            .into_iter()
+            .map(|row| ProviderTurnCalibrationAggregate {
+                provider: row.get(0),
+                subject_id: row.get(1),
+                model_id: row.get(2),
+                service_tier: row.get(3),
+                inference_geo: row.get(4),
+                tariff_schedule_id: row.get(5),
+                turns: row.get(6),
+                first_completed_at: row.get(7),
+                last_completed_at: row.get(8),
+                input_tokens: row.get(9),
+                audio_input_tokens: row.get(10),
+                cache_read_tokens: row.get(11),
+                cached_audio_input_tokens: row.get(12),
+                cache_write_5m_tokens: row.get(13),
+                cache_write_1h_tokens: row.get(14),
+                output_tokens: row.get(15),
+                thinking_output_tokens: row.get(16),
+                image_output_tokens: row.get(17),
+                tool_prompt_tokens: row.get(18),
+                search_queries: row.get(19),
+                grounded_search_prompts: row.get(20),
+                api_input_nanousd: row.get(21),
+                api_audio_input_nanousd: row.get(22),
+                api_cache_read_nanousd: row.get(23),
+                api_cached_audio_input_nanousd: row.get(24),
+                api_cache_write_5m_nanousd: row.get(25),
+                api_cache_write_1h_nanousd: row.get(26),
+                api_output_nanousd: row.get(27),
+                api_image_output_nanousd: row.get(28),
+                api_search_nanousd: row.get(29),
+                api_total_nanousd: row.get(30),
+            })
+            .collect())
+    }
+
+    pub fn load_anthropic_calibration(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_kind: &str,
+    ) -> Result<Option<AnthropicCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM anthropic_window_calibrations \
+                 WHERE subject_id=$1 AND plan=$2 AND window_kind=$3",
+                crate::ANTHROPIC_CALIBRATION_COLUMNS
+            ),
+            &[&subject_id, &plan, &window_kind],
+        )?;
+        let row = row.as_ref().map(pg_anthropic_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_anthropic_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_anthropic_calibrations(&mut self) -> Result<Vec<AnthropicCalibrationRow>> {
+        let rows = self
+            .client
+            .query(
+                &format!(
+                    "SELECT {} FROM anthropic_window_calibrations \
+                     ORDER BY subject_id,plan,window_kind",
+                    crate::ANTHROPIC_CALIBRATION_COLUMNS
+                ),
+                &[],
+            )?
+            .iter()
+            .map(pg_anthropic_calibration_row)
+            .collect::<Vec<_>>();
+        for row in &rows {
+            crate::validate_anthropic_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    pub fn load_anthropic_window_observations(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_kind: &str,
+    ) -> Result<Vec<AnthropicWindowObservation>> {
+        let rows = self.client.query(
+            "SELECT subject_id,plan,window_kind,window_duration_mins,resets_at,observed_at,\
+               used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano,\
+               observation_source,source_request_id FROM anthropic_window_observations \
+             WHERE subject_id=$1 AND plan=$2 AND window_kind=$3 ORDER BY observed_at,id",
+            &[&subject_id, &plan, &window_kind],
+        )?;
+        let rows = rows
+            .into_iter()
+            .map(|row| AnthropicWindowObservation {
+                subject_id: row.get(0),
+                plan: row.get(1),
+                window_kind: row.get(2),
+                window_duration_mins: row.get(3),
+                resets_at: row.get(4),
+                observed_at: row.get(5),
+                used_fraction_units: row.get(6),
+                measurement_resolution_fraction_units: row.get(7),
+                gateway_spend_nano: row.get(8),
+                observation_source: row.get(9),
+                source_request_id: row.get(10),
+            })
+            .collect::<Vec<_>>();
+        for row in &rows {
+            crate::validate_anthropic_window_observation(row)?;
+        }
+        Ok(rows)
+    }
+
+    pub fn save_anthropic_calibration(
+        &mut self,
+        state: &AnthropicCalibrationRow,
+        observation: &AnthropicWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_anthropic_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        let values: &[&(dyn postgres::types::ToSql + Sync)] = &[
+            &state.subject_id,
+            &state.plan,
+            &state.window_kind,
+            &state.window_duration_mins,
+            &state.resets_at,
+            &state.anchor_used_fraction_units,
+            &state.anchor_resolution_fraction_units,
+            &state.anchor_spend_nano,
+            &state.used_fraction_units,
+            &state.measurement_resolution_fraction_units,
+            &state.observed_at,
+            &state.observed_fraction_units,
+            &state.observed_spend_nano,
+            &state.samples,
+            &state.unattributed_fraction_units,
+            &state.current_capacity_nano,
+            &state.current_low_nano,
+            &state.current_high_nano,
+            &state.current_confidence_bp,
+            &state.last_measured_at,
+            &state.estimator_version,
+            &state.version,
+            &state.updated_ts,
+        ];
+        let changed = if state.version == 0 {
+            tx.execute(
+                "INSERT INTO anthropic_window_calibrations(\
+                   subject_id,plan,window_kind,window_duration_mins,resets_at,\
+                   anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
+                   used_fraction_units,measurement_resolution_fraction_units,observed_at,\
+                   observed_fraction_units,observed_spend_nano,samples,unattributed_fraction_units,\
+                   current_capacity_nano,current_low_nano,current_high_nano,\
+                   current_confidence_bp,last_measured_at,estimator_version,version,updated_ts) \
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
+                        $18,$19,$20,$21,$22+1,$23) \
+                 ON CONFLICT(subject_id,plan,window_kind) DO NOTHING",
+                values,
+            )?
+        } else {
+            tx.execute(
+                "UPDATE anthropic_window_calibrations SET \
+                   window_duration_mins=$4,resets_at=$5,anchor_used_fraction_units=$6,\
+                   anchor_resolution_fraction_units=$7,anchor_spend_nano=$8,\
+                   used_fraction_units=$9,measurement_resolution_fraction_units=$10,\
+                   observed_at=$11,observed_fraction_units=$12,observed_spend_nano=$13,\
+                   samples=$14,unattributed_fraction_units=$15,current_capacity_nano=$16,\
+                   current_low_nano=$17,current_high_nano=$18,current_confidence_bp=$19,\
+                   last_measured_at=$20,estimator_version=$21,version=version+1,updated_ts=$23 \
+                 WHERE subject_id=$1 AND plan=$2 AND window_kind=$3 AND version=$22",
+                values,
+            )?
+        };
+        if changed == 0 {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO anthropic_window_observations(\
+               subject_id,plan,window_kind,window_duration_mins,resets_at,observed_at,\
+               used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano,\
+               observation_source,source_request_id) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING",
+            &[
+                &observation.subject_id,
+                &observation.plan,
+                &observation.window_kind,
+                &observation.window_duration_mins,
+                &observation.resets_at,
+                &observation.observed_at,
+                &observation.used_fraction_units,
+                &observation.measurement_resolution_fraction_units,
+                &observation.gateway_spend_nano,
+                &observation.observation_source,
+                &observation.source_request_id,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(state.version.saturating_add(1)))
     }
 
     // -- Durable OpenAI/Codex capacity evidence ----------------------------------------------

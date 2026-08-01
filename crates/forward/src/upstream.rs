@@ -206,12 +206,82 @@ impl Clients {
     }
 }
 
-/// Утилизация приходит ДОЛЕЙ 0.0–1.0 — ПОДТВЕРЖДЕНО живым заголовком (`7d-utilization: 0.22` = 22%).
-/// Значит «ровно 1% → 100%» невозможен: Anthropic шлёт `0.01` для 1%, а не `1`. Клампим в [0,1] от
-/// шума; ветку `/100 при >1` держим лишь страховкой на случай смены формата (реально не срабатывает).
-fn util(h: &wreq::header::HeaderMap, name: &str) -> Option<f64> {
-    let v: f64 = h.get(name)?.to_str().ok()?.trim().parse().ok()?;
-    Some((if v > 1.0 { v / 100.0 } else { v }).clamp(0.0, 1.0))
+const FRACTION_SCALE: i64 = 100_000_000;
+
+/// Exact quota endpoint value and the numeric resolution carried by its original decimal spelling.
+/// Storage precision is always `10^-8`; this separate resolution prevents `0.22` from pretending
+/// that Anthropic measured more finely than one hundredth of a full window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuotaFraction {
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+}
+
+impl QuotaFraction {
+    pub fn ratio(self) -> f64 {
+        self.used_fraction_units as f64 / FRACTION_SCALE as f64
+    }
+}
+
+fn pow10(exponent: usize) -> Option<i128> {
+    (0..exponent).try_fold(1i128, |value, _| value.checked_mul(10))
+}
+
+/// Anthropic currently sends fractions (`0.22` = 22%). Values above one retain the historical
+/// percent fallback, but both paths are parsed as decimal integers without an `f64` round-trip.
+fn parse_quota_fraction(raw: &str) -> Option<QuotaFraction> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.starts_with('-') || raw.contains('e') || raw.contains('E') {
+        return None;
+    }
+    let raw = raw.strip_prefix('+').unwrap_or(raw);
+    let mut parts = raw.split('.');
+    let whole_text = parts.next()?;
+    let fraction_text = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || whole_text.is_empty()
+        || !whole_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole = whole_text.parse::<i128>().ok()?;
+    let fraction_is_zero = fraction_text.bytes().all(|byte| byte == b'0');
+    let is_native_fraction = whole < 1 || (whole == 1 && fraction_is_zero);
+    let (unit_scale, max_decimals, max_whole) = if is_native_fraction {
+        (i128::from(FRACTION_SCALE), 8usize, 1i128)
+    } else {
+        // One percentage point is 1e6 full-window fraction units.
+        (i128::from(FRACTION_SCALE / 100), 6usize, 100i128)
+    };
+    if whole > max_whole || (whole == max_whole && !fraction_is_zero) {
+        return None;
+    }
+
+    let (kept, excess) = fraction_text.split_at(fraction_text.len().min(max_decimals));
+    if excess.bytes().any(|byte| byte != b'0') {
+        return None;
+    }
+    let kept_value = if kept.is_empty() {
+        0
+    } else {
+        kept.parse::<i128>().ok()?
+    };
+    let decimal_scale = pow10(kept.len())?;
+    let units = whole.checked_mul(unit_scale)?.checked_add(
+        kept_value
+            .checked_mul(unit_scale)?
+            .checked_div(decimal_scale)?,
+    )?;
+    let resolution = unit_scale.checked_div(decimal_scale)?.max(1);
+    Some(QuotaFraction {
+        used_fraction_units: i64::try_from(units).ok()?.clamp(0, FRACTION_SCALE),
+        measurement_resolution_fraction_units: i64::try_from(resolution).ok()?,
+    })
+}
+
+fn quota_fraction(h: &wreq::header::HeaderMap, name: &str) -> Option<QuotaFraction> {
+    parse_quota_fraction(h.get(name)?.to_str().ok()?)
 }
 /// RFC3339 → Unix epoch (сек). Поддерживает `Z` и `±HH:MM`; дробные секунды игнорируем (нужна
 /// секундная точность). Алгоритм civil→days — Howard Hinnant, без внешних зависимостей. None при
@@ -279,6 +349,8 @@ fn reset_ts(h: &wreq::header::HeaderMap, name: &str) -> Option<i64> {
 pub struct Limits {
     pub util5h: Option<f64>,
     pub util7d: Option<f64>,
+    pub quota5h: Option<QuotaFraction>,
+    pub quota7d: Option<QuotaFraction>,
     pub status: Option<String>,
     pub reset5h: Option<i64>,
     pub reset7d: Option<i64>,
@@ -290,9 +362,13 @@ pub struct Limits {
 
 /// Разобрать unified-ratelimit из заголовков ответа.
 pub fn limits_from_headers(h: &wreq::header::HeaderMap) -> Limits {
+    let quota5h = quota_fraction(h, "anthropic-ratelimit-unified-5h-utilization");
+    let quota7d = quota_fraction(h, "anthropic-ratelimit-unified-7d-utilization");
     Limits {
-        util5h: util(h, "anthropic-ratelimit-unified-5h-utilization"),
-        util7d: util(h, "anthropic-ratelimit-unified-7d-utilization"),
+        util5h: quota5h.map(QuotaFraction::ratio),
+        util7d: quota7d.map(QuotaFraction::ratio),
+        quota5h,
+        quota7d,
         status: h
             .get("anthropic-ratelimit-unified-status")
             .and_then(|v| v.to_str().ok())
@@ -316,6 +392,8 @@ impl Limits {
 pub struct PollResult {
     pub util5h: Option<f64>,
     pub util7d: Option<f64>,
+    pub quota5h: Option<QuotaFraction>,
+    pub quota7d: Option<QuotaFraction>,
     pub status: Option<String>,
     pub reset5h: Option<i64>,
     pub reset7d: Option<i64>,
@@ -429,6 +507,8 @@ pub async fn poll_sub(
     Some(PollResult {
         util5h: l.util5h,
         util7d: l.util7d,
+        quota5h: l.quota5h,
+        quota7d: l.quota7d,
         status: l.status,
         reset5h: l.reset5h,
         reset7d: l.reset7d,
@@ -496,5 +576,47 @@ mod tests {
         assert_eq!(parse_rfc3339("not-a-date"), None);
         assert_eq!(parse_rfc3339("2000-13-01T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2000-01-32T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn quota_fraction_preserves_units_and_provider_resolution_without_float() {
+        assert_eq!(
+            parse_quota_fraction("0.22"),
+            Some(QuotaFraction {
+                used_fraction_units: 22_000_000,
+                measurement_resolution_fraction_units: 1_000_000,
+            })
+        );
+        assert_eq!(
+            parse_quota_fraction("0.22000001"),
+            Some(QuotaFraction {
+                used_fraction_units: 22_000_001,
+                measurement_resolution_fraction_units: 1,
+            })
+        );
+        assert_eq!(
+            parse_quota_fraction("22"),
+            Some(QuotaFraction {
+                used_fraction_units: 22_000_000,
+                measurement_resolution_fraction_units: 1_000_000,
+            })
+        );
+        assert_eq!(
+            parse_quota_fraction("1"),
+            Some(QuotaFraction {
+                used_fraction_units: 100_000_000,
+                measurement_resolution_fraction_units: 100_000_000,
+            })
+        );
+        assert_eq!(
+            parse_quota_fraction("1.00000000"),
+            Some(QuotaFraction {
+                used_fraction_units: 100_000_000,
+                measurement_resolution_fraction_units: 1,
+            })
+        );
+        assert!(parse_quota_fraction("1.1e-2").is_none());
+        assert!(parse_quota_fraction("101").is_none());
+        assert!(parse_quota_fraction("0.123456789").is_none());
     }
 }

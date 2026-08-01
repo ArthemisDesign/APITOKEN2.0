@@ -440,7 +440,15 @@ function HomeCapacityTable({
   );
 }
 
-export function CodexCapacityBoard({ response, nowMs }: { response: CodexSubsResponse; nowMs: number }): ReactElement {
+export function CodexCapacityBoard({
+  response,
+  nowMs,
+  showSummary = true,
+}: {
+  response: CodexSubsResponse;
+  nowMs: number;
+  showSummary?: boolean;
+}): ReactElement {
   const models = response.conversion_models ?? [];
   const windows = capacityWindows(response);
   const targetWindowMinutes = windows.some((item) => item.windowMinutes === 10_080)
@@ -462,12 +470,22 @@ export function CodexCapacityBoard({ response, nowMs }: { response: CodexSubsRes
 
   return (
     <div className="codex-capacity-board">
-      <CapacityStrip
+      {showSummary ? (
+        <CapacityStrip
+          window={weekly}
+          standardValue={standardValue}
+          standardScenario={standardScenario}
+          maxValue={maxValue}
+          maxScenario={maxScenario}
+        />
+      ) : null}
+      <HomeCapacityTable
+        homes={response.homes ?? []}
         window={weekly}
-        standardValue={standardValue}
-        standardScenario={standardScenario}
-        maxValue={maxValue}
-        maxScenario={maxScenario}
+        cohortWindows={cohortWindows}
+        nowMs={nowMs}
+        standard={standard}
+        maximum={maximum}
       />
       {models.length ? (
         <>
@@ -477,14 +495,6 @@ export function CodexCapacityBoard({ response, nowMs }: { response: CodexSubsRes
       ) : (
         <div className="codex-no-catalog">Тарифный каталог недоступен.</div>
       )}
-      <HomeCapacityTable
-        homes={response.homes ?? []}
-        window={weekly}
-        cohortWindows={cohortWindows}
-        nowMs={nowMs}
-        standard={standard}
-        maximum={maximum}
-      />
     </div>
   );
 }

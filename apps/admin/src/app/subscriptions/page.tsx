@@ -8,9 +8,10 @@ import { useMemo } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
 import { count, formatDate } from "@/lib/format";
-import { Banner, LoadingGrid, PageHead, Pill, SectionHeader } from "@/components/ui";
+import { Banner, LoadingGrid, PageHead, Pill } from "@/components/ui";
 import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
+import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
 import { resolveBanner } from "./logic";
 import type {
@@ -55,6 +56,10 @@ export default function SubsPage() {
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
     const subsDown = subs === null;
     const claudeCapacityDown = capacity === null;
+    const claudeCalibrationPending = Number(capacity?.calibration_delivery?.pending_events ?? 0);
+    const claudeCalibrationDropped = Number(capacity?.calibration_delivery?.dropped_events ?? 0);
+    const claudeCalibrationStorageBad = capacity?.calibration_delivery?.persistence_ok === false
+      || capacity?.calibration_authority_available === false;
 
     const gptDown = codex === null;
     const gptOff = Boolean(codex && codex.enabled === false);
@@ -73,7 +78,9 @@ export default function SubsPage() {
 
     const fleetTotal = list.length + (gptOff ? 0 : homes.length) + (geminiOff ? 0 : geminiProfiles.length);
     const fleetWarn = Boolean(
-      dead || claudeCapacityDown || gptDown || geminiDown || geminiEmpty || geminiUnavailable || geminiAuthBad || geminiMissing,
+      dead || claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
+        || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
+        || geminiUnavailable || geminiAuthBad || geminiMissing,
     );
 
     return {
@@ -84,6 +91,9 @@ export default function SubsPage() {
       suspect,
       subsDown,
       claudeCapacityDown,
+      claudeCalibrationPending,
+      claudeCalibrationDropped,
+      claudeCalibrationStorageBad,
       codex,
       homes,
       gptDown,
@@ -134,7 +144,7 @@ export default function SubsPage() {
     <>
       <PageHead
         title="Подписки"
-        sub="Claude, GPT и Gemini: ёмкость, окна, quota и тарифы"
+        sub="остаток API-$, окна и экономика трёх пулов"
         badge={
           <Pill kind={derived.fleetWarn ? "warn" : "ok"}>
             {count(derived.fleetTotal, "подписка", "подписки", "подписок")}
@@ -142,60 +152,66 @@ export default function SubsPage() {
         }
       />
 
-      <Banner kind={banner.kind} title={banner.title}>
-        {banner.sub}
-      </Banner>
-
-      <SectionHeader
-        title="Claude · ёмкость"
-        sub="API-$, доступные токены и тариф по моделям"
+      <FleetCapacityOverview
+        claude={derived.capacity}
+        gpt={derived.codex}
+        gemini={derived.gemini}
       />
-      <div style={{ marginTop: 12 }}>
-        {derived.claudeCapacityDown ? (
-          <div className="tcard"><div className="empty" style={{ padding: 26 }}>/capacity не отвечает</div></div>
-        ) : (
-          <ClaudeCapacityBoard response={derived.capacity!} />
-        )}
-      </div>
 
-      <SectionHeader
-        title="GPT · ёмкость"
-        sub="Credits, доступные токены и выгодность моделей"
-      />
-      <div style={{ marginTop: 12 }}>
-        {derived.gptDown || derived.gptOff ? (
-          <div className="tcard">
-            <div className="empty" style={{ padding: 26 }}>
-              {derived.gptDown
-                ? "OpenAI-runtime недоступен — /codex-subs не отвечает"
-                : "Codex-контур выключен на этом runtime"}
+      {banner.kind === "ok" ? null : (
+        <Banner kind={banner.kind} title={banner.title}>
+          {banner.sub}
+        </Banner>
+      )}
+
+      <div className="subscription-provider-stack">
+        <section className="subscription-provider-group provider-group-claude">
+          <header className="subscription-provider-head">
+            <div><span>01 · Claude</span><h2>Аккаунты и окна</h2></div>
+            <b>API-$ · модели · cache</b>
+          </header>
+          {derived.claudeCapacityDown ? (
+            <div className="tcard"><div className="empty">/capacity не отвечает</div></div>
+          ) : (
+            <ClaudeCapacityBoard response={derived.capacity!} showSummary={false} />
+          )}
+        </section>
+
+        <section className="subscription-provider-group provider-group-gpt">
+          <header className="subscription-provider-head">
+            <div><span>02 · GPT</span><h2>Аккаунты и окна</h2></div>
+            <b>credits · API-$ · модели</b>
+          </header>
+          {derived.gptDown || derived.gptOff ? (
+            <div className="tcard">
+              <div className="empty">
+                {derived.gptDown ? "OpenAI-runtime не отвечает" : "Codex-контур выключен"}
+              </div>
             </div>
-          </div>
-        ) : (
-          <CodexCapacityBoard response={derived.codex!} nowMs={result.nowMs} />
-        )}
-      </div>
+          ) : (
+            <CodexCapacityBoard response={derived.codex!} nowMs={result.nowMs} showSummary={false} />
+          )}
+        </section>
 
-      <SectionHeader
-        title="Gemini · ёмкость"
-        sub="Официальная quota, workload-$ и тариф по моделям"
-      />
-      <div style={{ marginTop: 12 }}>
-        {derived.geminiDown || derived.geminiOff ? (
-          <div className="tcard">
-            <div className="empty" style={{ padding: 26 }}>
-              {derived.geminiDown
-                ? "Gemini runtime недоступен — /gemini-subs не отвечает"
-                : "Gemini-контур выключен на этом runtime"}
+        <section className="subscription-provider-group provider-group-gemini">
+          <header className="subscription-provider-head">
+            <div><span>03 · Gemini</span><h2>Аккаунты и окна</h2></div>
+            <b>API-$ · quota · модели</b>
+          </header>
+          {derived.geminiDown || derived.geminiOff ? (
+            <div className="tcard">
+              <div className="empty">
+                {derived.geminiDown ? "Gemini runtime не отвечает" : "Gemini-контур выключен"}
+              </div>
             </div>
-          </div>
-        ) : (
-          <GeminiCapacityBoard response={derived.gemini!} nowMs={result.nowMs} />
-        )}
+          ) : (
+            <GeminiCapacityBoard response={derived.gemini!} nowMs={result.nowMs} showSummary={false} />
+          )}
+        </section>
       </div>
 
       <footer>
-        Обновление 10с · деньги считаются в nanoUSD · почта маскирована · Gemini «—» означает, что Google не публикует amount.
+        10с · nanoUSD · почта маскирована
       </footer>
     </>
   );

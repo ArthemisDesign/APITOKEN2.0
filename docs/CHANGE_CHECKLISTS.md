@@ -64,6 +64,8 @@ live GA: `docs/engine/PROVIDER_ONBOARDING.md`. Чеклист ниже — ин�
       native subscription credits ведутся раздельно.
 - [ ] Калибровка каждого native window по Codex fixed-point/raw-evidence контракту; exact plan +
       duration cohorts, null до evidence, без nominal/prior/EMA.
+- [ ] Exact turn delivery имеет bounded FIFO, idempotent replay, conflict quarantine, pending/drop
+      diagnostics и shutdown drain; quota snapshot не может обогнать failed spend event.
 - [ ] Доставка: `config.env.example`, deploy-скрипты (`watchdog.sh`, `watchdog-lib*.sh`,
       `engine-bluegreen.sh`, `sudoers.d`) — новые порты, юниты и секреты провайдера.
 - [ ] Observability: метрики и алерты в `observability/prometheus/rules/*`, дашборды Grafana,

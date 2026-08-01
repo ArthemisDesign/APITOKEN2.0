@@ -15,6 +15,7 @@ import {
 } from "./provider-calibration";
 import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
 import type {
+  ClaudeCalibrationEvidence,
   CapacityResponse,
   CapacitySub,
   ClaudeConversionModel,
@@ -38,6 +39,24 @@ interface ClaudeProfitRow {
   rates: Record<ClaudeTokenKind, string>;
   bestKind: ClaudeTokenKind;
   bestRate: string;
+}
+
+function evidenceRows(rows: ClaudeCalibrationEvidence[]): ClaudeCalibrationEvidence[] {
+  return [...rows].sort((left, right) => {
+    const a = providerInteger(left.api_total_nanousd) ?? 0n;
+    const b = providerInteger(right.api_total_nanousd) ?? 0n;
+    if (a !== b) return a > b ? -1 : 1;
+    return String(left.model ?? "").localeCompare(String(right.model ?? ""));
+  });
+}
+
+function evidenceCell(tokens: string | undefined, nano: string | undefined): ReactElement {
+  return (
+    <>
+      <b>{compactTokenCount(providerInteger(tokens))}</b>
+      <small>{moneyOrDash(nano)}</small>
+    </>
+  );
 }
 
 function rateFor(tier: ClaudeRateTier, kind: ClaudeTokenKind): string {
@@ -97,7 +116,7 @@ function subscriptionStatus(item: CapacitySub): { label: string; kind: "ok" | "w
   if (item.auth_state === "suspect") return { label: "auth под наблюдением", kind: "warn" };
   if (item.cooling) return { label: "cooling", kind: "warn" };
   if (item.routable === false) return { label: "вне ротации", kind: "warn" };
-  if (item.calibrated === false) return { label: "active · prior", kind: "warn" };
+  if (item.calibrated === false) return { label: "ждём данные", kind: "warn" };
   return { label: "active", kind: "ok" };
 }
 
@@ -176,6 +195,49 @@ function ClaudeProfitability({ rows }: { rows: ClaudeProfitRow[] }) {
   );
 }
 
+function ClaudeEvidence({ rows }: { rows: ClaudeCalibrationEvidence[] }) {
+  return (
+    <ProviderSection overline="Реальные запросы" title="Фактическая смесь калибровки" meta="API-$ ↓">
+      <TableCard>
+        <table className="provider-calibration-table">
+          <thead>
+            <tr>
+              <th className="left">Почта</th>
+              <th className="left">Модель</th>
+              <th className="left">Режим</th>
+              <th>Запросы</th>
+              <th>Input</th>
+              <th>Cache read</th>
+              <th>Write 5м</th>
+              <th>Write 1ч</th>
+              <th>Output</th>
+              <th>Search</th>
+              <th>Итого API-$</th>
+            </tr>
+          </thead>
+          <tbody>
+            {evidenceRows(rows).map((row, index) => (
+              <tr key={`${row.email ?? "claude"}-${row.model ?? "model"}-${row.service_tier ?? "tier"}-${index}`}>
+                <td className="left"><b>{row.email ?? "—"}</b></td>
+                <td className="left"><b>{row.model ?? "—"}</b></td>
+                <td className="left"><Pill kind={row.service_tier === "fast" ? "warn" : "ok"}>{row.service_tier ?? "—"}</Pill><small>{row.inference_geo ?? "global"}</small></td>
+                <td><b>{row.turns ?? 0}</b></td>
+                <td>{evidenceCell(row.input_tokens, row.api_input_nanousd)}</td>
+                <td className="provider-cache-cell">{evidenceCell(row.cache_read_tokens, row.api_cache_read_nanousd)}</td>
+                <td>{evidenceCell(row.cache_write_5m_tokens, row.api_cache_write_5m_nanousd)}</td>
+                <td>{evidenceCell(row.cache_write_1h_tokens, row.api_cache_write_1h_nanousd)}</td>
+                <td>{evidenceCell(row.output_tokens, row.api_output_nanousd)}</td>
+                <td>{evidenceCell(row.search_queries, row.api_search_nanousd)}</td>
+                <td className="provider-usd-ink"><b>{moneyOrDash(row.api_total_nanousd)}</b></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableCard>
+    </ProviderSection>
+  );
+}
+
 function ClaudeSubscriptions({ items }: { items: CapacitySub[] }) {
   return (
     <ProviderSection overline="Подписки" title="Окна по аккаунтам" meta={`${items.filter((item) => item.routable).length}/${items.length} в ротации`}>
@@ -220,7 +282,13 @@ function ClaudeSubscriptions({ items }: { items: CapacitySub[] }) {
   );
 }
 
-export function ClaudeCapacityBoard({ response }: { response: CapacityResponse }): ReactElement {
+export function ClaudeCapacityBoard({
+  response,
+  showSummary = true,
+}: {
+  response: CapacityResponse;
+  showSummary?: boolean;
+}): ReactElement {
   const windows = response.window_totals ?? [];
   const weekly = windows.find((item) => Number(item.window_minutes) === 10_080) ?? windows.at(-1);
   const five = windows.find((item) => Number(item.window_minutes) === 300);
@@ -231,38 +299,44 @@ export function ClaudeCapacityBoard({ response }: { response: CapacityResponse }
 
   return (
     <div className="provider-capacity-board claude-capacity-board">
-      <ProviderCapacityStrip
-        ariaLabel="Ёмкость Claude-пула"
-        items={[
-          {
-            label: "5ч · доступно",
-            value: moneyOrDash(five?.remaining_nano ?? response.available_nano?.next_5h),
-            caption: `из ${moneyOrDash(five?.capacity_nano)} · API-$`,
-            usd: true,
-          },
-          {
-            label: "7д · доступно",
-            value: moneyOrDash(weekly?.remaining_nano),
-            caption: `из ${moneyOrDash(weekly?.capacity_nano)} · API-$`,
-            usd: true,
-          },
-          {
-            label: "5ч · использовано",
-            value: usedFive.label,
-            caption: "текущее окно",
-          },
-          {
-            label: "7д · использовано",
-            value: usedWeekly.label,
-            caption: "текущее окно",
-          },
-          {
-            label: "В ротации",
-            value: `${(response.per_sub ?? []).filter((item) => item.routable).length}/${response.per_sub?.length ?? 0}`,
-            caption: `${five?.calibrated_subs ?? 0}/${five?.routable_subs ?? 0} откалибровано`,
-          },
-        ]}
-      />
+      {showSummary ? (
+        <ProviderCapacityStrip
+          ariaLabel="Ёмкость Claude-пула"
+          items={[
+            {
+              label: "5ч · доступно",
+              value: moneyOrDash(five?.remaining_nano ?? response.available_nano?.next_5h),
+              caption: `из ${moneyOrDash(five?.capacity_nano)} · API-$`,
+              usd: true,
+            },
+            {
+              label: "7д · доступно",
+              value: moneyOrDash(weekly?.remaining_nano),
+              caption: `из ${moneyOrDash(weekly?.capacity_nano)} · API-$`,
+              usd: true,
+            },
+            {
+              label: "5ч · использовано",
+              value: usedFive.label,
+              caption: "текущее окно",
+            },
+            {
+              label: "7д · использовано",
+              value: usedWeekly.label,
+              caption: "текущее окно",
+            },
+            {
+              label: "В ротации",
+              value: `${(response.per_sub ?? []).filter((item) => item.routable).length}/${response.per_sub?.length ?? 0}`,
+              caption: `${five?.calibrated_subs ?? 0}/${five?.routable_subs ?? 0} откалибровано`,
+            },
+          ]}
+        />
+      ) : null}
+      <ClaudeSubscriptions items={response.per_sub ?? []} />
+      {response.calibration_evidence?.length ? (
+        <ClaudeEvidence rows={response.calibration_evidence} />
+      ) : null}
       {models.length ? (
         <>
           <ClaudeTokenCapacity models={models} remaining={weekly?.remaining_nano} />
@@ -271,7 +345,6 @@ export function ClaudeCapacityBoard({ response }: { response: CapacityResponse }
       ) : (
         <div className="provider-no-catalog">Тарифный каталог Claude недоступен.</div>
       )}
-      <ClaudeSubscriptions items={response.per_sub ?? []} />
     </div>
   );
 }

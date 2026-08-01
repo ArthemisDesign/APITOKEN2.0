@@ -14,7 +14,7 @@ mod anthropic_snapshot;
 use self::anthropic_snapshot::{
     prepare_anthropic_legacy_quote, AnthropicLegacyQuoteInput, PreparedAnthropicLegacyQuote,
 };
-use crate::meter::{BillCtx, MeterCtx, TeeMeter};
+use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, TeeMeter};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::pricing::{
     build_policy_admission_snapshot, EnginePricingRequestId, PricingBridgeDecision,
@@ -1981,12 +1981,46 @@ pub async fn forward(
                     }),
                     _ => None,
                 };
+                let mut quota_snapshots = Vec::with_capacity(2);
+                if let (Some(quota), Some(resets_at)) = (lim.quota5h, lim.reset5h) {
+                    quota_snapshots.push(crate::billing::AnthropicQuotaSnapshot {
+                        window_kind: "5h".to_owned(),
+                        window_duration_mins: 300,
+                        resets_at,
+                        used_fraction_units: quota.used_fraction_units,
+                        measurement_resolution_fraction_units: quota
+                            .measurement_resolution_fraction_units,
+                        observed_at: now,
+                    });
+                }
+                if let (Some(quota), Some(resets_at)) = (lim.quota7d, lim.reset7d) {
+                    quota_snapshots.push(crate::billing::AnthropicQuotaSnapshot {
+                        window_kind: "7d".to_owned(),
+                        window_duration_mins: 10_080,
+                        resets_at,
+                        used_fraction_units: quota.used_fraction_units,
+                        measurement_resolution_fraction_units: quota
+                            .measurement_resolution_fraction_units,
+                        observed_at: now,
+                    });
+                }
+                let calibration = app.billing.clone().map(|billing| CalibrationCtx {
+                    billing,
+                    request_id: engine_request_id.clone(),
+                    plan: if sub.plan.trim().is_empty() {
+                        "unknown".to_owned()
+                    } else {
+                        sub.plan.clone()
+                    },
+                    quota_snapshots,
+                });
                 Some(MeterCtx {
                     pool: app.pool.clone(),
                     email: sub.email.clone(),
                     model: model.clone(),
                     is_sse: is_event_stream(&resp),
                     bill,
+                    calibration,
                     capacity,
                 })
             } else {
@@ -2431,6 +2465,8 @@ mod tests {
         Limits {
             util5h: Some(u5),
             util7d: Some(u7),
+            quota5h: None,
+            quota7d: None,
             status: None,
             reset5h: Some(r5),
             reset7d: Some(r7),

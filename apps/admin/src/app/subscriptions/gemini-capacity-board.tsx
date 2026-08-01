@@ -314,7 +314,15 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: Gemin
   );
 }
 
-export function GeminiCapacityBoard({ response, nowMs }: { response: GeminiSubsResponse; nowMs: number }): ReactElement {
+export function GeminiCapacityBoard({
+  response,
+  nowMs,
+  showSummary = true,
+}: {
+  response: GeminiSubsResponse;
+  nowMs: number;
+  showSummary?: boolean;
+}): ReactElement {
   const windows = response.window_totals ?? [];
   const weekly = windows.find((item) => Number(item.window_minutes) === 10_080) ?? windows.at(-1);
   const five = windows.find((item) => Number(item.window_minutes) === 300);
@@ -328,37 +336,44 @@ export function GeminiCapacityBoard({ response, nowMs }: { response: GeminiSubsR
 
   return (
     <div className="provider-capacity-board gemini-capacity-board">
-      <ProviderCapacityStrip
-        ariaLabel="Ёмкость Gemini-пула"
-        items={[
-          {
-            label: "5ч · доступно",
-            value: moneyOrDash(five?.remaining_nano),
-            caption: `из ${moneyOrDash(five?.capacity_nano)} · текущая смесь`,
-            usd: true,
-          },
-          {
-            label: "7д · доступно",
-            value: moneyOrDash(weekly?.remaining_nano),
-            caption: `из ${moneyOrDash(weekly?.capacity_nano)} · текущая смесь`,
-            usd: true,
-          },
-          {
-            label: "5ч · использовано",
-            value: usedFive.label,
-            caption: "workload-equivalent",
-          },
-          {
-            label: "7д · использовано",
-            value: usedWeekly.label,
-            caption: "workload-equivalent",
-          },
-          {
-            label: "Профили в ротации",
-            value: `${response.available ?? 0}/${response.profiles?.length ?? 0}`,
-            caption: `${five?.measured_profiles ?? 0}/${five?.observed_profiles ?? response.profiles?.length ?? 0} измерено · exact ${exactQuotaRows}/${quotas.length}`,
-          },
-        ]}
+      {showSummary ? (
+        <ProviderCapacityStrip
+          ariaLabel="Ёмкость Gemini-пула"
+          items={[
+            {
+              label: "5ч · доступно",
+              value: moneyOrDash(five?.remaining_nano),
+              caption: `из ${moneyOrDash(five?.capacity_nano)} · текущая смесь`,
+              usd: true,
+            },
+            {
+              label: "7д · доступно",
+              value: moneyOrDash(weekly?.remaining_nano),
+              caption: `из ${moneyOrDash(weekly?.capacity_nano)} · текущая смесь`,
+              usd: true,
+            },
+            {
+              label: "5ч · использовано",
+              value: usedFive.label,
+              caption: "workload-equivalent",
+            },
+            {
+              label: "7д · использовано",
+              value: usedWeekly.label,
+              caption: "workload-equivalent",
+            },
+            {
+              label: "Профили в ротации",
+              value: `${response.available ?? 0}/${response.profiles?.length ?? 0}`,
+              caption: `${five?.measured_profiles ?? 0}/${five?.observed_profiles ?? response.profiles?.length ?? 0} измерено · exact ${exactQuotaRows}/${quotas.length}`,
+            },
+          ]}
+        />
+      ) : null}
+      <GeminiSubscriptions
+        profiles={response.profiles ?? []}
+        modelCount={response.models?.length ?? models.length}
+        nowSec={nowSec}
       />
       {models.length ? (
         <>
@@ -368,7 +383,6 @@ export function GeminiCapacityBoard({ response, nowMs }: { response: GeminiSubsR
       ) : (
         <div className="provider-no-catalog">Тарифный каталог Gemini недоступен.</div>
       )}
-      <GeminiSubscriptions profiles={response.profiles ?? []} modelCount={response.models?.length ?? models.length} nowSec={nowSec} />
     </div>
   );
 }

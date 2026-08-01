@@ -24,12 +24,15 @@ use registry::pricing::{
     ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
-    AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow,
-    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
-    CodexWindowObservation, GeminiCalibrationRow, GeminiWindowObservation, KeyActivationPolicyAck,
-    KeyAuth, KeyPolicyUpdate, KeyRow,
+    AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
+    BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
+    CodexTurnCalibrationEvent, CodexWindowObservation, GeminiCalibrationRow,
+    GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    ProviderTurnCalibrationEvent,
 };
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -40,6 +43,176 @@ const WRITE_QUEUE_CAPACITY: usize = 4_096;
 const READ_QUEUE_CAPACITY: usize = 1_024;
 const PRICING_SHADOW_READ_QUEUE_CAPACITY: usize = 256;
 const PG_OPERATION_RETRY_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS: usize = 4_096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AnthropicQuotaSnapshot {
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub observed_at: i64,
+}
+
+type AnthropicTurnPersistenceResult = (
+    ProviderCalibrationSubjectSpend,
+    Vec<AnthropicCalibrationRow>,
+);
+
+#[derive(Clone)]
+struct PendingAnthropicCalibrationTurn {
+    delivery_id: u64,
+    event: ProviderTurnCalibrationEvent,
+    plan: String,
+    snapshots: Vec<AnthropicQuotaSnapshot>,
+}
+
+#[derive(Default)]
+struct AnthropicCalibrationDeliveryQueue {
+    pending: VecDeque<PendingAnthropicCalibrationTurn>,
+    next_delivery_id: u64,
+}
+
+struct AnthropicCalibrationDeliveryState {
+    queue: std::sync::Mutex<AnthropicCalibrationDeliveryQueue>,
+    dropped_events: std::sync::atomic::AtomicU64,
+    persistence_ok: AtomicBool,
+}
+
+impl Default for AnthropicCalibrationDeliveryState {
+    fn default() -> Self {
+        Self {
+            queue: std::sync::Mutex::new(AnthropicCalibrationDeliveryQueue::default()),
+            dropped_events: std::sync::atomic::AtomicU64::new(0),
+            persistence_ok: AtomicBool::new(true),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnthropicCalibrationDeliveryStatus {
+    pub pending_events: usize,
+    pub dropped_events: u64,
+    pub persistence_ok: bool,
+    pub queue_limit: usize,
+}
+
+fn enqueue_anthropic_calibration_turn(
+    state: &AnthropicCalibrationDeliveryState,
+    event: ProviderTurnCalibrationEvent,
+    plan: String,
+    snapshots: Vec<AnthropicQuotaSnapshot>,
+) -> anyhow::Result<u64> {
+    let mut queue = state
+        .queue
+        .lock()
+        .expect("Anthropic calibration delivery queue lock");
+    if queue.pending.len() >= MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS {
+        state.dropped_events.fetch_add(1, Ordering::Relaxed);
+        state.persistence_ok.store(false, Ordering::Relaxed);
+        anyhow::bail!(
+            "Anthropic calibration event queue is full (limit {})",
+            MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS
+        );
+    }
+    queue.next_delivery_id = queue.next_delivery_id.wrapping_add(1).max(1);
+    let delivery_id = queue.next_delivery_id;
+    queue.pending.push_back(PendingAnthropicCalibrationTurn {
+        delivery_id,
+        event,
+        plan,
+        snapshots,
+    });
+    Ok(delivery_id)
+}
+
+/// Replay exact Claude turn evidence in FIFO order. A transient failure leaves the head in memory,
+/// so neither a later turn nor a free poll snapshot can observe quota against stale cumulative
+/// spend. Immutable request-id replay makes an ambiguous lost database reply safe. A semantic
+/// replay conflict is quarantined instead of blocking every later valid event forever.
+fn flush_pending_anthropic_calibration_turns(
+    state: &AnthropicCalibrationDeliveryState,
+    target_delivery_id: Option<u64>,
+    mut persist: impl FnMut(
+        &PendingAnthropicCalibrationTurn,
+    ) -> anyhow::Result<AnthropicTurnPersistenceResult>,
+) -> anyhow::Result<Option<AnthropicTurnPersistenceResult>> {
+    let mut target_result = None;
+    let mut target_conflict = None;
+    loop {
+        let front = state
+            .queue
+            .lock()
+            .expect("Anthropic calibration delivery queue lock")
+            .pending
+            .front()
+            .cloned();
+        let Some(front) = front else {
+            break;
+        };
+        let delivery_id = front.delivery_id;
+        let result = persist(&front);
+        match result {
+            Ok(value) => {
+                let mut queue = state
+                    .queue
+                    .lock()
+                    .expect("Anthropic calibration delivery queue lock");
+                if queue
+                    .pending
+                    .front()
+                    .is_some_and(|pending| pending.delivery_id == delivery_id)
+                {
+                    queue.pending.pop_front();
+                }
+                if target_delivery_id == Some(delivery_id) {
+                    target_result = Some(value);
+                }
+            }
+            Err(error) if registry::is_provider_turn_calibration_replay_conflict(&error) => {
+                let mut queue = state
+                    .queue
+                    .lock()
+                    .expect("Anthropic calibration delivery queue lock");
+                if queue
+                    .pending
+                    .front()
+                    .is_some_and(|pending| pending.delivery_id == delivery_id)
+                {
+                    queue.pending.pop_front();
+                }
+                state.dropped_events.fetch_add(1, Ordering::Relaxed);
+                state.persistence_ok.store(false, Ordering::Relaxed);
+                eprintln!(
+                    "Anthropic calibration event quarantined after immutable replay conflict"
+                );
+                if target_delivery_id == Some(delivery_id) {
+                    target_conflict = Some(error);
+                }
+            }
+            Err(error) => {
+                state.persistence_ok.store(false, Ordering::Relaxed);
+                return Err(
+                    if target_delivery_id.is_some_and(|target| target != delivery_id) {
+                        error.context(
+                        "Anthropic calibration predecessor remains pending; later evidence held",
+                    )
+                    } else {
+                        error
+                    },
+                );
+            }
+        }
+    }
+    if state.dropped_events.load(Ordering::Relaxed) == 0 {
+        state.persistence_ok.store(true, Ordering::Relaxed);
+    }
+    if let Some(error) = target_conflict {
+        return Err(error);
+    }
+    Ok(target_result)
+}
 
 const RESERVE_HANDOFF_PENDING: u8 = 0;
 const RESERVE_HANDOFF_COMMITTED: u8 = 1;
@@ -547,7 +720,106 @@ fn run_pg_policy_snapshot_reserve_with_retry(
     }
 }
 
+fn observe_anthropic_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &AnthropicWindowObservation,
+) -> anyhow::Result<AnthropicCalibrationRow> {
+    loop {
+        let existing = pg.load_anthropic_calibration(
+            &observation.subject_id,
+            &observation.plan,
+            &observation.window_kind,
+        )?;
+        if let Some(existing) = existing.as_ref().filter(|row| {
+            row.estimator_version == crate::anthropic_calibration::ESTIMATOR_VERSION
+                && observation.observed_at <= row.observed_at
+        }) {
+            return Ok(existing.clone());
+        }
+        let history = if existing.as_ref().is_some_and(|row| {
+            row.estimator_version != crate::anthropic_calibration::ESTIMATOR_VERSION
+        }) {
+            pg.load_anthropic_window_observations(
+                &observation.subject_id,
+                &observation.plan,
+                &observation.window_kind,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state = crate::anthropic_calibration::apply_observation_with_history(
+            existing,
+            &history,
+            observation,
+        )?;
+        if let Some(version) = pg.save_anthropic_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
+}
+
+fn persist_anthropic_turn_postgres(
+    pg: &mut registry::pg::PgStore,
+    url: &str,
+    owner: &registry::pg::Owner,
+    turn: &PendingAnthropicCalibrationTurn,
+) -> anyhow::Result<AnthropicTurnPersistenceResult> {
+    run_pg_with_retry(pg, url, owner, "Anthropic turn calibration event", |pg| {
+        if turn.event.provider != registry::PROVIDER_ANTHROPIC || turn.plan.is_empty() {
+            anyhow::bail!("invalid Anthropic turn calibration command");
+        }
+        let spend = pg.record_provider_turn_calibration_event(&turn.event)?;
+        let mut states = Vec::with_capacity(turn.snapshots.len());
+        for snapshot in &turn.snapshots {
+            let observation = anthropic_observation(
+                &turn.event.subject_id,
+                &turn.plan,
+                snapshot,
+                spend.spent_nano,
+                "response",
+                Some(&turn.event.request_id),
+            );
+            states.push(observe_anthropic_postgres(pg, &observation)?);
+        }
+        Ok((spend, states))
+    })
+}
+
+fn anthropic_observation(
+    subject_id: &str,
+    plan: &str,
+    snapshot: &AnthropicQuotaSnapshot,
+    gateway_spend_nano: i64,
+    source: &str,
+    source_request_id: Option<&str>,
+) -> AnthropicWindowObservation {
+    AnthropicWindowObservation {
+        subject_id: subject_id.to_owned(),
+        plan: plan.to_owned(),
+        window_kind: snapshot.window_kind.clone(),
+        window_duration_mins: snapshot.window_duration_mins,
+        resets_at: snapshot.resets_at,
+        observed_at: snapshot.observed_at,
+        used_fraction_units: snapshot.used_fraction_units,
+        measurement_resolution_fraction_units: snapshot.measurement_resolution_fraction_units,
+        gateway_spend_nano,
+        observation_source: source.to_owned(),
+        source_request_id: source_request_id.map(str::to_owned),
+    }
+}
+
 enum WriteCmd {
+    AnthropicRecordTurn {
+        delivery_id: u64,
+        reply: Option<oneshot::Sender<anyhow::Result<AnthropicTurnPersistenceResult>>>,
+    },
+    AnthropicObserveWindow {
+        subject_id: String,
+        plan: String,
+        snapshot: AnthropicQuotaSnapshot,
+        reply: oneshot::Sender<anyhow::Result<(i64, AnthropicCalibrationRow)>>,
+    },
     GeminiCreditSpend {
         profile_id: String,
         delta_nano: i64,
@@ -748,6 +1020,14 @@ enum WriteCmd {
 }
 
 enum ReadCmd {
+    AnthropicCalibrationReport(
+        oneshot::Sender<
+            anyhow::Result<(
+                Vec<AnthropicCalibrationRow>,
+                Vec<ProviderTurnCalibrationAggregate>,
+            )>,
+        >,
+    ),
     CodexCalibrationReport(oneshot::Sender<anyhow::Result<Vec<CodexTurnCalibrationAggregate>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
@@ -847,6 +1127,7 @@ enum PricingShadowReadCmd {
 pub struct AsyncBilling {
     writer: mpsc::Sender<WriteCmd>,
     detached: Arc<DetachedDispatchTracker>,
+    anthropic_calibration_delivery: Arc<AnthropicCalibrationDeliveryState>,
     readers: Vec<mpsc::Sender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
     /// PostgreSQL-only connections reserved for evaluation-time shadow reads. They never share
@@ -858,6 +1139,145 @@ pub struct AsyncBilling {
 impl AsyncBilling {
     pub(crate) fn track_detached_work(&self) -> DetachedDispatchGuard {
         self.detached.begin()
+    }
+
+    pub fn anthropic_calibration_delivery_status(&self) -> AnthropicCalibrationDeliveryStatus {
+        AnthropicCalibrationDeliveryStatus {
+            pending_events: self
+                .anthropic_calibration_delivery
+                .queue
+                .lock()
+                .expect("Anthropic calibration delivery queue lock")
+                .pending
+                .len(),
+            dropped_events: self
+                .anthropic_calibration_delivery
+                .dropped_events
+                .load(Ordering::Relaxed),
+            persistence_ok: self
+                .anthropic_calibration_delivery
+                .persistence_ok
+                .load(Ordering::Relaxed),
+            queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
+        }
+    }
+
+    /// Persist one successful Claude turn, advance exact cumulative subject spend, and only then
+    /// pair any response quota snapshots with that new total.
+    #[cfg(test)]
+    pub(crate) async fn record_anthropic_turn(
+        &self,
+        event: ProviderTurnCalibrationEvent,
+        plan: &str,
+        snapshots: Vec<AnthropicQuotaSnapshot>,
+    ) -> anyhow::Result<(
+        ProviderCalibrationSubjectSpend,
+        Vec<AnthropicCalibrationRow>,
+    )> {
+        let delivery_id = enqueue_anthropic_calibration_turn(
+            &self.anthropic_calibration_delivery,
+            event,
+            plan.to_owned(),
+            snapshots,
+        )?;
+        let (reply, result) = oneshot::channel();
+        if self
+            .writer
+            .send(WriteCmd::AnthropicRecordTurn {
+                delivery_id,
+                reply: Some(reply),
+            })
+            .await
+            .is_err()
+        {
+            anyhow::bail!("billing writer unavailable; Anthropic evidence remains pending");
+        }
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Finalization runs inside `Stream::poll`/`Drop`, so the same ordered operation also has a
+    /// detached form. The billing FIFO and graceful-shutdown barrier still cover it.
+    pub(crate) fn record_anthropic_turn_detached(
+        &self,
+        event: ProviderTurnCalibrationEvent,
+        plan: &str,
+        snapshots: Vec<AnthropicQuotaSnapshot>,
+    ) {
+        let delivery_id = match enqueue_anthropic_calibration_turn(
+            &self.anthropic_calibration_delivery,
+            event,
+            plan.to_owned(),
+            snapshots,
+        ) {
+            Ok(delivery_id) => delivery_id,
+            Err(error) => {
+                eprintln!("Anthropic calibration evidence dropped: {error:#}");
+                return;
+            }
+        };
+        dispatch_detached(
+            &self.writer,
+            &self.detached,
+            WriteCmd::AnthropicRecordTurn {
+                delivery_id,
+                reply: None,
+            },
+        );
+    }
+
+    /// Pair a free liveness-poll snapshot with the current durable Claude spend without inventing
+    /// a turn event. Successful-response snapshots use `record_anthropic_turn` instead.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn observe_anthropic_window(
+        &self,
+        subject_id: &str,
+        plan: &str,
+        window_kind: &str,
+        window_duration_mins: i64,
+        resets_at: i64,
+        used_fraction_units: i64,
+        measurement_resolution_fraction_units: i64,
+        observed_at: i64,
+    ) -> anyhow::Result<(i64, AnthropicCalibrationRow)> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::AnthropicObserveWindow {
+                subject_id: subject_id.to_owned(),
+                plan: plan.to_owned(),
+                snapshot: AnthropicQuotaSnapshot {
+                    window_kind: window_kind.to_owned(),
+                    window_duration_mins,
+                    resets_at,
+                    used_fraction_units,
+                    measurement_resolution_fraction_units,
+                    observed_at,
+                },
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn anthropic_calibration_report(
+        &self,
+    ) -> anyhow::Result<(
+        Vec<AnthropicCalibrationRow>,
+        Vec<ProviderTurnCalibrationAggregate>,
+    )> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::AnthropicCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
     /// Persist exact official-price spend for every successful Gemini generation, including
@@ -1063,8 +1483,10 @@ impl AsyncBilling {
         let readers = readers.max(1);
         // writer
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
+        let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
         {
             let conn = registry::open(&db_path)?;
+            let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
             std::thread::Builder::new().name("billing-writer".into()).spawn(move || {
                 const RESERVATION_LEASE_SECS: i64 = 3600;
                 let refund_canceled_reserve = |request_id: &str, account_id: &str, key: &str,
@@ -1133,8 +1555,132 @@ impl AsyncBilling {
                         }
                     }
                 };
+                let observe_anthropic = |observation: &AnthropicWindowObservation| {
+                    loop {
+                        let existing = registry::load_anthropic_calibration(
+                            &conn,
+                            &observation.subject_id,
+                            &observation.plan,
+                            &observation.window_kind,
+                        )?;
+                        if let Some(existing) = existing.as_ref().filter(|row| {
+                            row.estimator_version
+                                == crate::anthropic_calibration::ESTIMATOR_VERSION
+                                && observation.observed_at <= row.observed_at
+                        }) {
+                            return Ok::<_, anyhow::Error>(existing.clone());
+                        }
+                        let history = if existing.as_ref().is_some_and(|row| {
+                            row.estimator_version
+                                != crate::anthropic_calibration::ESTIMATOR_VERSION
+                        }) {
+                            registry::load_anthropic_window_observations(
+                                &conn,
+                                &observation.subject_id,
+                                &observation.plan,
+                                &observation.window_kind,
+                            )?
+                        } else {
+                            Vec::new()
+                        };
+                        let mut state =
+                            crate::anthropic_calibration::apply_observation_with_history(
+                                existing,
+                                &history,
+                                observation,
+                            )?;
+                        if let Some(version) = registry::save_anthropic_calibration(
+                            &conn,
+                            &state,
+                            observation,
+                        )? {
+                            state.version = version;
+                            return Ok(state);
+                        }
+                    }
+                };
+                let persist_anthropic_turn =
+                    |turn: &PendingAnthropicCalibrationTurn| {
+                        if turn.event.provider != registry::PROVIDER_ANTHROPIC
+                            || turn.plan.is_empty()
+                        {
+                            anyhow::bail!("invalid Anthropic turn calibration command");
+                        }
+                        let spend = registry::record_provider_turn_calibration_event(
+                            &conn,
+                            &turn.event,
+                        )?;
+                        let mut states = Vec::with_capacity(turn.snapshots.len());
+                        for snapshot in &turn.snapshots {
+                            let observation = anthropic_observation(
+                                &turn.event.subject_id,
+                                &turn.plan,
+                                snapshot,
+                                spend.spent_nano,
+                                "response",
+                                Some(&turn.event.request_id),
+                            );
+                            states.push(observe_anthropic(&observation)?);
+                        }
+                        Ok((spend, states))
+                    };
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                    WriteCmd::AnthropicRecordTurn { delivery_id, reply } => {
+                        if let Some(reply) = reply {
+                            let result = flush_pending_anthropic_calibration_turns(
+                                &writer_anthropic_delivery,
+                                Some(delivery_id),
+                                &persist_anthropic_turn,
+                            )
+                            .and_then(|result| {
+                                result.ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Anthropic calibration target was not replayed"
+                                    )
+                                })
+                            });
+                            let _ = reply.send(result);
+                        } else {
+                            let result = flush_pending_anthropic_calibration_turns(
+                                &writer_anthropic_delivery,
+                                None,
+                                &persist_anthropic_turn,
+                            );
+                            if let Err(error) = result {
+                                eprintln!(
+                                    "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                );
+                            }
+                        }
+                    }
+                    WriteCmd::AnthropicObserveWindow {
+                        subject_id, plan, snapshot, reply,
+                    } => {
+                        let result = (|| {
+                            flush_pending_anthropic_calibration_turns(
+                                &writer_anthropic_delivery,
+                                None,
+                                &persist_anthropic_turn,
+                            )?;
+                            let spend = registry::provider_calibration_subject_spend(
+                                &conn,
+                                registry::PROVIDER_ANTHROPIC,
+                                &subject_id,
+                            )?;
+                            let observation = anthropic_observation(
+                                &subject_id,
+                                &plan,
+                                &snapshot,
+                                spend.spent_nano,
+                                "poll",
+                                None,
+                            );
+                            let state = observe_anthropic(&observation)?;
+                            Ok((spend.spent_nano, state))
+                        })();
+                        let _ = reply.send(result);
+                    }
                     WriteCmd::GeminiCreditSpend { profile_id, delta_nano, updated_ts, reply } => {
                         let _ = reply.send(registry::credit_gemini_profile_spend(
                             &conn, &profile_id, delta_nano, updated_ts,
@@ -1414,7 +1960,14 @@ impl AsyncBilling {
                     }
                     WriteCmd::ReleaseCapacity { .. } => {}
                     WriteCmd::Flush(reply) => {
-                        let result = registry::sqlite_reconcile_expired(&conn, 10_000).map(|_| ());
+                        let result = flush_pending_anthropic_calibration_turns(
+                            &writer_anthropic_delivery,
+                            None,
+                            &persist_anthropic_turn,
+                        )
+                        .and_then(|_| {
+                            registry::sqlite_reconcile_expired(&conn, 10_000).map(|_| ())
+                        });
                         let _ = reply.send(result);
                     }
                     }
@@ -1432,6 +1985,18 @@ impl AsyncBilling {
                 .spawn(move || {
                     while let Some(cmd) = rrx.blocking_recv() {
                         match cmd {
+                            ReadCmd::AnthropicCalibrationReport(reply) => {
+                                let result = (|| {
+                                    Ok((
+                                        registry::list_anthropic_calibrations(&conn)?,
+                                        registry::provider_turn_calibration_report(
+                                            &conn,
+                                            registry::PROVIDER_ANTHROPIC,
+                                        )?,
+                                    ))
+                                })();
+                                let _ = reply.send(result);
+                            }
                             ReadCmd::CodexCalibrationReport(reply) => {
                                 let _ = reply.send(registry::codex_turn_calibration_report(&conn));
                             }
@@ -1571,6 +2136,7 @@ impl AsyncBilling {
         Ok(AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
+            anthropic_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: Vec::new(),
@@ -1588,13 +2154,105 @@ impl AsyncBilling {
         const RESERVATION_LEASE_SECS: i64 = 3600;
         let readers = readers.max(1);
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
+        let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
         {
             let mut pg = registry::pg::PgStore::connect(&url)?;
             let writer_url = url.clone();
             let writer_owner = owner.clone();
+            let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
+                        WriteCmd::AnthropicRecordTurn {
+                            delivery_id,
+                            reply,
+                        } => {
+                            if let Some(reply) = reply {
+                                let result = flush_pending_anthropic_calibration_turns(
+                                    &writer_anthropic_delivery,
+                                    Some(delivery_id),
+                                    |turn| {
+                                        persist_anthropic_turn_postgres(
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            turn,
+                                        )
+                                    },
+                                )
+                                .and_then(|result| {
+                                    result.ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Anthropic calibration target was not replayed"
+                                        )
+                                    })
+                                });
+                                let _ = reply.send(result);
+                            } else {
+                                let result = flush_pending_anthropic_calibration_turns(
+                                    &writer_anthropic_delivery,
+                                    None,
+                                    |turn| {
+                                        persist_anthropic_turn_postgres(
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            turn,
+                                        )
+                                    },
+                                );
+                                if let Err(error) = result {
+                                    eprintln!(
+                                        "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                    );
+                                }
+                            }
+                        }
+                        WriteCmd::AnthropicObserveWindow {
+                            subject_id,
+                            plan,
+                            snapshot,
+                            reply,
+                        } => {
+                            let result = flush_pending_anthropic_calibration_turns(
+                                &writer_anthropic_delivery,
+                                None,
+                                |turn| {
+                                    persist_anthropic_turn_postgres(
+                                        &mut pg,
+                                        &writer_url,
+                                        &writer_owner,
+                                        turn,
+                                    )
+                                },
+                            )
+                            .and_then(|_| {
+                                run_pg_with_retry(
+                                    &mut pg,
+                                    &writer_url,
+                                    &writer_owner,
+                                    "Anthropic window observation",
+                                    |pg| {
+                                        let spend = pg.provider_calibration_subject_spend(
+                                            registry::PROVIDER_ANTHROPIC,
+                                            &subject_id,
+                                        )?;
+                                        let observation = anthropic_observation(
+                                            &subject_id,
+                                            &plan,
+                                            &snapshot,
+                                            spend.spent_nano,
+                                            "poll",
+                                            None,
+                                        );
+                                        let state =
+                                            observe_anthropic_postgres(pg, &observation)?;
+                                        Ok((spend.spent_nano, state))
+                                    },
+                                )
+                            });
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::GeminiCreditSpend {
                             profile_id, delta_nano, updated_ts, reply,
                         } => {
@@ -2101,19 +2759,33 @@ impl AsyncBilling {
                             let _ = reply.send(result);
                         }
                         WriteCmd::Flush(reply) => {
-                            let result = loop {
-                                match run_pg_with_retry(
-                                    &mut pg, &writer_url, &writer_owner, "outbox drain",
-                                    |pg| pg.drain_outbox(10_000),
-                                ) {
-                                    Ok(0) => break Ok(()),
-                                    Ok(_) => continue,
-                                    Err(error) => {
-                                        eprintln!("billing PostgreSQL outbox drain failed: {error:#}");
-                                        break Err(error);
+                            let result = flush_pending_anthropic_calibration_turns(
+                                &writer_anthropic_delivery,
+                                None,
+                                |turn| {
+                                    persist_anthropic_turn_postgres(
+                                        &mut pg,
+                                        &writer_url,
+                                        &writer_owner,
+                                        turn,
+                                    )
+                                },
+                            )
+                            .and_then(|_| {
+                                loop {
+                                    match run_pg_with_retry(
+                                        &mut pg, &writer_url, &writer_owner, "outbox drain",
+                                        |pg| pg.drain_outbox(10_000),
+                                    ) {
+                                        Ok(0) => break Ok(()),
+                                        Ok(_) => continue,
+                                        Err(error) => {
+                                            eprintln!("billing PostgreSQL outbox drain failed: {error:#}");
+                                            break Err(error);
+                                        }
                                     }
                                 }
-                            };
+                            });
                             let _ = reply.send(result);
                         }
                     }
@@ -2150,6 +2822,17 @@ impl AsyncBilling {
                             }};
                         }
                         match cmd {
+                            ReadCmd::AnthropicCalibrationReport(reply) => {
+                                let result = (|| {
+                                    Ok((
+                                        pg.list_anthropic_calibrations()?,
+                                        pg.provider_turn_calibration_report(
+                                            registry::PROVIDER_ANTHROPIC,
+                                        )?,
+                                    ))
+                                })();
+                                answer!(reply, result)
+                            }
                             ReadCmd::CodexCalibrationReport(reply) => {
                                 answer!(reply, pg.codex_turn_calibration_report())
                             }
@@ -2273,6 +2956,7 @@ impl AsyncBilling {
         Ok(AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
+            anthropic_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: pricing_shadow_rtxs,
@@ -3213,11 +3897,7 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
-    /// Дренаж очереди writer'а (барьер): сначала ждёт, пока backpressure-waiters поставят все
-    /// detached-команды в очередь, затем ждёт их применения. Вызывать на graceful shutdown ПОСЛЕ
-    /// дренажа стримов — тогда их финальные списания не потеряются при выходе процесса.
-    pub async fn flush(&self) -> anyhow::Result<()> {
-        self.detached.wait_idle().await;
+    async fn flush_writer_once(&self) -> anyhow::Result<()> {
         let (r, rx) = oneshot::channel();
         self.writer
             .send(WriteCmd::Flush(r))
@@ -3226,12 +3906,98 @@ impl AsyncBilling {
         rx.await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
+
+    /// Дренаж очереди writer'а (барьер): сначала ждёт, пока backpressure-waiters поставят все
+    /// detached-команды в очередь, затем ждёт их применения. Вызывать на graceful shutdown ПОСЛЕ
+    /// дренажа стримов — тогда их финальные списания не потеряются при выходе процесса. A retained
+    /// Claude calibration head is retried until authority recovery; returning success while it is
+    /// still only in process memory would make graceful shutdown silently destructive.
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        self.detached.wait_idle().await;
+        loop {
+            match self.flush_writer_once().await {
+                Ok(()) => return Ok(()),
+                Err(error) if self.anthropic_calibration_delivery_status().pending_events > 0 => {
+                    eprintln!(
+                        "Anthropic calibration shutdown drain waiting for authority recovery: {error:#}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn flush_once(&self) -> anyhow::Result<()> {
+        self.detached.wait_idle().await;
+        self.flush_writer_once().await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn anthropic_event(
+        request_id: &str,
+        api_total_nanousd: i64,
+        completed_at: i64,
+    ) -> ProviderTurnCalibrationEvent {
+        ProviderTurnCalibrationEvent {
+            provider: registry::PROVIDER_ANTHROPIC.to_owned(),
+            request_id: request_id.to_owned(),
+            subject_id: "operator@example.test".to_owned(),
+            model_id: "claude-sonnet-4-5".to_owned(),
+            service_tier: "standard".to_owned(),
+            inference_geo: "global".to_owned(),
+            tariff_schedule_id: "anthropic/test/v1".to_owned(),
+            priced_ts: completed_at,
+            completed_at,
+            input_tokens: 1,
+            audio_input_tokens: 0,
+            cache_read_tokens: 0,
+            cached_audio_input_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            output_tokens: 0,
+            thinking_output_tokens: 0,
+            image_output_tokens: 0,
+            tool_prompt_tokens: 0,
+            search_queries: 0,
+            grounded_search_prompts: 0,
+            api_input_nanousd: api_total_nanousd,
+            api_audio_input_nanousd: 0,
+            api_cache_read_nanousd: 0,
+            api_cached_audio_input_nanousd: 0,
+            api_cache_write_5m_nanousd: 0,
+            api_cache_write_1h_nanousd: 0,
+            api_output_nanousd: 0,
+            api_image_output_nanousd: 0,
+            api_search_nanousd: 0,
+            api_total_nanousd,
+        }
+    }
+
+    fn anthropic_snapshot(
+        window_kind: &str,
+        used_fraction_units: i64,
+        observed_at: i64,
+    ) -> AnthropicQuotaSnapshot {
+        AnthropicQuotaSnapshot {
+            window_kind: window_kind.to_owned(),
+            window_duration_mins: if window_kind == "5h" { 300 } else { 10_080 },
+            resets_at: if window_kind == "5h" {
+                2_000_000_000
+            } else {
+                2_000_500_000
+            },
+            used_fraction_units,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at,
+        }
+    }
 
     fn codex_event(
         request_id: &str,
@@ -3587,6 +4353,337 @@ mod tests {
         restarted.flush().await.unwrap();
         drop(restarted);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn anthropic_admin_turns_are_exact_idempotent_and_calibrate_both_windows() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-calibration-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let first = AsyncBilling::start(path_string.clone(), 1).unwrap();
+
+        // No account, key reservation or customer usage_event exists: provider capacity evidence
+        // is deliberately independent and therefore includes successful operator/admin traffic.
+        let anchor_event = anthropic_event("request-1", 1_000_000_000, 100);
+        let (anchor_spend, anchors) = first
+            .record_anthropic_turn(
+                anchor_event.clone(),
+                "max20",
+                vec![
+                    anthropic_snapshot("5h", 10_000_000, 100),
+                    anthropic_snapshot("7d", 20_000_000, 100),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(anchor_spend.inserted);
+        assert_eq!(anchor_spend.spent_nano, 1_000_000_000);
+        assert_eq!(anchors.len(), 2);
+        assert!(anchors
+            .iter()
+            .all(|row| row.current_capacity_nano.is_none()));
+
+        let (replayed_spend, replayed) = first
+            .record_anthropic_turn(
+                anchor_event,
+                "max20",
+                vec![
+                    anthropic_snapshot("5h", 10_000_000, 100),
+                    anthropic_snapshot("7d", 20_000_000, 100),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(!replayed_spend.inserted);
+        assert_eq!(replayed_spend.spent_nano, 1_000_000_000);
+        assert_eq!(
+            replayed.iter().map(|row| row.version).collect::<Vec<_>>(),
+            anchors.iter().map(|row| row.version).collect::<Vec<_>>(),
+        );
+
+        let measured_event = anthropic_event("request-2", 2_000_000_000, 101);
+        let (measured_spend, measured) = first
+            .record_anthropic_turn(
+                measured_event.clone(),
+                "max20",
+                vec![
+                    anthropic_snapshot("5h", 14_000_000, 101),
+                    anthropic_snapshot("7d", 21_000_000, 101),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(measured_spend.spent_nano, 3_000_000_000);
+        assert_eq!(measured[0].window_kind, "5h");
+        assert_eq!(measured[0].current_capacity_nano, Some(50_000_000_000));
+        assert_eq!(measured[1].window_kind, "7d");
+        assert_eq!(measured[1].current_capacity_nano, Some(200_000_000_000));
+
+        let mut conflict = measured_event;
+        conflict.input_tokens += 1;
+        let error = first
+            .record_anthropic_turn(conflict, "max20", Vec::new())
+            .await
+            .unwrap_err();
+        assert!(registry::is_provider_turn_calibration_replay_conflict(
+            &error
+        ));
+        let conflicted_status = first.anthropic_calibration_delivery_status();
+        assert_eq!(conflicted_status.pending_events, 0);
+        assert_eq!(conflicted_status.dropped_events, 1);
+        assert!(!conflicted_status.persistence_ok);
+
+        // A poll can move quota but never advances spend. The first unmatched movement is held for
+        // one snapshot; seeing the same point again excludes it as unattributed instead of
+        // manufacturing a larger dollar capacity.
+        let (_, lagged) = first
+            .observe_anthropic_window(
+                "operator@example.test",
+                "max20",
+                "5h",
+                300,
+                2_000_000_000,
+                15_000_000,
+                100_000,
+                102,
+            )
+            .await
+            .unwrap();
+        assert_eq!(lagged.unattributed_fraction_units, 0);
+        let (spend, excluded) = first
+            .observe_anthropic_window(
+                "operator@example.test",
+                "max20",
+                "5h",
+                300,
+                2_000_000_000,
+                15_000_000,
+                100_000,
+                103,
+            )
+            .await
+            .unwrap();
+        assert_eq!(spend, 3_000_000_000);
+        assert_eq!(excluded.unattributed_fraction_units, 1_000_000);
+        assert_eq!(excluded.current_capacity_nano, Some(50_000_000_000));
+
+        // A poisoned request id is quarantined; it cannot pin later valid evidence behind the
+        // immutable conflict forever.
+        let (post_conflict, _) = first
+            .record_anthropic_turn(
+                anthropic_event("request-after-conflict", 1, 104),
+                "max20",
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(post_conflict.inserted);
+        assert_eq!(post_conflict.spent_nano, 3_000_000_001);
+        assert_eq!(
+            first.anthropic_calibration_delivery_status().pending_events,
+            0
+        );
+
+        first.flush().await.unwrap();
+        drop(first);
+
+        let restarted = AsyncBilling::start(path_string, 1).unwrap();
+        let (rows, evidence) = restarted.anthropic_calibration_report().await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].turns, 3);
+        assert_eq!(evidence[0].api_total_nanousd, 3_000_000_001);
+
+        restarted.flush().await.unwrap();
+        drop(restarted);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn anthropic_outage_recovery_replays_turns_fifo_before_poll_snapshot() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-fifo-recovery-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        let control = registry::open(&path_string).unwrap();
+        control
+            .execute_batch(
+                "CREATE TRIGGER reject_anthropic_calibration_turn \
+                 BEFORE INSERT ON provider_turn_calibration_events \
+                 BEGIN SELECT RAISE(FAIL, 'simulated authority outage'); END;",
+            )
+            .unwrap();
+
+        let first = billing
+            .record_anthropic_turn(
+                anthropic_event("fifo-first", 1_000_000_000, 100),
+                "max20",
+                vec![anthropic_snapshot("5h", 10_000_000, 100)],
+            )
+            .await;
+        assert!(first.is_err());
+        let second = billing
+            .record_anthropic_turn(
+                anthropic_event("fifo-second", 2_000_000_000, 101),
+                "max20",
+                vec![anthropic_snapshot("5h", 14_000_000, 101)],
+            )
+            .await;
+        assert!(second.is_err());
+        assert_eq!(
+            billing.anthropic_calibration_delivery_status(),
+            AnthropicCalibrationDeliveryStatus {
+                pending_events: 2,
+                dropped_events: 0,
+                persistence_ok: false,
+                queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
+            }
+        );
+
+        control
+            .execute_batch("DROP TRIGGER reject_anthropic_calibration_turn;")
+            .unwrap();
+        let (spend, row) = billing
+            .observe_anthropic_window(
+                "operator@example.test",
+                "max20",
+                "5h",
+                300,
+                2_000_000_000,
+                14_000_000,
+                100_000,
+                102,
+            )
+            .await
+            .unwrap();
+        assert_eq!(spend, 3_000_000_000);
+        assert_eq!(row.current_capacity_nano, Some(50_000_000_000));
+        assert_eq!(
+            billing.anthropic_calibration_delivery_status(),
+            AnthropicCalibrationDeliveryStatus {
+                pending_events: 0,
+                dropped_events: 0,
+                persistence_ok: true,
+                queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
+            }
+        );
+
+        let ids = {
+            let mut statement = control
+                .prepare("SELECT request_id FROM provider_turn_calibration_events ORDER BY rowid")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(ids, ["fifo-first", "fifo-second"]);
+
+        billing.flush().await.unwrap();
+        drop(billing);
+        drop(control);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn anthropic_flush_retries_detached_pending_turn_before_shutdown() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-shutdown-drain-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        let control = registry::open(&path_string).unwrap();
+        control
+            .execute_batch(
+                "CREATE TRIGGER reject_anthropic_calibration_turn \
+                 BEFORE INSERT ON provider_turn_calibration_events \
+                 BEGIN SELECT RAISE(FAIL, 'simulated authority outage'); END;",
+            )
+            .unwrap();
+
+        billing.record_anthropic_turn_detached(
+            anthropic_event("shutdown-pending", 1_000_000_000, 100),
+            "max20",
+            vec![anthropic_snapshot("5h", 10_000_000, 100)],
+        );
+        assert!(billing.flush_once().await.is_err());
+        assert_eq!(
+            billing
+                .anthropic_calibration_delivery_status()
+                .pending_events,
+            1
+        );
+
+        control
+            .execute_batch("DROP TRIGGER reject_anthropic_calibration_turn;")
+            .unwrap();
+        billing.flush().await.unwrap();
+        assert_eq!(
+            billing.anthropic_calibration_delivery_status(),
+            AnthropicCalibrationDeliveryStatus {
+                pending_events: 0,
+                dropped_events: 0,
+                persistence_ok: true,
+                queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
+            }
+        );
+        let (_, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].turns, 1);
+
+        drop(billing);
+        drop(control);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn anthropic_pending_queue_is_bounded_and_counts_dropped_evidence() {
+        let state = AnthropicCalibrationDeliveryState::default();
+        for index in 0..MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS {
+            enqueue_anthropic_calibration_turn(
+                &state,
+                anthropic_event(&format!("bounded-{index}"), 1, 100),
+                "max20".to_owned(),
+                Vec::new(),
+            )
+            .unwrap();
+        }
+        assert!(enqueue_anthropic_calibration_turn(
+            &state,
+            anthropic_event("bounded-overflow", 1, 100),
+            "max20".to_owned(),
+            Vec::new(),
+        )
+        .is_err());
+        assert_eq!(
+            state
+                .queue
+                .lock()
+                .expect("Anthropic calibration delivery queue lock")
+                .pending
+                .len(),
+            MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS
+        );
+        assert_eq!(state.dropped_events.load(Ordering::Relaxed), 1);
+        assert!(!state.persistence_ok.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

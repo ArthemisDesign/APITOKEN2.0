@@ -99,4 +99,17 @@ describe("systemVerdict", () => {
     expect(verdict.kind).toBe("ok");
     expect(verdict.detail).toContain("headroom 5h ∞ / 7d ∞");
   });
+
+  it("exact authority без current remaining предупреждает и не трактуется как нулевая ёмкость", () => {
+    const overview = baseOverview();
+    overview.supply = {
+      ...overview.supply,
+      authority: "exact_provider_turns_and_quota_fractions",
+      avail_usd: { "5h": null, "7d": null },
+    };
+    const verdict = systemVerdict(overview);
+    expect(verdict.kind).toBe("warn");
+    expect(verdict.title).toBe("Точная ёмкость временно неизвестна");
+    expect(verdict.detail).toContain("prior/EMA не подставляется");
+  });
 });

@@ -52,16 +52,109 @@ export interface CapacitySub {
   auth_state?: string;
   dead_reason?: string;
   dead_since?: number;
+  windows?: ClaudeSubWindow[];
+}
+
+export interface ClaudeSubWindow {
+  window_kind?: "5h" | "7d" | string;
+  window_minutes?: number;
+  resets_at?: number | null;
+  observed_at?: number | null;
+  data_age_seconds?: number | null;
+  snapshot_fresh?: boolean;
+  used_fraction_units?: number | null;
+  measurement_resolution_fraction_units?: number | null;
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
+  confidence_bp?: number | null;
+  cohort_samples?: string | null;
+  cohort_observed_fraction_units?: string | null;
+  cohort_observed_spend_nano?: string | null;
+  account_samples?: number | null;
+  account_observed_fraction_units?: number | null;
+  account_observed_spend_nano?: string | null;
+  unattributed_fraction_units?: number | null;
+  source?: string;
+  same_plan_capacity?: boolean;
+  missing_reason?: string | null;
 }
 
 export interface ClaudeWindowTotal {
+  window_kind?: "5h" | "7d" | string;
   window_minutes?: number;
   capacity_nano?: string | null;
   remaining_nano?: string | null;
+  low_nano?: string | null;
+  high_nano?: string | null;
+  remaining_low_nano?: string | null;
+  remaining_high_nano?: string | null;
   routable_subs?: number;
   calibrated_subs?: number;
+  snapshot_subs?: number;
+  plans_total?: number;
+  calibrated_plans?: number;
+  confidence_bp?: number | null;
+  samples?: string;
+  observed_fraction_units?: string;
+  observed_spend_nano?: string;
+  unattributed_fraction_units?: string;
   source?: string;
   workload_dependent?: boolean;
+  fail_closed?: boolean;
+  missing_reason?: string | null;
+}
+
+export interface ClaudePlanCohort {
+  plan?: string;
+  window_kind?: string;
+  window_minutes?: number;
+  subs_total?: number;
+  routable_subs?: number;
+  snapshot_subs?: number;
+  routable_snapshot_subs?: number;
+  measured_subs?: number;
+  observed_fraction_units?: string;
+  observed_spend_nano?: string;
+  samples?: string;
+  unattributed_fraction_units?: string;
+  measurement_resolution_fraction_units?: number;
+  confidence_bp?: number | null;
+  capacity_per_sub_nano?: string | null;
+  low_per_sub_nano?: string | null;
+  high_per_sub_nano?: string | null;
+  fleet_capacity_nano?: string | null;
+  fleet_remaining_nano?: string | null;
+  source?: string;
+  same_plan_capacity?: boolean;
+  missing_reason?: string | null;
+}
+
+export interface ClaudeCalibrationEvidence {
+  email?: string;
+  model?: string;
+  service_tier?: string;
+  inference_geo?: string;
+  tariff_schedule_id?: string;
+  turns?: number;
+  first_completed_at?: number;
+  last_completed_at?: number;
+  input_tokens?: string;
+  cache_read_tokens?: string;
+  cache_write_5m_tokens?: string;
+  cache_write_1h_tokens?: string;
+  output_tokens?: string;
+  search_queries?: string;
+  api_input_nanousd?: string;
+  api_cache_read_nanousd?: string;
+  api_cache_write_5m_nanousd?: string;
+  api_cache_write_1h_nanousd?: string;
+  api_output_nanousd?: string;
+  api_search_nanousd?: string;
+  api_total_nanousd?: string;
 }
 
 export interface ClaudeRateTier {
@@ -86,6 +179,13 @@ export interface ClaudeConversionModel {
 export interface CapacityResponse {
   now?: number;
   calibrated?: boolean;
+  calibration_authority_available?: boolean;
+  calibration_delivery?: {
+    pending_events?: number;
+    dropped_events?: number;
+    persistence_ok?: boolean;
+    queue_limit?: number;
+  } | null;
   per_sub?: CapacitySub[];
   available_usd?: {
     next_7d?: number;
@@ -100,6 +200,8 @@ export interface CapacityResponse {
     next_1d?: string;
   };
   window_totals?: ClaudeWindowTotal[];
+  plan_cohorts?: ClaudePlanCohort[];
+  calibration_evidence?: ClaudeCalibrationEvidence[];
   conversion_models?: ClaudeConversionModel[];
 }
 

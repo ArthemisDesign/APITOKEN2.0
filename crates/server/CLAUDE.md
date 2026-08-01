@@ -94,7 +94,13 @@
   duration в общий native-credit capacity per home/fleet; per-home evidence и workload-dependent
   API USD не заменяются этим агрегатом. `/capacity` публикует Claude 5ч/7д и horizon money как
   decimal nanoUSD strings, per-sub remaining и authoritative Standard/Fast conversion catalogue из
-  `metering`; float USD остаётся только display compatibility.
+  `metering`. Claude full-window capacity pool-ится только внутри exact plan+duration по формуле
+  `10^8*Σspend/Σfraction`; другой routable plan без evidence, snapshot старше 900с или pending/
+  degraded calibration delivery fail-closed для fleet remaining. Историческая capacity при этом
+  не стирается. `calibration_delivery` раскрывает только bounded queue counts/integrity, без identity.
+  `/overview` и новые metrics.db snapshots берут capacity-facing поля из того же exact report;
+  `pool::Cap` prior/EMA остаётся routing-only. Overview добавляет canonical decimal `*_nano`, а его
+  старые float USD поля остаются только display compatibility.
   `/fleet-history` читает историю metrics.db
   (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
   per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
@@ -125,9 +131,10 @@
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; оба blue-green поколения читают один sealed roster, поэтому паритет
   authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
-- `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes, и
-  fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini. Raw client IDs,
-  prompt content, account IDs, model IDs и subscription IDs в Redis/метрики не попадают.
+- `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes,
+  fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini и fleet-only
+  Anthropic exact-capacity/coverage/delivery gauges. Raw client IDs, prompt content, account IDs,
+  model IDs и subscription IDs в Redis/метрики не попадают.
 - Stage 9 runtime delivery не активирует production bindings и не применяет account assignments.
   Production Stage 5/6 data application, Stage 8 evidence и strict activation остаются
   заблокированы до reviewed B2B/service/OpenKeys assignment matrix.
@@ -142,5 +149,8 @@
   а env/upstream pin и startup-fixed service composition — только здесь. Production unit обязан
   argv-level pin-ить Antigravity version + Cloud Code host + Node binary/version/SHA после shared
   EnvironmentFile.
+- Shutdown Claude после stream drain вызывает общий billing FIFO barrier: pending calibration head
+  повторяется до outbox reconcile; процесс не объявляет flush успешным, пока exact evidence остаётся
+  неприменённым.
 
 **Проверка:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.
