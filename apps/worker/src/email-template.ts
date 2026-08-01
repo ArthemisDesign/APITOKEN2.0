@@ -9,14 +9,18 @@ export interface RenderedAuthEmail {
 export function renderBusinessInviteEmail(
   token: string,
   appBaseUrl: string,
-  discountPercent: number,
+  discountPercent: number | null,
   expiresAt: string,
 ): RenderedAuthEmail {
   const url = new URL("/register", appBaseUrl);
   url.searchParams.set("invite", token);
   const actionUrl = url.toString();
-  const subject = `Your apiToken.sale B2B invitation — ${discountPercent}% discount`;
-  const introduction = `You have been invited to create a business account with a negotiated ${discountPercent}% discount.`;
+  const subject = discountPercent === null
+    ? "Your apiToken.sale B2B invitation"
+    : `Your apiToken.sale B2B invitation — ${discountPercent}% discount`;
+  const introduction = discountPercent === null
+    ? "You have been invited to create a business account with negotiated provider and model pricing. Review the active rates after accepting the invitation."
+    : `You have been invited to create a business account with a negotiated ${discountPercent}% discount.`;
   const expiry = new Date(expiresAt).toUTCString();
   const escapedUrl = escapeHtml(actionUrl);
   return {

@@ -1,8 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { multiplierForDiscount } from "@claude-api/contracts";
 import {
+  multiplierForDiscount,
+  type PricingPolicyEditorRule,
+  type ProviderSwitchEditorMutation,
+} from "@claude-api/contracts";
+import {
+  BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
   createBusinessInvite,
@@ -10,6 +15,9 @@ import {
   decryptAuthToken,
   encryptAuthToken,
   evaluateRefundEligibility,
+  getManagedPricingPolicy,
+  getManagedPricingCatalog,
+  listManagedServicePricingPolicies,
   getBusinessInviteToken,
   getEngineAccountMapping,
   listAdminUserOverview,
@@ -17,6 +25,8 @@ import {
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
+  updateManagedPricingPolicy,
+  updateManagedProviderSwitches,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
@@ -105,7 +115,8 @@ export class AdminService {
 
   async createBusinessInvite(input: {
     email?: string;
-    discountPercent: number;
+    discountPercent?: number;
+    policy?: { rules: readonly PricingPolicyEditorRule[] };
     expiresInDays: number;
     reason: string;
     idempotencyKey: string;
@@ -118,24 +129,77 @@ export class AdminService {
       ...(input.email ? { email: input.email } : {}),
       tokenHash: hashToken(token),
       encryptedToken: encryptAuthToken(token, key),
-      multiplierBp: multiplierForDiscount(input.discountPercent),
+      multiplierBp: input.discountPercent === undefined ? 10_000 : multiplierForDiscount(input.discountPercent),
       expiresAt,
       idempotencyKey: input.idempotencyKey,
       actorId: input.actorId,
       reason: input.reason,
+      ...(input.policy === undefined ? {} : { policyRules: input.policy.rules }),
     });
     const storedToken = invite.idempotentReplay
       ? decryptAuthToken(invite.encryptedToken, key)
       : token;
+    const policy = input.policy === undefined ? null : await getManagedPricingPolicy(this.database, {
+      ownerType: "b2b_invitation",
+      ownerId: invite.id,
+    });
     return {
       id: invite.id,
       email: invite.email,
-      discountPercent: 100 - invite.multiplierBp / 100,
+      discountPercent: input.policy === undefined ? 100 - invite.multiplierBp / 100 : null,
+      policy,
       expiresAt: invite.expiresAt.toISOString(),
       inviteUrl: this.inviteUrl(storedToken),
       deliveryStatus: invite.deliveryStatus,
       idempotentReplay: invite.idempotentReplay,
     };
+  }
+
+  async getManagedPricingPolicy(
+    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
+    ownerId: string,
+    productId?: string,
+  ): Promise<unknown> {
+    const policy = await getManagedPricingPolicy(this.database, {
+      ownerType,
+      ownerId,
+      ...(productId ? { productId } : {}),
+    });
+    if (!policy) throw new BusinessCustomerNotFoundError("managed pricing policy not found");
+    return policy;
+  }
+
+  async getManagedPricingCatalog(productId?: string): Promise<unknown> {
+    return getManagedPricingCatalog(this.database, productId);
+  }
+
+  async listManagedServicePricingPolicies(): Promise<unknown> {
+    return { policies: await listManagedServicePricingPolicies(this.database) };
+  }
+
+  async updateManagedProviderSwitches(
+    input: ProviderSwitchEditorMutation,
+    actorId: string,
+  ): Promise<unknown> {
+    return updateManagedProviderSwitches(this.database, { ...input, actorId });
+  }
+
+  async updateManagedPricingPolicy(
+    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
+    ownerId: string,
+    input: { expectedVersion: number; rules: readonly PricingPolicyEditorRule[]; reason: string },
+    actorId: string,
+    productId?: string,
+  ): Promise<unknown> {
+    return updateManagedPricingPolicy(this.database, {
+      ownerType,
+      ownerId,
+      ...(productId ? { productId } : {}),
+      expectedVersion: input.expectedVersion,
+      rules: input.rules,
+      actorId,
+      reason: input.reason,
+    });
   }
 
   async getBusinessInviteLink(inviteId: string): Promise<Record<string, unknown>> {
@@ -208,17 +272,29 @@ export class AdminService {
 
   async setBusinessPricing(
     userId: string,
-    discountPercent: number,
+    input: { discountPercent?: number; policy?: { expectedVersion: number; rules: readonly PricingPolicyEditorRule[] } },
     actorId: string,
     reason: string,
   ): Promise<Record<string, unknown>> {
+    if (input.policy) {
+      const policy = await updateManagedPricingPolicy(this.database, {
+        ownerType: "b2b_client",
+        ownerId: userId,
+        expectedVersion: input.policy.expectedVersion,
+        rules: input.policy.rules,
+        actorId,
+        reason,
+      });
+      return { userId, policy, syncStatus: policy.targets.every((target) => target.syncState === "confirmed") ? "confirmed" : "pending" };
+    }
+    if (input.discountPercent === undefined) throw new Error("business pricing mutation is empty");
     const result = await setBusinessPricing(this.database, {
       userId,
-      multiplierBp: multiplierForDiscount(discountPercent),
+      multiplierBp: multiplierForDiscount(input.discountPercent),
       actorId,
       reason,
     });
-    return { userId, discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
+    return { userId, discountPercent: input.discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
   }
 
   private inviteUrl(token: string): string {

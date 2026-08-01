@@ -68,11 +68,41 @@ CAS expectation from the engine's active state, and stores the complete durable 
 the desired binding confirmed. Expired leases replay safely, including a lost ACK after the engine
 commit; same-version/different-digest and malformed protocol responses are permanent failures.
 
-This application checkpoint does not seed or activate production policies. A legacy scalar job is
-drained only after its account has a non-null desired full-policy version and digest, so empty
-version streams cannot alter current users. Provisioning becomes policy-before-key only after the
-Stage 5 seed/backfill has created and delivered the relevant account policy; OpenKeys follows its
-separate Stage 7 cutover.
+This application checkpoint does not seed production policies or enable the engine's strict runtime.
+A legacy scalar job is drained only after its account has a non-null desired full-policy version and
+digest, so empty version streams cannot alter current users. Application provisioning is now
+conditionally policy-before-key: when a managed Global B2C or B2B source policy exists, commerce
+creates the binding, immutable effective version and durable job before a usable key, keeps the
+engine account pending, and activates it only after the exact ACK. Accounts with no managed policy
+authority retain the legacy path until Stage 5 creates that authority. OpenKeys follows its separate
+Stage 7 cutover.
+
+Key issuance checks exact desired/applied version and digest both before and after the remote issue.
+If policy authority appears or changes in that race window, commerce disables the just-issued engine
+key as compensation and never stores it as usable. A provider-switch update creates a new immutable
+generation and rematerializes every existing managed binding against it, preserving unrelated
+product/OpenKeys scopes while preventing stale switch lineage.
+
+The commercial admin API exposes the complete managed surface:
+
+```text
+GET       /admin/pricing-catalog?product_id=...
+PATCH     /admin/provider-switches
+GET/PATCH /admin/pricing-policies/global-b2c
+GET       /admin/business-users/{id}/pricing-policy
+PATCH     /admin/business-users/{id}/pricing
+GET/PATCH /admin/business-invites/{id}/pricing-policy
+GET       /admin/service-policies
+GET/PATCH /admin/service-policies/{id}?product_id=...
+```
+
+Policy writes are full CAS replacements over provider/model rules. Their responses include source
+actor/reason/version, desired/applied target versions, durable delivery state and the latest error.
+Service inventory spans all products and carries the reviewed Stage 5 purpose/responsible evidence.
+An invitation may use either a complete policy or the legacy scalar compatibility input, never both;
+policy-based invitations persist a neutral `10000` placeholder. Edit, resend and redemption preserve
+independent exact snapshots, and redemption copies the selected invitation version into the new B2B
+client policy before provisioning.
 
 Stage 8 adds a read-only synchronization report for the commerce side:
 
@@ -102,10 +132,11 @@ POST   /v1/api-keys                {"label"?: "production"}; raw sk-pool key ret
 DELETE /v1/api-keys/{id}           disable an owned key by commercial UUID
 ```
 
-`GET /v1/account` also returns the authenticated customer's safe pricing view. Commercial operator
-routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B
-invitations, revoke/rotate them, and change B2B pricing. That key is never a client session or an
-engine Control API credential.
+`GET /v1/account` also returns the authenticated customer's safe funding and desired/applied pricing
+view, including provider/model availability without inferring provider from model names. Commercial
+operator routes use a separate `COMMERCIAL_ADMIN_KEY`; they create email-bound or copy-only B2B
+invitations, revoke/rotate them, and manage full B2B pricing policies. That key is never a client
+session or an engine Control API credential.
 
 Engine provisioning is recoverable: the stable handle `user:<commercial UUID>` makes account
 creation idempotent. API-key revocation uses the engine's non-secret `key_id`; PostgreSQL stores the
@@ -113,10 +144,11 @@ commercial UUID, engine `key_id`, and mask, never the usable key. A key issued b
 immediately disabled as compensation if its commercial record cannot be committed.
 
 New Google/GitHub B2C provisioning also sends one idempotent `$4.000000000` signup credit using
-`signup-bonus:<commercial UUID>`. Because Starter clients pay 40% of official prices, the public
-offer is stated as **$10 of usage at official API prices**. Password accounts are ineligible even
-when their address is hosted by Gmail. Recovery derives eligibility from the stored OAuth identity
-and repeats the same reference, so it cannot double-credit; B2B invitation provisioning skips it.
+`signup-bonus:<commercial UUID>`. The customer offer is exactly a **$4 track-only welcome bonus**;
+it is not projected into an official-price usage equivalent and cannot fund static discount rules.
+Password accounts are ineligible even when their address is hosted by Gmail. Recovery derives
+eligibility from the stored OAuth identity and repeats the same reference, so it cannot double-credit;
+B2B invitation provisioning skips it.
 
 ## Top-up money contract
 

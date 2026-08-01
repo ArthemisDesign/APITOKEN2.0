@@ -15,12 +15,15 @@ import {
 } from "@nestjs/common";
 import {
   createBusinessInviteSchema,
+  providerSwitchEditorMutationSchema,
+  pricingPolicyMutationSchema,
   setBusinessPricingSchema,
 } from "@claude-api/contracts";
 import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
+  PricingPolicyWriteError,
 } from "@claude-api/db";
 import { z } from "zod";
 import { AdminGuard } from "./admin.guard.js";
@@ -113,17 +116,123 @@ export class AdminController {
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
       return await this.admin.createBusinessInvite({
-        discountPercent: parsed.data.discountPercent,
         expiresInDays: parsed.data.expiresInDays,
         reason: parsed.data.reason,
         idempotencyKey: parsed.data.idempotencyKey,
+        ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
+        ...(parsed.data.policy === undefined ? {} : { policy: parsed.data.policy }),
         ...(parsed.data.email === undefined ? {} : { email: parsed.data.email }),
         actorId: adminActor(actorHeader),
       });
     } catch (error) {
       if (error instanceof BusinessInvitationConflictError) throw new HttpException(error.message, 409);
+      throwPricingPolicyHttpError(error);
       throw error;
     }
+  }
+
+  @Get("pricing-policies/global-b2c")
+  @Header("Cache-Control", "no-store")
+  async getGlobalB2cPricingPolicy(): Promise<unknown> {
+    return this.getManagedPolicy("global_b2c", "global-b2c");
+  }
+
+  @Get("pricing-catalog")
+  @Header("Cache-Control", "no-store")
+  async getManagedPricingCatalog(@Query("product_id") productId?: string): Promise<unknown> {
+    try {
+      return await this.admin.getManagedPricingCatalog(managedProductId(productId));
+    } catch (error) {
+      throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  @Patch("provider-switches")
+  @Header("Cache-Control", "no-store")
+  async updateManagedProviderSwitches(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const parsed = providerSwitchEditorMutationSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      return await this.admin.updateManagedProviderSwitches(parsed.data, adminActor(actorHeader));
+    } catch (error) {
+      throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  @Patch("pricing-policies/global-b2c")
+  @Header("Cache-Control", "no-store")
+  async updateGlobalB2cPricingPolicy(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    return this.updateManagedPolicy("global_b2c", "global-b2c", body, actorHeader);
+  }
+
+  @Get("business-invites/:id/pricing-policy")
+  @Header("Cache-Control", "no-store")
+  async getBusinessInvitePricingPolicy(@Param("id") id: string): Promise<unknown> {
+    assertUuid(id, "invitation ID");
+    return this.getManagedPolicy("b2b_invitation", id);
+  }
+
+  @Patch("business-invites/:id/pricing-policy")
+  @Header("Cache-Control", "no-store")
+  async updateBusinessInvitePricingPolicy(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    assertUuid(id, "invitation ID");
+    return this.updateManagedPolicy("b2b_invitation", id, body, actorHeader);
+  }
+
+  @Get("business-users/:id/pricing-policy")
+  @Header("Cache-Control", "no-store")
+  async getBusinessUserPricingPolicy(@Param("id") id: string): Promise<unknown> {
+    assertUuid(id, "user ID");
+    return this.getManagedPolicy("b2b_client", id);
+  }
+
+  @Get("service-policies")
+  @Header("Cache-Control", "no-store")
+  async listServicePricingPolicies(): Promise<unknown> {
+    try {
+      return await this.admin.listManagedServicePricingPolicies();
+    } catch (error) {
+      throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  @Get("service-policies/:id")
+  @Header("Cache-Control", "no-store")
+  async getServicePricingPolicy(
+    @Param("id") id: string,
+    @Query("product_id") productId?: string,
+  ): Promise<unknown> {
+    return this.getManagedPolicy("service", serviceOwnerId(id), managedProductId(productId));
+  }
+
+  @Patch("service-policies/:id")
+  @Header("Cache-Control", "no-store")
+  async updateServicePricingPolicy(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+    @Query("product_id") productId?: string,
+  ): Promise<unknown> {
+    return this.updateManagedPolicy(
+      "service",
+      serviceOwnerId(id),
+      body,
+      actorHeader,
+      managedProductId(productId),
+    );
   }
 
   @Get("business-invites/:id/link")
@@ -194,12 +303,53 @@ export class AdminController {
     try {
       return await this.admin.setBusinessPricing(
         id,
-        parsed.data.discountPercent,
+        {
+          ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
+          ...(parsed.data.policy === undefined ? {} : { policy: parsed.data.policy }),
+        },
         adminActor(actorHeader),
         parsed.data.reason,
       );
     } catch (error) {
       if (error instanceof BusinessCustomerNotFoundError) throw new NotFoundException(error.message);
+      throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  private async getManagedPolicy(
+    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
+    ownerId: string,
+    productId?: string,
+  ): Promise<unknown> {
+    try {
+      return await this.admin.getManagedPricingPolicy(ownerType, ownerId, productId);
+    } catch (error) {
+      if (error instanceof BusinessCustomerNotFoundError) throw new NotFoundException(error.message);
+      throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  private async updateManagedPolicy(
+    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
+    ownerId: string,
+    body: unknown,
+    actorHeader?: string,
+    productId?: string,
+  ): Promise<unknown> {
+    const parsed = pricingPolicyMutationSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      return await this.admin.updateManagedPricingPolicy(
+        ownerType,
+        ownerId,
+        parsed.data,
+        adminActor(actorHeader),
+        productId,
+      );
+    } catch (error) {
+      throwPricingPolicyHttpError(error);
       throw error;
     }
   }
@@ -212,4 +362,29 @@ function adminActor(value: string | undefined): string {
 
 function assertUuid(value: string, label: string): void {
   if (!uuidSchema.safeParse(value).success) throw new BadRequestException(`${label} must be a UUID`);
+}
+
+function serviceOwnerId(value: string): string {
+  const ownerId = value.trim();
+  if (!ownerId || ownerId.length > 200 || ownerId.includes("/")) {
+    throw new BadRequestException("service policy owner ID is invalid");
+  }
+  return ownerId;
+}
+
+function managedProductId(value: string | undefined): string {
+  const productId = value?.trim() || "main";
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(productId)) {
+    throw new BadRequestException("pricing product ID is invalid");
+  }
+  return productId;
+}
+
+function throwPricingPolicyHttpError(error: unknown): void {
+  if (!(error instanceof PricingPolicyWriteError)) return;
+  if (error.code === "policy_not_found") throw new NotFoundException(error.message);
+  if (error.code === "invalid_owner_rule" || error.code === "rule_outside_catalog") {
+    throw new BadRequestException(error.message);
+  }
+  throw new HttpException(error.message, 409);
 }

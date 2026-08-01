@@ -898,12 +898,36 @@ export async function confirmPricingControlJob(
         await client.query(`
           UPDATE account_policy_bindings
           SET applied_effective_version = $2, applied_digest = $3, last_ack_at = now(),
+              policy_enforcement = $4,
+              funding_enforcement = $5,
+              reconciliation_state = $6,
               sync_state = CASE
                 WHEN desired_effective_version = $2 AND desired_digest = $3 THEN 'confirmed'
                 ELSE 'pending'
               END,
               last_error = NULL, updated_at = now()
           WHERE id = $1
+        `, [
+          job.bindingId,
+          job.spec.effective_version,
+          job.spec.content_digest,
+          job.binding.policy_enforcement,
+          job.binding.funding_enforcement,
+          job.binding.reconciliation_state,
+        ]);
+        await client.query(`
+          UPDATE engine_accounts account
+          SET status = 'active', last_error = NULL, updated_at = now()
+          FROM account_policy_bindings binding
+          WHERE binding.id = $1
+            AND binding.user_id = account.user_id
+            AND binding.engine_account_id = account.engine_account_id
+            AND binding.sync_state = 'confirmed'
+            AND binding.desired_effective_version = $2
+            AND binding.applied_effective_version = $2
+            AND binding.desired_digest = $3
+            AND binding.applied_digest = $3
+            AND account.status = 'pending'
         `, [job.bindingId, job.spec.effective_version, job.spec.content_digest]);
       }
     }

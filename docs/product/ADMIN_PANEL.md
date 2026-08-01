@@ -75,6 +75,35 @@ same-origin проксирует обезличенные `/capacity`, `/codex-s
 provider runtime и добавляет серверные ключи; браузер не получает control keys, полный email,
 OAuth, Google project или proxy. Защита относится ко всем страницам, включая `/sales/calculator`.
 
+## Pricing configurators и B2B policies
+
+Страница `/pricing` — операторская поверхность versioned multi-discount authority:
+
+- Global B2C редактируется полным CAS replacement-набором provider/model rules. Для B2C разрешены
+  `track` и точные static overrides; exact model rule имеет приоритет над provider rule;
+- provider switches показывают master, product, B2C и B2B gates. Master визуально отделён, а его
+  изменение и любое выключение gate требуют отдельного browser confirmation. Сохранённые policy
+  rules при выключении не удаляются;
+- provider rule не включает будущие модели автоматически. Редактор предлагает только модели из
+  активного product catalog; Gemini не появляется без явной catalog entry;
+- service inventory охватывает все products, показывает `purpose` и `responsible` из утверждённой
+  Stage 5 matrix и открывает product-aware policy editor. Service и B2B принимают только static
+  discount rules, не `track`;
+- каждое сохранение показывает новую source version и не объявляется применённым, пока targets не
+  имеют совпадающие desired/applied versions и exact ACK. В UI видны job state, последняя ошибка,
+  actor, reason и время версии.
+
+Страница `/business` использует тот же policy editor для существующих B2B clients и активных
+invitations. Новая invitation создаётся сразу с полной provider/model policy; scalar discount editor
+в активном UI отсутствует. Непогашенная invitation редактируется CAS replacement-версиями, resend
+получает независимую exact snapshot, а после redemption изменение invitation уже не меняет client
+policy. Preview/email/registration описывают provider/model доступ и account остаётся pending до
+engine ACK; usable key до подтверждения policy не выдаётся.
+
+Админка не выполняет Stage 5 assignment/backfill сама и не выводит назначения B2B/service/OpenKeys
+из имён. Пока catalog/policy foundation отсутствует, соответствующие редакторы fail closed и явно
+показывают, что materialization ещё не выполнена.
+
 ## Calibration laboratory на странице подписок
 
 GPT-блок страницы `/subscriptions` — операторская лаборатория, а не одна итоговая USD-цифра:

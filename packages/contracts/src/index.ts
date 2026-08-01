@@ -682,17 +682,96 @@ export const B2C_SIGNUP_BONUS_BALANCE_NANO =
   B2C_SIGNUP_BONUS_OFFICIAL_NANO * BigInt(B2C_PRICING_TIERS[0].multiplierBp) / 10_000n;
 
 export const businessDiscountSchema = z.number().int().min(0).max(95);
+export const pricingPolicyEditorRuleSchema = z.object({
+  scope: z.union([
+    z.object({
+      provider: z.object({ providerId: pricingIdentifierSchema }).strict(),
+    }).strict(),
+    z.object({
+      model: z.object({
+        providerId: pricingIdentifierSchema,
+        canonicalModelId: pricingIdentifierSchema,
+      }).strict(),
+    }).strict(),
+  ]),
+  pricingMode: z.enum(["track", "discount"]),
+  discountBps: z.number().int().min(0).max(9_500)
+    .refine((value) => value % 100 === 0, "discountBps must use whole percentage points")
+    .nullable(),
+}).strict().superRefine((rule, context) => {
+  if (rule.pricingMode === "track" && rule.discountBps !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["discountBps"], message: "track rules do not have a fixed discount" });
+  }
+  if (rule.pricingMode === "discount" && rule.discountBps === null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["discountBps"], message: "discount rules require discountBps" });
+  }
+});
+export type PricingPolicyEditorRule = z.infer<typeof pricingPolicyEditorRuleSchema>;
+
+export const pricingPolicyEditorRulesSchema = z.array(pricingPolicyEditorRuleSchema).min(1).max(100)
+  .superRefine((rules, context) => {
+    const scopes = new Set<string>();
+    rules.forEach((rule, index) => {
+      const key = "provider" in rule.scope
+        ? `${rule.scope.provider.providerId}\0`
+        : `${rule.scope.model.providerId}\0${rule.scope.model.canonicalModelId}`;
+      if (scopes.has(key)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "scope"], message: "pricing rule scope is duplicated" });
+      }
+      scopes.add(key);
+    });
+  });
+
+export const pricingPolicyMutationSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(300),
+  rules: pricingPolicyEditorRulesSchema,
+}).strict();
+export type PricingPolicyMutation = z.infer<typeof pricingPolicyMutationSchema>;
+
+export const providerSwitchEditorStateSchema = z.object({
+  providerId: pricingIdentifierSchema,
+  masterEnabled: z.boolean(),
+  productEnabled: z.boolean(),
+  b2cEnabled: z.boolean(),
+  b2bEnabled: z.boolean(),
+}).strict();
+export const providerSwitchEditorMutationSchema = z.object({
+  expectedGeneration: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(300),
+  providers: z.array(providerSwitchEditorStateSchema).min(1).max(20),
+}).strict().superRefine((value, context) => {
+  const providers = new Set<string>();
+  value.providers.forEach((provider, index) => {
+    if (providers.has(provider.providerId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["providers", index, "providerId"], message: "provider switch is duplicated" });
+    }
+    providers.add(provider.providerId);
+  });
+});
+export type ProviderSwitchEditorMutation = z.infer<typeof providerSwitchEditorMutationSchema>;
+
 export const createBusinessInviteSchema = z.object({
   email: authEmailSchema.optional(),
-  discountPercent: businessDiscountSchema,
+  // discountPercent remains an additive rolling-deploy fallback for an older admin slot. A
+  // full-policy request never combines with it or turns the scalar into extra rules.
+  discountPercent: businessDiscountSchema.optional(),
+  policy: z.object({ rules: pricingPolicyEditorRulesSchema }).strict().optional(),
   expiresInDays: z.number().int().min(1).max(30).default(7),
   reason: z.string().trim().min(3).max(300),
   idempotencyKey: z.string().uuid(),
-}).strict();
+}).strict().refine(
+  (value) => (value.policy === undefined) !== (value.discountPercent === undefined),
+  { message: "provide exactly one of policy or the legacy scalar fallback" },
+);
 export const setBusinessPricingSchema = z.object({
-  discountPercent: businessDiscountSchema,
+  discountPercent: businessDiscountSchema.optional(),
+  policy: pricingPolicyMutationSchema.omit({ reason: true }).optional(),
   reason: z.string().trim().min(3).max(300),
-}).strict();
+}).strict().refine(
+  (value) => (value.policy === undefined) !== (value.discountPercent === undefined),
+  { message: "provide exactly one of policy or discountPercent" },
+);
 
 export function multiplierForDiscount(discountPercent: number): number {
   return 10_000 - discountPercent * 100;

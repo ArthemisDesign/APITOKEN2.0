@@ -32,6 +32,12 @@ immutable eligibility/funding, а static/B2B/service usage не проходит
 immutable ledger attribution в customer API/dashboard без угадывания провайдера или денежной
 эквивалентности. Он остаётся additive для rolling deploy и не включает admin configurators,
 production backfill либо strict activation.
+Текущий четвёртый Stage 10 checkpoint добавляет operator configurators для Global B2C,
+provider switches, B2B clients/invitations и service policies, а также завершает application-side
+policy-before-key lifecycle. Он материализует и требует exact ACK только там, где managed policy
+уже существует, поэтому rolling deploy до Stage 5 не меняет legacy accounts без policy authority.
+Checkpoint не создаёт production assignment matrix, не применяет Stage 5/6 data и сам по себе не
+включает strict runtime либо публичный запуск.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -1915,7 +1921,7 @@ HTTP integration test проходит полный catalog → switches → pol
 dual-lineage read и stale expectation conflict; registry PostgreSQL CAS matrix остаётся
 authoritative backend parity proof.
 
-### Этап 4. Authority и durable synchronization в commerce — текущий application-checkpoint
+### Этап 4. Authority и durable synchronization в commerce — application checkpoint реализован
 
 - Добавить полные atomic policy jobs.
 - Ввести monotonic CAS/digest/ACK.
@@ -1942,10 +1948,28 @@ Scalar coexistence fail-safe включается только для аккау
 `desired_effective_version`/digest: pending/retry scalar rows сохраняются как audit и дренируются,
 а уже захваченная scalar job не возвращается в очередь после появления desired policy. Пустые
 version streams не меняют существующих пользователей, provisioning, keys или цену до Stage 5.
-Policy-before-key gate нельзя включать раньше seed/backfill: иначе новый аккаунт не сможет получить
-ещё не существующую materialized policy. Stage 5 атомарно создаёт authority data и jobs; после
-подтверждённого ACK gate включается для commerce provisioning, а OpenKeys делает то же в своём
-отдельном Stage 7 cutover.
+Application gate теперь включён условно по наличию managed source policy: аккаунт без authority
+остаётся на совместимом legacy provisioning, а аккаунт с Global B2C/B2B policy сначала получает
+binding, immutable effective version и durable job. Engine account остаётся `pending` до exact ACK;
+ACK атомарно сохраняет applied identity и enforcement binding и только затем переводит account в
+`active`. Выпуск ключа проверяет equality desired/applied version+digest и до, и после удалённого
+issue. Policy, появившаяся в race-окне, приводит к компенсирующему disable выданного секрета; usable
+commerce key при этом не сохраняется. Stage 5 атомарно создаёт production authority data и jobs,
+после чего этот же уже доставленный gate начинает защищать новые commerce accounts; OpenKeys делает
+эквивалентный отдельный cutover на Этапе 7.
+
+Full-policy B2B invitation создаётся с независимой immutable provider/model policy и neutral
+compatibility multiplier `10000`; одновременно передать full policy и legacy scalar нельзя.
+Непогашенная invitation редактируется только CAS replacement-версиями, preview/email/registration
+показывают provider/model rules, а resend создаёт новую invitation с отдельной exact snapshot и не
+переиспользует исторический scalar. При redemption exact invitation version/digest копируется в
+новую client policy; дальнейшие изменения invitation не меняют клиента. Provisioning создаёт
+binding/job до usable key и активирует account только после ACK.
+
+Каждая новая provider-switch generation также rematerialize-ит все существующие managed account
+bindings в новые immutable effective versions, pinned к этой generation. Иначе policy могла бы
+остаться на старой switch lineage и сделать Stage 8 evidence корректно stale. Неизменённые
+OpenKeys/product scopes копируются в новую generation без потери.
 
 ### Этап 5. Backfill каталогов и политик
 
@@ -2115,6 +2139,33 @@ admin configurators или публичный launch:
 - новые browser/API поля остаются optional/additive, поэтому порядок rolling deploy web/API не
   требует contract lockstep. Checkpoint не меняет settlement, policy jobs, bindings, key issuance
   или production data и не снимает блокер reviewed B2B/service/OpenKeys assignment matrix.
+
+Четвёртый application checkpoint Этапа 10 включает operator configurators и application-side
+provisioning lifecycle, но не является production data application или public launch:
+
+- `/pricing` показывает product catalog и versioned provider gates, редактирует Global B2C и
+  product-aware service policies полными provider/model replacement rules. Master gate визуально
+  отделён; его изменение и любое выключение gate требуют явного подтверждения. Выключение не
+  удаляет rules, а provider rule не включает будущую модель без отдельной catalog entry;
+- `/business` создаёт full-policy invitations и редактирует CAS replacement policies активных
+  invitations и существующих B2B clients. Активный scalar editor из UI удалён; policy invitation
+  использует только neutral compatibility placeholder и сохраняет snapshot при resend/redemption;
+- policy editor показывает exact-model-over-provider priority, effective availability/mode/discount,
+  actor/reason/version, desired/applied versions, job delivery state и последнюю ошибку. Service
+  inventory охватывает все products и показывает зафиксированные Stage 5 `purpose`/`responsible`;
+- provider switch update создаёт immutable generation, durable switch job и новые effective
+  versions для всех managed bindings. Policy update аналогично создаёт новую source version и jobs
+  для её targets; UI не объявляет изменение применённым до exact ACK;
+- commerce provisioning материализует policy до ключа, оставляет account `pending` до ACK и
+  компенсирующе disable-ит key при pre/post-issue race. Legacy account без managed authority остаётся
+  совместимым до Stage 5; checkpoint не угадывает и не создаёт production assignments;
+- invitation preview, email и registration показывают provider/model доступ вместо скалярного
+  обещания; customer welcome copy описывает `$4` как track-only bonus. Gemini появляется только из
+  явного product catalog и потому отсутствует в текущих main/OpenKeys surfaces;
+- PostgreSQL integration покрывает policy CAS/materialization, switch rematerialization,
+  invitation create/edit/redeem/resend snapshot и policy-before-key race/compensation. Это доказывает
+  application contract, но не заменяет Stage 5/6 application, Stage 8 production evidence, strict
+  activation и финальный аудит критериев готовности.
 
 ### Этап 11. Поздний contract cleanup
 

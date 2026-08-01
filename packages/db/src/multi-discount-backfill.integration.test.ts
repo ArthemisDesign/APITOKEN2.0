@@ -281,6 +281,8 @@ describe.runIf(Boolean(connectionString))("Stage 5 multi-discount backfill", () 
           product_id: "main",
           owner_id: "service:stage5-test",
           policy_id: "policy:main:service:stage5-test",
+          purpose: "Stage 5 service assignment test",
+          responsible: "service-owner@example.test",
           rules: [{
             rule_id: "provider:anthropic:discount",
             scope: { provider: { provider_id: "anthropic" } },
@@ -315,6 +317,16 @@ describe.runIf(Boolean(connectionString))("Stage 5 multi-discount backfill", () 
         WHERE engine_account_id = 'acct_stage5_openkeys'
       `);
       expect(openKeysCommerceBinding.rows[0]!.count).toBe("0");
+      const serviceEvidence = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+        SELECT metadata FROM audit_log
+        WHERE action = 'pricing.service_assignment.applied'
+          AND target_id = 'policy:main:service:stage5-test'
+      `);
+      expect(serviceEvidence.rows[0]?.metadata).toMatchObject({
+        purpose: "Stage 5 service assignment test",
+        responsible: "service-owner@example.test",
+        assignmentMatrixDigest: matrix.content_digest,
+      });
     } finally {
       await database.pool.end();
     }
@@ -364,6 +376,8 @@ describe.runIf(Boolean(connectionString))("Stage 5 multi-discount backfill", () 
           product_id: "main",
           owner_id: "service:stage5-test",
           policy_id: "policy:main:service:stage5-test",
+          purpose: "Stage 5 service assignment test",
+          responsible: "service-owner@example.test",
           rules: [{
             rule_id: "provider:anthropic:discount",
             scope: { provider: { provider_id: "anthropic" } },

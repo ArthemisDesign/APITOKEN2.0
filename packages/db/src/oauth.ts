@@ -3,6 +3,7 @@ import { B2C_PRICING_TIERS } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { initialDisplayName, type AuthUser, type RegisteredAuthUser } from "./auth.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
+import { copyBusinessInvitationPolicyToUser } from "./pricing-policy-write.js";
 
 export type OAuthProvider = "google" | "github";
 
@@ -184,6 +185,7 @@ export async function completeExternalSignIn(
       VALUES ($1, $2, $3, $4, $5)
     `, [userId, customerType, invite ? null : 0, engineMultiplierBp, monthStart]);
     if (invite) {
+      await copyBusinessInvitationPolicyToUser(client, { inviteId: invite.id, userId });
       await client.query(`
         UPDATE business_invites
         SET consumed_at = now(), consumed_by_user_id = $2, encrypted_token = NULL

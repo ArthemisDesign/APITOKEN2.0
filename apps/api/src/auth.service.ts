@@ -12,6 +12,7 @@ import {
   flagSignupProfile,
   ipSubnetOf,
   isBonusEligibleEmailDomain,
+  materializeProvisionedUserPolicy,
   recordDeviceSighting,
   releaseSignupBonus,
   upsertSignupProfile,
@@ -90,7 +91,8 @@ export class AuthService {
       emailBound: invite.email !== null,
       maskedEmail: invite.email ? maskEmail(invite.email) : null,
       email: invite.email,
-      discountPercent: 100 - invite.multiplierBp / 100,
+      discountPercent: invite.policy ? null : 100 - invite.multiplierBp / 100,
+      pricingPolicy: invite.policy,
       expiresAt: invite.expiresAt.toISOString(),
     };
   }
@@ -498,28 +500,13 @@ export class AuthService {
         multBp: multiplierBp,
         welcomeBonusEligible,
       });
-      const completed = await this.database.pool.query(`
-        UPDATE engine_accounts
-        SET engine_account_id = $2, status = 'active', last_error = NULL, updated_at = now()
-        WHERE user_id = $1 AND status IN ('pending', 'error')
-        RETURNING status
-      `, [user.id, account.account]);
-      if (completed.rowCount === 1) {
-        user.engineAccountStatus = "active";
-        return;
-      }
+      const materialized = await materializeProvisionedUserPolicy(this.database, {
+        userId: user.id,
+        engineAccountId: account.account,
+      });
+      user.engineAccountStatus = materialized.ready ? "active" : "pending";
+      return;
 
-      const latestStatus = await this.engineAccountStatusForUser(user.id);
-      if (latestStatus === "active") {
-        user.engineAccountStatus = "active";
-        return;
-      }
-      if (latestStatus === "disabled") {
-        user.engineAccountStatus = "disabled";
-        // AUDIT-TODO(C61): add a durable provisioning lease/version plus remote disable compensation for a claim lost after creation.
-        throw new EngineAccountDisabledError();
-      }
-      throw new Error("engine account mapping changed during provisioning");
     } catch (error) {
       if (error instanceof EngineAccountDisabledError) throw error;
       const failed = await this.database.pool.query(`

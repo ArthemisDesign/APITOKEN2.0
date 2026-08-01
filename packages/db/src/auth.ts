@@ -3,6 +3,7 @@ import { B2C_PRICING_TIERS, displayNameSchema } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { insertAuthEmail } from "./email.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
+import { copyBusinessInvitationPolicyToUser } from "./pricing-policy-write.js";
 
 export interface AuthUser {
   id: string;
@@ -92,6 +93,7 @@ export async function createEmailUser(
         VALUES ($1, $2, $3, 0, 0)
       `, [randomUUID(), userId, monthStart]);
     } else {
+      await copyBusinessInvitationPolicyToUser(client, { inviteId: invite.id, userId });
       await client.query(`
         UPDATE business_invites
         SET consumed_at = now(), consumed_by_user_id = $2, encrypted_token = NULL

@@ -197,6 +197,8 @@ const serviceAssignmentSchema = z.object({
   product_id: z.enum([STAGE5_MAIN_PRODUCT_ID, STAGE5_OPENKEYS_PRODUCT_ID]),
   owner_id: z.string().trim().min(1).max(200),
   policy_id: z.string().trim().min(1).max(200),
+  purpose: z.string().trim().min(3).max(500),
+  responsible: z.string().trim().min(1).max(200),
   rules: z.array(serviceRuleSchema).min(1),
 }).strict();
 
@@ -2034,6 +2036,32 @@ export async function runStage5Backfill(
           client,
           buildServiceAccountPlan(assignment, inventoryAccount, plan.catalogs),
         );
+        const assignmentEvidence = {
+          accountId: assignment.account_id,
+          productId: assignment.product_id,
+          ownerId: assignment.owner_id,
+          policyId: assignment.policy_id,
+          purpose: assignment.purpose,
+          responsible: assignment.responsible,
+          assignmentMatrixDigest: approvedMatrix.content_digest,
+          approvedAt: approvedMatrix.approved_at,
+          reason: approvedMatrix.reason,
+        };
+        await client.query(`
+          INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+          SELECT 'admin', $1, 'pricing.service_assignment.applied', 'pricing_policy', $2, $3::jsonb
+          WHERE NOT EXISTS (
+            SELECT 1 FROM audit_log
+            WHERE action = 'pricing.service_assignment.applied'
+              AND target_type = 'pricing_policy' AND target_id = $2
+              AND metadata->>'assignmentMatrixDigest' = $4
+          )
+        `, [
+          approvedMatrix.approved_by,
+          assignment.policy_id,
+          JSON.stringify(assignmentEvidence),
+          approvedMatrix.content_digest,
+        ]);
       }
     }
 

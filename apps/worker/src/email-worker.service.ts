@@ -109,7 +109,9 @@ export class EmailWorkerService implements OnModuleInit, OnApplicationShutdown {
       ? renderBusinessInviteEmail(
         token,
         appBaseUrl,
-        readNumber(job.payload, "discountPercent"),
+        job.payload.pricingPolicy === "provider_model"
+          ? null
+          : readNumber(job.payload, "discountPercent"),
         readString(job.payload, "expiresAt"),
       )
       : renderAuthEmail(job.template, token, appBaseUrl);

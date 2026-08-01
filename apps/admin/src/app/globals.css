@@ -156,6 +156,27 @@ nav{display:flex;margin:0 0 0 14px;overflow-x:auto;align-items:center}
 main{padding:18px 14px 50px}.page-head h1{font-size:19px}.form{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){.cards,.form,.domain-grid{grid-template-columns:1fr}.card .value{font-size:23px}}
 
+/* ── Multi-provider pricing policies ───────────────────── */
+.policy-editor{display:grid;gap:12px}.policy-editor-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 14px;
+border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.policy-editor-head>div{display:grid}.policy-editor-head b{font-size:13px}
+.policy-editor-head span{color:var(--faint);font:11px/1.5 var(--mono)}.policy-provider{overflow:hidden;border:1px solid var(--line);border-radius:11px;background:var(--panel)}
+.policy-provider-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 14px;background:var(--panel2);border-bottom:1px solid var(--line2)}
+.policy-rule-toggle{display:flex;align-items:center;gap:9px;min-width:0;cursor:pointer}.policy-rule-toggle input{width:16px;height:16px;margin:0;padding:0;accent-color:var(--accent)}
+.policy-rule-toggle>span{display:grid;min-width:0}.policy-rule-toggle b{font:650 12.5px/1.35 var(--mono);overflow:hidden;text-overflow:ellipsis}.policy-rule-toggle small{color:var(--faint);font-size:10.5px}
+.policy-rule-controls{display:flex;align-items:end;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line2);background:color-mix(in srgb,var(--accent-soft) 28%,var(--panel))}
+.policy-rule-controls.compact{padding:0;border:0;background:transparent}.policy-rule-controls label{display:grid;gap:4px}.policy-rule-controls label>span{color:var(--faint);font:650 9.5px/1.2 var(--sans);text-transform:uppercase;letter-spacing:.06em}
+.policy-rule-controls select{min-width:180px}.policy-rule-controls input{width:95px}.policy-progressive-note{align-self:center;color:var(--muted);font-size:11px}
+.policy-provider-warning{padding:8px 14px;border-bottom:1px solid var(--line2);background:var(--warn-soft);color:var(--warn);font-size:10.5px;line-height:1.45}
+.policy-models{display:grid}.policy-model{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:16px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line2)}
+.policy-model-config{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.policy-model:last-child{border-bottom:0}.policy-rule-count{padding:10px 12px;border-radius:8px;background:var(--ok-soft);color:var(--ok);font-size:11.5px}.policy-rule-count.bad{background:var(--bad-soft);color:var(--bad)}
+.policy-targets{display:grid;gap:7px;margin-top:12px}.policy-target{display:grid;grid-template-columns:minmax(180px,1fr) auto auto auto;gap:10px;align-items:center;padding:9px 11px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2)}
+.policy-target code{overflow:hidden;text-overflow:ellipsis}.policy-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px;color:var(--muted);font-size:11.5px}.policy-meta code{font-family:var(--mono)}
+.policy-switch-grid{display:grid;gap:8px}.policy-switch-row{display:grid;grid-template-columns:minmax(140px,1fr) repeat(4,minmax(110px,.6fr));gap:10px;align-items:center;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.policy-switch-row>label{display:flex;align-items:center;gap:7px;font-size:11.5px}.policy-switch-row input{margin:0;padding:0;accent-color:var(--accent)}
+.policy-switch-row .master-switch{padding:6px 8px;border:1px solid var(--bad);border-radius:7px;background:var(--bad-soft);color:var(--bad);font-weight:650}
+@media(max-width:760px){.policy-model{grid-template-columns:1fr}.policy-rule-controls.compact{padding-left:25px}.policy-switch-row{grid-template-columns:1fr 1fr}.policy-switch-row>b{grid-column:1/-1}}
+
 /* ── Codex calibration laboratory ───────────────────────── */
 .codex-lab{--codex-credit:#0f9488;--codex-credit-soft:#e3f6f2;--codex-usd:#7357d8;--codex-usd-soft:#eeeafe;
 --codex-uncertain:#c47b16;display:grid;gap:18px;margin-top:12px}

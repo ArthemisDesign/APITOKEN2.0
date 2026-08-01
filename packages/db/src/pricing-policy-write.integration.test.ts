@@ -1,0 +1,469 @@
+import { createHash, randomUUID } from "node:crypto";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Client } from "pg";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { PricingPolicyEditorRule } from "@claude-api/contracts";
+import { createEmailUser } from "./auth.js";
+import { createDatabase, type Database } from "./client.js";
+import { MIGRATIONS_FOLDER } from "./migrate.js";
+import { completeExternalSignIn } from "./oauth.js";
+import {
+  assertUserPolicyReadyForKey,
+  getManagedPricingCatalog,
+  getManagedPricingPolicy,
+  materializeProvisionedUserPolicy,
+  updateManagedPricingPolicy,
+  updateManagedProviderSwitches,
+} from "./pricing-policy-write.js";
+import {
+  claimNextPricingControlJob,
+  confirmPricingControlJob,
+  type ClaimedPricingControlJob,
+} from "./pricing-control-jobs.js";
+import { createBusinessInvite, rotateBusinessInvite } from "./pricing.js";
+import { runStage5Backfill } from "./multi-discount-backfill.js";
+
+const connectionString = process.env.TEST_DATABASE_URL;
+const TEST_TIMEOUT_MS = 120_000;
+
+const ANTHROPIC_60: PricingPolicyEditorRule = {
+  scope: { provider: { providerId: "anthropic" } },
+  pricingMode: "discount",
+  discountBps: 6_000,
+};
+const OPENAI_50: PricingPolicyEditorRule = {
+  scope: { provider: { providerId: "openai" } },
+  pricingMode: "discount",
+  discountBps: 5_000,
+};
+
+function quoteIdentifier(identifier: string): string {
+  if (!/^[a-z][a-z0-9_]*$/.test(identifier)) throw new Error(`unsafe identifier ${identifier}`);
+  return `"${identifier}"`;
+}
+
+describe.runIf(Boolean(connectionString))("managed multi-discount policy writes", () => {
+  let admin: Client;
+  let seedClient: Client;
+  let database: Database;
+  let databaseName: string;
+
+  beforeAll(async () => {
+    databaseName = `policy_write_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 10)}`;
+    admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+    const url = new URL(connectionString!);
+    url.pathname = `/${databaseName}`;
+    seedClient = new Client({ connectionString: url.toString() });
+    await seedClient.connect();
+    await migrate(drizzle(seedClient), { migrationsFolder: MIGRATIONS_FOLDER });
+    database = createDatabase(url.toString(), "policy-write-test");
+  }, TEST_TIMEOUT_MS);
+
+  beforeEach(async () => {
+    const tables = await seedClient.query<{ tablename: string }>(`
+      SELECT tablename FROM pg_tables
+      WHERE schemaname = 'public' AND tablename <> '__drizzle_migrations'
+      ORDER BY tablename
+    `);
+    if (tables.rows.length > 0) {
+      await seedClient.query(
+        `TRUNCATE TABLE ${tables.rows.map((row) => quoteIdentifier(row.tablename)).join(", ")} RESTART IDENTITY CASCADE`,
+      );
+    }
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+  }, TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await database?.pool.end();
+    await seedClient?.end();
+    if (admin) {
+      await admin.query(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+        [databaseName],
+      );
+      await admin.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)}`);
+      await admin.end();
+    }
+  }, TEST_TIMEOUT_MS);
+
+  it("creates a complete invitation policy atomically and replays only the exact policy", async () => {
+    const idempotencyKey = randomUUID();
+    const input = inviteInput(idempotencyKey, [ANTHROPIC_60, OPENAI_50]);
+    const created = await createBusinessInvite(database, input);
+    const replay = await createBusinessInvite(database, {
+      ...input,
+      tokenHash: tokenHash("replayed-token"),
+      encryptedToken: "different-ciphertext",
+    });
+
+    expect(replay).toMatchObject({ id: created.id, idempotentReplay: true });
+    await expect(getManagedPricingPolicy(database, {
+      ownerType: "b2b_invitation",
+      ownerId: created.id,
+    })).resolves.toMatchObject({
+      currentVersion: 1,
+      rules: [ANTHROPIC_60, OPENAI_50],
+      targets: [],
+    });
+    await expect(createBusinessInvite(database, {
+      ...input,
+      tokenHash: tokenHash("conflicting-token"),
+      encryptedToken: "conflicting-ciphertext",
+      policyRules: [ANTHROPIC_60],
+    })).rejects.toMatchObject({ code: "version_conflict" });
+    await expect(createBusinessInvite(database, {
+      ...input,
+      idempotencyKey: randomUUID(),
+      multiplierBp: 4_000,
+    })).rejects.toMatchObject({ code: "invalid_owner_rule" });
+    const stored = await seedClient.query<{ policies: string; bindings: string }>(`
+      SELECT
+        (SELECT count(*)::text FROM pricing_policies WHERE owner_type = 'b2b_invitation') AS policies,
+        (SELECT count(*)::text FROM business_invite_policy_bindings) AS bindings
+    `);
+    expect(stored.rows[0]).toEqual({ policies: "1", bindings: "1" });
+  });
+
+  it("enforces full replacement CAS, catalog membership, uniqueness, and static B2B rules", async () => {
+    const created = await createBusinessInvite(database, inviteInput(randomUUID(), [ANTHROPIC_60]));
+    const base = {
+      ownerType: "b2b_invitation" as const,
+      ownerId: created.id,
+      expectedVersion: 1,
+      actorId: "admin@example.test",
+      reason: "update negotiated provider policy",
+    };
+
+    await expect(updateManagedPricingPolicy(database, {
+      ...base,
+      rules: [{ ...ANTHROPIC_60, pricingMode: "track", discountBps: null }],
+    })).rejects.toMatchObject({ code: "invalid_owner_rule" });
+    await expect(updateManagedPricingPolicy(database, {
+      ...base,
+      rules: [{
+        scope: { provider: { providerId: "gemini" } },
+        pricingMode: "discount",
+        discountBps: 5_000,
+      }],
+    })).rejects.toMatchObject({ code: "rule_outside_catalog" });
+    await expect(updateManagedPricingPolicy(database, { ...base, rules: [] })).rejects.toThrow();
+    await expect(updateManagedPricingPolicy(database, {
+      ...base,
+      rules: [ANTHROPIC_60, { ...ANTHROPIC_60, discountBps: 5_000 }],
+    })).rejects.toThrow();
+
+    const updated = await updateManagedPricingPolicy(database, {
+      ...base,
+      rules: [ANTHROPIC_60, OPENAI_50],
+    });
+    expect(updated).toMatchObject({ currentVersion: 2, rules: [ANTHROPIC_60, OPENAI_50] });
+    await expect(updateManagedPricingPolicy(database, {
+      ...base,
+      rules: [ANTHROPIC_60],
+    })).rejects.toMatchObject({ code: "version_conflict" });
+  });
+
+  it("copies the exact invitation snapshot through OAuth redemption", async () => {
+    const token = `oauth-invite-${randomUUID()}`;
+    const created = await createBusinessInvite(database, {
+      ...inviteInput(randomUUID(), [ANTHROPIC_60, OPENAI_50]),
+      email: "oauth-buyer@example.test",
+      tokenHash: tokenHash(token),
+    });
+    const user = await completeExternalSignIn(database, {
+      provider: "github",
+      subject: `github-${randomUUID()}`,
+      email: "oauth-buyer@example.test",
+      emailVerified: true,
+      displayName: "OAuth Buyer",
+      metadata: { login: "oauth-buyer" },
+    }, tokenHash(token));
+
+    expect(user).toMatchObject({ customerType: "b2b", isNewAccount: true });
+    const [invitationPolicy, clientPolicy] = await Promise.all([
+      getManagedPricingPolicy(database, { ownerType: "b2b_invitation", ownerId: created.id }),
+      getManagedPricingPolicy(database, { ownerType: "b2b_client", ownerId: user.id }),
+    ]);
+    expect(invitationPolicy).not.toBeNull();
+    expect(clientPolicy).not.toBeNull();
+    expect(clientPolicy).toMatchObject({ currentVersion: 1, rules: invitationPolicy!.rules });
+    const audit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'business_invite.policy_copied' AND target_id = $1
+    `, [clientPolicy!.policyId]);
+    expect(audit.rows[0]?.metadata).toMatchObject({
+      inviteId: created.id,
+      invitationPolicyVersion: invitationPolicy!.currentVersion,
+      invitationPolicyDigest: invitationPolicy!.currentDigest,
+      clientPolicyVersion: clientPolicy!.currentVersion,
+      clientPolicyDigest: clientPolicy!.currentDigest,
+    });
+  });
+
+  it("rotates a policy invitation as an independent exact snapshot with a neutral scalar placeholder", async () => {
+    const created = await createBusinessInvite(database, inviteInput(randomUUID(), [ANTHROPIC_60, OPENAI_50]));
+    // Stage 5 can attach a full policy to a legacy invitation whose historical scalar was not
+    // neutral. Rotation must not carry that scalar forward as authority or presentation data.
+    await seedClient.query("UPDATE business_invites SET multiplier_bp = 4000 WHERE id = $1", [created.id]);
+    const replacementIdempotencyKey = randomUUID();
+    const replacement = await rotateBusinessInvite(database, {
+      inviteId: created.id,
+      tokenHash: tokenHash(`replacement-${randomUUID()}`),
+      encryptedToken: "replacement-ciphertext",
+      expiresAt: new Date(Date.now() + 172_800_000),
+      idempotencyKey: replacementIdempotencyKey,
+      actorId: "admin@example.test",
+      reason: "rotate the invitation without changing negotiated policy",
+    });
+    expect(replacement.multiplierBp).toBe(10_000);
+    const [sourcePolicy, replacementPolicy] = await Promise.all([
+      getManagedPricingPolicy(database, { ownerType: "b2b_invitation", ownerId: created.id }),
+      getManagedPricingPolicy(database, { ownerType: "b2b_invitation", ownerId: replacement.id }),
+    ]);
+    expect(replacementPolicy).toMatchObject({ currentVersion: 1, rules: sourcePolicy!.rules });
+    expect(replacementPolicy!.policyId).not.toBe(sourcePolicy!.policyId);
+    const replay = await rotateBusinessInvite(database, {
+      inviteId: created.id,
+      tokenHash: tokenHash("ignored-replay-token"),
+      encryptedToken: "ignored-replay-ciphertext",
+      expiresAt: new Date(Date.now() + 259_200_000),
+      idempotencyKey: replacementIdempotencyKey,
+      actorId: "admin@example.test",
+      reason: "exact replay",
+    });
+    expect(replay).toMatchObject({ id: replacement.id, idempotentReplay: true, multiplierBp: 10_000 });
+  });
+
+  it("updates provider switches as one versioned full replacement and preserves unrelated scopes", async () => {
+    const token = `switch-policy-${randomUUID()}`;
+    const invitation = await createBusinessInvite(database, {
+      ...inviteInput(randomUUID(), [ANTHROPIC_60]),
+      tokenHash: tokenHash(token),
+    });
+    const user = await createEmailUser(database, "buyer@example.test", "password-hash", tokenHash(token));
+    expect(invitation.id).toBeTruthy();
+    await materializeProvisionedUserPolicy(database, {
+      userId: user.id,
+      engineAccountId: `acct_switch_${user.id.replaceAll("-", "")}`,
+    });
+    const current = await getManagedPricingCatalog(database);
+    expect(current).toMatchObject({
+      catalogGeneration: 1,
+      switchGeneration: 1,
+      providers: [
+        { providerId: "anthropic", masterEnabled: true, productEnabled: true, b2cEnabled: true, b2bEnabled: true },
+        { providerId: "openai", masterEnabled: true, productEnabled: true, b2cEnabled: true, b2bEnabled: true },
+      ],
+    });
+    const updated = await updateManagedProviderSwitches(database, {
+      expectedGeneration: current.switchGeneration,
+      reason: "disable Anthropic only for new B2B admissions",
+      actorId: "admin@example.test",
+      providers: [{
+        providerId: "anthropic",
+        masterEnabled: true,
+        productEnabled: true,
+        b2cEnabled: true,
+        b2bEnabled: false,
+      }],
+    });
+    expect(updated).toMatchObject({
+      switchGeneration: 2,
+      switchSyncState: "pending",
+      providers: [
+        { providerId: "anthropic", masterEnabled: true, productEnabled: true, b2cEnabled: true, b2bEnabled: false },
+        { providerId: "openai", masterEnabled: true, productEnabled: true, b2cEnabled: true, b2bEnabled: true },
+      ],
+    });
+    await expect(updateManagedProviderSwitches(database, {
+      expectedGeneration: 1,
+      reason: "stale switch replacement must not win",
+      actorId: "admin@example.test",
+      providers: [{
+        providerId: "anthropic",
+        masterEnabled: true,
+        productEnabled: true,
+        b2cEnabled: true,
+        b2bEnabled: true,
+      }],
+    })).rejects.toMatchObject({ code: "version_conflict" });
+    const stored = await seedClient.query<{
+      entries: string;
+      openkeys_enabled: string;
+      jobs: string;
+      policy_versions: string;
+      desired_switch_generation: string;
+    }>(`
+      SELECT
+        (SELECT count(*)::text FROM provider_switch_entries WHERE generation = 2) AS entries,
+        (SELECT count(*)::text FROM provider_switch_entries
+          WHERE generation = 2 AND product_id = 'openkeys' AND enabled) AS openkeys_enabled,
+        (SELECT count(*)::text FROM engine_switch_jobs WHERE generation = 2) AS jobs,
+        (SELECT count(*)::text FROM account_policy_versions version
+          JOIN account_policy_bindings binding ON binding.id = version.binding_id
+          WHERE binding.user_id = $1) AS policy_versions,
+        (SELECT version.switch_generation::text FROM account_policy_bindings binding
+          JOIN account_policy_versions version
+            ON version.binding_id = binding.id AND version.effective_version = binding.desired_effective_version
+          WHERE binding.user_id = $1) AS desired_switch_generation
+    `, [user.id]);
+    expect(stored.rows[0]).toEqual({
+      entries: "10",
+      openkeys_enabled: "2",
+      jobs: "1",
+      policy_versions: "2",
+      desired_switch_generation: "2",
+    });
+  });
+
+  it("serializes invitation edit against redemption and blocks keys until the exact policy ACK", async () => {
+    const token = `invite-${randomUUID()}`;
+    const created = await createBusinessInvite(database, {
+      ...inviteInput(randomUUID(), [ANTHROPIC_60]),
+      tokenHash: tokenHash(token),
+    });
+    const edit = updateManagedPricingPolicy(database, {
+      ownerType: "b2b_invitation",
+      ownerId: created.id,
+      expectedVersion: 1,
+      rules: [ANTHROPIC_60, OPENAI_50],
+      actorId: "admin@example.test",
+      reason: "race a complete policy edit with redemption",
+    });
+    const redemption = createEmailUser(database, "buyer@example.test", "password-hash", tokenHash(token));
+    const [editResult, redemptionResult] = await Promise.allSettled([edit, redemption]);
+    if (redemptionResult.status !== "fulfilled") throw redemptionResult.reason;
+    if (editResult.status === "rejected") {
+      expect(editResult.reason).toMatchObject({ code: "invitation_not_editable" });
+    }
+
+    const userId = redemptionResult.value.id;
+    const policies = await seedClient.query<{
+      owner_type: string;
+      version: string;
+      content_digest: string;
+      rules: unknown;
+    }>(`
+      SELECT policy.owner_type, head.current_version::text AS version,
+             head.current_digest AS content_digest,
+             jsonb_agg(jsonb_build_object(
+               'scope_type', rule.scope_type,
+               'provider_id', rule.provider_id,
+               'canonical_model_id', rule.canonical_model_id,
+               'pricing_mode', rule.pricing_mode,
+               'discount_bps', rule.discount_bps
+             ) ORDER BY rule.provider_id, rule.scope_type, rule.canonical_model_id) AS rules
+      FROM pricing_policies policy
+      JOIN pricing_policy_heads head ON head.policy_id = policy.id
+      JOIN pricing_policy_rules rule
+        ON rule.policy_id = head.policy_id AND rule.policy_version = head.current_version
+      WHERE (policy.owner_type = 'b2b_invitation' AND policy.owner_id = $1)
+         OR (policy.owner_type = 'b2b_client' AND policy.owner_id = $2)
+      GROUP BY policy.owner_type, head.current_version, head.current_digest
+      ORDER BY policy.owner_type DESC
+    `, [created.id, userId]);
+    expect(policies.rows).toHaveLength(2);
+    expect(policies.rows[0]!.owner_type).toBe("b2b_invitation");
+    expect(policies.rows[1]!.owner_type).toBe("b2b_client");
+    expect(policies.rows[1]!.rules).toEqual(policies.rows[0]!.rules);
+    const copiedAudit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'business_invite.policy_copied' AND target_id LIKE $1
+    `, [`policy:main:b2b:${userId}`]);
+    expect(copiedAudit.rows[0]?.metadata).toMatchObject({
+      invitationPolicyVersion: Number(policies.rows[0]!.version),
+      invitationPolicyDigest: policies.rows[0]!.content_digest,
+    });
+
+    // A copied source policy is already authority: absence of its binding/ACK must fail closed,
+    // including the race before provisioning has materialized the effective account policy.
+    await expect(assertUserPolicyReadyForKey(database, userId))
+      .rejects.toMatchObject({ code: "provisioning_policy_missing" });
+
+    const staged = await materializeProvisionedUserPolicy(database, {
+      userId,
+      engineAccountId: `acct_policy_${userId.replaceAll("-", "")}`,
+    });
+    expect(staged).toMatchObject({ policyRequired: true, ready: false, jobId: expect.any(String) });
+    await expect(assertUserPolicyReadyForKey(database, userId))
+      .rejects.toMatchObject({ code: "provisioning_policy_missing" });
+
+    let policyJob: Extract<ClaimedPricingControlJob, { kind: "policy" }> | null = null;
+    for (let index = 0; index < 5; index += 1) {
+      const job = await claimNextPricingControlJob(database, `policy-write-${index}`);
+      if (!job) break;
+      if (job.kind === "catalog") {
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: { catalog: job.spec, expectation: "absent" },
+        });
+      } else if (job.kind === "switches") {
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: { switches: job.spec, expectation: "absent" },
+        });
+      } else {
+        policyJob = job;
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: {
+            policy: job.spec,
+            activation: {
+              account_id: job.spec.account_id,
+              effective_version: job.spec.effective_version,
+              content_digest: job.spec.content_digest,
+              binding: job.binding,
+            },
+            expectation: "unbound",
+          },
+        });
+      }
+    }
+    expect(policyJob).not.toBeNull();
+    await expect(assertUserPolicyReadyForKey(database, userId)).resolves.toBeUndefined();
+    const account = await seedClient.query<{ status: string }>(
+      "SELECT status FROM engine_accounts WHERE user_id = $1",
+      [userId],
+    );
+    expect(account.rows[0]?.status).toBe("active");
+    const archived = await seedClient.query<{
+      copied_to_user_id: string;
+      copied_client_policy_digest: string;
+      redeemed_source_policy_digest: string;
+    }>(`
+      SELECT copied_to_user_id::text, copied_client_policy_digest, redeemed_source_policy_digest
+      FROM business_invite_policy_bindings WHERE invite_id = $1
+    `, [created.id]);
+    expect(archived.rows[0]).toMatchObject({
+      copied_to_user_id: userId,
+      copied_client_policy_digest: policies.rows[1]!.content_digest,
+      redeemed_source_policy_digest: policies.rows[0]!.content_digest,
+    });
+  });
+}, TEST_TIMEOUT_MS);
+
+function inviteInput(idempotencyKey: string, policyRules: readonly PricingPolicyEditorRule[]) {
+  const token = `token-${idempotencyKey}`;
+  return {
+    email: "buyer@example.test",
+    tokenHash: tokenHash(token),
+    encryptedToken: `encrypted-${token}`,
+    multiplierBp: 10_000,
+    expiresAt: new Date(Date.now() + 86_400_000),
+    idempotencyKey,
+    actorId: "admin@example.test",
+    reason: "negotiated provider and model pricing policy",
+    policyRules,
+  };
+}
+
+function tokenHash(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}

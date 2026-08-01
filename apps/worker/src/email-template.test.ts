@@ -49,3 +49,15 @@ test("renders a B2B invitation with the negotiated discount and expiry", () => {
   assert.match(message.text, /Sat, 01 Aug 2026 12:00:00 GMT/);
   assert.match(message.html, /invite=invite-token/);
 });
+
+test("renders policy-based B2B pricing without promising one universal discount", () => {
+  const message = renderBusinessInviteEmail(
+    "invite-token",
+    "https://apitoken.sale",
+    null,
+    "2026-08-01T12:00:00.000Z",
+  );
+  assert.equal(message.subject, "Your apiToken.sale B2B invitation");
+  assert.match(message.text, /provider and model pricing/);
+  assert.doesNotMatch(message.text, /% discount/);
+});

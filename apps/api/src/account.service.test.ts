@@ -207,6 +207,10 @@ async function createUser(
     INSERT INTO engine_accounts (id, user_id, engine_account_id, status)
     VALUES ($1, $2, $3, 'active')
   `, [randomUUID(), userId, engineAccountId]);
+  await database.pool.query(`
+    INSERT INTO customer_profiles (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
+    VALUES ($1, 'b2c', 0, 4000, date_trunc('month', now())::date)
+  `, [userId]);
   if (oauthProvider) {
     await database.pool.query(`
       INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified)

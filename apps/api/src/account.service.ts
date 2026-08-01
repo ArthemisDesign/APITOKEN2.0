@@ -1,10 +1,13 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
+  assertUserPolicyReadyForKey,
   findOwnedApiKey,
   getCustomerPricingPolicyView,
   getPricingView,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
+  materializeProvisionedUserPolicy,
+  PricingPolicyWriteError,
   saveIssuedApiKey,
   syncEngineApiKey,
   type Database,
@@ -23,6 +26,7 @@ import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
 
 export class EngineAccountUnavailableError extends Error {}
+class EngineAccountPolicyPendingError extends EngineAccountUnavailableError {}
 
 @Injectable()
 export class AccountService {
@@ -104,7 +108,7 @@ export class AccountService {
       // AUDIT(C65): never let an in-flight request overwrite a concurrent administrative disable.
       const completed = await client.query<{ engine_account_id: string }>(`
         UPDATE engine_accounts
-        SET engine_account_id = $3, status = 'active', last_error = NULL, updated_at = now()
+        SET engine_account_id = $3, status = 'pending', last_error = NULL, updated_at = now()
         WHERE user_id = $1
           AND status = $2
           AND engine_account_id IS NOT DISTINCT FROM $4
@@ -117,6 +121,27 @@ export class AccountService {
         // AUDIT-TODO(C65): add an engine-client account-disable compensation call for a newly
         // provisioned account when this compare-and-set loses to an administrative disable.
         throw new EngineAccountUnavailableError("engine account state changed during provisioning");
+      }
+      let materialized: Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>;
+      try {
+        materialized = await materializeProvisionedUserPolicy(this.database, {
+          userId,
+          engineAccountId: completed.rows[0].engine_account_id,
+        });
+      } catch (error) {
+        await this.database.pool.query(`
+          UPDATE engine_accounts
+          SET status = 'error', last_error = $3, updated_at = now()
+          WHERE user_id = $1 AND engine_account_id = $2 AND status = 'pending'
+        `, [
+          userId,
+          completed.rows[0].engine_account_id,
+          (error instanceof Error ? error.message : "pricing policy materialization failed").slice(0, 1000),
+        ]);
+        throw new EngineAccountUnavailableError("engine account policy is temporarily unavailable", { cause: error });
+      }
+      if (!materialized.ready) {
+        throw new EngineAccountPolicyPendingError("engine account policy is waiting for synchronization");
       }
       return completed.rows[0].engine_account_id;
     } catch (error) {
@@ -242,6 +267,19 @@ export class AccountService {
   }
 
   async createApiKey(userId: string, input: CreateApiKey): Promise<unknown> {
+    // A pending/error mapping may not have a binding yet. Recover/materialize it before the
+    // fail-closed preflight; otherwise the missing binding would prevent the very provisioning
+    // step that creates it. ensureEngineAccount returns only for legacy accounts or exact-ACK-ready
+    // managed accounts.
+    try {
+      await this.ensureEngineAccount(userId);
+    } catch (error) {
+      if (error instanceof EngineAccountPolicyPendingError) {
+        throw new ConflictException("pricing policy is still waiting for an exact engine ACK");
+      }
+      throw error;
+    }
+    await this.ensurePolicyReadyForKey(userId);
     const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
@@ -252,6 +290,16 @@ export class AccountService {
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       }),
     );
+    try {
+      await this.ensurePolicyReadyForKey(userId);
+    } catch (error) {
+      try {
+        await this.engine.disableKey(issued.key_id);
+      } catch {
+        throw new EngineAccountUnavailableError("pricing policy check and key compensation both failed", { cause: error });
+      }
+      throw error;
+    }
     const keyMasked = maskApiKey(issued.key);
     let stored: StoredApiKey;
     try {
@@ -376,6 +424,17 @@ export class AccountService {
 
   private async withEngineAccount<T>(userId: string, action: (accountId: string) => Promise<T>): Promise<T> {
     return (await this.withEngineAccountId(userId, action)).value;
+  }
+
+  private async ensurePolicyReadyForKey(userId: string): Promise<void> {
+    try {
+      await assertUserPolicyReadyForKey(this.database, userId);
+    } catch (error) {
+      if (error instanceof PricingPolicyWriteError && error.code === "provisioning_policy_missing") {
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
   }
 
   private async withEngineAccountId<T>(

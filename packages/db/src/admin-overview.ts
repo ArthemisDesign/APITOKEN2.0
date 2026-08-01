@@ -101,6 +101,9 @@ export interface AdminBusinessInviteRow {
   deliveryAttempts: number | null;
   deliveryError: string | null;
   deliverySentAt: Date | null;
+  policyVersion: number | null;
+  policyDigest: string | null;
+  policyRuleCount: number;
   createdAt: Date;
 }
 
@@ -695,13 +698,22 @@ export async function listAdminBusinessInvites(database: Database, limit: number
     consumed_by_user_id: string | null; revoked_at: Date | null; superseded_by_invite_id: string | null;
     created_by_actor: string | null; delivery_status: string | null; delivery_attempts: number | null;
     delivery_error: string | null; delivery_sent_at: Date | null; created_at: Date;
+    policy_version: string | null; policy_digest: string | null; policy_rule_count: string;
   }>(`
     SELECT bi.id, bi.email, bi.multiplier_bp, bi.expires_at, bi.consumed_at,
            bi.consumed_by_user_id, bi.revoked_at, bi.superseded_by_invite_id,
            bi.created_by_actor, eo.status::text AS delivery_status,
            eo.attempts AS delivery_attempts, eo.last_error AS delivery_error,
-           eo.sent_at AS delivery_sent_at, bi.created_at
+           eo.sent_at AS delivery_sent_at, bi.created_at,
+           policy.current_policy_version::text AS policy_version,
+           policy.current_policy_digest AS policy_digest,
+           COALESCE((
+             SELECT count(*)::text FROM pricing_policy_rules rule
+             WHERE rule.policy_id = policy.invitation_policy_id
+               AND rule.policy_version = policy.current_policy_version
+           ), '0') AS policy_rule_count
     FROM business_invites bi
+    LEFT JOIN business_invite_policy_bindings policy ON policy.invite_id = bi.id
     LEFT JOIN LATERAL (
       SELECT status, attempts, last_error, sent_at
       FROM email_outbox
@@ -717,7 +729,11 @@ export async function listAdminBusinessInvites(database: Database, limit: number
     revokedAt: row.revoked_at, supersededByInviteId: row.superseded_by_invite_id,
     createdByActor: row.created_by_actor, deliveryStatus: row.delivery_status ?? "copy_only",
     deliveryAttempts: row.delivery_attempts, deliveryError: row.delivery_error,
-    deliverySentAt: row.delivery_sent_at, createdAt: row.created_at,
+    deliverySentAt: row.delivery_sent_at,
+    policyVersion: row.policy_version === null ? null : Number(row.policy_version),
+    policyDigest: row.policy_digest,
+    policyRuleCount: Number(row.policy_rule_count),
+    createdAt: row.created_at,
   }));
 }
 

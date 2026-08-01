@@ -3,9 +3,16 @@ import {
   B2C_PRICING_TIERS,
   paymentProviderSchema,
   type EngineLedgerEntry,
+  type PricingPolicyEditorRule,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
+import {
+  copyBusinessInvitationPolicyToReplacement,
+  createBusinessInvitationPolicy,
+  getManagedPricingPolicy,
+  PricingPolicyWriteError,
+} from "./pricing-policy-write.js";
 
 export class InvalidBusinessInvitationError extends Error {}
 export class BusinessInvitationNotFoundError extends Error {}
@@ -453,7 +460,14 @@ export async function createBusinessInvite(database: Database, input: {
   idempotencyKey: string;
   actorId: string;
   reason: string;
+  policyRules?: readonly PricingPolicyEditorRule[];
 }): Promise<BusinessInviteRecord> {
+  if (input.policyRules && input.multiplierBp !== 10_000) {
+    throw new PricingPolicyWriteError(
+      "invalid_owner_rule",
+      "policy-based invitation requires a neutral 10000 compatibility multiplier",
+    );
+  }
   const client = await database.pool.connect();
   const email = input.email?.toLowerCase() ?? null;
   try {
@@ -462,10 +476,12 @@ export async function createBusinessInvite(database: Database, input: {
     const existing = await client.query<{
       id: string; email: string | null; encrypted_token: string | null;
       multiplier_bp: number; expires_at: Date; delivery_status: string | null;
+      invitation_policy_id: string | null;
     }>(`
       SELECT bi.id, bi.email, bi.encrypted_token, bi.multiplier_bp, bi.expires_at,
-             eo.status AS delivery_status
+             eo.status AS delivery_status, policy.invitation_policy_id
       FROM business_invites bi
+      LEFT JOIN business_invite_policy_bindings policy ON policy.invite_id = bi.id
       LEFT JOIN LATERAL (
         SELECT status::text AS status FROM email_outbox
         WHERE business_invite_id = bi.id ORDER BY created_at DESC LIMIT 1
@@ -480,6 +496,17 @@ export async function createBusinessInvite(database: Database, input: {
       }
       if (!prior.encrypted_token) {
         throw new BusinessInvitationConflictError("the invitation token is no longer available");
+      }
+      if (Boolean(prior.invitation_policy_id) !== Boolean(input.policyRules)) {
+        throw new BusinessInvitationConflictError("idempotency key was already used with another pricing policy mode");
+      }
+      if (input.policyRules) {
+        await createBusinessInvitationPolicy(client, {
+          inviteId: prior.id,
+          rules: input.policyRules,
+          actorId: input.actorId,
+          reason: input.reason,
+        });
       }
       await client.query("COMMIT");
       return {
@@ -503,6 +530,14 @@ export async function createBusinessInvite(database: Database, input: {
       id, email, input.tokenHash, input.encryptedToken, input.multiplierBp,
       input.expiresAt, input.idempotencyKey, input.actorId,
     ]);
+    if (input.policyRules) {
+      await createBusinessInvitationPolicy(client, {
+        inviteId: id,
+        rules: input.policyRules,
+        actorId: input.actorId,
+        reason: input.reason,
+      });
+    }
     if (email) {
       await queueBusinessInviteEmail(client, {
         inviteId: id,
@@ -510,6 +545,7 @@ export async function createBusinessInvite(database: Database, input: {
         encryptedToken: input.encryptedToken,
         multiplierBp: input.multiplierBp,
         expiresAt: input.expiresAt,
+        policyBased: Boolean(input.policyRules),
       });
     }
     await client.query(`
@@ -518,6 +554,7 @@ export async function createBusinessInvite(database: Database, input: {
     `, [input.actorId, id, JSON.stringify({
       email,
       multiplierBp: input.multiplierBp,
+      policyBased: Boolean(input.policyRules),
       expiresAt: input.expiresAt.toISOString(),
       delivery: email ? "email" : "copy_only",
       reason: input.reason,
@@ -559,16 +596,31 @@ export async function lockBusinessInvite(
 export async function getBusinessInvitePreview(
   database: Database,
   tokenHash: string,
-): Promise<{ email: string | null; multiplierBp: number; expiresAt: Date } | null> {
+): Promise<{
+  email: string | null;
+  multiplierBp: number;
+  expiresAt: Date;
+  policy: { currentVersion: number; rules: PricingPolicyEditorRule[] } | null;
+} | null> {
   const result = await database.pool.query<{
-    email: string | null; multiplier_bp: number; expires_at: Date;
+    id: string; email: string | null; multiplier_bp: number; expires_at: Date;
   }>(`
-    SELECT email, multiplier_bp, expires_at
+    SELECT id::text, email, multiplier_bp, expires_at
     FROM business_invites
     WHERE token_hash = $1 AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
   `, [tokenHash]);
   const row = result.rows[0];
-  return row ? { email: row.email, multiplierBp: row.multiplier_bp, expiresAt: row.expires_at } : null;
+  if (!row) return null;
+  const policy = await getManagedPricingPolicy(database, {
+    ownerType: "b2b_invitation",
+    ownerId: row.id,
+  });
+  return {
+    email: row.email,
+    multiplierBp: row.multiplier_bp,
+    expiresAt: row.expires_at,
+    policy: policy ? { currentVersion: policy.currentVersion, rules: policy.rules } : null,
+  };
 }
 
 export async function getBusinessInviteToken(
@@ -674,25 +726,38 @@ export async function rotateBusinessInvite(database: Database, input: {
       throw new BusinessInvitationConflictError("idempotency key was already used for another invitation");
     }
     const oldResult = await client.query<{
-      email: string | null; multiplier_bp: number;
+      email: string | null; multiplier_bp: number; policy_based: boolean;
     }>(`
-      SELECT email, multiplier_bp FROM business_invites
-      WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL
-      FOR UPDATE
+      SELECT invitation.email, invitation.multiplier_bp,
+             (policy.invitation_policy_id IS NOT NULL) AS policy_based
+      FROM business_invites invitation
+      LEFT JOIN business_invite_policy_bindings policy ON policy.invite_id = invitation.id
+      WHERE invitation.id = $1 AND invitation.consumed_at IS NULL AND invitation.revoked_at IS NULL
+      FOR UPDATE OF invitation
     `, [input.inviteId]);
     const old = oldResult.rows[0];
     if (!old) throw new BusinessInvitationNotFoundError("active invitation not found");
     if (!old.email) throw new BusinessInvitationConflictError("copy-only invitations cannot be emailed; copy the existing link");
     const id = randomUUID();
+    const replacementMultiplierBp = old.policy_based ? 10_000 : old.multiplier_bp;
     await client.query(`
       INSERT INTO business_invites (
         id, email, token_hash, encrypted_token, multiplier_bp, expires_at,
         idempotency_key, created_by_actor
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
-      id, old.email, input.tokenHash, input.encryptedToken, old.multiplier_bp,
+      id, old.email, input.tokenHash, input.encryptedToken, replacementMultiplierBp,
       input.expiresAt, input.idempotencyKey, input.actorId,
     ]);
+    const replacementPolicy = await copyBusinessInvitationPolicyToReplacement(client, {
+      sourceInviteId: input.inviteId,
+      replacementInviteId: id,
+      actorId: input.actorId,
+      reason: input.reason,
+    });
+    if (Boolean(replacementPolicy) !== old.policy_based) {
+      throw new PricingPolicyWriteError("policy_not_found", "replacement invitation lost its source policy");
+    }
     await client.query(`
       UPDATE business_invites
       SET revoked_at = now(), revoked_by_actor = $2, encrypted_token = NULL,
@@ -709,8 +774,9 @@ export async function rotateBusinessInvite(database: Database, input: {
       inviteId: id,
       recipient: old.email,
       encryptedToken: input.encryptedToken,
-      multiplierBp: old.multiplier_bp,
+      multiplierBp: replacementMultiplierBp,
       expiresAt: input.expiresAt,
+      policyBased: replacementPolicy !== null,
     });
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
@@ -724,7 +790,7 @@ export async function rotateBusinessInvite(database: Database, input: {
       id,
       email: old.email,
       encryptedToken: input.encryptedToken,
-      multiplierBp: old.multiplier_bp,
+      multiplierBp: replacementMultiplierBp,
       expiresAt: input.expiresAt,
       idempotentReplay: false,
       deliveryStatus: "pending",
@@ -743,13 +809,17 @@ async function queueBusinessInviteEmail(client: PoolClient, input: {
   encryptedToken: string;
   multiplierBp: number;
   expiresAt: Date;
+  policyBased?: boolean;
 }): Promise<void> {
+  const pricingPayload = input.policyBased
+    ? { pricingPolicy: "provider_model" }
+    : { discountPercent: 100 - input.multiplierBp / 100 };
   await client.query(`
     INSERT INTO email_outbox (id, business_invite_id, recipient, template, payload)
     VALUES ($1, $2, $3, 'business_invite', $4::jsonb)
   `, [randomUUID(), input.inviteId, input.recipient, JSON.stringify({
     encryptedToken: input.encryptedToken,
-    discountPercent: 100 - input.multiplierBp / 100,
+    ...pricingPayload,
     expiresAt: input.expiresAt.toISOString(),
   })]);
 }
