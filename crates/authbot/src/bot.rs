@@ -1359,7 +1359,18 @@ pub async fn on_message(
                     rec.hproxy_order,
                     text,
                 ) {
-                    GeminiProxyRetry::SellerSupplied(proxy) => {
+                    GeminiProxyRetry::SellerSupplied(proxy, credentials) => {
+                        if !credentials {
+                            // Прокси с авторизацией по IP законен, но у продавца это почти всегда
+                            // обрезанная вставка. Без явного предупреждения ошибка проявится только
+                            // как CONNECT 407 внутри OAuth, когда одноразовый код уже потрачен.
+                            let _ = bot
+                                .send(
+                                    chat,
+                                    "ℹ️ В этом прокси не распознаны логин и пароль — подключение пойдёт с авторизацией по IP. Если у прокси есть логин и пароль, пришли его целиком в формате <code>ip:port:user:pass</code>.",
+                                )
+                                .await;
+                        }
                         // A manually supplied replacement is unrelated to any prior IPRoyal order.
                         prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), 0).await;
                     }
@@ -1384,6 +1395,11 @@ pub async fn on_message(
                             .await;
                     }
                     GeminiProxyRetry::Invalid => {
+                        eprintln!(
+                            "[gemini-proxy] chat={} rejected seller proxy input: {}",
+                            chat,
+                            proxy_input_fingerprint(text)
+                        );
                         let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
                     }
                 }
@@ -1543,20 +1559,132 @@ async fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> an
     .map_err(|e| anyhow::anyhow!("PostgreSQL registration worker failed: {e}"))?
 }
 
+/// Разобранный ввод прокси: канонический URL плюс факт наличия учётных данных.
+///
+/// Флаг нужен продавцовской ветке: `ip:port` — валидный прокси с авторизацией по IP, но для
+/// Gemini это почти всегда обрезанная вставка, и без явного предупреждения она превращается в
+/// CONNECT 407, неотличимый в журнале от мёртвого прокси.
+#[derive(Debug, PartialEq, Eq)]
+struct ProxyInput {
+    url: String,
+    credentials: bool,
+}
+
+impl ProxyInput {
+    fn invalid() -> Self {
+        Self {
+            url: String::new(),
+            credentials: false,
+        }
+    }
+}
+
 /// host:port:user:pass | host:port | http(s)://… → http-URL (для реестра/прокси).
-fn proxy_url(raw: &str) -> String {
+///
+/// Реконструкция обязана быть ОБРАТИМОЙ: пароль продавца — произвольная строка, и всё, что здесь
+/// потеряно, позже утекает в CONNECT как чужой пароль. Поэтому режем ровно на четыре поля (пароль
+/// может содержать `:`) и процент-кодируем userinfo. Без кодирования `normalize_proxy_url` ниже по
+/// стеку ДЕКОДИРУЕТ литеральный `%41` в `A`, а `/`, `?`, `#` в пароле рвут разбор authority —
+/// в обоих случаях бот уходит на прокси не с тем паролем, который прислал продавец.
+fn parse_proxy_input(raw: &str) -> ProxyInput {
     let raw = raw.trim();
     if raw.is_empty() {
-        return String::new();
+        return ProxyInput::invalid();
+    }
+    if let Some(rest) = raw
+        .strip_prefix("http://")
+        .or_else(|| raw.strip_prefix("https://"))
+    {
+        let authority = rest.split('/').next().unwrap_or_default();
+        return ProxyInput {
+            url: raw.to_string(),
+            credentials: authority.contains('@'),
+        };
+    }
+    let fields: Vec<&str> = raw.splitn(4, ':').collect();
+    let (host, port) = match fields.as_slice() {
+        [host, port] | [host, port, _, _] => (*host, *port),
+        _ => return ProxyInput::invalid(),
+    };
+    if !valid_proxy_host(host) || !valid_proxy_port(port) {
+        return ProxyInput::invalid();
+    }
+    match fields.as_slice() {
+        [_, _, user, password] if !(user.is_empty() && password.is_empty()) => ProxyInput {
+            url: format!(
+                "http://{}:{}@{host}:{port}",
+                encode_userinfo(user),
+                encode_userinfo(password)
+            ),
+            credentials: true,
+        },
+        _ => ProxyInput {
+            url: format!("http://{host}:{port}"),
+            credentials: false,
+        },
+    }
+}
+
+fn proxy_url(raw: &str) -> String {
+    parse_proxy_input(raw).url
+}
+
+fn valid_proxy_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 255
+        && !host.bytes().any(|byte| {
+            matches!(byte, b'@' | b'/' | b'?' | b'#' | b'[' | b']' | b'%') || byte <= b' '
+        })
+}
+
+fn valid_proxy_port(port: &str) -> bool {
+    port.parse::<u16>().map(|port| port > 0).unwrap_or(false)
+}
+
+/// Процент-кодирование в самый узкий безопасный набор: всё, кроме unreserved, экранируется, поэтому
+/// `decode_proxy_component` и `decodeURIComponent` в helper возвращают ровно исходные байты.
+fn encode_userinfo(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Бесключевой отпечаток отвергнутого ввода: только форма, хост, порт и длины. Позволяет разобрать
+/// инцидент, не сохраняя и не печатая секрет продавца.
+fn proxy_input_fingerprint(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return "shape=empty".into();
     }
     if raw.starts_with("http://") || raw.starts_with("https://") {
-        return raw.to_string();
+        return format!("shape=url len={}", raw.len());
     }
-    let p: Vec<&str> = raw.split(':').collect();
-    match p.len() {
-        4 => format!("http://{}:{}@{}:{}", p[2], p[3], p[0], p[1]),
-        2 => format!("http://{}:{}", p[0], p[1]),
-        _ => String::new(),
+    let fields: Vec<&str> = raw.splitn(4, ':').collect();
+    match fields.as_slice() {
+        [host, port] => format!(
+            "shape=host:port host_ok={} port_ok={} credentials=no",
+            valid_proxy_host(host),
+            valid_proxy_port(port)
+        ),
+        [host, port, user, password] => format!(
+            "shape=host:port:user:pass host_ok={} port_ok={} user_len={} pass_len={}",
+            valid_proxy_host(host),
+            valid_proxy_port(port),
+            user.len(),
+            password.len()
+        ),
+        _ => format!(
+            "shape=unrecognised fields={} len={}",
+            fields.len(),
+            raw.len()
+        ),
     }
 }
 
@@ -1788,6 +1916,11 @@ async fn prepare_gemini_account(
     let effective_proxy = match gemini_oauth::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
         Err(_) => {
+            eprintln!(
+                "[gemini-proxy] chat={} canonicalisation rejected proxy: {}",
+                chat,
+                proxy_input_fingerprint(effective_proxy)
+            );
             let (retry_proxy, retry_order) = if replaceable_proxy {
                 ("", 0)
             } else {
@@ -2028,7 +2161,8 @@ pub(crate) fn gemini_job_accepts_proxy_input(
 
 #[derive(Debug, PartialEq, Eq)]
 enum GeminiProxyRetry {
-    SellerSupplied(String),
+    /// URL продавца плюс признак того, что в нём распознаны логин и пароль.
+    SellerSupplied(String, bool),
     Retained(String, i64),
     Fixed(String, i64),
     Invalid,
@@ -2045,11 +2179,11 @@ fn select_gemini_proxy_retry(
         if is_gemini_proxy_retry(input) && !current_proxy.is_empty() {
             return GeminiProxyRetry::Retained(current_proxy.to_string(), current_proxy_order_id);
         }
-        let proxy = proxy_url(input);
-        return if proxy.is_empty() {
+        let parsed = parse_proxy_input(input);
+        return if parsed.url.is_empty() {
             GeminiProxyRetry::Invalid
         } else {
-            GeminiProxyRetry::SellerSupplied(proxy)
+            GeminiProxyRetry::SellerSupplied(parsed.url, parsed.credentials)
         };
     }
     if current_proxy.is_empty() {
@@ -4538,6 +4672,112 @@ mod tests {
         assert_eq!(proxy_url("не прокси"), "");
     }
 
+    /// Пароль продавца — произвольная строка. Любая потеря здесь уходит в CONNECT как ЧУЖОЙ
+    /// пароль и возвращается неотличимым от мёртвого прокси отказом, поэтому реконструкция URL
+    /// обязана переживать `:`, `%`, `@`, `/`, `?` и `#` без изменения исходных байтов.
+    #[test]
+    fn seller_proxy_password_survives_reserved_characters() {
+        for password in [
+            "pa:ss",
+            "pa%41ss",
+            "pa@ss",
+            "pa/ss",
+            "pa?ss",
+            "pa#ss",
+            "p%s:s/w@rd#1",
+        ] {
+            let url = proxy_url(&format!("1.2.3.4:8080:user:{password}"));
+            let canonical = gemini_credential::normalize_proxy_url(&url)
+                .unwrap_or_else(|error| panic!("{password:?} не канонизируется: {error}"));
+            let parsed = reqwest::Url::parse(&canonical).expect("canonical proxy URL");
+            let decoded = percent_decode(parsed.password().unwrap_or_default());
+            assert_eq!(decoded, password, "пароль искажён для {password:?}");
+            assert_eq!(percent_decode(parsed.username()), "user");
+            assert_eq!(parsed.host_str(), Some("1.2.3.4"));
+            assert_eq!(parsed.port(), Some(8080));
+        }
+    }
+
+    /// Хелпер теста: `decodeURIComponent`-эквивалент, которым helper восстанавливает userinfo.
+    fn percent_decode(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%' && index + 2 < bytes.len() {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or_default();
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    decoded.push(byte);
+                    index += 3;
+                    continue;
+                }
+            }
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+        String::from_utf8(decoded).expect("decoded userinfo is UTF-8")
+    }
+
+    /// `ip:port` — валидный прокси с авторизацией по IP, но продавцовская ветка обязана отличать
+    /// его от полного `ip:port:user:pass`, иначе обрезанная вставка молча уходит без учётных
+    /// данных и возвращается как CONNECT 407 уже внутри OAuth.
+    #[test]
+    fn parsed_proxy_reports_whether_credentials_were_recognised() {
+        assert_eq!(
+            parse_proxy_input("1.2.3.4:8080:user:pass"),
+            ProxyInput {
+                url: "http://user:pass@1.2.3.4:8080".into(),
+                credentials: true,
+            }
+        );
+        assert_eq!(
+            parse_proxy_input("1.2.3.4:8080"),
+            ProxyInput {
+                url: "http://1.2.3.4:8080".into(),
+                credentials: false,
+            }
+        );
+        assert_eq!(
+            parse_proxy_input("http://1.2.3.4:8080"),
+            ProxyInput {
+                url: "http://1.2.3.4:8080".into(),
+                credentials: false,
+            }
+        );
+        assert_eq!(
+            parse_proxy_input("http://user:pass@1.2.3.4:8080"),
+            ProxyInput {
+                url: "http://user:pass@1.2.3.4:8080".into(),
+                credentials: true,
+            }
+        );
+        for rejected in ["1.2.3.4", "1.2.3.4:port", "1.2.3.4:0", ":8080", "  "] {
+            assert_eq!(
+                parse_proxy_input(rejected),
+                ProxyInput::invalid(),
+                "{rejected:?} должен быть отвергнут"
+            );
+        }
+    }
+
+    /// Отпечаток нужен для разбора инцидента и потому обязан оставаться без секретов.
+    #[test]
+    fn rejected_proxy_fingerprint_never_carries_credentials() {
+        let fingerprint = proxy_input_fingerprint("1.2.3.4:port:login7:secret42");
+        assert_eq!(
+            fingerprint,
+            "shape=host:port:user:pass host_ok=true port_ok=false user_len=6 pass_len=8"
+        );
+        assert!(!fingerprint.contains("login7") && !fingerprint.contains("secret42"));
+        assert_eq!(proxy_input_fingerprint("   "), "shape=empty");
+        assert_eq!(
+            proxy_input_fingerprint("1.2.3.4:8080"),
+            "shape=host:port host_ok=true port_ok=true credentials=no"
+        );
+        assert!(proxy_input_fingerprint("http://user:pass@1.2.3.4:8080").starts_with("shape=url"));
+        assert!(!proxy_input_fingerprint("http://user:pass@1.2.3.4:8080").contains("pass"));
+    }
+
     #[test]
     fn gemini_retry_consumes_a_new_seller_proxy_but_keeps_a_buyer_proxy_fixed() {
         let seller_store = store();
@@ -4580,7 +4820,7 @@ mod tests {
                 0,
                 "2.2.2.2:9000:new:proxy",
             ),
-            GeminiProxyRetry::SellerSupplied("http://new:proxy@2.2.2.2:9000".into())
+            GeminiProxyRetry::SellerSupplied("http://new:proxy@2.2.2.2:9000".into(), true)
         );
         assert_eq!(
             select_gemini_proxy_retry(

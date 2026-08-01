@@ -125,12 +125,31 @@ pub fn normalize_proxy_url(proxy: &str) -> anyhow::Result<String> {
     let username = decode_proxy_component(parsed.username())?;
     let password = parsed.password().map(decode_proxy_component).transpose()?;
     parsed
-        .set_username(&username)
+        .set_username(&encode_proxy_component(&username))
         .map_err(|_| anyhow!("invalid Codex proxy username"))?;
     parsed
-        .set_password(password.as_deref())
+        .set_password(password.as_deref().map(encode_proxy_component).as_deref())
         .map_err(|_| anyhow!("invalid Codex proxy password"))?;
     Ok(parsed.to_string())
+}
+
+/// Re-encode a decoded credential into the unreserved set. `Url::set_password` escapes with the
+/// userinfo set, which deliberately leaves `%` alone — so a password whose plaintext contains a
+/// literal `%41` would be emitted unescaped and decoded back to `A` by the transport helper, and
+/// the proxy would then reject a credential the seller supplied correctly. Escaping everything
+/// outside the unreserved set makes decode/encode an exact round trip and keeps the canonical form
+/// stable under repeated normalization.
+fn encode_proxy_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn decode_proxy_component(value: &str) -> anyhow::Result<String> {
@@ -546,6 +565,30 @@ mod tests {
             "http://user:%00@proxy.example/",
         ] {
             assert!(normalize_proxy_url(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    /// Canonicalization decodes credentials, so it must escape everything it decoded. `%` is not in
+    /// the userinfo escape set: leaving re-encoding to `Url::set_password` turned a literal `%41`
+    /// in a seller password into `A`, and the proxy then rejected the CONNECT with an authentication
+    /// failure indistinguishable from an unreachable proxy.
+    #[test]
+    fn proxy_normalization_round_trips_reserved_credential_bytes() {
+        for password in ["pa%41ss", "p%s:s/w@rd#1", "100%", "a b", "%%%"] {
+            let encoded = super::encode_proxy_component(password);
+            let canonical =
+                normalize_proxy_url(&format!("http://user:{encoded}@proxy.example:8080")).unwrap();
+            let parsed = url::Url::parse(&canonical).unwrap();
+            assert_eq!(
+                super::decode_proxy_component(parsed.password().unwrap_or_default()).unwrap(),
+                password,
+                "credential mangled for {password:?}"
+            );
+            assert_eq!(
+                normalize_proxy_url(&canonical).unwrap(),
+                canonical,
+                "canonical form is not stable for {password:?}"
+            );
         }
     }
 
