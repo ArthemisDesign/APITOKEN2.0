@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -143,7 +143,12 @@ describe("writeHeartbeatFile", () => {
   });
 
   it("tolerates unwritable locations with a warning, not a crash", async () => {
+    // Нельзя использовать /proc как «незаписываемое» место: на Linux mkdir recursive
+    // под procfs зависает вместо быстрой ошибки. Родитель-файл даёт детерминированный
+    // ENOTDIR на любой платформе.
+    const blocker = path.join(await mkdtemp(path.join(tmpdir(), "devbot-hb-blocked-")), "file");
+    await writeFile(blocker, "not a directory", "utf8");
     const logger = new Logger("error");
-    await expect(writeHeartbeatFile("/proc/devbot-definitely-not-writable/x.prom", 1, logger)).resolves.toBeUndefined();
+    await expect(writeHeartbeatFile(path.join(blocker, "x.prom"), 1, logger)).resolves.toBeUndefined();
   });
 });
