@@ -17,6 +17,8 @@
 - [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` и/или pricing-схемы.
 - [ ] `apps/web/src/lib/models.ts` — SEO-каталог (шапка файла требует синхронизации с
       `crates/metering`).
+- [ ] `apps/web/src/app/docs/` — docs-портал: `integration-builder-data.ts` и, если модель
+      видна в справке, `api-reference-data.ts` / `docs-portal.tsx`.
 - [ ] `docs/engine/<провайдер>.md` — список моделей провайдера.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — новая модель НЕ включается автоматически:
       нужна явная catalog generation (каталоги/свитчи/политики в `crates/registry/src/pricing/`
@@ -31,9 +33,14 @@
 
 - [ ] `crates/metering` — authority-таблица (официальные цены провайдера), ревьюимый коммит.
 - [ ] Engine multiplier меняется только durable jobs — не разовыми вызовами (инвариант из
-      `CLAUDE.md`); протокол — versioned pricing в `docs/engine/CONTROL_API.md`.
+      `CLAUDE.md`); протокол — versioned pricing в `docs/engine/CONTROL_API.md`. Машинерия:
+      `packages/db/src/pricing-control-jobs.ts`, `apps/worker/src/pricing-worker.service.ts`,
+      `packages/engine-client` (ledger/ack), исполнение в `crates/forward/src/**/billing.rs`.
 - [ ] `packages/contracts` — `B2C_PRICING_TIERS` / pricing-схемы; `packages/db/src/pricing.ts`.
-- [ ] `apps/web/src/lib/pricing-tiers.ts` + `models.ts` — витринные числа.
+- [ ] `apps/web` — витринные числа: `src/lib/pricing-tiers.ts` + `src/lib/models.ts` и вся
+      витринная копия (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
+      `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
+      Радиус проверять grep'ом по старому числу, а не по памяти.
 - [ ] `docs/commerce/PRICING.md` — клиентский прайсинг и тиры.
 - [ ] Партнёрские расчёты: `docs/sales/SALES_PAYOUT_PERIODS.md`, логика `apps/sales-api` —
       если цена входит в базу выплат.
@@ -44,7 +51,13 @@
 - [ ] Credential-крейт `crates/<provider>-credential` (шифрованные OAuth-конверты, без сети)
       + `crates/<name>/CLAUDE.md` по правилам «живого контракта».
 - [ ] `crates/metering/src/<provider>.rs` — тарифная таблица.
-- [ ] Runtime: слоты/порты в `deploy/Caddyfile`, systemd-юниты, режим в `crates/server`.
+- [ ] Runtime движка: транспорт/пул/биллинг провайдера в `crates/forward` (основной объём кода),
+      режим в `crates/server`, слоты/порты в `deploy/Caddyfile`, systemd-юниты.
+- [ ] Пополнение пула: OAuth-provisioning в `crates/authbot` (если провайдер подписочный).
+- [ ] Доставка: `config.env.example`, deploy-скрипты (`watchdog.sh`, `watchdog-lib*.sh`,
+      `engine-bluegreen.sh`, `sudoers.d`) — новые порты, юниты и секреты провайдера.
+- [ ] Observability: метрики и алерты в `observability/prometheus/rules/*`, дашборды Grafana,
+      runbook-секции в `docs/ops/MONITORING.md` (см. чеклист «Новый алерт или метрика»).
 - [ ] `docs/engine/<PROVIDER>_PROVIDER.md` — новый документ + строка в `docs/README.md`.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` — каталоги, рубильник провайдера (§8), политики.
 - [ ] `packages/contracts` — canonical models, продуктовые каталоги.
@@ -73,6 +86,8 @@
       для обратного направления) — первым, по протоколу контрактов.
 - [ ] Потребитель `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`) или `apps/api`
       (`promo.service.ts`, `auth.service.ts`) — после деплоя производителя.
+- [ ] `apps/sales-web` — партнёрский фронтенд (`referrals`, `partner-analytics`, `lib/api.ts`),
+      если изменение фида видно партнёру.
 - [ ] `docs/sales/SALES_PORTAL.md` — раздел «Граница sales ↔ commerce» в том же коммите.
 - [ ] Строка sales feed в `docs/DEPENDENCIES.md` — если меняется состав эндпоинтов.
 
