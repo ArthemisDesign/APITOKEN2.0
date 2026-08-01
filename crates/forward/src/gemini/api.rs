@@ -834,7 +834,6 @@ fn image_output_tokens(body: &Value) -> u64 {
         .and_then(Value::as_str)
         .unwrap_or("1K")
     {
-        "0.5K" => 747,
         "1K" => 1_120,
         "2K" => 1_680,
         "4K" => 2_520,
@@ -977,9 +976,13 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
                 let size = size
                     .as_str()
                     .ok_or_else(|| ApiError::invalid("imageConfig.imageSize must be a string."))?;
-                if !matches!(size, "0.5K" | "1K" | "2K" | "4K") {
+                // The public Developer API documents 0.5K for this model, but the paid
+                // Antigravity subscription route rejects that value with INVALID_ARGUMENT. Keep
+                // the private capability allowlist tied to live evidence instead of assuming the
+                // two provider surfaces advance together.
+                if !matches!(size, "1K" | "2K" | "4K") {
                     return Err(ApiError::invalid(
-                        "imageConfig.imageSize must be one of 0.5K, 1K, 2K, or 4K.",
+                        "The subscription image route supports imageSize 1K, 2K, or 4K.",
                     ));
                 }
             }
@@ -3478,6 +3481,7 @@ mod tests {
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 0}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": 32_769}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"maxOutputTokens": "100"}}),
+            json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"imageConfig": {"imageSize": "0.5K"}}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"imageConfig": {"imageSize": "8K"}}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "generationConfig": {"thinkingConfig": {}}}),
             json!({"contents": [{"parts": [{"text": "x"}]}], "tools": [{"googleSearch": {}}]}),

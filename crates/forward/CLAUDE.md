@@ -311,7 +311,9 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
    фиксирует `userAgent=antigravity` и `requestType=agent`. Image generation сохраняет только
    public affinity, но private wire обязан быть stateless: без `request.sessionId`, с
    `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, `candidateCount=1` и
-   `responseModalities=[TEXT,IMAGE]`. Legacy profiles сохраняют `request.session_id` и
+   `responseModalities=[TEXT,IMAGE]`. Resolution allowlist private subscription surface — только
+   live-verified `1K`/`2K`/`4K`; Developer API-only `0.5K` fail-closed до отдельного live evidence.
+   Legacy profiles сохраняют `request.session_id` и
    `user_prompt_id=<session UUID>########<human-turn ordinal>`.
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.

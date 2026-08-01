@@ -390,13 +390,15 @@ For Antigravity the wrapper uses the complete image identity rather than mixing 
 turn: `requestType=image_gen`, `requestId=image_gen/<unix-ms>/<uuid>/12`, no private `sessionId`,
 `candidateCount=1`, and `responseModalities=[TEXT,IMAGE]`. The public affinity binding is still
 used to select a warm subscription, but it is never sent as an unsupported image session. Missing
-image controls become explicit `aspectRatio=1:1` and `imageSize=1K`; the accepted sizes are `0.5K`,
-`1K`, `2K`, and `4K`, and the accepted ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`,
+image controls become explicit `aspectRatio=1:1` and `imageSize=1K`; the live-verified subscription
+sizes are `1K`, `2K`, and `4K`, and the accepted ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`,
 `4:1`, `4:3`, `4:5`, `5:4`, `8:1`, `9:16`, `16:9`, and `21:9`. Up to 14 inline reference images
 are accepted, using only the documented PNG, JPEG, WEBP, HEIC and HEIF MIME types with valid base64.
 Project-scoped `fileData`, system instructions, tools, structured output, multiple candidates,
 non-equivalent response-modalities overrides and private-route thinking controls fail closed rather
-than being silently dropped.
+than being silently dropped. Google's Developer API also documents `0.5K`, but the Antigravity
+subscription endpoint returns `INVALID_ARGUMENT` for the same native spelling; the gateway rejects
+it locally before balance reservation until that private capability is live-verified.
 
 Official paid-standard equivalence is pinned as integer nanoUSD: `$0.50/M` input tokens,
 `$3/M` text plus thinking output tokens, and `$60/M` generated-image tokens. Authoritative
@@ -406,16 +408,18 @@ detail while retaining only aggregate `candidatesTokenCount`; when it actually d
 `inlineData`, settlement splits out the official fixed token count for the requested size and
 prices the aggregate remainder as text/thinking. An explicit provider modality split always wins,
 and a refusal/text-only response never receives an image charge. Preflight reserves the complete
-requested image without silently lowering its quality: 747 image tokens for 0.5K (`$0.04482`),
-1,120 for 1K (`$0.0672`), 1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded
-text/input and grounding. A stream that delivered bytes but never supplied final usage settles the
-conservative hold without inventing a token event.
+requested image without silently lowering its quality: 1,120 image tokens for 1K (`$0.0672`),
+1,680 for 2K (`$0.1008`), and 2,520 for 4K (`$0.1512`), plus bounded text/input and grounding. A
+stream that delivered bytes but never supplied final usage settles the conservative hold without
+inventing a token event.
 
 For money, the paid-tier pricing table is authoritative. On 2026-07-31 Google's separate image
 generation resolution table showed different 2K/4K processing-token figures; those describe the
 generation surface but do not override the pricing page's explicit billable-token counts and USD
 equivalents. The gateway therefore pins the pricing SKUs above and prefers an explicit provider
-modality breakdown whenever one is returned.
+modality breakdown whenever one is returned. The same official pricing page lists the currently
+unexposed 0.5K Developer API SKU as 747 image tokens (`$0.04482`); that price is research evidence,
+not proof that the Antigravity subscription transport can serve the resolution.
 
 ### Video is a separate provider surface
 
