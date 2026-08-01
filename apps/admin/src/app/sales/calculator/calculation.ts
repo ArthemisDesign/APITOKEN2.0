@@ -19,29 +19,65 @@ export interface ProductDefinition {
   plan: string;
   label: string;
   compactLabel: string;
+  quotaWeight: number;
+  quotaLabel: string;
   /** Editable public/contract subscription price. Null means the contract price is not universal. */
   defaultMonthlyCostNano: bigint | null;
 }
 
 export const PRODUCT_CATALOG: readonly ProductDefinition[] = [
-  { id: "claude-pro", provider: "claude", plan: "pro", label: "Claude Pro", compactLabel: "Pro", defaultMonthlyCostNano: 20n * NANO_PER_USD },
-  { id: "claude-max5", provider: "claude", plan: "max5", label: "Claude Max 5×", compactLabel: "Max 5×", defaultMonthlyCostNano: 100n * NANO_PER_USD },
-  { id: "claude-max20", provider: "claude", plan: "max20", label: "Claude Max 20×", compactLabel: "Max 20×", defaultMonthlyCostNano: 200n * NANO_PER_USD },
-  { id: "chatgpt-plus", provider: "openai", plan: "chatgpt_plus", label: "ChatGPT Plus", compactLabel: "Plus", defaultMonthlyCostNano: 20n * NANO_PER_USD },
-  { id: "chatgpt-pro", provider: "openai", plan: "chatgpt_pro", label: "ChatGPT Pro", compactLabel: "Pro", defaultMonthlyCostNano: 200n * NANO_PER_USD },
-  { id: "chatgpt-business", provider: "openai", plan: "chatgpt_business", label: "ChatGPT Business", compactLabel: "Business", defaultMonthlyCostNano: null },
-  { id: "google-ai-pro", provider: "gemini", plan: "google_ai_pro", label: "Google AI Pro", compactLabel: "AI Pro", defaultMonthlyCostNano: 20n * NANO_PER_USD },
-  { id: "google-ai-ultra", provider: "gemini", plan: "google_ai_ultra", label: "Google AI Ultra", compactLabel: "AI Ultra", defaultMonthlyCostNano: null },
-  { id: "code-assist-standard", provider: "gemini", plan: "code_assist_standard", label: "Code Assist Standard", compactLabel: "Standard", defaultMonthlyCostNano: null },
-  { id: "code-assist-enterprise", provider: "gemini", plan: "code_assist_enterprise", label: "Code Assist Enterprise", compactLabel: "Enterprise", defaultMonthlyCostNano: null },
-  { id: "workspace-ai-ultra", provider: "gemini", plan: "workspace_ai_ultra", label: "Workspace AI Ultra", compactLabel: "Workspace Ultra", defaultMonthlyCostNano: null },
+  { id: "claude-pro", provider: "claude", plan: "pro", label: "Claude Pro", compactLabel: "Pro", quotaWeight: 1, quotaLabel: "1× квоты Pro", defaultMonthlyCostNano: 20n * NANO_PER_USD },
+  { id: "claude-max5", provider: "claude", plan: "max5", label: "Claude Max 5×", compactLabel: "Max 5×", quotaWeight: 5, quotaLabel: "5× квоты Pro", defaultMonthlyCostNano: 100n * NANO_PER_USD },
+  { id: "claude-max20", provider: "claude", plan: "max20", label: "Claude Max 20×", compactLabel: "Max 20×", quotaWeight: 20, quotaLabel: "20× квоты Pro", defaultMonthlyCostNano: 200n * NANO_PER_USD },
+  { id: "chatgpt-plus", provider: "openai", plan: "chatgpt_plus", label: "ChatGPT Plus", compactLabel: "Plus", quotaWeight: 1, quotaLabel: "1× квоты Plus", defaultMonthlyCostNano: 20n * NANO_PER_USD },
+  { id: "chatgpt-pro-5x", provider: "openai", plan: "chatgpt_pro_5x", label: "ChatGPT Pro 5×", compactLabel: "Pro 5×", quotaWeight: 5, quotaLabel: "5× квоты Plus", defaultMonthlyCostNano: 100n * NANO_PER_USD },
+  { id: "chatgpt-pro-20x", provider: "openai", plan: "chatgpt_pro", label: "ChatGPT Pro 20×", compactLabel: "Pro 20×", quotaWeight: 20, quotaLabel: "20× квоты Plus", defaultMonthlyCostNano: 200n * NANO_PER_USD },
+  { id: "chatgpt-business", provider: "openai", plan: "chatgpt_business", label: "ChatGPT Business", compactLabel: "Business", quotaWeight: 1, quotaLabel: "1× квоты Plus", defaultMonthlyCostNano: null },
+  { id: "google-ai-pro", provider: "gemini", plan: "google_ai_pro", label: "Google AI Pro", compactLabel: "AI Pro", quotaWeight: 1_500, quotaLabel: "1500 запросов/день", defaultMonthlyCostNano: 20n * NANO_PER_USD },
+  { id: "google-ai-ultra", provider: "gemini", plan: "google_ai_ultra", label: "Google AI Ultra", compactLabel: "AI Ultra", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
+  { id: "code-assist-standard", provider: "gemini", plan: "code_assist_standard", label: "Code Assist Standard", compactLabel: "Standard", quotaWeight: 1_500, quotaLabel: "1500 запросов/день", defaultMonthlyCostNano: null },
+  { id: "code-assist-enterprise", provider: "gemini", plan: "code_assist_enterprise", label: "Code Assist Enterprise", compactLabel: "Enterprise", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
+  { id: "workspace-ai-ultra", provider: "gemini", plan: "workspace_ai_ultra", label: "Workspace AI Ultra", compactLabel: "Workspace Ultra", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
 ] as const;
+
+export const PROVIDER_RATIO_BASIS: Record<Provider, { label: string; source: string; href: string }> = {
+  claude: {
+    label: "Anthropic 1:5:20",
+    source: "Anthropic pricing",
+    href: "https://www.anthropic.com/pricing",
+  },
+  openai: {
+    label: "OpenAI 1:5:20",
+    source: "OpenAI pricing",
+    href: "https://learn.chatgpt.com/docs/pricing",
+  },
+  gemini: {
+    label: "Google 1500:2000",
+    source: "Gemini Code Assist quotas",
+    href: "https://developers.google.com/gemini-code-assist/resources/quotas",
+  },
+};
+
+export type WindowEvidence = "measured" | "estimated" | "unknown";
+
+export interface EstimateSource {
+  productId: string;
+  label: string;
+  ratioLabel: string;
+}
+
+export interface EstimateProvenance {
+  basisLabel: string;
+  sources: EstimateSource[];
+}
 
 export interface WindowMetric {
   capacityNano: bigint | null;
   lowNano: bigint | null;
   highNano: bigint | null;
   measuredProfiles: number;
+  evidence: WindowEvidence;
+  estimate: EstimateProvenance | null;
 }
 
 export interface ProductMetric {
@@ -209,6 +245,8 @@ function aggregateWindow(profiles: ProfileEvidence[], key: "fiveHour" | "sevenDa
     lowNano: averageOptional(measured.map((window) => window.lowNano), measured.length),
     highNano: averageOptional(measured.map((window) => window.highNano), measured.length),
     measuredProfiles: measured.length,
+    evidence: measured.length ? "measured" : "unknown",
+    estimate: null,
   };
 }
 
@@ -234,6 +272,8 @@ function aggregateMonth(profiles: ProfileEvidence[]): WindowMetric {
     lowNano: averageOptional(lows, measured.length),
     highNano: averageOptional(highs, measured.length),
     measuredProfiles: measured.length,
+    evidence: measured.length ? "measured" : "unknown",
+    estimate: null,
   };
 }
 
@@ -251,7 +291,7 @@ export function buildProductMetrics(payload: CalibrationPayload): ProductMetric[
     openai: payload.codex !== null,
     gemini: payload.gemini !== null,
   };
-  return PRODUCT_CATALOG.map((product) => {
+  const directMetrics = PRODUCT_CATALOG.map((product) => {
     const profiles = evidence.filter(
       (profile) => profile.provider === product.provider && profile.plan === product.plan,
     );
@@ -269,6 +309,87 @@ export function buildProductMetrics(payload: CalibrationPayload): ProductMetric[
       sourceOnline: online[product.provider],
     };
   });
+
+  return directMetrics.map((metric) => ({
+    ...metric,
+    fiveHour: estimateMissingWindow(metric, "fiveHour", directMetrics),
+    sevenDay: estimateMissingWindow(metric, "sevenDay", directMetrics),
+    month: estimateMissingWindow(metric, "month", directMetrics),
+  }));
+}
+
+type WindowKey = "fiveHour" | "sevenDay" | "month";
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(Math.trunc(left));
+  let b = Math.abs(Math.trunc(right));
+  while (b !== 0) [a, b] = [b, a % b];
+  return a || 1;
+}
+
+function ratioLabel(targetWeight: number, sourceWeight: number): string {
+  const divisor = greatestCommonDivisor(targetWeight, sourceWeight);
+  const numerator = targetWeight / divisor;
+  const denominator = sourceWeight / divisor;
+  if (denominator === 1) return numerator === 1 ? "×1" : `×${numerator}`;
+  if (numerator === 1) return `÷${denominator}`;
+  return `×${numerator}/${denominator}`;
+}
+
+function scaleByQuota(value: bigint, targetWeight: number, sourceWeight: number): bigint {
+  return (value * BigInt(targetWeight)) / BigInt(sourceWeight);
+}
+
+function estimateMissingWindow(
+  target: ProductMetric,
+  key: WindowKey,
+  directMetrics: ProductMetric[],
+): WindowMetric {
+  const current = target[key];
+  if (current.evidence === "measured") return current;
+
+  const anchors = directMetrics.filter(
+    (candidate) =>
+      candidate.product.provider === target.product.provider &&
+      candidate.product.id !== target.product.id &&
+      candidate[key].evidence === "measured" &&
+      candidate[key].capacityNano != null,
+  );
+  if (!anchors.length) return current;
+
+  const capacities = anchors.map((anchor) =>
+    scaleByQuota(
+      anchor[key].capacityNano as bigint,
+      target.product.quotaWeight,
+      anchor.product.quotaWeight,
+    ),
+  );
+  const lows = anchors.map((anchor) =>
+    anchor[key].lowNano == null
+      ? null
+      : scaleByQuota(anchor[key].lowNano, target.product.quotaWeight, anchor.product.quotaWeight),
+  );
+  const highs = anchors.map((anchor) =>
+    anchor[key].highNano == null
+      ? null
+      : scaleByQuota(anchor[key].highNano, target.product.quotaWeight, anchor.product.quotaWeight),
+  );
+
+  return {
+    capacityNano: average(capacities),
+    lowNano: averageOptional(lows, anchors.length),
+    highNano: averageOptional(highs, anchors.length),
+    measuredProfiles: anchors.reduce((sum, anchor) => sum + anchor[key].measuredProfiles, 0),
+    evidence: "estimated",
+    estimate: {
+      basisLabel: PROVIDER_RATIO_BASIS[target.product.provider].label,
+      sources: anchors.map((anchor) => ({
+        productId: anchor.product.id,
+        label: anchor.product.compactLabel,
+        ratioLabel: ratioLabel(target.product.quotaWeight, anchor.product.quotaWeight),
+      })),
+    },
+  };
 }
 
 export interface ScenarioInput {

@@ -12,6 +12,7 @@ import type {
 } from "../../subscriptions/types";
 import {
   PRODUCT_CATALOG,
+  PROVIDER_RATIO_BASIS,
   buildProductMetrics,
   calculateScenario,
   decimalUsdToNano,
@@ -53,11 +54,16 @@ function WindowValue({ metric }: { metric: WindowMetric }) {
     );
   }
   const hasEnvelope = metric.lowNano != null && metric.highNano != null;
+  const estimateNote = metric.estimate?.sources.length === 1
+    ? `${metric.estimate.sources[0].ratioLabel} от ${metric.estimate.sources[0].label}`
+    : `${metric.estimate?.sources.length ?? 0} live-опоры · среднее`;
   return (
-    <div className="calc-window">
-      <strong>{nanoMoney(metric.capacityNano)}</strong>
+    <div className={`calc-window${metric.evidence === "estimated" ? " is-estimated" : ""}`}>
+      <strong>{metric.evidence === "estimated" ? "≈ " : ""}{nanoMoney(metric.capacityNano)}</strong>
       <span>
-        {hasEnvelope
+        {metric.evidence === "estimated"
+          ? estimateNote
+          : hasEnvelope
           ? `${nanoMoney(metric.lowNano)}—${nanoMoney(metric.highNano)}`
           : `${metric.measuredProfiles} измер.`}
       </span>
@@ -67,6 +73,9 @@ function WindowValue({ metric }: { metric: WindowMetric }) {
 
 function EvidenceStatus({ metric }: { metric: ProductMetric }) {
   if (!metric.sourceOnline) return <span className="calc-evidence is-down">источник недоступен</span>;
+  if (metric.month.evidence === "estimated") {
+    return <span className="calc-evidence is-model">расчёт · {metric.month.estimate?.basisLabel}</span>;
+  }
   if (!metric.profiles) return <span className="calc-evidence">нет в текущем пуле</span>;
   if (!metric.measuredProfiles) return <span className="calc-evidence is-waiting">ждём Δusage</span>;
   return (
@@ -141,7 +150,8 @@ export default function SalesCalculatorPage() {
           subscriptionCostNano,
         });
 
-  const measuredProducts = metrics.filter((metric) => metric.month.capacityNano != null).length;
+  const measuredProducts = metrics.filter((metric) => metric.month.evidence === "measured").length;
+  const estimatedProducts = metrics.filter((metric) => metric.month.evidence === "estimated").length;
   const sourceCount = data
     ? Number(data.capacity !== null) + Number(data.codex !== null) + Number(data.gemini !== null)
     : 0;
@@ -178,8 +188,8 @@ export default function SalesCalculatorPage() {
             </small>
           </div>
           <div>
-            <strong>{measuredProducts}</strong>
-            <small>тарифов с 30д оценкой</small>
+            <strong>{measuredProducts} + {estimatedProducts}</strong>
+            <small>прямых + расчётных тарифов</small>
           </div>
         </div>
       </section>
@@ -190,7 +200,7 @@ export default function SalesCalculatorPage() {
             <span className="calc-overline">01 · Калибровочная лента</span>
             <h2 id="capacity-title">API-$ на одну подписку</h2>
           </div>
-          <p>Среднее только по измеренным профилям. Прайоры и холодные якоря не участвуют.</p>
+          <p>Прямое измерение важнее модели. Для пустых строк — пересчёт от live-тарифов по официальной пропорции.</p>
         </div>
 
         <div className="calc-matrix-scroll">
@@ -217,7 +227,7 @@ export default function SalesCalculatorPage() {
                     <i />
                     <span>
                       <strong>{metric.product.label}</strong>
-                      <small>{PROVIDER_LABEL[metric.product.provider]} · {metric.profiles} в пуле</small>
+                      <small>{PROVIDER_LABEL[metric.product.provider]} · {metric.product.quotaLabel} · {metric.profiles} в пуле</small>
                     </span>
                   </span>
                   <span><WindowValue metric={metric.fiveHour} /></span>
@@ -290,6 +300,12 @@ export default function SalesCalculatorPage() {
           <div className="calc-output" aria-live="polite">
             {scenario ? (
               <>
+                {selected?.month.evidence === "estimated" ? (
+                  <div className="calc-model-note">
+                    <strong>Расчётная 30-дневная ёмкость.</strong>
+                    <span> Сценарий масштабирован от live-калибровки по {selected.month.estimate?.basisLabel}; собственное измерение тарифа заменит модель автоматически.</span>
+                  </div>
+                ) : null}
                 <div className="calc-equation" aria-label="Формула сценария">
                   <div><span>полная ёмкость</span><strong>{nanoMoney(scenario.fullCapacityNano)}</strong></div>
                   <b>×</b>
@@ -322,7 +338,7 @@ export default function SalesCalculatorPage() {
                 <span>Δ</span>
                 <div>
                   <strong>Для {selected?.product.label ?? "этого тарифа"} ещё нет полного измерения 5ч + 7д.</strong>
-                  <p>Калькулятор не подставляет рекламный номинал. Он включится сам после реального движения quota и settlement.</p>
+                  <p>Нет ни собственной калибровки, ни измеренного тарифа-опоры этого провайдера. Калькулятор включится сам после движения quota и settlement.</p>
                 </div>
               </div>
             )}
@@ -331,9 +347,14 @@ export default function SalesCalculatorPage() {
       </section>
 
       <footer className="calc-footnote">
-        API-$ — официальный API-эквивалент реально обслуженной смеси моделей, контекста, reasoning и tools.
-        Это не обещанный номинал тарифа. GPT и Gemini показывают evidence envelope; Claude — calibrated EMA.
-        Значения обновляются каждые 5 секунд, пока вкладка видима. Полные email, OAuth, project и proxy в браузер не передаются.
+        <strong>Источники пропорций:</strong>{" "}
+        {Object.values(PROVIDER_RATIO_BASIS).map((basis, index) => (
+          <span key={basis.href}>
+            {index ? " · " : ""}<a href={basis.href} target="_blank" rel="noreferrer">{basis.source}</a>
+          </span>
+        ))}. API-$ — эквивалент реально обслуженной смеси моделей, контекста, reasoning и tools.
+        Значения со знаком ≈ масштабированы от live-калибровки; дополнительные недельные лимиты Claude/OpenAI могут не повторять пропорцию 5ч, поэтому 7д и 30д остаются оценкой до собственного измерения.
+        Обновление — каждые 5 секунд. Полные email, OAuth, project и proxy в браузер не передаются.
       </footer>
     </div>
   );
