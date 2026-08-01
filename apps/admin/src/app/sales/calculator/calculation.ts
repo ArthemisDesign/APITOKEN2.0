@@ -33,11 +33,8 @@ export const PRODUCT_CATALOG: readonly ProductDefinition[] = [
   { id: "chatgpt-pro-5x", provider: "openai", plan: "chatgpt_pro_5x", label: "ChatGPT Pro 5×", compactLabel: "Pro 5×", quotaWeight: 5, quotaLabel: "5× квоты Plus", defaultMonthlyCostNano: 100n * NANO_PER_USD },
   { id: "chatgpt-pro-20x", provider: "openai", plan: "chatgpt_pro", label: "ChatGPT Pro 20×", compactLabel: "Pro 20×", quotaWeight: 20, quotaLabel: "20× квоты Plus", defaultMonthlyCostNano: 200n * NANO_PER_USD },
   { id: "chatgpt-business", provider: "openai", plan: "chatgpt_business", label: "ChatGPT Business", compactLabel: "Business", quotaWeight: 1, quotaLabel: "1× квоты Plus", defaultMonthlyCostNano: null },
-  { id: "google-ai-pro", provider: "gemini", plan: "google_ai_pro", label: "Google AI Pro", compactLabel: "AI Pro", quotaWeight: 1_500, quotaLabel: "1500 запросов/день", defaultMonthlyCostNano: 20n * NANO_PER_USD },
-  { id: "google-ai-ultra", provider: "gemini", plan: "google_ai_ultra", label: "Google AI Ultra", compactLabel: "AI Ultra", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
-  { id: "code-assist-standard", provider: "gemini", plan: "code_assist_standard", label: "Code Assist Standard", compactLabel: "Standard", quotaWeight: 1_500, quotaLabel: "1500 запросов/день", defaultMonthlyCostNano: null },
-  { id: "code-assist-enterprise", provider: "gemini", plan: "code_assist_enterprise", label: "Code Assist Enterprise", compactLabel: "Enterprise", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
-  { id: "workspace-ai-ultra", provider: "gemini", plan: "workspace_ai_ultra", label: "Workspace AI Ultra", compactLabel: "Workspace Ultra", quotaWeight: 2_000, quotaLabel: "2000 запросов/день", defaultMonthlyCostNano: null },
+  { id: "google-ai-pro", provider: "gemini", plan: "google_ai_pro", label: "Google AI Pro", compactLabel: "AI Pro", quotaWeight: 1, quotaLabel: "1× квоты AI Pro", defaultMonthlyCostNano: 20n * NANO_PER_USD },
+  { id: "google-ai-ultra", provider: "gemini", plan: "google_ai_ultra", label: "Google AI Ultra", compactLabel: "AI Ultra", quotaWeight: 20, quotaLabel: "до 20× квоты AI Pro", defaultMonthlyCostNano: null },
 ] as const;
 
 export const PROVIDER_RATIO_BASIS: Record<Provider, { label: string; source: string; href: string }> = {
@@ -52,9 +49,9 @@ export const PROVIDER_RATIO_BASIS: Record<Provider, { label: string; source: str
     href: "https://learn.chatgpt.com/docs/pricing",
   },
   gemini: {
-    label: "Google 1500:2000",
-    source: "Gemini Code Assist quotas",
-    href: "https://developers.google.com/gemini-code-assist/resources/quotas",
+    label: "Google AI Pro:Ultra 1:20",
+    source: "Google AI plans",
+    href: "https://one.google.com/about/google-ai-plans/",
   },
 };
 

@@ -20,16 +20,17 @@ Claude Pro/Max, paid ChatGPT и paid Gemini планы по живой кали�
   квоту, что Plus, по [OpenAI pricing](https://learn.chatgpt.com/docs/pricing). Runtime-plan
   `chatgpt_pro` — покупаемая Authbot подписка за $200, то есть Pro 20×; Pro 5× пока существует
   в калькуляторе как расчётная линия `chatgpt_pro_5x` за $100.
-- Gemini Code Assist/Antigravity: Google AI Pro и Code Assist Standard = 1500 запросов/день;
-  Google AI Ultra, Code Assist Enterprise и Workspace AI Ultra = 2000 запросов/день по
-  [Gemini Code Assist quotas](https://developers.google.com/gemini-code-assist/resources/quotas).
+- Google AI: в коммерческой матрице присутствуют только используемые пулом планы Pro и Ultra.
+  Google публикует для Ultra до `20×` больше лимитов Gemini относительно Pro, поэтому расчётный
+  коэффициент Pro / Ultra = `1:20` по [Google AI plans](https://one.google.com/about/google-ai-plans/).
+  Code Assist Standard/Enterprise и Workspace Ultra в калькулятор не выводятся.
 
 Масштабирование выполняется отдельно для 5ч, 7д и 30д только через integer BigInt. Источниками
 служат исключительно прямые измерения тарифов того же провайдера; уже рассчитанные значения не
 используются рекурсивно. Если прямых опор несколько, берётся среднее нормализованных значений.
-Опубликованные коэффициенты описывают 5-часовые Claude/OpenAI или дневные Gemini лимиты;
-дополнительные недельные ограничения могут отличаться, поэтому расчёт 7д/30д не считается
-калибровкой до собственного live-измерения тарифа.
+Опубликованные коэффициенты описывают 5-часовые Claude/OpenAI лимиты и верхнюю границу Google AI
+Ultra; дополнительные недельные ограничения и workload-зависимое потребление могут отличаться,
+поэтому расчёт 7д/30д не считается калибровкой до собственного live-измерения тарифа.
 
 ## Состав
 

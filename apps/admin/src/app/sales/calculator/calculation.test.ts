@@ -90,7 +90,7 @@ describe("sales calibration calculator", () => {
     expect(business?.sevenDay.capacityNano).toBe(10n * NANO_PER_USD);
   });
 
-  it("uses the Code Assist 1500:2000 ratio for paid Gemini plans", () => {
+  it("uses the published 1:20 Google AI Pro to Ultra ratio", () => {
     const metrics = buildProductMetrics({
       capacity: null,
       codex: null,
@@ -105,17 +105,14 @@ describe("sales calibration calculator", () => {
       },
     });
 
-    const standard = metrics.find((metric) => metric.product.id === "code-assist-standard");
     const ultra = metrics.find((metric) => metric.product.id === "google-ai-ultra");
-    const enterprise = metrics.find((metric) => metric.product.id === "code-assist-enterprise");
-    const workspace = metrics.find((metric) => metric.product.id === "workspace-ai-ultra");
-    expect(standard?.fiveHour.capacityNano).toBe(36n * NANO_PER_USD);
-    expect(standard?.fiveHour.estimate?.sources[0].ratioLabel).toBe("×1");
-    expect(ultra?.fiveHour.capacityNano).toBe(48n * NANO_PER_USD);
-    expect(ultra?.sevenDay.capacityNano).toBe(292n * NANO_PER_USD);
-    expect(ultra?.fiveHour.estimate?.sources[0].ratioLabel).toBe("×4/3");
-    expect(enterprise?.fiveHour.capacityNano).toBe(48n * NANO_PER_USD);
-    expect(workspace?.fiveHour.capacityNano).toBe(48n * NANO_PER_USD);
+    expect(metrics.filter((metric) => metric.product.provider === "gemini").map((metric) => metric.product.id)).toEqual([
+      "google-ai-pro",
+      "google-ai-ultra",
+    ]);
+    expect(ultra?.fiveHour.capacityNano).toBe(720n * NANO_PER_USD);
+    expect(ultra?.sevenDay.capacityNano).toBe(4_380n * NANO_PER_USD);
+    expect(ultra?.fiveHour.estimate?.sources[0].ratioLabel).toBe("×20");
   });
 
   it("keeps plans unknown when their provider has no measured anchor", () => {
