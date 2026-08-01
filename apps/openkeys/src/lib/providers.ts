@@ -21,6 +21,7 @@ export interface ProviderDescriptor {
 export const PROVIDER_COLORS = {
   anthropic: "#d97757",
   openai: "#10a37f",
+  gemini: "#4b8bf5",
   unattributed: "#6f7a8a",
 } as const;
 
@@ -44,5 +45,15 @@ export const PROVIDER_REGISTRY: ProviderDescriptor[] = [
     docsPath: UNIVERSAL_CONNECTIONS.openai.docsPath,
     color: PROVIDER_COLORS.openai,
     logo: "/assets/providers/openai.svg",
+  },
+  {
+    id: "gemini",
+    name: "Gemini",
+    api: "Google Gemini API",
+    baseUrl: "https://gemini.api.apitoken.sale",
+    authHeader: "x-goog-api-key",
+    docsPath: "/docs",
+    color: PROVIDER_COLORS.gemini,
+    logo: "/assets/providers/gemini.svg",
   },
 ];

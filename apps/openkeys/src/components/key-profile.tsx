@@ -172,19 +172,26 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
   const dailyProviders = new Map<number, {
     anthropic: bigint;
     openai: bigint;
+    gemini: bigint;
     anthropicRequests: number;
     openaiRequests: number;
+    geminiRequests: number;
   }>();
   for (const row of usage?.daily_providers ?? []) {
     const current = dailyProviders.get(row.day_ts) ?? {
       anthropic: 0n,
       openai: 0n,
+      gemini: 0n,
       anthropicRequests: 0,
       openaiRequests: 0,
+      geminiRequests: 0,
     };
     if (row.provider === "openai") {
       current.openai += BigInt(row.official_nano);
       current.openaiRequests += row.requests;
+    } else if (row.provider === "gemini") {
+      current.gemini += BigInt(row.official_nano);
+      current.geminiRequests += row.requests;
     } else {
       current.anthropic += BigInt(row.official_nano);
       current.anthropicRequests += row.requests;
@@ -206,11 +213,13 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
         const providers = dailyProviders.get(point.dayTs) ?? {
           anthropic: 0n,
           openai: 0n,
+          gemini: 0n,
           anthropicRequests: 0,
           openaiRequests: 0,
+          geminiRequests: 0,
         };
         const value = BigInt(point.officialNano);
-        const attributed = providers.anthropic + providers.openai;
+        const attributed = providers.anthropic + providers.openai + providers.gemini;
         return {
           day: point.dayTs * 1_000,
           requests: point.requests,
@@ -218,9 +227,11 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
           charged: BigInt(point.chargedNano),
           anthropic: providers.anthropic,
           openai: providers.openai,
+          gemini: providers.gemini,
           unattributed: value > attributed ? value - attributed : 0n,
           anthropicRequests: providers.anthropicRequests,
           openaiRequests: providers.openaiRequests,
+          geminiRequests: providers.geminiRequests,
         };
       })
     : [];
@@ -238,9 +249,11 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
     charged: 0n,
     anthropic: 0n,
     openai: 0n,
+    gemini: 0n,
     unattributed: 0n,
     anthropicRequests: 0,
     openaiRequests: 0,
+    geminiRequests: 0,
   });
   const averageDays = BigInt(usage ? usageWindowDays(usage.since_ts, usage.until_ts) : 1);
 
@@ -453,6 +466,9 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
               <div className="usage-chart-legend" aria-label={t.apiSpend}>
                 <span><i style={{ background: PROVIDER_COLORS.anthropic }} />Claude</span>
                 <span><i style={{ background: PROVIDER_COLORS.openai }} />GPT / OpenAI</span>
+                {series.some((point) => point.gemini > 0n) && (
+                  <span><i style={{ background: PROVIDER_COLORS.gemini }} />Gemini</span>
+                )}
                 {series.some((point) => point.unattributed > 0n) && (
                   <span><i style={{ background: PROVIDER_COLORS.unattributed }} />{t.unattributed}</span>
                 )}
@@ -503,6 +519,12 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                               style={{ height: `${boundedPercent(point.openai, scale.max)}%`, background: PROVIDER_COLORS.openai }}
                             />
                           )}
+                          {point.gemini > 0n && (
+                            <div
+                              className="uchart-seg provider-gemini"
+                              style={{ height: `${boundedPercent(point.gemini, scale.max)}%`, background: PROVIDER_COLORS.gemini }}
+                            />
+                          )}
                           {point.unattributed > 0n && (
                             <div
                               className="uchart-seg provider-unattributed"
@@ -534,6 +556,13 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                             <span className="chart-tip-dot" style={{ background: PROVIDER_COLORS.openai }} />
                             <span className="chart-tip-nm">GPT / OpenAI</span>
                             <b>{formatNanoUsdSmart(series[hoverDay]!.openai)}</b>
+                          </div>
+                        )}
+                        {series[hoverDay]!.gemini > 0n && (
+                          <div className="chart-tip-row">
+                            <span className="chart-tip-dot" style={{ background: PROVIDER_COLORS.gemini }} />
+                            <span className="chart-tip-nm">Gemini</span>
+                            <b>{formatNanoUsdSmart(series[hoverDay]!.gemini)}</b>
                           </div>
                         )}
                         {series[hoverDay]!.unattributed > 0n && (
@@ -717,7 +746,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                             {modelLabel(model.model)}
                           </span>
                         </td>
-                        <td><span className="chip">{usageProviderOf(model.model, model.provider) === "openai" ? "GPT" : "Claude"}</span></td>
+                        <td><span className="chip">{{ openai: "GPT", gemini: "Gemini", claude: "Claude" }[usageProviderOf(model.model, model.provider)]}</span></td>
                         <td className="tnum">{model.requests.toLocaleString(locale)}</td>
                         <td className="tnum">{fmtTokens(model.input_tokens)}</td>
                         <td className="tnum">{fmtTokens(model.output_tokens)}</td>

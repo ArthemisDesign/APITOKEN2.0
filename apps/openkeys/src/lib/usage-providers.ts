@@ -1,8 +1,8 @@
-export type UsageProvider = "claude" | "openai";
+export type UsageProvider = "claude" | "openai" | "gemini";
 
 export interface UsageModelRow {
   model: string;
-  provider?: "anthropic" | "openai";
+  provider?: "anthropic" | "openai" | "gemini";
   requests: number;
   input_tokens: number;
   output_tokens: number;
@@ -22,9 +22,12 @@ export interface UsageProviderSummary {
   chargedNano: bigint;
 }
 
-export function usageProviderOf(model: string, provider?: "anthropic" | "openai"): UsageProvider {
+export function usageProviderOf(model: string, provider?: "anthropic" | "openai" | "gemini"): UsageProvider {
+  if (provider === "gemini") return "gemini";
   if (provider) return provider === "openai" ? "openai" : "claude";
-  return model.toLowerCase().startsWith("gpt-") ? "openai" : "claude";
+  const name = model.toLowerCase();
+  if (name.startsWith("gemini")) return "gemini";
+  return name.startsWith("gpt-") ? "openai" : "claude";
 }
 
 /** Разбивка общего USAGE по API-планам, при этом деньги остаются bigint. */
@@ -46,6 +49,14 @@ export function aggregateUsageProviders(models: UsageModelRow[]): UsageProviderS
       officialNano: 0n,
       chargedNano: 0n,
     },
+    gemini: {
+      provider: "gemini",
+      label: "Gemini / Google",
+      requests: 0,
+      tokens: 0,
+      officialNano: 0n,
+      chargedNano: 0n,
+    },
   };
 
   for (const model of models) {
@@ -60,5 +71,5 @@ export function aggregateUsageProviders(models: UsageModelRow[]): UsageProviderS
     summary.chargedNano += BigInt(model.charged_nano);
   }
 
-  return [summaries.claude, summaries.openai];
+  return [summaries.claude, summaries.openai, summaries.gemini];
 }

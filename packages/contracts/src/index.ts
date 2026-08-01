@@ -103,7 +103,7 @@ const usageMoneyOnlyBucketSchema = z.object({
 });
 export const engineUsageModelSchema = z.object({
   model: z.string(),
-  provider: z.enum(["anthropic", "openai"]).optional(),
+  provider: z.enum(["anthropic", "openai", "gemini"]).optional(),
   requests: z.coerce.number().int().nonnegative(),
   input_tokens: z.coerce.number().int().nonnegative(),
   output_tokens: z.coerce.number().int().nonnegative(),
@@ -139,7 +139,7 @@ export const engineUsageSchema = z.object({
   })),
   daily_providers: z.array(z.object({
     day_ts: z.coerce.number().int().nonnegative(),
-    provider: z.enum(["anthropic", "openai"]),
+    provider: z.enum(["anthropic", "openai", "gemini"]),
     requests: z.coerce.number().int().nonnegative(),
     official_nano: decimalIntegerSchema,
     charged_nano: decimalIntegerSchema,
