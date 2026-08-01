@@ -137,10 +137,12 @@ contract-тестами в модуле. Мультимодальность и s
 image_url-части user-сообщений → Messages image-блоки (data: → base64 source,
 http(s) → url source, `detail` != auto → 400), `response_format` json_schema →
 GA `output_config.format` (только схема; json_object отклонён matrix).
-Reasoning (3.4b): `reasoning_effort` minimal|low|medium|high → GA `output_config.effort`
+Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high → GA `output_config.effort`
 (minimal клампится в low, невалидное значение → `400 invalid_request`; `effort`
-соседствует с `format` в одном `output_config`), thinking-блоки/thinking_delta
-ответа → `message.reasoning_content`/reasoning_content-дельты
+соседствует с `format` в одном `output_config`) + инжект `thinking: {type:"adaptive",
+display:"summarized"}` — без него на 4.6+ adaptive выключен, а дефолтный display=omitted
+присылает пустые thinking-блоки; явный `thinking` клиента не переопределяется.
+Thinking-блоки/thinking_delta ответа → `message.reasoning_content`/reasoning_content-дельты
 (signature/redacted_thinking не выставляются).
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.

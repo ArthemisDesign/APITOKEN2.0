@@ -437,6 +437,13 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `output_config`, не затирая его) и на Gemini
    `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
    плоскость сама мапит уровень в wire model id; `includeThoughts: true`).
+   **3.4c** (фикс по живым пробам native lane): на Anthropic одного `effort`
+   мало — на моделях 4.6+ adaptive thinking по умолчанию выключен, а
+   дефолтный `display: "omitted"` присылает thinking-блоки с пустым текстом,
+   поэтому при не-null `reasoning_effort` адаптер дополнительно инжектит
+   `thinking: {"type": "adaptive", "display": "summarized"}` (явный
+   `thinking` клиента не переопределяется — open list; на моделях ≤4.5
+   adaptive не поддержан — upstream честно отвечает 400).
    Ответ — конвенция `reasoning_content`: Anthropic thinking-блоки и Gemini
    thought-парты склеиваются в `message.reasoning_content` (non-stream, поле
    присутствует только при непустом reasoning), thinking_delta/thought-парты

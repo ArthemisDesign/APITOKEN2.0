@@ -14,11 +14,14 @@
 //! user-сообщений → Messages image-блоки (data: URL → base64 source,
 //! http(s) → url source; `detail` != auto отклоняется), `response_format`
 //! json_schema → GA `output_config.format` (json_object у Messages нет).
-//! Reasoning (3.4b): `reasoning_effort` minimal|low|medium|high → GA
+//! Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high → GA
 //! `output_config.effort` (minimal клампится в low; невалидное значение →
-//! 400 invalid_request); thinking-блоки ответа склеиваются в OpenAI-расширение
-//! `reasoning_content` (signature/redacted_thinking не выставляются —
-//! решение 4).
+//! 400 invalid_request) + инжект `thinking: {type:"adaptive", display:
+//! "summarized"}` (без него на 4.6+ adaptive выключен, а дефолтный
+//! display=omitted присылает пустые thinking-блоки — живые пробы native lane;
+//! явный `thinking` клиента не переопределяется); thinking-блоки ответа
+//! склеиваются в OpenAI-расширение `reasoning_content`
+//! (signature/redacted_thinking не выставляются — решение 4).
 //!
 //! Capability matrix (решение 3): параметры, которые Messages не умеет
 //! (n>1, penalties, logprobs, seed, store, …), с
@@ -280,8 +283,21 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(format) = translate_response_format(object.get("response_format"))? {
         output_config.insert("format".to_string(), format);
     }
-    if let Some(effort) = translate_reasoning_effort(object.get("reasoning_effort"))? {
+    let effort = translate_reasoning_effort(object.get("reasoning_effort"))?;
+    if let Some(effort) = effort {
         output_config.insert("effort".to_string(), Value::String(effort));
+        // reasoning_effort без явного thinking включает adaptive thinking с
+        // видимой summary: на 4.6+ моделях adaptive выключен по умолчанию
+        // (effort без thinking не даёт рассуждения вовсе), а дефолтный
+        // display=omitted присылает thinking-блоки с пустым текстом — оба
+        // факта подтверждены живыми пробами native lane (3.4c). Явный
+        // thinking клиента не переопределяем: open list ниже его проксирует.
+        if object.get("thinking").filter(|v| !v.is_null()).is_none() {
+            body.insert(
+                "thinking".to_string(),
+                json!({"type": "adaptive", "display": "summarized"}),
+            );
+        }
     }
     if !output_config.is_empty() {
         body.insert("output_config".to_string(), Value::Object(output_config));
@@ -2218,7 +2234,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    // ---------- reasoning (этап 3.4b) ----------
+    // ---------- reasoning (этапы 3.4b/3.4c) ----------
 
     #[test]
     fn translates_reasoning_effort_to_output_config_effort() {
@@ -2239,14 +2255,38 @@ mod tests {
                 serde_json::json!(expected),
                 "{effort}"
             );
+            // 3.4c: effort без явного thinking включает adaptive thinking с
+            // видимой summary (иначе рассуждения нет или блоки пустые).
+            assert_eq!(
+                translated.body["thinking"],
+                serde_json::json!({"type": "adaptive", "display": "summarized"}),
+                "{effort}"
+            );
         }
-        // null/отсутствие — выкл: output_config не появляется.
+        // null/отсутствие — выкл: ни output_config, ни thinking не появляется.
         let translated = ok_translated(serde_json::json!({
             "model": "claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "reasoning_effort": null,
         }));
         assert!(translated.body.get("output_config").is_none());
+        assert!(translated.body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_preserves_client_thinking() {
+        // Явный thinking клиента (open list) не переопределяется инжектом 3.4c.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-5-20251101",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium",
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+        }));
+        assert_eq!(translated.body["output_config"]["effort"], "medium");
+        assert_eq!(
+            translated.body["thinking"],
+            serde_json::json!({"type": "enabled", "budget_tokens": 2048})
+        );
     }
 
     #[test]
