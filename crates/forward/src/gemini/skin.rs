@@ -136,7 +136,10 @@ use super::chat::{
 };
 use super::gemini_api;
 use crate::codex::new_id;
-use crate::proxy::{read_body_limited, BodyReadError, TerminalErrorReason};
+use crate::proxy::{
+    read_body_limited, with_not_started, without_not_started, BodyReadError,
+    TerminalErrorReason,
+};
 use crate::state::AppState;
 
 /// Интервал heartbeat `event: ping` в Messages SSE — как у Codex skin 5.1
@@ -164,7 +167,12 @@ fn skin_error(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(reason));
-    response
+    // Все прямые вызовы skin_error происходят до границы доставки: локальная валидация
+    // ещё не запускала native request, а convert_error_response получает только не-2xx
+    // gemini_api, чей admission гарантированно refund/cancel. Ошибки разбора уже успешного
+    // 2xx и fallback сборки SSE снимают заголовок через without_not_started ниже: там
+    // request уже мог стать billable.
+    with_not_started(response)
 }
 
 /// 400 ошибки валидации адаптера; имя параметра живёт внутри message (в Anthropic-конверте
@@ -1051,25 +1059,25 @@ async fn json_messages_response(upstream: Response, requested_model: String) -> 
     let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return skin_error(
+            return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "The provider returned an unreadable response.",
                 "internal_response_error",
                 None,
-            )
+            ))
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
-            return skin_error(
+            return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "The provider returned a malformed response.",
                 "internal_response_error",
                 None,
-            )
+            ))
         }
     };
     let model = value
@@ -1127,36 +1135,36 @@ async fn count_tokens_json_response(upstream: Response) -> Response {
     let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return skin_error(
+            return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "The provider returned an unreadable response.",
                 "internal_response_error",
                 None,
-            )
+            ))
         }
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
-            return skin_error(
+            return without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "The provider returned a malformed response.",
                 "internal_response_error",
                 None,
-            )
+            ))
         }
     };
     let total = value.get("totalTokens").and_then(Value::as_u64);
     let Some(total) = total else {
-        return skin_error(
+        return without_not_started(skin_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "api_error",
             "The provider returned a malformed response.",
             "internal_response_error",
             None,
-        );
+        ));
     };
     let mut response = axum::Json(json!({"input_tokens": total})).into_response();
     if let Some(request_id) = request_id {
@@ -1583,13 +1591,15 @@ fn stream_messages_response(upstream: Response, requested_model: String) -> Resp
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(translator))
         .unwrap_or_else(|_| {
-            skin_error(
+            // gemini_api уже вернул 2xx и мог durable отметить delivery/charge; ошибка
+            // локальной сборки ответа не даёт права объявлять попытку не начатой.
+            without_not_started(skin_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
                 "Internal server error",
                 "internal_response_error",
                 None,
-            )
+            ))
         });
     if let Some(request_id) = request_id {
         response.headers_mut().insert("request-id", request_id);
@@ -1799,6 +1809,56 @@ mod tests {
             "gemini-2.5-flash".to_string(),
             SSE_PING_INTERVAL,
         )
+    }
+
+    #[tokio::test]
+    async fn skin_errors_mark_execution_not_started_but_post_success_rebuilds_do_not() {
+        // Локальная валидация и конвертация не-2xx gemini_api происходят до delivery:
+        // reserve refund/cancel, поэтому Anthropic skin сохраняет внутренний контракт.
+        for response in [
+            skin_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "overloaded_error",
+                "Overloaded",
+                "test_reason",
+                Some(2),
+            ),
+            invalid_request("bad request"),
+            convert_error_response(upstream_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}"#,
+                "quota_exhausted",
+            ))
+            .await,
+            translate_messages_request(json!({"model": "google/gemini-2.5-flash"}), true)
+                .unwrap_err(),
+        ] {
+            assert!(!response.status().is_success());
+            assert_eq!(
+                response
+                    .headers()
+                    .get(crate::proxy::EXECUTION_STATE_HEADER)
+                    .unwrap(),
+                crate::proxy::EXECUTION_STATE_NOT_STARTED
+            );
+        }
+
+        // После 2xx native request уже мог стать billable. Ошибка адаптера при разборе
+        // такого ответа обязана fail closed: без not_started, значит router не ретраит.
+        for response in [
+            json_messages_response(
+                upstream_error(StatusCode::OK, "not json", "unused"),
+                "gemini-2.5-flash".to_string(),
+            )
+            .await,
+            count_tokens_json_response(upstream_json(json!({"missing": "totalTokens"}))).await,
+        ] {
+            assert!(!response.status().is_success());
+            assert!(response
+                .headers()
+                .get(crate::proxy::EXECUTION_STATE_HEADER)
+                .is_none());
+        }
     }
 
     // ---------- перевод запроса ----------

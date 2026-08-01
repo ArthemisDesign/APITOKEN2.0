@@ -80,9 +80,11 @@ Control API движка использует только на чтение. С
   (`codex/billing.rs`), shadow-runtime стартует в проде (`crates/server`). НЕ читает БД
   и не считает стоимость токенов.
 - **Контракт `x-apitoken-execution-state` (плоскости → router, этап 6.1).** Производители —
-  `crates/forward` (`proxy.rs`, `codex/api.rs`, `codex/skin.rs`, `gemini/api.rs`): заголовок
+  `crates/forward` (`proxy.rs`, `codex/api.rs`, `codex/skin.rs`, `gemini/api.rs`,
+  `gemini/skin.rs`): заголовок
   `not_started` на не-2xx отказах до границы started при гарантии refund/cancel reserve
-  (fail-closed зазор — адаптеры universal lanes, см. контракт §3.2). Потребитель —
+  (`gemini/skin.rs` снимает его с ошибок после 2xx; fail-closed зазор остаётся в остальных
+  universal adapters, см. контракт §3.2). Потребитель —
   `crates/router`: обязан снимать заголовок со всех транзитных ответов; retry по сигналу —
   фаза 6.2. Документ контракта — `docs/engine/ROUTING_FENCING.md` §3.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.

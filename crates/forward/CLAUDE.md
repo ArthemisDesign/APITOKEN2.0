@@ -82,12 +82,14 @@ Anthropic — до `mark_delivering`, Codex — до `emitted`/первого SS
 full-hold, дропнутый TeeMeter на 2xx-пути, fallback-сборки SSE после запущенного admission),
 обязаны снимать заголовок через `without_not_started`. Точки выставления: Anthropic —
 `local_err_for` и `stream_back` (не-2xx без метеринга), Codex — `ApiError::into_response` и
-`skin_error`, Gemini — `ApiError::into_response`. На 2xx заголовок недопустим никогда (включая
-SseErrorTail внутри 200). Адаптеры (`anthropic.rs`/`anthropic_responses.rs`,
+`skin_error`, Gemini — `ApiError::into_response` и Messages-skin `skin_error`. На 2xx заголовок
+недопустим никогда (включая SseErrorTail внутри 200). Адаптеры
+(`anthropic.rs`/`anthropic_responses.rs`,
 `gemini/chat.rs`/`gemini/responses.rs`) пересобирают upstream-ошибки и заголовок теряют —
 fail-closed деградация: нет заголовка = нет retry (ROUTING_FENCING §3.3), покрытие этих
-поверхностей — отдельная правка. Router обязан снимать заголовок с транзитных ответов
-(см. crates/router/CLAUDE.md).
+поверхностей — отдельные правки. Gemini Messages skin сохраняет сигнал на pre-delivery
+не-2xx и явно снимает его с ошибок адаптера после 2xx, когда charge уже возможен. Router обязан
+снимать заголовок с транзитных ответов (см. crates/router/CLAUDE.md).
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** каждый
 успешный Anthropic turn, включая неметеренный admin traffic, после authoritative usage строит один

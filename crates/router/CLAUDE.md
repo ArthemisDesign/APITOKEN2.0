@@ -54,8 +54,8 @@
   dispatch в Anthropic-конверте: namespaced `openai/*` уходит на Codex plane
   (там Messages→Responses адаптер `crates/forward/src/codex/skin.rs`),
   `anthropic/*` — на Anthropic plane как native lane, `google/*` — на Gemini
-  plane по общему namespace-правилу (Messages skin там пока нет — plane
-  честно отвечает своей 404). `POST
+  plane по общему namespace-правилу (Messages→generateContent skin реализован
+  в `crates/forward/src/gemini/skin.rs`). `POST
   /v1/messages/count_tokens` dispatch не использует и остаётся байт-прокси на
   Anthropic plane (этап 5.2).
 - `responses.rs` — model-based dispatch `POST /v1/responses` (этап 4.1) по

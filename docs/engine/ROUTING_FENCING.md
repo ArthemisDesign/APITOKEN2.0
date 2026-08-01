@@ -104,8 +104,10 @@ Codex stream даже 200 не означает billable. Без явного с
 - Адаптеры universal lanes (`anthropic.rs`/`anthropic_responses.rs`,
   `gemini/chat.rs`/`gemini/responses.rs`) пересобирают upstream-ошибки и заголовок сегодня
   не пробрасывают — fail-closed деградация (нет заголовка = retry запрещён, §3.3), а не
-  нарушение контракта. Точечное покрытие skin-поверхностей — отдельные follow-up пакеты
-  (первый — `gemini/skin.rs` от этапа 5.2), обязательные до включения fallback в 6.2.
+  нарушение контракта. Gemini Messages skin (`gemini/skin.rs`) покрыт: pre-delivery
+  не-2xx сохраняют `not_started`, а ошибки пересборки уже после 2xx явно снимают сигнал,
+  потому что charge возможен. Остальные adapter-поверхности закрываются точечно до
+  включения fallback в 6.2.
 
 ### 3.3. Обязанности router (фаза 6.2)
 
@@ -182,8 +184,9 @@ MVP-контракт §3 закрывает гонку «вторая попыт
 1. **6.1 — контракт `not_started` в плоскостях — РЕАЛИЗОВАН 2026-08-01** (header-strip в
    router для транзитных ответов даже без fallback, unit/contract-тесты веток с реальным
    reserve, документация `crates/forward/CLAUDE.md` + `crates/router/CLAUDE.md`). Выкат
-   при выключенном fallback безопасен: клиент заголовок не видит. Известный fail-closed
-   зазор — адаптеры universal lanes (§3.2), закрывается follow-up пакетами до фазы 6.2.
+   при выключенном fallback безопасен: клиент заголовок не видит. Gemini Messages skin
+   уже покрыт; известный fail-closed зазор остаётся в остальных universal adapters (§3.2)
+   и закрывается follow-up пакетами до включения fallback в 6.2.
 2. **6.2 — router fallback engine:** поле `models`, retry matrix §3.3, логирование попыток,
    feature-flag off-by-default, интеграционные тесты с двумя mock-плоскостями.
 3. **6.3 — group identity в registry/billing:** expand-only миграции, winner-правило в
