@@ -4,6 +4,19 @@ For copy-paste production commands, preflight, worker handling, rollback, backup
 verification gate, start with [`../DEPLOYMENT.md`](../docs/ops/DEPLOYMENT.md). This file documents controller
 internals and first-environment procedures.
 
+## Merge client (agent-merge.sh)
+
+`agent-merge.sh` is the only path into `master` for contributors. Run it from your own
+worktree with a clean tree and an upstream set: it reads the live `deploy/watchdog` state via
+the GitHub API (reusing the credential from `git credential`), runs the path-aware local gate
+for the lanes your diff touches (TypeScript/Rust/deployment classifiers from
+`deploy/watchdog-lib.sh`, always-on static lane with `bash -n`, `git diff --check`, and
+`deploy/docs-check.sh`), takes the machine merge-lock, rebases onto the latest
+`origin/master`, re-runs the gate on the exact SHA it pushes, and holds the lock until the
+host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward
+with a new commit on a new branch. The full contributor workflow is in
+[`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+
 These scripts finalize immutable SHA-addressed releases, move release links atomically, and activate
 processes with exact-systemd-unit readiness gates. The automatic watchdog passes
 `--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a
