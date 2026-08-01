@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 from tools.claude_calibration.run_live import (
     CalibrationError,
     ProfileBudget,
+    ProductionSshJsonHttpClient,
     TokenRates,
     attribute_exact_turn,
     build_coverage_legs,
@@ -147,6 +149,13 @@ class BudgetTests(unittest.TestCase):
         budget.charge("a…", 60)
         with self.assertRaisesRegex(CalibrationError, "exceeded budget"):
             budget.charge("a…", 41)
+
+    def test_exact_profile_budget_does_not_block_other_targets(self):
+        budget = ProfileBudget.for_profiles(["a…", "b…"], 100)
+        budget.spent_nano["a…"] = 99
+        budget.require_room_for_profile("b…", 100)
+        with self.assertRaisesRegex(CalibrationError, "a…"):
+            budget.require_room_for_profile("a…", 2)
 
     def test_count_tokens_bound_covers_cache_miss_output_and_search(self):
         rates = TokenRates(10, 1, 12, 20, 30, 1_000)
@@ -304,6 +313,34 @@ class CatalogueAndPlanTests(unittest.TestCase):
             ),
             "token-class coverage incomplete for 1 leg: cache-read:a",
         )
+
+
+class ProductionSshClientTests(unittest.TestCase):
+    @patch("tools.claude_calibration.run_live.subprocess.run")
+    def test_admin_secret_stays_remote_and_target_is_bounded(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = b'{"input_tokens":17}\n200'
+        run.return_value.stderr = b""
+        client = ProductionSshJsonHttpClient(30)
+
+        self.assertEqual(
+            client.request(
+                "/v1/messages/count_tokens",
+                method="POST",
+                body={"model": "claude-haiku-4-5", "messages": []},
+                session_id="123e4567-e89b-42d3-a456-426614174000",
+                target_profile="besp…",
+            ),
+            {"input_tokens": 17},
+        )
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], ["ssh", "apitokensale"])
+        self.assertIn("${CLAUDE_API_KEYS%%,*}", command[2])
+        self.assertIn("x-apitoken-calibration-profile: besp", command[2])
+        self.assertNotIn("APITOKEN_API_KEY", command[2])
+
+        with self.assertRaisesRegex(CalibrationError, "bounded profile hint"):
+            client.request("/v1/models", target_profile="too-long…")
 
 
 if __name__ == "__main__":

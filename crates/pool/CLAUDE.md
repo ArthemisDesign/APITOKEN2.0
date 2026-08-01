@@ -32,6 +32,11 @@ Shared cache-root НЕ lineage: `peek_affinity_home_with_warm` получает 
 предпочитает лучший тёплый. Сильно более свободная холодная персона побеждает и сама становится тёплой
 после успешного ответа. Это soft hint; все обычные health/reserve/inflight проверки остаются теми же.
 
+`route_operator_target` — узкий pure-memory путь для forwarding-admin live-калибровки: caller
+передаёт bounded opaque/profile hint и идентификатор-функцию, collision возвращает `None`. Путь
+обходит только мягкий new-placement `Reserve`, но не hard 100% cap, cooling или durable auth-dead;
+он никогда не spill/rebind-ится. HTTP/auth/header остаются ответственностью `forward`.
+
 Continuation использует hard 100% provider cap, а новый placement — мягкий `Reserve`; busy home
 spill-ится немедленно, без локального ожидания. Legacy `route(u64)` и bounded `bindings`
 оставлены для совместимости тестов/внутренних callers. Сетей, env и persistence в pool нет.

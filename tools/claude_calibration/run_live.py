@@ -119,6 +119,16 @@ class ProfileBudget:
                 + ", ".join(sorted(blocked))
             )
 
+    def require_room_for_profile(self, profile: str, upper_bound_nano: int) -> None:
+        if upper_bound_nano <= 0:
+            raise CalibrationError("request upper bound must be positive")
+        if profile not in self.spent_nano:
+            raise CalibrationError(f"unknown exact-routing profile: {profile}")
+        if self.spent_nano[profile] + upper_bound_nano > self.limit_nano:
+            raise CalibrationError(
+                f"budget guard stopped before dispatch; insufficient room on: {profile}"
+            )
+
     def charge(self, profile: str, actual_nano: int) -> None:
         if profile not in self.spent_nano:
             raise CalibrationError(f"turn was attributed to an unexpected profile: {profile}")
@@ -478,8 +488,14 @@ class JsonHttpClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
-                session_id: str | None = None) -> dict[str, Any]:
+    def request(
+        self,
+        path: str,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        target_profile: str | None = None,
+    ) -> dict[str, Any]:
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {
             "x-api-key": self.api_key,
@@ -490,6 +506,8 @@ class JsonHttpClient:
         }
         if session_id:
             headers["x-session-id"] = session_id
+        if target_profile:
+            headers["x-apitoken-calibration-profile"] = target_profile.removesuffix("…")
         request = urllib.request.Request(
             f"{self.api_url}{path}", data=data, headers=headers, method=method
         )
@@ -501,6 +519,89 @@ class JsonHttpClient:
             raise CalibrationError(f"{path} returned HTTP {error.code}: {detail}") from error
         except urllib.error.URLError as error:
             raise CalibrationError(f"{path} failed: {error}") from error
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise CalibrationError(f"{path} returned invalid JSON") from error
+        if not isinstance(payload, dict):
+            raise CalibrationError(f"{path} returned a non-object")
+        return payload
+
+
+class ProductionSshJsonHttpClient:
+    """Call the stable loopback router with a remote-only forwarding-admin credential.
+
+    The credential is expanded only by the production shell and never crosses SSH or enters the
+    report. The admin-only calibration header makes each paid-equivalent turn exact-profile and is
+    stripped before the request reaches Anthropic.
+    """
+
+    def __init__(self, timeout: int) -> None:
+        self.timeout = timeout
+
+    def request(
+        self,
+        path: str,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        target_profile: str | None = None,
+    ) -> dict[str, Any]:
+        if method not in {"GET", "POST"} or not path.startswith("/v1/"):
+            raise CalibrationError(f"unsupported production SSH request: {method} {path}")
+        if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-?=&." for char in path):
+            raise CalibrationError(f"unsafe production SSH path: {path!r}")
+        headers = [
+            "anthropic-version: 2023-06-01",
+            "content-type: application/json",
+            "accept: application/json",
+            "anthropic-beta: web-search-2025-03-05,extended-cache-ttl-2025-04-11",
+        ]
+        if session_id:
+            try:
+                uuid.UUID(session_id)
+            except ValueError as error:
+                raise CalibrationError("invalid calibration session UUID") from error
+            headers.append(f"x-session-id: {session_id}")
+        if target_profile:
+            hint = target_profile.removesuffix("…")
+            if not (1 <= len(hint) <= 4) or not all(
+                char.isascii() and (char.isalnum() or char in "._-") for char in hint
+            ):
+                raise CalibrationError(f"invalid bounded profile hint: {target_profile!r}")
+            headers.append(f"x-apitoken-calibration-profile: {hint}")
+        header_args = " ".join(f"-H {shlex.quote(header)}" for header in headers)
+        data_arg = "--data-binary @-" if body is not None else ""
+        remote = (
+            "set -a && . /srv/claude-api/data/server.env && set +a && "
+            "calibration_key=${CLAUDE_API_KEYS%%,*} && test -n \"$calibration_key\" && "
+            f"curl -sS --max-time {self.timeout} -w '\\n%{{http_code}}' "
+            f"-X {method} -H \"x-api-key: $calibration_key\" {header_args} {data_arg} "
+            f"{shlex.quote('http://127.0.0.1:8790' + path)}"
+        )
+        data = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+        try:
+            result = subprocess.run(
+                ["ssh", "apitokensale", remote],
+                input=data,
+                capture_output=True,
+                timeout=self.timeout + 30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CalibrationError(f"{path} timed out over production SSH") from error
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace")[-800:]
+            raise CalibrationError(
+                f"{path} production SSH transport failed ({result.returncode}): {detail}"
+            )
+        raw, separator, status_raw = result.stdout.rpartition(b"\n")
+        if not separator or not status_raw.isdigit():
+            raise CalibrationError(f"{path} production SSH response has no HTTP status")
+        status = int(status_raw)
+        if status >= 400:
+            detail = raw[:800].decode(errors="replace")
+            raise CalibrationError(f"{path} returned HTTP {status}: {detail}")
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
@@ -562,6 +663,7 @@ class Runner:
         evidence_timeout: int,
         profile_delay: float,
         run_id: str,
+        exact_profile_routing: bool = False,
     ) -> None:
         self.api = api
         self.capacity = capacity
@@ -571,6 +673,7 @@ class Runner:
         self.evidence_timeout = evidence_timeout
         self.profile_delay = profile_delay
         self.run_id = run_id
+        self.exact_profile_routing = exact_profile_routing
         self.last_profile_turn: dict[str, float] = defaultdict(float)
         self.records: list[dict[str, Any]] = []
 
@@ -600,6 +703,7 @@ class Runner:
             method="POST",
             body=count_body(body),
             session_id=session_id,
+            target_profile=expected_profile if self.exact_profile_routing else None,
         )
         input_tokens = as_int(count.get("input_tokens"), "count_tokens.input_tokens")
         rates = rates_for_model(self.catalog, self.ceiling, leg.model, leg.tier)
@@ -611,10 +715,19 @@ class Runner:
         upper = request_upper_bound_nano(
             input_tokens, leg.max_tokens, web_uses, rates, leg.cache_ttl
         )
-        self.budget.require_room_for_any_routing(upper)
+        if self.exact_profile_routing:
+            if not expected_profile:
+                raise CalibrationError("exact-profile routing requires an expected profile")
+            self.budget.require_room_for_profile(expected_profile, upper)
+        else:
+            self.budget.require_room_for_any_routing(upper)
 
         response = self.api.request(
-            "/v1/messages", method="POST", body=body, session_id=session_id
+            "/v1/messages",
+            method="POST",
+            body=body,
+            session_id=session_id,
+            target_profile=expected_profile if self.exact_profile_routing else None,
         )
         usage = usage_from_response(response)
         served_model = str(response.get("model") or leg.model)
@@ -785,6 +898,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="use the standard secret-safe read-only SSH capacity command",
     )
+    parser.add_argument(
+        "--production-api-over-ssh",
+        action="store_true",
+        help="send admin-only exact-profile live turns through the production loopback slot",
+    )
     return parser.parse_args(argv)
 
 
@@ -794,7 +912,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Refusing live traffic without --execute.", file=sys.stderr)
         return 2
     api_key = os.getenv(args.api_key_env, "")
-    if not api_key:
+    if not args.production_api_over_ssh and not api_key:
         raise CalibrationError(f"missing API key environment variable: {args.api_key_env}")
     capacity_command = (
         remote_capacity_command()
@@ -807,7 +925,11 @@ def main(argv: list[str] | None = None) -> int:
         os.getenv(args.panel_key_env),
         args.http_timeout,
     )
-    api = JsonHttpClient(args.api_url, api_key, args.http_timeout)
+    api = (
+        ProductionSshJsonHttpClient(args.http_timeout)
+        if args.production_api_over_ssh
+        else JsonHttpClient(args.api_url, api_key, args.http_timeout)
+    )
     baseline = capacity.read()
     states = profile_state(baseline)
     profiles = sorted(
@@ -841,26 +963,41 @@ def main(argv: list[str] | None = None) -> int:
         args.evidence_timeout,
         args.profile_delay,
         run_id,
+        exact_profile_routing=args.production_api_over_ssh,
     )
 
     sessions: dict[str, str] = {}
     failure: str | None = None
     try:
         discovery_model = next((model for model in models if "haiku" in model), models[-1])
-        for attempt in range(max(12, len(profiles) * 6)):
-            if len(sessions) == len(profiles):
-                break
-            session = str(uuid.uuid4())
-            leg = Leg(
-                name=f"discovery:{attempt}",
-                model=discovery_model,
-                tier="standard",
-                kind="fresh",
-                prompt_words=16,
-                max_tokens=8,
-            )
-            profile, _ = runner.execute_leg(leg, session)
-            sessions.setdefault(profile, session)
+        if args.production_api_over_ssh:
+            for attempt, profile in enumerate(profiles):
+                session = str(uuid.uuid4())
+                leg = Leg(
+                    name=f"discovery:{attempt}",
+                    model=discovery_model,
+                    tier="standard",
+                    kind="fresh",
+                    prompt_words=16,
+                    max_tokens=8,
+                )
+                runner.execute_leg(leg, session, expected_profile=profile)
+                sessions[profile] = session
+        else:
+            for attempt in range(max(12, len(profiles) * 6)):
+                if len(sessions) == len(profiles):
+                    break
+                session = str(uuid.uuid4())
+                leg = Leg(
+                    name=f"discovery:{attempt}",
+                    model=discovery_model,
+                    tier="standard",
+                    kind="fresh",
+                    prompt_words=16,
+                    max_tokens=8,
+                )
+                profile, _ = runner.execute_leg(leg, session)
+                sessions.setdefault(profile, session)
         missing = sorted(set(profiles) - set(sessions))
         if missing:
             raise CalibrationError(f"could not establish sticky sessions for: {', '.join(missing)}")

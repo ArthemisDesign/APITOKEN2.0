@@ -202,6 +202,7 @@ fn skip_req_header(name: &str) -> bool {
         | "anthropic-beta" | "anthropic-version" | "user-agent" | "accept-encoding"
         | "x-claude-code-session-id" | "x-conversation-id" | "x-session-id"
         | "x-apitoken-api-plane"
+        | "x-apitoken-calibration-profile"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
         | "keep-alive" | "te" | "trailer"
         // Клиентские forwarding/hop-заголовки НЕ пробрасываем апстриму: они раскрыли бы цепочку прокси
@@ -209,6 +210,39 @@ fn skip_req_header(name: &str) -> bool {
         | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-proto" | "forwarded"
         | "x-real-ip" | "via" | "cf-connecting-ip" | "true-client-ip"
     )
+}
+
+const CALIBRATION_PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
+
+/// Bounded operator identifier shared with the protected capacity report. Full subscription
+/// identity never enters the request or report, and a collision is rejected by the pool.
+fn calibration_profile_hint(email: &str) -> String {
+    email
+        .split('@')
+        .next()
+        .unwrap_or(email)
+        .chars()
+        .take(4)
+        .collect()
+}
+
+/// Exact profile targeting is deliberately unavailable to metered/control/panel credentials.
+/// Forwarding-admin traffic is already unmetered and trusted to exercise live subscriptions; this
+/// header only makes a bounded calibration run attributable instead of changing its authority.
+fn operator_calibration_target<'a>(authz: &Authz, headers: &'a HeaderMap) -> Option<&'a str> {
+    if !matches!(authz, Authz::Admin { .. }) {
+        return None;
+    }
+    headers
+        .get(CALIBRATION_PROFILE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| {
+            (1..=4).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
 }
 // Заголовки апстрима, которые НЕ отдаём клиенту: hop-by-hop + per-ПОДПИСОЧНЫЕ ratelimit/идентити.
 // `anthropic-ratelimit-*` отражают состояние НАШЕЙ подписки (утилизация/reset пула) — отдавать их
@@ -866,6 +900,7 @@ pub async fn forward(
         }
         Authz::Admin { .. } | Authz::Metered { .. } => {}
     }
+    let operator_target = operator_calibration_target(&authz, &parts.headers).map(str::to_owned);
     // ALLOWLIST эндпоинтов: форвардим на пул ТОЛЬКО то, что доступно на квоте ПОДПИСКИ Claude Max
     // (messages/count_tokens/models). Batches/Files/Agents/Sessions требуют scope OAuth-токена
     // (user:batch/developer), которого у подписки НЕТ → на них Anthropic отдаёт 403/401/404. Не роутим
@@ -1591,7 +1626,11 @@ pub async fn forward(
         // крутимся дальше по флоту (клиенту такая ошибка идти не должна, пока есть здоровые подписки).
         // Бюджет `max_tries` тратят только BACKEND-фейлы (5xx/сеть — вероятный аутейдж апстрима). Верхний
         // предел итераций = «весь флот + запас» (пул сам исключает уже cooling/tried → быстро сходится).
-        let hard_cap = app.pool.len().max(1) + 2;
+        let hard_cap = if operator_target.is_some() {
+            1
+        } else {
+            app.pool.len().max(1) + 2
+        };
         let mut attempt = 0usize;
         let mut backend_tries = 0usize;
         let mut auth_tries = 0usize; // 401/403: возможно вина запроса клиента, а не токена — см. ниже
@@ -1608,7 +1647,7 @@ pub async fn forward(
             // First attempt uses shared cache affinity. Redis only proposes an opaque home; the pool
             // revalidates live health/capacity and reserves the local slot atomically. Retries remain
             // load-based and PostgreSQL below is still the authoritative distributed capacity gate.
-            let affinity_sub = if attempt == 0 {
+            let affinity_sub = if attempt == 0 && operator_target.is_none() {
                 if let Some(input) = affinity_input.as_ref() {
                     if affinity_resolution.is_none() {
                         if let Some(proposed) = app.pool.peek_affinity_home_with_warm(
@@ -1653,12 +1692,25 @@ pub async fn forward(
             } else {
                 None
             };
-            let (sub, affinity_disposition) = match affinity_sub {
-                Some((sub, disposition)) => (sub, Some(disposition)),
-                None => match app.pool.pick(&tried, false) {
-                    Some(sub) => (sub, None),
-                    None => break,
-                },
+            let (sub, affinity_disposition) = if let Some(target) = operator_target.as_deref() {
+                match app
+                    .pool
+                    .route_operator_target(target, calibration_profile_hint)
+                {
+                    Some(sub) => (sub, Some(pool::AffinityDisposition::Pinned)),
+                    None => {
+                        transient_hint = Some(1);
+                        break;
+                    }
+                }
+            } else {
+                match affinity_sub {
+                    Some((sub, disposition)) => (sub, Some(disposition)),
+                    None => match app.pool.pick(&tried, false) {
+                        Some(sub) => (sub, None),
+                        None => break,
+                    },
+                }
             };
             // route/pick отдали cooling-персону → значит НЕТ ни одной не-cooling (весь оставшийся флот за
             // лимитом). НЕ шлём живой клиентский трафик на отлимиченный аккаунт: это гарантированный свежий
@@ -2715,6 +2767,32 @@ mod tests {
             1,
             "the same credential in two headers must be checked only once"
         );
+    }
+
+    #[test]
+    fn calibration_target_is_admin_only_bounded_and_never_forwarded() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CALIBRATION_PROFILE_HEADER,
+            "besp".parse().expect("valid bounded profile hint"),
+        );
+        let admin = Authz::Admin {
+            affinity_scope: "operator".to_string(),
+        };
+        assert_eq!(operator_calibration_target(&admin, &headers), Some("besp"));
+        assert_eq!(
+            operator_calibration_target(&Authz::Unauthorized, &headers),
+            None,
+            "a customer-controlled header cannot select a subscription"
+        );
+        assert!(skip_req_header(CALIBRATION_PROFILE_HEADER));
+
+        headers.insert(
+            CALIBRATION_PROFILE_HEADER,
+            "too-long".parse().expect("syntactically valid header"),
+        );
+        assert_eq!(operator_calibration_target(&admin, &headers), None);
+        assert_eq!(calibration_profile_hint("bespoke@example.com"), "besp");
     }
 
     #[tokio::test]

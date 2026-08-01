@@ -968,6 +968,44 @@ impl Pool {
         Some(global)
     }
 
+    /// Route one operator-authorized calibration request to exactly one opaque target.
+    ///
+    /// This deliberately bypasses the soft new-session reserve so a bounded live calibration can
+    /// measure a healthy account that normal placement is preserving as headroom. It never bypasses
+    /// the provider hard cap, cooling, or durable auth death, and it never spills to another home.
+    /// Ambiguous target identifiers fail closed. The caller is responsible for restricting this
+    /// capability to forwarding-admin traffic and pairing the returned slot with `mark_done` or the
+    /// normal streaming guard.
+    pub fn route_operator_target<F>(&self, target: &str, identify: F) -> Option<Sub>
+    where
+        F: Fn(&str) -> String,
+    {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let now = now();
+        let mut matches = g
+            .subs
+            .iter()
+            .filter(|sub| identify(&sub.email) == target)
+            .cloned();
+        let sub = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let home = sub.email.clone();
+        let scale = plan_scale(&sub.plan);
+        let unavailable = is_dead(&g, &home)
+            || is_cooling(&g, &home, now)
+            || live_util(&g, &home, scale, 5, now, self.prior5h_usd, self.prior7d_usd) >= 1.0
+            || live_util(&g, &home, scale, 7, now, self.prior5h_usd, self.prior7d_usd) >= 1.0;
+        if unavailable {
+            return None;
+        }
+        let live = g.live.entry(home).or_default();
+        live.last_used = now;
+        live.inflight = live.inflight.saturating_add(1);
+        Some(sub)
+    }
+
     /// Route a lineage whose preferred home is stored by the caller (normally keyed and shared in
     /// Redis). `identify` converts a subscription email into that opaque home ID without teaching
     /// this pure scheduler about secrets or network storage.
@@ -2214,6 +2252,29 @@ mod tests {
             }
             other => panic!("unexpected rebound route: {other:?}"),
         }
+    }
+
+    #[test]
+    fn operator_target_is_exact_collision_safe_and_uses_only_hard_provider_caps() {
+        let p = pool(&["alpha-one", "alpha-two", "beta"]);
+        for email in ["alpha-one", "alpha-two", "beta"] {
+            p.set_util(email, Some(0.95), Some(0.95), None, None, None);
+        }
+        let prefix = |email: &str| email.chars().take(4).collect::<String>();
+
+        assert!(
+            p.route_operator_target("alph", prefix).is_none(),
+            "a bounded display-prefix collision must never guess a subscription"
+        );
+        let selected = p.route_operator_target("beta", prefix).unwrap();
+        assert_eq!(selected.email, "beta", "soft reserve is intentionally bypassed");
+        p.mark_done(&selected.email);
+
+        p.mark_cooling("beta", 60);
+        assert!(
+            p.route_operator_target("beta", prefix).is_none(),
+            "operator targeting cannot bypass provider cooling"
+        );
     }
 
     #[test]

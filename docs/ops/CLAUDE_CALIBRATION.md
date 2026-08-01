@@ -27,17 +27,25 @@ immutable `calibration_evidence` и provider quota snapshots.
   Это даёт post-turn poll шанс связать exact spend с новой quota fraction.
 - API key и panel/control key читаются только из env/remote shell и в отчёт не попадают. Email уже
   приходит из `/capacity` в bounded mask без домена.
+- Production-режим отправляет generation через SSH прямо в стабильный loopback router с
+  forwarding-admin key, который раскрывается только внутри remote shell. Admin-only заголовок
+  адресует bounded четырёхсимвольный profile hint, вырезается до upstream и fail-closed при
+  коллизии. Поэтому normal customer routing/reserve не мешает измерить конкретную подписку, а
+  калибровочный запрос никогда не spill/rebind-ится на соседнюю.
 
 ## Production-команда
 
-На рабочей машине должен быть `APITOKEN_API_KEY`. Control snapshot безопасно читается на production
-host: remote shell загружает `/srv/claude-api/data/server.env`, использует panel key внутри `curl`
-и возвращает только JSON `/capacity`; сам секрет через SSH не печатается.
+Control snapshot и live generation безопасно выполняются на production host: remote shell загружает
+`/srv/claude-api/data/server.env`; panel key используется только для JSON `/capacity`, а
+forwarding-admin key — только для loopback `/v1/*`. Ни один секрет через SSH не печатается и в
+локальный процесс не возвращается. `APITOKEN_API_KEY` нужен только для legacy/public режима без
+`--production-api-over-ssh`.
 
 ```bash
 python3 tools/claude_calibration/run_live.py \
   --execute \
   --production-capacity-over-ssh \
+  --production-api-over-ssh \
   --budget-usd 40 \
   --report /tmp/claude-calibration-report.json
 ```
@@ -53,9 +61,11 @@ python3 tools/claude_calibration/run_live.py \
 для inference-only токена с 403 допускается только единогласный plan остальных подписок этого fleet.
 Если fleet смешанный или полностью не размечен, нагрузку не запускают до появления authoritative plan.
 
-Runner сначала создаёт новые `x-session-id`, а LRU/capacity placement раскладывает их по healthy
-подпискам. После exact attribution один session закрепляется за каждым masked home. Если все homes
-получить не удалось, нагрузочная матрица не начинается.
+В production SSH-режиме runner создаёт отдельный `x-session-id` на каждую healthy подписку и
+проверяет первым микрозапросом, что admin-only exact target совпал с backend attribution. Target
+обходит только мягкий routing reserve; hard 100% provider cap, cooling и auth-dead остаются
+непроходимыми. В legacy/public режиме runner по-прежнему пытается разложить новые sessions обычным
+capacity placement. Если все homes получить не удалось, нагрузочная матрица не начинается.
 
 ## Офлайн-проверка runner
 
