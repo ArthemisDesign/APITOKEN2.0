@@ -34,9 +34,10 @@ const MIGRATION_0015: &str =
     include_str!("../migrations_pg/0015_codex_fractional_calibration.sql");
 const MIGRATION_0016: &str =
     include_str!("../migrations_pg/0016_multi_discount_strict_enforcement.sql");
+const MIGRATION_0017: &str = include_str!("../migrations_pg/0017_policy_runtime_floor.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_SCHEMA_VERSION: i64 = 17;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -56,6 +57,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (14, MIGRATION_0014),
     (15, MIGRATION_0015),
     (16, MIGRATION_0016),
+    (17, MIGRATION_0017),
 ];
 
 #[cfg(test)]
@@ -7065,7 +7067,12 @@ mod tests {
         pg.migrate().unwrap();
         pg.client
             .batch_execute(
-                "TRUNCATE accounts RESTART IDENTITY CASCADE;
+                "TRUNCATE engine_instances RESTART IDENTITY CASCADE;
+                 ALTER SEQUENCE engine_owner_epoch_seq RESTART WITH 2;
+                 INSERT INTO engine_instances(
+                     instance_id,owner_epoch,lease_until,started_ts,updated_ts
+                 ) VALUES('stage9-guard-engine',1,9999999999,1,1);
+                 TRUNCATE accounts RESTART IDENTITY CASCADE;
                  TRUNCATE pricing_catalog_versions,provider_switch_versions
                  RESTART IDENTITY CASCADE;
                  INSERT INTO accounts(
@@ -7152,15 +7159,50 @@ mod tests {
                  INSERT INTO account_policy_bindings(
                      account_id,product_id,account_class,active_effective_version,
                      policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
-                 ) VALUES
-                     (
-                         'stage9-strict','stage9-product','b2c',1,
-                         'strict','strict','verified',1
-                     ),
-                     (
+                 ) VALUES (
                          'stage9-cutover','stage9-product','b2c',1,
                          'shadow','legacy_single','verified',1
                      );",
+            )
+            .unwrap();
+
+        let runtime_floor_error = pg
+            .client
+            .execute(
+                "INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'stage9-strict','stage9-product','b2c',1,
+                     'strict','strict','verified',1
+                 )",
+                &[],
+            )
+            .expect_err("a live policy-incapable engine unexpectedly allowed strict cutover");
+        assert_eq!(
+            runtime_floor_error.as_db_error().unwrap().message(),
+            "strict pricing activation requires policy-incapable engine instances to drain"
+        );
+        pg.client
+            .execute(
+                "UPDATE engine_instances
+                 SET pricing_schema_version=1,
+                     pricing_runtime_manifest_generation=1,
+                     pricing_runtime_manifest_digest='stage9-runtime-v1'
+                 WHERE instance_id='stage9-guard-engine'",
+                &[],
+            )
+            .unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'stage9-strict','stage9-product','b2c',1,
+                     'strict','strict','verified',1
+                 )",
+                &[],
             )
             .unwrap();
 
@@ -7231,7 +7273,10 @@ mod tests {
         };
         assert_eq!(scalar_topup_state, (1025, 1025, 0));
 
-        let owner = pg.claim_instance("stage9-guard-engine", 600).unwrap();
+        let owner = Owner {
+            instance_id: "stage9-guard-engine".to_owned(),
+            epoch: 1,
+        };
         let scalar_snapshot = legacy_snapshot("stage9-scalar-reserve", "stage9-strict", 100, 20);
         assert!(
             pg.reserve_request_with_legacy_snapshot(
@@ -7445,6 +7490,15 @@ mod tests {
         assert_eq!(
             policy_settlement_state,
             (965, 0, 965, 0, 60, 40, 1, "settled".into())
+        );
+
+        let incapable_claim = pg
+            .claim_instance("stage9-policy-incapable-rollback", 600)
+            .expect_err("a policy-incapable engine unexpectedly claimed an epoch after strict");
+        assert!(
+            format!("{incapable_claim:#}")
+                .contains("strict pricing requires a policy-capable engine runtime manifest"),
+            "unexpected incapable claim error: {incapable_claim:#}"
         );
 
         // First strict cutover fails with an unstamped active key.
