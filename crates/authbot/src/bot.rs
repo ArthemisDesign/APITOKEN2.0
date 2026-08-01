@@ -1341,28 +1341,40 @@ pub async fn on_message(
                 }
             }
             // `gm_gid`/`gm_gsecret` are accepted only as restart compatibility for users who were
-            // in the removed custom-client wizard during deployment. Every session now pauses at
-            // account preparation before authorization, including users with a retained proxy.
-            "gm_gid" | "gm_gsecret" | "gm_gproxy" => {
-                if !rec.hproxy.is_empty() {
-                    prepare_gemini_account(bot, store, chat, None, rec.hproxy_order).await;
-                } else if let Some((batch, item)) = active_batch_item(store, chat)
-                    .filter(|(batch, _)| batch.proxy_source == PROXY_SOURCE_BUYER)
-                {
-                    // OAuth failure must retry with the buyer-selected egress, never silently
-                    // switch a buyer-proxy batch to a seller-proxy flow.
-                    let _ = bot.send(chat, &format!(
-                        "🔁 Повторяю позицию <b>{}/{}</b> batch #{} через тот же прокси покупателя.",
-                        item.item_no, batch.quantity, batch.id
-                    )).await;
-                    prepare_gemini_account(bot, store, chat, Some(&item.proxy), 0).await;
-                } else {
-                    let purl = proxy_url(text.trim());
-                    if purl.is_empty() {
-                        let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
-                    } else {
-                        prepare_gemini_account(bot, store, chat, Some(&purl), rec.hproxy_order)
+            // in the removed custom-client wizard during deployment.
+            "gm_gid" | "gm_gsecret" => {
+                prepare_gemini_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
+            }
+            "gm_gproxy" => {
+                let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+                    return;
+                };
+                if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Gemini) {
+                    return;
+                }
+                match select_gemini_proxy_retry(
+                    store,
+                    &job.reference,
+                    &rec.hproxy,
+                    rec.hproxy_order,
+                    text,
+                ) {
+                    GeminiProxyRetry::SellerSupplied(proxy) => {
+                        // A manually supplied replacement is unrelated to any prior IPRoyal order.
+                        prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), 0).await;
+                    }
+                    GeminiProxyRetry::Fixed(proxy, proxy_order_id) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Повторяю подключение через закреплённый за этой позицией прокси. Сообщением продавца его заменить нельзя.",
+                            )
                             .await;
+                        prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), proxy_order_id)
+                            .await;
+                    }
+                    GeminiProxyRetry::Invalid => {
+                        let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
                     }
                 }
             }
@@ -1733,6 +1745,7 @@ async fn do_feed_token(
 async fn prepare_gemini_account(
     bot: &Bot,
     store: &Arc<Store>,
+    cfg: &Arc<Config>,
     chat: i64,
     proxy: Option<&str>,
     proxy_order_id: i64,
@@ -1746,7 +1759,7 @@ async fn prepare_gemini_account(
     }
     let user = store.get_user(chat).ok().flatten().unwrap_or_default();
     let effective_proxy = proxy.unwrap_or(&user.hproxy);
-    let effective_order = if proxy_order_id > 0 {
+    let effective_order = if proxy.is_some() {
         proxy_order_id
     } else {
         user.hproxy_order
@@ -1761,12 +1774,53 @@ async fn prepare_gemini_account(
         let _ = bot.send(chat, GEMINI_PROXY_PROMPT).await;
         return;
     }
+    let fixed_proxy = !gemini_job_accepts_proxy_input(store, &expected_job, effective_order);
+    let effective_proxy = match gemini_oauth::probe_proxy(effective_proxy).await {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            let (retry_proxy, retry_order) = if fixed_proxy {
+                (effective_proxy, effective_order)
+            } else {
+                ("", 0)
+            };
+            if !store
+                .set_handoff_state_for_seller_job(
+                    chat,
+                    &expected_job,
+                    "gm_gproxy",
+                    retry_proxy,
+                    retry_order,
+                )
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let seller_message = if fixed_proxy {
+                "⚠️ Закреплённый за этой позицией прокси сейчас не подключается к Google. Авторизация не начата, код не потерян. Администратор уведомлён; после исправления отправь <code>повторить</code>."
+            } else {
+                "❌ Этот прокси не подключается к Google с сервера бота. Авторизация не начата — пришли другой прокси."
+            };
+            let _ = bot.send(chat, seller_message).await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ Gemini proxy preflight не пройден ({}) для {}. OAuth не запускался; секреты прокси не логировались.",
+                    error.diagnostic_kind(),
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
     if !store
         .set_handoff_state_for_seller_job(
             chat,
             &expected_job,
             "gm_ready",
-            effective_proxy,
+            &effective_proxy,
             effective_order,
         )
         .unwrap_or(false)
@@ -1937,20 +1991,59 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
     }
 }
 
-fn active_batch_item(
+/// A seller-proxy job may replace its proxy after a failed OAuth transaction. Buyer-proxy jobs
+/// and legacy jobs backed by an issued IPRoyal order remain pinned to their assigned egress.
+pub(crate) fn gemini_job_accepts_proxy_input(
     store: &Store,
-    seller_chat: i64,
-) -> Option<(PurchaseBatch, crate::db::BatchItem)> {
-    let job = store.active_seller_job(seller_chat).ok().flatten()?;
-    if job.reference.kind != "batch" || job.phase != "processing" {
-        return None;
+    expected: &SellerJobRef,
+    current_proxy_order_id: i64,
+) -> bool {
+    match expected.kind.as_str() {
+        "batch" => store
+            .get_batch(expected.batch_id)
+            .ok()
+            .flatten()
+            .is_some_and(|batch| batch.proxy_source == PROXY_SOURCE_SELLER),
+        "offer" => store
+            .get_offer(expected.offer_id)
+            .ok()
+            .flatten()
+            .is_some_and(|offer| match offer.proxy_source.as_str() {
+                PROXY_SOURCE_SELLER => true,
+                PROXY_SOURCE_LEGACY => current_proxy_order_id == 0,
+                _ => false,
+            }),
+        _ => false,
     }
-    let batch = store.get_batch(job.reference.batch_id).ok().flatten()?;
-    let item = store
-        .get_batch_item(batch.id, job.reference.item_no)
-        .ok()
-        .flatten()?;
-    Some((batch, item))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GeminiProxyRetry {
+    SellerSupplied(String),
+    Fixed(String, i64),
+    Invalid,
+}
+
+fn select_gemini_proxy_retry(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy: &str,
+    current_proxy_order_id: i64,
+    input: &str,
+) -> GeminiProxyRetry {
+    if gemini_job_accepts_proxy_input(store, expected, current_proxy_order_id) {
+        let proxy = proxy_url(input);
+        return if proxy.is_empty() {
+            GeminiProxyRetry::Invalid
+        } else {
+            GeminiProxyRetry::SellerSupplied(proxy)
+        };
+    }
+    if current_proxy.is_empty() {
+        GeminiProxyRetry::Invalid
+    } else {
+        GeminiProxyRetry::Fixed(current_proxy.to_string(), current_proxy_order_id)
+    }
 }
 
 fn seller_job_matches_handoff(
@@ -2070,7 +2163,7 @@ async fn start_batch_item(
             )
             .await;
         if next_step == "gm_ready" {
-            prepare_gemini_account(bot, store, seller_chat, None, 0).await;
+            prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
         }
     } else {
         if !store
@@ -2571,7 +2664,7 @@ async fn deliver_issued_proxy(
                 )
                 .await;
             if gemini {
-                prepare_gemini_account(bot, store, seller_chat, None, px.order_id).await;
+                prepare_gemini_account(bot, store, cfg, seller_chat, None, px.order_id).await;
             }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
@@ -2662,7 +2755,7 @@ async fn start_buyer_offer_handoff(
         oid, esc(&offer.product), esc(hash), esc(&offer.buyer_proxy), setup
     )).await;
     if next_step == "gm_ready" {
-        prepare_gemini_account(bot, store, seller_chat, None, 0).await;
+        prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
     }
 }
 
@@ -4423,6 +4516,83 @@ mod tests {
         );
         assert_eq!(proxy_url("  "), "");
         assert_eq!(proxy_url("не прокси"), "");
+    }
+
+    #[test]
+    fn gemini_retry_consumes_a_new_seller_proxy_but_keeps_a_buyer_proxy_fixed() {
+        let seller_store = store();
+        seller_store
+            .register_user(111, 111, "seller-proxy")
+            .unwrap();
+        let seller_batch = seller_store
+            .create_batch(
+                "Google AI Pro",
+                "$20",
+                2,
+                "$40",
+                999,
+                111,
+                PROXY_SOURCE_SELLER,
+                &[],
+            )
+            .unwrap();
+        assert!(seller_store.accept_batch(seller_batch, 111).unwrap());
+        assert!(seller_store.claim_batch_payment(seller_batch).unwrap());
+        assert!(seller_store
+            .mark_batch_paid(seller_batch, "0xseller")
+            .unwrap());
+        assert!(seller_store.start_batch_item(seller_batch, 1).unwrap());
+        let seller_job = seller_store.active_seller_job(111).unwrap().unwrap();
+        assert!(seller_store
+            .set_handoff_state_for_seller_job(
+                111,
+                &seller_job.reference,
+                "gm_gproxy",
+                "http://old:proxy@1.1.1.1:8000",
+                0,
+            )
+            .unwrap());
+        assert_eq!(
+            select_gemini_proxy_retry(
+                &seller_store,
+                &seller_job.reference,
+                "http://old:proxy@1.1.1.1:8000",
+                0,
+                "2.2.2.2:9000:new:proxy",
+            ),
+            GeminiProxyRetry::SellerSupplied("http://new:proxy@2.2.2.2:9000".into())
+        );
+
+        let buyer_store = store();
+        buyer_store.register_user(222, 222, "buyer-proxy").unwrap();
+        let assigned = "http://fixed:proxy@3.3.3.3:7000".to_string();
+        let buyer_batch = buyer_store
+            .create_batch(
+                "Google AI Pro",
+                "$20",
+                2,
+                "$40",
+                999,
+                222,
+                PROXY_SOURCE_BUYER,
+                &[assigned.clone(), "http://next:proxy@4.4.4.4:7000".into()],
+            )
+            .unwrap();
+        assert!(buyer_store.accept_batch(buyer_batch, 222).unwrap());
+        assert!(buyer_store.claim_batch_payment(buyer_batch).unwrap());
+        assert!(buyer_store.mark_batch_paid(buyer_batch, "0xbuyer").unwrap());
+        assert!(buyer_store.start_batch_item(buyer_batch, 1).unwrap());
+        let buyer_job = buyer_store.active_seller_job(222).unwrap().unwrap();
+        assert_eq!(
+            select_gemini_proxy_retry(
+                &buyer_store,
+                &buyer_job.reference,
+                &assigned,
+                0,
+                "5.5.5.5:9000:ignored:proxy",
+            ),
+            GeminiProxyRetry::Fixed(assigned, 0)
+        );
     }
 
     use super::extract_code_state;

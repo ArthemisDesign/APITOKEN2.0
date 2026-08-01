@@ -332,6 +332,43 @@ pub fn begin(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProxyProbeError {
+    Invalid,
+    Transport(&'static str),
+}
+
+impl ProxyProbeError {
+    pub(crate) fn diagnostic_kind(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::Transport(kind) => kind,
+        }
+    }
+}
+
+/// Verify the exact server-side egress before the seller creates an account or spends a one-use
+/// Google authorization code. Any HTTP response proves that CONNECT/TLS to the token endpoint
+/// works; response semantics are intentionally irrelevant to this credential-free GET probe.
+pub(crate) async fn probe_proxy(proxy: &str) -> Result<String, ProxyProbeError> {
+    let proxy = normalize_proxy_url(proxy).map_err(|_| ProxyProbeError::Invalid)?;
+    let mut client = GeminiHttpClient::connect(&proxy).await.map_err(|error| {
+        ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
+    })?;
+    client
+        .request(
+            GeminiHttpMethod::Get,
+            TOKEN_URL,
+            &[("user-agent", "Go-http-client/2.0")],
+            &[],
+        )
+        .await
+        .map_err(|error| {
+            ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
+        })?;
+    Ok(proxy)
+}
+
 fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
     let normalized =
         gemini_credential::normalize_proxy_url(proxy).map_err(|_| StartError::Proxy)?;
@@ -670,12 +707,22 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
     let _ = state.store.fail_gemini_oauth(&session.state);
-    let (proxy, proxy_order_id) = state
+    let (pending_proxy, pending_proxy_order_id) = state
         .config
         .gemini_oauth
         .as_ref()
         .and_then(|oauth| pending_proxy(oauth, session))
         .unwrap_or_default();
+    let accepts_proxy_input = session.job.as_ref().is_some_and(|expected| {
+        crate::bot::gemini_job_accepts_proxy_input(&state.store, expected, pending_proxy_order_id)
+    });
+    let (retry_proxy, retry_proxy_order_id) = if accepts_proxy_input {
+        // The failed proxy must not shadow the seller's next message. Clearing it makes the next
+        // generation consume and persist the replacement supplied in `gm_gproxy`.
+        (String::new(), 0)
+    } else {
+        (pending_proxy, pending_proxy_order_id)
+    };
     let retry_applied = session.job.as_ref().is_some_and(|expected| {
         state
             .store
@@ -683,8 +730,8 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
                 session.chat_id,
                 expected,
                 "gm_gproxy",
-                &proxy,
-                proxy_order_id,
+                &retry_proxy,
+                retry_proxy_order_id,
             )
             .unwrap_or(false)
     });
@@ -709,11 +756,18 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
         );
         return;
     }
-    // The authorization code and its encrypted PKCE transaction cannot be retried. The exact
-    // generation-bound proxy was restored atomically above; /cancel can still replace it.
+    // The authorization code and its encrypted PKCE transaction cannot be retried. Fixed buyer or
+    // issued proxies are restored; seller-owned proxy jobs explicitly wait for a replacement.
     let _ = state
         .bot
-        .send(session.chat_id, failure.public_message())
+        .send(
+            session.chat_id,
+            if accepts_proxy_input {
+                failure.public_message()
+            } else {
+                failure.fixed_proxy_message()
+            },
+        )
         .await;
     if failure.operator_action_required() {
         for admin in &state.config.admins_id {
@@ -790,6 +844,16 @@ impl Failure {
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
             Self::MigrationProxyMismatch => "❌ Для перехода на Antigravity используй тот же прокси, который уже закреплён за этой Google-подпиской.",
             Self::Storage => "⚠️ Подписка проверена, но добавить аккаунт не получилось. Администратор уведомлён; повторять действия пока не нужно.",
+        }
+    }
+
+    fn fixed_proxy_message(self) -> &'static str {
+        match self {
+            Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Подключение осталось закреплено за прокси этой позиции. Отправь <code>повторить</code>, чтобы начать авторизацию заново.",
+            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Отправь <code>повторить</code>; если ошибка вернётся, администратор проверит причину.",
+            Self::Temporary => "⚠️ Google временно не завершил проверку. Подключение осталось закреплено за прокси этой позиции. Подожди немного и отправь <code>повторить</code>.",
+            Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь тариф на этом аккаунте и отправь <code>повторить</code>; будет использован закреплённый прокси.",
+            _ => self.public_message(),
         }
     }
 
@@ -887,11 +951,11 @@ async fn complete(
     }
     let mut client = match GeminiHttpClient::connect(proxy).await {
         Ok(client) => client,
-        Err(failure) => {
-            let _ = failure;
+        Err(error) => {
             eprintln!(
-                "[gemini-oauth] chat={} attested OAuth transport startup failed",
+                "[gemini-oauth] chat={} attested OAuth transport startup failed: {}",
                 session.chat_id,
+                crate::gemini_transport::diagnostic_kind(&error),
             );
             return Err(Failure::Temporary);
         }
@@ -911,10 +975,11 @@ async fn complete(
             form.as_bytes(),
         )
         .await
-        .map_err(|_| {
+        .map_err(|error| {
             eprintln!(
-                "[gemini-oauth] chat={} token exchange transport failed",
+                "[gemini-oauth] chat={} token exchange transport failed: {}",
                 session.chat_id,
+                crate::gemini_transport::diagnostic_kind(&error),
             );
             Failure::Temporary
         })?;
@@ -1873,6 +1938,12 @@ mod tests {
         assert!(Failure::CodeAssistApiDisabled
             .public_message()
             .contains("администратор проверит причину"));
+        assert!(Failure::Temporary
+            .fixed_proxy_message()
+            .contains("закреплено за прокси"));
+        assert!(!Failure::Temporary
+            .fixed_proxy_message()
+            .contains("пришли прокси"));
         for failure in [
             Failure::Authorization,
             Failure::CodeAssistApiDisabled,

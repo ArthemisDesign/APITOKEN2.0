@@ -22,6 +22,54 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const HELPER_SOURCE: &str = include_str!("../../forward/src/gemini/node_transport.cjs");
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestFailureKind {
+    Timeout,
+    Network,
+    Protocol,
+    Helper,
+}
+
+impl RequestFailureKind {
+    fn from_helper(kind: Option<&str>) -> Self {
+        match kind {
+            Some("timeout") => Self::Timeout,
+            Some("network") => Self::Network,
+            Some("protocol") => Self::Protocol,
+            _ => Self::Helper,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Network => "network",
+            Self::Protocol => "protocol",
+            Self::Helper => "helper",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RequestFailure(RequestFailureKind);
+
+impl std::fmt::Display for RequestFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Gemini OAuth transport {}", self.0.as_str())
+    }
+}
+
+impl std::error::Error for RequestFailure {}
+
+/// Return only a bounded, credential-free operator diagnostic. Raw helper errors and proxy URLs
+/// are deliberately never surfaced to journalctl.
+pub fn diagnostic_kind(error: &anyhow::Error) -> &'static str {
+    error
+        .downcast_ref::<RequestFailure>()
+        .map(|failure| failure.0.as_str())
+        .unwrap_or("startup_or_ipc")
+}
+
 #[derive(Clone, Copy)]
 pub enum Method {
     Get,
@@ -95,6 +143,8 @@ struct InboundFrame {
     status: Option<u16>,
     #[serde(default)]
     data: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 impl Client {
@@ -227,7 +277,12 @@ impl Client {
                         body: response_body,
                     });
                 }
-                "error" => anyhow::bail!("Gemini OAuth Node request failed"),
+                "error" => {
+                    return Err(RequestFailure(RequestFailureKind::from_helper(
+                        frame.kind.as_deref(),
+                    ))
+                    .into());
+                }
                 _ => anyhow::bail!("Gemini OAuth Node protocol failure"),
             }
         }
@@ -306,5 +361,24 @@ mod tests {
         assert_eq!(gemini_credential::GEMINI_CLI_VERSION, "0.53.0");
         assert_eq!(gemini_credential::GEMINI_NODE_VERSION, "v24.18.0");
         assert_eq!(gemini_credential::GEMINI_NODE_SHA256.len(), 64);
+    }
+
+    #[test]
+    fn helper_failures_become_bounded_secret_free_diagnostics() {
+        for (input, expected) in [
+            (Some("timeout"), "timeout"),
+            (Some("network"), "network"),
+            (Some("protocol"), "protocol"),
+            (Some("proxy-password"), "helper"),
+            (None, "helper"),
+        ] {
+            let error: anyhow::Error =
+                RequestFailure(RequestFailureKind::from_helper(input)).into();
+            assert_eq!(diagnostic_kind(&error), expected);
+        }
+        assert_eq!(
+            diagnostic_kind(&anyhow::anyhow!("internal detail")),
+            "startup_or_ipc"
+        );
     }
 }
