@@ -1,5 +1,5 @@
-//! Universal Chat Completions → Anthropic Messages адаптер — этапы 3.1–3.2
-//! docs/engine/UNIFIED_ROUTER.md (решения 1–3).
+//! Universal Chat Completions → Anthropic Messages адаптер — этапы 3.1–3.4a
+//! docs/engine/UNIFIED_ROUTER.md (решения 1–4).
 //!
 //! `POST /v1/chat/completions` на Anthropic-плоскости. Поток запроса:
 //! парс chat-запроса → перевод в Messages JSON → внутренний `Request` на
@@ -10,10 +10,14 @@
 //! (`parameters`→`input_schema`), `tool_choice`/`function_call`/
 //! `parallel_tool_calls` → `tool_choice` (+`disable_parallel_tool_use`),
 //! история `tool_calls`/tool-ролей ↔ `tool_use`/`tool_result` блоки.
+//! Мультимодальность и structured output (3.4a): image_url-части
+//! user-сообщений → Messages image-блоки (data: URL → base64 source,
+//! http(s) → url source; `detail` != auto отклоняется), `response_format`
+//! json_schema → GA `output_config.format` (json_object у Messages нет).
 //!
 //! Capability matrix (решение 3): параметры, которые Messages не умеет
-//! (n>1, penalties, logprobs, seed, store, structured output и reasoning до
-//! этапа 3.4, …), с не-дефолтным значением отклоняются
+//! (n>1, penalties, logprobs, seed, store, reasoning до этапа 3.4b, …), с
+//! не-дефолтным значением отклоняются
 //! `400 unsupported_parameter`; с дефолтным — принимаются (stock SDK шлют
 //! дефолты пачками). Неизвестные адаптеру поля проксируются в Messages тело
 //! как есть (открытый список; валидация — на апстриме).
@@ -265,6 +269,11 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(choice) = translate_tool_choice(&object)? {
         body.insert("tool_choice".to_string(), choice);
     }
+    // Structured output (этап 3.4a): response_format json_schema →
+    // GA output_config.format.
+    if let Some(output_config) = translate_response_format(object.get("response_format"))? {
+        body.insert("output_config".to_string(), output_config);
+    }
     // Открытый список (решение 3): неизвестные адаптеру поля проксируются в
     // Messages тело. Известные consumed/matrix-ключи сюда не попадают.
     for (key, value) in &object {
@@ -327,7 +336,13 @@ const CONSUMED_KEYS: &[&str] = &[
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
     let rules: [(&str, fn(&Value) -> bool); 17] = [
         ("response_format", |v| {
-            v.is_null() || v.get("type").and_then(Value::as_str) == Some("text")
+            // text — дефолт; json_schema переводится в output_config.format
+            // (этап 3.4a). json_object у Messages нет — отклоняется.
+            v.is_null()
+                || matches!(
+                    v.get("type").and_then(Value::as_str),
+                    Some("text") | Some("json_schema")
+                )
         }),
         ("reasoning_effort", |v| v.is_null()),
         ("store", |v| v.is_null() || v.as_bool() == Some(false)),
@@ -607,19 +622,107 @@ fn message_text(content: Option<&Value>) -> Result<String, Response> {
     }
 }
 
-/// Контент user-сообщения → массив Messages-блоков. Пока только текст;
-/// image/audio/file-части идут в `400 unsupported_parameter` (этап 3.4).
+/// Контент user-сообщения → массив Messages-блоков: text + image (этап 3.4a).
+/// Текстовые части склеиваются в один text-блок (через \n, как раньше); image
+/// разрывают склейку, порядок частей сохраняется. image_url с data: URL →
+/// base64 source, http(s) URL → url source — оба нативные для Messages.
+/// Остальные части — `400 unsupported_parameter`.
 fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Response> {
-    let text = message_text(content)?;
-    if text.is_empty() && role == "user" {
-        // Messages не принимает пустые text-блоки; пустое user-сообщение
-        // бессмысленно и для chat-входа — отклоняем честно.
+    let Some(Value::Array(parts)) = content else {
+        let text = message_text(content)?;
+        if text.is_empty() && role == "user" {
+            // Messages не принимает пустые text-блоки; пустое user-сообщение
+            // бессмысленно и для chat-входа — отклоняем честно.
+            return Err(invalid_request(
+                "User message content must not be empty.",
+                Some("messages"),
+            ));
+        }
+        return Ok(vec![json!({"type": "text", "text": text})]);
+    };
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut text = String::new();
+    for part in parts {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let segment = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !text.is_empty() && !segment.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(segment);
+            }
+            Some("image_url") => {
+                if !text.is_empty() {
+                    blocks.push(json!({"type": "text", "text": std::mem::take(&mut text)}));
+                }
+                blocks.push(image_block(part)?);
+            }
+            _ => return Err(unsupported_parameter("messages")),
+        }
+    }
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    if blocks.is_empty() && role == "user" {
         return Err(invalid_request(
             "User message content must not be empty.",
             Some("messages"),
         ));
     }
-    Ok(vec![json!({"type": "text", "text": text})])
+    Ok(blocks)
+}
+
+/// Chat image_url-часть → Messages image-блок. `detail` Messages не умеет:
+/// дефолт (`auto`) принимается, остальное — `400 unsupported_parameter`.
+fn image_block(part: &Value) -> Result<Value, Response> {
+    let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
+        invalid_request(
+            "Invalid image_url part: expected an object with a url string.",
+            Some("messages"),
+        )
+    })?;
+    if let Some(detail) = image.get("detail").and_then(Value::as_str) {
+        if detail != "auto" {
+            return Err(unsupported_parameter("messages"));
+        }
+    }
+    let url = image.get("url").and_then(Value::as_str).ok_or_else(|| {
+        invalid_request(
+            "Invalid image_url part: expected an object with a url string.",
+            Some("messages"),
+        )
+    })?;
+    if let Some(data_url) = url.strip_prefix("data:") {
+        let (media_type, data) = data_url.split_once(";base64,").ok_or_else(|| {
+            invalid_request(
+                "Invalid image_url data URL: expected data:<mime>;base64,<data>.",
+                Some("messages"),
+            )
+        })?;
+        if !media_type.starts_with("image/") || data.is_empty() {
+            return Err(invalid_request(
+                "Invalid image_url data URL: expected an image MIME type and base64 data.",
+                Some("messages"),
+            ));
+        }
+        return Ok(json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }));
+    }
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return Ok(json!({
+            "type": "image",
+            "source": {"type": "url", "url": url},
+        }));
+    }
+    Err(invalid_request(
+        "Invalid image_url: expected an http(s) or data: URL.",
+        Some("messages"),
+    ))
 }
 
 /// `stop`: строка или массив до 4 непустых строк → `stop_sequences`
@@ -648,6 +751,30 @@ fn translate_stop(value: Option<&Value>) -> Result<Option<Value>, Response> {
         }
     };
     Ok(Some(Value::Array(sequences)))
+}
+
+/// `response_format` → `output_config.format` (GA structured outputs, этап
+/// 3.4a). text — дефолт без перевода; json_object у Messages нет (отклонён
+/// matrix). Обёрточные name/strict/description GA-формат не имеет —
+/// проксируется сама схема, constrained decoding всегда строгий.
+fn translate_response_format(value: Option<&Value>) -> Result<Option<Value>, Response> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    if value.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return Ok(None);
+    }
+    let schema = value
+        .get("json_schema")
+        .and_then(|j| j.get("schema"))
+        .filter(|s| s.is_object())
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid response_format: json_schema requires a schema object.",
+                Some("response_format"),
+            )
+        })?;
+    Ok(Some(json!({"format": {"type": "json_schema", "schema": schema}})))
 }
 
 /// Chat `tools[]` / legacy `functions[]` → Messages `tools[]`. Legacy
@@ -1929,19 +2056,106 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_level_media_and_name_fields_are_400() {
-        for message in [
-            serde_json::json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x"}}]}),
-            serde_json::json!({"role": "user", "content": "hi", "name": "alice"}),
+    async fn message_level_name_field_is_400() {
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "user", "content": "hi", "name": "alice"}
+            ],
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "unsupported_parameter");
+    }
+
+    #[test]
+    fn translates_user_image_parts() {
+        // data: URL → base64 source, http(s) → url source; text-склейка
+        // разрывается image-блоками, порядок сохраняется.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg", "detail": "auto"}},
+                {"type": "text", "text": "And this?"}
+            ]}]
+        }));
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([{"role": "user", "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}},
+                {"type": "text", "text": "And this?"}
+            ]}])
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_image_parts() {
+        for content in [
+            // detail != auto — Messages не умеет.
+            serde_json::json!([{"type": "image_url", "image_url": {"url": "https://x/y.png", "detail": "high"}}]),
+            // Битый data: URL.
+            serde_json::json!([{"type": "image_url", "image_url": {"url": "data:image/png;plain,xyz"}}]),
+            // Не-image MIME.
+            serde_json::json!([{"type": "image_url", "image_url": {"url": "data:text/html;base64,PGI+"}}]),
+            // Схема вне http(s)/data:.
+            serde_json::json!([{"type": "image_url", "image_url": {"url": "file:///etc/passwd"}}]),
+            // Нет url.
+            serde_json::json!([{"type": "image_url", "image_url": {}}]),
         ] {
-            let (status, json) = expect_err(serde_json::json!({
+            let (status, _) = expect_err(serde_json::json!({
                 "model": "claude-opus-4-8",
-                "messages": [{"role": "user", "content": "hi"}, message],
+                "messages": [{"role": "user", "content": content}],
             }))
             .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
-            assert_eq!(json["error"]["code"], "unsupported_parameter", "{message}");
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{content}");
         }
+    }
+
+    #[test]
+    fn translates_response_format_json_schema() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Extract."}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "profile", "strict": true,
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+            }}
+        }));
+        // Обёртка (name/strict) не проксируется — только сама схема.
+        assert_eq!(
+            translated.body["output_config"],
+            serde_json::json!({"format": {"type": "json_schema", "schema": {
+                "type": "object", "properties": {"name": {"type": "string"}}
+            }}})
+        );
+        assert!(translated.body.get("response_format").is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_response_format() {
+        // json_object у Messages нет — matrix 400.
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"}
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "unsupported_parameter");
+        assert_eq!(json["error"]["param"], "response_format");
+        // json_schema без schema-объекта — битый запрос.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "x"}}
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

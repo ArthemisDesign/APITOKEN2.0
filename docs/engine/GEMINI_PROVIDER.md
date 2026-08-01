@@ -560,6 +560,14 @@ API_KEY_INVALID` answer is re-mapped to `401 authentication_error`, which is wha
 expect for a bad key. Error bodies keep the OpenAI envelope with the original HTTP status (402
 included) and `Retry-After`.
 
+Stage 3.4a adds multimodal input and structured output to this surface. `image_url` parts of user
+messages become `inlineData` parts; only `data:` URLs are accepted because this plane has no
+outbound fetch for remote images, so an `http(s)` image URL is rejected with `400 invalid_request`
+and a non-default `detail` with `400 unsupported_parameter`. `response_format` is translated into
+`generationConfig`: `json_object` and `json_schema` both set `responseMimeType:
+application/json`, and `json_schema` additionally sets `responseSchema`, dropping the OpenAI
+`name`/`strict` wrapper.
+
 ## Operations
 
 ```bash

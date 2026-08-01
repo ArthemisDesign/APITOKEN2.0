@@ -407,7 +407,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    finishReason → finish-чанк, последний usageMetadata → usage-чанк на EOF (по
    `stream_options.include_usage`) → `[DONE]`; санитизированный mid-stream
    `{error}` → OpenAI error frame без `[DONE]`; неразборчивые кадры пропускаются.
-   Capability matrix — те же 19 правил, плюс отличие плоскости: закрытый список
+   Capability matrix — те же 17 правил Anthropic-плоскости плюс
+   `parallel_tool_calls` и `user` (19 всего), и отличие плоскости: закрытый список
    top-level полей (неизвестное поле → `400 unsupported_parameter`, потому что
    Code Assist wrapper иначе выбросил бы его молча). Ошибки: Google-конверт
    `{error:{code,message,status}}` → OpenAI-конверт с сохранением статуса (402
@@ -416,7 +417,19 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    в `crates/forward/src/gemini/chat.rs` (запрос, matrix, ответ, SSE); e2e-харнесс
    для Gemini-ноги не добавлялся: native-путь плоскости покрыт своими тестами, а
    мок-харнесс не умеет AEAD-конверты профилей — шов адаптера покрыт
-   unit/contract-тестами; **3.4** — images, structured output, `reasoning_content`.
+   unit/contract-тестами; **3.4a** — images + structured output —
+   **РЕАЛИЗОВАН** (обе плоскости): image_url-части user-сообщений — Anthropic:
+   data: URL → base64 source, http(s) → url source (оба нативные Messages
+   image-блока); Gemini: только data: URL → inlineData (http(s) ссылки
+   generateContent не принимает — честный 400, fileData требует File API
+   upload); `detail` != auto отклоняется `400 unsupported_parameter` на обеих.
+   `response_format` json_schema → Anthropic GA `output_config.format`
+   (обёрточные name/strict/description не проксируются — только схема;
+   json_object у Messages нет → matrix 400), на Gemini json_object →
+   `generationConfig.responseMimeType: application/json`, json_schema →
+   +`responseSchema` (обёртка аналогично снимается); **3.4b** —
+   `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
+   (следующий пакет, решение 4).
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
    reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
    явный `400 documented_limitation`).

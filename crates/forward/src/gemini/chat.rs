@@ -11,8 +11,12 @@
 //!
 //! Capability matrix (решение 3): параметры, которые generateContent не умеет
 //! или чьё поведение на private wire не подтверждено (n>1, penalties, logprobs,
-//! seed, store, parallel_tool_calls, structured output и reasoning до этапа
-//! 3.4, …), с не-дефолтным значением отклоняются `400 unsupported_parameter`.
+//! seed, store, parallel_tool_calls, reasoning до этапа 3.4b, …), с
+//! не-дефолтным значением отклоняются `400 unsupported_parameter`.
+//! Мультимодальность и structured output (3.4a): image_url-части user-сообщений
+//! с data: URL → inlineData-партам (http(s) ссылки generateContent не принимает —
+//! честный 400), `response_format` json_object/json_schema →
+//! `generationConfig.responseMimeType`/`responseSchema`.
 //! В отличие от Anthropic-плоскости, НЕИЗВЕСТНЫЕ top-level поля тоже
 //! отклоняются: Code Assist wrapper (`wrap_code_assist_request`) пропускает
 //! только закрытый список полей GenerateContentRequest, поэтому «проксирование»
@@ -236,6 +240,14 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(stop) = translate_stop(object.get("stop"))? {
         generation_config.insert("stopSequences".to_string(), stop);
     }
+    // Structured output (этап 3.4a): response_format → responseMimeType
+    // (+responseSchema для json_schema).
+    if let Some((mime, schema)) = translate_response_format(object.get("response_format"))? {
+        generation_config.insert("responseMimeType".to_string(), Value::String(mime));
+        if let Some(schema) = schema {
+            generation_config.insert("responseSchema".to_string(), schema);
+        }
+    }
 
     let mut body = Map::new();
     body.insert("contents".to_string(), Value::Array(contents));
@@ -329,7 +341,13 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
     let rules: [(&str, fn(&Value) -> bool); 19] = [
         ("parallel_tool_calls", |v| v.as_bool() == Some(true)),
         ("response_format", |v| {
-            v.is_null() || v.get("type").and_then(Value::as_str) == Some("text")
+            // text — дефолт; json_object/json_schema переводятся в
+            // generationConfig responseMimeType/responseSchema (этап 3.4a).
+            v.is_null()
+                || matches!(
+                    v.get("type").and_then(Value::as_str),
+                    Some("text") | Some("json_object") | Some("json_schema")
+                )
         }),
         ("reasoning_effort", |v| v.is_null()),
         ("store", |v| v.is_null() || v.as_bool() == Some(false)),
@@ -400,14 +418,8 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Option<Value>, Vec<Value>
                 }
             }
             "user" => {
-                let text = message_text(object.get("content"))?;
-                if text.is_empty() {
-                    return Err(invalid_request(
-                        "User message content must not be empty.",
-                        Some("messages"),
-                    ));
-                }
-                merge_or_push(&mut contents, "user", vec![json!({"text": text})]);
+                let parts = user_message_parts(object.get("content"))?;
+                merge_or_push(&mut contents, "user", parts);
             }
             "assistant" => {
                 let parts = assistant_parts(object, &mut call_names)?;
@@ -482,6 +494,127 @@ fn message_text(content: Option<&Value>) -> Result<String, Response> {
             "Invalid message content: expected a string or an array of parts.",
             Some("messages"),
         )),
+    }
+}
+
+/// Контент user-сообщения → parts: text + inlineData image (этап 3.4a).
+/// Текстовые части склеиваются в один text-парт (через \n); image разрывают
+/// склейку, порядок сохраняется. Поддерживаются только data: URL —
+/// generateContent не принимает внешние http(s) ссылки (fileData требует
+/// File API upload), поэтому http(s) image — честный 400, а не молчаливое
+/// выбрасывание.
+fn user_message_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
+    let Some(Value::Array(parts)) = content else {
+        let text = message_text(content)?;
+        if text.is_empty() {
+            return Err(invalid_request(
+                "User message content must not be empty.",
+                Some("messages"),
+            ));
+        }
+        return Ok(vec![json!({"text": text})]);
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let mut text = String::new();
+    for part in parts {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let segment = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !text.is_empty() && !segment.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(segment);
+            }
+            Some("image_url") => {
+                if !text.is_empty() {
+                    out.push(json!({"text": std::mem::take(&mut text)}));
+                }
+                out.push(gemini_image_part(part)?);
+            }
+            _ => return Err(unsupported_parameter("messages")),
+        }
+    }
+    if !text.is_empty() {
+        out.push(json!({"text": text}));
+    }
+    if out.is_empty() {
+        return Err(invalid_request(
+            "User message content must not be empty.",
+            Some("messages"),
+        ));
+    }
+    Ok(out)
+}
+
+/// Chat image_url-часть → inlineData-парт. Только data: URL (см.
+/// user_message_parts); `detail` != auto — `400 unsupported_parameter`.
+fn gemini_image_part(part: &Value) -> Result<Value, Response> {
+    let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
+        invalid_request(
+            "Invalid image_url part: expected an object with a url string.",
+            Some("messages"),
+        )
+    })?;
+    if let Some(detail) = image.get("detail").and_then(Value::as_str) {
+        if detail != "auto" {
+            return Err(unsupported_parameter("messages"));
+        }
+    }
+    let url = image.get("url").and_then(Value::as_str).ok_or_else(|| {
+        invalid_request(
+            "Invalid image_url part: expected an object with a url string.",
+            Some("messages"),
+        )
+    })?;
+    let Some(data_url) = url.strip_prefix("data:") else {
+        return Err(invalid_request(
+            "Gemini chat lane supports only data: image URLs (external image fetch is not supported).",
+            Some("messages"),
+        ));
+    };
+    let (mime_type, data) = data_url.split_once(";base64,").ok_or_else(|| {
+        invalid_request(
+            "Invalid image_url data URL: expected data:<mime>;base64,<data>.",
+            Some("messages"),
+        )
+    })?;
+    if !mime_type.starts_with("image/") || data.is_empty() {
+        return Err(invalid_request(
+            "Invalid image_url data URL: expected an image MIME type and base64 data.",
+            Some("messages"),
+        ));
+    }
+    Ok(json!({"inlineData": {"mimeType": mime_type, "data": data}}))
+}
+
+/// `response_format` → `(responseMimeType, Option<responseSchema>)` (этап
+/// 3.4a). json_object — JSON без схемы; json_schema требует schema-объект.
+/// Обёрточные name/strict/description у generateContent отсутствуют —
+/// проксируется сама схема.
+fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Option<Value>)>, Response> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    match value.get("type").and_then(Value::as_str) {
+        Some("json_object") => Ok(Some(("application/json".to_string(), None))),
+        Some("json_schema") => {
+            let schema = value
+                .get("json_schema")
+                .and_then(|j| j.get("schema"))
+                .filter(|s| s.is_object())
+                .ok_or_else(|| {
+                    invalid_request(
+                        "Invalid response_format: json_schema requires a schema object.",
+                        Some("response_format"),
+                    )
+                })?;
+            Ok(Some(("application/json".to_string(), Some(schema.clone()))))
+        }
+        // text — дефолт без перевода; остальные типы отклонены matrix.
+        _ => Ok(None),
     }
 }
 
@@ -1756,7 +1889,7 @@ mod tests {
     async fn rejects_non_default_matrix_parameters() {
         let cases: [(&str, Value); 19] = [
             ("parallel_tool_calls", json!(false)),
-            ("response_format", json!({"type": "json_object"})),
+            ("response_format", json!({"type": "future_format"})),
             ("reasoning_effort", json!("low")),
             ("store", json!(true)),
             ("metadata", json!({"a": 1})),
@@ -1848,6 +1981,106 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
             assert_eq!(body["error"]["type"], "invalid_request_error");
         }
+    }
+
+    #[test]
+    fn translates_user_data_image_to_inline_data() {
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                {"type": "text", "text": "Be brief."}
+            ]}]
+        }));
+        assert_eq!(
+            translated.body["contents"],
+            json!([{"role": "user", "parts": [
+                {"text": "What is this?"},
+                {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}},
+                {"text": "Be brief."}
+            ]}])
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_image_parts() {
+        for (content, expected) in [
+            // http(s) ссылки generateContent не принимает — честный 400.
+            (
+                json!([{"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}}]),
+                "only data: image URLs",
+            ),
+            // detail != auto — generateContent не умеет.
+            (
+                json!([{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8=", "detail": "low"}}]),
+                "Unsupported parameter",
+            ),
+            // Битый data: URL.
+            (
+                json!([{"type": "image_url", "image_url": {"url": "data:image/png;plain,xyz"}}]),
+                "data URL",
+            ),
+            // Не-image MIME.
+            (
+                json!([{"type": "image_url", "image_url": {"url": "data:text/html;base64,PGI+"}}]),
+                "image MIME",
+            ),
+        ] {
+            let (status, body) = expect_err(json!({
+                "model": "gemini-2.5-flash",
+                "messages": [{"role": "user", "content": content}],
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{content}");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
+                "{content}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn translates_response_format_to_generation_config() {
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "Extract."}],
+            "response_format": {"type": "json_object"}
+        }));
+        let config = &translated.body["generationConfig"];
+        assert_eq!(config["responseMimeType"], "application/json");
+        assert!(config.get("responseSchema").is_none());
+
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "Extract."}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "profile", "strict": true,
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+            }}
+        }));
+        let config = &translated.body["generationConfig"];
+        assert_eq!(config["responseMimeType"], "application/json");
+        // Обёртка (name/strict) не проксируется — только сама схема.
+        assert_eq!(
+            config["responseSchema"],
+            json!({"type": "object", "properties": {"name": {"type": "string"}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_response_format_json_schema_without_schema() {
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "x"}}
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["param"], "response_format");
     }
 
     // ---------- ответ: unit-маппинги ----------

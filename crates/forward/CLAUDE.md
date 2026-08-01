@@ -118,11 +118,11 @@ Stage 8 evidence или Stage 5/6 data application.
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
-`anthropic.rs` — universal Chat Completions→Messages адаптер (этапы 3.1–3.2
+`anthropic.rs` — universal Chat Completions→Messages адаптер (этапы 3.1–3.4a
 docs/engine/UNIFIED_ROUTER.md): переводит chat-запрос в Messages JSON (strip
 `anthropic/`-префикса ДО admission, дефолт `max_tokens` 4096, склейка одноролевых
 сообщений и серий tool-ответов, capability matrix с `400 unsupported_parameter` для
-не-дефолтных structured/reasoning/penalties) и вызывает общий `forward()` — auth, reserve,
+не-дефолтных reasoning/penalties) и вызывает общий `forward()` — auth, reserve,
 ротация, identity-инжект, tee-метеринг и settle без изменений; ответ переводится
 СНАРУЖИ (Messages SSE → `chat.completion.chunk`, JSON → `chat.completion`), а все
 ошибки этого пути (включая `local_err` и пасsthrough апстрима) конвертируются в
@@ -133,18 +133,22 @@ Tools (3.2): chat `tools`/`functions` → Messages `tools[]` (`parameters`→`in
 детерминированный `callu_<name>`), в ответе `tool_use` ↔ `message.tool_calls`
 (non-stream) и tool_calls-чанки из `content_block_start`/`input_json_delta` (SSE, tool
 ordinal нумеруется отдельно от Messages block index); словарь событий закреплён
-contract-тестами в модуле.
+contract-тестами в модуле. Мультимодальность и structured output (3.4a):
+image_url-части user-сообщений → Messages image-блоки (data: → base64 source,
+http(s) → url source, `detail` != auto → 400), `response_format` json_schema →
+GA `output_config.format` (только схема; json_object отклонён matrix).
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
 Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
 events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
-settlement; `gemini/chat.rs` — universal Chat Completions→generateContent адаптер (этап 3.3
+settlement; `gemini/chat.rs` — universal Chat Completions→generateContent адаптер (этапы 3.3–3.4a
 docs/engine/UNIFIED_ROUTER.md) по той же схеме, что `anthropic.rs`: chat-запрос переводится в
 GenerateContentRequest JSON (system/developer → `systemInstruction`, склейка одноролевых contents
 и серий functionResponse, `maxOutputTokens` дефолт 4096, tool/function история ↔ functionCall/
 functionResponse с восстановлением имени по tool_call_id, `tool_choice` → `functionCallingConfig`,
-capability matrix с теми же 19 правилами ПЛЮС закрытый список top-level полей — неизвестное поле
+capability matrix из 19 правил (те же 17, что у Anthropic-плоскости, плюс `parallel_tool_calls`
+и `user`) ПЛЮС закрытый список top-level полей — неизвестное поле
 → `400 unsupported_parameter`, т.к. Code Assist wrapper выбросил бы его молча), strip
 `google/`-префикса ДО admission; вызывает общий `gemini_api()` через синтезированный внутренний
 запрос на `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` — admission,
@@ -153,6 +157,11 @@ reserve, affinity, ротация, wrapper, tee-метеринг и settle бе�
 usage-чанками и functionCall одним tool_calls-чанком, JSON → `chat.completion` с синтезируемыми
 id `callu_<name>[_N]`), ошибки Google-конверта конвертируются в OpenAI-конверт с сохранением
 статуса (402 тоже) и `Retry-After`, нативный `400 API_KEY_INVALID` → `401 authentication_error`.
+Мультимодальность и structured output (3.4a): image_url-части user-сообщений → `inlineData`-парты
+(принимаются только data: URL — исходящего fetch для внешних изображений на плоскости нет, поэтому
+http(s) image URL → `400 invalid_request`; `detail` != auto → `400 unsupported_parameter`),
+`response_format` json_object/json_schema → `generationConfig.responseMimeType`/`responseSchema`
+(обёртка name/strict снимается).
 Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
