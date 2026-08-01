@@ -91,6 +91,17 @@ pub struct CodexRateLimits {
     pub observed_at: i64,
 }
 
+/// One authenticated profile's live model catalogue.
+///
+/// Model availability and Fast capability are kept separately: the official catalogue advertises
+/// Fast as the `priority` service tier (with legacy `additional_speed_tiers: ["fast"]` on older
+/// payloads), while actual entitlement is learned only from completed generation responses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CodexModelCatalog {
+    pub models: HashSet<String>,
+    pub fast_models: HashSet<String>,
+}
+
 impl CodexRateLimits {
     fn windows(&self) -> impl Iterator<Item = &CodexRateLimitWindow> {
         self.primary.iter().chain(self.secondary.iter())
@@ -351,7 +362,7 @@ impl ProfileTransport {
     pub(crate) async fn fetch_models(
         &self,
         auth: &AuthContext,
-    ) -> Result<HashSet<String>, ProcessError> {
+    ) -> Result<CodexModelCatalog, ProcessError> {
         let response = self
             .client
             .get(format!(
@@ -382,22 +393,7 @@ impl ProfileTransport {
             .map_err(|_| ProcessError::Protocol("models response body unreadable".to_string()))?;
         let value: Value = serde_json::from_slice(&body)
             .map_err(|_| ProcessError::Protocol("models response is not JSON".to_string()))?;
-        let data = value
-            .get("models")
-            .or_else(|| value.get("data"))
-            .and_then(Value::as_array)
-            .ok_or_else(|| ProcessError::Protocol("models response omitted models".to_string()))?;
-        Ok(data
-            .iter()
-            .filter_map(|model| {
-                model.as_str().or_else(|| {
-                    ["id", "model", "slug"]
-                        .iter()
-                        .find_map(|key| model.get(*key).and_then(Value::as_str))
-                })
-            })
-            .map(str::to_string)
-            .collect())
+        parse_model_catalog(&value)
     }
 
     /// Refresh the profile's OAuth material against the pinned token endpoint. The caller owns the
@@ -484,6 +480,38 @@ fn retry_after_seconds(headers: &wreq::header::HeaderMap) -> Option<u64> {
         .parse::<u64>()
         .ok()
         .filter(|seconds| *seconds > 0)
+}
+
+fn parse_model_catalog(value: &Value) -> Result<CodexModelCatalog, ProcessError> {
+    let data = value
+        .get("models")
+        .or_else(|| value.get("data"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProcessError::Protocol("models response omitted models".to_string()))?;
+    let mut catalog = CodexModelCatalog::default();
+    for model in data {
+        let Some(id) = model.as_str().or_else(|| {
+            ["id", "model", "slug"]
+                .iter()
+                .find_map(|key| model.get(*key).and_then(Value::as_str))
+        }) else {
+            continue;
+        };
+        catalog.models.insert(id.to_string());
+        let has_fast_tier = ["service_tiers", "additional_speed_tiers"]
+            .iter()
+            .filter_map(|key| model.get(*key).and_then(Value::as_array))
+            .flatten()
+            .filter_map(|tier| {
+                tier.as_str()
+                    .or_else(|| tier.get("id").and_then(Value::as_str))
+            })
+            .any(|tier| matches!(tier, "priority" | "fast"));
+        if has_fast_tier {
+            catalog.fast_models.insert(id.to_string());
+        }
+    }
+    Ok(catalog)
 }
 
 /// Map an upstream HTTP failure onto the pool's blame vocabulary. Status classification mirrors
@@ -932,6 +960,40 @@ mod tests {
         assert_eq!(translated["outputTokens"], 20);
         assert_eq!(translated["reasoningOutputTokens"], 5);
         assert_eq!(translated["totalTokens"], 120);
+    }
+
+    #[test]
+    fn model_catalog_preserves_current_and_legacy_fast_capabilities() {
+        let catalog = parse_model_catalog(&json!({
+            "models": [
+                {
+                    "slug": "gpt-current",
+                    "service_tiers": [{"id": "priority", "name": "Fast"}],
+                    "additional_speed_tiers": []
+                },
+                {
+                    "model": "gpt-legacy",
+                    "service_tiers": [],
+                    "additional_speed_tiers": ["fast"]
+                },
+                {"id": "gpt-standard", "service_tiers": [{"id": "default"}]},
+                "gpt-string"
+            ]
+        }))
+        .unwrap();
+        assert_eq!(catalog.models.len(), 4);
+        assert!(catalog.fast_models.contains("gpt-current"));
+        assert!(catalog.fast_models.contains("gpt-legacy"));
+        assert!(!catalog.fast_models.contains("gpt-standard"));
+        assert!(!catalog.fast_models.contains("gpt-string"));
+    }
+
+    #[test]
+    fn model_catalog_requires_a_models_array() {
+        assert!(matches!(
+            parse_model_catalog(&json!({"object": "list"})),
+            Err(ProcessError::Protocol(_))
+        ));
     }
 
     #[test]

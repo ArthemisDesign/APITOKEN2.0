@@ -27,7 +27,9 @@ pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
-pub(crate) use transport::{AppServerEvent, AuthContext, ProfileTransport, TurnEvents};
+pub(crate) use transport::{
+    AppServerEvent, AuthContext, CodexModelCatalog, ProfileTransport, TurnEvents,
+};
 pub use transport::{CodexRateLimitWindow, CodexRateLimits, ProcessError};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 
@@ -138,6 +140,24 @@ fn quota_rank(used_percent: Option<i64>) -> i64 {
         .saturating_sub(QUOTA_STEER_FLOOR_PERCENT)
         .max(0)
         / QUOTA_STEER_BUCKET_PERCENT
+}
+
+/// Lower ranks are preferred for a requested Fast turn. Wire evidence wins over catalogue
+/// metadata; missing metadata stays fail-open and an unavailable model is attempted only after all
+/// profiles that advertised it.
+fn fast_route_rank(
+    observed: Option<FastServedTier>,
+    catalog_available: Option<bool>,
+    catalog_fast_supported: Option<bool>,
+) -> u8 {
+    match observed {
+        Some(FastServedTier::Priority) => 0,
+        Some(FastServedTier::Default) => 3,
+        None if catalog_fast_supported == Some(true) => 1,
+        None if catalog_available.is_none() => 2,
+        None if catalog_available == Some(false) => 4,
+        None => 3,
+    }
 }
 /// Match the Claude fleet's cache-root fanout: one shared prompt prefix is deliberately warmed on
 /// two competitive homes so independent sessions do not collapse onto the first subscription.
@@ -258,6 +278,44 @@ pub struct CodexHomeStatus {
     pub calibration_persistence_ok: bool,
     /// Capacity estimate per reported window slot (empty until the first snapshot arrives).
     pub capacities: Vec<CodexWindowCapacityReport>,
+    /// Per-model Fast capability and actual served-tier evidence. Catalogue claims are advisory;
+    /// only a completed `priority` response proves that this profile currently honors Fast.
+    pub fast_tiers: Vec<CodexFastTierStatus>,
+}
+
+/// Privacy-safe Fast evidence for one configured upstream model on one opaque home.
+#[derive(Clone, Debug)]
+pub struct CodexFastTierStatus {
+    pub model: String,
+    /// `None` before this home has supplied a model catalogue.
+    pub catalog_available: Option<bool>,
+    /// `None` when the model catalogue is unknown or does not contain this model.
+    pub catalog_fast_supported: Option<bool>,
+    /// `priority` after an honored Fast turn, `default` after an observed downgrade, otherwise
+    /// `None`. Provider payloads, tokens and account identity never enter this surface.
+    pub served_tier: Option<&'static str>,
+    pub observed_at: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FastServedTier {
+    Priority,
+    Default,
+}
+
+impl FastServedTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Priority => "priority",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FastTierObservation {
+    served: FastServedTier,
+    observed_at: i64,
 }
 
 /// Evidence-backed capacity of one provider-reported subscription window.
@@ -311,6 +369,12 @@ pub(crate) struct CodexHome {
     transport: std::sync::Mutex<ProfileTransport>,
     /// Latest window snapshot, fed by usage probes and by live response headers.
     rate_limits: Arc<Mutex<Option<CodexRateLimits>>>,
+    /// Last catalogue fetched through this exact profile. The provider may roll out model/tier
+    /// availability account by account, so a fleet-wide set is insufficient for Fast routing.
+    model_catalog: std::sync::RwLock<Option<CodexModelCatalog>>,
+    /// Actual completed Fast outcomes, keyed by upstream model. This is stronger evidence than the
+    /// catalogue and drives selection without ever turning a downgrade into a client error.
+    fast_observations: std::sync::Mutex<BTreeMap<String, FastTierObservation>>,
     /// Set once this generation proved the profile works (token plus usage read or a served turn).
     ready: AtomicBool,
     retired: Arc<AtomicBool>,
@@ -356,6 +420,8 @@ impl CodexHome {
             credential_mtime: std::sync::Mutex::new(mtime),
             transport,
             rate_limits: Arc::new(Mutex::new(None)),
+            model_catalog: std::sync::RwLock::new(None),
+            fast_observations: std::sync::Mutex::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             retired: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -681,6 +747,99 @@ impl CodexHome {
         self.rate_limits.lock().await.clone()
     }
 
+    fn cached_profile_catalog(&self) -> Option<CodexModelCatalog> {
+        self.model_catalog
+            .read()
+            .expect("Codex model catalog lock")
+            .clone()
+    }
+
+    fn publish_profile_catalog(&self, catalog: CodexModelCatalog) {
+        *self
+            .model_catalog
+            .write()
+            .expect("Codex model catalog lock") = Some(catalog);
+    }
+
+    /// Ordering signal for Fast requests. A completed priority turn is strongest, followed by an
+    /// untried profile whose catalogue advertises Fast. Observed downgrades remain usable as the
+    /// fail-open standard fallback, but cannot steal traffic from a profile proven to honor Fast.
+    fn fast_route_rank(&self, model: &str) -> u8 {
+        let observed = self
+            .fast_observations
+            .lock()
+            .expect("Codex Fast observation lock")
+            .get(model)
+            .copied()
+            .map(|observation| observation.served);
+        let catalog = self
+            .model_catalog
+            .read()
+            .expect("Codex model catalog lock");
+        let catalog_available = catalog
+            .as_ref()
+            .map(|catalog| catalog.models.contains(model));
+        let catalog_fast_supported = catalog.as_ref().and_then(|catalog| {
+            catalog
+                .models
+                .contains(model)
+                .then(|| catalog.fast_models.contains(model))
+        });
+        fast_route_rank(observed, catalog_available, catalog_fast_supported)
+    }
+
+    fn observe_fast_result(&self, model: &str, served_tier: Option<&str>) {
+        let served = match served_tier {
+            Some("priority") => FastServedTier::Priority,
+            Some(_) => FastServedTier::Default,
+            None => return,
+        };
+        self.fast_observations
+            .lock()
+            .expect("Codex Fast observation lock")
+            .insert(
+                model.to_string(),
+                FastTierObservation {
+                    served,
+                    observed_at: pool::now(),
+                },
+            );
+    }
+
+    fn fast_tier_statuses(&self) -> Vec<CodexFastTierStatus> {
+        let catalog = self
+            .model_catalog
+            .read()
+            .expect("Codex model catalog lock");
+        let observations = self
+            .fast_observations
+            .lock()
+            .expect("Codex Fast observation lock");
+        let mut models = BTreeMap::new();
+        for model in self.cfg.models.iter().filter(|model| model.supports_fast()) {
+            models.entry(model.upstream.as_str()).or_insert_with(|| {
+                let catalog_available = catalog
+                    .as_ref()
+                    .map(|catalog| catalog.models.contains(&model.upstream));
+                let catalog_fast_supported = catalog.as_ref().and_then(|catalog| {
+                    catalog
+                        .models
+                        .contains(&model.upstream)
+                        .then(|| catalog.fast_models.contains(&model.upstream))
+                });
+                let observation = observations.get(&model.upstream).copied();
+                CodexFastTierStatus {
+                    model: model.upstream.clone(),
+                    catalog_available,
+                    catalog_fast_supported,
+                    served_tier: observation.map(|observation| observation.served.as_str()),
+                    observed_at: observation.map(|observation| observation.observed_at),
+                }
+            });
+        }
+        models.into_values().collect()
+    }
+
     /// Ingest one fresh snapshot from the wire (usage probe, response headers or SSE): store it
     /// and feed duration-keyed calibration. This is the ONLY path that persists observations.
     async fn ingest_rate_limits(&self, limits: CodexRateLimits) {
@@ -955,6 +1114,7 @@ impl CodexHome {
             spend_usd_total: self.spend_usd_total(),
             calibration_persistence_ok: self.calibration_persistence_ok.load(Ordering::Relaxed),
             capacities,
+            fast_tiers: self.fast_tier_statuses(),
         }
     }
 
@@ -1021,13 +1181,15 @@ impl CodexHome {
     }
 
     /// Read the live availability catalogue through this home's identity.
-    async fn fetch_models(&self) -> Result<HashSet<String>, ProcessError> {
+    async fn fetch_models(&self) -> Result<CodexModelCatalog, ProcessError> {
         let token = self.access_token().await?;
         let auth = AuthContext {
             access_token: token,
             account_id: self.credential.lock().await.account_id.clone(),
         };
-        self.transport().fetch_models(&auth).await
+        let catalog = self.transport().fetch_models(&auth).await?;
+        self.publish_profile_catalog(catalog.clone());
+        Ok(catalog)
     }
 
     /// Translate a transport-level failure into the health signal it actually proves.
@@ -1124,6 +1286,22 @@ fn open_credential(
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+
+    #[test]
+    fn fast_routing_prefers_wire_honor_then_advertised_unknowns() {
+        assert_eq!(
+            fast_route_rank(Some(FastServedTier::Priority), Some(true), Some(true)),
+            0
+        );
+        assert_eq!(fast_route_rank(None, Some(true), Some(true)), 1);
+        assert_eq!(fast_route_rank(None, None, None), 2);
+        assert_eq!(
+            fast_route_rank(Some(FastServedTier::Default), Some(true), Some(true)),
+            3
+        );
+        assert_eq!(fast_route_rank(None, Some(true), Some(false)), 3);
+        assert_eq!(fast_route_rank(None, Some(false), None), 4);
+    }
 
     #[test]
     fn admission_rejects_full_windows_and_explicit_provider_limit() {
@@ -1314,6 +1492,9 @@ pub struct CodexGateway {
     /// Rotates equal-load cold/warm candidates. Without an atomic cursor, sequential requests and
     /// concurrent bursts with identical snapshots all collapse onto the lowest discovery order.
     selection_cursor: AtomicU64,
+    /// Samples one profile catalogue per refresh pass. This learns account-scoped rollout metadata
+    /// across the fleet without multiplying the health cadence into one `/models` call per home.
+    model_catalog_cursor: AtomicU64,
     abort_notify: Notify,
     /// Raised when a home's health asks to be re-checked ahead of the sweep cadence.
     ///
@@ -1376,6 +1557,7 @@ impl CodexGateway {
             shutting_down: AtomicBool::new(false),
             abort_turns: AtomicBool::new(false),
             selection_cursor: AtomicU64::new(0),
+            model_catalog_cursor: AtomicU64::new(0),
             abort_notify: Notify::new(),
             probe_poke: Notify::new(),
             background_tasks: Arc::new(Semaphore::new(MAX_BACKGROUND_TASKS as usize)),
@@ -1540,11 +1722,29 @@ impl CodexGateway {
         let now = pool::now();
         let mut last_error = ProcessError::Closed;
         let pool_homes = self.homes().await;
+        let width = pool_homes.len().max(1);
+        let cursor = self.model_catalog_cursor.fetch_add(1, Ordering::Relaxed) as usize % width;
         let mut ordered: Vec<_> = pool_homes.iter().collect();
-        ordered.sort_by_key(|home| (home.is_cooling(now), home.order()));
+        ordered.sort_by_key(|home| {
+            (
+                home.is_cooling(now),
+                (home.order() + width - cursor) % width,
+            )
+        });
         for home in ordered {
             match home.fetch_models().await {
-                Ok(models) => return Ok(models),
+                Ok(catalog) => {
+                    // The public list is the union of last-good account snapshots: a model rolled
+                    // out to only part of the fleet remains usable, while selection keeps its
+                    // per-profile capability evidence for Fast placement.
+                    let mut models = catalog.models;
+                    for candidate in &pool_homes {
+                        if let Some(snapshot) = candidate.cached_profile_catalog() {
+                            models.extend(snapshot.models);
+                        }
+                    }
+                    return Ok(models);
+                }
                 Err(error) => {
                     home.note_transport_error(&error);
                     last_error = error;
@@ -1654,9 +1854,10 @@ impl CodexGateway {
 
     /// Choose a usable home and take one of its turn slots.
     ///
-    /// A conversation-pinned home is first. Other homes are ordered only by current in-flight load
-    /// and a rotating tie-break; calibration is reporting evidence and never an admission/routing
-    /// restriction. New shared roots still seed two homes, but no capacity ratio can veto warmth.
+    /// A conversation-pinned home is first inside the best Fast-evidence class. Other homes are
+    /// ordered by current in-flight load and a rotating tie-break; calibration is reporting
+    /// evidence and never an admission/routing restriction. New shared roots still seed two homes,
+    /// but no capacity ratio can veto warmth.
     /// Collect routable candidates for one selection pass under a window-reserve policy.
     ///
     /// The reserve keeps each subscription below its jittered 5h/weekly cap: a home beyond its
@@ -1668,7 +1869,8 @@ impl CodexGateway {
         exclude: &[String],
         now: i64,
         reserve: &WindowReserve,
-    ) -> (Vec<(bool, usize, i64, Arc<CodexHome>)>, Option<i64>) {
+        fast_model: Option<&str>,
+    ) -> (Vec<(u8, bool, usize, i64, Arc<CodexHome>)>, Option<i64>) {
         let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
         for home in pool_homes {
@@ -1697,7 +1899,14 @@ impl CodexGateway {
                     // how much capacity is left in money — and stays empty until a window turns over.
                     let used =
                         quota_rank(limits.as_ref().and_then(|limits| limits.max_used_percent()));
-                    candidates.push((snapshot_stale, home.inflight(), used, home.clone()));
+                    let fast_rank = fast_model.map_or(0, |model| home.fast_route_rank(model));
+                    candidates.push((
+                        fast_rank,
+                        snapshot_stale,
+                        home.inflight(),
+                        used,
+                        home.clone(),
+                    ));
                 }
                 health::Admission::Reject { ready_at, .. } => {
                     if let Some(ready_at) = ready_at {
@@ -1716,6 +1925,7 @@ impl CodexGateway {
         warm: &[String],
         place_cache_root: bool,
         advance_cursor: bool,
+        fast_model: Option<&str>,
     ) -> HomeSelection {
         if self.shutting_down.load(Ordering::Acquire) {
             return HomeSelection::Unavailable { ready_at: None };
@@ -1723,13 +1933,25 @@ impl CodexGateway {
         let now = pool::now();
         let pool_homes = self.homes().await;
         let (mut candidates, mut soonest) = self
-            .selection_candidates(&pool_homes, exclude, now, &self.cfg.window_reserve())
+            .selection_candidates(
+                &pool_homes,
+                exclude,
+                now,
+                &self.cfg.window_reserve(),
+                fast_model,
+            )
             .await;
         if candidates.is_empty() && self.cfg.window_reserve() != WindowReserve::FULL {
             // Peak escape hatch, mirroring the Claude fleet: when every home is past its soft
             // reserve, serve at up to the provider's own wall rather than fail the client.
             let (relaxed, relaxed_soonest) = self
-                .selection_candidates(&pool_homes, exclude, now, &WindowReserve::FULL)
+                .selection_candidates(
+                    &pool_homes,
+                    exclude,
+                    now,
+                    &WindowReserve::FULL,
+                    fast_model,
+                )
                 .await;
             candidates = relaxed;
             if candidates.is_empty() {
@@ -1750,9 +1972,17 @@ impl CodexGateway {
         } as usize
             % width;
         candidates.sort_by(
-            |(stale_a, inflight_a, used_a, home_a), (stale_b, inflight_b, used_b, home_b)| {
+            |(fast_a, stale_a, inflight_a, used_a, home_a),
+             (fast_b, stale_b, inflight_b, used_b, home_b)| {
                 let rotated_a = (home_a.order() + width - cursor) % width;
                 let rotated_b = (home_b.order() + width - cursor) % width;
+                // Fast capability is a service-quality boundary, not a small balancing hint. Once
+                // one profile proves it can honor priority, a downgraded profile must not win on
+                // cache warmth, load or quota. Within the same Fast class, ordinary fleet
+                // discipline remains unchanged.
+                fast_a
+                    .cmp(fast_b)
+                    .then_with(|| stale_a.cmp(stale_b))
                 // A home whose quota evidence has gone stale is still routable — the snapshot is
                 // observational and must never become a hard dependency — but it must never win a
                 // tie against a home whose evidence is current. A frozen reading looks arbitrarily
@@ -1763,50 +1993,59 @@ impl CodexGateway {
                 // capacity first would pile concurrent turns onto whichever subscription is emptiest.
                 // Quota steering is bucketed and only engages near the wall, so comparable homes stay
                 // tied and the rotation cursor keeps spreading them.
-                stale_a
-                    .cmp(stale_b)
                     .then_with(|| inflight_a.cmp(inflight_b))
                     .then_with(|| used_a.cmp(used_b))
                     .then_with(|| rotated_a.cmp(&rotated_b))
             },
         );
+        let best_fast_rank = candidates[0].0;
         // A resolved conversation is a hard first choice. For a new shared root, seed a cold home
-        // until two copies exist, then prefer the least-loaded warm home.
+        // until two copies exist, then prefer the least-loaded warm home. Fast requests keep that
+        // affinity only inside the best currently known served-tier class.
         let mut ordered: Vec<Arc<CodexHome>> = Vec::with_capacity(candidates.len());
         if let Some(id) = preferred {
-            if let Some((_, _, _, home)) = candidates.iter().find(|(_, _, _, home)| home.id() == id)
+            if let Some((_, _, _, _, home)) = candidates
+                .iter()
+                .find(|(fast, _, _, _, home)| *fast == best_fast_rank && home.id() == id)
             {
                 ordered.push(home.clone());
             }
         } else if place_cache_root {
             let warm_count = candidates
                 .iter()
-                .filter(|(_, _, _, home)| warm.iter().any(|id| id == home.id()))
+                .filter(|(fast, _, _, _, home)| {
+                    *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
+                })
                 .count();
             let primary = if warm_count < CACHE_ROOT_MIN_WARM_HOMES {
                 candidates
                     .iter()
-                    .position(|(_, _, _, home)| !warm.iter().any(|id| id == home.id()))
+                    .position(|(fast, _, _, _, home)| {
+                        *fast == best_fast_rank && !warm.iter().any(|id| id == home.id())
+                    })
             } else {
                 candidates
                     .iter()
-                    .position(|(_, _, _, home)| warm.iter().any(|id| id == home.id()))
+                    .position(|(fast, _, _, _, home)| {
+                        *fast == best_fast_rank && warm.iter().any(|id| id == home.id())
+                    })
             }
             .unwrap_or(0);
-            ordered.push(candidates[primary].3.clone());
+            ordered.push(candidates[primary].4.clone());
         }
         // If the primary choice is currently sampling, another warm copy is the next best spill;
         // remaining candidates stay in global capacity order.
         if place_cache_root {
-            for (_, _, _, home) in &candidates {
-                if warm.iter().any(|id| id == home.id())
+            for (fast, _, _, _, home) in &candidates {
+                if *fast == best_fast_rank
+                    && warm.iter().any(|id| id == home.id())
                     && !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, home))
                 {
                     ordered.push(home.clone());
                 }
             }
         }
-        for (_, _, _, home) in candidates {
+        for (_, _, _, _, home) in candidates {
             if !ordered.iter().any(|chosen| Arc::ptr_eq(chosen, &home)) {
                 ordered.push(home);
             }
@@ -1827,7 +2066,10 @@ impl CodexGateway {
     /// same selection a real turn would and releases the acquired load slot immediately. A home can
     /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
     pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
-        match self.select_home(&[], None, &[], false, false).await {
+        match self
+            .select_home(&[], None, &[], false, false, None)
+            .await
+        {
             HomeSelection::Ready(_home, _slot) => Ok(()),
             HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
                 retry_after: ready_at

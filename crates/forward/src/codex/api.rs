@@ -2015,16 +2015,16 @@ fn build_completed_response(
         output,
         Some(&result.usage),
     );
-    // The completed response reports the tier the provider actually served (a downgraded Fast
-    // request shows default, an honored one shows priority); fall back to the requested tier
-    // when the provider omitted the field.
-    if let Some(tier) = result
-        .served_service_tier
-        .as_deref()
-        .or(request.service_tier.as_deref())
-    {
-        response["service_tier"] = Value::String(tier.to_string());
-    }
+    // The completed response reports only the tier the provider actually served. Missing wire
+    // evidence is standard, never requested Fast: claiming priority here would also make clients
+    // believe they received a service level that settlement correctly refused to bill.
+    response["service_tier"] = Value::String(
+        result
+            .served_service_tier
+            .as_deref()
+            .unwrap_or("default")
+            .to_string(),
+    );
     response
 }
 
@@ -2060,7 +2060,9 @@ fn response_object(
             "summary": request.reasoning_summary
         },
         "safety_identifier": Value::Null,
-        "service_tier": request.service_tier.as_deref().unwrap_or("default"),
+        // In-progress lifecycle events precede the completed provider verdict. The final object
+        // overwrites this with `priority` only when the upstream response proves Fast was served.
+        "service_tier": "default",
         "store": request.store,
         "temperature": Value::Null,
         "text": request.text,
@@ -3634,7 +3636,32 @@ mod tests {
             assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
             let response =
                 response_object(&parsed, "resp_fast", 0, "in_progress", Vec::new(), None);
-            assert_eq!(response["service_tier"], "priority");
+            assert_eq!(
+                response["service_tier"], "default",
+                "requested Fast is not served-tier evidence"
+            );
+            let downgraded = build_completed_response(
+                &parsed,
+                &CodexTurnResult {
+                    output: Vec::new(),
+                    usage: CodexUsage::default(),
+                    served_service_tier: None,
+                },
+                "resp_fast",
+                0,
+            );
+            assert_eq!(downgraded["service_tier"], "default");
+            let honored = build_completed_response(
+                &parsed,
+                &CodexTurnResult {
+                    output: Vec::new(),
+                    usage: CodexUsage::default(),
+                    served_service_tier: Some("priority".to_string()),
+                },
+                "resp_fast",
+                0,
+            );
+            assert_eq!(honored["service_tier"], "priority");
         }
         for requested in ["default", "auto", "flex", "future-tier"] {
             let parsed = parse_responses_request(

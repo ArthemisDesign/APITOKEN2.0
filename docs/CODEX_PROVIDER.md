@@ -79,7 +79,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
 | `CLAUDE_API_CODEX_PROFILES_FILE` | `/srv/claude-api/data/codex/profiles.json` | roster location |
 | `CLAUDE_API_CODEX_CREDENTIAL_KEYS` | — (required when enabled) | AEAD keyring `kid:64hex[,...]` |
 | `CLAUDE_API_CODEX_BASE_URL` | `https://chatgpt.com/backend-api/codex` | native backend (loopback only with explicit opt-in) |
-| `CLAUDE_API_CODEX_CLI_VERSION` | `0.145.0` | pinned official-client wire identity |
+| `CLAUDE_API_CODEX_CLI_VERSION` | `0.146.0` | pinned official-client wire identity |
 | `CLAUDE_API_CODEX_MODELS` | `gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4` | enabled ids from the pinned price catalog |
 | `CLAUDE_API_CODEX_REQUEST_TIMEOUT_MS` | `15000` | connect/control bound (`CLAUDE_API_CODEX_RPC_TIMEOUT_MS` is accepted as a legacy alias) |
 | `CLAUDE_API_CODEX_TURN_TIMEOUT_MS` | `600000` | total turn bound |
@@ -144,9 +144,14 @@ token on every refresh with strict family reuse detection. The pool therefore:
   holds the conservative Fast multiplier, while settlement, ledger, capacity spend and the
   public `service_tier` response field all use the tier reported on the completed turn. A
   silently downgraded request bills at the standard rate and is never rejected; an honored
-  priority turn bills at the multiplier. Verified live (2026-07-31): the current backend
-  reports `default` for every tier request, so Fast requests serve normally at standard
-  price today and start billing Fast automatically if the provider enables the tier.
+  priority turn bills at the multiplier. Model discovery retains `service_tiers` and legacy
+  `additional_speed_tiers` per profile; Fast routing walks catalogue-supported unknown profiles,
+  then sticks to any profile that has actually served `priority` without letting ordinary cache
+  affinity pull the turn back to a known downgrade. Verified live (2026-08-01) on all four Pro
+  pool profiles with the official 0.146 request shape: their catalogues advertise `priority`, but
+  completed turns report `default` (`fast` itself is rejected with HTTP 400). Those accounts serve
+  Fast requests normally at standard price until OpenAI enables the tier; there is no documented
+  account-toggle API, and the official `/fast` command only selects wire value `priority`.
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.
@@ -175,7 +180,9 @@ token on every refresh with strict family reuse detection. The pool therefore:
   `tools/codex-app-server/` no longer exists.
 - **Status** stays at `GET /codex-subs` (control plane) and the Prometheus
   `claude_api_codex_*` series; `process_live` now means "credential opened and transport built",
-  `ready_published` means this generation proved the profile works.
+  `ready_published` means this generation proved the profile works. Each home's `fast_tiers`
+  separates advisory catalogue availability/support from authoritative completed
+  `served_tier`/`observed_at`, so a provider downgrade cannot look like working Fast.
 - **Runbook alerts** are unchanged in name (`CodexNoAvailableHomes`, `CodexHomeUnauthenticated`,
   `CodexHomeQuotaSnapshotStale`); their meaning maps to sealed profiles.
 - **Wire verification** before enabling in production and after any `CODEX_CLI_VERSION` bump:

@@ -2387,6 +2387,13 @@ fn codex_subs_value(status: &forward::codex::CodexOperationalStatus, now: i64) -
                     "confidence": c.confidence,
                     "samples": c.samples,
                 })).collect::<Vec<_>>(),
+                "fast_tiers": h.fast_tiers.iter().map(|tier| json!({
+                    "model": tier.model,
+                    "catalog_available": tier.catalog_available,
+                    "catalog_fast_supported": tier.catalog_fast_supported,
+                    "served_tier": tier.served_tier,
+                    "observed_at": tier.observed_at,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -2812,6 +2819,13 @@ mod tests {
                     confidence: 0.0,
                     samples: 0,
                 }],
+                fast_tiers: vec![forward::codex::CodexFastTierStatus {
+                    model: "gpt-5.6-sol".to_string(),
+                    catalog_available: Some(true),
+                    catalog_fast_supported: Some(true),
+                    served_tier: Some("default"),
+                    observed_at: Some(101),
+                }],
             }],
             available: 1,
             soonest_ready: None,
@@ -2883,6 +2897,16 @@ mod tests {
             value["homes"][0]["windows"][0]["used_percent"], 100,
             "the exhausted window stays visible next to the verdict"
         );
+    }
+
+    #[test]
+    fn codex_subscription_contract_separates_catalog_fast_from_served_fast() {
+        let value = codex_subs_value(&unknown_codex_status(), 105);
+        let tier = &value["homes"][0]["fast_tiers"][0];
+        assert_eq!(tier["model"], "gpt-5.6-sol");
+        assert_eq!(tier["catalog_fast_supported"], true);
+        assert_eq!(tier["served_tier"], "default");
+        assert_eq!(tier["observed_at"], 101);
     }
 
     #[test]

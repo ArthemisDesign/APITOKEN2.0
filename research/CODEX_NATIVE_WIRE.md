@@ -1,6 +1,7 @@
 # Codex native wire facts (live probe record)
 
-> Статус: **ПОДТВЕРЖДЕНО живым прогоном 2026-07-31** на production-профиле (ChatGPT Pro).
+> Статус: **ПОДТВЕРЖДЕНО живыми прогонами 2026-07-31 и 2026-08-01** на четырёх
+> production-профилях (ChatGPT Pro).
 > Прогон: read-only + один tiny turn, без rotation-теста (rotation на проде не проводилась —
 > строгая reuse-инвалидация убила бы токен; логика покрыта кодом и тестами).
 
@@ -71,10 +72,33 @@ response.content_part.done, response.output_item.done, response.completed`
   `OpenAI-Beta: responses=experimental`, `session_id` — приняты, 200.
 - Тело: `model, instructions:"", input, tools:[], store:false, stream:true` — принято.
 
+## Fast / service tier (полный прогон 2026-08-01)
+
+Проверены все четыре pool-профиля с официальной идентичностью Codex 0.146 и модели
+`gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`:
+
+- `/codex/models?client_version=0.145.0` и `0.146.0` возвращают одинаковый каталог; у моделей
+  одновременно есть текущий `service_tiers[].id = "priority"` и legacy
+  `additional_speed_tiers = ["fast"]`;
+- `POST /responses` с `service_tier: "priority"` принимает запрос (HTTP 200), но
+  `response.completed.response.service_tier` на каждом аккаунте равен `default`;
+- literal `service_tier: "fast"` backend отклоняет: HTTP 400 `Unsupported service_tier`;
+- результат одинаков для HTTP+SSE и WebSocket v2, для минимального тела и для полной формы
+  официального клиента (`tools/tool_choice/parallel_tool_calls`, `reasoning`,
+  `include: ["reasoning.encrypted_content"]`, `prompt_cache_key`, `client_metadata`, session/thread/
+  installation/window headers);
+- `/wham/usage` не содержит Fast-полей, `has_credits: false`.
+
+Исходники официального `rust-v0.146.0` подтверждают: `ServiceTier::Fast.request_value()` — ровно
+`"priority"`; `/fast` меняет клиентскую настройку и не вызывает отдельный endpoint активации.
+Следовательно, провод сформирован правильно, а фактический downgrade — entitlement/rollout-вердикт
+OpenAI для этих аккаунтов. Источник истины для ответа и денег — только completed `service_tier`.
+Шлюз предпочитает профиль, уже доказавший `priority`, затем обследует неизвестные профили, но при
+отсутствии honor сохраняет fail-open стандартное обслуживание вместо ложного Fast или HTTP 400.
+
 ## Открытые вопросы (не блокеры)
 
 1. Появляется ли `codex.rate_limits` в стриме при исчерпании/429 — парсер принимает обе формы.
-2. WS-транспорт: HTTP+SSE жив, WS не требуется (проверено на текущую дату).
-3. Формат `/wham/usage` на Plus/Business (структура та же, окна могут отличаться).
-4. `metered_feature`-семейства (codex_bengalfox) — если добавим Spark-модель в каталог,
+2. Формат `/wham/usage` на Plus/Business (структура та же, окна могут отличаться).
+3. `metered_feature`-семейства (codex_bengalfox) — если добавим Spark-модель в каталог,
    потребуется учитывать её отдельный лимит в selection.

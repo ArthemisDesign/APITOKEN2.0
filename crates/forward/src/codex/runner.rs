@@ -242,6 +242,8 @@ impl CodexGateway {
         if request.prompt_cache_key.is_none() {
             request.prompt_cache_key = routing.as_ref().map(TurnRouting::prompt_cache_key);
         }
+        let fast_model = (request.service_tier.as_deref() == Some("priority"))
+            .then(|| request.model.upstream.as_str());
         let emitted = Arc::new(AtomicBool::new(false));
         let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
@@ -256,7 +258,14 @@ impl CodexGateway {
                 .unwrap_or(&[]);
             let place_cache_root = routing.as_ref().is_some_and(TurnRouting::places_cache_root);
             let (home, slot) = match self
-                .select_home(&tried, preferred, warm, place_cache_root, true)
+                .select_home(
+                    &tried,
+                    preferred,
+                    warm,
+                    place_cache_root,
+                    true,
+                    fast_model,
+                )
                 .await
             {
                 HomeSelection::Ready(home, slot) => (home, slot),
@@ -274,6 +283,9 @@ impl CodexGateway {
                 .await;
             let error = match result {
                 Ok(result) => {
+                    if let Some(model) = fast_model {
+                        home.observe_fast_result(model, result.served_service_tier.as_deref());
+                    }
                     home.record_spend(super::billing::price_real_nano(
                         &request.model,
                         &result.usage,

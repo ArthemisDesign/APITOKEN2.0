@@ -5,16 +5,18 @@ Run on a throwaway ChatGPT account (Plus/Pro) BEFORE enabling the native provide
 production. The probe completes the official device flow, then verifies the exact wire facts
 the Rust transport depends on, and prints them REDACTED (no tokens, no account ids):
 
-  1. `POST /backend-api/codex/responses` HTTP+SSE liveness: status, SSE event types in order,
-     rate-limit response headers (exact `x-codex-*` names observed);
-  2. `GET /backend-api/wham/usage`: JSON shape (plan_type, rate_limit primary/secondary,
+  1. `GET /backend-api/codex/models`: model availability plus current/legacy Fast metadata;
+  2. `POST /backend-api/codex/responses` HTTP+SSE liveness: requested and actually served
+     service tier, SSE event types, and rate-limit response headers;
+  3. `GET /backend-api/wham/usage`: JSON shape (plan_type, rate_limit primary/secondary,
      resets spelling);
-  3. refresh-token rotation: two consecutive refreshes must succeed, and the second one must
+  4. refresh-token rotation: two consecutive refreshes must succeed, and the second one must
      reject the FIRST refresh token (strict family reuse detection);
-  4. optional WebSocket reachability check for `wss://chatgpt.com/backend-api/codex/responses`.
+  5. optional WebSocket reachability check for `wss://chatgpt.com/backend-api/codex/responses`.
 
 Usage:
-    python3 tools/codex-native/probe-live.py [--proxy http://user:pass@host:port] [--no-ws]
+    python3 tools/codex-native/probe-live.py --service-tier priority \
+      [--expect-served-tier priority] [--proxy http://user:pass@host:port] [--no-ws]
 
 Findings belong in research/CODEX_NATIVE_WIRE.md. Never commit the captured tokens or ids.
 """
@@ -24,7 +26,9 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -33,9 +37,8 @@ DEVICETOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token"
 VERIFICATION_URL = "https://auth.openai.com/codex/device"
 BASE_URL = "https://chatgpt.com/backend-api/codex"
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-CLI_VERSION = "0.145.0"
+CLI_VERSION = "0.146.0"
 ORIGINATOR = "codex_cli_rs"
-USER_AGENT = f"{ORIGINATOR}/{CLI_VERSION} (Linux; x86_64) {ORIGINATOR}"
 
 TIMEOUT = 30
 
@@ -124,20 +127,69 @@ def jwt_claims(token):
         return {}
 
 
-def auth_headers(tokens):
+def request_identity():
     return {
-        "Authorization": f"Bearer {tokens['access_token']}",
-        "ChatGPT-Account-ID": account_id_of(tokens),
-        "originator": ORIGINATOR,
-        "User-Agent": USER_AGENT,
-        "session_id": "00000000-0000-4000-8000-0000000000ab",
-        "OpenAI-Beta": "responses=experimental",
+        "installation": str(uuid.uuid4()),
+        "session": str(uuid.uuid4()),
+        "thread": str(uuid.uuid4()),
+        "window": str(uuid.uuid4()),
     }
 
 
-def probe_responses(opener, tokens):
+def auth_headers(tokens, client_version, identity=None):
+    headers = {
+        "Authorization": f"Bearer {tokens['access_token']}",
+        "ChatGPT-Account-ID": account_id_of(tokens),
+        "originator": ORIGINATOR,
+        "User-Agent": f"{ORIGINATOR}/{client_version} (Linux; x86_64) {ORIGINATOR}",
+        "OpenAI-Beta": "responses=experimental",
+    }
+    if identity:
+        headers.update({
+            "session-id": identity["session"],
+            "thread-id": identity["thread"],
+            "x-client-request-id": identity["thread"],
+            "x-codex-installation-id": identity["installation"],
+            "x-codex-window-id": identity["window"],
+        })
+    return headers
+
+
+def probe_models(opener, tokens, client_version, model):
+    query = urllib.parse.urlencode({"client_version": client_version})
+    request = urllib.request.Request(
+        f"{BASE_URL}/models?{query}",
+        headers=auth_headers(tokens, client_version),
+    )
+    try:
+        response = opener.open(request, timeout=TIMEOUT)
+    except urllib.error.HTTPError as error:
+        print(f"== models: HTTP {error.code}: {error.read(200).decode(errors='replace')}")
+        return None
+    payload = json.loads(response.read())
+    entries = payload.get("models", payload.get("data", []))
+    rows = []
+    for entry in entries:
+        if isinstance(entry, str):
+            model_id, current, legacy = entry, [], []
+        else:
+            model_id = entry.get("id") or entry.get("model") or entry.get("slug")
+            current = [
+                tier.get("id") if isinstance(tier, dict) else tier
+                for tier in entry.get("service_tiers", [])
+            ]
+            legacy = entry.get("additional_speed_tiers", [])
+        if model_id:
+            rows.append({"model": model_id, "service_tiers": current, "legacy_speed_tiers": legacy})
+    selected = next((row for row in rows if row["model"] == model), None)
+    print(f"== models: HTTP {response.status}; client_version={client_version}; entries={len(rows)}")
+    print(f"   selected model tiers: {json.dumps(selected, sort_keys=True)}")
+    return selected
+
+
+def probe_responses(opener, tokens, client_version, model, service_tier, identity):
     body = {
-        "model": "gpt-5.5",
+        "model": model,
         "instructions": "",
         "input": [
             {
@@ -146,14 +198,28 @@ def probe_responses(opener, tokens):
                 "content": [{"type": "input_text", "text": "Reply with the single word PONG."}],
             }
         ],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "reasoning": {"effort": "low", "summary": "auto"},
         "store": False,
         "stream": True,
+        "include": ["reasoning.encrypted_content"],
+        "prompt_cache_key": identity["session"],
+        "client_metadata": {
+            "x-codex-installation-id": identity["installation"],
+            "session_id": identity["session"],
+            "thread_id": identity["thread"],
+            "x-codex-window-id": identity["window"],
+        },
     }
+    if service_tier != "none":
+        body["service_tier"] = service_tier
     request = urllib.request.Request(
         f"{BASE_URL}/responses",
         data=json.dumps(body).encode(),
         headers={
-            **auth_headers(tokens),
+            **auth_headers(tokens, client_version, identity),
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         },
@@ -165,7 +231,7 @@ def probe_responses(opener, tokens):
         print(f"== responses: HTTP {error.code}")
         print(f"   error headers: {dict(error.headers)}")
         print(f"   error body (truncated): {error.read(300).decode(errors='replace')}")
-        return False
+        return False, None
     print(f"== responses: HTTP {response.status}")
     interesting = {
         name: value
@@ -173,19 +239,40 @@ def probe_responses(opener, tokens):
         if name.lower().startswith(("x-codex", "x-ratelimit", "openai", "retry-after"))
     }
     print(f"   rate-limit headers seen: {json.dumps(interesting, indent=2)}")
-    events = []
+    events, event_name, data_lines = [], "", []
+    served_tier = None
+
+    def dispatch():
+        nonlocal served_tier
+        if not data_lines:
+            return
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except json.JSONDecodeError:
+            return
+        kind = payload.get("type") or event_name
+        if kind:
+            events.append(kind)
+        if kind == "response.completed":
+            served_tier = payload.get("response", {}).get("service_tier")
+
     for raw in response:
-        line = raw.decode(errors="replace").strip()
-        if line.startswith("event:"):
-            events.append(line.split(":", 1)[1].strip())
-        if len(events) >= 40:
-            break
-    print(f"   SSE event order: {events}")
-    return True
+        line = raw.decode(errors="replace").rstrip("\r\n")
+        if not line:
+            dispatch()
+            event_name, data_lines = "", []
+        elif line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].lstrip())
+    dispatch()
+    print(f"   SSE event order: {events[:40]}")
+    print(f"   requested service_tier: {service_tier}; served service_tier: {served_tier!r}")
+    return True, served_tier
 
 
-def probe_usage(opener, tokens):
-    request = urllib.request.Request(USAGE_URL, headers=auth_headers(tokens))
+def probe_usage(opener, tokens, client_version):
+    request = urllib.request.Request(USAGE_URL, headers=auth_headers(tokens, client_version))
     try:
         response = opener.open(request, timeout=TIMEOUT)
     except urllib.error.HTTPError as error:
@@ -247,6 +334,22 @@ def probe_ws(tokens):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proxy", default=None)
+    parser.add_argument("--client-version", default=CLI_VERSION)
+    parser.add_argument("--model", default="gpt-5.6-sol")
+    parser.add_argument(
+        "--service-tier", choices=["none", "priority", "fast"], default="priority"
+    )
+    parser.add_argument(
+        "--expect-served-tier",
+        choices=["default", "priority", "flex"],
+        default=None,
+        help="exit non-zero unless response.completed reports this exact tier",
+    )
+    parser.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="skip destructive refresh-family rotation (required for production credentials)",
+    )
     parser.add_argument("--no-ws", action="store_true")
     args = parser.parse_args()
     opener = make_opener(args.proxy)
@@ -254,12 +357,31 @@ def main():
     tokens = exchange_code(opener, device)
     plan = jwt_claims(tokens.get("id_token", "")).get("https://api.openai.com/auth", {})
     print(f"== plan claim: {plan.get('chatgpt_plan_type')!r} (account id redacted)")
-    probe_responses(opener, tokens)
-    probe_usage(opener, tokens)
-    tokens = probe_refresh_rotation(opener, tokens)
+    identity = request_identity()
+    probe_models(opener, tokens, args.client_version, args.model)
+    ok, served_tier = probe_responses(
+        opener,
+        tokens,
+        args.client_version,
+        args.model,
+        args.service_tier,
+        identity,
+    )
+    probe_usage(opener, tokens, args.client_version)
+    if not args.no_refresh:
+        tokens = probe_refresh_rotation(opener, tokens)
     if not args.no_ws:
         probe_ws(tokens)
+    if args.expect_served_tier and served_tier != args.expect_served_tier:
+        print(
+            f"!! served-tier mismatch: expected {args.expect_served_tier!r}, "
+            f"got {served_tier!r}"
+        )
+        return 1
+    if args.service_tier == "priority" and served_tier != "priority":
+        print("!! provider did not honor Fast; this account was served at the standard tier")
     print("== probe complete; record findings in research/CODEX_NATIVE_WIRE.md")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

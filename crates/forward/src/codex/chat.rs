@@ -957,7 +957,6 @@ fn completed_chat(
         "service_tier": result
             .served_service_tier
             .as_deref()
-            .or(prepared.request.service_tier.as_deref())
             .unwrap_or("default"),
         "system_fingerprint": Value::Null
     })
@@ -1256,18 +1255,21 @@ async fn stream_chat(
         if downstream_closed {
             return;
         }
-        if !send_chat_frame(
-            &frame_tx,
-            chat_chunk(
-                &prepared,
-                &completion_id,
-                created,
-                json!({}),
-                Value::String(finish_reason.to_string()),
-            ),
-        )
-        .await
-        {
+        let mut final_chunk = chat_chunk(
+            &prepared,
+            &completion_id,
+            created,
+            json!({}),
+            Value::String(finish_reason.to_string()),
+        );
+        final_chunk["service_tier"] = Value::String(
+            result
+                .served_service_tier
+                .as_deref()
+                .unwrap_or("default")
+                .to_string(),
+        );
+        if !send_chat_frame(&frame_tx, final_chunk).await {
             return;
         }
         if include_usage
@@ -1280,11 +1282,7 @@ async fn stream_chat(
                     "model": prepared.request.public_model.id,
                     "choices": [],
                     "usage": chat_usage(&result.usage),
-                    "service_tier": result
-            .served_service_tier
-            .as_deref()
-            .or(prepared.request.service_tier.as_deref())
-            .unwrap_or("default"),
+                    "service_tier": result.served_service_tier.as_deref().unwrap_or("default"),
                     "system_fingerprint": Value::Null
                 }),
             )
@@ -1326,7 +1324,9 @@ fn chat_chunk(
             "finish_reason": finish_reason
         }],
         "usage": Value::Null,
-        "service_tier": prepared.request.service_tier.as_deref().unwrap_or("default"),
+        // A streaming chunk precedes the provider's completed verdict. Never claim Fast from the
+        // request alone; the terminal usage chunk publishes `priority` only after wire honor.
+        "service_tier": "default",
         "system_fingerprint": Value::Null
     })
 }
