@@ -1,13 +1,13 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1a и 1b реализованы и работают в проде.** `router.apitoken.sale` обслуживает
-весь публичный native-контракт через процесс `claude-router` (singleton `127.0.0.1:8798`):
-native lanes трёх плоскостей по форме пути и единый агрегированный каталог `GET /v1/models{,/{id}}`
-с namespaced ID и политикой деградации. Universal lane пока не существует — `/v1/chat/completions`
-обслуживает только OpenAI plane; его архитектурные решения зафиксированы (раздел «Решения
-universal lanes») и реализуются по подпакетам этапа 3. Документ фиксирует целевую картину,
-публичный контракт, инварианты и этапный план; каждый этап при реализации обновляет этот
-документ и смежные инструкции в том же коммите.
+Статус: **этапы 1–5 и фаза 6.1 реализованы и работают в проде.**
+`router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
+`claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
+`GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
+dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
+До полного OpenRouter-grade routing остаются фазы 6.2–6.4. Документ фиксирует целевую
+картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
+обновляет этот документ и смежные инструкции в том же коммите.
 
 ## Контекст и цель
 
@@ -24,7 +24,7 @@ universal lanes») и реализуются по подпакетам этап�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | да (этап 5, с attempt fencing) |
+| Provider preferences / fallback | да | в работе (этап 6, с attempt fencing) |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -102,10 +102,10 @@ POST /v1/messages                                   Anthropic Messages (Claude C
                                                     в Anthropic Skin на Codex plane;
                                                     этап 5.2 — + любая google/* модель
                                                     каталога на Gemini plane)
-POST /v1/messages/count_tokens                    Anthropic token counting
-                                                    (этап 5.1/5.2 — endpoint есть на Codex
-                                                    и Gemini plane; dispatch в router —
-                                                    follow-up)
+POST /v1/messages/count_tokens                    Anthropic token counting с model-based
+                                                  dispatch: native Anthropic, локальный
+                                                  подсчёт Codex или native Gemini
+                                                  `:countTokens` (этапы 5.1–5.2)
 
 POST /v1/responses                                OpenAI Responses (этап 1a — только OpenAI
                                                   plane, этап 4.1 — + любая Claude-модель
@@ -620,10 +620,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    dispatch — в Anthropic-конверте. Namespaced `anthropic/<id>` на Anthropic plane
    снимается admission'ом плоскости до reserve и upstream (`strip_own_namespace` в
    `crates/forward/src/proxy.rs`, зеркало strip'а chat-адаптера 3.x): до этого исправления
-   префикс доезжал до upstream байт-идентично и тот отвечал 404 (прод-проба 2026-08-01). `POST /v1/messages/count_tokens` в router остаётся
-   байт-прокси на Anthropic plane (model-based dispatch для него — отдельный follow-up;
-   endpoint на Gemini plane реализован в 5.2 ниже, до router-диспетча доступен прямым
-   обращением к плоскости). На Codex plane
+   префикс доезжал до upstream байт-идентично и тот отвечал 404 (прод-проба 2026-08-01).
+   `POST /v1/messages/count_tokens` использует тот же model-based dispatch: native
+   Anthropic lane, локальный reserve-grade подсчёт Codex или Gemini endpoint из 5.2.
+   На Codex plane
    (`crates/forward/src/codex/skin.rs`, роуты `/v1/messages` и
    `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
    Responses JSON и идёт через тот же turn pipeline, что chat-адаптер (admission,
@@ -666,8 +666,7 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    тот же parse + `parse_responses_request`/`prepare_turn` → reserve-grade оценка
    `input_tokens` без сети (`max_tokens` там опционален, как у официального endpoint'а).
    Ограничения 5.1: лимит тела — 8 MiB (общий `OPENAI_BODY_LIMIT` плоскости, не 32),
-   model-based dispatch `count_tokens` в router — по-прежнему follow-up (plane endpoint
-   реализован в 5.2), сквозного e2e-smoke Codex plane нет (харнесс
+   сквозного e2e-smoke Codex plane нет (харнесс
    не умеет encrypted OAuth-профили — покрытие unit/contract-тестами, как 3.3/4.3).
    **5.2 — Anthropic Skin для `google/*` моделей (Gemini plane) — РЕАЛИЗОВАН.**
    Gemini-зеркало 5.1 (`crates/forward/src/gemini/skin.rs`, роуты `/v1/messages` и
@@ -699,8 +698,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    tool-истории (`400 INVALID_ARGUMENT` Code Assist, thoughtSignature — решение 4)
    разделяется с chat/responses lanes плоскости (прямой tool calling работает); лимит
    тела — общий плоскости; сквозного e2e-smoke Gemini plane нет (как 3.3/4.3 — покрытие
-   unit/contract-тестами модуля); model-based dispatch `/v1/messages/count_tokens` в
-   router — follow-up (см. ограничения 5.1).
+   unit/contract-тестами модуля). Router dispatch `/v1/messages/count_tokens` покрыт
+   интеграционными mock-тестами namespace и alias-путей всех трёх плоскостей.
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,
    см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым

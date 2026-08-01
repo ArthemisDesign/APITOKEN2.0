@@ -1,4 +1,5 @@
-//! Model-based dispatch для `POST /v1/messages` — этап 5.1
+//! Model-based dispatch для `POST /v1/messages` и
+//! `POST /v1/messages/count_tokens` — этапы 5.1–5.2
 //! docs/engine/UNIFIED_ROUTER.md (решение 1 «перевод живёт в плоскостях»,
 //! решение 6 «этап 5 зеркалит 3–4»).
 //!
@@ -25,10 +26,10 @@
 //! ошибки, чужой конверт оборачивать нельзя). По той же причине router-local
 //! 502 на этом пути шейпится как `Lane::Anthropic` независимо от плоскости.
 //!
-//! `POST /v1/messages/count_tokens` dispatch НЕ использует: он остаётся
-//! байт-прокси native Anthropic lane до 5.2 (token counting на Codex-плоскости
-//! — внутренний вызов input_tokens-логики, роут регистрируется в плоскости,
-//! не в router — см. п. 5 документа).
+//! Для `/v1/messages/count_tokens` применяется тот же model-based dispatch:
+//! Anthropic получает native запрос, Codex считает reserve-grade input локально,
+//! Gemini вызывает quota-free native `:countTokens`. URI и тело во всех случаях
+//! проксируются без изменений; контракт ответа остаётся Anthropic Messages.
 
 use std::sync::Arc;
 
@@ -45,7 +46,7 @@ use crate::{proxy, AppState};
 /// предел, свои лимиты плоскости применяют сами после проксирования.
 const MESSAGES_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-/// Хендлер `POST /v1/messages`.
+/// Общий хендлер `POST /v1/messages` и `POST /v1/messages/count_tokens`.
 pub async fn proxy_messages(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let (parts, body) = req.into_parts();
     let bytes = match to_bytes(body, MESSAGES_BODY_LIMIT).await {

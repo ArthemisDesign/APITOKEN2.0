@@ -79,6 +79,11 @@ Control API движка использует только на чтение. С
   resolver вызывается в admission-пути strict-политики (`proxy.rs`) и в Codex-биллинге
   (`codex/billing.rs`), shadow-runtime стартует в проде (`crates/server`). НЕ читает БД
   и не считает стоимость токенов.
+- **Provider data-plane (`crates/forward` → `crates/router`).** Плоскости производят
+  native и universal HTTP-поверхности, router потребляет их только через stable loopback
+  origins. В частности, `/v1/messages/count_tokens` доступен на всех трёх плоскостях и
+  выбирается по `model`: Anthropic native, локальный reserve-grade подсчёт Codex или
+  quota-free Gemini `:countTokens`. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
 - **Контракт `x-apitoken-execution-state` (плоскости → router, этап 6.1).** Производители —
   `crates/forward` (`proxy.rs`, `codex/api.rs`, `codex/skin.rs`, `gemini/api.rs`,
   `gemini/skin.rs`): заголовок

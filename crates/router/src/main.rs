@@ -52,11 +52,10 @@ fn build_client() -> anyhow::Result<Client> {
 
 /// Таблица маршрутизации публичного контракта (UNIFIED_ROUTER.md,
 /// «Публичный контракт»). Native lanes выбирают плоскость формой пути;
-/// `/v1/chat/completions`, `/v1/responses` и `/v1/messages` — universal
+/// `/v1/chat/completions`, `/v1/responses` и `/v1/messages{,/count_tokens}` — universal
 /// lanes с model-based dispatch (chat::proxy_chat, этап 3.1;
 /// responses::proxy_responses, этап 4.1; messages::proxy_messages, этап 5.1).
 /// Stored responses endpoints остаются native OpenAI lane (решение 5);
-/// `/v1/messages/count_tokens` остаётся native Anthropic lane до 5.2.
 /// Собственные поверхности router'а — агрегированный каталог /v1/models и
 /// dispatch universal-запросов.
 pub fn app(state: Arc<AppState>) -> Router {
@@ -66,7 +65,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/ready", get(proxy::ready))
         .route("/balance", get(proxy_anthropic))
         .route("/v1/messages", post(messages::proxy_messages))
-        .route("/v1/messages/count_tokens", post(proxy_anthropic))
+        .route(
+            "/v1/messages/count_tokens",
+            post(messages::proxy_messages),
+        )
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model))
         .route("/v1/responses", post(responses::proxy_responses))
@@ -1161,24 +1163,81 @@ mod tests {
         assert!(log_a.lock().unwrap().is_empty());
     }
 
-    /// `/v1/messages/count_tokens` dispatch не использует: байт-прокси native
-    /// Anthropic lane независимо от model (до 5.2).
+    /// `/v1/messages/count_tokens` использует тот же namespace-dispatch, что Messages:
+    /// endpoint реализован на каждой плоскости, каталог для namespaced ID не нужен.
     #[tokio::test]
-    async fn count_tokens_stays_native_anthropic_lane() {
+    async fn count_tokens_namespaced_models_route_by_prefix_without_catalog_fetch() {
         let (a, log_a) = echo_plane().await;
         let (o, log_o) = echo_plane().await;
-        let router = spawn(make_router(&a, &o, "http://127.0.0.1:2", Duration::ZERO)).await;
-        let payload = r#"{"model":"openai/gpt-5.6","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#;
-        let response = reqwest::Client::new()
-            .post(format!("{router}/v1/messages/count_tokens"))
-            .body(payload)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.text().await.unwrap(), payload);
-        assert_eq!(log_a.lock().unwrap().len(), 1);
-        assert!(log_o.lock().unwrap().is_empty());
+        let (g, log_g) = echo_plane().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+            let payload = format!(
+                r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#
+            );
+            let response = client
+                .post(format!("{router}/v1/messages/count_tokens"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        for log in [&log_a, &log_o, &log_g] {
+            let requests = log.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].path, "/v1/messages/count_tokens");
+            assert_eq!(requests[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn count_tokens_aliases_route_via_cached_catalog() {
+        let (a, log_a) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
+        let (o, log_o) = chat_plane(OPENAI_MODELS, "/v1/models").await;
+        let (g, log_g) = chat_plane(GEMINI_MODELS, "/v1beta/models").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["claude-opus-4-8", "gpt-5.6", "gemini-2.5-pro"] {
+            let payload = format!(r#"{{"model":"{model}","messages":[]}}"#);
+            let response = client
+                .post(format!("{router}/v1/messages/count_tokens"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        let paths = |log: &SharedLog| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
+        assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
+        assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
+        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
+        for paths in [&pa, &po, &pg] {
+            assert_eq!(
+                paths
+                    .iter()
+                    .filter(|path| *path == "/v1/messages/count_tokens")
+                    .count(),
+                1,
+                "{paths:?}"
+            );
+        }
     }
 
     // ---------- единый каталог ----------

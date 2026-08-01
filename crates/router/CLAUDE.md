@@ -24,8 +24,9 @@
   (`Body::wrap_stream`/`Body::from_stream`); reqwest собран без auto-decode
   (default-features off), чтобы байты и Content-Encoding шли неизменно.
   Единственное исключение — `chat.rs`, `responses.rs` и `messages.rs`: тело
-  ЗАПРОСА `/v1/chat/completions`, `/v1/responses` и `/v1/messages` читается
-  целиком (лимит 32 MiB) ради поля `model`; тело ответа остаётся потоком.
+  ЗАПРОСА `/v1/chat/completions`, `/v1/responses` и
+  `/v1/messages{,/count_tokens}` читается целиком (лимит 32 MiB) ради поля
+  `model`; тело ответа остаётся потоком.
   Disconnect клиента обязан транзитивно рвать соединение к плоскости
   (TeeMeter drain): поэтому вокруг тела ответа нет detached-тасков.
 - **Внутренняя семантика исполнения не транслируется клиенту.** Заголовок
@@ -49,15 +50,16 @@
   `catalog::namespace_lane`) либо по alias через кэшированный каталог; тело
   проксируется без изменений (namespaced ID резолвит admission плоскости),
   ошибки dispatch — в OpenAI-конверте.
-- `messages.rs` — model-based dispatch `POST /v1/messages` (этап 5.1) по тем
+- `messages.rs` — model-based dispatch `POST /v1/messages` и
+  `POST /v1/messages/count_tokens` (этапы 5.1–5.2) по тем
   же правилам, что `chat.rs` (та же `catalog::namespace_lane`), но с ошибками
   dispatch в Anthropic-конверте: namespaced `openai/*` уходит на Codex plane
   (там Messages→Responses адаптер `crates/forward/src/codex/skin.rs`),
   `anthropic/*` — на Anthropic plane как native lane, `google/*` — на Gemini
   plane по общему namespace-правилу (Messages→generateContent skin реализован
-  в `crates/forward/src/gemini/skin.rs`). `POST
-  /v1/messages/count_tokens` dispatch не использует и остаётся байт-прокси на
-  Anthropic plane (этап 5.2).
+  в `crates/forward/src/gemini/skin.rs`). Для `count_tokens` выбирается та же
+  плоскость: Anthropic native, reserve-grade локальный подсчёт Codex или
+  quota-free native `:countTokens` Gemini.
 - `responses.rs` — model-based dispatch `POST /v1/responses` (этап 4.1) по
   тем же правилам, что `chat.rs` (та же `catalog::namespace_lane`). Stored
   responses endpoints (`/v1/responses/input_tokens`, `/v1/responses/{id}`,
@@ -83,7 +85,7 @@ cargo build                   # весь workspace зелёный до комм�
 покрывают: passthrough тела/заголовков, небуферизованный SSE, транзитивный
 disconnect, агрегацию/деградацию/stale каталога, 401/503 каталога, alias-
 разрешение моделей, 404/405, model-based dispatch chat-, responses- и
-messages-запросов
+messages- и messages/count_tokens-запросов
 (namespaced без catalog fetch, alias через каталог, 400 невалидного/слишком
 большого тела, небуферизованный chat SSE). Живой PostgreSQL и подписки не нужны.
 Полная цепочка router→engine→mock upstream — `tests/universal_chat_smoke.sh`.
