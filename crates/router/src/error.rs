@@ -42,9 +42,9 @@ fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     (status, axum::Json(body)).into_response()
 }
 
-/// 502: плоскость недостижима (connect/timeout до отправки запроса). Router не
-/// ретраит (инвариант 2): повтор после отправки создал бы новый billable
-/// request_id; отказ до отправки честно сообщается клиенту.
+/// 502: плоскость недостижима до заголовков ответа. Native lane и ambiguous
+/// universal outcomes возвращают её сразу; только доказанный ConnectionRefused
+/// может разрешить следующую явную fallback-модель (инвариант 2).
 pub fn upstream_unavailable(lane: Lane, detail: &str) -> Response {
     match lane {
         Lane::Anthropic => json_response(

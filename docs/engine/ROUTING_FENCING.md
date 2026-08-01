@@ -114,11 +114,15 @@ Codex stream даже 200 не означает billable. Без явного с
 Retry на следующую модель fallback-списка разрешён РОВНО в двух случаях:
 
 1. Ответ плоскости не-2xx С заголовком `x-apitoken-execution-state: not_started` (header
-   снимается, тело ошибки этой попытки логируется, клиенту уходит ответ последней попытки).
+   снимается, клиенту уходит ответ последней попытки). Router логирует только bounded
+   metadata попытки; headers и тела запросов/ответов в лог не попадают.
 2. TCP connect-refused к плоскости (запрос физически не ушёл).
 
 Запрещено: retry на timeout, на 5xx БЕЗ заголовка, на обрыв после заголовков, на 402
 (баланс аккаунта — повтор на другой модели той же учётки бессмысленен), на 4xx клиента.
+Исключение внутри диапазона 4xx — `429` с точным `not_started`: это capacity-отказ
+плоскости, а не исправимая клиентом ошибка. Exact означает одно значение `not_started`;
+другой регистр, несколько значений и неизвестное значение fail closed.
 
 ## 4. Execution group / attempt identity (зрелая версия, фаза 6.3)
 
@@ -151,6 +155,13 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   соглашение; expand-only контракта universal endpoint — старые клиенты не затронуты).
   `model` остаётся обязательным и трактуется как первый элемент цепочки; `models` задаёт
   продолжение. Пустой список/дубликаты/неизвестные id → `400` в конверте lane входного пути.
+  Флаг `CLAUDE_ROUTER_FALLBACK_ENABLED` строгий (`0|1|false|true`) и по умолчанию false;
+  при выключенном флаге само присутствие `models` даёт `400` до любого network вызова.
+- Запрос без `models` сохраняет прежний контракт: исходные body bytes не меняются,
+  namespaced ID выбирает плоскость напрямую даже при недоступном каталоге, alias использует
+  кэшированный aggregate catalog. Явная fallback-цепочка целиком валидируется по одному
+  aggregate snapshot ДО первой попытки; alias и namespaced ID одной catalog entry считаются
+  дубликатом. Затем `models` удаляется, а `model` заменяется для каждой попытки.
 - Router буферизует только тело запроса (как сегодня, 32 MiB), выбирает плоскость каждой
   попытки независимо (namespace/alias — существующий `catalog::namespace_lane`); retry —
   только по правилам §3.3; ответ клиенту — последней попытки (успех или её ошибка),
@@ -159,25 +170,29 @@ MVP-контракт §3 закрывает гонку «вторая попыт
 - `provider` preferences-объект (order/allow/sort по цене-латентности) — НЕ в этой фазе;
   отдельный пакет после живой телеметрии fallback.
 - Per-account policy: существующий substrate `crates/registry/src/pricing.rs` (provider
-  switches, account policy) — fallback-цепочка фильтруется policy аккаунта ДО первой
-  попытки; пустая после фильтрации → `400`/`403` с объяснением.
+  switches, account policy) будет фильтровать fallback-цепочку ДО первой попытки в фазе
+  6.4; фаза 6.2 policy не читает.
 
 ## 6. Телеметрия и верификация
 
-- Новые счётчики: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
+- Фаза 6.2 пишет bounded attempt-log: surface, порядковый номер/размер цепочки, публичный
+  canonical catalog ID, lane, HTTP status и reason (`not_started`/`connect_refused`/none).
+  URL/query, auth headers, credentials и request/response bodies запрещены.
+- Счётчики фазы 6.4: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
   `claude_api_execution_group_double_winner_total` (always-zero алерт).
-- Групповые лейблы на существующих денежных рядах НЕ добавляются (кардинальность); group_id —
-  только в structured-логах попыток.
+- Групповые лейблы на существующих денежных рядах НЕ добавляются (кардинальность); после
+  фазы 6.3 group_id допустим только в structured-логах попыток, не в metric labels.
 - Детекторы регрессий: `apitoken_balance_divergence_nano` (существующий),
   `EngineSettlementBacklog`, `EngineExpiredLeasePresent` — проходят нагрузочный период с
   включённым fallback до GA.
-- Флаг rollout: fallback выключен по умолчанию (`ROUTER_FALLBACK_ENABLED=false`), включается
+- Флаг rollout: fallback выключен по умолчанию (`CLAUDE_ROUTER_FALLBACK_ENABLED=false`), включается
   config-флагом на canary; `deploy`-чеклист — измерение доли ambiguous-исходов (timeouts без
   заголовка) до и после включения.
-- Верификация fencing: fault-injection тесты плоскостей (симулированный баг сигнала → winner
-  conflict → charge 0 + алерт), интеграционный тест router: две плоскости, первая отвечает
-  not_started → вторая billable, ledger содержит ровно один charge на group.
+- Верификация 6.2: TCP integration router с двумя mock-плоскостями доказывает serial
+  not_started/ConnectionRefused retry и fail-closed ambiguous outcomes; per-plane тесты 6.1
+  доказывают refund сигнальной попытки. Фаза 6.3 добавит fault injection winner-conflict и
+  проверку, что реальный ledger содержит ровно один charge на group.
 
 ## 7. Фазировка (каждая фаза — отдельный пакет через merge-конвейер)
 
@@ -187,8 +202,11 @@ MVP-контракт §3 закрывает гонку «вторая попыт
    при выключенном fallback безопасен: клиент заголовок не видит. Gemini Messages skin
    и четыре universal Chat/Responses adapter-поверхности покрыты правилами §3.2; signal-
    propagation зазор закрыт до включения fallback в 6.2.
-2. **6.2 — router fallback engine:** поле `models`, retry matrix §3.3, логирование попыток,
-   feature-flag off-by-default, интеграционные тесты с двумя mock-плоскостями.
+2. **6.2 — router fallback engine — РЕАЛИЗОВАН 2026-08-02:** поле `models`, единый
+   preflight/rewrite engine для Chat/Responses/Messages/count_tokens, retry matrix §3.3,
+   безопасное логирование attempts, feature-flag off-by-default; TCP mock-тесты двух
+   плоскостей покрывают exact signal, 429, unsigned 5xx, 400/402, ConnectionRefused,
+   timeout, malformed/duplicate/unknown models и снятие внутреннего header.
 3. **6.3 — group identity в registry/billing:** expand-only миграции, winner-правило в
    settle, fault-injection тесты, always-zero алерт.
 4. **6.4 — policies/presets + telemetry GA:** фильтрация цепочек policy, presets в каталоге,

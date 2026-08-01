@@ -4,16 +4,19 @@
 //! - никакой трансляции: метод, путь+query, заголовки (кроме hop-by-hop) и тело
 //!   идут в плоскость без изменений; ответ (включая SSE и native errors)
 //!   возвращается без буферизации;
-//! - никаких ретраев: повтор после отправки запроса создал бы второй billable
-//!   request_id (инвариант 2). Отказ соединения честно превращается в 502;
+//! - native lanes не ретраятся; universal fallback может повторить запрос
+//!   только после точного `not_started` или доказанного ConnectionRefused
+//!   (docs/engine/ROUTING_FENCING.md §3.3);
 //! - disconnect клиента транзитивно рвёт соединение к плоскости: hyper роняет
 //!   тело ответа → роняется reqwest-стрим → соединение router→плоскость
 //!   закрывается → TeeMeter плоскости дренирует до authoritative usage
 //!   (инвариант 4). Поэтому здесь нет detached-тасков вокруг тела ответа.
 //! - `x-apitoken-execution-state` (авторитетная семантика исполнения,
 //!   docs/engine/ROUTING_FENCING.md §3) — контракт между движком и его клиентом;
-//!   с транзитных ответов заголовок снимается: router не может подтвердить его
-//!   условия и не транслирует чужое обещание (failover по нему — отдельная фаза).
+//!   с каждого публичного ответа заголовок снимается; universal fallback
+//!   проверяет его до снятия, но клиент внутренний сигнал не видит.
+
+use std::error::Error as StdError;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode};
@@ -47,6 +50,30 @@ pub const AUTH_HEADERS: [HeaderName; 3] = [
 /// движком только на отказах без исполнения (`not_started`). С транзитных ответов router
 /// заголовок снимает — за его условия отвечает только сам движок.
 const EXECUTION_STATE_HEADER: HeaderName = HeaderName::from_static("x-apitoken-execution-state");
+const EXECUTION_STATE_NOT_STARTED: &[u8] = b"not_started";
+
+/// Единственные два доказательства, разрешающие следующий universal attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryReason {
+    NotStarted,
+    ConnectionRefused,
+}
+
+impl RetryReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::ConnectionRefused => "connect_refused",
+        }
+    }
+}
+
+/// Результат одной попытки до передачи публичных байтов клиенту. Ответ уже
+/// очищен от внутреннего execution-state заголовка.
+pub struct ProxyAttempt {
+    pub response: Response<Body>,
+    pub retry_reason: Option<RetryReason>,
+}
 
 /// Копия заголовков запроса без hop-by-hop. Токены, перечисленные в значении
 /// `connection`, тоже вырезаются.
@@ -72,12 +99,13 @@ pub fn strip_hop_by_hop(headers: &HeaderMap) -> HeaderMap {
 /// Никакого таймаута на весь запрос: SSE-стримы живут минуты. Единственный
 /// таймаут — connect (2 с) на клиенте; дальше жизнью соединения управляет
 /// клиентский disconnect и плоскость.
-pub async fn proxy_request(
+pub async fn proxy_attempt(
     client: &Client,
     origin: &str,
-    lane: Lane,
+    target_lane: Lane,
+    error_lane: Lane,
     req: Request<Body>,
-) -> Response<Body> {
+) -> ProxyAttempt {
     let path_query = req
         .uri()
         .path_and_query()
@@ -97,6 +125,20 @@ pub async fn proxy_request(
 
     match upstream {
         Ok(res) => {
+            let status = res.status();
+            let not_started = {
+                let mut values = res.headers().get_all(&EXECUTION_STATE_HEADER).iter();
+                matches!(
+                    (values.next(), values.next()),
+                    (Some(value), None) if value.as_bytes() == EXECUTION_STATE_NOT_STARTED
+                )
+            };
+            // 429 — capacity отказ, а не исправимая клиентом ошибка. Остальные
+            // 4xx (особенно 401/402) никогда не должны обходиться другой моделью.
+            let retry_reason = (!status.is_success()
+                && not_started
+                && (!status.is_client_error() || status == StatusCode::TOO_MANY_REQUESTS))
+                .then_some(RetryReason::NotStarted);
             let mut builder = Response::builder().status(res.status());
             let filtered = strip_hop_by_hop(res.headers());
             for (name, value) in filtered.iter() {
@@ -111,20 +153,66 @@ pub async fn proxy_request(
             // копии в память. Ошибка апстрима посреди тела обрывает стрим —
             // клиент видит усечённый ответ и обрыв соединения, как и при прямом
             // соединении с плоскостью.
-            match builder.body(Body::from_stream(res.bytes_stream())) {
+            let response = match builder.body(Body::from_stream(res.bytes_stream())) {
                 Ok(response) => response,
-                Err(_) => error::upstream_unavailable(lane, "failed to build upstream response"),
-            }
+                Err(_) => {
+                    return ProxyAttempt {
+                        response: error::upstream_unavailable(
+                            error_lane,
+                            "failed to build upstream response",
+                        ),
+                        retry_reason: None,
+                    }
+                }
+            };
+            ProxyAttempt { response, retry_reason }
         }
         Err(e) => {
             // Сюда попадают только отказы ДО получения заголовков ответа
             // (connect refused, connect timeout, сброс до ответа): запрос мог
-            // не дойти до плоскости, но мы не знаем этого наверняка — поэтому
-            // никакого автоматического повтора, только честная 502.
-            eprintln!("router: {lane:?} lane upstream {origin} failed: {e}");
-            error::upstream_unavailable(lane, "The provider plane is temporarily unavailable.")
+            // не дойти до плоскости. Только exact io::ErrorKind::ConnectionRefused
+            // доказывает, что TCP-соединение не установилось; is_connect() также
+            // включает timeout/DNS/ambiguous failures и потому недостаточен.
+            let retry_reason = error_chain_has_connection_refused(&e)
+                .then_some(RetryReason::ConnectionRefused);
+            let class = retry_reason.map_or("ambiguous", RetryReason::as_str);
+            // Display reqwest::Error содержит URL (и потенциальный secret query),
+            // поэтому логируем только bounded classification.
+            eprintln!("router: {target_lane:?} lane upstream transport failed class={class}");
+            ProxyAttempt {
+                response: error::upstream_unavailable(
+                    error_lane,
+                    "The provider plane is temporarily unavailable.",
+                ),
+                retry_reason,
+            }
         }
     }
+}
+
+/// Проксирование native lane: ровно одна попытка независимо от transport/
+/// execution-state результата.
+pub async fn proxy_request(
+    client: &Client,
+    origin: &str,
+    lane: Lane,
+    req: Request<Body>,
+) -> Response<Body> {
+    proxy_attempt(client, origin, lane, lane, req).await.response
+}
+
+fn error_chain_has_connection_refused(error: &(dyn StdError + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if source
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
+            return true;
+        }
+        current = source.source();
+    }
+    false
 }
 
 /// Выбор заголовков авторизации из входящего запроса для фонового запроса
@@ -196,6 +284,22 @@ mod tests {
         assert_eq!(auth.get("x-goog-api-key").unwrap(), "sk-pool-b");
         assert_eq!(auth.get("authorization").unwrap(), "Bearer sk-pool-c");
         assert!(auth.get("user-agent").is_none());
+    }
+
+    #[test]
+    fn retry_transport_classifier_is_exact() {
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(error_chain_has_connection_refused(&refused));
+
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::NetworkUnreachable,
+        ] {
+            let error = std::io::Error::from(kind);
+            assert!(!error_chain_has_connection_refused(&error), "{kind:?}");
+        }
     }
 
     #[test]

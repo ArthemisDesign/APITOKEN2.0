@@ -91,8 +91,11 @@ Control API движка использует только на чтение. С
   `not_started` на не-2xx отказах до границы started при гарантии refund/cancel reserve;
   universal adapters сохраняют только точный сигнал плоскости и снимают его с ошибок после
   2xx. Потребитель —
-  `crates/router`: обязан снимать заголовок со всех транзитных ответов; retry по сигналу —
-  фаза 6.2. Документ контракта — `docs/engine/ROUTING_FENCING.md` §3.
+  `crates/router`: всегда снимает заголовок со всех публичных ответов и при явной
+  off-by-default `models`-цепочке использует точный сигнал для следующей serial attempt;
+  401/402/клиентские 4xx (кроме signed 429) не ретраятся. Второе разрешённое доказательство —
+  TCP `ConnectionRefused`; timeout/generic connect/unsigned 5xx fail closed. Документ
+  контракта — `docs/engine/ROUTING_FENCING.md` §3.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
 
 ## 3. Модели и цены — где ещё зеркалятся

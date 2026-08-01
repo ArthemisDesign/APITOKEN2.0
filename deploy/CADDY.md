@@ -134,8 +134,10 @@ restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `
 `/health`, `/balance`) proxies to the router process — the `claude-router` singleton on
 loopback `127.0.0.1:8798` (`claude-router.service`). The router owns path-shape routing to the
 three provider planes, the aggregated namespaced `/v1/models` catalog with its degradation
-policy, and lane-shaped errors; authentication, billing, retry boundaries, and streaming stay
-inside the planes behind their stable origins. `/health` reaches the router as well and stays
+policy, lane-shaped errors, and explicit off-by-default serial model fallback. Authentication,
+billing, in-plane retry boundaries, and streaming stay inside the planes; cross-plane fallback
+uses only the planes' exact `not_started` fencing signal or proven TCP ConnectionRefused.
+`/health` reaches the router as well and stays
 router-local there — unified liveness is deliberately not a conjunction of plane health. The
 router is a singleton, so `deploy.sh` restarts it only on an actual binary change and gates the
 release on its `/ready`; blue-green for it is stage 6. The vhost has no `encode` policy so

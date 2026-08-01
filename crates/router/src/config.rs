@@ -14,10 +14,24 @@ pub struct Config {
     pub openai_origin: String,
     /// Stable origin Gemini-плоскости.
     pub gemini_origin: String,
+    /// Явный rollout-флаг model fallback. По умолчанию выключен: поле
+    /// `models` отклоняется до любого обращения к плоскости.
+    pub fallback_enabled: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn parse_strict_bool(key: &str, value: Option<&str>, default: bool) -> anyhow::Result<bool> {
+    match value {
+        None => Ok(default),
+        Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+        Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        Some(value) => anyhow::bail!("{key}={value:?}: expected exactly 0, 1, false, or true"),
+    }
 }
 
 impl Config {
@@ -30,6 +44,13 @@ impl Config {
             anthropic_origin: env_or("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", "http://127.0.0.1:8790"),
             openai_origin: env_or("CLAUDE_ROUTER_OPENAI_ORIGIN", "http://127.0.0.1:8792"),
             gemini_origin: env_or("CLAUDE_ROUTER_GEMINI_ORIGIN", "http://127.0.0.1:8794"),
+            fallback_enabled: parse_strict_bool(
+                "CLAUDE_ROUTER_FALLBACK_ENABLED",
+                std::env::var("CLAUDE_ROUTER_FALLBACK_ENABLED")
+                    .ok()
+                    .as_deref(),
+                false,
+            )?,
         };
         for (name, origin) in [
             ("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", &cfg.anthropic_origin),
@@ -46,5 +67,21 @@ impl Config {
             );
         }
         Ok(cfg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_strict_bool;
+
+    #[test]
+    fn fallback_flag_is_strict_and_defaults_off() {
+        assert!(!parse_strict_bool("FLAG", None, false).unwrap());
+        assert!(parse_strict_bool("FLAG", Some("1"), false).unwrap());
+        assert!(parse_strict_bool("FLAG", Some("TRUE"), false).unwrap());
+        assert!(!parse_strict_bool("FLAG", Some("0"), true).unwrap());
+        assert!(!parse_strict_bool("FLAG", Some("false"), true).unwrap());
+        assert!(parse_strict_bool("FLAG", Some("yes"), false).is_err());
+        assert!(parse_strict_bool("FLAG", Some(" true "), false).is_err());
     }
 }

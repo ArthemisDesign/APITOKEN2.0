@@ -4,8 +4,11 @@
 //! Bounded context ВНЕ слоёв registry ← pool ← forward ← server: крейт не
 //! импортирует их и общается с плоскостями только по HTTP через stable
 //! loopback origins (8790/8792/8794). Router не резервирует и не списывает
-//! деньги (инвариант 1), не ретраит ничего (инвариант 2), не имеет очередей,
-//! semaphore и breaker (инвариант 3) и не буферизует SSE (инвариант 4).
+//! деньги (инвариант 1), не ретраит неоднозначные исходы (инвариант 2), не
+//! имеет очередей, semaphore и breaker (инвариант 3) и не буферизует SSE
+//! (инвариант 4).
+//! Universal fallback выключен по умолчанию и разрешён только по fencing-
+//! сигналам из docs/engine/ROUTING_FENCING.md.
 
 mod catalog;
 mod chat;
@@ -14,6 +17,7 @@ mod error;
 mod messages;
 mod proxy;
 mod responses;
+mod routing;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -201,8 +205,11 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!(
-        "claude-router listening on {addr} (anthropic={}, openai={}, gemini={})",
-        state.cfg.anthropic_origin, state.cfg.openai_origin, state.cfg.gemini_origin
+        "claude-router listening on {addr} (anthropic={}, openai={}, gemini={}, fallback_enabled={})",
+        state.cfg.anthropic_origin,
+        state.cfg.openai_origin,
+        state.cfg.gemini_origin,
+        state.cfg.fallback_enabled,
     );
     // Graceful shutdown: SIGTERM прекращает приём новых соединений; живые
     // SSE-стримы добиваются до TimeoutStopSec юнита (см.
@@ -221,6 +228,7 @@ mod tests {
     use axum::http::{Request as AxumRequest, Response as AxumResponse, StatusCode};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_stream::wrappers::ReceiverStream;
 
     // ---------- тестовая инфраструктура: mock-плоскости и запуск router'а ----------
@@ -274,6 +282,40 @@ mod tests {
     }
 
     fn make_router(anthropic: &str, openai: &str, gemini: &str, ttl: Duration) -> Router {
+        make_router_with(
+            anthropic,
+            openai,
+            gemini,
+            ttl,
+            false,
+            build_client().unwrap(),
+        )
+    }
+
+    fn make_fallback_router(
+        anthropic: &str,
+        openai: &str,
+        gemini: &str,
+        ttl: Duration,
+    ) -> Router {
+        make_router_with(
+            anthropic,
+            openai,
+            gemini,
+            ttl,
+            true,
+            build_client().unwrap(),
+        )
+    }
+
+    fn make_router_with(
+        anthropic: &str,
+        openai: &str,
+        gemini: &str,
+        ttl: Duration,
+        fallback_enabled: bool,
+        client: Client,
+    ) -> Router {
         app(Arc::new(AppState {
             cfg: Config {
                 host: "127.0.0.1".into(),
@@ -281,8 +323,9 @@ mod tests {
                 anthropic_origin: anthropic.into(),
                 openai_origin: openai.into(),
                 gemini_origin: gemini.into(),
+                fallback_enabled,
             },
-            client: build_client().unwrap(),
+            client,
             catalog: Catalog::with_ttl(ttl),
         }))
     }
@@ -353,6 +396,76 @@ mod tests {
         let (openai, log_o) = catalog_plane(OPENAI_MODELS, "/v1/models", "ok").await;
         let (gemini, log_g) = catalog_plane(GEMINI_MODELS, "/v1beta/models", "ok").await;
         (anthropic, openai, gemini, log_a, log_o, log_g)
+    }
+
+    type SharedBodies = Arc<StdMutex<Vec<Vec<u8>>>>;
+
+    /// Plane с живым каталогом и программируемым ответом universal attempt.
+    /// В body-log попадают только attempts, catalog fetch туда не пишется.
+    async fn attempt_plane(
+        catalog_body: &'static str,
+        catalog_path: &'static str,
+        attempt_status: StatusCode,
+        execution_state: Option<&'static str>,
+        hang_attempt: bool,
+    ) -> (String, SharedBodies) {
+        let bodies: SharedBodies = Arc::new(StdMutex::new(Vec::new()));
+        let state = bodies.clone();
+        let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let bodies = state.clone();
+            async move {
+                if req.uri().path() == catalog_path {
+                    return AxumResponse::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(catalog_body))
+                        .unwrap();
+                }
+                let body = to_bytes(req.into_body(), 64 * 1024 * 1024).await.unwrap();
+                bodies.lock().unwrap().push(body.to_vec());
+                if hang_attempt {
+                    return std::future::pending::<AxumResponse<Body>>().await;
+                }
+                let mut builder = AxumResponse::builder()
+                    .status(attempt_status)
+                    .header("content-type", "application/json")
+                    .header("x-attempt-plane", catalog_path);
+                if let Some(value) = execution_state {
+                    builder = builder.header("x-apitoken-execution-state", value);
+                }
+                builder.body(Body::from(body)).unwrap()
+            }
+        }));
+        (spawn(router).await, bodies)
+    }
+
+    /// Отдаёт ровно один catalog response с `Connection: close`, затем
+    /// закрывает listener. Следующая попытка к тому же origin получает
+    /// доказуемый TCP ConnectionRefused.
+    async fn one_shot_catalog_origin(body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                received.extend_from_slice(&chunk[..count]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+            drop(listener);
+        });
+        format!("http://{addr}")
     }
 
     // ---------- native lanes ----------
@@ -587,6 +700,289 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "api_error");
+    }
+
+    // ---------- universal serial fallback (routing phase 6.2) ----------
+
+    #[tokio::test]
+    async fn fallback_flag_off_rejects_models_before_contacting_any_plane() {
+        let (a, log_a) = echo_plane().await;
+        let (o, log_o) = echo_plane().await;
+        let (g, log_g) = echo_plane().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/responses"))
+            .body(
+                r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["param"], "models");
+        assert!(log_a.lock().unwrap().is_empty());
+        assert!(log_o.lock().unwrap().is_empty());
+        assert!(log_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn signed_not_started_falls_back_and_rewrites_each_attempt_body() {
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+            false,
+        )
+        .await;
+        let (o, bodies_o) = attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let (g, bodies_g) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .header("x-api-key", "sk-pool-secret")
+            .body(
+                r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[{"role":"user","content":"hi"}]}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-apitoken-execution-state").is_none());
+        let final_body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(final_body["model"], "openai/gpt-5.6");
+        assert!(final_body.get("models").is_none());
+
+        let first: serde_json::Value =
+            serde_json::from_slice(&bodies_a.lock().unwrap()[0]).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+        assert_eq!(first["model"], "anthropic/claude-opus-4-8");
+        assert_eq!(second["model"], "openai/gpt-5.6");
+        assert!(first.get("models").is_none());
+        assert!(second.get("models").is_none());
+        assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_matrix_stops_on_ambiguous_5xx_and_client_4xx() {
+        for (status, signal) in [
+            (StatusCode::SERVICE_UNAVAILABLE, None),
+            (StatusCode::SERVICE_UNAVAILABLE, Some("NOT_STARTED")),
+            (StatusCode::PAYMENT_REQUIRED, Some("not_started")),
+            (StatusCode::BAD_REQUEST, Some("not_started")),
+        ] {
+            let (a, bodies_a) =
+                attempt_plane(ANTHROPIC_MODELS, "/v1/models", status, signal, false).await;
+            let (o, bodies_o) =
+                attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+            let (g, _) = attempt_plane(
+                GEMINI_MODELS,
+                "/v1beta/models",
+                StatusCode::OK,
+                None,
+                false,
+            )
+            .await;
+            let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+            let response = reqwest::Client::new()
+                .post(format!("{router}/v1/messages"))
+                .body(
+                    r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"max_tokens":16,"messages":[]}"#,
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "status={status} signal={signal:?}");
+            assert!(response.headers().get("x-apitoken-execution-state").is_none());
+            assert_eq!(bodies_a.lock().unwrap().len(), 1);
+            assert!(bodies_o.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_429_is_a_retryable_capacity_refusal_for_count_tokens() {
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::TOO_MANY_REQUESTS,
+            Some("not_started"),
+            false,
+        )
+        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, _) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/messages/count_tokens"))
+            .body(
+                r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[]}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(bodies_a.lock().unwrap().len(), 1);
+        assert_eq!(bodies_o.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn proven_connection_refused_retries_but_timeout_does_not() {
+        // Catalog validates the Anthropic ID, then that one-shot origin closes
+        // completely before the first attempt. TCP cannot have carried a body.
+        let a = one_shot_catalog_origin(ANTHROPIC_MODELS).await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, _) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let payload = r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[]}"#;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(bodies_o.lock().unwrap().len(), 1);
+
+        // A deterministic timeout after TCP connect but before response headers
+        // is ambiguous: the plane has received the body, so no second attempt.
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+            true,
+        )
+        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, _) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let timeout_client = Client::builder()
+            .timeout(Duration::from_millis(150))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let router = spawn(make_router_with(
+            &a,
+            &o,
+            &g,
+            Duration::ZERO,
+            true,
+            timeout_client,
+        ))
+        .await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(bodies_a.lock().unwrap().len(), 1);
+        assert!(bodies_o.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_chain_validation_is_lane_shaped_and_preflighted() {
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, bodies_g) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for models in ["[]", "{}", r#"[""]"#, r#"[42]"#, r#"["anthropic/claude-opus-4-8"]"#] {
+            let response = client
+                .post(format!("{router}/v1/chat/completions"))
+                .body(format!(
+                    r#"{{"model":"anthropic/claude-opus-4-8","models":{models},"messages":[]}}"#
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "models={models}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["type"], "invalid_request_error");
+            assert_eq!(json["error"]["param"], "models");
+        }
+
+        // Alias + namespaced ID of the same catalog entry is also a duplicate.
+        for models in [
+            r#"["anthropic/claude-opus-4-8"]"#,
+            r#"["cohere/command-x"]"#,
+        ] {
+            let response = client
+                .post(format!("{router}/v1/messages"))
+                .body(format!(
+                    r#"{{"model":"claude-opus-4-8","models":{models},"max_tokens":16,"messages":[]}}"#
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "models={models}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["type"], "error");
+            assert_eq!(json["error"]["type"], "invalid_request_error");
+        }
+
+        // Validation completes before the first billable attempt.
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
     }
 
     // ---------- universal chat dispatch (model-based routing, этап 3.1) ----------

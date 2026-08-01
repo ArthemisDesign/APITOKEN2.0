@@ -1,11 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5 и фаза 6.1 реализованы и работают в проде.**
+Статус: **этапы 1–5 и фазы 6.1–6.2 реализованы; fallback 6.2 выкатывается
+выключенным по умолчанию.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаются фазы 6.2–6.4. Документ фиксирует целевую
+До полного OpenRouter-grade routing остаются фазы 6.3–6.4. Документ фиксирует целевую
 картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
 обновляет этот документ и смежные инструкции в том же коммите.
 
@@ -24,7 +25,7 @@ dispatch на три плоскости. `/v1/messages/count_tokens` испол�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | в работе (этап 6, с attempt fencing) |
+| Provider preferences / fallback | да | MVP fallback 6.2 готов default-off; preferences — фаза 6.4 |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -129,6 +130,13 @@ POST /v1beta/models/{id}:streamGenerateContent    (alt=sse и alt=json)
 POST /v1beta/models/{id}:countTokens
 ```
 
+Четыре universal POST-пути (`chat/completions`, `responses`, `messages` и
+`messages/count_tokens`) принимают необязательное `models: [<id>, …]` как продолжение
+цепочки после обязательного `model`. Поле активно только при
+`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; default-off router возвращает lane-shaped `400` до
+обращения к каталогу/плоскости. Подробный preflight и retry matrix —
+`docs/engine/ROUTING_FENCING.md` §§3.3, 5.
+
 Префикс `/api/v1` (OpenRouter-совместимые пути) в MVP **не** добавляется: Cline, Codex и
 большинство custom-provider конфигураций принимают свой Base URL. Он понадобится, только
 если появятся клиенты, жёстко привязанные к OpenRouter path.
@@ -169,10 +177,13 @@ provider поддерживает только `wire_api="responses"` (это д
    Ключ клиента передаётся в плоскость verbatim; `request_id`, reserve → delivering →
    settle и exactly-once ledger остаются ответственностью плоскости
    (`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`). Двойное списание исключено конструктивно.
-2. **Router не ретраит ничего, что могло дойти до плоскости.** Повтор по timeout после
+2. **Router не ретраит неоднозначный исход, который мог дойти до плоскости.** Повтор по timeout после
    отправки запроса создал бы новый `request_id` и второе списание: backend мог выполнить
-   запрос и settle, даже если router ответа не получил. Retry допустим только до отправки
-   запроса в плоскость (connection refused). Подробности — «Семантика fallback».
+   запрос и settle, даже если router ответа не получил. Следующая модель явной fallback-
+   цепочки допустима только после доказанного TCP ConnectionRefused либо точного не-2xx
+   `x-apitoken-execution-state: not_started`, которым плоскость гарантирует отсутствие
+   charge. 401/402 и клиентские 4xx не ретраятся; signed 429 — capacity-исключение.
+   Подробности — «Семантика fallback».
 3. **Никаких общих очередей, semaphore и circuit breaker в router.** Concurrency limits,
    breaker и cooling живут в плоскостях (процессная изоляция, см.
    `docs/engine/ARCHITECTURE.md`). Router не добавляет глобальный лимит — иначе
@@ -234,12 +245,16 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 Наивное правило «fallback только до первого байта» недостаточно: при timeout backend мог
 выполнить запрос и settle, даже если router ответа не получил. Отсюда градация:
 
-- **Этапы 1a–4: межмодельного fallback нет вообще.** Единственный retry — существующий
+- **Этапы 1a–5: межмодельного fallback нет вообще.** Единственный retry — существующий
   внутри плоскости до первого публичного байта (no-byte retry boundary), он безопасен,
   потому что не создаёт новый billable request после начала доставки.
-- **Этап 5, MVP fallback:** повтор на другую модель только после явного внутреннего
-  ответа плоскости `execution_state=not_started`. Этого контракта сейчас нет — он
-  добавляется в плоскости вместе с routing-этапом.
+- **Фаза 6.1:** плоскости выставляют внутренний
+  `x-apitoken-execution-state: not_started` только до started при гарантии refund/cancel;
+  router снимает его со всех публичных ответов.
+- **Фаза 6.2, MVP fallback:** default-off поле `models` задаёт serial continuation после
+  обязательного `model`. Router preflight-валидирует всю цепочку по одному catalog snapshot,
+  а повторяет только по точному сигналу 6.1 либо доказанному TCP ConnectionRefused. Timeout,
+  unsigned 5xx, обрыв после headers и клиентские 4xx fail closed.
 - **Зрелая версия:** общий execution group / attempt ID, идемпотентные reservations и
   атомарный выбор единственного billable winner — reservation identity расширяется с
   `request_id` на `(group_id, attempt_id)`, а settled-запись допускает ровно один winner
@@ -283,12 +298,12 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 6. **Этап 5 зеркалит 3–4.** `/v1/messages` для `openai/*` и `google/*` — адаптеры
    Messages→native в соответствующих плоскостях с той же capability matrix; thinking-дельты
    без подписей; реплей thinking-блоков для non-Claude моделей не поддерживается.
-7. **Этап 6: сейчас — принципы, детали — после 3–5.** Фундамент уже есть в
+7. **Этап 6: fencing и fallback реализуются фазами.** Фундамент уже есть в
    `crates/registry/src/pricing.rs` (versioned catalog, provider switches, account policy).
-   Attempt fencing: execution group, единственный billable winner, retry только после явного
-   `execution_state=not_started` от плоскости (контракт добавляется в плоскости на этапе 6).
-   Детальный дизайн routing'а — первым пакетом после зелёных этапов 3–5, на живой телеметрии
-   universal lanes.
+   Фазы 6.1–6.2 реализовали внутренний `not_started` и default-off serial fallback по
+   `models`; durable execution group/единственный billable winner остаётся фазой 6.3,
+   policy/presets/GA telemetry — фазой 6.4. Детальный контракт —
+   `docs/engine/ROUTING_FENCING.md`.
 
 ## Существующая база (что переиспользуем)
 
@@ -330,7 +345,7 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    и не моделью. `/v1/models` намеренно не обслуживается до этапа 1b.
 2. **1b. `crates/router` + единый каталог — РЕАЛИЗОВАН (код и конвейер), cutover отдельным
    шагом.** Stateless router (`crates/router`, бинарь `claude-router`, loopback `127.0.0.1:8798`,
-   singleton `claude-router.service`): байт-в-байт proxy трёх плоскостей без ретраев и без
+   singleton `claude-router.service`): байт-в-байт proxy трёх плоскостей без native retries и без
    общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
    под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
    ID (`anthropic/…`, `openai/…`, `google/…`) + aliases, TTL-кэш 30 с + last-good без TTL,
@@ -339,7 +354,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
    tested artifact в цепочке watchdog → promote → stage, `restart_router_if_changed` сравнивает
    запущенный бинарь и требует `/ready` до зелёного релиза; юнит ставится watchdog-infrastructure
-   шагом. Без cross-provider translation и fallback. Cutover Caddy выполнен: vhost
+   шагом. На этапе 1b — без cross-provider translation и fallback; последующие фазы
+   расширяют тот же bounded context. Cutover Caddy выполнен: vhost
    `router.apitoken.sale` терминирует TLS и проксирует весь публичный контракт (включая
    `/v1/models*`) в router на `127.0.0.1:8798`; раздельные шаги (процесс, затем переворот)
    исключили окно 502 между установкой Caddyfile и запуском router'а.
@@ -710,8 +726,12 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    границы started при гарантии refund/cancel reserve, router снимает заголовок со всех
    транзитных ответов. Gemini Messages skin и universal Chat/Responses-адаптеры обеих
    переводящих плоскостей сохраняют сигнал на pre-delivery не-2xx и снимают его с
-   пересобранных ошибок после 2xx, когда charge возможен (§3.2 там же). Retry по сигналу
-   и поле `models` — фаза 6.2. Отдельно —
+   пересобранных ошибок после 2xx, когда charge возможен (§3.2 там же). Фаза 6.2
+   реализована (2026-08-02): shared router engine принимает default-off `models`,
+   preflight-валидирует цепочку и делает serial retry только по exact signal либо
+   ConnectionRefused; timeout/unsigned 5xx/client 4xx fail closed, внутренний header
+   никогда не виден клиенту. Фазы 6.3–6.4 добавят durable group winner,
+   policy/presets и GA telemetry. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).
