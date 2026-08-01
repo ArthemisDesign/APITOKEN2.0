@@ -3,11 +3,13 @@
 mod api;
 mod billing;
 mod calibration;
+mod chat;
 mod config;
 mod pool;
 mod transport;
 
 pub use api::api as gemini_api;
+pub use chat::gemini_chat_completions;
 pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
 pub use config::{

@@ -14,7 +14,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use forward::{
     anthropic_chat_completions, authed, client_keys, control_authed, forward, gemini_api,
-    openai_chat_completions, openai_delete_response, openai_get_response, openai_input_tokens,
+    gemini_chat_completions, openai_chat_completions, openai_delete_response,
+    openai_get_response, openai_input_tokens,
     openai_model, openai_models, openai_response_input_items, openai_responses, readonly_authed,
     resolve_client_key, resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
     PricingShadowEnqueueResult, PricingShadowProcessingResult, StrictPricingProvider,
@@ -378,6 +379,8 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .method_not_allowed_fallback(fixed_openai_not_found),
         forward::ProviderMode::Gemini => common
             .route("/gemini-subs", get(gemini_subs))
+            // Universal lane (этап 3.3 UNIFIED_ROUTER.md): chat→generateContent адаптер.
+            .route("/v1/chat/completions", post(gemini_chat_completions))
             .fallback(gemini_api)
             .method_not_allowed_fallback(gemini_api),
     };

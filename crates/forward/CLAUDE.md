@@ -139,7 +139,21 @@ contract-тестами в модуле.
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
 Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
 events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
-settlement. Env для обоих читает только `server::config`.
+settlement; `gemini/chat.rs` — universal Chat Completions→generateContent адаптер (этап 3.3
+docs/engine/UNIFIED_ROUTER.md) по той же схеме, что `anthropic.rs`: chat-запрос переводится в
+GenerateContentRequest JSON (system/developer → `systemInstruction`, склейка одноролевых contents
+и серий functionResponse, `maxOutputTokens` дефолт 4096, tool/function история ↔ functionCall/
+functionResponse с восстановлением имени по tool_call_id, `tool_choice` → `functionCallingConfig`,
+capability matrix с теми же 19 правилами ПЛЮС закрытый список top-level полей — неизвестное поле
+→ `400 unsupported_parameter`, т.к. Code Assist wrapper выбросил бы его молча), strip
+`google/`-префикса ДО admission; вызывает общий `gemini_api()` через синтезированный внутренний
+запрос на `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` — admission,
+reserve, affinity, ротация, wrapper, tee-метеринг и settle без изменений; ответ переводится
+СНАРУЖИ (GenerateContentResponse data-only SSE → `chat.completion.chunk` с role/content/finish/
+usage-чанками и functionCall одним tool_calls-чанком, JSON → `chat.completion` с синтезируемыми
+id `callu_<name>[_N]`), ошибки Google-конверта конвертируются в OpenAI-конверт с сохранением
+статуса (402 тоже) и `Retry-After`, нативный `400 API_KEY_INVALID` → `401 authentication_error`.
+Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи
 аккаунта разделяют кэш) или отдельный admin scope. `AffinityStore::infer` считается ДО identity-инжекта.

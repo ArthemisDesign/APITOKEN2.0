@@ -537,6 +537,29 @@ zero blocks that model until its parsed RFC3339 reset. Legacy Gemini CLI profile
 `HEALTH_CHECK`, `retrieveUserQuota`, `request.session_id`, `user_prompt_id` and Google library
 headers so an existing sealed roster remains usable during migration.
 
+## Universal chat surface
+
+`POST /v1/chat/completions` (stage 3.3 of `docs/engine/UNIFIED_ROUTER.md`) is served by the adapter
+in `crates/forward/src/gemini/chat.rs`. It translates the OpenAI chat request into a
+`GenerateContentRequest` (system/developer → `systemInstruction`, same-role merge of `contents`,
+tool history ↔ `functionCall`/`functionResponse` parts with the tool name recovered from
+`tool_call_id`, `tool_choice` → `toolConfig.functionCallingConfig`, generation knobs →
+`generationConfig` with a 4096 `maxOutputTokens` default), then issues an internal request to
+`/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` handled by the shared
+`gemini_api` path — admission, reserve, affinity, rotation, Code Assist wrapper, metering and
+settlement are identical to the native route. Responses are translated outside that path:
+`candidates[0]` parts become chat content/`tool_calls` (synthetic `callu_<name>[_N]` ids),
+`usageMetadata` becomes OpenAI usage (completion = candidates + thoughts tokens), and the data-only
+SSE stream becomes `chat.completion.chunk` frames with a final usage chunk on EOF when
+`stream_options.include_usage` is set.
+
+Two deliberate differences from the Anthropic-plane adapter: the capability matrix is closed at the
+top level — an unknown request field is rejected with `400 unsupported_parameter` instead of being
+proxied, because the Code Assist wrapper would silently drop it; and the native `400
+API_KEY_INVALID` answer is re-mapped to `401 authentication_error`, which is what OpenAI clients
+expect for a bad key. Error bodies keep the OpenAI envelope with the original HTTP status (402
+included) and `Retry-After`.
+
 ## Operations
 
 ```bash

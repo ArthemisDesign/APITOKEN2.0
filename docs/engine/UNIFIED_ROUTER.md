@@ -377,7 +377,46 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    tool calls, text+tool и usage — в тестах `crates/forward/src/anthropic.rs`; e2e —
    `tests/universal_chat_smoke.sh` (мок отдаёт tool_use диалог, проверки tools
    non-stream/stream/history и сквозной цепочки router→engine→mock); **3.3** —
-   адаптер Gemini plane; **3.4** — images, structured output, `reasoning_content`.
+   адаптер Gemini plane — **РЕАЛИЗОВАН**: `crates/forward/src/gemini/chat.rs`,
+   роут в `ProviderMode::Gemini`. Chat→GenerateContentRequest: system/developer →
+   `systemInstruction`, user/assistant → `contents` с Gemini-ролями user/model и
+   склейкой подряд идущих одноролевых, `max_completion_tokens`/`max_tokens` →
+   `maxOutputTokens` (дефолт 4096), `stop` → `stopSequences` (≤5),
+   temperature/top_p/top_k → `generationConfig`, strip `google/`-префикса до
+   admission. Адаптер синтезирует внутренний запрос на
+   `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` и вызывает
+   общий `gemini_api()` — admission, reserve, affinity, ротация, Code Assist
+   wrapper, tee-метеринг и settle без изменений. Tools: chat `tools[]`/legacy
+   `functions[]` → `tools:[{functionDeclarations}]` (parameters проксируются,
+   отсутствующие опускаются); `tool_choice`/legacy `function_call` →
+   `toolConfig.functionCallingConfig` (auto не вставляется, required→ANY, none→NONE,
+   именная → ANY+allowedFunctionNames). История: assistant `tool_calls[]`/
+   `function_call` → functionCall-парты, role `tool`/`function` →
+   functionResponse-парты в user-content (имя восстанавливается по tool_call_id из
+   карты id→name этой же истории, неизвестный id → 400; не-JSON tool output
+   заворачивается строкой в `{result}`), серии tool-ответов склеиваются. Ответ:
+   non-stream candidates[0] — text-парты склеиваются, functionCall →
+   `message.tool_calls` (args → arguments-строка, синтезируемые id
+   `callu_<name>[_N]`, content:null без текста), finishReason → finish_reason
+   (MAX_TOKENS→length, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII→
+   content_filter), promptFeedback.blockReason без кандидатов → content_filter с
+   пустым content, usageMetadata → usage (completion = candidates+thoughts, cached →
+   `prompt_tokens_details.cached_tokens`), model = `modelVersion` либо запрошенная.
+   SSE: data-only кадры GenerateContentResponse → role-чанк, content-дельты,
+   functionCall целиком одним tool_calls-чанком (arguments-дельт на wire нет),
+   finishReason → finish-чанк, последний usageMetadata → usage-чанк на EOF (по
+   `stream_options.include_usage`) → `[DONE]`; санитизированный mid-stream
+   `{error}` → OpenAI error frame без `[DONE]`; неразборчивые кадры пропускаются.
+   Capability matrix — те же 19 правил, плюс отличие плоскости: закрытый список
+   top-level полей (неизвестное поле → `400 unsupported_parameter`, потому что
+   Code Assist wrapper иначе выбросил бы его молча). Ошибки: Google-конверт
+   `{error:{code,message,status}}` → OpenAI-конверт с сохранением статуса (402
+   LowBalance тоже) и `Retry-After`; особый маппинг нативного
+   `400 API_KEY_INVALID` → `401 authentication_error`. Contract-тесты — табличные
+   в `crates/forward/src/gemini/chat.rs` (запрос, matrix, ответ, SSE); e2e-харнесс
+   для Gemini-ноги не добавлялся: native-путь плоскости покрыт своими тестами, а
+   мок-харнесс не умеет AEAD-конверты профилей — шов адаптера покрыт
+   unit/contract-тестами; **3.4** — images, structured output, `reasoning_content`.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
    reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
    явный `400 documented_limitation`).
