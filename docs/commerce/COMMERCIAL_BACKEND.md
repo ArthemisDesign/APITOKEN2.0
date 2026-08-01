@@ -12,7 +12,7 @@ apps/worker              Durable engine-credit, customer-pricing and SMTP email 
 packages/contracts       Shared validation and transport types
 packages/db              PostgreSQL schema, migrations and repositories
 packages/engine-client   Typed client for the Rust Control API
-packages/payments        DigiSeller/Cryptomus adapters and normalized payment contracts
+packages/payments        Platega/Cryptomus adapters (DigiSeller registered but disabled) and normalized payment contracts
 ```
 
 The applications are independently deployable. They share packages at build time, but neither
@@ -50,8 +50,8 @@ TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/comme
 Payment providers sit behind a provider-neutral adapter. Every adapter must verify
 the provider event using its authoritative API and persist the webhook's globally unique event ID.
 Only then may it create a payment and enqueue an engine credit. The worker uses the payment ID as a
-stable, idempotent engine credit reference. Provider specifics are in `docs/commerce/DIGISELLER_INTEGRATION.md`
-and `docs/commerce/CRYPTOMUS_INTEGRATION.md`.
+stable, idempotent engine credit reference. Provider specifics are in `docs/commerce/PLATEGA_INTEGRATION.md`
+(default), `docs/commerce/CRYPTOMUS_INTEGRATION.md` and `docs/commerce/DIGISELLER_INTEGRATION.md` (disabled).
 
 Email/password authentication, authorization invariants and the future email/Google provider
 boundaries are documented in `docs/commerce/AUTHENTICATION.md`.

@@ -30,7 +30,8 @@ context'ов. Правила размещения и обновления — в
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation.
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover.
 - [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — приём платежей через Cryptomus.
-- [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — приём платежей через DigiSeller.
+- [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — приём платежей через Platega (дефолтный провайдер).
+- [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — DigiSeller: провайдер отключён, задел адаптера и условия включения.
 - [EMAIL_INTEGRATION.md](commerce/EMAIL_INTEGRATION.md) — транзакционная почта и self-hosted SMTP.
 
 ## sales/ — партнёрское направление (`apps/sales-*`, `packages/sales-db`)
