@@ -10,7 +10,6 @@ import { useI18n } from "@/components/i18n-provider";
 import { SupportContent } from "@/components/compliance-pages";
 import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
-import { buildAgentHandoff, buildClaudeCodeCommands, buildCodexCommands, type SetupShell } from "@/lib/claude-connection";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { modelLabel, modelProvider } from "@/lib/model-label";
@@ -454,7 +453,11 @@ export function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChang
     : "0";
   return <section ref={keysPanelRef} className="panel keys-panel">
     <div className="keys-heading-row"><PageHeading eyebrow={copy.keysEyebrow} title={copy.keysTitle} subtitle={copy.keysSubtitle} /></div>
-    <QuickConnectDock key={issued ? "with-key" : "without-key"} issuedKey={issued} defaultExpanded={keys.length === 0} onDismissKey={() => setIssued(null)} />
+    {issued && <div className="agent-key-reveal secret-card" role="status">
+      <div className="agent-key-reveal-head"><div><strong>{copy.copyNewKeyNow}</strong><span>{copy.rawSecretWarning}</span></div><span className="chip">{copy.shownOnce}</span></div>
+      <div className="secret-key-field"><code>{issued}</code><CopyButton value={issued} className="secret-copy" /></div>
+      <div className="agent-key-reveal-actions"><button type="button" className="btn btn-primary btn-sm" onClick={() => setIssued(null)}>{copy.savedKey}</button><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.openInDocs}</Link></div>
+    </div>}
     {error && !createOpen && !editTarget && !revokeTarget && <div className="banner banner-error" role="alert">{error}</div>}
 
     <section className="dsec keys-manager" aria-label={copy.keysTitle}>
@@ -536,70 +539,6 @@ export function ApiKeys({ keys, onChanged, user }: { keys: ApiKeyView[]; onChang
 
     {revokeTarget && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeRevoke(); }}><div ref={revokeModalRef} className="key-modal key-revoke-modal" role="alertdialog" aria-modal="true" aria-labelledby="revoke-key-title" aria-describedby="revoke-key-description" tabIndex={-1}><div className="key-modal-head"><div><span className="eyebrow danger-text">{localCopy.revokeKey}</span><h2 id="revoke-key-title">{localCopy.revokeTitle}</h2><p><strong>{revokeTarget.label || copy.unlabelledKey}</strong> · <code>{revokeTarget.keyMasked}</code></p></div></div><p id="revoke-key-description">{localCopy.revokeBody}</p>{error && <div className="banner banner-error" role="alert">{error}</div>}<div className="key-modal-actions"><button type="button" className="btn btn-ghost" disabled={busy} onClick={closeRevoke}>{localCopy.cancel}</button><button type="button" className="btn btn-danger" disabled={busy} autoFocus onClick={() => void revoke()}>{localCopy.confirmRevoke}</button></div></div></div>}
   </section>;
-}
-
-function TerminalCommands({ commands }: { commands: string }) {
-  return <code>{commands.split("\n").map((command, index) => {
-    const assignmentEnd = command.indexOf("=") + 1;
-    const prefix = assignmentEnd > 0 ? command.slice(0, assignmentEnd) : command;
-    const value = assignmentEnd > 0 ? command.slice(assignmentEnd) : "";
-    return <span className="agent-terminal-line" key={`${index}-${command}`}>{prefix}{assignmentEnd > 0 && <wbr />}{value || "\u00a0"}</span>;
-  })}</code>;
-}
-
-function QuickConnectDock({ issuedKey, defaultExpanded, onDismissKey }: { issuedKey: string | null; defaultExpanded: boolean; onDismissKey(): void }) {
-  const copy = useDashboardCopy();
-  const { language } = useI18n();
-  const [expanded, setExpanded] = useState(Boolean(issuedKey) || defaultExpanded);
-  const [surface, setSurface] = useState<"claude" | "codex">("claude");
-  const [shell, setShell] = useState<SetupShell>("zsh");
-  const handoff = buildAgentHandoff({ apiKey: issuedKey, docsUrl: DOCS_URL, language });
-  const terminalCommands = surface === "claude" ? buildClaudeCodeCommands(issuedKey, shell) : buildCodexCommands(issuedKey, shell);
-  const shellOptions: Array<{ id: SetupShell; label: string }> = [
-    { id: "zsh", label: copy.agentDockOsMac },
-    { id: "powershell", label: copy.agentDockOsPowershell },
-    { id: "cmd", label: copy.agentDockOsCmd },
-  ];
-  const shellTag = shell === "zsh" ? "zsh" : shell === "powershell" ? "PowerShell" : "CMD";
-  const note = shell === "zsh"
-    ? (issuedKey ? copy.agentDockSecretNote : copy.agentDockTemplateNote)
-    : (issuedKey ? copy.agentDockSecretNoteWin : copy.agentDockTemplateNoteWin);
-
-  return <aside className={`agent-connect-dock${expanded ? " is-open" : ""}${issuedKey ? " has-live-key" : ""}`} aria-labelledby="agent-connect-title">
-    <button className="agent-connect-summary" type="button" aria-expanded={expanded} aria-controls="agent-connect-body" onClick={() => setExpanded((current) => !current)}>
-      <span className="agent-connect-icon" aria-hidden="true">&gt;_</span>
-      <span className="agent-connect-main"><span>{copy.agentDockEyebrow}</span><strong id="agent-connect-title">{copy.agentDockTitle}</strong><small>{copy.agentDockText}</small></span>
-      <span className={`agent-connect-state${issuedKey ? " ready" : ""}`}><i />{issuedKey ? copy.agentDockKeyIncluded : copy.agentDockKeyPlaceholder}</span>
-      <span className="agent-connect-chevron" aria-hidden="true">⌄</span>
-    </button>
-    {expanded && <div className="agent-connect-body" id="agent-connect-body">
-      {issuedKey && <div className="agent-key-reveal secret-card"><div className="agent-key-reveal-head"><div><strong>{copy.copyNewKeyNow}</strong><span>{copy.rawSecretWarning}</span></div><span className="chip">{copy.shownOnce}</span></div><div className="secret-key-field"><code>{issuedKey}</code><CopyButton value={issuedKey} className="secret-copy" /></div></div>}
-      <div className="agent-connect-path" aria-label={copy.agentDockEyebrow}><span><b>1</b>{copy.agentDockStepOne}</span><i>→</i><span><b>2</b>{copy.agentDockStepTwo}</span><i>→</i><span><b>3</b>{surface === "claude" ? copy.agentDockStepThree : copy.agentDockStepThreeCodex}</span></div>
-      <div className="agent-connect-controls">
-        <div className="agent-connect-control">
-          <span>{copy.agentDockToolLabel}</span>
-          <div className="agent-connect-tabs" role="group" aria-label={copy.agentDockToolLabel}>
-            <button type="button" className={surface === "claude" ? "active" : ""} aria-pressed={surface === "claude"} onClick={() => setSurface("claude")}>{copy.agentDockTabClaude}</button>
-            <button type="button" className={surface === "codex" ? "active" : ""} aria-pressed={surface === "codex"} onClick={() => setSurface("codex")}>{copy.agentDockTabCodex}</button>
-          </div>
-        </div>
-        <div className="agent-connect-control">
-          <span>{copy.agentDockOsLabel}</span>
-          <div className="agent-connect-tabs" role="group" aria-label={copy.agentDockOsLabel}>
-            {shellOptions.map((option) => (
-              <button key={option.id} type="button" className={shell === option.id ? "active" : ""} aria-pressed={shell === option.id} onClick={() => setShell(option.id)}>{option.label}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="agent-terminal" aria-label={copy.agentDockTerminal}>
-        <div className="agent-terminal-head"><span><i /><i /><i />{copy.agentDockTerminal} · {shellTag}</span><CopyButton value={terminalCommands} className="agent-connect-copy" label={issuedKey ? copy.agentDockCopyTerminal : copy.agentDockCopyTemplate} copiedLabel={copy.agentDockTerminalCopied} /></div>
-        <pre><TerminalCommands commands={terminalCommands} /></pre>
-      </div>
-      <div className="agent-connect-footer"><div><strong>{copy.agentDockAgentTitle}</strong><span>{copy.agentDockAgentText}</span></div><div className="agent-connect-footer-actions"><CopyButton value={handoff} className="agent-handoff-copy" label={issuedKey ? copy.agentDockCopyWithKey : copy.agentDockCopy} copiedLabel={copy.agentDockCopied} /><Link className="btn btn-ghost btn-sm" href={DOCS_URL} target="_blank" rel="noreferrer">{copy.agentDockDocs} ↗</Link>{issuedKey && <button type="button" className="btn btn-ghost btn-sm" onClick={onDismissKey}>{copy.savedKey}</button>}</div></div>
-      <p className={`agent-connect-note${issuedKey ? " secret-note" : ""}`}><span aria-hidden="true">{issuedKey ? "⚠" : "ⓘ"}</span><span>{note}</span></p>
-    </div>}
-  </aside>;
 }
 
 function nanoToUsdInput(value: string): string {

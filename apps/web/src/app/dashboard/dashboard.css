@@ -171,7 +171,7 @@
 .keys-heading-row{margin-bottom:24px}
 .keys-heading-row .page-heading{margin-bottom:0}
 .keys-create-button{flex:none}
-.keys-panel .agent-connect-dock{margin-bottom:28px}
+.keys-panel>.agent-key-reveal{margin-bottom:22px}
 .keys-manager{margin-top:0}
 .keys-manager-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:0 0 13px}
 .keys-manager-title{display:flex;flex-direction:column;gap:4px}.keys-manager-head .eyebrow{margin:0;font-size:8px}
@@ -282,7 +282,6 @@
   .key-table th,.key-table td{padding-inline:10px}
 }
 @media(max-width:900px){
-  .keys-panel .agent-connect-main>small{white-space:normal}
   .keys-toolbar-right{align-items:stretch;flex-direction:column}.keys-sort{justify-content:space-between}.keys-sort select{max-width:none;flex:1;text-align:right}.keys-filter-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}.keys-filter-tab{min-height:40px;white-space:normal}
   .key-table-wrap{border:0;background:transparent;box-shadow:none}.key-table{display:block}.key-table thead{display:none}.key-table tbody{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
   .key-table tr{display:grid;grid-template-columns:112px minmax(0,1fr);padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
@@ -503,8 +502,8 @@ body.app-body .bg-decor{display:none!important}
 .app .panel .link,.app .panel strong,.app .panel b{font-family:var(--font-ui)}
 .app .panel strong,.app .panel b{font-weight:680}
 /* Shared dashboard surfaces adopt the overview card geometry (16px radius, soft border/shadow). */
-.app .table-scroll,.app .key-table-wrap,.app .uchart,.app .usum,.app .txh-day,.app .agent-connect-dock,.app .empty-box{border-radius:var(--overview-radius)}
-.app .table-scroll,.app .key-table-wrap,.app .uchart,.app .txh-day,.app .agent-connect-dock{border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
+.app .table-scroll,.app .key-table-wrap,.app .uchart,.app .usum,.app .txh-day,.app .empty-box{border-radius:var(--overview-radius)}
+.app .table-scroll,.app .key-table-wrap,.app .uchart,.app .txh-day{border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
 .app .ubreak-sum,.app .tok-buckets,.app .pricing-banner{border-radius:var(--overview-radius)}
 .app .banner{border-radius:12px}
 /* Support panel inside the dashboard follows the same sans hierarchy; the public /support page keeps its own. */
