@@ -7,12 +7,12 @@ import {
   catalogModelBySlug,
   claudeModels,
   formatUsd,
-  DISCOUNT_BASE,
+  DISCOUNT_FLAT,
   modelPath,
   openaiModels,
   type CatalogModel,
 } from "./models";
-import { FLAT_DISCOUNT_PERCENT, FLAT_PRICE_MULTIPLIER } from "./pricing-tiers";
+import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
 import { API_ERRORS } from "./api-errors";
 
@@ -106,6 +106,245 @@ function pct(discount: number): string {
   return `${Math.round(discount * 100)}%`;
 }
 
+/** Purpose-built runbook for an AI agent that must configure an unknown user environment safely. */
+export function buildAgentSetupMarkdown(): string {
+  const anthropicModelIds = claudeModels.map((model) => `- \`${model.id}\` — ${model.name}`).join("\n");
+  const openAiModelIds = openaiModels.map((model) => `- \`${model.id}\` — ${model.name}`).join("\n");
+
+  return (
+    frontmatter({
+      title: "Connect apiToken.sale — execution guide for AI agents",
+      description:
+        "An operational runbook for connecting any supported client, IDE, CLI or SDK to apiToken.sale across Windows, macOS and Linux, including API selection, secure key handling, verification and diagnostics.",
+      url: `${SITE_ORIGIN}/docs#agent-setup`,
+      language: "en",
+    }) +
+    `# Connect apiToken.sale — execution guide for AI agents
+
+You are reading the canonical setup contract for an AI agent. Your task is to connect the user's existing project or tool to apiToken.sale with the smallest safe change, verify a real response, and report exactly what you changed. Do not make the user choose a provider surface or manually translate configuration fields when you can infer them.
+
+This guide owns the changing setup facts. The short instruction copied from the website should remain stable as models and compatible tools are added.
+
+## Definition of done
+
+The connection is complete only when all of the following are true:
+
+1. You identified the operating system, shell, client or SDK, runtime, and existing provider configuration.
+2. You selected a protocol the client natively supports and an exact model ID that is currently available.
+3. The API key is stored in an environment variable or secret store, never in tracked source code.
+4. A minimal real API request succeeded through apiToken.sale.
+5. You told the user which files or settings changed, which endpoint and model are active, and how to revert the setup. Never repeat the full key in the report.
+
+## Safety rules
+
+- Inspect before editing. Read the relevant configuration and \`.gitignore\`; do not rewrite unrelated files or replace an existing provider setup without explaining the impact.
+- Never print, log, transmit, commit, or paste a full \`sk-pool-…\` key into chat, screenshots, issue trackers, browser code, mobile apps, or client-side bundles.
+- Prefer a server-side environment variable or the tool's protected secret storage. A project \`.env.local\` is acceptable only when it is ignored by version control. Put variable names, never values, in \`.env.example\`.
+- If the key is missing, ask the user to create it at ${SITE_ORIGIN}/dashboard?view=keys and enter it through the local tool or shell. Do not ask them to send the full key to support.
+- Do not make destructive repository operations, install unrelated packages, or change the project's model behavior beyond what connection requires.
+- Verification makes a billable real request. Keep it minimal and tell the user before running anything unusually expensive.
+
+## Step 1 — inspect the environment
+
+Determine, without guessing:
+
+- OS and version: Windows, macOS, Linux, WSL, container, or remote development host.
+- Active shell: PowerShell, cmd.exe, bash, zsh, fish, or another shell.
+- Target: IDE, coding agent, CLI, application, framework, raw HTTP client, or SDK and its exact version.
+- Runtime and package manager when relevant: Node.js/npm/pnpm/yarn, Python/pip/uv/poetry, Go, Rust, Java, .NET, Docker, or CI.
+- Existing model provider, base URL, environment-variable names, proxy settings, and configuration scope (user, workspace, project, CI, or production).
+- Whether the client supports Anthropic Messages, OpenAI Responses, OpenAI Chat Completions, or more than one of them.
+
+Use the remote/container OS that actually runs the client, not merely the desktop OS hosting the editor.
+
+## Step 2 — choose the compatible API surface
+
+Choose by the client's wire protocol, not by brand preference.
+
+### Anthropic Messages surface
+
+- Base URL: \`${API_BASE_URL}\` — do not append \`/v1\` when an SDK asks for a base URL.
+- Request endpoint: \`POST ${API_BASE_URL}/v1/messages\`.
+- Direct HTTP auth: \`x-api-key: sk-pool-…\`.
+- Direct HTTP version header: \`anthropic-version: 2023-06-01\`.
+- Official Anthropic SDKs normally add the version header themselves.
+- Use this surface for Claude Code, Anthropic SDKs, and tools whose custom-provider mode is Anthropic-compatible.
+- Standard Messages request bodies, response objects, SSE streaming, tools, prompt caching, vision, and Anthropic error envelopes pass through unchanged.
+
+### OpenAI-compatible surface
+
+- Base URL: \`${OPENAI_BASE_URL}\` — this base already includes \`/v1\`; do not produce \`/v1/v1\`.
+- Responses: \`POST ${OPENAI_BASE_URL}/responses\`.
+- Chat Completions: \`POST ${OPENAI_BASE_URL}/chat/completions\`.
+- Model discovery: \`GET ${OPENAI_BASE_URL}/models\`.
+- Auth: \`Authorization: Bearer sk-pool-…\`; do not use \`x-api-key\` on this surface.
+- Use this surface for Codex, OpenAI SDKs, and tools with an OpenAI-compatible custom provider.
+- Responses and Chat Completions support SSE streaming and text or image input with text output. This endpoint does not provide the unrelated OpenAI Platform services such as audio, realtime, assistants, batches, files, or fine-tuning.
+
+The same \`sk-pool-…\` key and account balance work on both surfaces. If a client supports both protocols, preserve the protocol it already uses unless the user requests a change. If it supports neither custom base URLs nor custom providers, explain the incompatibility and recommend a supported integration rather than pretending the setup succeeded.
+
+## Current model catalog
+
+Never invent or normalize a model ID. Use the exact ID. The full data-driven catalog, including context limits and capabilities, is ${SITE_ORIGIN}/md/models.
+
+Anthropic Messages models:
+
+${anthropicModelIds}
+
+OpenAI-compatible models:
+
+${openAiModelIds}
+
+For the OpenAI-compatible surface, call \`GET /v1/models\` when the key is available so the runtime result wins over cached documentation. For the Anthropic surface, use the canonical model catalog above. If the user did not request a model, keep the project's existing model family when possible; otherwise choose a sensible current model for the stated workload and explain the choice.
+
+## Step 3 — store the key for the actual OS and tool
+
+Use \`APITOKEN_API_KEY\` as the neutral local name. Add a tool-specific alias only when the client requires it.
+
+### macOS and Linux — bash or zsh, current session
+
+\`\`\`bash
+export APITOKEN_API_KEY="sk-pool-…"
+\`\`\`
+
+For an Anthropic-native client:
+
+\`\`\`bash
+export ANTHROPIC_BASE_URL="${API_BASE_URL}"
+export ANTHROPIC_API_KEY="$APITOKEN_API_KEY"
+\`\`\`
+
+For an OpenAI-compatible client that reads standard environment names:
+
+\`\`\`bash
+export OPENAI_BASE_URL="${OPENAI_BASE_URL}"
+export OPENAI_API_KEY="$APITOKEN_API_KEY"
+\`\`\`
+
+For persistence, use the active shell's correct profile only with the user's consent. Prefer a secret manager or CI secret over a plaintext profile. Fish syntax differs; use \`set -gx NAME value\` for the current session and do not paste secrets into a tracked fish config.
+
+### Windows PowerShell — current process
+
+\`\`\`powershell
+$env:APITOKEN_API_KEY = "sk-pool-…"
+$env:ANTHROPIC_BASE_URL = "${API_BASE_URL}"
+$env:ANTHROPIC_API_KEY = $env:APITOKEN_API_KEY
+\`\`\`
+
+For an OpenAI-compatible client, set \`OPENAI_BASE_URL\` to \`${OPENAI_BASE_URL}\` and \`OPENAI_API_KEY\` to \`$env:APITOKEN_API_KEY\`. Persistent user-level variables apply only to new processes; do not claim the running terminal inherited them. Prefer Windows Credential Manager or the client's protected key field when available.
+
+### Windows cmd.exe — current process
+
+\`\`\`bat
+set APITOKEN_API_KEY=sk-pool-…
+set ANTHROPIC_BASE_URL=${API_BASE_URL}
+set ANTHROPIC_API_KEY=%APITOKEN_API_KEY%
+\`\`\`
+
+Avoid putting the key on a command line that will be recorded in shared shell history. When interacting with a human, let them enter the secret locally.
+
+### Project, container, CI, and production
+
+- Use the platform's encrypted secret store for the key.
+- Inject the base URL as non-secret configuration and the key as a secret at runtime.
+- Restart or redeploy the process after changing environment variables, then verify from the same runtime environment.
+- Never expose the key through \`NEXT_PUBLIC_*\`, \`VITE_*\`, browser JavaScript, a public Docker build argument, or a committed manifest.
+
+## Step 4 — map common tools
+
+| Tool or codebase | Preferred surface | Required setup |
+|---|---|---|
+| Claude Code | Anthropic Messages | \`ANTHROPIC_BASE_URL=${API_BASE_URL}\`, \`ANTHROPIC_API_KEY=<key>\` |
+| Anthropic Python/TypeScript SDK | Anthropic Messages | custom \`base_url\` / \`baseURL\` plus the key |
+| Cursor, Cline, Continue, Zed, Roo Code | Preserve the configured compatible provider | select Anthropic-compatible mode when available, set \`${API_BASE_URL}\`, exact model ID, protected key field |
+| Codex CLI | OpenAI-compatible Responses | named provider profile with \`base_url = "${OPENAI_BASE_URL}"\`, \`wire_api = "responses"\`, and \`env_key = "APITOKEN_API_KEY"\` |
+| OpenAI Python/JavaScript SDK | OpenAI-compatible | custom \`base_url\` / \`baseURL\`, bearer key, Responses or Chat Completions |
+| Generic OpenAI-compatible tool | OpenAI-compatible | \`${OPENAI_BASE_URL}\`, bearer key, exact model returned by \`GET /v1/models\` |
+| Raw HTTP | Match the request schema | use the exact endpoint and auth header from Step 2 |
+
+Tool-specific machine-readable guides are indexed at ${SITE_ORIGIN}/md/int. Read the matching guide and the installed tool's current configuration before editing paths from memory.
+
+## Step 5 — verify with a real request
+
+Verify from the same machine, container, user account, and proxy path as the target application. A website reachable in a desktop browser does not prove a container or remote IDE can reach it.
+
+Anthropic Messages verification:
+
+\`\`\`bash
+curl --fail-with-body ${API_BASE_URL}/v1/messages \\
+  -H "x-api-key: $APITOKEN_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "content-type: application/json" \\
+  -d '{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with exactly: connected"}]}'
+\`\`\`
+
+OpenAI-compatible discovery and verification:
+
+\`\`\`bash
+curl --fail-with-body ${OPENAI_BASE_URL}/models \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY"
+
+curl --fail-with-body ${OPENAI_BASE_URL}/responses \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "content-type: application/json" \\
+  -d '{"model":"gpt-5.6-luna","input":"Reply with exactly: connected","max_output_tokens":16}'
+\`\`\`
+
+On PowerShell, use \`curl.exe\` for these curl examples or create the equivalent \`Invoke-RestMethod\` request with a header dictionary. Do not assume the \`curl\` alias has curl semantics on older Windows PowerShell.
+
+After the direct request succeeds, run the target client itself. If the integration needs streaming, tools, or images, perform one small feature-specific check after the basic non-streaming check.
+
+## Diagnostic decision tree
+
+1. **DNS, TLS, connection refused, or timeout before HTTP:** verify the exact hostname, system clock, proxy, VPN, firewall, container DNS, and remote-host network. Test from the target runtime.
+2. **HTML, a website page, or 404 route output:** the base URL is wrong. Check for a missing endpoint or duplicated \`/v1/v1\`.
+3. **401:** confirm the key is active and not surrounded by quotes or whitespace in the stored value. Anthropic uses \`x-api-key\`; OpenAI-compatible uses \`Authorization: Bearer\`. A revoked key must be replaced, not retried.
+4. **402:** the account's available balance is insufficient. Top up in the dashboard; backoff cannot fix it.
+5. **404 model_not_found:** list OpenAI-compatible models with \`GET /v1/models\` or check ${SITE_ORIGIN}/md/models, then use the exact ID on the matching surface.
+6. **413 or context-length failure:** reduce prompt, image, tool-schema, or output size; confirm the selected model's limits.
+7. **429:** honor \`Retry-After\`, reduce concurrency, and use bounded exponential backoff with jitter. Do not create an unbounded retry loop.
+8. **5xx:** keep the request ID and approximate timestamp, retry a small number of times with backoff, and check ${SITE_ORIGIN}/status.
+9. **Streaming does not arrive incrementally:** confirm \`stream: true\`, the correct SDK streaming method, SSE parsing, and that a reverse proxy is not buffering the response.
+10. **Direct curl works but the client fails:** inspect the client's actual configuration scope, inherited environment, restarted process, provider mode, generated URL, model ID, and proxy. Do not blame the gateway before comparing the outgoing request.
+
+The complete exact-error catalog is ${SITE_ORIGIN}/md/docs/errors.
+
+## Escalate to support
+
+Telegram: https://t.me/apitokensupportbot — AI first-line support is available 24/7 and a person can join the same case.
+
+Send this diagnostic brief with secrets redacted:
+
+\`\`\`text
+Operating system and version:
+Client / IDE / CLI / SDK and version:
+Runtime and shell:
+What is being connected:
+API surface and exact endpoint:
+Model ID:
+HTTP status and exact error text:
+Approximate time and timezone:
+Request ID, if present:
+What has already been tried:
+API key: REDACTED (last 4 characters only):
+\`\`\`
+
+Support must never request a password, payment-card data, or a full API key. If a key was exposed, revoke it in the dashboard and issue a replacement before continuing.
+
+## Final report to the user
+
+State concisely:
+
+- detected environment and target tool;
+- selected API surface, base URL, and exact model ID;
+- settings or files changed, without secret values;
+- verification performed and its result;
+- how to restart, switch model, or revert;
+- any unresolved error with HTTP status, request ID, and the next concrete action.
+`
+  );
+}
+
 /** Canonical API reference: everything an agent needs to make a first call, from live model data. */
 export function buildApiReferenceMarkdown(): string {
   const claudeRows = claudeModels
@@ -125,7 +364,7 @@ export function buildApiReferenceMarkdown(): string {
     }) +
     `# API reference — apiToken.sale
 
-apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount for every account. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
+apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line and an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
 
 ## Surface 1 — Anthropic Messages API (Claude models)
 
@@ -134,7 +373,7 @@ apiToken.sale is an independent multi-provider gateway. It serves the **standard
 - **Headers:** \`x-api-key: sk-pool-…\` and \`anthropic-version: 2023-06-01\`
 - **Auth:** on this surface the \`sk-pool-…\` key is sent in \`x-api-key\` (not as a bearer token).
 
-Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; every account pays a flat ${FLAT_DISCOUNT_PERCENT}% less.
+Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay a flat 50% less on every request.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -148,7 +387,7 @@ ${claudeRows}
 - **Auth:** the same \`sk-pool-…\` key sent as \`Authorization: Bearer sk-pool-…\` (x-api-key is not accepted on this surface).
 - **Modalities:** text and image input, text output. Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent OpenAI-compatible service, not the OpenAI Platform.
 
-Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same flat ${FLAT_DISCOUNT_PERCENT}% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
+Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -247,15 +486,16 @@ Envelope: \`{"error":{"message","type","param","code"}}\`.
 | 402 | insufficient_quota | Prepaid balance too low | Top up any whole-dollar amount; retry after crediting. |
 | 404 | model_not_found | Unknown or disabled model ID | List enabled IDs with \`GET /v1/models\`; check for typos. |
 | 429 | rate_limit_error | Rate or concurrency limit | Honor \`Retry-After\`; back off with jitter, cap concurrency. |
-| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another tier if urgent. |
+| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another model if urgent. |
 
 ## Pricing
 
-Prepaid, per-token at official provider rates minus a flat ${pct(DISCOUNT_BASE)} discount for every account, shared by both surfaces. No tiers or conditions, no fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
+Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by both surfaces. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
 
 ## Get started
 
 - Create a key: ${SITE_ORIGIN}/register (Google or GitHub sign-up gets $10 of API usage at official prices)
+- Agent setup runbook (OS, client detection, secure configuration and verification): ${SITE_ORIGIN}/md/connect
 - All guides (Markdown): ${SITE_ORIGIN}/docs/learn
 - Machine-readable index: ${SITE_ORIGIN}/md
 - Support: Telegram and apitokensale@gmail.com (English, Russian)
@@ -263,11 +503,11 @@ Prepaid, per-token at official provider rates minus a flat ${pct(DISCOUNT_BASE)}
   );
 }
 
-/** Model catalog with exact IDs, context, limits and flat-discount pricing. */
+/** Model catalog with exact IDs, context, limits and discounted per-token prices. */
 export function buildModelsMarkdown(): string {
   const sectionFor = (m: CatalogModel): string => {
-    const inYours = formatUsd(m.inputPerM * (1 - DISCOUNT_BASE));
-    const outYours = formatUsd(m.outputPerM * (1 - DISCOUNT_BASE));
+    const inHere = formatUsd(m.inputPerM * (1 - DISCOUNT_FLAT));
+    const outHere = formatUsd(m.outputPerM * (1 - DISCOUNT_FLAT));
     const surface = m.provider === "anthropic"
       ? `- **Surface:** Anthropic Messages API at \`${API_BASE_URL}\``
       : `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`;
@@ -282,7 +522,7 @@ export function buildModelsMarkdown(): string {
       `- **Context window:** ${m.context}`,
       `- **Max output:** ${m.maxOutput}`,
       `- **Official price (per 1M):** $${m.inputPerM} input / $${m.outputPerM} output${cached}`,
-      `- **Your price (per 1M):** input ${inYours}, output ${outYours} (${pct(DISCOUNT_BASE)} off)`,
+      `- **Your price (per 1M):** input ${inHere}, output ${outHere} (flat ${pct(DISCOUNT_FLAT)} off)`,
       surface,
       `- **Best for:** ${m.bestFor.join(" ")}`,
       `- **Detail page:** ${SITE_ORIGIN}${modelPath(m.slug)}`,
@@ -315,23 +555,26 @@ API reference: ${SITE_ORIGIN}/md/docs · Pricing: ${SITE_ORIGIN}/md/plans
   );
 }
 
-/** Flat-discount pricing, generated from the live B2C pricing model. */
+/** Flat 50% B2C pricing, generated from the live pricing model. */
 export function buildPlansMarkdown(): string {
   return (
     frontmatter({
       title: "apiToken.sale — API pricing (Claude & GPT)",
       description:
-        "apiToken.sale pricing: a flat 50% discount off official Anthropic and OpenAI rates for every account. Prepaid per-token billing, no tiers or conditions.",
+        "apiToken.sale flat pricing: 50% off official provider rates on every request, for every account and any top-up amount. Prepaid per-token billing at official Anthropic and OpenAI rates.",
       url: `${SITE_ORIGIN}/plans`,
       language: "en",
     }) +
-    `# Pricing — flat ${FLAT_DISCOUNT_PERCENT}% off for everyone
+    `# Pricing — flat ${B2C_DISCOUNT_PERCENT}% off
 
-Top up any whole-dollar amount. Each request is billed at the official provider token price, then the flat ${FLAT_DISCOUNT_PERCENT}% discount is applied and the remainder is deducted from balance — you pay ×${FLAT_PRICE_MULTIPLIER} of the official price on every request. One balance and one discount cover Claude and GPT models alike. No fixed packages, no subscriptions, balance never expires.
+Top up any whole-dollar amount. Each request is billed at the official provider token price, then the flat ${B2C_DISCOUNT_PERCENT}% discount is applied and deducted from balance. One balance and one rate cover Claude and GPT models alike. No fixed packages, no subscriptions, no tiers, balance never expires.
 
-- **Every account** gets the same flat ${FLAT_DISCOUNT_PERCENT}% discount — no tiers, thresholds, spend requirements or expiry.
-- Examples per 1M tokens: Claude Opus 4.8 $5/$25 official → $2.50/$12.50 here; Claude Sonnet 5 $3/$15 → $1.50/$7.50; Claude Haiku 4.5 $1/$5 → $0.50/$2.50; GPT-5.6 Sol $5/$30 → $2.50/$15.
-- $1 of balance covers $2 of official usage (×2 value).
+| Top up | Discount (value multiplier) | Official API value |
+|---|---|---|
+| Any whole USD amount | ${B2C_DISCOUNT_PERCENT}% (×${B2C_VALUE_MULTIPLIER}) | top-up × ${B2C_VALUE_MULTIPLIER} — e.g. $50 → $100 |
+
+- The same ${B2C_DISCOUNT_PERCENT}% discount applies to **every request** — no thresholds, no monthly targets, nothing to unlock or keep.
+- Official API value = top-up ÷ the share paid after the discount; billing itself is exact.
 - B2B pricing is negotiated separately.
 
 ---
@@ -342,8 +585,8 @@ API reference: ${SITE_ORIGIN}/md/docs · Models: ${SITE_ORIGIN}/md/models
 
 /** One model's full spec (exact ID, context, limits, pricing, best-for, notes, FAQ). */
 export function buildModelMarkdown(model: CatalogModel): string {
-  const inYours = formatUsd(model.inputPerM * (1 - DISCOUNT_BASE));
-  const outYours = formatUsd(model.outputPerM * (1 - DISCOUNT_BASE));
+  const inHere = formatUsd(model.inputPerM * (1 - DISCOUNT_FLAT));
+  const outHere = formatUsd(model.outputPerM * (1 - DISCOUNT_FLAT));
   const surfaceLine = model.provider === "anthropic"
     ? `- **Base URL:** \`${API_BASE_URL}\` · **Endpoint:** \`POST /v1/messages\``
     : `- **Base URL:** \`${OPENAI_BASE_URL}\` · **Endpoints:** \`POST /v1/responses\`, \`POST /v1/chat/completions\` (Authorization: Bearer)`;
@@ -377,7 +620,7 @@ ${model.dek}
 - **Context window:** ${model.context}
 - **Max output:** ${model.maxOutput}
 - **Official price (per 1M):** $${model.inputPerM} input / $${model.outputPerM} output
-- **Your price (per 1M):** input ${inYours}, output ${outYours} (${pct(DISCOUNT_BASE)} off)
+- **Your price (per 1M):** input ${inHere}, output ${outHere} (flat ${pct(DISCOUNT_FLAT)} off)
 ${surfaceLine}
 
 ## Best for
@@ -586,11 +829,12 @@ Every public section of apiToken.sale is available as clean Markdown. Private da
 
 ## Core references
 
+- Agent setup runbook (use this to configure an unknown OS, client or SDK): ${SITE_ORIGIN}/md/connect
 - API reference (connection, models, streaming, tools, errors): ${SITE_ORIGIN}/md/docs
 - Error reference (exact response text, cause and fix for every error): ${SITE_ORIGIN}/md/docs/errors
 - Model catalog (exact IDs, context, pricing): ${SITE_ORIGIN}/md/models
 - Per-model spec: append the model slug to ${SITE_ORIGIN}/md/models/<slug> (${[...claudeModels, ...openaiModels].map((m) => m.slug).join(", ")})
-- Pricing (flat 50% off for everyone): ${SITE_ORIGIN}/md/plans
+- Pricing & flat 50% discount: ${SITE_ORIGIN}/md/plans
 - Integrations (all tools): ${SITE_ORIGIN}/md/int
 - Per-tool setup: append the slug to ${SITE_ORIGIN}/md/int/<slug> (${integrationSlugs.join(", ")})
 

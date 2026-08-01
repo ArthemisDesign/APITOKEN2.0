@@ -139,8 +139,9 @@ describe("completed Next.js migration", () => {
     expect(analytics).toContain('window.ym?.(YANDEX_METRIKA_ID, "hit", location.origin + pathname');
     expect(authShell).toContain("auth-card ym-hide-content");
     expect(dashboard).toContain("app ym-hide-content");
-    expect(docs).toContain("ym-disable-keys");
-    expect(docs).toContain("docs-code-card ym-hide-content");
+    expect(docs).toContain("docs-agent-card ym-hide-content");
+    expect(docs).not.toContain('id="docs-api-key"');
+    expect(docs).toContain("ApiReference");
   });
 
   it("keeps reloadable dashboard views in the localized canonical dashboard routes", () => {
@@ -166,21 +167,20 @@ describe("completed Next.js migration", () => {
     expect(dashboard).not.toContain("router.refresh()");
   });
 
-  it("uses flexible whole-USD top-ups and the flat 50% discount", () => {
+  it("uses flexible whole-USD top-ups and one flat 50% B2C discount", () => {
     const pricing = readFileSync(join(root, "components", "pricing-overview.tsx"), "utf8");
     const pricingTiers = readFileSync(join(root, "lib", "pricing-tiers.ts"), "utf8");
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    expect(pricingTiers).toContain("export const FLAT_DISCOUNT_PERCENT = 50");
-    expect(pricingTiers).not.toContain("B2C_PRICING_MILESTONES");
-    expect(pricingTiers).not.toMatch(/62\.5|67\.5|Builder|Studio/);
+    expect(pricingTiers).toContain("B2C_DISCOUNT_PERCENT = 50");
+    expect(pricingTiers).not.toMatch(/milestone|Starter|Builder|Studio|Scale|62\.5|67\.5|tierIndex/);
     expect(messages).not.toMatch(/\bcredit packs?\b|пакет/i);
     expect(pricing).toContain("Choose any whole USD amount");
     expect(pricing).toContain("Negotiated business pricing");
-    expect(pricing).toContain("FLAT_DISCOUNT_PERCENT");
     expect(pricing).not.toContain("B2C_PRICING_MILESTONES");
     expect(pricing).not.toContain("BillingFormula");
     expect(messages).toContain("$10 of API usage at official prices");
     expect(messages).toContain("$10 на использование API по официальным ценам");
+    expect(messages).not.toContain("$2.50");
   });
 
   it("renders dashboard pricing as the flat 50% banner", () => {
@@ -243,11 +243,20 @@ describe("completed Next.js migration", () => {
 
   it("serves documentation as a standalone copyable portal", () => {
     const docs = readFileSync(join(appRoot, "docs", "docs-portal.tsx"), "utf8");
+    const apiReference = readFileSync(join(appRoot, "docs", "api-reference-data.ts"), "utf8");
+    const agentGuideRoute = readFileSync(join(appRoot, "md", "connect", "route.ts"), "utf8");
     const dynamicRoute = readFileSync(join(appRoot, "[slug]", "page.tsx"), "utf8");
     expect(docs).toContain("docs-layout");
     expect(docs).toContain("navigator.clipboard.writeText");
-    expect(docs).toContain("ANTHROPIC_BASE_URL");
-    expect(docs).toContain("Python SDK");
+    expect(docs).toContain("docs-agent-chip");
+    expect(docs).toContain('copyAgent: "Скопировать"');
+    expect(docs).toContain('className="docs-agent-prompt"');
+    expect(docs).toContain("https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md");
+    expect(docs).not.toContain("Connection details");
+    expect(docs).not.toContain("Параметры подключения");
+    expect(agentGuideRoute).toContain("buildAgentSetupMarkdown");
+    expect(apiReference).toContain("ANTHROPIC_BASE_URL");
+    expect(apiReference).toContain("Python SDK");
     expect(dynamicRoute).not.toContain("DocsPage");
   });
 
@@ -316,7 +325,7 @@ describe("completed Next.js migration", () => {
     expect(home).not.toContain('k="hero_note"');
     expect(home).toContain('k="offer_free_eyebrow"');
     expect(home).toContain('className="offer-value-table"');
-    expect(home).toContain("−{tier.discount}%");
+    expect(home).toContain("−{row.discount}%");
     expect(animations).not.toContain(".feat:hover{");
     expect(motion).toContain("transform={`translate(${waveWidth} 0)`}");
     expect(animations).toContain("translateX(-50%)");

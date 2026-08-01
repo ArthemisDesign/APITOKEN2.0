@@ -50,7 +50,7 @@ export const seoPages = {
   plans: {
     path: "/plans",
     title: "API Pricing, Discounts & Prepaid Plans — Claude & GPT",
-    description: "Review flexible USD top-ups, the flat 50% discount for every account, estimated official API value, and negotiated B2B pricing across Claude and GPT models.",
+    description: "Review flexible USD top-ups, a flat 50% B2C discount on every request, estimated official API value, and negotiated B2B pricing across Claude and GPT models.",
     priority: 0.9,
     changeFrequency: "weekly",
   },

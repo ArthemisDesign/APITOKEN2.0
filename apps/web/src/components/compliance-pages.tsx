@@ -172,8 +172,8 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "5. Prices, tariffs, and metering",
           paragraphs: [
             "The Service uses a prepaid usage model, not fixed token packs. You choose a whole USD amount to add to your platform balance. A request's official API spend is calculated from the upstream model's published input, output, cache, and other applicable usage rates. We then apply your active discount and charge the result to your platform balance.",
-            "Example: at the flat 50% discount you pay half of official API spend, so $100 of official API usage charges $50 from your platform balance, and $2,500 of official API usage charges $1,250. The request ledger is the billing record. Displayed estimates may be rounded, while billing uses the exact calculation.",
-            "Every B2C account has the same flat 50% discount on official API spend; there are no progressive tiers, thresholds, or retention conditions. B2B discounts are set under an individual invite-only agreement. Prices shown before payment and the active account discount control the transaction.",
+            "Example: at the flat 50% discount you pay 50% of official API spend, so $100 of official API usage charges $50 from your platform balance. The request ledger is the billing record. Displayed estimates may be rounded, while billing uses the exact calculation.",
+            "B2C accounts are billed at one flat 50% discount applied to every request, with no tiers, spend thresholds, or monthly retention targets. B2B discounts are set under an individual invite-only agreement. Prices shown before payment and the active account discount control the transaction.",
           ],
         },
         {
@@ -376,15 +376,15 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
           title: "5. Цены, тарифы и учёт использования",
           paragraphs: [
             "Сервис работает по предоплате за использование, без фиксированных пакетов токенов. Вы выбираете целую сумму в долларах США для пополнения баланса платформы. Официальная стоимость запроса рассчитывается по опубликованным поставщиком ценам на входные, выходные, кэшированные и иные применимые единицы использования. Затем применяется активная скидка, а результат списывается с баланса платформы.",
-            "Пример: при плоской скидке 50% вы оплачиваете половину официальной стоимости API, поэтому $100 официального использования списывают $50 с баланса платформы, а $2 500 официального использования — $1 250. Журнал запросов является учётной записью биллинга. Публичные оценки могут округляться, но списание рассчитывается точно.",
-            "У каждого B2C-аккаунта одна и та же плоская скидка 50% от официальной стоимости API; прогрессивных уровней, порогов и условий удержания нет. Скидка B2B устанавливается индивидуальным соглашением для приглашённого клиента. Для операции действуют цены, показанные до оплаты, и активная скидка аккаунта.",
+            "Пример: при единой скидке 50% вы оплачиваете 50% официальной стоимости API, поэтому $100 официального использования списывают $50 с баланса платформы. Журнал запросов является учётной записью биллинга. Публичные оценки могут округляться, но списание рассчитывается точно.",
+            "Аккаунты B2C оплачивают каждый запрос по единой скидке 50% — без уровней, порогов расхода и ежемесячных целей удержания. Скидка B2B устанавливается индивидуальным соглашением для приглашённого клиента. Для операции действуют цены, показанные до оплаты, и активная скидка аккаунта.",
           ],
         },
         {
           title: "6. Платежи и бонусы",
           paragraphs: [
             "Платёж проводит провайдер, указанный на странице оплаты. Пополнение зачисляется только после корректного подтверждения провайдера. Срок обработки, курс, комиссия сети и доступный способ возврата могут зависеть от провайдера. Не переводите средства на адрес или счёт, не созданный официальной страницей оплаты.",
-            "Новый подходящий B2C-аккаунт может получить бонус, эквивалентный $10 использования по официальным ценам API при плоской скидке 50%, то есть $5 баланса платформы. Бонус не имеет денежной стоимости, не выводится и не передаётся, предоставляется один раз одному подходящему клиенту и может быть отменён при дублях аккаунтов, мошенничестве или злоупотреблении.",
+            "Новый подходящий B2C-аккаунт может получить бонус, эквивалентный $10 использования по официальным ценам API при единой скидке 50%, то есть $5 баланса платформы. Бонус не имеет денежной стоимости, не выводится и не передаётся, предоставляется один раз одному подходящему клиенту и может быть отменён при дублях аккаунтов, мошенничестве или злоупотреблении.",
           ],
         },
         {
@@ -439,23 +439,24 @@ const documents: Record<Language, { privacy: LegalDocument; terms: LegalDocument
 
 const supportCopy: Record<Language, {
   eyebrow: string; title: string; summary: string; emailLabel: string; emailHelp: string;
-  write: string; official: string; topicsTitle: string; topics: string[];
-  securityTitle: string; security: string; refundsTitle: string; refunds: string;
+  write: string; official: string; topicsTitle: string; topics: string[]; includeTitle: string;
+  include: string[]; securityTitle: string; security: string; refundsTitle: string; refunds: string;
   bot: { poweredBy: string; name: string; desc: string; points: string[]; cta: string; availability: string; handleLabel: string };
   how: { title: string; hours: string; steps: { h: string; p: string }[] };
   emailKicker: string;
 }> = {
   en: {
-    eyebrow: "Customer support", title: "apiToken Support", summary: "Ask in plain words. Our Telegram AI already knows the apiToken.sale documentation, supported tools, endpoints, and current models; a real person joins only when needed.",
+    eyebrow: "Customer support", title: "apiToken Support", summary: "Get help fast. Our AI assistant answers instantly in Telegram, and hands you over to a real person whenever a case needs targeted, human attention.",
     emailLabel: "Official support email", emailHelp: "For account-specific paperwork or if you can't use Telegram — email is a permanent channel for B2C and B2B.", write: "Write an email", emailKicker: "Prefer email?",
     official: "The only official support bot is @apitokensupportbot — ignore anyone else.",
     topicsTitle: "What it handles", topics: ["Sign-up & top-up", "Issue / revoke keys", "Endpoint setup", "Request errors", "Pricing & discounts", "Reading usage", "Base URL & x-api-key", "Model id & balance"],
+    includeTitle: "For a faster answer", include: ["Your account email", "The exact error or model id", "Roughly when it happened", "Screenshots — no secrets"],
     securityTitle: "Protect your account", security: "Never share passwords, full keys or card details — we'll never ask.",
     refundsTitle: "Money & refunds", refunds: "Charges & refunds go straight to a human — 14 days, order id.",
     bot: {
-      poweredBy: "AI support · all docs included",
+      poweredBy: "AI first line · Claude Sonnet 5",
       name: "apiToken Support",
-      desc: "The AI knows every apiToken.sale guide, supported client, endpoint, setup path, and current model. Ask any product question and it will help right away; a real person joins when the case needs one.",
+      desc: "Instant AI help in Telegram — a real person joins when your case needs one.",
       points: [],
       cta: "Open in Telegram",
       availability: "AI 24/7 · humans 08:00–12:00 UTC",
@@ -465,23 +466,24 @@ const supportCopy: Record<Language, {
       title: "How it works",
       hours: "Humans · 08:00–12:00 UTC",
       steps: [
-        { h: "Ask any question", p: "About using apiToken.sale." },
-        { h: "AI knows all docs", p: "Setup, models, and errors." },
+        { h: "Message the bot", p: "In plain words." },
+        { h: "AI answers", p: "In seconds, 24/7." },
         { h: "Human if needed", p: "Money & account cases." },
       ],
     },
   },
   ru: {
-    eyebrow: "Поддержка клиентов", title: "apiToken Support", summary: "Спросите своими словами. ИИ в Telegram уже знает документацию apiToken.sale, поддерживаемые инструменты, эндпоинты и актуальные модели; человек подключается только при необходимости.",
+    eyebrow: "Поддержка клиентов", title: "apiToken Support", summary: "Помощь без ожидания. ИИ-ассистент мгновенно отвечает в Telegram и передаёт вас живому человеку, как только вопрос требует точечного, ручного разбора.",
     emailLabel: "Официальная почта поддержки", emailHelp: "Для документов по аккаунту или если Telegram недоступен — почта остаётся постоянным каналом для B2C и B2B.", write: "Написать письмо", emailKicker: "Удобнее почтой?",
     official: "Единственный официальный бот поддержки — @apitokensupportbot, остальным не верьте.",
     topicsTitle: "С чем помогает", topics: ["Регистрация и пополнение", "Выпуск / отзыв ключей", "Настройка endpoint", "Ошибки запросов", "Тарифы и скидки", "Чтение использования", "Base URL и x-api-key", "id модели и баланс"],
+    includeTitle: "Чтобы ответить быстрее", include: ["Email аккаунта", "Точный текст ошибки или id модели", "Примерное время события", "Скриншоты — без секретов"],
     securityTitle: "Защитите аккаунт", security: "Не отправляйте пароли, полные ключи и данные карт — мы их не спросим.",
     refundsTitle: "Деньги и возвраты", refunds: "Списания и возвраты — сразу человеку; 14 дней, номер заказа.",
     bot: {
-      poweredBy: "ИИ-поддержка · вся документация уже внутри",
+      poweredBy: "ИИ первой линии · Claude Sonnet 5",
       name: "apiToken Support",
-      desc: "ИИ знает всю документацию apiToken.sale, поддерживаемые клиенты, эндпоинты, варианты настройки и актуальные модели. Задайте любой вопрос о продукте — он сразу поможет, а человек подключится, если без него не обойтись.",
+      desc: "Мгновенная помощь ИИ в Telegram — человек подключается, когда нужно.",
       points: [],
       cta: "Открыть в Telegram",
       availability: "ИИ 24/7 · люди 08:00–12:00 UTC",
@@ -491,8 +493,8 @@ const supportCopy: Record<Language, {
       title: "Как это работает",
       hours: "Люди · 08:00–12:00 UTC",
       steps: [
-        { h: "Задайте любой вопрос", p: "О работе с apiToken.sale." },
-        { h: "ИИ знает все доки", p: "Настройки, модели и ошибки." },
+        { h: "Напишите боту", p: "Простыми словами." },
+        { h: "ИИ отвечает", p: "За секунды, 24/7." },
         { h: "Человек при необходимости", p: "По деньгам и аккаунту." },
       ],
     },

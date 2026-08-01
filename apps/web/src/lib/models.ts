@@ -1,8 +1,8 @@
 // Model catalog for the /models programmatic SEO pages — two providers, one key and balance.
 // Claude prices are official Anthropic per-million-token rates; GPT prices are official OpenAI
 // per-million-token rates from the pinned engine catalog (crates/metering/src/codex.rs). The
-// discount shown to users is the flat 50% off official rates for every account, and applies to
-// both providers through the same account multiplier.
+// discounted price shown to users derives from the flat B2C pricing model (50% off official
+// spend on every request) and applies to both providers through the same account multiplier.
 // Keep numbers in sync with the providers' price lists and the engine catalog.
 
 export type ModelProvider = "anthropic" | "openai";
@@ -14,7 +14,7 @@ export type ClaudeModel = {
   /** Exact API model ID. */
   id: string;
   name: string;
-  tier: "Opus" | "Sonnet" | "Haiku";
+  tier: "Mythos" | "Opus" | "Sonnet" | "Haiku";
   /** <title> without brand suffix. */
   title: string;
   description: string;
@@ -65,12 +65,11 @@ export type OpenAiModel = {
 
 export type CatalogModel = ClaudeModel | OpenAiModel;
 
-// Единственная скидка на платформе: плоские 50% для всех аккаунтов, без тиров.
-export const DISCOUNT_BASE = 0.5;
+export const DISCOUNT_FLAT = 0.5;
 
-/** Price after the flat 50% discount, formatted. */
-export function priceFrom(officialPerM: number): string {
-  return formatUsd(officialPerM * (1 - DISCOUNT_BASE));
+/** Price after the flat (50%) discount, formatted. */
+export function priceHere(officialPerM: number): string {
+  return formatUsd(officialPerM * (1 - DISCOUNT_FLAT));
 }
 
 export function formatUsd(value: number): string {
@@ -83,6 +82,72 @@ export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 
 export const claudeModels: ClaudeModel[] = [
+  {
+    provider: "anthropic",
+    slug: "claude-opus-5",
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    tier: "Opus",
+    title: "Claude Opus 5 API — Price per Token & Access",
+    description: "Claude Opus 5 API pricing: official $5/$25 per 1M tokens, $2.50/$12.50 with the flat 50% apiToken.sale discount. The newest Opus on the same Anthropic API.",
+    keywords: ["claude opus 5 api", "claude opus 5 price", "claude opus 5 api cost", "opus 5 token pricing", "claude-opus-5", "buy claude opus api"],
+    dek: "Claude Opus 5 is Anthropic's newest Opus — the July 2026 flagship for agentic coding, long-horizon tasks and hard reasoning, at the same token price as Opus 4.8.",
+    inputPerM: 5,
+    outputPerM: 25,
+    cacheReadPerM: 0.5,
+    cacheWrite5mPerM: 6.25,
+    context: "1M tokens",
+    maxOutput: "128K tokens",
+    bestFor: [
+      "Agentic coding in Claude Code, Cursor and Cline — the new default.",
+      "Long-horizon autonomous tasks and complex refactors.",
+      "The hardest reasoning, planning and review work.",
+    ],
+    notes: [
+      "Same $5/$25 tariff as Opus 4.8 — a capability upgrade at no price change.",
+      "Fast mode (research preview, ~2.5× speed) bills $10/$50 per 1M on requests that use it.",
+      "Adaptive thinking is the recommended mode; thinking tokens bill as output.",
+    ],
+    faq: [
+      { q: "How much does the Claude Opus 5 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens — unchanged from Opus 4.8. On apiToken.sale the same requests cost 50% less: $2.50/$12.50 at the flat discount applied to every call." },
+      { q: "What is the model ID for Claude Opus 5?", a: "claude-opus-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "Opus 5 or Fable 5?", a: "Opus 5 is the default for almost everything — top-tier agentic quality at half the Fable token price. Route to Fable 5 only the longest-horizon runs where its edge is worth 2× the tokens." },
+    ],
+    related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
+  },
+  {
+    provider: "anthropic",
+    slug: "claude-fable-5",
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    tier: "Mythos",
+    title: "Claude Fable 5 API — Price per Token & Access",
+    description: "Claude Fable 5 API pricing: official $10/$50 per 1M tokens, $5/$25 with the flat 50% apiToken.sale discount. Mythos-class — the strongest Claude tier.",
+    keywords: ["claude fable 5 api", "claude fable 5 price", "fable 5 api cost", "claude-fable-5", "mythos class model", "fable 5 token pricing"],
+    dek: "Claude Fable 5 is Anthropic's Mythos-class model — a tier above Opus for the longest-horizon agentic work, at double the Opus token price.",
+    inputPerM: 10,
+    outputPerM: 50,
+    cacheReadPerM: 1,
+    cacheWrite5mPerM: 12.5,
+    context: "1M tokens",
+    maxOutput: "128K tokens",
+    bestFor: [
+      "The longest-horizon autonomous runs where failure costs more than tokens.",
+      "The hardest software tasks — it leads SWE-bench Pro.",
+      "An orchestrator or advisor role reviewing and steering cheaper models.",
+    ],
+    notes: [
+      "Mythos class sits above Opus: $10/$50 vs the Opus $5/$25 tariff.",
+      "Safety classifiers may reroute sensitive requests to Opus.",
+      "Adaptive thinking is the recommended mode; thinking tokens bill as output.",
+    ],
+    faq: [
+      { q: "How much does the Claude Fable 5 API cost?", a: "Officially $10 per 1M input tokens and $50 per 1M output tokens — double the Opus tariff. On apiToken.sale the flat 50% discount applies to every call: $5/$25." },
+      { q: "What is the model ID for Claude Fable 5?", a: "claude-fable-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "Fable 5 or Mythos 5?", a: "They share weights and price; Mythos 5 stays restricted to Project Glasswing partners. Fable 5 is the publicly available model, and the one served here." },
+    ],
+    related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
+  },
   {
     provider: "anthropic",
     slug: "claude-opus-4-8",
@@ -109,7 +174,7 @@ export const claudeModels: ClaudeModel[] = [
       "1M-token context window at standard pricing — no long-context premium.",
     ],
     faq: [
-      { q: "How much does the Claude Opus 4.8 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens. On apiToken.sale the same requests cost a flat 50% less — $2.50 per 1M input and $12.50 per 1M output." },
+      { q: "How much does the Claude Opus 4.8 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens. On apiToken.sale the same requests cost 50% less — $2.50/$12.50 at the flat discount applied to every call." },
       { q: "What is the model ID for Claude Opus 4.8?", a: "claude-opus-4-8. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
       { q: "Is Opus 4.8 worth the price over Sonnet?", a: "For hard agentic and reasoning work, usually yes. For routine coding, Sonnet 5 delivers near-Opus quality at 40% of the token price — many teams route by task." },
     ],
@@ -173,7 +238,7 @@ export const claudeModels: ClaudeModel[] = [
       "Adaptive thinking is on by default when the thinking parameter is omitted.",
     ],
     faq: [
-      { q: "How much does the Claude Sonnet 5 API cost?", a: "The standard official rate is $3 per 1M input tokens and $15 per 1M output tokens (Anthropic lists an introductory $2/$10 through August 2026). apiToken.sale applies a flat 50% discount on top of official spend." },
+      { q: "How much does the Claude Sonnet 5 API cost?", a: "The standard official rate is $3 per 1M input tokens and $15 per 1M output tokens (Anthropic lists an introductory $2/$10 through August 2026). apiToken.sale applies your flat 50% discount on top of official spend." },
       { q: "What is the model ID for Claude Sonnet 5?", a: "claude-sonnet-5 — use it as-is in the Anthropic SDK, Claude Code, Cursor, Cline or any compatible tool." },
       { q: "Is Sonnet 5 good enough for coding?", a: "For most coding it is the sweet spot: near-Opus quality on agentic and editing tasks at a much lower per-token price. Route only the hardest reasoning to Opus." },
     ],
@@ -279,7 +344,7 @@ export const openaiModels: OpenAiModel[] = [
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
-      { q: "How much does the GPT-5.6 Sol API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens, with cached input at $0.50. On apiToken.sale the same requests cost a flat 50% less — $2.50 per 1M input and $15 per 1M output." },
+      { q: "How much does the GPT-5.6 Sol API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens, with cached input at $0.50. On apiToken.sale the same requests cost 50% less — $2.50/$15 at the flat discount applied to every call." },
       { q: "What is the model ID for GPT-5.6 Sol?", a: "gpt-5.6-sol (gpt-5.6 is an alias of the same model). Use it with the OpenAI SDK, Codex CLI, opencode or any OpenAI-compatible tool pointed at https://openai.api.apitoken.sale/v1." },
       { q: "Does the same key really work for GPT and Claude?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: Anthropic Messages API for Claude models and the OpenAI-compatible API for GPT models. The same discount applies to both." },
     ],
@@ -292,7 +357,7 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.6 Terra",
     tier: "Balanced",
     title: "GPT-5.6 Terra API — Price per Token & Access",
-    description: "GPT-5.6 Terra API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Balanced GPT-5.6 model on one prepaid balance.",
+    description: "GPT-5.6 Terra API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Balanced GPT-5.6 tier on one prepaid balance.",
     keywords: ["gpt-5.6 terra api", "gpt-5.6 terra price", "gpt-5.6-terra", "gpt-5.6 token pricing", "openai compatible api"],
     dek: "GPT-5.6 Terra is the balanced tier of the GPT-5.6 line — half the flagship token price, with the same reasoning-effort controls and the full 272K context.",
     inputPerM: 2.5,
@@ -326,7 +391,7 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.6 Luna",
     tier: "Fast",
     title: "GPT-5.6 Luna API — Price per Token & Access",
-    description: "GPT-5.6 Luna API pricing: official $1/$6 per 1M tokens, $0.50/$3 with the flat 50% apiToken.sale discount. The fastest, cheapest GPT-5.6 model.",
+    description: "GPT-5.6 Luna API pricing: official $1/$6 per 1M tokens, $0.50/$3 with the flat 50% apiToken.sale discount. The fastest, cheapest GPT-5.6 tier.",
     keywords: ["gpt-5.6 luna api", "gpt-5.6 luna price", "gpt-5.6-luna", "cheapest gpt model", "openai compatible api"],
     dek: "GPT-5.6 Luna is the fast, economical tier of the GPT-5.6 line — built for high-volume, latency-sensitive work at one fifth of the flagship price.",
     inputPerM: 1,
@@ -394,7 +459,7 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.4",
     tier: "Balanced",
     title: "GPT-5.4 API — Price per Token & Access",
-    description: "GPT-5.4 API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Proven balanced model on one prepaid balance.",
+    description: "GPT-5.4 API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Proven balanced tier on one prepaid balance.",
     keywords: ["gpt-5.4 api", "gpt-5.4 price", "gpt-5.4 api cost", "gpt-5.4 token pricing", "openai compatible api"],
     dek: "GPT-5.4 is the proven balanced tier of the previous generation — a workhorse for coding and production pipelines, at the same list price as GPT-5.6 Terra.",
     inputPerM: 2.5,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FLAT_DISCOUNT_PERCENT, FLAT_PRICE_MULTIPLIER } from "@/lib/pricing-tiers";
+import { B2C_DISCOUNT_PERCENT, officialUsageForTopup } from "@/lib/pricing-tiers";
 import { useI18n } from "./i18n-provider";
 
 export function TopUpAmountInput({ className, initialAmount, showReceive }: { className: string; initialAmount: string; showReceive?: boolean }) {
@@ -24,18 +24,18 @@ export function TopUpAmountInput({ className, initialAmount, showReceive }: { cl
   if (!showReceive) return field;
 
   const amt = Number(amount) || 0;
-  // Плоская модель: любая сумма конвертируется по одной ставке −50% (×2 официальной ценности).
-  const receive = amt / FLAT_PRICE_MULTIPLIER;
+  // Плоская модель: любая сумма конвертируется по одной ставке — скидка 50% (×2 ценности).
+  const receive = officialUsageForTopup(amt);
   const value = `$${receive.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
   const sub = amt <= 0
     ? (language === "ru" ? "Введите сумму" : "Enter an amount")
-    : (language === "ru" ? "официального использования API · плоские −50%" : "of official API usage · flat −50%");
+    : (language === "ru" ? "официального использования API" : "of official API usage");
   return <div className="topup-live">
     {field}
     <div className="topup-live-out">
       <div className="tlo-row">
         <b>{amt > 0 ? `≈ ${value}` : "—"}</b>
-        {amt > 0 && <span className="tlo-badge">−{FLAT_DISCOUNT_PERCENT}%</span>}
+        {amt > 0 && <span className="tlo-badge">−{B2C_DISCOUNT_PERCENT}%</span>}
       </div>
       <span className="tlo-sub">{sub}</span>
     </div>

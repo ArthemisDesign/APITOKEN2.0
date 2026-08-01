@@ -13,7 +13,7 @@ import {
   modelPath,
   MODELS_HUB_PATH,
   openaiModels,
-  priceFrom,
+  priceHere,
   type CatalogModel,
 } from "@/lib/models";
 
@@ -36,17 +36,17 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
 function priceRowsFor(model: CatalogModel) {
   if (model.provider === "anthropic") {
     return [
-      { rate: "Input", official: formatUsd(model.inputPerM), yours: priceFrom(model.inputPerM) },
-      { rate: "Output", official: formatUsd(model.outputPerM), yours: priceFrom(model.outputPerM) },
-      { rate: "Cache read", official: formatUsd(model.cacheReadPerM), yours: priceFrom(model.cacheReadPerM) },
-      { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), yours: priceFrom(model.cacheWrite5mPerM) },
+      { rate: "Input", official: formatUsd(model.inputPerM), here: priceHere(model.inputPerM) },
+      { rate: "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
+      { rate: "Cache read", official: formatUsd(model.cacheReadPerM), here: priceHere(model.cacheReadPerM) },
+      { rate: "Cache write (5m)", official: formatUsd(model.cacheWrite5mPerM), here: priceHere(model.cacheWrite5mPerM) },
     ];
   }
   return [
-    { rate: "Input", official: formatUsd(model.inputPerM), yours: priceFrom(model.inputPerM) },
-    { rate: "Cached input", official: formatUsd(model.cachedInputPerM), yours: priceFrom(model.cachedInputPerM) },
-    { rate: "Cache write", official: formatUsd(model.cacheWritePerM), yours: priceFrom(model.cacheWritePerM) },
-    { rate: "Output", official: formatUsd(model.outputPerM), yours: priceFrom(model.outputPerM) },
+    { rate: "Input", official: formatUsd(model.inputPerM), here: priceHere(model.inputPerM) },
+    { rate: "Cached input", official: formatUsd(model.cachedInputPerM), here: priceHere(model.cachedInputPerM) },
+    { rate: "Cache write", official: formatUsd(model.cacheWritePerM), here: priceHere(model.cacheWritePerM) },
+    { rate: "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
   ];
 }
 
@@ -138,14 +138,14 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                   <tr>
                     <th>Rate</th>
                     <th>{copy.officialCol}</th>
-                    <th>Your price (−50%)</th>
+                    <th>Here (−50%)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {priceRows.map((row) => <tr key={row.rate}>
                     <td>{row.rate}</td>
                     <td>{row.official}</td>
-                    <td>{row.yours}</td>
+                    <td>{row.here}</td>
                   </tr>)}
                 </tbody>
               </table>
@@ -155,11 +155,11 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                 <h3>{row.rate}</h3>
                 <dl>
                   <div><dt>{copy.officialCol}</dt><dd>{row.official}</dd></div>
-                  <div><dt>Your price (−50%)</dt><dd>{row.yours}</dd></div>
+                  <div><dt>Here (−50%)</dt><dd>{row.here}</dd></div>
                 </dl>
               </article>)}
             </div>
-            <p className="docs-para">Every request is metered at the official rate first, then the flat 50% discount — the same for every account, with no conditions — is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
+            <p className="docs-para">Every request is metered at the official rate first, then the flat 50% B2C discount is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
           </div>
 
           <div className="learn-section">

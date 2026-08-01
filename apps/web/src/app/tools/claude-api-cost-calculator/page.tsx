@@ -33,7 +33,7 @@ const FAQ = [
   },
   {
     q: "How can I make the Claude API cheaper?",
-    a: "apiToken.sale serves the exact same Anthropic Messages API on one key and one balance, billed at a flat 50% below official prices for every account. Point any Anthropic-compatible tool (Claude Code, Cursor, Cline, the SDK) at our endpoint — same models, same responses, half the price per call.",
+    a: "apiToken.sale serves the exact same Anthropic Messages API on one key and one balance, billed at a flat 50% below official prices on every request. Point any Anthropic-compatible tool (Claude Code, Cursor, Cline, the SDK) at our endpoint — same models, same responses, half the price per call.",
   },
   {
     q: "What is a token?",

@@ -484,7 +484,12 @@ async function capturePage(client, [name, route, width, height, theme, language 
   await client.send("Runtime.evaluate", {
     expression: `localStorage.setItem('theme:v1', ${JSON.stringify(theme)}); localStorage.setItem('theme', ${JSON.stringify(theme)}); localStorage.setItem('lang', ${JSON.stringify(language)});`,
   });
-  const captureUrl = new URL(route, baseUrl);
+  // The site language is URL-owned. Navigate straight to the localized route instead of
+  // clicking a language control before React has necessarily hydrated its event handler.
+  const localizedRoute = language === "ru" && !route.startsWith("/ru")
+    ? route === "/" ? "/ru" : `/ru${route}`
+    : route;
+  const captureUrl = new URL(localizedRoute, baseUrl);
   // Force a real navigation even when consecutive captures use the same route.
   // Without this cache-buster Chrome can reuse the mounted English page after
   // localStorage is changed, producing a mislabeled language screenshot.
@@ -1402,7 +1407,7 @@ async function verifyDocsTheme(client) {
   await loaded;
   await waitForCondition(
     client,
-    `document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme' && !document.documentElement.hasAttribute('data-theme')`,
+    `document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme' && document.documentElement.dataset.theme !== 'dark'`,
     "the light docs theme",
   );
 
@@ -1412,8 +1417,8 @@ async function verifyDocsTheme(client) {
       return JSON.stringify({
         site: style('.docs-site').backgroundColor,
         header: style('.docs-header').backgroundColor,
-        code: style('.docs-code-card pre').backgroundColor,
-        durations: ['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => style(selector).transitionDuration),
+        code: style('.ib-code').backgroundColor,
+        durations: ['.docs-site', '.docs-header', '.docs-sidebar', '.docs-agent-card', '.docs-integration-builder', '.ib-code', '.docs-errors', '.docs-footer'].map((selector) => style(selector).transitionDuration),
       });
     })()`,
     returnByValue: true,
@@ -1436,7 +1441,7 @@ async function verifyDocsTheme(client) {
       return JSON.stringify({
         site: style('.docs-site').backgroundColor,
         header: style('.docs-header').backgroundColor,
-        code: style('.docs-code-card pre').backgroundColor,
+        code: style('.ib-code').backgroundColor,
       });
     })()`,
     returnByValue: true,
@@ -1469,7 +1474,7 @@ async function verifyDocsTheme(client) {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
   const reducedResult = await client.send("Runtime.evaluate", {
-    expression: `JSON.stringify(['.docs-site', '.docs-header', '.docs-sidebar', '.docs-endpoint', '.docs-notice', '.docs-code-card pre', '.docs-auth-flow', '.docs-checklist', '.docs-footer'].map((selector) => getComputedStyle(document.querySelector(selector)).transitionDuration))`,
+    expression: `JSON.stringify(['.docs-site', '.docs-header', '.docs-sidebar', '.docs-agent-card', '.docs-integration-builder', '.ib-code', '.docs-errors', '.docs-footer'].map((selector) => getComputedStyle(document.querySelector(selector)).transitionDuration))`,
     returnByValue: true,
   });
   const reducedDurations = JSON.parse(reducedResult.result.value);

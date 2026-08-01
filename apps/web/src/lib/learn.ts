@@ -237,7 +237,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Pay by bank card or with cryptocurrency through a secure checkout provider.",
           "Every request is converted to official Anthropic API spend, then your active discount is applied.",
-          "Every account pays a flat 50% below official spend — on all models, always.",
+          "B2C accounts get a flat 50% off official spend on every request.",
         ] },
       ] },
       { h2: "What you can do with the key", blocks: [
@@ -268,13 +268,13 @@ export const learnArticles: LearnArticle[] = [
     h1: "The cheapest way to use the Claude API",
     description: "The cheapest Claude API: buy discounted Claude API tokens at a flat 50% off. apiToken.sale sells the identical Anthropic API from prepaid balance with a flat Claude API discount.",
     keywords: ["cheapest claude api", "claude api discount", "claude api tokens", "discounted claude api", "cheap claude api", "claude api cheaper than anthropic", "buy claude api", "claude api access", "claude api top up", "claude api reseller", "claude api provider"],
-    dek: "The Claude API is priced per token, and those tokens add up fast on long coding sessions. apiToken.sale gives you the identical API for a flat 50% less by pooling prepaid balance and applying the discount to every request.",
+    dek: "The Claude API is priced per token, and those tokens add up fast on long coding sessions. apiToken.sale gives you the identical API for 50% less by pooling prepaid balance and applying a flat discount.",
     sections: [
       { h2: "Why it is cheaper", blocks: [
         { type: "p", text: "You send the same request to the same Anthropic Messages API and get the same response. The only thing under the hood is billing: each call is metered at official rates, then your discount is subtracted before it touches your balance." },
         { type: "list", items: [
-          "Every account pays a flat 50% off official spend.",
-          "The discount applies to all models, forever — no conditions.",
+          "B2C accounts get a flat 50% off official spend.",
+          "The same flat rate applies to every request — nothing to unlock.",
           "B2B volume pricing is negotiated separately.",
         ] },
       ] },
@@ -306,7 +306,7 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "Is this really the same Claude API?", a: "Yes — the same Anthropic Messages API, same model IDs, same request and response format. Only the price per call is lower." },
-      { q: "How much can I save?", a: "Every account pays a flat 50% below official API spend — half the official price on every model, with no conditions." },
+      { q: "How much can I save?", a: "B2C pricing is a flat 50% below official API spend on every request." },
       { q: "Are there hidden fees or subscriptions?", a: "No. Balance is prepaid, never expires, and is consumed only by real API usage — there is no monthly charge." },
       { q: "Is there a cheaper Claude API than buying from Anthropic directly?", a: "Yes. apiToken.sale sells the identical Anthropic API at a flat 50% off official spend, with no subscription." },
     ],
@@ -509,7 +509,7 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "How do I start the trial?", a: "Create a new account with Google or GitHub. The $10 of official-price usage is added automatically; email and password accounts are not eligible." },
-      { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; the flat 50% discount applies immediately." },
+      { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; your flat discount applies immediately." },
     ],
     related: ["free-claude-api-key", "claude-api-without-waitlist", "claude-api-quick-setup", "claude-haiku-api"],
   },
@@ -558,7 +558,7 @@ export const learnArticles: LearnArticle[] = [
         ] },
       ] },
       { h2: "Opus on your balance", blocks: [
-        { type: "p", text: "Opus 4.8 (model ID claude-opus-4-8) and Opus 4.7 are billed at official token rates minus the flat 50% discount, so you get the top tier for half the list price." },
+        { type: "p", text: "Opus 4.8 (model ID claude-opus-4-8) and Opus 4.7 are billed at official token rates minus your discount, so you get the top tier for a fraction of the list price." },
         { type: "table", headers: ["Model", "Official in / out ($ per 1M)", "Here (\u221250%)"], rows: [
           ["Claude Opus 4.8", "$5 / $25", "$2.50 / $12.50"],
           ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
@@ -844,7 +844,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Use the Claude API with Aider",
     h1: "Use the Claude API with Aider",
-    description: "Run Aider on Claude through apiToken.sale: export ANTHROPIC_API_BASE and your key, pick a Claude model, and pair-program in the terminal at 50% off.",
+    description: "Run Aider on Claude through apiToken.sale: export ANTHROPIC_API_BASE and your key, pick a Claude model, and pair-program in the terminal at a flat 50% off.",
     keywords: ["claude api aider", "aider anthropic", "aider claude", "aider anthropic api base", "aider claude api key", "aider cheap claude"],
     dek: "Aider is a terminal pair-programmer that burns tokens fast on long sessions. Point it at the discounted gateway with two environment variables and keep the exact same workflow.",
     published: "2026-07-17",
@@ -867,7 +867,7 @@ export const learnArticles: LearnArticle[] = [
     faq: [
       { q: "Does Aider work with a custom Claude endpoint?", a: "Yes. Aider uses LiteLLM for Anthropic models, and LiteLLM honours the ANTHROPIC_API_BASE environment variable — set it to https://api.apitoken.sale and start Aider normally." },
       { q: "Which Claude model is best in Aider?", a: "claude-sonnet-5 is the best default for most coding; switch to claude-opus-4-8 for the hardest multi-file work. Both run on the same key." },
-      { q: "How much cheaper is a long Aider session?", a: "Every request is billed at official token rates minus the flat 50% discount, so a session that would cost $10 direct costs $5 here." },
+      { q: "How much cheaper is a long Aider session?", a: "Every request is billed at official token rates minus your flat 50% discount, so a session that would cost $10 direct costs $5 here." },
     ],
     related: ["claude-api-litellm", "claude-code-without-subscription", "best-claude-model-for-coding", "save-tokens-on-claude-api"],
   },
@@ -876,7 +876,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Use the Claude API with Roo Code",
     h1: "Use the Claude API with Roo Code",
-    description: "Connect Roo Code in VS Code to Claude through apiToken.sale: choose the Anthropic provider, enable the custom base URL, paste your key and code at 50% off.",
+    description: "Connect Roo Code in VS Code to Claude through apiToken.sale: choose the Anthropic provider, enable the custom base URL, paste your key and code at a flat 50% off.",
     keywords: ["claude api roo code", "roo code anthropic", "roo code claude", "roo code custom base url", "roo code api key", "roo code cheap claude"],
     dek: "Roo Code is an agentic VS Code extension with a native Anthropic provider and a custom base URL option — which makes it a two-minute setup on the discounted gateway.",
     published: "2026-07-17",
@@ -926,7 +926,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "What changes", blocks: [
         { type: "list", items: [
-          "Price: a flat 50% below official spend for every account.",
+          "Price: a flat 50% below official spend for B2C.",
           "Onboarding: no Anthropic account, waitlist or billing-country requirement.",
           "Payment: bank card or cryptocurrency.",
         ] },
@@ -956,7 +956,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Prepaid discount, not markup", blocks: [
         { type: "list", items: [
-          "A flat 50% discount off official Claude spend.",
+          "Flat 50% B2C discount off official Claude spend.",
           "One key and balance for Opus, Sonnet and Haiku.",
           "Card or crypto top-ups that never expire.",
         ] },
@@ -1030,7 +1030,7 @@ export const learnArticles: LearnArticle[] = [
         ] },
       ] },
       { h2: "The apiToken.sale discount", blocks: [
-        { type: "p", text: "Each call is converted to official Anthropic spend, then the flat 50% discount is subtracted — the same rate for every account, on every model. Every request is visible in your dashboard with token-level detail." },
+        { type: "p", text: "Each call is converted to official Anthropic spend, then your discount is subtracted: B2C takes a flat 50% off every request. Every request is visible in your dashboard with token-level detail." },
         cta(),
       ] },
       { h2: "Claude API token pricing by model", blocks: [
@@ -1047,8 +1047,8 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "How is the Claude API priced?", a: "Per token, split into input and output, with separate cheaper rates for cache reads. Larger models cost more per token." },
-      { q: "How does the discount apply?", a: "Official spend is calculated first, then the flat 50% discount is subtracted before it touches your balance." },
-      { q: "How are Claude API tokens priced?", a: "Per token, split into input and output, with cheaper cache reads. apiToken.sale applies a flat 50% discount on top of the official token rates." },
+      { q: "How does the discount apply?", a: "Official spend is calculated first, then your flat 50% B2C discount is subtracted before it touches your balance." },
+      { q: "How are Claude API tokens priced?", a: "Per token, split into input and output, with cheaper cache reads. apiToken.sale applies your flat 50% discount on top of the official token rates." },
     ],
     related: ["cheapest-claude-api", "save-tokens-on-claude-api", "how-billing-works", "apitoken-vs-anthropic-direct"],
     updated: "2026-07-17",
@@ -1088,9 +1088,9 @@ export const learnArticles: LearnArticle[] = [
     cluster: "explain",
     title: "How Billing Works on apiToken.sale",
     h1: "How billing works",
-    description: "Understand apiToken.sale billing: prepaid balance, per-request metering at official provider rates, a flat 50% discount across Claude and GPT, and token-level usage in the dashboard.",
+    description: "Understand apiToken.sale billing: prepaid balance, per-request metering at official provider rates, your flat discount across Claude and GPT, and token-level usage in the dashboard.",
     keywords: ["claude api billing", "gpt api billing", "how apitoken billing works", "prepaid claude api", "prepaid gpt api", "claude api usage tracking", "claude api balance", "claude api pricing", "how claude api works", "anthropic api"],
-    dek: "Billing is prepaid and transparent. You fund one balance, and each request — Claude or GPT — draws down official provider spend minus the flat 50% discount, with a full breakdown you can audit.",
+    dek: "Billing is prepaid and transparent. You fund one balance, and each request — Claude or GPT — draws down official provider spend minus your discount, with a full breakdown you can audit.",
     sections: [
       { h2: "Prepaid balance", blocks: [
         { type: "p", text: "You top up any whole-dollar amount. Balance never expires and there is no subscription, so idle time costs nothing. One balance covers both providers: Claude models on the Anthropic surface and GPT models on the OpenAI-compatible surface." },
@@ -1098,7 +1098,7 @@ export const learnArticles: LearnArticle[] = [
       { h2: "Per-request metering", blocks: [
         { type: "list", items: [
           "Each call is converted to official provider spend by token — Anthropic rates for Claude, OpenAI rates for GPT, including cache and long-context buckets.",
-          "The flat 50% discount is subtracted — the same rate applies to both providers.",
+          "Your flat 50% B2C discount is subtracted — the same rate applies to both providers.",
           "The net amount is deducted from your prepaid balance.",
         ] },
       ] },
@@ -1222,7 +1222,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "Discount, not markup", blocks: [
         { type: "list", items: [
-          "A flat 50% discount off official Claude spend.",
+          "Flat 50% B2C discount off official Claude spend.",
           "One prepaid key and balance for Opus, Sonnet and Haiku.",
           "Card or cryptocurrency top-ups that never expire.",
         ] },
@@ -1230,7 +1230,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "When each fits", blocks: [
         { type: "list", items: [
-          "apiToken.sale — a native Anthropic endpoint with a flat 50% discount, lifetime key spending limits and optional expiration.",
+          "apiToken.sale — a native Anthropic endpoint with a flat discount, lifetime key spending limits and optional expiration.",
           "A generic reseller — may suit you if you already use its other providers.",
           "Both remove the Anthropic-account barrier; the difference is price and how native the Claude access is.",
         ] },
@@ -1339,7 +1339,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Pay only for the tokens you actually use — no monthly floor.",
           "One key drives Claude Code, Cursor, agents and production calls.",
-          "apiToken.sale adds a flat 50% off official token rates.",
+          "apiToken.sale takes a flat 50% off official token rates.",
         ] },
         cta(),
       ] },
@@ -1385,7 +1385,7 @@ export const learnArticles: LearnArticle[] = [
       { h2: "The short version", blocks: [
         { type: "list", items: [
           "The exact Anthropic Messages API with every current Claude model, plus an OpenAI-compatible API (Responses and Chat Completions) with the GPT-5 line.",
-          "A flat 50% off official spend on prepaid balance that never expires — one discount covers both providers.",
+          "A flat 50% off official spend on prepaid balance that never expires — one rate covers both providers.",
           "Instant, self-serve access — no Anthropic or OpenAI account, waitlist or billing country.",
           "Pay by bank card or cryptocurrency.",
           "An optional lifetime spending limit and expiration date per key, plus token-level usage in the dashboard.",
@@ -1397,9 +1397,9 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "What makes apiToken.sale different?", a: "It is the same Claude and GPT APIs at a flat 50% less, with instant access and no provider account, payable by card or crypto." },
+      { q: "What makes apiToken.sale different?", a: "It is the same Claude and GPT APIs at 50% less, with instant access and no provider account, payable by card or crypto." },
       { q: "Is anything about the API changed?", a: "No — the protocols, models and responses are the standard Anthropic and OpenAI-compatible ones. Only price and onboarding differ." },
-      { q: "What is apiToken.sale?", a: "An independent multi-provider API gateway that sells discounted, prepaid access to the official Anthropic API and an OpenAI-compatible API — the same models, a flat 50% cheaper, with no provider account." },
+      { q: "What is apiToken.sale?", a: "An independent multi-provider API gateway that sells discounted, prepaid access to the official Anthropic API and an OpenAI-compatible API — the same models, 50% cheaper, with no provider account." },
     ],
     related: ["apitoken-vs-anthropic-direct", "cheapest-claude-api", "openai-api-quickstart", "how-to-buy-claude-api-key"],
     updated: "2026-07-29",
@@ -1626,7 +1626,7 @@ export const learnArticles: LearnArticle[] = [
           "Reasoning effort is adjustable per request — none through xhigh on every model, plus max on the GPT-5.6 line.",
           "Every model accepts text and image input and streams over SSE on both Responses and Chat Completions.",
           "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
-          "The flat 50% discount applies here exactly as it does to Claude usage — one balance, one rate, 50% off official spend.",
+          "Your B2C discount applies here exactly as it does to Claude usage — one balance, one rate, 50% off official spend.",
         ] },
         { type: "link", text: "Full per-model specs and discounted prices", href: "/models" },
       ] },
@@ -1639,7 +1639,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Does the same key really work for Claude and GPT?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: the Anthropic Messages API at api.apitoken.sale for Claude models and the OpenAI-compatible API at openai.api.apitoken.sale/v1 for GPT models. The discount is shared too." },
       { q: "Which auth header does the OpenAI-compatible endpoint use?", a: "Authorization: Bearer sk-pool-…. The x-api-key header is only for the Anthropic surface — sending it to the OpenAI endpoint returns a 401." },
       { q: "Responses or Chat Completions?", a: "Both are served with SSE streaming. Use Responses for new code and the official SDKs; Chat Completions works for clients and frameworks that expect the classic shape." },
-      { q: "How is GPT usage billed?", a: "Per token at official OpenAI rates — including cached-input and long-context pricing — then the flat 50% discount is subtracted before the charge touches your prepaid balance, exactly like Claude usage." },
+      { q: "How is GPT usage billed?", a: "Per token at official OpenAI rates — including cached-input and long-context pricing — then your flat 50% B2C discount is subtracted before the charge touches your prepaid balance, exactly like Claude usage." },
     ],
     related: ["codex-cli-setup", "how-billing-works", "why-choose-apitoken", "how-to-buy-claude-api-key"],
     published: "2026-07-29",
@@ -1682,7 +1682,7 @@ export const learnArticles: LearnArticle[] = [
     faq: [
       { q: "Do I need a ChatGPT account or subscription?", a: "No. With a custom model_providers profile and the provider's API key in the environment, Codex runs entirely on API-key authentication — the ChatGPT login in auth.json is irrelevant." },
       { q: "Does this change my default Codex setup?", a: "No. The profile lives in its own file and activates only when you pass --profile apitoken. Your default configuration and login stay as they were." },
-      { q: "Is the discount the same as for Claude?", a: "Yes. GPT-5.6 usage is metered at official OpenAI token rates and the flat 50% discount applies to the same prepaid balance." },
+      { q: "Is the discount the same as for Claude?", a: "Yes. GPT-5.6 usage is metered at official OpenAI token rates and your flat 50% B2C discount applies to the same prepaid balance." },
       { q: "Responses or Chat Completions for wire_api?", a: "Use wire_api = \"responses\" — the gateway serves both, and Codex is built around the Responses stream. The Chat Completions shape exists for clients that require it." },
     ],
     related: ["openai-api-quickstart", "claude-code-api-key", "how-billing-works", "why-choose-apitoken"],

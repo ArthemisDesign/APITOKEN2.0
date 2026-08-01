@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { claudeModels, openaiModels } from "@/lib/models";
-import { FLAT_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
+import { B2C_DISCOUNT_PERCENT } from "@/lib/pricing-tiers";
 
 /**
  * Free Claude/GPT API cost calculator — framed around whole real tasks, not single requests.
@@ -150,7 +150,9 @@ const TASKS: Task[] = [
 
 const DEFAULT_TASK = 0; // "A month of coding"
 
-// Плоская модель: одна скидка −50% для всех аккаунтов, выбора тира больше нет.
+// Flat B2C pricing: one 50% discount on every request — no tiers to pick.
+const DISCOUNT = B2C_DISCOUNT_PERCENT;
+const MULT = 1 - DISCOUNT / 100;
 
 function usd(v: number): string {
   if (!isFinite(v) || v <= 0) return "$0.00";
@@ -189,8 +191,8 @@ export function CostCalculator() {
   const providerInfo = PROVIDERS[provider];
   const models = providerInfo.models;
   const task = TASKS[taskIdx];
-  const discount = FLAT_DISCOUNT_PERCENT;
-  const mult = 1 - discount / 100;
+  const discount = DISCOUNT;
+  const mult = MULT;
 
   function pickTask(i: number) {
     const t = TASKS[i];
@@ -294,16 +296,10 @@ export function CostCalculator() {
 
           <div className="calc-field" style={{ marginBottom: 0 }}>
             <label>
-              Your discount <span>flat −{FLAT_DISCOUNT_PERCENT}% for every account, on every model</span>
+              Your discount <span>one flat rate — no tiers, no minimums</span>
             </label>
-            <div className="calc-tiers">
-              <button type="button" className="calc-tier on" disabled>
-                <b>−{FLAT_DISCOUNT_PERCENT}%</b>
-                <em>Everyone</em>
-              </button>
-            </div>
             <Link className="calc-tier-cta" href="/#pricing">
-              <span>One flat rate — nothing to unlock or maintain. See pricing</span>
+              <span>Flat −{DISCOUNT}% off official prices on every request — see how billing works</span>
               <span className="calc-tier-cta-arrow" aria-hidden="true">→</span>
             </Link>
           </div>
