@@ -159,7 +159,7 @@ groups:
           runbook: 'docs/ops/MONITORING.md#hostclockskew'
 
       - alert: ProjectSystemdUnitFailed
-        expr: node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|openkeys|deploy-watchdog|monitoring-collector|affinity-redis)|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot))\\.service",state="failed"} == 1
+        expr: node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|openkeys|deploy-watchdog|monitoring-collector|affinity-redis)|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router))\\.service",state="failed"} == 1
         for: 1m
         labels:
           severity: critical
@@ -181,7 +181,7 @@ groups:
           runbook: 'docs/ops/MONITORING.md#criticaltimerfailed'
 
       - alert: ServiceRestartLoop
-        expr: changes(node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|openkeys)|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot))\\.service",state="active"}[15m]) > 4
+        expr: changes(node_systemd_unit_state{name=~"(apitoken-(api@.+|worker|content-studio|sales-api|sales-web|crm-api|crm-web|openkeys)|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router))\\.service",state="active"}[15m]) > 4
         for: 5m
         labels:
           severity: warning

@@ -1204,9 +1204,11 @@ printf 'tested bundle\n' \
   >"$tested_candidate/.deploy-artifacts/commerce-release/apps/api/main.js"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/claude-api"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/authbot"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/engine/claude-router"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tested_candidate/.deploy-artifacts/codex/codex"
 chmod +x "$tested_candidate/.deploy-artifacts/engine/claude-api" \
   "$tested_candidate/.deploy-artifacts/engine/authbot" \
+  "$tested_candidate/.deploy-artifacts/engine/claude-router" \
   "$tested_candidate/.deploy-artifacts/codex/codex"
 tested_marker="$TEMP/tested-candidate.marker"
 {
@@ -1225,6 +1227,8 @@ tested_marker="$TEMP/tested-candidate.marker"
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/claude-api")"
   printf 'authbot_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/authbot")"
+  printf 'router_binary_sha256=%s\n' \
+    "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/engine/claude-router")"
   printf 'codex_binary_sha256=%s\n' \
     "$(wd_sha256_file "$tested_candidate/.deploy-artifacts/codex/codex")"
 } >"$tested_marker"
@@ -1632,8 +1636,8 @@ grep -Fq -- '--label "apitoken.watchdog.slot=$SLOT"' "$ROOT/deploy/watchdog-test
 
 # The authbot produces the subscriptions the engine serves from, so the production watchdog builds
 # it once beside the tested engine and the release controller only promotes those exact binaries.
-grep -Fq 'cargo build --locked --release -p claude-api -p authbot' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the candidate gate does not build both production engine artifacts"
+grep -Fq 'cargo build --locked --release -p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the candidate gate does not build all production engine artifacts"
 grep -Fq '"$TESTED_CANDIDATE/.deploy-artifacts/engine/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the release controller does not promote the tested authbot"
 grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
@@ -1680,6 +1684,38 @@ grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/d
 # from the unit being absent — which is exactly how the first attempt silently skipped the restart.
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot unit check must not require sudo"
+
+# The unified router is a third engine artifact: the gate builds it once beside the tested engine,
+# the marker pins its digest, the promoter verifies it, and the release controller restarts the
+# singleton only on an actual binary change, then requires /ready before reporting green.
+grep -Fq -- '-p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the candidate gate does not build the production router artifact"
+grep -Fq 'router_binary_sha256' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the tested marker does not pin the router binary digest"
+grep -Fq 'claude-router) digest_key=router_binary_sha256' "$ROOT/deploy/lib.sh" \
+  || wd_die "the promoter does not verify the router digest from the marker"
+grep -Fq '"$TESTED_CANDIDATE/.deploy-artifacts/engine/claude-router"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the release controller does not promote the tested router"
+grep -Fq '"$ENGINE_STAGE/claude-router"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the router binary is not installed into the engine release"
+grep -Fq 'staged router binary is missing' "$ROOT/deploy/deploy.sh" \
+  || wd_die "a release without a router binary must fail closed"
+grep -Fq 'restart_router_if_changed "$ENGINE_RELEASE"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "deployment can leave changed router code unadopted"
+grep -Fq 'cmp -s "$exe" "$current/claude-router"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "the router restart must compare the running binary, not release paths"
+grep -Fq 'never became ready on 127.0.0.1:8798' "$ROOT/deploy/deploy.sh" \
+  || wd_die "a router that never answers /ready must fail the deployment"
+grep -Fq 'CLAUDE_ROUTER_PORT=8798' "$ROOT/systemd/claude-router.service" \
+  || wd_die "the router unit does not pin the deploy-verified loopback port"
+grep -Fq 'systemctl try-restart claude-router.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "an updated router unit contract is not adopted by the running service"
+grep -Fq 'claude-router.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "the router unit is never installed"
+grep -Fq '/usr/bin/systemctl restart claude-router.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "the deploy user cannot restart the router"
+grep -Fq 'systemd/claude-router.service' "$ROOT/deploy/watchdog-lib.sh" \
+  || wd_die "the router unit definition is not scoped as systemd infrastructure"
 
 # The native Codex provider ships its wire identity inside the tested engine binary: there is no
 # sidecar artifact, no isolated build lane and no promotion helper left.
@@ -1860,7 +1896,8 @@ grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
 for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
   claude-api-openai@8797.service claude-api-gemini.service \
-  claude-api-gemini@8795.service claude-api-gemini@8799.service claude-authbot.service; do
+  claude-api-gemini@8795.service claude-api-gemini@8799.service claude-authbot.service \
+  claude-router.service; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
     || wd_die "release retention can unlink the executable backing $retained_engine_unit"
 done

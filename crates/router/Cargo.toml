@@ -1,0 +1,22 @@
+[package]
+name = "claude-router"
+version = "0.1.0"
+edition = "2021"
+description = "Unified stateless entry point: native-lane fan-in and aggregated model catalog over the provider planes (docs/engine/UNIFIED_ROUTER.md)"
+
+[[bin]]
+name = "claude-router"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+# Loopback-only client: no TLS, no transparent content decoding. Decoding would strip
+# Content-Encoding while forwarding bytes and break byte-exact native lanes.
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+tokio-stream = { version = "0.1", features = ["sync"] }

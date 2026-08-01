@@ -1,6 +1,8 @@
 # Workspace: пул Claude-подписок как прозрачный /v1 API.
 # Слои (снизу вверх): registry ← pool ← forward ← server(bin).
 # Границы зависимостей — в crates/*/CLAUDE.md; архитектура — в docs/engine/ARCHITECTURE.md.
+# crates/router стоит ВНЕ слоёв: отдельный bounded context (docs/engine/UNIFIED_ROUTER.md),
+# общается с плоскостями только по HTTP и не импортирует pool/forward/registry.
 [workspace]
 resolver = "2"
 members = [
@@ -12,6 +14,7 @@ members = [
     "crates/server",
     "crates/metering",
     "crates/authbot",
+    "crates/router",
 ]
 
 [profile.release]

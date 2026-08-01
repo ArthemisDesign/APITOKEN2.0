@@ -1,0 +1,173 @@
+//! Синтетические ошибки самого router'а. Ошибки, пришедшие из плоскостей,
+//! проксируются байт-в-байт и сюда не попадают. Форма ответа повторяет нативную
+//! ошибку соответствующего провайдера: harness-клиенты разбирают ошибки по
+//! провайдер-специфичному конверту (Claude Code иногда восстанавливается по
+//! тексту ошибки, поэтому оборачивать чужой формат нельзя — см.
+//! docs/engine/UNIFIED_ROUTER.md, «Совместимость с harness-агентами»).
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde_json::json;
+
+/// Плоскость, которой принадлежит путь запроса. Определяет форму синтетической
+/// ошибки router'а.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Lane {
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+impl Lane {
+    /// Плоскость по префиксу пути публичного контракта. `None` — путь вне
+    /// контракта; его 404 шейпится в нейтральном OpenAI-совместимом конверте.
+    pub fn from_path(path: &str) -> Option<Lane> {
+        if path == "/balance" || path.starts_with("/v1/messages") {
+            Some(Lane::Anthropic)
+        } else if path.starts_with("/v1/responses") || path == "/v1/chat/completions" {
+            Some(Lane::OpenAi)
+        } else if path.starts_with("/v1beta/") {
+            Some(Lane::Gemini)
+        } else if path == "/v1/models" || path.starts_with("/v1/models/") {
+            // Единый каталог — собственная поверхность router'а; её ошибки
+            // OpenAI-совместимы (формат самого каталога).
+            Some(Lane::OpenAi)
+        } else {
+            None
+        }
+    }
+}
+
+fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+    (status, axum::Json(body)).into_response()
+}
+
+/// 502: плоскость недостижима (connect/timeout до отправки запроса). Router не
+/// ретраит (инвариант 2): повтор после отправки создал бы новый billable
+/// request_id; отказ до отправки честно сообщается клиенту.
+pub fn upstream_unavailable(lane: Lane, detail: &str) -> Response {
+    match lane {
+        Lane::Anthropic => json_response(
+            StatusCode::BAD_GATEWAY,
+            json!({"type": "error", "error": {"type": "api_error", "message": detail}}),
+        ),
+        Lane::OpenAi => json_response(
+            StatusCode::BAD_GATEWAY,
+            json!({"error": {"message": detail, "type": "server_error", "code": "bad_gateway"}}),
+        ),
+        Lane::Gemini => json_response(
+            StatusCode::BAD_GATEWAY,
+            json!({"error": {"code": 502, "message": detail, "status": "UNAVAILABLE"}}),
+        ),
+    }
+}
+
+/// 404 для пути вне публичного контракта — той же формой, что отвечает
+/// OpenAI-плоскость на неподдерживаемый endpoint.
+pub fn unsupported_endpoint() -> Response {
+    json_response(
+        StatusCode::NOT_FOUND,
+        json!({"error": {"message": "The requested endpoint is not supported.",
+            "type": "invalid_request_error", "code": "unsupported_endpoint"}}),
+    )
+}
+
+/// 405 в форме плоскости, выбранной по пути (harness видит привычный конверт).
+pub fn method_not_allowed(path: &str) -> Response {
+    let body = match Lane::from_path(path) {
+        Some(Lane::Anthropic) => json!({"type": "error", "error": {"type": "not_found_error",
+            "message": "Method not allowed for this endpoint."}}),
+        Some(Lane::Gemini) => json!({"error": {"code": 405,
+            "message": "Method not allowed for this endpoint.", "status": "NOT_FOUND"}}),
+        Some(Lane::OpenAi) | None => json!({"error": {"message": "Method not allowed for this endpoint.",
+            "type": "invalid_request_error", "code": "method_not_allowed"}}),
+    };
+    json_response(StatusCode::METHOD_NOT_ALLOWED, body)
+}
+
+/// 404 неизвестной модели — зеркалит контракт OpenAI-плоскости
+/// (`model_not_found`), потому что каталог OpenAI-совместим.
+pub fn model_not_found(id: &str) -> Response {
+    json_response(
+        StatusCode::NOT_FOUND,
+        json!({"error": {"message": format!("The model `{id}` does not exist or you do not have access to it."),
+            "type": "invalid_request_error", "param": "model", "code": "model_not_found"}}),
+    )
+}
+
+/// 401: клиентский ключ отклонён плоскостью. Плоскости делят один billing
+/// authority, поэтому 401 любой из них однозначно означает невалидный ключ;
+/// ответ плоскости отдаётся клиенту как есть (см. proxy::catalog_fetch).
+pub fn catalog_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "The model catalog is temporarily unavailable.",
+            "type": "server_error", "code": "catalog_unavailable"}}),
+    )
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(Body::from(response.into_body()), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn upstream_unavailable_matches_lane_envelope() {
+        let response = upstream_unavailable(Lane::Anthropic, "x");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let json = body_json(response).await;
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["error"]["type"], "api_error");
+
+        let response = upstream_unavailable(Lane::OpenAi, "x");
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "server_error");
+        assert_eq!(json["error"]["code"], "bad_gateway");
+
+        let response = upstream_unavailable(Lane::Gemini, "x");
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], 502);
+        assert_eq!(json["error"]["status"], "UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn unsupported_endpoint_is_openai_shaped_404() {
+        let response = unsupported_endpoint();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert_eq!(json["error"]["code"], "unsupported_endpoint");
+    }
+
+    #[tokio::test]
+    async fn method_not_allowed_follows_lane_of_path() {
+        let response = method_not_allowed("/v1/messages");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(body_json(response).await["error"]["type"], "not_found_error");
+
+        let response = method_not_allowed("/v1beta/models");
+        assert_eq!(body_json(response).await["error"]["status"], "NOT_FOUND");
+
+        let response = method_not_allowed("/v1/responses");
+        assert_eq!(body_json(response).await["error"]["code"], "method_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn model_not_found_mirrors_openai_contract() {
+        let response = model_not_found("gpt-9");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "model_not_found");
+        assert_eq!(json["error"]["param"], "model");
+        assert!(json["error"]["message"].as_str().unwrap().contains("gpt-9"));
+    }
+}

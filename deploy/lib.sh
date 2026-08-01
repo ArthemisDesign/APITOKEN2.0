@@ -204,15 +204,15 @@ validate_tested_candidate() {
       || die "candidate did not pass the Rust lane"
     [[ "$(tested_marker_value "$marker" engine_artifacts)" == 1 ]] \
       || die "candidate has no tested production engine artifacts"
-    for artifact in claude-api authbot; do
+    for artifact in claude-api authbot claude-router; do
       [[ -x "$candidate/.deploy-artifacts/engine/$artifact" \
           && ! -L "$candidate/.deploy-artifacts/engine/$artifact" ]] \
         || die "tested engine artifact is missing or unsafe: $artifact"
-      if [[ "$artifact" == claude-api ]]; then
-        digest_key=engine_binary_sha256
-      else
-        digest_key=authbot_binary_sha256
-      fi
+      case "$artifact" in
+        claude-api) digest_key=engine_binary_sha256 ;;
+        authbot) digest_key=authbot_binary_sha256 ;;
+        claude-router) digest_key=router_binary_sha256 ;;
+      esac
       expected_digest=$(tested_marker_value "$marker" "$digest_key") \
         || die "candidate marker has no digest for $artifact"
       actual_digest=$(sha256_file "$candidate/.deploy-artifacts/engine/$artifact")

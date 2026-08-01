@@ -1,10 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
 Статус: **этап 1a реализован** (Caddy fan-in: `router.apitoken.sale` обслуживает native lanes
-по форме пути на существующих loopback origins). `crates/router`, единый агрегированный
-каталог `/v1/models` и universal lane пока не существуют — на этапе 1a `GET /v1/models{,/{id}}`
-на unified hostname осознанно отвечает `404`, а не каталогом одной плоскости. Документ
-фиксирует целевую картину, публичный контракт, инварианты и этапный план; каждый этап при
+по форме пути на существующих loopback origins); **этап 1b реализован в коде и деплой-конвейере**
+(`crates/router` с агрегированным каталогом `/v1/models`, systemd-юнит `claude-router.service`,
+продвижение через tested-artifact цепочку) — публичный cutover Caddy с fan-in на router идёт
+отдельным шагом, поэтому до него `GET /v1/models{,/{id}}` на unified hostname всё ещё отвечает
+`404`, а трафик native lanes идёт напрямую в плоскости. Universal lane пока не существует.
+Документ фиксирует целевую картину, публичный контракт, инварианты и этапный план; каждый этап при
 реализации обновляет этот документ и смежные инструкции в том же коммите.
 
 ## Контекст и цель
@@ -107,7 +109,8 @@ POST /v1/chat/completions                         universal OpenAI-compatible в
                                                    этап 3 — любая модель каталога)
 
 GET  /v1/models                                   единый агрегированный каталог (этап 1b;
-GET  /v1/models/{id}                               на 1a — 404, коллизия native-путей)
+GET  /v1/models/{id}                               до публичного cutover — 404, коллизия
+                                                   native-путей)
 
 GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
@@ -208,7 +211,7 @@ provider поддерживает только `wire_api="responses"` (это д
 Bedrock, Vertex) route planner сможет выбирать между ними. Текущие нативные ID остаются
 однозначными aliases. Источник правды для каталога — существующий versioned
 multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
-`crates/registry/src/pricing/snapshots.rs`).
+`crates/registry/src/pricing.rs`).
 
 `/v1/models` — единственная коллизия путей native-плоскостей: unified endpoint обязан
 агрегировать каталоги всех плоскостей (кэш, частичный каталог при падении одной
@@ -272,9 +275,20 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    конъюнкция health плоскостей), остальные пути — 404. Без нового кода; изоляция,
    биллинг и auth passthrough — «из коробки». Провайдер определяется путём, не ключом
    и не моделью. `/v1/models` намеренно не обслуживается до этапа 1b.
-2. **1b. `crates/router` + единый каталог (~1 неделя).** Stateless router: единый
-   `/v1/models` (агрегация, кэш, частичный каталог), namespaced ID + aliases,
-   auth passthrough без изменений. Без cross-provider translation и fallback.
+2. **1b. `crates/router` + единый каталог — РЕАЛИЗОВАН (код и конвейер), cutover отдельным
+   шагом.** Stateless router (`crates/router`, бинарь `claude-router`, loopback `127.0.0.1:8798`,
+   singleton `claude-router.service`): байт-в-байт proxy трёх плоскостей без ретраев и без
+   общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
+   под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
+   ID (`anthropic/…`, `openai/…`, `google/…`) + aliases, TTL-кэш 30 с + last-good без TTL,
+   упавшая плоскость опускается с маркировкой `x-apitoken-catalog-degraded`, пустой каталог
+   плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
+   Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
+   tested artifact в цепочке watchdog → promote → stage, `restart_router_if_changed` сравнивает
+   запущенный бинарь и требует `/ready` до зелёного релиза; юнит ставится watchdog-infrastructure
+   шагом. Без cross-provider translation и fallback. Cutover Caddy (fan-in → router, включая
+   публичный `/v1/models`) идёт отдельным коммитом после зелёного деплоя процесса — иначе на
+   окно между установкой Caddyfile и запуском router'а клиенты получили бы 502.
 3. **Universal Chat (2–4 недели).** `/v1/chat/completions` для всех моделей каталога:
    text, images, tools, structured output, streaming через canonical IR.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
@@ -297,7 +311,11 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 
 - ~~Имя публичного домена~~ — решено на этапе 1a: `router.apitoken.sale` (новый отдельный
   hostname, `api.apitoken.sale` не переиспользуется и не меняет поведение).
-- Политика частичного каталога `/v1/models` при падении плоскости (TTL кэша, маркировка).
+- ~~Политика частичного каталога `/v1/models` при падении плоскости~~ — решено на этапе 1b:
+  TTL-кэш 30 с + last-good без TTL; упавшая плоскость опускается из выдачи, деградация
+  маркируется заголовком `x-apitoken-catalog-degraded` со списком namespace'ов; пустой
+  каталог плоскости считается сбоем и не кэшируется; 401/403 любой плоскости → единый 401
+  `invalid_api_key`; все плоскости недоступны без кэша → 503 `catalog_unavailable`.
 - Продуктовый охват Gemini: OpenKeys и commerce-контракты сейчас фиксируют только
   Anthropic/OpenAI (`docs/product/OPENKEYS.md`, `packages/contracts`) — расширение
   enum/каталогов идёт отдельным expand-only шагом до публичного включения Gemini

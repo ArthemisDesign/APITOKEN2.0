@@ -453,6 +453,9 @@ candidate_is_tested() {
     expected_hash=$(wd_marker_value "$marker" authbot_binary_sha256 2>/dev/null) || return 1
     actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot") || return 1
     [[ $actual_hash == "$expected_hash" ]] || return 1
+    expected_hash=$(wd_marker_value "$marker" router_binary_sha256 2>/dev/null) || return 1
+    actual_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-router") || return 1
+    [[ $actual_hash == "$expected_hash" ]] || return 1
   fi
   return 0
 }
@@ -516,6 +519,7 @@ live_release_shas() {
     claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
     claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
     claude-authbot.service \
+    claude-router.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -643,14 +647,16 @@ test_rust_lane() {
   run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
     cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
   if (( build_artifacts == 1 )); then
-    wd_log "building the production engine and authbot once, from the tested candidate"
-    run_as_ci cargo build --locked --release -p claude-api -p authbot \
+    wd_log "building the production engine, authbot and router once, from the tested candidate"
+    run_as_ci cargo build --locked --release -p claude-api -p authbot -p claude-router \
       --manifest-path "$candidate/Cargo.toml"
     run_as_ci install -d -m 0755 "$candidate/.deploy-artifacts/engine"
     run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/claude-api" \
       "$candidate/.deploy-artifacts/engine/claude-api"
     run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/authbot" \
       "$candidate/.deploy-artifacts/engine/authbot"
+    run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/claude-router" \
+      "$candidate/.deploy-artifacts/engine/claude-router"
   fi
 }
 
@@ -701,7 +707,7 @@ prepare_and_test_candidate_unlocked() {
   local typescript_digest_openkeys=none typescript_digest_web=none
   local typescript_digest_admin=none
   local commerce_release_bundle_hash=none
-  local engine_hash=none authbot_hash=none
+  local engine_hash=none authbot_hash=none router_hash=none
   candidate=$(candidate_for "$sha")
   marker=$(marker_for "$sha")
 
@@ -819,6 +825,7 @@ prepare_and_test_candidate_unlocked() {
   if (( engine_artifacts_required == 1 )); then
     engine_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-api")
     authbot_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/authbot")
+    router_hash=$(wd_sha256_file "$candidate/.deploy-artifacts/engine/claude-router")
   fi
   {
     printf 'sha=%s\n' "$sha"
@@ -844,6 +851,7 @@ prepare_and_test_candidate_unlocked() {
     printf 'commerce_release_bundle_sha256=%s\n' "$commerce_release_bundle_hash"
     printf 'engine_binary_sha256=%s\n' "$engine_hash"
     printf 'authbot_binary_sha256=%s\n' "$authbot_hash"
+    printf 'router_binary_sha256=%s\n' "$router_hash"
     printf 'completed_at=%s\n' "$(date -u +%FT%TZ)"
   } >"${marker}.tmp.${BASHPID:-$$}"
   chmod 0640 "${marker}.tmp.${BASHPID:-$$}"
