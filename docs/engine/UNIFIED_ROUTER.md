@@ -106,7 +106,9 @@ GET  /v1/responses/{id}/input_items               либо явные огран
 
 POST /v1/chat/completions                         universal OpenAI-compatible вход
                                                   (этап 1a — только OpenAI plane,
-                                                   этап 3 — любая модель каталога)
+                                                   этап 3.1 — + любая Claude-модель
+                                                   каталога через model-based dispatch,
+                                                   этап 3.3 — + Gemini-модели)
 
 GET  /v1/models                                   единый агрегированный каталог (этап 1b)
 GET  /v1/models/{id}
@@ -335,9 +337,29 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    text, images, tools, structured output, streaming. Реализуется по решениям 1–4 раздела
    «Решения universal lanes»: адаптеры в плоскостях, router — только model-based routing,
    контракт событий вместо IR-структа, capability matrix. Подпакеты: **3.0** — фиксация
-   решений в этом документе; **3.1** — router model-routing + адаптер Anthropic plane
-   (text, streaming, usage); **3.2** — tools/tool_choice + contract-тесты словаря событий;
-   **3.3** — адаптер Gemini plane; **3.4** — images, structured output, `reasoning_content`.
+   решений в этом документе (РЕАЛИЗОВАН); **3.1** — router model-routing + адаптер
+   Anthropic plane (text, streaming, usage) — **РЕАЛИЗОВАН**: `POST /v1/chat/completions`
+   в router (`crates/router/src/chat.rs`) буферизует только тело запроса (32 MiB — потолок
+   наибольшей плоскости), извлекает `model` и выбирает плоскость по namespace-префиксу без
+   опроса каталога либо по alias через кэшированный каталог; тело проксируется без
+   изменений, ошибки dispatch (400 невалидный JSON/нет `model`, 404 `model_not_found`,
+   503 `catalog_unavailable`, единый 401) — в OpenAI-конверте. Адаптер Anthropic plane
+   (`crates/forward/src/anthropic.rs`, роут в `ProviderMode::Anthropic`) переводит
+   chat→Messages (system/developer → top-level `system`, склейка подряд идущих одноролевых
+   сообщений, `max_completion_tokens`→`max_tokens` с дефолтом 4096, `stop`→`stop_sequences`,
+   `user`→`metadata.user_id`, strip `anthropic/`-префикса до admission) и вызывает общий
+   `forward()` — auth, reserve, ротация, identity-инжект, tee-метеринг и settle без
+   изменений. Ответ переводится снаружи: Messages SSE → `chat.completion.chunk` (role/text/
+   finish-чанки, ping→heartbeat, `event: error`→OpenAI error frame без `[DONE]`,
+   usage-чанк по `stream_options.include_usage`), JSON message → `chat.completion`
+   (usage включает cache-токены с `prompt_tokens_details.cached_tokens`). Capability
+   matrix: tools/structured/reasoning/penalties/n>1/store и прочие не-дефолтные
+   unsupported-параметры → `400 unsupported_parameter` до этапов 3.2/3.4; дефолтные
+   значения принимаются, неизвестные поля проксируются. Все ошибки этого пути (включая
+   `local_err` плоскости и пасsthrough апстрима) конвертируются в OpenAI-конверт с
+   сохранением статуса (402 LowBalance тоже) и `Retry-After`; **3.2** — tools/tool_choice
+   + contract-тесты словаря событий; **3.3** — адаптер Gemini plane; **3.4** — images,
+   structured output, `reasoning_content`.
 4. **Universal Responses для Codex-parity (2–4 недели).** Function/custom tools,
    reasoning events, usage; stored responses — по решению 5 (только `openai/*`, для остальных
    явный `400 documented_limitation`).

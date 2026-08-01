@@ -9,6 +9,7 @@
 //! эндпоинтов — это делает крейт `server` (композиция).
 
 mod affinity;
+mod anthropic;
 mod billing;
 mod breaker;
 pub mod codex;
@@ -26,6 +27,7 @@ mod upstream;
 pub use affinity::{
     AffinityInput, AffinityResolution, AffinitySource, AffinityStats, AffinityStore,
 };
+pub use anthropic::anthropic_chat_completions;
 pub use billing::AsyncBilling;
 pub use breaker::Breaker;
 pub use codex::{

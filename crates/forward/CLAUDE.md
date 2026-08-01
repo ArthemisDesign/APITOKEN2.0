@@ -118,6 +118,17 @@ Stage 8 evidence или Stage 5/6 data application.
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
+`anthropic.rs` — universal Chat Completions→Messages адаптер (этап 3.1
+docs/engine/UNIFIED_ROUTER.md): переводит chat-запрос в Messages JSON (strip
+`anthropic/`-префикса ДО admission, дефолт `max_tokens` 4096, склейка одноролевых
+сообщений, capability matrix с `400 unsupported_parameter` для не-дефолтных
+tools/structured/reasoning/penalties) и вызывает общий `forward()` — auth, reserve,
+ротация, identity-инжект, tee-метеринг и settle без изменений; ответ переводится
+СНАРУЖИ (Messages SSE → `chat.completion.chunk`, JSON → `chat.completion`), а все
+ошибки этого пути (включая `local_err` и пасsthrough апстрима) конвертируются в
+OpenAI-конверт с сохранением HTTP-статуса (402 LowBalance тоже) и `Retry-After`.
+Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
+`TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
 `codex/` содержит native HTTPS transport (`transport.rs`), profile pool (`mod.rs`),
 Responses/Chat adapters, tenant-bound history, Codex admission/settlement и reconstruction SSE
 events; `gemini/` — native route allowlist, encrypted OAuth pool, Code Assist translation и
@@ -412,4 +423,5 @@ patch-версию базового UA на `ua_spread`. Клиентский `u
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.
 
-**Проверка:** `cargo build -p forward`; полный smoke — через бинарь против мок-апстрима.
+**Проверка:** `cargo build -p forward`; полный smoke — через бинарь против мок-апстрима
+(`tests/rotation_fanout_smoke.sh`; universal chat lane end-to-end — `tests/universal_chat_smoke.sh`).

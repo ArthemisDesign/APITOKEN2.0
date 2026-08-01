@@ -85,6 +85,18 @@ pub fn method_not_allowed(path: &str) -> Response {
     json_response(StatusCode::METHOD_NOT_ALLOWED, body)
 }
 
+/// 400 universal chat-пути: тело не JSON, превышает лимит или не содержит
+/// валидный `model`. Конверт зеркалит 400-е OpenAI-плоскости на этом пути
+/// (`invalid_request_error`, `code: null`), чтобы router-local отказ был
+/// неотличим от отказа адаптера плоскости.
+pub fn invalid_chat_request(message: &str, param: Option<&str>) -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        json!({"error": {"message": message, "type": "invalid_request_error",
+            "param": param, "code": serde_json::Value::Null}}),
+    )
+}
+
 /// 404 неизвестной модели — зеркалит контракт OpenAI-плоскости
 /// (`model_not_found`), потому что каталог OpenAI-совместим.
 pub fn model_not_found(id: &str) -> Response {
@@ -159,6 +171,20 @@ mod tests {
 
         let response = method_not_allowed("/v1/responses");
         assert_eq!(body_json(response).await["error"]["code"], "method_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn invalid_chat_request_is_openai_shaped_400() {
+        let response = invalid_chat_request("Missing or invalid required parameter: model.", Some("model"));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert_eq!(json["error"]["param"], "model");
+        assert!(json["error"]["code"].is_null());
+
+        let response = invalid_chat_request("Invalid JSON in request body.", None);
+        let json = body_json(response).await;
+        assert!(json["error"]["param"].is_null());
     }
 
     #[tokio::test]

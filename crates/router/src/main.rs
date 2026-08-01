@@ -8,6 +8,7 @@
 //! semaphore и breaker (инвариант 3) и не буферизует SSE (инвариант 4).
 
 mod catalog;
+mod chat;
 mod config;
 mod error;
 mod proxy;
@@ -48,9 +49,10 @@ fn build_client() -> anyhow::Result<Client> {
 }
 
 /// Таблица маршрутизации публичного контракта (UNIFIED_ROUTER.md,
-/// «Публичный контракт»). Форма пути выбирает плоскость; ключ и модель —
-/// нет. Единственная собственная поверхность router'а — агрегированный
-/// каталог /v1/models.
+/// «Публичный контракт»). Native lanes выбирают плоскость формой пути;
+/// `/v1/chat/completions` — universal lane с model-based dispatch
+/// (chat::proxy_chat, этап 3.1). Собственные поверхности router'а —
+/// агрегированный каталог /v1/models и dispatch chat-запросов.
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(proxy::health))
@@ -65,7 +67,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/responses/input_tokens", post(proxy_openai))
         .route("/v1/responses/{id}", get(proxy_openai).delete(proxy_openai))
         .route("/v1/responses/{id}/input_items", get(proxy_openai))
-        .route("/v1/chat/completions", post(proxy_openai))
+        .route("/v1/chat/completions", post(chat::proxy_chat))
         .route("/v1beta/{*rest}", any(proxy_gemini))
         .fallback(error_fallback)
         .method_not_allowed_fallback(method_not_allowed_fallback)
@@ -95,7 +97,7 @@ async fn method_not_allowed_fallback(req: Request) -> Response {
     error::method_not_allowed(req.uri().path())
 }
 
-fn origins(state: &AppState) -> PlaneOrigins<'_> {
+pub(crate) fn origins(state: &AppState) -> PlaneOrigins<'_> {
     PlaneOrigins {
         anthropic: &state.cfg.anthropic_origin,
         openai: &state.cfg.openai_origin,
@@ -166,7 +168,7 @@ async fn get_model(
 /// Единый 401 каталога: ключ проверяет общий billing authority плоскостей,
 /// поэтому отказ любой из них однозначен. Конверт OpenAI-совместим, как и
 /// сам каталог.
-fn auth_rejected_response() -> Response {
+pub(crate) fn auth_rejected_response() -> Response {
     (
         axum::http::StatusCode::UNAUTHORIZED,
         axum::Json(serde_json::json!({"error": {"message": "Invalid or missing API key.",
@@ -499,10 +501,17 @@ mod tests {
             ("GET", "/v1/responses/resp_42"),
             ("DELETE", "/v1/responses/resp_42"),
             ("GET", "/v1/responses/resp_42/input_items"),
-            ("POST", "/v1/chat/completions"),
         ] {
             client.request(method.parse().unwrap(), format!("{router}{path}")).send().await.unwrap();
         }
+        // /v1/chat/completions — universal lane: до плоскости доходит запрос
+        // с валидным namespaced model (этап 3.1, chat::proxy_chat).
+        client
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"openai/gpt-5.6","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
         client.get(format!("{router}/balance")).send().await.unwrap();
 
         assert_eq!(log_g.lock().unwrap().len(), 4);
@@ -525,6 +534,249 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "api_error");
+    }
+
+    // ---------- universal chat dispatch (model-based routing, этап 3.1) ----------
+
+    /// Плоскость для chat-тестов: каталог на своём catalog path + echo всего
+    /// остального (тело запроса байт-в-байт, лог заголовков).
+    async fn chat_plane(body: &'static str, path: &'static str) -> (String, SharedLog) {
+        let log: SharedLog = Arc::new(StdMutex::new(Vec::new()));
+        let state = log.clone();
+        let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let log = state.clone();
+            async move {
+                log.lock().unwrap().push(record_of(&req));
+                if req.uri().path() == path {
+                    return AxumResponse::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap();
+                }
+                let bytes = to_bytes(req.into_body(), 64 * 1024 * 1024).await.unwrap();
+                AxumResponse::builder()
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(bytes))
+                    .unwrap()
+            }
+        }));
+        (spawn(router).await, log)
+    }
+
+    #[tokio::test]
+    async fn chat_namespaced_models_route_by_prefix_without_catalog_fetch() {
+        let (a, log_a) = echo_plane().await;
+        let (o, log_o) = echo_plane().await;
+        let (g, log_g) = echo_plane().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+            let payload =
+                format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#);
+            let response = client
+                .post(format!("{router}/v1/chat/completions"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            // Тело проксируется байт-в-байт: namespaced ID резолвит плоскость.
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        let (la, lo, lg) = (
+            log_a.lock().unwrap().clone(),
+            log_o.lock().unwrap().clone(),
+            log_g.lock().unwrap().clone(),
+        );
+        // Ровно один запрос на каждой плоскости: catalog fetch не выполнялся,
+        // dispatch по префиксу каталог не опрашивает.
+        assert_eq!(la.len(), 1);
+        assert_eq!(lo.len(), 1);
+        assert_eq!(lg.len(), 1);
+        assert_eq!(la[0].path, "/v1/chat/completions");
+        assert_eq!(lo[0].path, "/v1/chat/completions");
+        assert_eq!(lg[0].path, "/v1/chat/completions");
+        assert_eq!(la[0].x_api_key.as_deref(), Some("sk-pool-secret"));
+    }
+
+    #[tokio::test]
+    async fn chat_alias_routes_via_cached_catalog() {
+        let (a, log_a) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
+        let (o, log_o) = chat_plane(OPENAI_MODELS, "/v1/models").await;
+        let (g, log_g) = chat_plane(GEMINI_MODELS, "/v1beta/models").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for model in ["claude-opus-4-8", "gpt-5.6", "gemini-2.5-pro"] {
+            let payload = format!(r#"{{"model":"{model}","messages":[]}}"#);
+            let response = client
+                .post(format!("{router}/v1/chat/completions"))
+                .header("x-api-key", "sk-pool-secret")
+                .body(payload.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{model}");
+            assert_eq!(response.text().await.unwrap(), payload, "{model}");
+        }
+
+        let paths = |log: &SharedLog| log.lock().unwrap().iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
+        // Каждая плоскость увидела catalog fetch и ровно один chat-запрос.
+        assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
+        assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
+        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
+        assert_eq!(pa.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{pa:?}");
+        assert_eq!(po.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{po:?}");
+        assert_eq!(pg.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{pg:?}");
+    }
+
+    #[tokio::test]
+    async fn chat_unknown_model_is_openai_shaped_404() {
+        let (a, _) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
+        let (o, _) = chat_plane(OPENAI_MODELS, "/v1/models").await;
+        let (g, _) = chat_plane(GEMINI_MODELS, "/v1beta/models").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        // Неизвестный префикс и неизвестный alias оба уходят в alias-поиск и 404.
+        for model in ["cohere/command-x", "gpt-9"] {
+            let payload = format!(r#"{{"model":"{model}","messages":[]}}"#);
+            let response = client
+                .post(format!("{router}/v1/chat/completions"))
+                .body(payload)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{model}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["code"], "model_not_found", "{model}");
+            assert_eq!(json["error"]["param"], "model", "{model}");
+            assert!(json["error"]["message"].as_str().unwrap().contains(model), "{model}");
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_invalid_json_and_missing_model_are_400_without_plane_call() {
+        let (a, log_a) = echo_plane().await;
+        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for body in ["not json{", "{}", r#"{"model":42}"#, r#"{"model":""}"#] {
+            let response = client
+                .post(format!("{router}/v1/chat/completions"))
+                .body(body.to_string())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{body}");
+            if body == "not json{" {
+                assert!(json["error"]["param"].is_null(), "{body}");
+            } else {
+                assert_eq!(json["error"]["param"], "model", "{body}");
+            }
+        }
+        // Невалидный запрос не должен дойти до плоскости.
+        assert!(log_a.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_namespaced_dispatch_survives_dead_catalog_alias_is_503() {
+        let (a, _) = echo_plane().await;
+        let (d1, d2) = (dead_origin().await, dead_origin().await);
+        let router = spawn(make_router(&a, &d1, &d2, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        // Namespaced dispatch каталог не опрашивает: мёртвые плоскости не мешают.
+        let response = client
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Alias без живого каталога (и без кэша) — честный 503.
+        let response = client
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"claude-opus-4-8","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["code"], "catalog_unavailable");
+    }
+
+    #[tokio::test]
+    async fn chat_alias_with_auth_rejected_catalog_is_unified_401() {
+        let (a, _) = catalog_plane("", "/v1/models", "auth").await;
+        let (d1, d2) = (dead_origin().await, dead_origin().await);
+        let router = spawn(make_router(&a, &d1, &d2, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"claude-opus-4-8","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["code"], "invalid_api_key");
+    }
+
+    #[tokio::test]
+    async fn chat_oversized_body_is_400_and_never_reaches_plane() {
+        let (a, log_a) = echo_plane().await;
+        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let body = vec![b'x'; 32 * 1024 * 1024 + 1];
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["type"], "invalid_request_error");
+        assert!(json["error"]["message"].as_str().unwrap().contains("32 MiB"));
+        assert!(log_a.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_sse_response_first_chunk_is_not_buffered() {
+        // Буферизуется только тело запроса; ответ стримится, как в native lanes.
+        let plane = spawn(Router::new().fallback(any(|| async {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+            tokio::spawn(async move {
+                let _ = tx.send(Ok(Bytes::from("data: {\"delta\":{}}\n\n"))).await;
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
+            });
+            AxumResponse::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(ReceiverStream::new(rx)))
+                .unwrap()
+        })))
+        .await;
+        let router = spawn(make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+
+        let mut response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","stream":true,"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_millis(400), response.chunk())
+            .await
+            .expect("first chat SSE chunk must arrive before the plane finishes")
+            .unwrap()
+            .expect("first chunk present");
+        assert!(String::from_utf8_lossy(&first).contains("delta"));
     }
 
     // ---------- единый каталог ----------

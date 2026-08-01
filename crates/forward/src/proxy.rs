@@ -202,12 +202,12 @@ impl Stream for KeyGuardStream {
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-enum BodyReadError {
+pub(crate) enum BodyReadError {
     TooLarge,
     Read,
 }
 
-async fn read_body_limited(body: Body, limit: usize) -> Result<bytes::Bytes, BodyReadError> {
+pub(crate) async fn read_body_limited(body: Body, limit: usize) -> Result<bytes::Bytes, BodyReadError> {
     let mut stream = body.into_data_stream();
     let mut out = bytes::BytesMut::new();
     while let Some(chunk) = stream.next().await {

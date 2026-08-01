@@ -23,6 +23,9 @@
 - **SSE не буферизуется.** Тела запроса и ответа — потоки
   (`Body::wrap_stream`/`Body::from_stream`); reqwest собран без auto-decode
   (default-features off), чтобы байты и Content-Encoding шли неизменно.
+  Единственное исключение — `chat.rs`: тело ЗАПРОСА `/v1/chat/completions`
+  читается целиком (лимит 32 MiB) ради поля `model`; тело ответа остаётся
+  потоком.
   Disconnect клиента обязан транзитивно рвать соединение к плоскости
   (TeeMeter drain): поэтому вокруг тела ответа нет detached-тасков.
 - **Деньги — только integer**: router денег не касается вовсе; если когда-либо
@@ -32,6 +35,11 @@
 
 - `config.rs` — единственное место чтения env (`CLAUDE_ROUTER_*`).
 - `proxy.rs` — байт-в-байт прокси native lanes + auth passthrough.
+- `chat.rs` — model-based dispatch `POST /v1/chat/completions` (этап 3.1):
+  буферизует только тело ЗАПРОСА (32 MiB), извлекает `model`, выбирает
+  плоскость по namespace-префиксу без опроса каталога либо по alias через
+  кэшированный каталог; тело проксируется без изменений (namespaced ID
+  резолвит admission плоскости), ошибки dispatch — в OpenAI-конверте.
 - `catalog.rs` — единый `/v1/models`: агрегация трёх плоскостей, namespaced ID
   + aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
   `x-apitoken-catalog-degraded`.
@@ -49,7 +57,10 @@ cargo build                   # весь workspace зелёный до комм�
 Интеграционные тесты поднимают mock-плоскости на реальных loopback-сокетах и
 покрывают: passthrough тела/заголовков, небуферизованный SSE, транзитивный
 disconnect, агрегацию/деградацию/stale каталога, 401/503 каталога, alias-
-разрешение моделей, 404/405. Живой PostgreSQL и подписки не нужны.
+разрешение моделей, 404/405, model-based dispatch chat-запросов (namespaced
+без catalog fetch, alias через каталог, 400 невалидного/слишком большого тела,
+небуферизованный chat SSE). Живой PostgreSQL и подписки не нужны.
+Полная цепочка router→engine→mock upstream — `tests/universal_chat_smoke.sh`.
 
 ## Эксплуатация
 
