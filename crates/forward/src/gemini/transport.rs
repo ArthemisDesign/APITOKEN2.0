@@ -890,7 +890,10 @@ async fn dispatch_frame(
 fn helper_error_kind(kind: Option<&str>) -> Option<TransportError> {
     match kind {
         Some("timeout") => Some(TransportError::Timeout),
-        Some("proxy" | "tls" | "network") => Some(TransportError::Network),
+        Some(
+            "proxy-timeout" | "proxy-auth" | "proxy-throttle" | "proxy-rejected" | "proxy-upstream"
+            | "proxy-connect" | "proxy-eof" | "proxy-protocol" | "tls" | "network",
+        ) => Some(TransportError::Network),
         Some("protocol") => Some(TransportError::Protocol),
         _ => None,
     }
@@ -1141,7 +1144,18 @@ mod tests {
             helper_error_kind(Some("timeout")),
             Some(TransportError::Timeout)
         );
-        for kind in ["proxy", "tls", "network"] {
+        for kind in [
+            "proxy-timeout",
+            "proxy-auth",
+            "proxy-throttle",
+            "proxy-rejected",
+            "proxy-upstream",
+            "proxy-connect",
+            "proxy-eof",
+            "proxy-protocol",
+            "tls",
+            "network",
+        ] {
             assert_eq!(helper_error_kind(Some(kind)), Some(TransportError::Network));
         }
         assert_eq!(

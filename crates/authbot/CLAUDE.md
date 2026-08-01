@@ -115,13 +115,18 @@ seller lock освобождается, response становится `cancelled
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
    envelope. Startup rewrap переводит старые envelopes на active kid, сохраняя online key rotation.
-7. После неуспешного OAuth retry сохраняет владельца egress: buyer/IPRoyal proxy остаётся
-   закреплённым за позицией, а seller-proxy очищается и следующее сообщение продавца действительно
-   заменяет его. До инструкции по созданию аккаунта exact Node transport делает credential-free
-   preflight к Google token endpoint: transient `timeout`/`proxy`/`tls`/`network` получает до трёх
-   независимых helper-попыток в общем bounded-окне около 30 секунд, а protocol/helper/startup failure
-   завершается сразу. Только после исчерпания попыток прокси отклоняется до выдачи одноразового кода.
-   Transport-журнал содержит только номер попытки и bounded-класс, никогда не URL/credentials прокси.
+7. После неуспешного OAuth retry сохраняет exact egress для buyer/IPRoyal и seller-proxy. В
+   seller-proxy работе команда `повторить` создаёт новую PKCE generation с сохранённым proxy, а новое
+   proxy-сообщение явно заменяет его. До инструкции по созданию аккаунта выполняется только локальная
+   канонизация URL: speculative CONNECT запрещён, потому что residential gateway может ответить
+   transient 403 на сам probe при полностью рабочем allocation. Реальный OAuth transport сериализован
+   внутри authbot и различает bounded CONNECT-классы `proxy_auth`, `proxy_throttle`,
+   `proxy_rejected`, `proxy_upstream`, `proxy_connect`, `proxy_eof`, `proxy_protocol` и
+   `proxy_timeout`. Безопасные pre-target отказы token exchange автоматически повторяются свежим
+   helper на 0/2/7/17/37 секунде; после получения токена idempotent userinfo/Code Assist операции
+   используют то же bounded recovery. Ambiguous post-send timeout/network никогда не переигрывает
+   одноразовый authorization code. Transport-журнал содержит только номер попытки и bounded-класс,
+   никогда не URL/credentials прокси.
 **Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
 `authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
 

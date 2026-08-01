@@ -47,7 +47,14 @@ function fail(id, kind) {
 function requestFailureKind(error) {
   const message = error && typeof error.message === 'string' ? error.message : '';
   if (message === 'timeout') return 'timeout';
-  if (message === 'proxy') return 'proxy';
+  if (message === 'proxy-timeout') return 'proxy-timeout';
+  if (message === 'proxy-auth') return 'proxy-auth';
+  if (message === 'proxy-throttle') return 'proxy-throttle';
+  if (message === 'proxy-rejected') return 'proxy-rejected';
+  if (message === 'proxy-upstream') return 'proxy-upstream';
+  if (message === 'proxy-connect') return 'proxy-connect';
+  if (message === 'proxy-eof') return 'proxy-eof';
+  if (message === 'proxy-protocol') return 'proxy-protocol';
   if (message === 'tls') return 'tls';
   return 'network';
 }
@@ -78,6 +85,15 @@ function proxyOptions(proxy) {
   return {url: parsed, authorization};
 }
 
+function connectStatusFailure(status) {
+  if (status === 407) return new Error('proxy-auth');
+  // Residential gateways commonly use 403 as a short-lived connection/concurrency throttle.
+  // It must not be reported as invalid credentials: the same allocation can recover unchanged.
+  if (status === 403 || status === 429) return new Error('proxy-throttle');
+  if (status >= 500 && status <= 599) return new Error('proxy-upstream');
+  return new Error('proxy-rejected');
+}
+
 function readConnectResponse(socket, callback) {
   let buffered = Buffer.alloc(0);
   const cleanup = () => {
@@ -85,13 +101,13 @@ function readConnectResponse(socket, callback) {
     socket.off('error', onError);
     socket.off('end', onEnd);
   };
-  const onError = () => { cleanup(); callback(new Error('proxy')); };
-  const onEnd = () => { cleanup(); callback(new Error('proxy')); };
+  const onError = () => { cleanup(); callback(new Error('proxy-connect')); };
+  const onEnd = () => { cleanup(); callback(new Error('proxy-eof')); };
   const onData = chunk => {
     buffered = Buffer.concat([buffered, chunk]);
     if (buffered.length > 64 * 1024) {
       cleanup();
-      callback(new Error('proxy'));
+      callback(new Error('proxy-protocol'));
       return;
     }
     const boundary = buffered.indexOf('\r\n\r\n');
@@ -100,8 +116,13 @@ function readConnectResponse(socket, callback) {
     const head = buffered.subarray(0, boundary).toString('latin1');
     const first = head.split('\r\n', 1)[0] || '';
     const match = /^HTTP\/1\.[01] ([0-9]{3})(?: |$)/.exec(first);
-    if (!match || match[1] !== '200') {
-      callback(new Error('proxy'));
+    if (!match) {
+      callback(new Error('proxy-protocol'));
+      return;
+    }
+    const status = Number(match[1]);
+    if (status !== 200) {
+      callback(connectStatusFailure(status));
       return;
     }
     const remainder = buffered.subarray(boundary + 4);
@@ -143,9 +164,9 @@ class GeminiProxyAgent extends https.Agent {
       if (error) raw.destroy();
       callback(error, socket);
     };
-    const timer = setTimeout(() => finish(new Error('timeout')), connectTimeoutMs);
+    const timer = setTimeout(() => finish(new Error('proxy-timeout')), connectTimeoutMs);
     timer.unref();
-    raw.once('error', () => finish(new Error('proxy')));
+    raw.once('error', () => finish(new Error('proxy-connect')));
     const connectedEvent = this.proxy.protocol === 'https:' ? 'secureConnect' : 'connect';
     raw.once(connectedEvent, () => {
       const targetHost = net.isIPv6(options.host) ? `[${options.host}]` : options.host;

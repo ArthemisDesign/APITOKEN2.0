@@ -48,9 +48,12 @@ const ANTIGRAVITY_CLIENT_SECRET: &str = gemini_credential::ANTIGRAVITY_OAUTH_CLI
 const ANTIGRAVITY_REDIRECT_URI: &str = gemini_credential::ANTIGRAVITY_REDIRECT_URI;
 const OAUTH_SESSION_SECS: i64 = 1200;
 const MAX_ONBOARD_POLLS: usize = 24;
-const PROXY_PROBE_ATTEMPTS: usize = 3;
-const PROXY_PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
-const PROXY_PROBE_RETRY_DELAY: Duration = Duration::from_millis(300);
+const TRANSPORT_RECOVERY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+];
 
 const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
 
@@ -145,7 +148,9 @@ impl Config {
             keyring,
             active_key_id,
             publish_lock: Arc::new(tokio::sync::Mutex::new(())),
-            callback_limit: Arc::new(tokio::sync::Semaphore::new(32)),
+            // A batch is sequential, and serializing completion across sellers prevents authbot
+            // from creating its own CONNECT burst against residential proxy gateways.
+            callback_limit: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -335,87 +340,10 @@ pub fn begin(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProxyProbeError {
-    Invalid,
-    Transport(&'static str),
-}
-
-impl ProxyProbeError {
-    pub(crate) fn diagnostic_kind(self) -> &'static str {
-        match self {
-            Self::Invalid => "invalid",
-            Self::Transport(kind) => kind,
-        }
-    }
-
-    fn retryable(self) -> bool {
-        matches!(
-            self,
-            Self::Transport("timeout" | "proxy" | "tls" | "network")
-        )
-    }
-}
-
-/// Verify the exact server-side egress before the seller creates an account or spends a one-use
-/// Google authorization code. Any HTTP response proves that CONNECT/TLS to the token endpoint
-/// works; response semantics are intentionally irrelevant to this credential-free GET probe. Each
-/// transient attempt owns a fresh helper so a poisoned CONNECT socket cannot reject a valid proxy.
-pub(crate) async fn probe_proxy(proxy: &str, chat_id: i64) -> Result<String, ProxyProbeError> {
-    let proxy = normalize_proxy_url(proxy).map_err(|_| ProxyProbeError::Invalid)?;
-    for attempt in 1..=PROXY_PROBE_ATTEMPTS {
-        let result = tokio::time::timeout(PROXY_PROBE_ATTEMPT_TIMEOUT, probe_proxy_once(&proxy))
-            .await
-            .unwrap_or(Err(ProxyProbeError::Transport("timeout")));
-        match result {
-            Ok(()) => {
-                if attempt > 1 {
-                    eprintln!(
-                        "[gemini-oauth] chat={} proxy preflight recovered on attempt {}/{}",
-                        chat_id, attempt, PROXY_PROBE_ATTEMPTS
-                    );
-                }
-                return Ok(proxy);
-            }
-            Err(error) => {
-                eprintln!(
-                    "[gemini-oauth] chat={} proxy preflight attempt {}/{} failed: {}",
-                    chat_id,
-                    attempt,
-                    PROXY_PROBE_ATTEMPTS,
-                    error.diagnostic_kind(),
-                );
-                if attempt == PROXY_PROBE_ATTEMPTS || !error.retryable() {
-                    return Err(error);
-                }
-                tokio::time::sleep(PROXY_PROBE_RETRY_DELAY).await;
-            }
-        }
-    }
-    unreachable!("bounded Gemini proxy probe loop always returns")
-}
-
-async fn probe_proxy_once(proxy: &str) -> Result<(), ProxyProbeError> {
-    let mut client = GeminiHttpClient::connect_for_probe(proxy)
-        .await
-        .map_err(|error| {
-            ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
-        })?;
-    client
-        .request(
-            GeminiHttpMethod::Get,
-            TOKEN_URL,
-            &[("user-agent", "Go-http-client/2.0")],
-            &[],
-        )
-        .await
-        .map_err(|error| {
-            ProxyProbeError::Transport(crate::gemini_transport::diagnostic_kind(&error))
-        })?;
-    Ok(())
-}
-
-fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
+/// Parse and canonicalize the seller's proxy without opening a speculative CONNECT. Residential
+/// gateways can transiently throttle that probe while the same browser allocation is healthy; the
+/// real OAuth transaction owns bounded, classified recovery instead.
+pub(crate) fn normalize_proxy_url(proxy: &str) -> Result<String, StartError> {
     let normalized =
         gemini_credential::normalize_proxy_url(proxy).map_err(|_| StartError::Proxy)?;
     reqwest::Proxy::all(&normalized).map_err(|_| StartError::Proxy)?;
@@ -564,14 +492,14 @@ async fn finish_oauth(
     code: Option<&str>,
     callback_error: Option<&str>,
 ) -> Response {
+    let Some(callback_state) = callback_state.filter(|value| valid_oauth_state(value)) else {
+        return callback_html(StatusCode::BAD_REQUEST, false);
+    };
     let Some(oauth) = state.config.gemini_oauth.as_ref() else {
         return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
     };
-    let Ok(_callback_permit) = oauth.callback_limit.clone().try_acquire_owned() else {
+    let Ok(_callback_permit) = oauth.callback_limit.clone().acquire_owned().await else {
         return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
-    };
-    let Some(callback_state) = callback_state.filter(|value| valid_oauth_state(value)) else {
-        return callback_html(StatusCode::BAD_REQUEST, false);
     };
     let session = match state.store.claim_gemini_oauth(callback_state) {
         Ok(Some(session)) => session,
@@ -762,13 +690,10 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
     let accepts_proxy_input = session.job.as_ref().is_some_and(|expected| {
         crate::bot::gemini_job_accepts_proxy_input(&state.store, expected, pending_proxy_order_id)
     });
-    let (retry_proxy, retry_proxy_order_id) = if accepts_proxy_input {
-        // The failed proxy must not shadow the seller's next message. Clearing it makes the next
-        // generation consume and persist the replacement supplied in `gm_gproxy`.
-        (String::new(), 0)
-    } else {
-        (pending_proxy, pending_proxy_order_id)
-    };
+    // Keep the exact egress after every callback outcome. Seller-owned jobs can still replace it by
+    // sending a new proxy, while `повторить` now starts a fresh PKCE generation with the retained
+    // one. A transient gateway failure therefore never turns into a request to re-enter secrets.
+    let (retry_proxy, retry_proxy_order_id) = (pending_proxy, pending_proxy_order_id);
     let retry_applied = session.job.as_ref().is_some_and(|expected| {
         state
             .store
@@ -802,8 +727,8 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
         );
         return;
     }
-    // The authorization code and its encrypted PKCE transaction cannot be retried. Fixed buyer or
-    // issued proxies are restored; seller-owned proxy jobs explicitly wait for a replacement.
+    // The authorization code and its encrypted PKCE transaction cannot be reused after this point;
+    // the proxy remains available for a new generation or can be explicitly replaced by its owner.
     let _ = state
         .bot
         .send(
@@ -882,10 +807,10 @@ impl Failure {
 
     fn public_message(self) -> &'static str {
         match self {
-            Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Пришли прокси ещё раз — бот начнёт авторизацию заново.",
-            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Пришли прокси ещё раз; если ошибка повторится, администратор проверит причину.",
-            Self::Temporary => "⚠️ Google временно не завершил проверку. Подожди немного и пришли прокси ещё раз, чтобы начать авторизацию заново.",
-            Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте, затем начни подключение заново.",
+            Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Прокси сохранён: отправь <code>повторить</code> для новой авторизации либо пришли новый прокси, чтобы заменить его.",
+            Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Прокси сохранён: отправь <code>повторить</code>; если ошибка вернётся, администратор проверит причину.",
+            Self::Temporary => "⚠️ После автоматических попыток Google временно не завершил проверку. Прокси сохранён: отправь <code>повторить</code> для новой авторизации либо пришли новый прокси.",
+            Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
             Self::MigrationProxyMismatch => "❌ Для перехода на Antigravity используй тот же прокси, который уже закреплён за этой Google-подпиской.",
@@ -973,6 +898,157 @@ struct PublishedProfile {
     migrated: bool,
 }
 
+/// One serialized OAuth transaction with evidence-based CONNECT recovery. A new helper is spawned
+/// after every transport error so a half-closed tunnel cannot poison the next attempt. Token
+/// exchange is replayed only when the helper proves the failure happened before the target request;
+/// after a token exists, the idempotent control-plane reads/onboarding calls may recover from the
+/// wider transient set.
+struct RecoveringClient<'a> {
+    proxy: &'a str,
+    chat_id: i64,
+    inner: GeminiHttpClient,
+}
+
+impl<'a> RecoveringClient<'a> {
+    async fn connect(proxy: &'a str, chat_id: i64) -> Result<Self, Failure> {
+        let inner = GeminiHttpClient::connect(proxy).await.map_err(|error| {
+            eprintln!(
+                "[gemini-oauth] chat={} attested OAuth transport startup failed: {}",
+                chat_id,
+                crate::gemini_transport::diagnostic_kind(&error),
+            );
+            Failure::Temporary
+        })?;
+        Ok(Self {
+            proxy,
+            chat_id,
+            inner,
+        })
+    }
+
+    async fn reconnect(&mut self) -> Result<(), Failure> {
+        self.inner = GeminiHttpClient::connect(self.proxy)
+            .await
+            .map_err(|error| {
+                eprintln!(
+                    "[gemini-oauth] chat={} OAuth transport restart failed: {}",
+                    self.chat_id,
+                    crate::gemini_transport::diagnostic_kind(&error),
+                );
+                Failure::Temporary
+            })?;
+        Ok(())
+    }
+
+    async fn token_request(
+        &mut self,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<crate::gemini_transport::Response, Failure> {
+        for attempt in 1..=TRANSPORT_RECOVERY_DELAYS.len() + 1 {
+            match self
+                .inner
+                .request(GeminiHttpMethod::Post, TOKEN_URL, headers, body)
+                .await
+            {
+                Ok(response) => {
+                    if attempt > 1 {
+                        eprintln!(
+                            "[gemini-oauth] chat={} token transport recovered on attempt {}/{}",
+                            self.chat_id,
+                            attempt,
+                            TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
+                    let retryable = crate::gemini_transport::failure_kind(&error)
+                        .is_some_and(|kind| kind.safe_to_retry_before_target());
+                    eprintln!(
+                        "[gemini-oauth] chat={} token transport attempt {}/{} failed: {}",
+                        self.chat_id,
+                        attempt,
+                        TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        diagnostic,
+                    );
+                    if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
+                        return Err(Failure::Temporary);
+                    }
+                    tokio::time::sleep(TRANSPORT_RECOVERY_DELAYS[attempt - 1]).await;
+                    self.reconnect().await?;
+                }
+            }
+        }
+        unreachable!("bounded token transport recovery loop always returns")
+    }
+
+    async fn control_request(
+        &mut self,
+        method: GeminiHttpMethod,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        phase: &'static str,
+    ) -> Result<crate::gemini_transport::Response, Failure> {
+        for attempt in 1..=TRANSPORT_RECOVERY_DELAYS.len() + 1 {
+            match self.inner.request(method, url, headers, body).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
+                    let retryable = crate::gemini_transport::failure_kind(&error)
+                        .is_some_and(|kind| kind.retryable_control_plane());
+                    eprintln!(
+                        "[gemini-oauth] chat={} {} transport attempt {}/{} failed: {}",
+                        self.chat_id,
+                        phase,
+                        attempt,
+                        TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        diagnostic,
+                    );
+                    if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
+                        return Err(Failure::Temporary);
+                    }
+                    tokio::time::sleep(TRANSPORT_RECOVERY_DELAYS[attempt - 1]).await;
+                    self.reconnect().await?;
+                }
+            }
+        }
+        unreachable!("bounded control transport recovery loop always returns")
+    }
+
+    async fn userinfo_request(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<crate::gemini_transport::Response, Failure> {
+        for attempt in 1..=TRANSPORT_RECOVERY_DELAYS.len() + 1 {
+            match self.inner.fetch_userinfo(url, headers).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
+                    let retryable = crate::gemini_transport::failure_kind(&error)
+                        .is_some_and(|kind| kind.retryable_control_plane());
+                    eprintln!(
+                        "[gemini-oauth] chat={} userinfo transport attempt {}/{} failed: {}",
+                        self.chat_id,
+                        attempt,
+                        TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        diagnostic,
+                    );
+                    if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
+                        return Err(Failure::Temporary);
+                    }
+                    tokio::time::sleep(TRANSPORT_RECOVERY_DELAYS[attempt - 1]).await;
+                    self.reconnect().await?;
+                }
+            }
+        }
+        unreachable!("bounded userinfo transport recovery loop always returns")
+    }
+}
+
 async fn complete(
     config: &Config,
     session: &GeminiOAuthSession,
@@ -995,22 +1071,10 @@ async fn complete(
         );
         return Err(Failure::Authorization);
     }
-    let mut client = match GeminiHttpClient::connect(proxy).await {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!(
-                "[gemini-oauth] chat={} attested OAuth transport startup failed: {}",
-                session.chat_id,
-                crate::gemini_transport::diagnostic_kind(&error),
-            );
-            return Err(Failure::Temporary);
-        }
-    };
+    let mut client = RecoveringClient::connect(proxy, session.chat_id).await?;
     let form = token_exchange_form(client_id, verifier, code, redirect_uri, client_secret)?;
     let response = client
-        .request(
-            GeminiHttpMethod::Post,
-            TOKEN_URL,
+        .token_request(
             &[
                 (
                     "content-type",
@@ -1020,15 +1084,7 @@ async fn complete(
             ],
             form.as_bytes(),
         )
-        .await
-        .map_err(|error| {
-            eprintln!(
-                "[gemini-oauth] chat={} token exchange transport failed: {}",
-                session.chat_id,
-                crate::gemini_transport::diagnostic_kind(&error),
-            );
-            Failure::Temporary
-        })?;
+        .await?;
     if !(200..300).contains(&response.status) {
         eprintln!(
             "[gemini-oauth] chat={} Google rejected the token exchange: HTTP {}",
@@ -1059,10 +1115,7 @@ async fn complete(
     );
     let authorization = Zeroizing::new(format!("Bearer {}", token.access_token));
     let headers = official_userinfo_headers(authorization.as_str());
-    let user_info_response = client
-        .fetch_userinfo(USERINFO_URL, &headers)
-        .await
-        .map_err(|_| Failure::Temporary)?;
+    let user_info_response = client.userinfo_request(USERINFO_URL, &headers).await?;
     if !(200..300).contains(&user_info_response.status) {
         eprintln!(
             "[gemini-oauth] chat={} Google userinfo call failed: HTTP {}",
@@ -1151,7 +1204,7 @@ fn valid_identity(value: &str, max: usize) -> bool {
 }
 
 async fn resolve_account(
-    client: &mut GeminiHttpClient,
+    client: &mut RecoveringClient<'_>,
     access_token: &str,
 ) -> Result<ResolvedAccount, Failure> {
     let mut loaded = load_code_assist(client, access_token).await?;
@@ -1186,7 +1239,7 @@ async fn resolve_account(
 }
 
 async fn load_code_assist(
-    client: &mut GeminiHttpClient,
+    client: &mut RecoveringClient<'_>,
     access_token: &str,
 ) -> Result<LoadCodeAssistResponse, Failure> {
     for base in [
@@ -1217,7 +1270,7 @@ fn load_code_assist_request_body() -> Value {
 }
 
 async fn onboard_antigravity(
-    client: &mut GeminiHttpClient,
+    client: &mut RecoveringClient<'_>,
     access_token: &str,
     tier_id: &str,
 ) -> Result<(), Failure> {
@@ -1272,7 +1325,7 @@ fn onboard_request_body(tier_id: &str) -> Value {
 }
 
 async fn post_antigravity_json<T: for<'de> Deserialize<'de>>(
-    client: &mut GeminiHttpClient,
+    client: &mut RecoveringClient<'_>,
     access_token: &str,
     url: &str,
     body: &Value,
@@ -1296,9 +1349,14 @@ async fn post_antigravity_json<T: for<'de> Deserialize<'de>>(
         headers.push(("x-goog-api-client", google_api_client));
     }
     let response = client
-        .request(GeminiHttpMethod::Post, url, &headers, &encoded)
-        .await
-        .map_err(|_| Failure::Temporary)?;
+        .control_request(
+            GeminiHttpMethod::Post,
+            url,
+            &headers,
+            &encoded,
+            "code_assist",
+        )
+        .await?;
     if !(200..300).contains(&response.status) {
         let status = response.status;
         // Private Google diagnostics can contain consumer project/account context. Use them only
@@ -1928,18 +1986,20 @@ mod tests {
     }
 
     #[test]
-    fn proxy_probe_retries_only_transient_egress_failures() {
-        for kind in ["timeout", "proxy", "tls", "network"] {
-            assert!(ProxyProbeError::Transport(kind).retryable(), "kind={kind}");
-        }
-        for error in [
-            ProxyProbeError::Invalid,
-            ProxyProbeError::Transport("protocol"),
-            ProxyProbeError::Transport("helper"),
-            ProxyProbeError::Transport("startup_or_ipc"),
-        ] {
-            assert!(!error.retryable(), "error={error:?}");
-        }
+    fn transport_recovery_reaches_the_observed_gateway_recovery_window_without_bursting() {
+        assert_eq!(
+            TRANSPORT_RECOVERY_DELAYS,
+            [
+                Duration::from_secs(2),
+                Duration::from_secs(5),
+                Duration::from_secs(10),
+                Duration::from_secs(20),
+            ]
+        );
+        assert_eq!(
+            TRANSPORT_RECOVERY_DELAYS.iter().sum::<Duration>(),
+            Duration::from_secs(37)
+        );
     }
 
     #[test]

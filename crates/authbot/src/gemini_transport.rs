@@ -22,15 +22,19 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const OAUTH_CONNECT_TIMEOUT_MS: u64 = 30_000;
 const OAUTH_READ_TIMEOUT_MS: u64 = 90_000;
-const PROBE_CONNECT_TIMEOUT_MS: u64 = 8_000;
-const PROBE_READ_TIMEOUT_MS: u64 = 8_000;
-const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const HELPER_SOURCE: &str = include_str!("../../forward/src/gemini/node_transport.cjs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RequestFailureKind {
+pub(crate) enum RequestFailureKind {
     Timeout,
-    Proxy,
+    ProxyTimeout,
+    ProxyAuth,
+    ProxyThrottle,
+    ProxyRejected,
+    ProxyUpstream,
+    ProxyConnect,
+    ProxyEof,
+    ProxyProtocol,
     Tls,
     Network,
     Protocol,
@@ -41,7 +45,14 @@ impl RequestFailureKind {
     fn from_helper(kind: Option<&str>) -> Self {
         match kind {
             Some("timeout") => Self::Timeout,
-            Some("proxy") => Self::Proxy,
+            Some("proxy-timeout") => Self::ProxyTimeout,
+            Some("proxy-auth") => Self::ProxyAuth,
+            Some("proxy-throttle") => Self::ProxyThrottle,
+            Some("proxy-rejected") => Self::ProxyRejected,
+            Some("proxy-upstream") => Self::ProxyUpstream,
+            Some("proxy-connect") => Self::ProxyConnect,
+            Some("proxy-eof") => Self::ProxyEof,
+            Some("proxy-protocol") => Self::ProxyProtocol,
             Some("tls") => Self::Tls,
             Some("network") => Self::Network,
             Some("protocol") => Self::Protocol,
@@ -52,12 +63,50 @@ impl RequestFailureKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::Timeout => "timeout",
-            Self::Proxy => "proxy",
+            Self::ProxyTimeout => "proxy_timeout",
+            Self::ProxyAuth => "proxy_auth",
+            Self::ProxyThrottle => "proxy_throttle",
+            Self::ProxyRejected => "proxy_rejected",
+            Self::ProxyUpstream => "proxy_upstream",
+            Self::ProxyConnect => "proxy_connect",
+            Self::ProxyEof => "proxy_eof",
+            Self::ProxyProtocol => "proxy_protocol",
             Self::Tls => "tls",
             Self::Network => "network",
             Self::Protocol => "protocol",
             Self::Helper => "helper",
         }
+    }
+
+    /// These failures happen before the target TLS request can carry an OAuth code. Retrying the
+    /// exact token exchange is therefore safe; a generic read timeout/network failure is not.
+    pub(crate) fn safe_to_retry_before_target(self) -> bool {
+        matches!(
+            self,
+            Self::ProxyTimeout
+                | Self::ProxyThrottle
+                | Self::ProxyUpstream
+                | Self::ProxyConnect
+                | Self::ProxyEof
+                | Self::Tls
+        )
+    }
+
+    /// Once an access token exists, every authbot control-plane operation is replay-safe. Keep
+    /// malformed CONNECT responses and explicit auth/rejection failures fail-closed, while all
+    /// transient transport classes receive bounded recovery.
+    pub(crate) fn retryable_control_plane(self) -> bool {
+        matches!(
+            self,
+            Self::Timeout
+                | Self::ProxyTimeout
+                | Self::ProxyThrottle
+                | Self::ProxyUpstream
+                | Self::ProxyConnect
+                | Self::ProxyEof
+                | Self::Tls
+                | Self::Network
+        )
     }
 }
 
@@ -79,6 +128,12 @@ pub fn diagnostic_kind(error: &anyhow::Error) -> &'static str {
         .downcast_ref::<RequestFailure>()
         .map(|failure| failure.0.as_str())
         .unwrap_or("startup_or_ipc")
+}
+
+pub(crate) fn failure_kind(error: &anyhow::Error) -> Option<RequestFailureKind> {
+    error
+        .downcast_ref::<RequestFailure>()
+        .map(|failure| failure.0)
 }
 
 #[derive(Clone, Copy)]
@@ -166,17 +221,6 @@ impl Client {
             OAUTH_CONNECT_TIMEOUT_MS,
             OAUTH_READ_TIMEOUT_MS,
             REQUEST_TIMEOUT,
-        )
-        .await
-    }
-
-    /// Start an independent helper with short bounds suitable for a credential-free egress probe.
-    pub async fn connect_for_probe(proxy: &str) -> anyhow::Result<Self> {
-        Self::connect_with_timeouts(
-            proxy,
-            PROBE_CONNECT_TIMEOUT_MS,
-            PROBE_READ_TIMEOUT_MS,
-            PROBE_REQUEST_TIMEOUT,
         )
         .await
     }
@@ -404,6 +448,18 @@ mod tests {
         assert!(HELPER_SOURCE.contains("internal/deps/undici/undici"));
         assert!(HELPER_SOURCE.contains("undici-fetch"));
         assert!(HELPER_SOURCE.contains("stdoutBlocked"));
+        for kind in [
+            "proxy-timeout",
+            "proxy-auth",
+            "proxy-throttle",
+            "proxy-rejected",
+            "proxy-upstream",
+            "proxy-connect",
+            "proxy-eof",
+            "proxy-protocol",
+        ] {
+            assert!(HELPER_SOURCE.contains(kind), "missing helper kind {kind}");
+        }
         assert_eq!(gemini_credential::GEMINI_CLI_VERSION, "0.53.0");
         assert_eq!(gemini_credential::GEMINI_NODE_VERSION, "v24.18.0");
         assert_eq!(gemini_credential::GEMINI_NODE_SHA256.len(), 64);
@@ -413,7 +469,14 @@ mod tests {
     fn helper_failures_become_bounded_secret_free_diagnostics() {
         for (input, expected) in [
             (Some("timeout"), "timeout"),
-            (Some("proxy"), "proxy"),
+            (Some("proxy-timeout"), "proxy_timeout"),
+            (Some("proxy-auth"), "proxy_auth"),
+            (Some("proxy-throttle"), "proxy_throttle"),
+            (Some("proxy-rejected"), "proxy_rejected"),
+            (Some("proxy-upstream"), "proxy_upstream"),
+            (Some("proxy-connect"), "proxy_connect"),
+            (Some("proxy-eof"), "proxy_eof"),
+            (Some("proxy-protocol"), "proxy_protocol"),
             (Some("tls"), "tls"),
             (Some("network"), "network"),
             (Some("protocol"), "protocol"),
@@ -428,5 +491,30 @@ mod tests {
             diagnostic_kind(&anyhow::anyhow!("internal detail")),
             "startup_or_ipc"
         );
+    }
+
+    #[test]
+    fn oauth_recovery_never_replays_an_ambiguous_token_exchange() {
+        for kind in [
+            RequestFailureKind::ProxyTimeout,
+            RequestFailureKind::ProxyThrottle,
+            RequestFailureKind::ProxyUpstream,
+            RequestFailureKind::ProxyConnect,
+            RequestFailureKind::ProxyEof,
+            RequestFailureKind::Tls,
+        ] {
+            assert!(kind.safe_to_retry_before_target(), "kind={kind:?}");
+        }
+        for kind in [
+            RequestFailureKind::Timeout,
+            RequestFailureKind::Network,
+            RequestFailureKind::ProxyAuth,
+            RequestFailureKind::ProxyRejected,
+            RequestFailureKind::ProxyProtocol,
+            RequestFailureKind::Protocol,
+            RequestFailureKind::Helper,
+        ] {
+            assert!(!kind.safe_to_retry_before_target(), "kind={kind:?}");
+        }
     }
 }

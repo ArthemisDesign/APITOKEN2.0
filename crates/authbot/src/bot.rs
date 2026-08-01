@@ -1363,11 +1363,21 @@ pub async fn on_message(
                         // A manually supplied replacement is unrelated to any prior IPRoyal order.
                         prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), 0).await;
                     }
+                    GeminiProxyRetry::Retained(proxy, proxy_order_id) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Использую сохранённый прокси для этой же позиции. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы получить новую ссылку авторизации.",
+                            )
+                            .await;
+                        prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), proxy_order_id)
+                            .await;
+                    }
                     GeminiProxyRetry::Fixed(proxy, proxy_order_id) => {
                         let _ = bot
                             .send(
                                 chat,
-                                "🔁 Повторяю подключение через закреплённый за этой позицией прокси. Сообщением продавца его заменить нельзя.",
+                                "🔁 Использую закреплённый за этой позицией прокси. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы получить новую ссылку авторизации. Сообщением продавца этот прокси заменить нельзя.",
                             )
                             .await;
                         prepare_gemini_account(bot, store, cfg, chat, Some(&proxy), proxy_order_id)
@@ -1774,14 +1784,14 @@ async fn prepare_gemini_account(
         let _ = bot.send(chat, GEMINI_PROXY_PROMPT).await;
         return;
     }
-    let fixed_proxy = !gemini_job_accepts_proxy_input(store, &expected_job, effective_order);
-    let effective_proxy = match gemini_oauth::probe_proxy(effective_proxy, chat).await {
+    let replaceable_proxy = gemini_job_accepts_proxy_input(store, &expected_job, effective_order);
+    let effective_proxy = match gemini_oauth::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
-        Err(error) => {
-            let (retry_proxy, retry_order) = if fixed_proxy {
-                (effective_proxy, effective_order)
-            } else {
+        Err(_) => {
+            let (retry_proxy, retry_order) = if replaceable_proxy {
                 ("", 0)
+            } else {
+                (effective_proxy, effective_order)
             };
             if !store
                 .set_handoff_state_for_seller_job(
@@ -1795,18 +1805,17 @@ async fn prepare_gemini_account(
             {
                 return;
             }
-            let seller_message = if fixed_proxy {
-                "⚠️ Закреплённый за этой позицией прокси сейчас не подключается к Google. Авторизация не начата, код не потерян. Администратор уведомлён; после исправления отправь <code>повторить</code>."
+            let seller_message = if replaceable_proxy {
+                "❌ Не удалось разобрать этот прокси. Авторизация не начата — пришли его заново в указанном формате."
             } else {
-                "❌ Этот прокси не подключается к Google с сервера бота. Авторизация не начата — пришли другой прокси."
+                "⚠️ Закреплённый за этой позицией прокси имеет неверный формат. Авторизация не начата; администратор уведомлён."
             };
             let _ = bot.send(chat, seller_message).await;
             notify_admins(
                 bot,
                 cfg,
                 &format!(
-                    "⚠️ Gemini proxy preflight не пройден ({}) для {}. OAuth не запускался; секреты прокси не логировались.",
-                    error.diagnostic_kind(),
+                    "⚠️ Gemini proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
                     seller_job_label(&job),
                 ),
                 None,
@@ -2020,6 +2029,7 @@ pub(crate) fn gemini_job_accepts_proxy_input(
 #[derive(Debug, PartialEq, Eq)]
 enum GeminiProxyRetry {
     SellerSupplied(String),
+    Retained(String, i64),
     Fixed(String, i64),
     Invalid,
 }
@@ -2032,6 +2042,9 @@ fn select_gemini_proxy_retry(
     input: &str,
 ) -> GeminiProxyRetry {
     if gemini_job_accepts_proxy_input(store, expected, current_proxy_order_id) {
+        if is_gemini_proxy_retry(input) && !current_proxy.is_empty() {
+            return GeminiProxyRetry::Retained(current_proxy.to_string(), current_proxy_order_id);
+        }
         let proxy = proxy_url(input);
         return if proxy.is_empty() {
             GeminiProxyRetry::Invalid
@@ -2044,6 +2057,13 @@ fn select_gemini_proxy_retry(
     } else {
         GeminiProxyRetry::Fixed(current_proxy.to_string(), current_proxy_order_id)
     }
+}
+
+fn is_gemini_proxy_retry(input: &str) -> bool {
+    matches!(
+        input.trim().to_lowercase().as_str(),
+        "повторить" | "повтори" | "retry"
+    )
 }
 
 fn seller_job_matches_handoff(
@@ -4561,6 +4581,16 @@ mod tests {
                 "2.2.2.2:9000:new:proxy",
             ),
             GeminiProxyRetry::SellerSupplied("http://new:proxy@2.2.2.2:9000".into())
+        );
+        assert_eq!(
+            select_gemini_proxy_retry(
+                &seller_store,
+                &seller_job.reference,
+                "http://old:proxy@1.1.1.1:8000",
+                0,
+                "повторить",
+            ),
+            GeminiProxyRetry::Retained("http://old:proxy@1.1.1.1:8000".into(), 0)
         );
 
         let buyer_store = store();
