@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Создаёт 6 топиков forum-группы для devbot и печатает готовые env-строки.
+ * Создаёт 5 топиков forum-группы для devbot и печатает готовые env-строки.
  *
  *   DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... node scripts/provision-topics.mjs
  *
@@ -12,7 +12,6 @@ const TOPICS = [
   { key: "DEVBOT_TOPIC_DEPLOYS", name: "🚀 Deploys", icon_color: 0x6fb9f0 },
   { key: "DEVBOT_TOPIC_WARNINGS", name: "⚠️ Warnings", icon_color: 0xffd67e },
   { key: "DEVBOT_TOPIC_COMMERCE", name: "💰 Commerce", icon_color: 0x8eee98 },
-  { key: "DEVBOT_TOPIC_CI", name: "🧪 CI & Validation", icon_color: 0xcb86db },
   { key: "DEVBOT_TOPIC_DIGEST", name: "📊 Digest", icon_color: 0x92a8d1 },
 ];
 

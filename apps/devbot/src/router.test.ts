@@ -10,7 +10,7 @@ import type { TelegramBot } from "./tg.js";
 
 const T0 = 1_700_000_000_000;
 const CHAT_ID = -100999;
-const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, ci: 5, digest: 6 };
+const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5 };
 
 interface SentMessage {
   chatId: number;
@@ -287,12 +287,6 @@ describe("Router deploy events", () => {
     expect(edited).toHaveLength(editsBefore);
   });
 
-  it("sends candidate-validation events to the CI topic", async () => {
-    const { router, sent } = await makeRouter();
-    await router.handleDeployEvent({ kind: "ci", environment: "candidate-validation", state: "success" });
-    expect(sent[0]?.options.threadId).toBe(TOPICS.ci);
-    expect(sent[0]?.text).toContain("candidate-validation");
-  });
 });
 
 describe("Router journal events", () => {

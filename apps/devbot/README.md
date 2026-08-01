@@ -30,7 +30,7 @@ node dist/main.js             # или: pnpm start
 DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... node scripts/provision-topics.mjs
 ```
 
-Скрипт создаёт 6 топиков и печатает готовые строки `DEVBOT_TOPIC_*` для env-файла.
+Скрипт создаёт 5 топиков и печатает готовые строки `DEVBOT_TOPIC_*` для env-файла.
 
 ## Проверки
 

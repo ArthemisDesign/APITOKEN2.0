@@ -273,9 +273,6 @@ export class Router {
         case "quarantine":
           await this.deployQuarantine(event.sha, event.phase);
           break;
-        case "ci":
-          await this.deployCi(event.environment, event.state);
-          break;
       }
     } catch (error) {
       this.deps.logger?.error(`router: deploy event ${event.kind} failed: ${errorMessage(error)}`);
@@ -379,13 +376,6 @@ export class Router {
     await tg.sendMessage(chatId, text, { threadId: topics.critical });
     this.countEvent("critical", "quarantine");
     await state.save();
-  }
-
-  private async deployCi(environment: string, phaseState: PhaseState): Promise<void> {
-    const { tg, chatId, topics } = this.deps;
-    const icon = phaseIcon(phaseState);
-    await tg.sendMessage(chatId, `${icon} <b>${escapeHtml(environment)}</b>: ${phaseState}`, { threadId: topics.ci });
-    this.countEvent("ci", "validation");
   }
 
   // ---------------------------------------------------------------- journald

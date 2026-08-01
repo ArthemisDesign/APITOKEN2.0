@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { errorMessage, type Logger } from "./log.js";
 
-export type TopicKey = "critical" | "deploys" | "warnings" | "commerce" | "ci" | "digest";
+export type TopicKey = "critical" | "deploys" | "warnings" | "commerce" | "digest";
 
 export type PhaseState = "pending" | "success" | "failure";
 

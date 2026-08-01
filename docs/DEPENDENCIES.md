@@ -59,7 +59,7 @@ Control API движка использует только на чтение. С
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
 | Alertmanager (`observability/alertmanager/alertmanager.yml.template`) | webhook `POST http://127.0.0.1:3800/alerts/{DEVBOT_AM_SECRET}` — receiver `devbot-telegram`, route с `continue: true` рядом с email-деревом (expand-only); блок рендерится только при provisioned `DEVBOT_AM_SECRET` из `/etc/apitoken/devbot.env` | `apps/devbot` | `docs/ops/DEVBOT.md` |
-| GitHub API | commit statuses `deploy/*`, deployments `production-*` / `candidate-validation` (read-only PAT) | `apps/devbot` (поллер, 30–60 с) | `docs/ops/DEVBOT.md` |
+| GitHub API | commit statuses `deploy/*`, deployments `production-*` (read-only PAT) | `apps/devbot` (поллер, 30–60 с) | `docs/ops/DEVBOT.md` |
 | `crates/server` Control API | readonly/control GET (`/pool`, `/codex-subs`, `/gemini-subs`, `/settlement-health`, слоты `/ready`) | `apps/devbot` (команды бота) | `docs/engine/CONTROL_API.md` |
 | journald | чтение журнала юнитов deploy-контура (префиксы `[watchdog]`, `[admin-deploy]` и т.п.) | `apps/devbot` (этап 3) | `docs/ops/DEVBOT.md` |
 | `apps/devbot` | node-exporter textfile `devbot_heartbeat_timestamp_seconds` (`/var/lib/apitoken/monitoring/textfile/devbot.prom`, атомарно каждые 60 с) | Prometheus → алерт `DevBotHeartbeatMissing` | `docs/ops/MONITORING.md#devbotheartbeatmissing` |

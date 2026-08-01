@@ -39,7 +39,6 @@ const configSchema = z.object({
   DEVBOT_TOPIC_DEPLOYS: threadId("DEVBOT_TOPIC_DEPLOYS"),
   DEVBOT_TOPIC_WARNINGS: threadId("DEVBOT_TOPIC_WARNINGS"),
   DEVBOT_TOPIC_COMMERCE: threadId("DEVBOT_TOPIC_COMMERCE"),
-  DEVBOT_TOPIC_CI: threadId("DEVBOT_TOPIC_CI"),
   DEVBOT_TOPIC_DIGEST: threadId("DEVBOT_TOPIC_DIGEST"),
   DEVBOT_PORT: z.coerce.number().int().min(1).max(65_535).default(3800),
   DEVBOT_AM_SECRET: z.string().min(16),
@@ -65,7 +64,6 @@ export interface TopicMap {
   deploys: number;
   warnings: number;
   commerce: number;
-  ci: number;
   digest: number;
 }
 
@@ -102,7 +100,6 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
       deploys: raw.DEVBOT_TOPIC_DEPLOYS,
       warnings: raw.DEVBOT_TOPIC_WARNINGS,
       commerce: raw.DEVBOT_TOPIC_COMMERCE,
-      ci: raw.DEVBOT_TOPIC_CI,
       digest: raw.DEVBOT_TOPIC_DIGEST,
     },
     port: raw.DEVBOT_PORT,

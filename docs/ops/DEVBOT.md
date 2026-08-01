@@ -36,7 +36,7 @@
 | Транспорт | Что несёт | Точка подключения |
 |---|---|---|
 | **Alertmanager webhook** | Все 43 alert-правила (26 critical, 17 warning) | новый `webhook_configs` receiver в `observability/alertmanager/alertmanager.yml.template` на loopback-порт бота; email-receiver сохраняется (expand-only) |
-| **GitHub API поллер** | commit statuses `deploy/*`, Deployments `production-*` и `candidate-validation`, check-run workflow indexnow | тот же контракт, что у `deploy/agent-merge.sh` (`am_status`) и `deploy/watchdog-github.sh`; интервал 30–60 с |
+| **GitHub API поллер** | commit statuses `deploy/*` и Deployments `production-*` | тот же контракт, что у `deploy/agent-merge.sh` (`am_status`) и `deploy/watchdog-github.sh`; интервал 30–60 с |
 | **Journald tail** (этап 3) | ручные вмешательства и откаты, не отражённые в GitHub | префиксы `[watchdog]`, `[agent-merge]`, `[admin-deploy]`, `[sales-deploy]`, `[openkeys-deploy]`; чтение через `journalctl -f` |
 
 ### 2.1 Деплой-конвейер (host-watchdog)
@@ -55,8 +55,6 @@
 | Пайплайн зелёный | `success deploy/watchdog` «All selected production components verified» (`watchdog.sh:2300`) | Status API | info |
 | Пайплайн завис | алерты `DeployPipelineStale`, `DeployStuckInPhase` | Alertmanager | high |
 | Ручной retry / rollback | `apitoken-watchdog retry` (`deploy/watchdog-control.sh:48-57`), `deploy/rollback.sh` | journald | warning (вмешательство человека) |
-| Candidate validation | Deployments `candidate-validation`, слоты `candidate-validation-{1,2}.status` (`watchdog.sh:1133`) | Deployments API | info/high |
-| indexnow workflow | check-run `.github/workflows/indexnow.yml` | GitHub Actions API | low |
 
 ### 2.2 Алерты Prometheus/Alertmanager
 
@@ -134,7 +132,6 @@ runbook-анкор) и приходят в один webhook — бот не оп
 | **🚀 Deploys** | Новый SHA, старт пайплайна, фазовые статусы, роллауты компонентов, зелёный финал, ручные retry/rollback, отложенные миграции | Пуш каждой вехи; фазы одного SHA сворачиваются в одно редактируемое сообщение |
 | **⚠️ Warnings** | Все warning-алерты (firing + resolved) | Пуш со сворачиванием повторов (раздел 4); resolved — правка исходного сообщения |
 | **💰 Commerce** | Денежные алерты (`FailedWebhooksPresent`, `StaleCheckoutSessions`, `SalesPayoutBatchFailed`, `DurableQueue*`, `BalanceDivergenceDetected`, `EngineSettlement*`) — дублируются из своего severity-топика; позитивные события (этап 4) | Дубль только заголовком + ссылкой-ответом на сообщение в Critical/Warnings |
-| **🧪 CI & Validation** | Candidate-validation результаты, indexnow check-run, падение gate при мёрже | Пуш; low-severity можно мьютить |
 | **📊 Digest** | Ежедневная сводка (см. `/digest`) | Одно сообщение в сутки |
 
 Критерии severity: severity-лейбл правила (`critical`/`warning`) — из Alertmanager;
@@ -285,7 +282,7 @@ apps/devbot/src/
    группы (expand-only: email-ветка не меняется). Группировка и inhibit остаются на
    Alertmanager — бот получает уже сгруппированные нотификации.
 2. **GitHub поллер**: читает statuses для `origin/master` HEAD и список deployments
-   (`production-*`, `candidate-validation`); diff против последнего известного состояния в
+   (`production-*`); diff против последнего известного состояния в
    state-файле → упорядоченный пакет вех деплоя, который роутер полностью обрабатывает до
    следующего snapshot. Токен — отдельный read-only PAT (см. раздел 7), не
    переиспользует `/etc/apitoken/github-watchdog.env` (root-only, чужой владелец).
@@ -383,7 +380,7 @@ env (`DEVBOT_AM_SECRET`). systemd-юнит, `.env.example`, watchdog-lane, ал�
 `DevBotHeartbeatMissing` + runbook + monitoring-config.test. Доки: этот файл (статус →
 реализовано частично), `docs/README.md`, `docs/DEPENDENCIES.md`, `AGENTS.md` (карта).
 
-**Этап 2 — деплои.** github-poller, топик 🚀 Deploys и 🧪 CI & Validation, команда
+**Этап 2 — деплои.** github-poller, топик 🚀 Deploys, команда
 `/deploys`, сворачиваемые фазовые сообщения, дубль карантина в 🚨 Critical.
 
 **Этап 3 — journald и silence.** journald.ts (откаты, retry, rollback.sh, agent-merge

@@ -95,19 +95,17 @@ describe("github diffSnapshots", () => {
     ]);
   });
 
-  it("maps production deployments to deploy phases and candidate-validation to CI", () => {
+  it("maps production deployments to deploy phases", () => {
     const prev = snapshot();
     const next = snapshot({
       deployments: {
         "production-engine": { id: 1, state: "success", sha: SHA1 },
-        "candidate-validation": { id: 2, state: "failure" },
         "production-devbot": { id: 3, state: "pending", sha: SHA1 },
       },
     });
     const events = diffSnapshots(prev, next);
     expect(events).toContainEqual({ kind: "phase", sha: SHA1, phase: "engine", state: "success" });
     expect(events).toContainEqual({ kind: "phase", sha: SHA1, phase: "devbot", state: "pending" });
-    expect(events).toContainEqual({ kind: "ci", environment: "candidate-validation", state: "failure" });
   });
 
   it("uses commit status as authority over an older deployment state", () => {

@@ -10,8 +10,7 @@ function minimalEnv(): Record<string, string> {
     DEVBOT_TOPIC_DEPLOYS: "2",
     DEVBOT_TOPIC_WARNINGS: "3",
     DEVBOT_TOPIC_COMMERCE: "4",
-    DEVBOT_TOPIC_CI: "5",
-    DEVBOT_TOPIC_DIGEST: "6",
+    DEVBOT_TOPIC_DIGEST: "5",
     DEVBOT_AM_SECRET: "0123456789abcdef",
   };
 }
@@ -22,7 +21,7 @@ describe("parseConfig", () => {
     expect(config.chatId).toBe(-100999);
     expect(config.adminIds.has(42)).toBe(true);
     expect(config.adminIds.has(43)).toBe(true);
-    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, ci: 5, digest: 6 });
+    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5 });
     expect(config.port).toBe(3800);
     expect(config.githubRepo).toBe("3xcalibur-tech/Claude_API");
     expect(config.pollGithubMs).toBe(45_000);

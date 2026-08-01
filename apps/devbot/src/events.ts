@@ -17,8 +17,7 @@ export type DeployEvent =
   | { kind: "new-sha"; sha: string; title: string; author?: string }
   | { kind: "phase"; sha: string; phase: string; state: PhaseState }
   | { kind: "green"; sha: string }
-  | { kind: "quarantine"; sha: string; phase?: string }
-  | { kind: "ci"; environment: string; state: PhaseState };
+  | { kind: "quarantine"; sha: string; phase?: string };
 
 export interface JournalEvent {
   source: string;

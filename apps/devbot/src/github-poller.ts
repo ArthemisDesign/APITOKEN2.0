@@ -24,8 +24,7 @@ const DEPLOY_PHASE_ENVS: Record<string, string> = {
   "production-devbot": "devbot",
 };
 
-const CI_ENVS = new Set(["candidate-validation"]);
-const RELEVANT_ENVS = new Set([...Object.keys(DEPLOY_PHASE_ENVS), ...CI_ENVS]);
+const RELEVANT_ENVS = new Set(Object.keys(DEPLOY_PHASE_ENVS));
 
 interface GhStatus {
   context?: string;
@@ -53,9 +52,8 @@ function mapGhState(state: string | undefined): PhaseState {
 
 /**
  * Чистая diff-логика вех деплоя (DEVBOT.md §2.1): новый SHA, фазовые переходы,
- * карантин (tests/migration/watchdog failure), зелёный пайплайн (watchdog success),
- * candidate-validation → 🧪 CI. Первый снимок — база без событий, чтобы рестарт
- * бота не спамил историей.
+ * карантин (tests/migration/watchdog failure), зелёный пайплайн (watchdog success).
+ * Первый снимок — база без событий, чтобы рестарт бота не спамил историей.
  */
 export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot): DeployEvent[] {
   if (!prev) return [];
@@ -82,10 +80,6 @@ export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot)
     // Деплой относится к текущему SHA, только если катил именно его; чужой/старый
     // деплой не должен закрашивать фазы нового чеклиста.
     const belongsToSha = !deployment.sha || deployment.sha === next.sha;
-    if (CI_ENVS.has(env)) {
-      if (changed || newSha) events.push({ kind: "ci", environment: env, state: deployment.state });
-      continue;
-    }
     const phase = DEPLOY_PHASE_ENVS[env];
     // Commit status is the canonical component verdict (including explicit
     // "no changes"). Deployments are a fallback for a rollout that appeared
