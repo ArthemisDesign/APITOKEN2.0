@@ -2465,6 +2465,108 @@ pub struct AccountRow {
     pub status: String,
 }
 
+/// One coherent account/funding read for Control API consumers. Bucket totals are grouped by
+/// durable source identity; any scalar amount not represented by a bucket stays explicit instead
+/// of being guessed as paid or promotional funding during the expand rollout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountFundingSummary {
+    pub account_class: Option<pricing::AccountClass>,
+    pub funding_enforcement: Option<pricing::FundingEnforcement>,
+    pub reconciliation_state: Option<pricing::ReconciliationState>,
+    pub bucket_count: i64,
+    pub paid_balance_nano: i64,
+    pub bonus_balance_nano: i64,
+    pub other_balance_nano: i64,
+    pub unattributed_balance_nano: i64,
+    pub paid_reserved_nano: i64,
+    pub bonus_reserved_nano: i64,
+    pub other_reserved_nano: i64,
+    pub unattributed_reserved_nano: i64,
+    pub paid_spent_nano: i64,
+    pub bonus_spent_nano: i64,
+    pub other_spent_nano: i64,
+    pub unattributed_spent_nano: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct AccountFundingSnapshot {
+    pub account: AccountRow,
+    pub funding: AccountFundingSummary,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn account_funding_snapshot_from_parts(
+    account: AccountRow,
+    account_class: Option<String>,
+    funding_enforcement: Option<String>,
+    reconciliation_state: Option<String>,
+    bucket_count: i64,
+    paid_balance_nano: i64,
+    bonus_balance_nano: i64,
+    other_balance_nano: i64,
+    paid_reserved_nano: i64,
+    bonus_reserved_nano: i64,
+    other_reserved_nano: i64,
+    paid_spent_nano: i64,
+    bonus_spent_nano: i64,
+    other_spent_nano: i64,
+) -> Result<AccountFundingSnapshot> {
+    fn unattributed(total: i64, paid: i64, bonus: i64, other: i64, label: &str) -> Result<i64> {
+        i64::try_from(i128::from(total) - i128::from(paid) - i128::from(bonus) - i128::from(other))
+            .with_context(|| format!("{label} funding remainder exceeds signed 64-bit range"))
+    }
+
+    let summary = AccountFundingSummary {
+        account_class: account_class
+            .as_deref()
+            .map(pricing::AccountClass::from_db)
+            .transpose()?,
+        funding_enforcement: funding_enforcement
+            .as_deref()
+            .map(pricing::FundingEnforcement::from_db)
+            .transpose()?,
+        reconciliation_state: reconciliation_state
+            .as_deref()
+            .map(pricing::ReconciliationState::from_db)
+            .transpose()?,
+        bucket_count,
+        paid_balance_nano,
+        bonus_balance_nano,
+        other_balance_nano,
+        unattributed_balance_nano: unattributed(
+            account.balance_nano,
+            paid_balance_nano,
+            bonus_balance_nano,
+            other_balance_nano,
+            "balance",
+        )?,
+        paid_reserved_nano,
+        bonus_reserved_nano,
+        other_reserved_nano,
+        unattributed_reserved_nano: unattributed(
+            account.reserved_nano,
+            paid_reserved_nano,
+            bonus_reserved_nano,
+            other_reserved_nano,
+            "reserved",
+        )?,
+        paid_spent_nano,
+        bonus_spent_nano,
+        other_spent_nano,
+        unattributed_spent_nano: unattributed(
+            account.spent_nano,
+            paid_spent_nano,
+            bonus_spent_nano,
+            other_spent_nano,
+            "spent",
+        )?,
+    };
+    Ok(AccountFundingSnapshot {
+        account,
+        funding: summary,
+    })
+}
+
 /// Резолв ключа → аккаунт (горячий путь авторизации). Активны должны быть И ключ, И аккаунт.
 #[derive(Clone, Debug)]
 pub struct KeyAuth {
@@ -2524,6 +2626,84 @@ pub fn account_create(
 
 pub fn account_get(conn: &Connection, id: &str) -> Result<Option<AccountRow>> {
     one_account(conn, "id", id)
+}
+
+/// Read account aggregates and all funding-bucket categories from one SQLite statement snapshot.
+/// `unattributed_*` remains non-zero until migration/reconciliation has actually materialized the
+/// scalar amount, so an expand-era reader never labels historical money by analogy.
+pub fn account_funding_snapshot(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<AccountFundingSnapshot>> {
+    let row = conn.query_row(
+        "SELECT
+             account.id,account.handle,account.balance_nano,account.spent_nano,
+             account.reserved_nano,account.mult_bp,COALESCE(account.status,'active'),
+             binding.account_class,binding.funding_enforcement,binding.reconciliation_state,
+             COUNT(bucket.bucket_id),
+             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                               THEN bucket.balance_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                               THEN bucket.balance_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                               THEN bucket.balance_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                               THEN bucket.reserved_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                               THEN bucket.reserved_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                               THEN bucket.reserved_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                               THEN bucket.spent_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                               THEN bucket.spent_nano ELSE 0 END),0),
+             COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                               THEN bucket.spent_nano ELSE 0 END),0)
+           FROM accounts account
+           LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id
+           LEFT JOIN funding_buckets bucket ON bucket.account_id=account.id
+          WHERE account.id=?1
+          GROUP BY account.id,account.handle,account.balance_nano,account.spent_nano,
+                   account.reserved_nano,account.mult_bp,account.status,binding.account_class,
+                   binding.funding_enforcement,binding.reconciliation_state",
+        rusqlite::params![id],
+        |row| {
+            Ok((
+                AccountRow {
+                    id: row.get(0)?,
+                    handle: row.get(1)?,
+                    balance_nano: row.get(2)?,
+                    spent_nano: row.get(3)?,
+                    reserved_nano: row.get(4)?,
+                    mult_bp: row.get(5)?,
+                    status: row.get(6)?,
+                },
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, i64>(13)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, i64>(15)?,
+                row.get::<_, i64>(16)?,
+                row.get::<_, i64>(17)?,
+                row.get::<_, i64>(18)?,
+                row.get::<_, i64>(19)?,
+            ))
+        },
+    );
+    let parts = match row {
+        Ok(parts) => parts,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    account_funding_snapshot_from_parts(
+        parts.0, parts.1, parts.2, parts.3, parts.4, parts.5, parts.6, parts.7, parts.8, parts.9,
+        parts.10, parts.11, parts.12, parts.13,
+    )
+    .map(Some)
 }
 /// Найти аккаунт по внешней идентичности (для входа юзера из TG/web).
 pub fn account_by_handle(conn: &Connection, handle: &str) -> Result<Option<AccountRow>> {
@@ -5467,33 +5647,269 @@ pub fn keys_by_account(conn: &Connection, account_id: &str) -> Result<Vec<KeyRow
 pub struct LedgerRow {
     pub id: i64,
     pub key: Option<String>,
-    pub kind: String,     // topup | charge | adjust
+    pub kind: String, // topup | charge | adjust
+    pub request_id: Option<String>,
     pub amount_nano: i64, // + пополнение / − списание
     pub reference: Option<String>,
     pub balance_after_nano: Option<i64>,
     pub ts: i64,
     pub model: Option<String>, // Claude-модель за charge (для per-model графика); topup/adjust → None
+    pub provider: Option<String>,
+    pub official_nano: Option<i64>,
+    pub attribution: Option<LedgerAttribution>,
+    pub funding_allocations: Vec<LedgerFundingAllocation>,
+}
+
+/// Immutable policy/funding evidence copied onto a charge ledger row by the Stage 9 settlement.
+/// Fields remain nullable because expand-era historical rows may contain only legacy/provider
+/// attribution; readers must preserve unknown rather than synthesize a policy identity.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LedgerAttribution {
+    pub attribution_schema_version: i64,
+    pub snapshot_kind: Option<String>,
+    pub provider_id: Option<String>,
+    pub product_id: Option<String>,
+    pub account_class: Option<String>,
+    pub requested_model_id: Option<String>,
+    pub canonical_model_id: Option<String>,
+    pub served_model_id: Option<String>,
+    pub served_canonical_model_id: Option<String>,
+    pub billing_invariant_code: Option<String>,
+    pub alias_generation: Option<i64>,
+    pub rule_id: Option<String>,
+    pub rule_digest: Option<String>,
+    pub rule_scope: Option<String>,
+    pub pricing_mode: Option<String>,
+    pub rule_origin: Option<String>,
+    pub discount_bps: Option<i64>,
+    pub payable_multiplier_bp: Option<i64>,
+    pub policy_id: Option<String>,
+    pub policy_version: Option<i64>,
+    pub effective_policy_version: Option<i64>,
+    pub policy_digest: Option<String>,
+    pub source_policy_digest: Option<String>,
+    pub catalog_generation: Option<i64>,
+    pub switch_generation: Option<i64>,
+    pub admission_catalog_generation: Option<i64>,
+    pub admission_catalog_digest: Option<String>,
+    pub admission_switch_generation: Option<i64>,
+    pub admission_switch_digest: Option<String>,
+    pub runtime_manifest_generation: Option<i64>,
+    pub runtime_manifest_digest: Option<String>,
+    pub tariff_schedule_id: Option<String>,
+    pub tariff_priced_ts: Option<i64>,
+    pub official_nano: Option<i64>,
+    pub official_cost_json: Option<serde_json::Value>,
+    pub paid_funded_nano: Option<i64>,
+    pub bonus_funded_nano: Option<i64>,
+    pub other_funded_nano: Option<i64>,
+    pub funding_allocation_json: Option<serde_json::Value>,
+    pub track_eligible: Option<bool>,
+    pub retention_eligible: Option<bool>,
+    pub commission_eligible: Option<bool>,
+    pub snapshot_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LedgerFundingAllocation {
+    pub bucket_id: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub bucket_version: i64,
+    pub direction: String,
+    pub amount_nano: i64,
+    pub allocation_order: Option<i64>,
+}
+
+fn parse_ledger_json(raw: Option<String>, field: &str) -> Result<Option<serde_json::Value>> {
+    raw.map(|value| {
+        serde_json::from_str(&value)
+            .with_context(|| format!("ledger {field} contains invalid JSON"))
+    })
+    .transpose()
+}
+
+fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
+    let provider = row.get::<_, Option<String>>(9)?;
+    let official_nano = row.get::<_, Option<i64>>(10)?;
+    let attribution_schema_version = row.get::<_, Option<i64>>(11)?;
+    let attribution = attribution_schema_version
+        .map(|attribution_schema_version| {
+            Ok::<LedgerAttribution, anyhow::Error>(LedgerAttribution {
+                attribution_schema_version,
+                snapshot_kind: row.get(12)?,
+                provider_id: provider.clone(),
+                product_id: row.get(13)?,
+                account_class: row.get(14)?,
+                requested_model_id: row.get(15)?,
+                canonical_model_id: row.get(16)?,
+                served_model_id: row.get(17)?,
+                served_canonical_model_id: row.get(18)?,
+                billing_invariant_code: row.get(19)?,
+                alias_generation: row.get(20)?,
+                rule_id: row.get(21)?,
+                rule_digest: row.get(22)?,
+                rule_scope: row.get(23)?,
+                pricing_mode: row.get(24)?,
+                rule_origin: row.get(25)?,
+                discount_bps: row.get(26)?,
+                payable_multiplier_bp: row.get(27)?,
+                policy_id: row.get(28)?,
+                policy_version: row.get(29)?,
+                effective_policy_version: row.get(30)?,
+                policy_digest: row.get(31)?,
+                catalog_generation: row.get(32)?,
+                switch_generation: row.get(33)?,
+                tariff_schedule_id: row.get(34)?,
+                tariff_priced_ts: row.get(35)?,
+                official_nano,
+                official_cost_json: parse_ledger_json(row.get(36)?, "official_cost_json")?,
+                paid_funded_nano: row.get(37)?,
+                bonus_funded_nano: row.get(38)?,
+                other_funded_nano: row.get(39)?,
+                funding_allocation_json: parse_ledger_json(
+                    row.get(40)?,
+                    "funding_allocation_json",
+                )?,
+                track_eligible: row.get::<_, Option<i64>>(41)?.map(|value| value != 0),
+                retention_eligible: row.get::<_, Option<i64>>(42)?.map(|value| value != 0),
+                commission_eligible: row.get::<_, Option<i64>>(43)?.map(|value| value != 0),
+                snapshot_digest: row.get(44)?,
+                source_policy_digest: row.get(45)?,
+                admission_catalog_generation: row.get(46)?,
+                admission_catalog_digest: row.get(47)?,
+                admission_switch_generation: row.get(48)?,
+                admission_switch_digest: row.get(49)?,
+                runtime_manifest_generation: row.get(50)?,
+                runtime_manifest_digest: row.get(51)?,
+            })
+        })
+        .transpose()?;
+    Ok(LedgerRow {
+        id: row.get(0)?,
+        key: row.get(1)?,
+        kind: row.get(2)?,
+        request_id: row.get(3)?,
+        amount_nano: row.get(4)?,
+        reference: row.get(5)?,
+        balance_after_nano: row.get(6)?,
+        ts: row.get(7)?,
+        model: row.get(8)?,
+        provider,
+        official_nano,
+        attribution,
+        funding_allocations: Vec::new(),
+    })
+}
+
+const SQLITE_LEDGER_READ_COLUMNS: &str = "
+    ledger.id,ledger.key,ledger.kind,ledger.request_id,ledger.amount_nano,ledger.ref,
+    ledger.balance_after_nano,ledger.ts,ledger.model,ledger.provider,ledger.official_nano,
+    ledger.attribution_schema_version,ledger.snapshot_kind,ledger.product_id,
+    ledger.account_class,ledger.requested_model_id,ledger.canonical_model_id,
+    ledger.served_model_id,ledger.served_canonical_model_id,ledger.billing_invariant_code,
+    ledger.alias_generation,ledger.rule_id,ledger.rule_digest,ledger.rule_scope,
+    ledger.pricing_mode,ledger.rule_origin,ledger.discount_bps,ledger.payable_multiplier_bp,
+    ledger.policy_id,ledger.policy_version,ledger.effective_policy_version,ledger.policy_digest,
+    ledger.catalog_generation,ledger.switch_generation,ledger.tariff_schedule_id,
+    ledger.tariff_priced_ts,ledger.official_cost_json,ledger.paid_funded_nano,
+    ledger.bonus_funded_nano,ledger.other_funded_nano,ledger.funding_allocation_json,
+    ledger.track_eligible,ledger.retention_eligible,ledger.commission_eligible,
+    ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
+    ledger.admission_catalog_digest,ledger.admission_switch_generation,
+    ledger.admission_switch_digest,ledger.runtime_manifest_generation,
+    ledger.runtime_manifest_digest";
+
+fn sqlite_ledger_allocations(
+    conn: &Connection,
+    account_id: &str,
+    entries: &mut [LedgerRow],
+) -> Result<()> {
+    let Some(first_id) = entries.iter().map(|entry| entry.id).min() else {
+        return Ok(());
+    };
+    let last_id = entries
+        .iter()
+        .map(|entry| entry.id)
+        .max()
+        .unwrap_or(first_id);
+    let mut statement = conn.prepare(
+        "SELECT allocation.ledger_id,allocation.bucket_id,allocation.bucket_source_type,
+                bucket.source_ref,allocation.bucket_version,allocation.direction,
+                allocation.amount_nano,reservation.allocation_order
+           FROM ledger_funding_allocations allocation
+           JOIN ledger ON ledger.id=allocation.ledger_id
+           JOIN funding_buckets bucket
+             ON bucket.bucket_id=allocation.bucket_id
+            AND bucket.account_id=allocation.account_id
+            AND bucket.source_type=allocation.bucket_source_type
+           LEFT JOIN reservation_funding_allocations reservation
+             ON reservation.request_id=ledger.request_id
+            AND reservation.account_id=allocation.account_id
+            AND reservation.bucket_id=allocation.bucket_id
+          WHERE ledger.account_id=?1 AND ledger.id BETWEEN ?2 AND ?3
+          ORDER BY allocation.ledger_id,
+                   COALESCE(reservation.allocation_order,9223372036854775807),
+                   allocation.bucket_id",
+    )?;
+    let mut rows = statement.query(rusqlite::params![account_id, first_id, last_id])?;
+    let mut by_ledger = std::collections::BTreeMap::<i64, Vec<LedgerFundingAllocation>>::new();
+    while let Some(row) = rows.next()? {
+        by_ledger
+            .entry(row.get(0)?)
+            .or_default()
+            .push(LedgerFundingAllocation {
+                bucket_id: row.get(1)?,
+                source_type: row.get(2)?,
+                source_ref: row.get(3)?,
+                bucket_version: row.get(4)?,
+                direction: row.get(5)?,
+                amount_nano: row.get(6)?,
+                allocation_order: row.get(7)?,
+            });
+    }
+    for entry in entries {
+        entry.funding_allocations = by_ledger.remove(&entry.id).unwrap_or_default();
+    }
+    Ok(())
+}
+
+fn sqlite_ledger_page(
+    conn: &Connection,
+    account_id: &str,
+    after_id: Option<i64>,
+    limit: i64,
+) -> Result<Vec<LedgerRow>> {
+    let predicate = if after_id.is_some() {
+        "ledger.account_id=?1 AND ledger.id>?2 ORDER BY ledger.id ASC LIMIT ?3"
+    } else {
+        "ledger.account_id=?1 ORDER BY ledger.id DESC LIMIT ?2"
+    };
+    let sql = format!("SELECT {SQLITE_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
+    let tx = conn.unchecked_transaction()?;
+    let mut statement = tx.prepare(&sql)?;
+    let mut query = match after_id {
+        Some(after_id) => statement.query(rusqlite::params![
+            account_id,
+            after_id.max(0),
+            limit.clamp(1, 1000)
+        ])?,
+        None => statement.query(rusqlite::params![account_id, limit.clamp(1, 1000)])?,
+    };
+    let mut entries = Vec::new();
+    while let Some(row) = query.next()? {
+        entries.push(sqlite_ledger_row(row)?);
+    }
+    drop(query);
+    drop(statement);
+    sqlite_ledger_allocations(&tx, account_id, &mut entries)?;
+    tx.commit()?;
+    Ok(entries)
 }
 
 /// Последние `limit` строк ledger аккаунта (свежие сверху). Для дашборда «история/расход».
 pub fn ledger_recent(conn: &Connection, account_id: &str, limit: i64) -> Result<Vec<LedgerRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts, model \
-         FROM ledger WHERE account_id=?1 ORDER BY id DESC LIMIT ?2",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![account_id, limit.clamp(1, 1000)], |r| {
-        Ok(LedgerRow {
-            id: r.get::<_, i64>(0)?,
-            key: r.get::<_, Option<String>>(1)?,
-            kind: r.get::<_, String>(2)?,
-            amount_nano: r.get::<_, i64>(3)?,
-            reference: r.get::<_, Option<String>>(4)?,
-            balance_after_nano: r.get::<_, Option<i64>>(5)?,
-            ts: r.get::<_, i64>(6)?,
-            model: r.get::<_, Option<String>>(7)?,
-        })
-    })?;
-    Ok(rows.filter_map(|x| x.ok()).collect())
+    sqlite_ledger_page(conn, account_id, None, limit)
 }
 
 /// Ledger cursor for durable external consumers. Rows are returned oldest-first after `after_id`.
@@ -5503,26 +5919,7 @@ pub fn ledger_after(
     after_id: i64,
     limit: i64,
 ) -> Result<Vec<LedgerRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, key, kind, amount_nano, ref, balance_after_nano, ts, model \
-         FROM ledger WHERE account_id=?1 AND id>?2 ORDER BY id ASC LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(
-        rusqlite::params![account_id, after_id.max(0), limit.clamp(1, 1000)],
-        |r| {
-            Ok(LedgerRow {
-                id: r.get::<_, i64>(0)?,
-                key: r.get::<_, Option<String>>(1)?,
-                kind: r.get::<_, String>(2)?,
-                amount_nano: r.get::<_, i64>(3)?,
-                reference: r.get::<_, Option<String>>(4)?,
-                balance_after_nano: r.get::<_, Option<i64>>(5)?,
-                ts: r.get::<_, i64>(6)?,
-                model: r.get::<_, Option<String>>(7)?,
-            })
-        },
-    )?;
-    Ok(rows.filter_map(|x| x.ok()).collect())
+    sqlite_ledger_page(conn, account_id, Some(after_id), limit)
 }
 
 /// Все ключи (для CLI-листинга; ключ маскируется на стороне вывода).
@@ -9538,6 +9935,15 @@ mod tests {
         let rest = ledger_after(&c, "acct", first[0].id, 10).unwrap();
         assert_eq!(rest.len(), 1);
         assert!(rest[0].id > first[0].id);
+        assert!(rest[0].attribution.is_none());
+        assert!(rest[0].funding_allocations.is_empty());
+        let funding = account_funding_snapshot(&c, "acct")
+            .unwrap()
+            .unwrap()
+            .funding;
+        assert_eq!(funding.bucket_count, 0);
+        assert_eq!(funding.unattributed_balance_nano, 1_950_000_000);
+        assert_eq!(funding.unattributed_spent_nano, 50_000_000);
         assert_eq!(account_set_mult_bp(&c, "acct", 3500).unwrap(), 1);
         assert_eq!(account_get(&c, "acct").unwrap().unwrap().mult_bp, 3500);
     }
@@ -9797,6 +10203,69 @@ mod tests {
             attribution,
             ("policy_v1".into(), 0, 300, 1, "runtime-manifest".into())
         );
+        let snapshot = account_funding_snapshot(&c, "strict-account")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.account.balance_nano, 700);
+        assert_eq!(
+            (
+                snapshot.funding.account_class,
+                snapshot.funding.funding_enforcement,
+                snapshot.funding.reconciliation_state,
+                snapshot.funding.bucket_count,
+            ),
+            (
+                Some(AccountClass::B2c),
+                Some(FundingEnforcement::Strict),
+                Some(ReconciliationState::Verified),
+                2,
+            )
+        );
+        assert_eq!(
+            (
+                snapshot.funding.paid_balance_nano,
+                snapshot.funding.bonus_balance_nano,
+                snapshot.funding.other_balance_nano,
+                snapshot.funding.unattributed_balance_nano,
+                snapshot.funding.bonus_spent_nano,
+                snapshot.funding.unattributed_spent_nano,
+            ),
+            (600, 100, 0, 0, 300, 0)
+        );
+        let charge = ledger_recent(&c, "strict-account", 1).unwrap().remove(0);
+        assert_eq!(charge.request_id.as_deref(), Some("strict-track-request"));
+        assert_eq!(charge.provider.as_deref(), Some(PROVIDER_ANTHROPIC));
+        let charge_attribution = charge.attribution.unwrap();
+        assert_eq!(
+            charge_attribution.snapshot_kind.as_deref(),
+            Some("policy_v1")
+        );
+        assert_eq!(
+            (
+                charge_attribution.source_policy_digest.as_deref(),
+                charge_attribution.admission_catalog_digest.as_deref(),
+                charge_attribution.runtime_manifest_digest.as_deref(),
+                charge_attribution.bonus_funded_nano,
+            ),
+            (
+                Some("source-policy"),
+                Some("catalog-digest"),
+                Some("runtime-manifest"),
+                Some(300),
+            )
+        );
+        assert_eq!(
+            charge.funding_allocations,
+            vec![LedgerFundingAllocation {
+                bucket_id: "strict-bonus".into(),
+                source_type: "welcome_track_bonus".into(),
+                source_ref: "welcome".into(),
+                bucket_version: 2,
+                direction: "debit".into(),
+                amount_nano: 300,
+                allocation_order: Some(1),
+            }]
+        );
 
         assert_eq!(
             account_topup(&c, "strict-account", 200, Some("strict-topup")).unwrap(),
@@ -9817,6 +10286,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(parity, (900, 900));
+        let topup = ledger_recent(&c, "strict-account", 1).unwrap().remove(0);
+        assert!(topup.attribution.is_none());
+        assert_eq!(topup.request_id, None);
+        assert_eq!(topup.funding_allocations.len(), 1);
+        assert_eq!(topup.funding_allocations[0].source_ref, "strict-topup");
+        assert_eq!(topup.funding_allocations[0].direction, "credit");
 
         let static_snapshot = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
             request_id: "strict-static-request".into(),

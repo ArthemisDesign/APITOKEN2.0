@@ -4,11 +4,12 @@
 //! idempotency boundary; owner epochs fence stale instances. PostgreSQL is the recovery floor.
 
 use crate::{
-    mask_proxy, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
-    LedgerConsumerLag, LedgerRow, PoolStateRow, SettlementFailure, SettlementHealth,
-    SpendAccountAgg, SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow,
-    UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    mask_proxy, AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow,
+    CodexWindowObservation, GeminiCalibrationRow, GeminiWindowObservation, KeyAuth,
+    KeyPolicyUpdate, KeyRow, LedgerAttribution, LedgerConsumerLag, LedgerFundingAllocation,
+    LedgerRow, PoolStateRow, SettlementFailure, SettlementHealth, SpendAccountAgg, SpendModelAgg,
+    SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg, UsageDailyProviderAgg,
+    UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -104,18 +105,96 @@ fn key_row(row: &Row) -> KeyRow {
     }
 }
 
-fn ledger_row(row: &Row) -> LedgerRow {
-    LedgerRow {
+fn ledger_row(row: &Row) -> Result<LedgerRow> {
+    let provider = row.get::<_, Option<String>>(9);
+    let official_nano = row.get::<_, Option<i64>>(10);
+    let attribution = row
+        .get::<_, Option<i64>>(11)
+        .map(|attribution_schema_version| {
+            Ok::<LedgerAttribution, anyhow::Error>(LedgerAttribution {
+                attribution_schema_version,
+                snapshot_kind: row.get(12),
+                provider_id: provider.clone(),
+                product_id: row.get(13),
+                account_class: row.get(14),
+                requested_model_id: row.get(15),
+                canonical_model_id: row.get(16),
+                served_model_id: row.get(17),
+                served_canonical_model_id: row.get(18),
+                billing_invariant_code: row.get(19),
+                alias_generation: row.get(20),
+                rule_id: row.get(21),
+                rule_digest: row.get(22),
+                rule_scope: row.get(23),
+                pricing_mode: row.get(24),
+                rule_origin: row.get(25),
+                discount_bps: row.get(26),
+                payable_multiplier_bp: row.get(27),
+                policy_id: row.get(28),
+                policy_version: row.get(29),
+                effective_policy_version: row.get(30),
+                policy_digest: row.get(31),
+                catalog_generation: row.get(32),
+                switch_generation: row.get(33),
+                tariff_schedule_id: row.get(34),
+                tariff_priced_ts: row.get(35),
+                official_nano,
+                official_cost_json: crate::parse_ledger_json(row.get(36), "official_cost_json")?,
+                paid_funded_nano: row.get(37),
+                bonus_funded_nano: row.get(38),
+                other_funded_nano: row.get(39),
+                funding_allocation_json: crate::parse_ledger_json(
+                    row.get(40),
+                    "funding_allocation_json",
+                )?,
+                track_eligible: row.get(41),
+                retention_eligible: row.get(42),
+                commission_eligible: row.get(43),
+                snapshot_digest: row.get(44),
+                source_policy_digest: row.get(45),
+                admission_catalog_generation: row.get(46),
+                admission_catalog_digest: row.get(47),
+                admission_switch_generation: row.get(48),
+                admission_switch_digest: row.get(49),
+                runtime_manifest_generation: row.get(50),
+                runtime_manifest_digest: row.get(51),
+            })
+        })
+        .transpose()?;
+    Ok(LedgerRow {
         id: row.get(0),
         key: row.get(1),
         kind: row.get(2),
-        amount_nano: row.get(3),
-        reference: row.get(4),
-        balance_after_nano: row.get(5),
-        ts: row.get(6),
-        model: row.get(7),
-    }
+        request_id: row.get(3),
+        amount_nano: row.get(4),
+        reference: row.get(5),
+        balance_after_nano: row.get(6),
+        ts: row.get(7),
+        model: row.get(8),
+        provider,
+        official_nano,
+        attribution,
+        funding_allocations: Vec::new(),
+    })
 }
+
+const POSTGRES_LEDGER_READ_COLUMNS: &str = "
+    ledger.id,ledger.key,ledger.kind,ledger.request_id,ledger.amount_nano,ledger.ref,
+    ledger.balance_after_nano,ledger.ts,ledger.model,ledger.provider,ledger.official_nano,
+    ledger.attribution_schema_version,ledger.snapshot_kind,ledger.product_id,
+    ledger.account_class,ledger.requested_model_id,ledger.canonical_model_id,
+    ledger.served_model_id,ledger.served_canonical_model_id,ledger.billing_invariant_code,
+    ledger.alias_generation,ledger.rule_id,ledger.rule_digest,ledger.rule_scope,
+    ledger.pricing_mode,ledger.rule_origin,ledger.discount_bps,ledger.payable_multiplier_bp,
+    ledger.policy_id,ledger.policy_version,ledger.effective_policy_version,ledger.policy_digest,
+    ledger.catalog_generation,ledger.switch_generation,ledger.tariff_schedule_id,
+    ledger.tariff_priced_ts,ledger.official_cost_json::text,ledger.paid_funded_nano,
+    ledger.bonus_funded_nano,ledger.other_funded_nano,ledger.funding_allocation_json::text,
+    ledger.track_eligible,ledger.retention_eligible,ledger.commission_eligible,
+    ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
+    ledger.admission_catalog_digest,ledger.admission_switch_generation,
+    ledger.admission_switch_digest,ledger.runtime_manifest_generation,
+    ledger.runtime_manifest_digest";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
@@ -2506,6 +2585,61 @@ impl PgStore {
             &[&id],
         )?.map(|r| account_row(&r)))
     }
+    pub fn account_funding_snapshot(&mut self, id: &str) -> Result<Option<AccountFundingSnapshot>> {
+        let Some(row) = self.client.query_opt(
+            "SELECT
+                 account.id,account.handle,account.balance_nano,account.spent_nano,
+                 account.reserved_nano,account.mult_bp,account.status,
+                 binding.account_class,binding.funding_enforcement,binding.reconciliation_state,
+                 COUNT(bucket.bucket_id)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                                   THEN bucket.balance_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                                   THEN bucket.balance_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                                   THEN bucket.balance_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                                   THEN bucket.reserved_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                                   THEN bucket.reserved_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                                   THEN bucket.reserved_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='paid'
+                                   THEN bucket.spent_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type='welcome_track_bonus'
+                                   THEN bucket.spent_nano ELSE 0 END),0)::bigint,
+                 COALESCE(SUM(CASE WHEN bucket.source_type NOT IN ('paid','welcome_track_bonus')
+                                   THEN bucket.spent_nano ELSE 0 END),0)::bigint
+               FROM accounts account
+               LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id
+               LEFT JOIN funding_buckets bucket ON bucket.account_id=account.id
+              WHERE account.id=$1
+              GROUP BY account.id,account.handle,account.balance_nano,account.spent_nano,
+                       account.reserved_nano,account.mult_bp,account.status,binding.account_class,
+                       binding.funding_enforcement,binding.reconciliation_state",
+            &[&id],
+        )?
+        else {
+            return Ok(None);
+        };
+        crate::account_funding_snapshot_from_parts(
+            account_row(&row),
+            row.get(7),
+            row.get(8),
+            row.get(9),
+            row.get(10),
+            row.get(11),
+            row.get(12),
+            row.get(13),
+            row.get(14),
+            row.get(15),
+            row.get(16),
+            row.get(17),
+            row.get(18),
+            row.get(19),
+        )
+        .map(Some)
+    }
     pub fn account_by_handle(&mut self, handle: &str) -> Result<Option<AccountRow>> {
         Ok(self.client.query_opt(
             "SELECT id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status FROM accounts WHERE handle=$1",
@@ -3015,17 +3149,85 @@ impl PgStore {
         Ok(self.client.execute("DELETE FROM api_keys", &[])? as usize)
     }
 
-    pub fn ledger_recent(&mut self, account_id: &str, limit: i64) -> Result<Vec<LedgerRow>> {
-        Ok(self
+    fn ledger_page(
+        &mut self,
+        account_id: &str,
+        after_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<LedgerRow>> {
+        let predicate = if after_id.is_some() {
+            "ledger.account_id=$1 AND ledger.id>$2 ORDER BY ledger.id ASC LIMIT $3"
+        } else {
+            "ledger.account_id=$1 ORDER BY ledger.id DESC LIMIT $2"
+        };
+        let sql = format!("SELECT {POSTGRES_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
+        let mut tx = self
             .client
-            .query(
-                "SELECT id,key,kind,amount_nano,ref,balance_after_nano,ts,model FROM ledger \
-             WHERE account_id=$1 ORDER BY id DESC LIMIT $2",
-                &[&account_id, &limit.clamp(1, 1000)],
-            )?
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let rows = match after_id {
+            Some(after_id) => tx.query(
+                &sql,
+                &[&account_id, &after_id.max(0), &limit.clamp(1, 1000)],
+            )?,
+            None => tx.query(&sql, &[&account_id, &limit.clamp(1, 1000)])?,
+        };
+        let mut entries = rows
             .into_iter()
-            .map(|r| ledger_row(&r))
-            .collect())
+            .map(|row| ledger_row(&row))
+            .collect::<Result<Vec<_>>>()?;
+        if let (Some(first_id), Some(last_id)) = (
+            entries.iter().map(|entry| entry.id).min(),
+            entries.iter().map(|entry| entry.id).max(),
+        ) {
+            let mut by_ledger =
+                std::collections::BTreeMap::<i64, Vec<LedgerFundingAllocation>>::new();
+            for row in tx.query(
+                "SELECT allocation.ledger_id,allocation.bucket_id,
+                        allocation.bucket_source_type,bucket.source_ref,
+                        allocation.bucket_version,allocation.direction,
+                        allocation.amount_nano,reservation.allocation_order
+                   FROM ledger_funding_allocations allocation
+                   JOIN ledger ON ledger.id=allocation.ledger_id
+                   JOIN funding_buckets bucket
+                     ON bucket.bucket_id=allocation.bucket_id
+                    AND bucket.account_id=allocation.account_id
+                    AND bucket.source_type=allocation.bucket_source_type
+                   LEFT JOIN reservation_funding_allocations reservation
+                     ON reservation.request_id=ledger.request_id
+                    AND reservation.account_id=allocation.account_id
+                    AND reservation.bucket_id=allocation.bucket_id
+                  WHERE ledger.account_id=$1 AND ledger.id BETWEEN $2 AND $3
+                  ORDER BY allocation.ledger_id,
+                           reservation.allocation_order NULLS LAST,
+                           allocation.bucket_id",
+                &[&account_id, &first_id, &last_id],
+            )? {
+                by_ledger
+                    .entry(row.get(0))
+                    .or_default()
+                    .push(LedgerFundingAllocation {
+                        bucket_id: row.get(1),
+                        source_type: row.get(2),
+                        source_ref: row.get(3),
+                        bucket_version: row.get(4),
+                        direction: row.get(5),
+                        amount_nano: row.get(6),
+                        allocation_order: row.get(7),
+                    });
+            }
+            for entry in &mut entries {
+                entry.funding_allocations = by_ledger.remove(&entry.id).unwrap_or_default();
+            }
+        }
+        tx.commit()?;
+        Ok(entries)
+    }
+
+    pub fn ledger_recent(&mut self, account_id: &str, limit: i64) -> Result<Vec<LedgerRow>> {
+        self.ledger_page(account_id, None, limit)
     }
     pub fn ledger_after(
         &mut self,
@@ -3033,16 +3235,7 @@ impl PgStore {
         after_id: i64,
         limit: i64,
     ) -> Result<Vec<LedgerRow>> {
-        Ok(self
-            .client
-            .query(
-                "SELECT id,key,kind,amount_nano,ref,balance_after_nano,ts,model FROM ledger \
-             WHERE account_id=$1 AND id>$2 ORDER BY id LIMIT $3",
-                &[&account_id, &after_id.max(0), &limit.clamp(1, 1000)],
-            )?
-            .into_iter()
-            .map(|r| ledger_row(&r))
-            .collect())
+        self.ledger_page(account_id, Some(after_id), limit)
     }
     pub fn ledger_ack(
         &mut self,
@@ -8367,6 +8560,159 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(bucket_count, 0);
+
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Real PostgreSQL proof that the additive Control API readers preserve the same funding and
+    /// immutable ledger evidence as the SQLite path.
+    #[test]
+    fn postgres_account_funding_and_ledger_read_contract() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL funding/ledger read contract: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE accounts RESTART IDENTITY CASCADE;
+                 INSERT INTO accounts(
+                     id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,
+                     created_ts,created
+                 ) VALUES('read-account','read-user',900,300,40,5000,'active',1,'');
+                 INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES('read-account','main','b2c',NULL,'shadow','shadow','verified',1);
+                 INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     ('read-paid','read-account','paid','payment:read','any',700,40,0,2,
+                      'active',1,2),
+                     ('read-bonus','read-account','welcome_track_bonus','welcome','track',200,0,
+                      300,2,'active',1,2);
+                 INSERT INTO ledger(
+                     account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                     provider,official_nano,attribution_schema_version,snapshot_kind,product_id,
+                     account_class,requested_model_id,canonical_model_id,served_model_id,
+                     served_canonical_model_id,alias_generation,rule_id,rule_digest,rule_scope,
+                     pricing_mode,rule_origin,payable_multiplier_bp,policy_id,policy_version,
+                     effective_policy_version,policy_digest,catalog_generation,switch_generation,
+                     tariff_schedule_id,tariff_priced_ts,official_cost_json,paid_funded_nano,
+                     bonus_funded_nano,other_funded_nano,funding_allocation_json,track_eligible,
+                     retention_eligible,commission_eligible,snapshot_digest,source_policy_digest,
+                     admission_catalog_generation,admission_catalog_digest,
+                     admission_switch_generation,admission_switch_digest,
+                     runtime_manifest_generation,runtime_manifest_digest
+                 ) VALUES(
+                     'read-account','read-key','charge','read-request',300,'provider:read',900,2,
+                     'claude-read','anthropic',600,1,'policy_v1','main','b2c','claude-read',
+                     'claude-read','claude-read','claude-read',1,'read-rule','read-rule-digest',
+                     'provider','track','managed',5000,'read-policy',1,1,'read-policy-digest',1,1,
+                     'read-tariff',2,
+                     '{\"schema_version\":1,\"provider\":\"anthropic\",\"official_nano\":600}'::jsonb,
+                     0,300,0,
+                     '[{\"bucket_id\":\"read-bonus\",\"source_type\":\"welcome_track_bonus\",\"bucket_version\":1,\"reserved_nano\":300,\"charged_nano\":300,\"released_nano\":0,\"allocation_order\":1}]'::jsonb,
+                     true,true,true,'read-snapshot','read-source-policy',1,'read-catalog',1,
+                     'read-switch',1,'read-runtime'
+                 );
+                 INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) SELECT id,'read-account','read-bonus','welcome_track_bonus',1,'debit',300
+                     FROM ledger WHERE request_id='read-request';",
+            )
+            .unwrap();
+
+        let snapshot = pg
+            .account_funding_snapshot("read-account")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.account.balance_nano, 900);
+        assert_eq!(
+            (
+                snapshot.funding.account_class,
+                snapshot.funding.funding_enforcement,
+                snapshot.funding.reconciliation_state,
+                snapshot.funding.bucket_count,
+                snapshot.funding.paid_balance_nano,
+                snapshot.funding.bonus_balance_nano,
+                snapshot.funding.unattributed_balance_nano,
+                snapshot.funding.paid_reserved_nano,
+                snapshot.funding.unattributed_reserved_nano,
+                snapshot.funding.bonus_spent_nano,
+                snapshot.funding.unattributed_spent_nano,
+            ),
+            (
+                Some(crate::pricing::AccountClass::B2c),
+                Some(crate::pricing::FundingEnforcement::Shadow),
+                Some(crate::pricing::ReconciliationState::Verified),
+                2,
+                700,
+                200,
+                0,
+                40,
+                0,
+                300,
+                0,
+            )
+        );
+        let recent = pg.ledger_recent("read-account", 10).unwrap();
+        let after = pg.ledger_after("read-account", 0, 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(recent[0].id, after[0].id);
+        assert_eq!(recent[0].request_id.as_deref(), Some("read-request"));
+        let attribution = recent[0].attribution.as_ref().unwrap();
+        assert_eq!(attribution.snapshot_kind.as_deref(), Some("policy_v1"));
+        assert_eq!(
+            (
+                attribution.source_policy_digest.as_deref(),
+                attribution.admission_catalog_digest.as_deref(),
+                attribution.runtime_manifest_digest.as_deref(),
+                attribution.bonus_funded_nano,
+            ),
+            (
+                Some("read-source-policy"),
+                Some("read-catalog"),
+                Some("read-runtime"),
+                Some(300),
+            )
+        );
+        assert_eq!(
+            recent[0].funding_allocations,
+            vec![LedgerFundingAllocation {
+                bucket_id: "read-bonus".into(),
+                source_type: "welcome_track_bonus".into(),
+                source_ref: "welcome".into(),
+                bucket_version: 1,
+                direction: "debit".into(),
+                amount_nano: 300,
+                allocation_order: None,
+            }]
+        );
 
         pg.client
             .query_one(

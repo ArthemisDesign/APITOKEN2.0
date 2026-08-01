@@ -143,8 +143,11 @@ pub async fn get_account(State(app): State<AppState>, Path(id): Path<String>) ->
         Ok(b) => b,
         Err(r) => return r,
     };
-    match b.account(&id).await {
-        Ok(Some(a)) => Json(json!({
+    match b.account_funding(&id).await {
+        Ok(Some(snapshot)) => {
+            let a = snapshot.account;
+            let funding = snapshot.funding;
+            Json(json!({
             "account": a.id,
             "balance_nano": a.balance_nano,
             "spent_nano": a.spent_nano,
@@ -153,8 +156,27 @@ pub async fn get_account(State(app): State<AppState>, Path(id): Path<String>) ->
             "mult_bp": a.mult_bp,
             "status": a.status,
             "handle": a.handle,
+            "funding": {
+                "account_class": funding.account_class.map(|value| value.as_str()),
+                "funding_enforcement": funding.funding_enforcement.map(|value| value.as_str()),
+                "reconciliation_state": funding.reconciliation_state.map(|value| value.as_str()),
+                "bucket_count": funding.bucket_count,
+                "paid_balance_nano": funding.paid_balance_nano,
+                "bonus_balance_nano": funding.bonus_balance_nano,
+                "other_balance_nano": funding.other_balance_nano,
+                "unattributed_balance_nano": funding.unattributed_balance_nano,
+                "paid_reserved_nano": funding.paid_reserved_nano,
+                "bonus_reserved_nano": funding.bonus_reserved_nano,
+                "other_reserved_nano": funding.other_reserved_nano,
+                "unattributed_reserved_nano": funding.unattributed_reserved_nano,
+                "paid_spent_nano": funding.paid_spent_nano,
+                "bonus_spent_nano": funding.bonus_spent_nano,
+                "other_spent_nano": funding.other_spent_nano,
+                "unattributed_spent_nano": funding.unattributed_spent_nano,
+            },
         }))
-        .into_response(),
+            .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "unknown account"})),
@@ -347,9 +369,15 @@ pub async fn list_ledger(
     let rows: Vec<_> = ledger
         .into_iter()
         .map(|e| {
+            let attribution = e.attribution.map(|attribution| {
+                serde_json::to_value(attribution).expect("typed ledger attribution serializes")
+            });
+            let funding_allocations = serde_json::to_value(e.funding_allocations)
+                .expect("typed ledger funding allocations serialize");
             json!({
                 "id": e.id,
                 "kind": e.kind,
+                "request_id": e.request_id,
                 "amount_nano": e.amount_nano,
                 "amount": metering::nano_to_usd_string(e.amount_nano as i128),
                 "key_masked": e.key.as_deref().map(mask),
@@ -357,6 +385,10 @@ pub async fn list_ledger(
                 "balance_after_nano": e.balance_after_nano,
                 "ts": e.ts,
                 "model": e.model,
+                "provider": e.provider,
+                "official_nano": e.official_nano,
+                "attribution": attribution,
+                "funding_allocations": funding_allocations,
             })
         })
         .collect();

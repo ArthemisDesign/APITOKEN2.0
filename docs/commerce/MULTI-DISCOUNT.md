@@ -2036,6 +2036,24 @@ production data:
 - Проверить отсутствие Gemini.
 - Запустить аудит usage/sales reports.
 
+Первый application checkpoint Этапа 10 доставляет необходимые engine read surfaces, но ещё не
+завершает commerce/UI launch:
+
+- `GET /admin/account/{id}` читает scalar totals и funding buckets одним snapshot и отдельно
+  возвращает paid, welcome bonus, other и `unattributed` balance/reserved/spent. До фактического
+  Stage 6 reconciliation исторический остаток не объявляется paid или bonus;
+- ledger cursor и recent history возвращают сохранённые `request_id/provider/official_nano`, полную
+  immutable policy/rule/catalog/switch/tariff/eligibility/runtime lineage и обе формы funding
+  evidence: исходный settlement JSON и нормализованные bucket allocations с `source_ref`;
+- SQLite и PostgreSQL используют одинаковую семантику и coherent snapshot для ledger row + child
+  allocations. Историческая строка остаётся с `attribution=null`/пустыми allocations — отсутствующие
+  provider, policy или funding для неё не выводятся по имени модели либо reference;
+- TypeScript contracts/engine-client принимают новые поля как additive optional, чтобы предыдущий
+  slot оставался читаемым во время rolling deploy, но все integer money/IDs нормализуются в decimal
+  strings;
+- checkpoint не меняет settlement, не включает strict bindings, не применяет Stage 5/6 data и не
+  считается готовностью customer/admin UI, commerce ingestion или sales audit.
+
 ### Этап 11. Поздний contract cleanup
 
 Только после подтверждения, что все deployed версии и jobs используют новый контракт:

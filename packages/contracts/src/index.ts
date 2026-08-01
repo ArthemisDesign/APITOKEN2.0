@@ -11,6 +11,34 @@ export const nonNegativeIntegerSchema = z.union([
   z.number().int().safe().nonnegative(),
 ]).transform(String);
 
+const nullableStringSchema = z.string().nullish().transform((value) => value ?? null);
+const nullableNonNegativeIntegerSchema = nonNegativeIntegerSchema.nullish()
+  .transform((value) => value ?? null);
+
+export const engineAccountFundingSchema = z.object({
+  account_class: z.enum(["b2c", "b2b", "openkeys", "service"]).nullish()
+    .transform((value) => value ?? null),
+  funding_enforcement: z.enum(["legacy_single", "shadow", "strict"]).nullish()
+    .transform((value) => value ?? null),
+  reconciliation_state: z.enum(["pending", "verified", "exception"]).nullish()
+    .transform((value) => value ?? null),
+  bucket_count: nonNegativeIntegerSchema,
+  paid_balance_nano: decimalIntegerSchema,
+  bonus_balance_nano: decimalIntegerSchema,
+  other_balance_nano: decimalIntegerSchema,
+  unattributed_balance_nano: decimalIntegerSchema,
+  paid_reserved_nano: decimalIntegerSchema,
+  bonus_reserved_nano: decimalIntegerSchema,
+  other_reserved_nano: decimalIntegerSchema,
+  unattributed_reserved_nano: decimalIntegerSchema,
+  paid_spent_nano: decimalIntegerSchema,
+  bonus_spent_nano: decimalIntegerSchema,
+  other_spent_nano: decimalIntegerSchema,
+  unattributed_spent_nano: decimalIntegerSchema,
+});
+
+export type EngineAccountFunding = z.infer<typeof engineAccountFundingSchema>;
+
 export const engineAccountSchema = z.object({
   account: z.string().startsWith("acct_"),
   balance_nano: decimalIntegerSchema,
@@ -20,6 +48,9 @@ export const engineAccountSchema = z.object({
   mult_bp: z.number().int(),
   status: z.enum(["active", "disabled"]),
   handle: z.string().nullable(),
+  // Expand compatibility: old engine slots omit this field. Callers must treat absence as unknown
+  // instead of inferring a paid/bonus split.
+  funding: engineAccountFundingSchema.nullable().optional(),
 });
 
 export type EngineAccount = z.infer<typeof engineAccountSchema>;
@@ -68,9 +99,89 @@ export const issuedEngineApiKeySchema = z.object({
 
 export type IssuedEngineApiKey = z.infer<typeof issuedEngineApiKeySchema>;
 
+export const engineLedgerFundingAllocationSchema = z.object({
+  bucket_id: z.string().min(1),
+  source_type: z.string().min(1),
+  source_ref: z.string(),
+  bucket_version: nonNegativeIntegerSchema,
+  direction: z.enum(["debit", "credit"]),
+  amount_nano: nonNegativeIntegerSchema,
+  allocation_order: nullableNonNegativeIntegerSchema,
+});
+
+export type EngineLedgerFundingAllocation = z.infer<typeof engineLedgerFundingAllocationSchema>;
+
+export const engineSettlementFundingEvidenceSchema = z.object({
+  bucket_id: z.string().min(1),
+  source_type: z.string().min(1),
+  bucket_version: nonNegativeIntegerSchema,
+  reserved_nano: nonNegativeIntegerSchema,
+  charged_nano: nonNegativeIntegerSchema,
+  released_nano: nonNegativeIntegerSchema,
+  allocation_order: nonNegativeIntegerSchema,
+});
+
+export type EngineSettlementFundingEvidence = z.infer<typeof engineSettlementFundingEvidenceSchema>;
+
+export const engineLedgerAttributionSchema = z.object({
+  attribution_schema_version: nonNegativeIntegerSchema,
+  snapshot_kind: z.enum(["policy_v1", "legacy_scalar"]).nullish()
+    .transform((value) => value ?? null),
+  provider_id: nullableStringSchema,
+  product_id: nullableStringSchema,
+  account_class: z.enum(["b2c", "b2b", "openkeys", "service"]).nullish()
+    .transform((value) => value ?? null),
+  requested_model_id: nullableStringSchema,
+  canonical_model_id: nullableStringSchema,
+  served_model_id: nullableStringSchema,
+  served_canonical_model_id: nullableStringSchema,
+  billing_invariant_code: nullableStringSchema,
+  alias_generation: nullableNonNegativeIntegerSchema,
+  rule_id: nullableStringSchema,
+  rule_digest: nullableStringSchema,
+  rule_scope: z.enum(["provider", "model"]).nullish().transform((value) => value ?? null),
+  pricing_mode: z.enum(["track", "discount", "legacy_scalar"]).nullish()
+    .transform((value) => value ?? null),
+  rule_origin: z.enum(["managed", "legacy"]).nullish().transform((value) => value ?? null),
+  discount_bps: z.number().int().min(0).max(9_500).nullish()
+    .transform((value) => value ?? null),
+  payable_multiplier_bp: z.number().int().min(0).max(10_000).nullish()
+    .transform((value) => value ?? null),
+  policy_id: nullableStringSchema,
+  policy_version: nullableNonNegativeIntegerSchema,
+  effective_policy_version: nullableNonNegativeIntegerSchema,
+  policy_digest: nullableStringSchema,
+  source_policy_digest: nullableStringSchema,
+  catalog_generation: nullableNonNegativeIntegerSchema,
+  switch_generation: nullableNonNegativeIntegerSchema,
+  admission_catalog_generation: nullableNonNegativeIntegerSchema,
+  admission_catalog_digest: nullableStringSchema,
+  admission_switch_generation: nullableNonNegativeIntegerSchema,
+  admission_switch_digest: nullableStringSchema,
+  runtime_manifest_generation: nullableNonNegativeIntegerSchema,
+  runtime_manifest_digest: nullableStringSchema,
+  tariff_schedule_id: nullableStringSchema,
+  tariff_priced_ts: nullableNonNegativeIntegerSchema,
+  official_nano: nullableNonNegativeIntegerSchema,
+  official_cost_json: z.record(z.string(), z.unknown()).nullish()
+    .transform((value) => value ?? null),
+  paid_funded_nano: nullableNonNegativeIntegerSchema,
+  bonus_funded_nano: nullableNonNegativeIntegerSchema,
+  other_funded_nano: nullableNonNegativeIntegerSchema,
+  funding_allocation_json: z.array(engineSettlementFundingEvidenceSchema).nullish()
+    .transform((value) => value ?? null),
+  track_eligible: z.boolean().nullish().transform((value) => value ?? null),
+  retention_eligible: z.boolean().nullish().transform((value) => value ?? null),
+  commission_eligible: z.boolean().nullish().transform((value) => value ?? null),
+  snapshot_digest: nullableStringSchema,
+});
+
+export type EngineLedgerAttribution = z.infer<typeof engineLedgerAttributionSchema>;
+
 export const engineLedgerEntrySchema = z.object({
   id: nonNegativeIntegerSchema,
   kind: z.enum(["topup", "charge", "adjust"]),
+  request_id: z.string().nullable().optional(),
   amount_nano: decimalIntegerSchema,
   amount: z.string(),
   key_masked: z.string().nullable(),
@@ -79,6 +190,10 @@ export const engineLedgerEntrySchema = z.object({
   ts: nonNegativeIntegerSchema,
   // Claude-модель за charge-строкой (topup/adjust → null). nullish — устойчивость к старому движку без поля.
   model: z.string().nullish(),
+  provider: z.string().nullable().optional(),
+  official_nano: nonNegativeIntegerSchema.nullable().optional(),
+  attribution: engineLedgerAttributionSchema.nullable().optional(),
+  funding_allocations: z.array(engineLedgerFundingAllocationSchema).optional(),
 });
 
 export type EngineLedgerEntry = z.infer<typeof engineLedgerEntrySchema>;

@@ -3400,6 +3400,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_and_ledger_control_reads_preserve_funding_and_attribution() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-read-surfaces-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        let connection = registry::open(path.to_string_lossy().as_ref()).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO accounts(
+                     id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,
+                     created_ts,created
+                 ) VALUES('acct_read_surface','read-user',900,300,40,5000,'active',1,'');
+                 INSERT INTO account_policy_bindings(
+                     account_id,product_id,account_class,active_effective_version,
+                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+                 ) VALUES(
+                     'acct_read_surface','main','b2c',NULL,'shadow','shadow','verified',1
+                 );
+                 INSERT INTO funding_buckets(
+                     bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     ('read-paid','acct_read_surface','paid','payment:read','any',700,40,0,2,
+                      'active',1,2),
+                     ('read-bonus','acct_read_surface','welcome_track_bonus','welcome','track',
+                      200,0,300,2,'active',1,2);
+                 INSERT INTO ledger(
+                     account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                     provider,official_nano,attribution_schema_version,snapshot_kind,product_id,
+                     account_class,requested_model_id,canonical_model_id,served_model_id,
+                     served_canonical_model_id,alias_generation,rule_id,rule_digest,rule_scope,
+                     pricing_mode,rule_origin,payable_multiplier_bp,policy_id,policy_version,
+                     effective_policy_version,policy_digest,catalog_generation,switch_generation,
+                     tariff_schedule_id,tariff_priced_ts,official_cost_json,paid_funded_nano,
+                     bonus_funded_nano,other_funded_nano,funding_allocation_json,track_eligible,
+                     retention_eligible,commission_eligible,snapshot_digest,source_policy_digest,
+                     admission_catalog_generation,admission_catalog_digest,
+                     admission_switch_generation,admission_switch_digest,
+                     runtime_manifest_generation,runtime_manifest_digest
+                 ) VALUES(
+                     'acct_read_surface','read-key','charge','read-request',300,'provider:read',900,
+                     2,'claude-read','anthropic',600,1,'policy_v1','main','b2c','claude-read',
+                     'claude-read','claude-read','claude-read',1,'read-rule','read-rule-digest',
+                     'provider','track','managed',5000,'read-policy',1,1,'read-policy-digest',1,1,
+                     'read-tariff',2,
+                     '{\"schema_version\":1,\"provider\":\"anthropic\",\"official_nano\":600}',
+                     0,300,0,
+                     '[{\"bucket_id\":\"read-bonus\",\"source_type\":\"welcome_track_bonus\",\"bucket_version\":1,\"reserved_nano\":300,\"charged_nano\":300,\"released_nano\":0,\"allocation_order\":1}]',
+                     1,1,1,'read-snapshot','read-source-policy',1,'read-catalog',1,
+                     'read-switch',1,'read-runtime'
+                 );
+                 INSERT INTO ledger_funding_allocations(
+                     ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
+                     direction,amount_nano
+                 ) SELECT id,'acct_read_surface','read-bonus','welcome_track_bonus',1,'debit',300
+                     FROM ledger WHERE request_id='read-request';",
+            )
+            .unwrap();
+        drop(connection);
+
+        let billing =
+            Arc::new(forward::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap());
+        let mut app = admin_auth_test_app();
+        app.billing = Some(billing);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+
+        let (status, account) = control_json_request(
+            &service,
+            Method::GET,
+            "/admin/account/acct_read_surface",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(account["funding"]["account_class"], "b2c");
+        assert_eq!(account["funding"]["funding_enforcement"], "shadow");
+        assert_eq!(account["funding"]["bucket_count"], 2);
+        assert_eq!(account["funding"]["paid_balance_nano"], 700);
+        assert_eq!(account["funding"]["bonus_balance_nano"], 200);
+        assert_eq!(account["funding"]["unattributed_balance_nano"], 0);
+        assert_eq!(account["funding"]["paid_reserved_nano"], 40);
+        assert_eq!(account["funding"]["bonus_spent_nano"], 300);
+
+        let (status, ledger) = control_json_request(
+            &service,
+            Method::GET,
+            "/admin/account/acct_read_surface/ledger?after_id=0&limit=10",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let entry = &ledger["entries"][0];
+        assert_eq!(entry["request_id"], "read-request");
+        assert_eq!(entry["provider"], "anthropic");
+        assert_eq!(entry["official_nano"], 600);
+        assert_eq!(entry["attribution"]["snapshot_kind"], "policy_v1");
+        assert_eq!(
+            entry["attribution"]["source_policy_digest"],
+            "read-source-policy"
+        );
+        assert_eq!(
+            entry["attribution"]["runtime_manifest_digest"],
+            "read-runtime"
+        );
+        assert_eq!(
+            entry["attribution"]["official_cost_json"]["official_nano"],
+            600
+        );
+        assert_eq!(entry["funding_allocations"][0]["bucket_id"], "read-bonus");
+        assert_eq!(entry["funding_allocations"][0]["source_ref"], "welcome");
+        assert_eq!(entry["funding_allocations"][0]["amount_nano"], 300);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn pricing_control_api_preserves_version_identity_cas_and_dual_lineage_state() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

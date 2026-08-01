@@ -24,8 +24,9 @@ use registry::pricing::{
     ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
-    AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation, GeminiCalibrationRow,
-    GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    AccountFundingSnapshot, AccountRow, BillingTotals, CodexCalibrationRow, CodexWindowObservation,
+    GeminiCalibrationRow, GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth,
+    KeyPolicyUpdate, KeyRow,
 };
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -752,6 +753,10 @@ enum ReadCmd {
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
+    AccountFunding(
+        String,
+        oneshot::Sender<anyhow::Result<Option<AccountFundingSnapshot>>>,
+    ),
     AccountByHandle(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
     Totals(oneshot::Sender<anyhow::Result<BillingTotals>>),
     AccountsList(oneshot::Sender<anyhow::Result<Vec<AccountRow>>>),
@@ -1427,6 +1432,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::Account(id, r) => {
                                 let _ = r.send(registry::account_get(&conn, &id));
+                            }
+                            ReadCmd::AccountFunding(id, r) => {
+                                let _ = r.send(registry::account_funding_snapshot(&conn, &id));
                             }
                             ReadCmd::AccountByHandle(handle, r) => {
                                 let _ = r.send(registry::account_by_handle(&conn, &handle));
@@ -2137,6 +2145,9 @@ impl AsyncBilling {
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
                             ReadCmd::Account(id, r) => answer!(r, pg.account_get(&id)),
+                            ReadCmd::AccountFunding(id, r) => {
+                                answer!(r, pg.account_funding_snapshot(&id))
+                            }
                             ReadCmd::AccountByHandle(handle, r) => {
                                 answer!(r, pg.account_by_handle(&handle))
                             }
@@ -2550,6 +2561,18 @@ impl AsyncBilling {
         let (r, rx) = oneshot::channel();
         self.reader()
             .send(ReadCmd::Account(id.into(), r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+    pub async fn account_funding(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<AccountFundingSnapshot>> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::AccountFunding(id.into(), r))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         rx.await

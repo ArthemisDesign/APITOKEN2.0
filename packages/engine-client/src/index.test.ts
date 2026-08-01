@@ -81,10 +81,34 @@ describe("EngineClient", () => {
         mult_bp: 2000,
         status: "active",
         handle: null,
+        funding: {
+          account_class: "b2c",
+          funding_enforcement: "strict",
+          reconciliation_state: "verified",
+          bucket_count: 2,
+          paid_balance_nano: 700,
+          bonus_balance_nano: 200,
+          other_balance_nano: 0,
+          unattributed_balance_nano: 0,
+          paid_reserved_nano: 40,
+          bonus_reserved_nano: 0,
+          other_reserved_nano: 0,
+          unattributed_reserved_nano: 0,
+          paid_spent_nano: 0,
+          bonus_spent_nano: 300,
+          other_spent_nano: 0,
+          unattributed_spent_nano: 0,
+        },
       }),
     });
     const account = await client.getAccount("acct_test");
     expect(account).toMatchObject({ balance_nano: "0", spent_nano: "12", reserved_nano: "0" });
+    expect(account.funding).toMatchObject({
+      bucket_count: "2",
+      paid_balance_nano: "700",
+      bonus_balance_nano: "200",
+      paid_reserved_nano: "40",
+    });
   });
 
   it("reads a bounded account page with one batch request", async () => {
@@ -200,11 +224,103 @@ describe("EngineClient", () => {
         entries: [{
           id: 1, kind: "topup", amount_nano: 1_000_000_000, amount: "$1.000000000",
           key_masked: null, ref: "payment:1", balance_after_nano: 1_000_000_000, ts: 1_700_000_000,
+        }, {
+          id: "9007199254740993123",
+          kind: "charge",
+          request_id: "request-strict",
+          amount_nano: "300",
+          amount: "$0.000000300",
+          key_masked: "sk-pool-read…only",
+          ref: "provider:read",
+          balance_after_nano: "9007199254740993000",
+          ts: "1700000001",
+          model: "claude-read",
+          provider: "anthropic",
+          official_nano: "600",
+          attribution: {
+            attribution_schema_version: 1,
+            snapshot_kind: "policy_v1",
+            provider_id: "anthropic",
+            product_id: "main",
+            account_class: "b2c",
+            requested_model_id: "claude-read",
+            canonical_model_id: "claude-read",
+            served_model_id: "claude-read",
+            served_canonical_model_id: "claude-read",
+            billing_invariant_code: null,
+            alias_generation: 1,
+            rule_id: "read-rule",
+            rule_digest: "read-rule-digest",
+            rule_scope: "provider",
+            pricing_mode: "track",
+            rule_origin: "managed",
+            discount_bps: null,
+            payable_multiplier_bp: 5000,
+            policy_id: "read-policy",
+            policy_version: 1,
+            effective_policy_version: 1,
+            policy_digest: "read-policy-digest",
+            source_policy_digest: "read-source-policy",
+            catalog_generation: 1,
+            switch_generation: 1,
+            admission_catalog_generation: 1,
+            admission_catalog_digest: "read-catalog",
+            admission_switch_generation: 1,
+            admission_switch_digest: "read-switch",
+            runtime_manifest_generation: 1,
+            runtime_manifest_digest: "read-runtime",
+            tariff_schedule_id: "read-tariff",
+            tariff_priced_ts: "1700000001",
+            official_nano: "600",
+            official_cost_json: { schema_version: 1, official_nano: 600 },
+            paid_funded_nano: 0,
+            bonus_funded_nano: 300,
+            other_funded_nano: 0,
+            funding_allocation_json: [{
+              bucket_id: "read-bonus",
+              source_type: "welcome_track_bonus",
+              bucket_version: 1,
+              reserved_nano: 300,
+              charged_nano: 300,
+              released_nano: 0,
+              allocation_order: 1,
+            }],
+            track_eligible: true,
+            retention_eligible: true,
+            commission_eligible: true,
+            snapshot_digest: "read-snapshot",
+          },
+          funding_allocations: [{
+            bucket_id: "read-bonus",
+            source_type: "welcome_track_bonus",
+            source_ref: "welcome",
+            bucket_version: 1,
+            direction: "debit",
+            amount_nano: 300,
+            allocation_order: 1,
+          }],
         }],
       }),
     });
     const entries = await client.getLedger("acct_test", 10);
     expect(entries[0]).toMatchObject({ id: "1", amount_nano: "1000000000", ts: "1700000000" });
+    expect(entries[0]?.attribution).toBeUndefined();
+    expect(entries[0]?.funding_allocations).toBeUndefined();
+    expect(entries[1]).toMatchObject({
+      id: "9007199254740993123",
+      request_id: "request-strict",
+      official_nano: "600",
+      attribution: {
+        source_policy_digest: "read-source-policy",
+        bonus_funded_nano: "300",
+        runtime_manifest_digest: "read-runtime",
+      },
+      funding_allocations: [{
+        bucket_id: "read-bonus",
+        bucket_version: "1",
+        amount_nano: "300",
+      }],
+    });
     await expect(client.getLedger("acct_test", 0)).rejects.toThrow("limit");
   });
 

@@ -28,7 +28,9 @@
   (та же дисциплина, что reserve/settle). Движок остаётся авторитетом ЖИВОГО баланса; коммерция лишь
   создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `docs/engine/CONTROL_API.md`.
   Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
-  the commercial pricing worker.
+  the commercial pricing worker. Account reads include the coherent paid/bonus/other/unattributed
+  funding summary. Ledger rows add stored immutable attribution and normalized funding allocations;
+  old rows remain null/empty and are never reclassified at the HTTP boundary.
   Stage 3C adds authenticated `/admin/pricing/*` prepare/read/activate routes for immutable product
   catalogs, provider switches and account policies. Requests/ACKs preserve complete version/digest,
   capability lineage and binding identity; typed CAS errors stay distinguishable. Routes only

@@ -2,8 +2,8 @@
 
 use crate::{
     pg::{Owner, PgStore},
-    AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow,
-    SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageModelAgg, UsageReport,
+    AccountFundingSnapshot, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
+    PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -228,6 +228,12 @@ impl Authority {
         match self {
             Self::Sqlite(c) => crate::account_get(c, id),
             Self::Postgres(pg) => pg.account_get(id),
+        }
+    }
+    pub fn account_funding_snapshot(&mut self, id: &str) -> Result<Option<AccountFundingSnapshot>> {
+        match self {
+            Self::Sqlite(c) => crate::account_funding_snapshot(c, id),
+            Self::Postgres(pg) => pg.account_funding_snapshot(id),
         }
     }
     pub fn account_by_handle(&mut self, handle: &str) -> Result<Option<AccountRow>> {

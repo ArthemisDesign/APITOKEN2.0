@@ -101,7 +101,8 @@ curl https://<база>/v1/messages \
 POST /admin/account                     {"handle"?, "mult_bp"?}      → 200 {account, mult_bp, handle}
 POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[...]} (max 500)
 GET  /admin/account/{id}                                             → 200 {balance_nano, spent_nano,
-                                                                            reserved_nano, balance, mult_bp, status, handle} | 404
+                                                                            reserved_nano, balance, mult_bp, status, handle,
+                                                                            funding:{...}} | 404
 POST /admin/account/{id}/credit         {"usd"?|"amount_nano"?, "ref"?} → 200 {balance_nano, balance} | 404
                                         (идемпотентно по ref; usd отрицательный = коррекция)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {updated} | 404
@@ -110,11 +111,30 @@ GET  /admin/account/{id}/keys                                        → 200 {ke
                                                                             spent_nano,reserved_nano,
                                                                             spend_limit_nano,expires_ts,
                                                                             created_ts,last_used_ts}]}
-GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,amount_nano,ref,ts,...}]}
+GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {entries:[{id,kind,request_id,
+                                                                            amount_nano,ref,ts,provider,
+                                                                            official_nano,attribution,
+                                                                            funding_allocations,...}]}
 ```
 
 Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
 returned oldest-first with `id > after_id`; this is the durable worker cursor for progressive pricing.
+
+`funding` читается вместе со scalar account aggregates из одного snapshot. Он содержит
+`account_class`, `funding_enforcement`, `reconciliation_state`, `bucket_count` и для
+`balance/reserved/spent` отдельные `paid_*_nano`, `bonus_*_nano`, `other_*_nano` и
+`unattributed_*_nano`. `bonus` означает только durable `welcome_track_bonus`, `paid` — только
+durable `paid`; до фактического reconciliation остаток остаётся `unattributed`, а не угадывается.
+
+Новая ledger row сохраняет expand-совместимые top-level `request_id`, `provider` и `official_nano`.
+`attribution` равен `null` для исторической строки без `attribution_schema_version`; иначе он
+переносит сохранённые snapshot/policy/rule/catalog/switch/tariff/eligibility/runtime-manifest поля,
+`official_cost_json`, категориальные funding totals и исходный `funding_allocation_json` без
+повторного resolve. `funding_allocations` всегда является массивом нормализованных durable
+allocations (`bucket_id`, `source_type`, `source_ref`, `bucket_version`, `direction`, `amount_nano`,
+optional `allocation_order`); старые строки честно возвращают пустой массив. Все `*_nano`, ledger
+IDs и generations остаются integer JSON values; `packages/contracts` нормализует их в decimal
+strings до попадания в JavaScript business logic.
 
 ### Ключи доступа
 ```
