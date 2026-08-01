@@ -25,14 +25,34 @@ mod shadow;
 
 /// Canonical compile-fixed capability evidence for the policy evaluator in this binary. Startup
 /// stamps this exact identity into the owner lease and strict reserve checks it transactionally.
+///
+/// The manifest lists every reviewed capability generation side by side: generation 1 (the active
+/// production authority) and generation 2 (`claude-opus-5` + `claude-fable-5`). Adding a member is
+/// inert — resolution keeps accepting the generation-1 pins until commerce activates catalog
+/// generation 2 — and is required before that activation, because the resolver fails closed on any
+/// catalog/switch capability outside this manifest.
 pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
-    let capability = registry::pricing::PricingRuntimeCapabilityEvidence::new(
-        PRICING_SCHEMA_VERSION,
-        1,
-        "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd",
-    )
-    .expect("built-in pricing evaluator capability is valid");
-    PricingRuntimeManifestEvidence::new(1, vec![capability])
+    let capabilities = [
+        (
+            1,
+            "sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd",
+        ),
+        (
+            2,
+            "sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0",
+        ),
+    ]
+    .into_iter()
+    .map(|(capability_generation, capability_digest)| {
+        registry::pricing::PricingRuntimeCapabilityEvidence::new(
+            PRICING_SCHEMA_VERSION,
+            capability_generation,
+            capability_digest,
+        )
+        .expect("built-in pricing evaluator capability is valid")
+    })
+    .collect();
+    PricingRuntimeManifestEvidence::new(2, capabilities)
         .expect("built-in pricing evaluator manifest is valid")
 }
 

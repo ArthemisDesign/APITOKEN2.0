@@ -4,6 +4,9 @@ import {
   CURRENT_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   type AccountPolicyBinding,
@@ -61,12 +64,50 @@ function catalogEntryKey(entry: { provider_id: string; canonical_model_id: strin
   return `${entry.provider_id}\u0000${entry.canonical_model_id}`;
 }
 
+/**
+ * Reviewed OpenKeys catalog identities, oldest first. Generation 1 is the
+ * active production authority; generation 2 (adds `claude-opus-5` and
+ * `claude-fable-5`) is accepted only once the engine authority activates it.
+ * Each identity pins its exact catalog generation, capability pin and complete
+ * enabled entry set, so a partial or forged catalog never passes.
+ */
+const REVIEWED_OPENKEYS_CATALOGS = [
+  {
+    generation: 1,
+    capability_generation: MULTI_DISCOUNT_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_CAPABILITY_DIGEST,
+    entries: CURRENT_PRODUCT_CATALOG_ENTRIES,
+  },
+  {
+    generation: 2,
+    capability_generation: MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+    entries: MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
+  },
+] as const;
+
+function matchesReviewedCatalog(
+  catalog: PricingCatalogSpec,
+  reviewed: (typeof REVIEWED_OPENKEYS_CATALOGS)[number],
+): boolean {
+  if (
+    catalog.generation !== reviewed.generation ||
+    catalog.capability_generation !== reviewed.capability_generation ||
+    catalog.capability_digest !== reviewed.capability_digest
+  ) {
+    return false;
+  }
+  const expected = new Set(reviewed.entries.map(catalogEntryKey));
+  const actual = new Set(catalog.entries.map(catalogEntryKey));
+  return catalog.entries.length === expected.size &&
+    actual.size === expected.size &&
+    catalog.entries.every((entry) => entry.enabled && expected.has(catalogEntryKey(entry)));
+}
+
 export function assertOpenKeysCatalog(catalog: PricingCatalogSpec): void {
   if (
     catalog.product_id !== OPENKEYS_PRICING_PRODUCT_ID ||
-    catalog.schema_version !== MULTI_DISCOUNT_SCHEMA_VERSION ||
-    catalog.capability_generation !== MULTI_DISCOUNT_CAPABILITY_GENERATION ||
-    catalog.capability_digest !== MULTI_DISCOUNT_CAPABILITY_DIGEST
+    catalog.schema_version !== MULTI_DISCOUNT_SCHEMA_VERSION
   ) {
     throw new OpenKeysPolicyError(
       "catalog_identity_mismatch",
@@ -74,13 +115,7 @@ export function assertOpenKeysCatalog(catalog: PricingCatalogSpec): void {
     );
   }
 
-  const expected = new Set(CURRENT_PRODUCT_CATALOG_ENTRIES.map(catalogEntryKey));
-  const actual = new Set(catalog.entries.map(catalogEntryKey));
-  if (
-    catalog.entries.length !== expected.size ||
-    actual.size !== expected.size ||
-    catalog.entries.some((entry) => !entry.enabled || !expected.has(catalogEntryKey(entry)))
-  ) {
+  if (!REVIEWED_OPENKEYS_CATALOGS.some((reviewed) => matchesReviewedCatalog(catalog, reviewed))) {
     throw new OpenKeysPolicyError(
       "catalog_models_mismatch",
       "OpenKeys issuance requires the exact reviewed Anthropic/OpenAI catalog",

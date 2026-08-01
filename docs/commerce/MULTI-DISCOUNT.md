@@ -43,6 +43,13 @@ OpenKeys: official 1:1 payload теперь строится одним canonica
 а `apps/openkeys` получает fail-closed batch CLI для exact Stage 5 dry-run/matrix, preflight всего
 инвентаря и prepare → CAS activate → readback. Он не меняет balances, ключи, статусы или историю и
 сам по себе не является production application Stage 7.
+2026-08-01 доставлена инертная основа catalog generation 2: capability generation 2 и product
+catalogs `main`/`openkeys` с `claude-opus-5` и `claude-fable-5` зафиксированы аддитивными
+константами рядом с неизменённым поколением 1, engine runtime manifest перечисляет обе capability
+generation side by side, а OpenKeys live-assert принимает оба reviewed поколения с точной
+identity каждого. Поколение 1 остаётся единственным production authority; операционная активация
+generation 2 — отдельная процедура по runbook `docs/commerce/MULTI_DISCOUNT_CATALOG_GEN2.md`, и
+этот checkpoint сам по себе не меняет ни один durable head.
 2026-07-30
 владелец продукта явно снял прежнюю остановку после 3B1b и полностью авторизовал дальнейшую
 реализацию этого документа до завершения этапов 3B1c–11. Авторизация не отменяет поэтапную доставку,
@@ -377,6 +384,39 @@ backfill реализация должна взять актуальный на 
 - Provider-rule распространяется только на модели, включённые для данного продукта.
 - Политика только из exact model rules не получает новую sibling-модель.
 - Ни один UI не должен строить список доступных моделей по префиксу строки.
+
+### 7.5. Catalog generation 2: `claude-opus-5` и `claude-fable-5`
+
+2026-08-01 зафиксирована вторая монотонная catalog generation, доставленная полностью инертно:
+пока генерация операционно не активирована, production authority остаётся поколением 1.
+
+Состав generation 2:
+
+- Anthropic: семь канонических моделей — пять моделей поколения 1 плюс `claude-opus-5` и
+  `claude-fable-5`;
+- OpenAI: тот же набор из пяти моделей, что в поколении 1, без изменений;
+- оба product catalog (`main` и `openkeys`) включают все двенадцать моделей;
+- capability generation `2`, schema version `1` без изменений, capability digest
+  `sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0`;
+- provider-switch generation `2` идентична поколению 1, кроме того что каждая scoped entry
+  переподписывает `catalog_generation = 2`.
+
+Инварианты доставки:
+
+- константы поколения 1 в `packages/contracts` не изменены ни в одном байте, а digest поколения 2
+  воспроизводим из этих констант той же canonical digest-формулой семейства `stage5Digest`;
+- `crates/metering` расширяет Anthropic capability allow-list обеими моделями: `claude-opus-5`
+  тарифицируется по семейству расписаний текущего Opus (standard и fast), `claude-fable-5`
+  standard — по собственному расписанию, fast — по консервативному fallback fast-расписанию;
+- engine runtime manifest теперь перечисляет обе capability generation side by side (manifest
+  generation `2`), поэтому resolver заранее способен принять пины любого из двух поколений;
+  admission при этом не меняется — fail-closed остаётся на любом capability вне manifest;
+- OpenKeys live-assert принимает catalog generation `1` или `2`, каждое только с точной reviewed
+  identity своего поколения (generation, capability pin и полный enabled-набор);
+- материализация — отдельная операция `pnpm --filter @claude-api/db pricing:catalog-gen2 --
+  dry_run|apply` по runbook `docs/commerce/MULTI_DISCOUNT_CATALOG_GEN2.md`; ни один account policy
+  при активации не пересобирается: существующие bindings продолжают пинить поколение 1, а новые
+  модели остаются закрытыми policy catalog до отдельной policy generation.
 
 ## 8. Рубильники провайдеров
 
@@ -1807,9 +1847,11 @@ transport, bounds, persistence и ожидаемые typed rejections. Он не
 Текущий Stage 3B1c.3 application-checkpoint реализует этот runtime-контракт без production
 activation:
 
-- server собирает fixed trusted manifest generation `1` из schema `1` и capability generation `1`
-  с capability digest
-  `sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd`;
+- server собирает fixed trusted manifest generation `2` из schema `1`, перечисляя side by side
+  capability generation `1` с digest
+  `sha256:v1:88da6b622727dda8aac0e1cd1749524f4929f7738f097c2dd3b81ba1cc14e7fd` и capability
+  generation `2` с digest
+  `sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0`;
   manifest не принимается из HTTP, request model или mutable database head;
 - enabled startup разрешён только с billing, PostgreSQL authority и fixed Anthropic/OpenAI plane;
   Gemini и live SQLite composition fail closed до запуска worker;

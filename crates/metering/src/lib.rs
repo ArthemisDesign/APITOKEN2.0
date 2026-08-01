@@ -213,6 +213,8 @@ pub fn anthropic_tariff_capability_at(
         "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
+        "claude-opus-5",
+        "claude-fable-5",
     ]
     .into_iter()
     .find(|canonical| requested_model_id == *canonical)
@@ -220,9 +222,12 @@ pub fn anthropic_tariff_capability_at(
 
     let fast = modifiers.speed == AnthropicSpeed::Fast;
     let (tariff_schedule_id, schedule_effective_from) = match (canonical_model_id, fast) {
-        ("claude-opus-4-8", true) => ("anthropic/fast/opus-current/v1", 0),
+        ("claude-opus-4-8" | "claude-opus-5", true) => ("anthropic/fast/opus-current/v1", 0),
         (_, true) => ("anthropic/fast/opus-4-7-conservative/v1", 0),
-        ("claude-opus-4-8" | "claude-opus-4-7", false) => ("anthropic/standard/opus-current/v1", 0),
+        ("claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-5", false) => {
+            ("anthropic/standard/opus-current/v1", 0)
+        }
+        ("claude-fable-5", false) => ("anthropic/standard/fable-5/v1", 0),
         ("claude-sonnet-5", false) if priced_ts < SONNET5_STD_START => {
             ("anthropic/standard/sonnet-5-intro/v1", 0)
         }
@@ -871,6 +876,18 @@ mod tests {
                 0,
                 "anthropic/fast/opus-4-7-conservative/v1",
             ),
+            (
+                "claude-opus-5",
+                "anthropic/standard/opus-current/v1",
+                0,
+                "anthropic/fast/opus-current/v1",
+            ),
+            (
+                "claude-fable-5",
+                "anthropic/standard/fable-5/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
         ] {
             let standard = anthropic_tariff_capability_at(
                 model,
@@ -986,7 +1003,10 @@ mod tests {
             "claude-opus-4-8-20260701",
             "claude-opus-4-8-preview",
             "claude-opus-4-8-2026070x",
-            "claude-opus-5",
+            "claude-opus-5-1",
+            "claude-opus-5-latest",
+            "claude-fable-5-1",
+            "CLAUDE-FABLE-5",
             "claude-3-5-sonnet-20241022",
             "anything-sonnet-anything",
         ] {
@@ -1033,6 +1053,8 @@ mod tests {
             "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-haiku-4-5",
+            "claude-opus-5",
+            "claude-fable-5",
         ] {
             for fast in [false, true] {
                 for us_inference in [false, true] {

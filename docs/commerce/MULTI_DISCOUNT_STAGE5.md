@@ -31,6 +31,11 @@ Both product catalogs contain only the reviewed Anthropic and OpenAI canonical m
 `docs/commerce/MULTI-DISCOUNT.md`. `gpt-5.6` is stored only as an alias of `gpt-5.6-sol`. Gemini has no
 capability projection entry, catalog entry, switch, rule, or job.
 
+These pins describe generation 1 and stay its permanent identity. Catalog generation 2
+(`claude-opus-5`, `claude-fable-5`) is a separate additive tooling with its own planner and
+runbook in `docs/commerce/MULTI_DISCOUNT_CATALOG_GEN2.md`; it never rewrites the generation-1
+rows this Stage 5 reconciler produces.
+
 ## Dry run and assignment approval
 
 `@claude-api/db` exposes `pricing:stage5`. It requires `DATABASE_URL` and accepts the mode plus the

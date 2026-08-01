@@ -31,6 +31,7 @@ context'ов. Правила размещения и обновления — в
 - [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5: multi-discount backfill.
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation.
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover.
+- [MULTI_DISCOUNT_CATALOG_GEN2.md](commerce/MULTI_DISCOUNT_CATALOG_GEN2.md) — catalog generation 2 (`claude-opus-5`, `claude-fable-5`): инертная доставка и активация.
 - [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — приём платежей через Cryptomus.
 - [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — приём платежей через Platega (дефолтный провайдер).
 - [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — DigiSeller: провайдер отключён, задел адаптера и условия включения.

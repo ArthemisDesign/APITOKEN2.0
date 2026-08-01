@@ -345,6 +345,49 @@ export const CURRENT_PRODUCT_CATALOG_ENTRIES = Object.freeze([
   })),
 ]);
 
+/**
+ * Canonical second-generation product catalog: the frozen generation 1 above
+ * plus `claude-opus-5` and `claude-fable-5` (provider `anthropic`). Generation 2
+ * is additive only — the generation-1 constants stay byte-identical because the
+ * active production authority still pins them, and the OpenAI model set does not
+ * change. The capability digest is reproducible: `multi-discount-stage5` domain
+ * SHA-256 over the canonical JSON of
+ * `{generation: 2, schema_version: 1, entries, aliases}` where each entry carries
+ * `entry_digest = stage5Digest("capability-entry", {provider_id, canonical_model_id,
+ * enabled: true, capability_data: {pricing_supported: true}})` and the only alias
+ * remains `gpt-5.6 -> gpt-5.6-sol`; the exact builder lives in
+ * `packages/db/src/multi-discount-catalog-gen2.ts` and is pinned by unit tests.
+ * Generation 2 becomes live only when the commerce operator materializes it and
+ * the pricing worker activates it in the engine authority; until then every
+ * runtime check keeps validating against generation 1.
+ */
+export const MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION = 2;
+export const MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST =
+  "sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0";
+
+export const MULTI_DISCOUNT_GEN2_ANTHROPIC_CANONICAL_MODELS = [
+  "claude-fable-5",
+  "claude-haiku-4-5",
+  "claude-opus-4-7",
+  "claude-opus-4-8",
+  "claude-opus-5",
+  "claude-sonnet-4-6",
+  "claude-sonnet-5",
+] as const;
+
+export const MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN2_ANTHROPIC_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "anthropic" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+  ...CURRENT_OPENAI_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "openai" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+]);
+
 export const pricingCatalogSpecSchema = z.object({
   product_id: pricingIdentifierSchema,
   generation: pricingVersionSchema,

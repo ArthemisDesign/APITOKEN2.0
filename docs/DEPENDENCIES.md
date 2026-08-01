@@ -43,7 +43,7 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, `B2C_PRICING_TIERS`, `CURRENT_*_CANONICAL_MODELS` | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | — (сам пакет и есть контракт) |
+| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, `B2C_PRICING_TIERS`, `CURRENT_*_CANONICAL_MODELS`, пины `MULTI_DISCOUNT_GEN2_*` (catalog generation 2) | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | — (сам пакет и есть контракт) |
 | `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
 | `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md` |
 | `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
@@ -87,13 +87,15 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 вместе с ним (полный обход — чеклист «Новая модель» / «Изменение цены» в
 `docs/CHANGE_CHECKLISTS.md`):
 
-- `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, `B2C_PRICING_TIERS`, pricing-схемы.
+- `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, `MULTI_DISCOUNT_GEN2_*` (catalog
+  generation 2: `claude-opus-5`, `claude-fable-5`), `B2C_PRICING_TIERS`, pricing-схемы.
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.
 - `apps/web/src/lib/pricing-tiers.ts` — витринная B2C-скидка (хардкод).
 - `packages/engine-client/src/openkeys-policy.ts` — canonical OpenKeys policy identity/digest и
-  сверка каталога с `CURRENT_PRODUCT_CATALOG_ENTRIES`; `apps/openkeys` и Stage 5 planner используют
-  один builder (fail closed при расхождении).
+  сверка каталога с точной reviewed identity поколения 1 или 2
+  (`CURRENT_PRODUCT_CATALOG_ENTRIES` / `MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES`);
+  `apps/openkeys` и Stage 5 planner используют один builder (fail closed при расхождении).
 - `apps/admin/src/app/sales/calculator/calculation.ts` — захардкоженный `PRODUCT_CATALOG`
   подписочных продуктов (nanoUSD, bigint).
 - Политика включения новых моделей: `docs/commerce/MULTI-DISCOUNT.md` §7 (каталоги), §15

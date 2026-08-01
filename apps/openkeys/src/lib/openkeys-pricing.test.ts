@@ -3,6 +3,9 @@ import {
   CURRENT_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   type AccountPolicyBinding,
@@ -69,6 +72,37 @@ function authority(): OpenKeysPricingAuthority {
   return { catalog: catalog(), switches: switches() };
 }
 
+function catalogGen2(): PricingCatalogSpec {
+  return {
+    product_id: OPENKEYS_PRICING_PRODUCT_ID,
+    generation: 2,
+    schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
+    capability_generation: MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+    content_digest: "catalog-openkeys-v2",
+    entries: MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES.map((entry) => ({ ...entry })),
+  };
+}
+
+function switchesGen2(): ProviderSwitchSpec {
+  return {
+    generation: 2,
+    schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
+    capability_generation: MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+    content_digest: "switches-v2",
+    entries: ["anthropic", "openai"].flatMap((providerId) => [
+      { provider_id: providerId, scope: "master" as const, catalog_generation: null, enabled: true },
+      {
+        provider_id: providerId,
+        scope: { product: { product_id: OPENKEYS_PRICING_PRODUCT_ID } },
+        catalog_generation: 2,
+        enabled: true,
+      },
+    ]),
+  };
+}
+
 describe("OpenKeys official 1:1 pricing", () => {
   it("pins the complete reviewed Anthropic/OpenAI catalog and excludes Gemini", () => {
     const active = catalog();
@@ -96,6 +130,62 @@ describe("OpenKeys official 1:1 pricing", () => {
       }],
     };
     expect(() => assertOpenKeysCatalog(withGemini)).toThrow("exact reviewed Anthropic/OpenAI catalog");
+  });
+
+  it("accepts the reviewed generation-2 catalog only with its exact pinned identity", () => {
+    const gen2 = catalogGen2();
+    expect(() => assertOpenKeysCatalog(gen2)).not.toThrow();
+    expect(gen2.entries.map((entry) => entry.canonical_model_id)).toEqual([
+      "claude-fable-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "gpt-5.4",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    ]);
+
+    // Generation-2 content under the generation-1 catalog identity is not the
+    // reviewed catalog, and neither is a superset/subset of its entries.
+    expect(() => assertOpenKeysCatalog({ ...gen2, generation: 1 }))
+      .toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() =>
+      assertOpenKeysCatalog({
+        ...gen2,
+        entries: gen2.entries.filter((entry) => entry.canonical_model_id !== "claude-fable-5"),
+      })
+    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() =>
+      assertOpenKeysCatalog({
+        ...gen2,
+        entries: gen2.entries.map((entry) =>
+          entry.canonical_model_id === "claude-opus-5" ? { ...entry, enabled: false } : entry),
+      })
+    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() => assertOpenKeysCatalog({ ...gen2, capability_generation: 1 }))
+      .toThrow("exact reviewed Anthropic/OpenAI catalog");
+  });
+
+  it("resolves the generation-2 authority only with matching generation-2 switches", async () => {
+    const gen2Authority: OpenKeysPricingAuthority = { catalog: catalogGen2(), switches: switchesGen2() };
+    const getActivePricingCatalog = vi.fn(async () => catalogGen2());
+    const getActiveProviderSwitches = vi.fn(async (): Promise<ProviderSwitchSpec | null> => switchesGen2());
+    const engine = { getActivePricingCatalog, getActiveProviderSwitches } as unknown as PricingEngine;
+    await expect(resolveOpenKeysPricingAuthority(engine)).resolves.toEqual(gen2Authority);
+
+    const policy = buildOfficialOpenKeysPolicy("acct_openkeys_gen2", gen2Authority);
+    expect(policy).toMatchObject({ catalog_generation: 2, switch_generation: 2 });
+
+    // The transition window (catalog 2 active, switches still 1) stays fail closed.
+    getActiveProviderSwitches.mockResolvedValueOnce(switches());
+    await expect(resolveOpenKeysPricingAuthority(engine)).rejects.toMatchObject({
+      code: "switch_identity_mismatch",
+    });
   });
 
   it("rejects multiplier, discount, and pricing-contract overrides at every caller boundary", () => {
