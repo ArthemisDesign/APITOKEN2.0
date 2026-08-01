@@ -276,6 +276,35 @@ failed), mid-stream error-кадр → `response.failed`; ошибки — об�
 `gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` с именем
 параметра, `function_declaration`, `function_response_value`, `synthetic_call_id`,
 `map_finish_reason`, константы лимитов) — `pub(crate)` в `gemini/chat.rs`.
+`gemini/skin.rs` — Anthropic Skin (этап 5.2 docs/engine/UNIFIED_ROUTER.md, роуты
+`POST /v1/messages` и `/v1/messages/count_tokens` в `ProviderMode::Gemini`, dispatch по
+модели — в router) — Gemini-зеркало `codex/skin.rs`: Messages-сторона словаря идентична 5.1
+(contract-тесты на эквивалентном входе), перевод и разбор — по правилам `gemini/chat.rs`:
+top-level `system` → `systemInstruction` (склейка \n\n, не-дефолт `cache_control` → 400),
+messages → contents общим `merge_or_push` (assistant → роль model; `tool_use` →
+functionCall с `args` OBJECT — не JSON-строка, отличие от Codex-стороны; `tool_result` →
+functionResponse, pairing по карте id→name валидируется — паттерн 3.3/4.3), image: только
+base64 → inlineData (url source → 400 — generateContent ссылки не принимает), thinking
+входа дропается; `tools`/`tool_choice` → functionDeclarations/functionCallingConfig
+(`disable_parallel_tool_use:true` → 400 — у Gemini нет аналога); `thinking` →
+thinkingConfig по порогам 5.1 (<1024 → 400) + `includeThoughts:true`; sampling
+(temperature/top_p/top_k) и `stop_sequences` проксируются в generationConfig (умеет
+нативно — плоскостное отличие от 5.1, где они игнорируются; stop_reason stop_sequence
+неразличим → end_turn); capability matrix — те же 4 правила 5.1 + закрытый список
+top-level полей (неизвестное → 400, как chat.rs). Ответ: text-парты → один text-блок,
+thought-парты → thinking-блоки БЕЗ signature (thoughtSignature-only пропускается),
+functionCall → `tool_use` с синтезируемым `toolu_<name>[_N]`, usage input=
+`promptTokenCount` / output=`candidatesTokenCount`+`thoughtsTokenCount` (thoughts →
+`output_tokens_details.thinking_tokens`, cached → `cache_read_input_tokens`); SSE — тот
+же каркас 5.1 (message_start с нулевым usage → плотные content_block_* → message_delta →
+message_stop, heartbeat `event: ping`, mid-stream отказ `event: error`); ошибки —
+Anthropic-конверт (400 API_KEY_INVALID → 401, 503 → 529 `overloaded_error`, 402 и
+Retry-After сохраняются). Хендлеры идут через общий `gemini_api()` внутренним Request на
+`generateContent|streamGenerateContent?alt=sse|:countTokens` — admission, reserve,
+affinity, ротация, wrapper, settle без единого изменения; `count_tokens` — нативный
+`:countTokens` (quota-free, без reserve), `max_tokens` там опционален. Прод-ограничение
+replayed tool-истории (400 INVALID_ARGUMENT, thoughtSignature — см. выше, решение 4)
+разделяет с chat/responses lanes плоскости; прямой tool calling работает.
 Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи

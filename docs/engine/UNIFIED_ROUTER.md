@@ -99,10 +99,13 @@ prompt-cache boundaries, usage и canonical streaming events.
 POST /v1/messages                                   Anthropic Messages (Claude Code)
                                                     (этап 5.1 — + любая openai/* модель
                                                     каталога через model-based dispatch
-                                                    в Anthropic Skin на Codex plane)
+                                                    в Anthropic Skin на Codex plane;
+                                                    этап 5.2 — + любая google/* модель
+                                                    каталога на Gemini plane)
 POST /v1/messages/count_tokens                    Anthropic token counting
-                                                    (этап 5.1 — endpoint есть на Codex
-                                                    plane; dispatch в router — этап 5.2)
+                                                    (этап 5.1/5.2 — endpoint есть на Codex
+                                                    и Gemini plane; dispatch в router —
+                                                    follow-up)
 
 POST /v1/responses                                OpenAI Responses (этап 1a — только OpenAI
                                                   plane, этап 4.1 — + любая Claude-модель
@@ -611,14 +614,16 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    dispatch (`crates/router/src/messages.rs`) по тем же правилам, что chat/responses
    dispatch'и 3.1/4.1: буферизуется только тело запроса (32 MiB), namespace-префикс
    `openai/` выбирает Codex plane без опроса каталога (общий `catalog::namespace_lane`;
-   `anthropic/` и `google/` уходят на свои плоскости — Gemini Messages skin появится
-   поздним этапом 5, до этого plane честно отвечает своей 404),
+   `anthropic/` и `google/` уходят на свои плоскости — Gemini Messages skin реализован
+   в 5.2 ниже),
    остальное — alias через кэшированный каталог; тело проксируется без изменений, ошибки
    dispatch — в Anthropic-конверте. Namespaced `anthropic/<id>` на Anthropic plane
    снимается admission'ом плоскости до reserve и upstream (`strip_own_namespace` в
    `crates/forward/src/proxy.rs`, зеркало strip'а chat-адаптера 3.x): до этого исправления
    префикс доезжал до upstream байт-идентично и тот отвечал 404 (прод-проба 2026-08-01). `POST /v1/messages/count_tokens` в router остаётся
-   байт-прокси на Anthropic plane (dispatch — 5.2). На Codex plane
+   байт-прокси на Anthropic plane (model-based dispatch для него — отдельный follow-up;
+   endpoint на Gemini plane реализован в 5.2 ниже, до router-диспетча доступен прямым
+   обращением к плоскости). На Codex plane
    (`crates/forward/src/codex/skin.rs`, роуты `/v1/messages` и
    `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
    Responses JSON и идёт через тот же turn pipeline, что chat-адаптер (admission,
@@ -661,8 +666,41 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    тот же parse + `parse_responses_request`/`prepare_turn` → reserve-grade оценка
    `input_tokens` без сети (`max_tokens` там опционален, как у официального endpoint'а).
    Ограничения 5.1: лимит тела — 8 MiB (общий `OPENAI_BODY_LIMIT` плоскости, не 32),
-   dispatch `count_tokens` в router — 5.2, сквозного e2e-smoke Codex plane нет (харнесс
+   model-based dispatch `count_tokens` в router — по-прежнему follow-up (plane endpoint
+   реализован в 5.2), сквозного e2e-smoke Codex plane нет (харнесс
    не умеет encrypted OAuth-профили — покрытие unit/contract-тестами, как 3.3/4.3).
+   **5.2 — Anthropic Skin для `google/*` моделей (Gemini plane) — РЕАЛИЗОВАН.**
+   Gemini-зеркало 5.1 (`crates/forward/src/gemini/skin.rs`, роуты `/v1/messages` и
+   `/v1/messages/count_tokens` в `ProviderMode::Gemini`; router не менялся — dispatch
+   `google/*` и gemini-alias'ов работает с 5.1): Messages-сторона словаря идентична 5.1
+   (system/messages/tools/tool_choice/thinking/capability matrix, Messages SSE,
+   Anthropic-конверт ошибок — contract-тесты обоих модулей на эквивалентном входе),
+   перевод запроса и разбор ответа — по правилам chat/responses-адаптеров плоскости
+   (3.3/4.3), общие хелперы переиспользованы из `gemini/chat.rs` без изменения его
+   логики. Запрос: strip `google/`-префикса ДО admission, top-level `system` →
+   `systemInstruction` (склейка \n\n, не-дефолт `cache_control` → 400), messages →
+   contents общим `merge_or_push` (assistant → роль model; `tool_use` → functionCall с
+   `args` OBJECT — не JSON-строка, отличие от Codex-стороны; `tool_result` →
+   functionResponse, pairing по карте id→name валидируется — паттерн 3.3/4.3), image:
+   только base64 → inlineData (url source → 400), thinking входа дропается (решение 6);
+   `disable_parallel_tool_use: true` → 400 (у generateContent нет аналога); sampling
+   (temperature/top_p/top_k) и `stop_sequences` проксируются в generationConfig (умеет
+   нативно — плоскостное отличие от 5.1; stop_reason `stop_sequence` неразличим →
+   `end_turn`); capability matrix — те же 4 правила 5.1 ПЛЮС закрытый список top-level
+   полей (неизвестное → 400, как chat.rs). Ответ: text-парты → один text-блок,
+   thought-парты → thinking-блоки БЕЗ signature, functionCall → `tool_use` с
+   синтезируемым `toolu_<name>[_N]`, usage — input=`promptTokenCount`, output=
+   candidates+thoughts (thoughts → `output_tokens_details.thinking_tokens`, cached →
+   `cache_read_input_tokens`). Хендлеры идут через общий `gemini_api()` внутренним
+   Request на `generateContent|streamGenerateContent?alt=sse|:countTokens` — admission,
+   reserve, affinity, ротация, Code Assist wrapper и usage-settlement без единого
+   изменения; `count_tokens` — нативный `:countTokens` (quota-free, без reserve),
+   `max_tokens` там опционален. Ограничения 5.2: прод-ограничение replayed
+   tool-истории (`400 INVALID_ARGUMENT` Code Assist, thoughtSignature — решение 4)
+   разделяется с chat/responses lanes плоскости (прямой tool calling работает); лимит
+   тела — общий плоскости; сквозного e2e-smoke Gemini plane нет (как 3.3/4.3 — покрытие
+   unit/contract-тестами модуля); model-based dispatch `/v1/messages/count_tokens` в
+   router — follow-up (см. ограничения 5.1).
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,
    см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым

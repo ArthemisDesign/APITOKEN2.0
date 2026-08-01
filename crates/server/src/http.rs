@@ -15,7 +15,8 @@ use axum::Router;
 use forward::{
     anthropic_chat_completions, anthropic_responses, authed, client_keys,
     codex_messages_count_tokens, codex_messages_skin, control_authed, forward,
-    gemini_api, gemini_chat_completions, gemini_responses, openai_chat_completions,
+    gemini_api, gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin,
+    gemini_responses, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
     resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
@@ -398,6 +399,15 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             // адаптер. Stored endpoints (/v1/responses/*) здесь НЕ регистрируются
             // и остаются openai-only (решение 5).
             .route("/v1/responses", post(gemini_responses))
+            // Anthropic Skin (этап 5.2 UNIFIED_ROUTER.md): Messages→generateContent адаптер
+            // на Gemini-плоскости. Dispatch по модели (`google/*` и gemini-alias'ы сюда,
+            // остальное на свои плоскости) выполняет router; сюда попадают только
+            // google-модели. count_tokens — через нативный :countTokens (quota-free).
+            .route("/v1/messages", post(gemini_messages_skin))
+            .route(
+                "/v1/messages/count_tokens",
+                post(gemini_messages_count_tokens),
+            )
             .fallback(gemini_api)
             .method_not_allowed_fallback(gemini_api),
     };
