@@ -1,0 +1,133 @@
+# DEPENDENCIES.md — карта связей проекта
+
+Единая карта всех связей между bounded context'ами и компонентами: кто производит, по какому
+контракту, кто потребляет. Когда меняешь что-то на границе — сначала найди здесь строку связи,
+потом действуй по `docs/CHANGE_CHECKLISTS.md` и протоколу контрактов из корневого `AGENTS.md`.
+
+**Правило поддержки (часть «живого контракта»):** новая кросс-контекстная связь, новый
+потребитель существующей связи или новый домен/сервис = новая строка в этом файле В ТОМ ЖЕ
+коммите + строка в индексе `docs/README.md` для новых документов контрактов. Изменил контракт —
+обновил и строку карты, и документ контракта. Строка, не соответствующая коду, — дефект уровня
+бага; если связь исчезла — строку удаляют, а не оставляют «для истории».
+
+## 1. Контракты между контекстами
+
+Формат: производитель → контракт/канал → потребители. Документ контракта — место, где связь
+описана предметно.
+
+### Engine Control API (движок → коммерция, OpenKeys)
+
+| Производитель | Контракт / канал | Потребители | Документ контракта |
+|---|---|---|---|
+| `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
+| `packages/engine-client` | TS-клиент `EngineClient`, zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками | `apps/api`, `apps/worker`, `apps/openkeys` (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` у каждого) | `docs/engine/CONTROL_API.md` |
+| `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`) | `apps/admin` (без engine-client и без своих секретов) | `docs/product/ADMIN_PANEL.md` |
+
+Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
+provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для pricing-worker), usage,
+ключи, versioned pricing (catalog/switches/policy, prepare→activate CAS).
+
+### Sales feed (коммерция ↔ партнёрка)
+
+Двусторонний контур под одним ключом `SALES_CONTROL_KEY` (заголовок `x-api-key`).
+
+| Производитель | Контракт / канал | Потребители | Документ контракта |
+|---|---|---|---|
+| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`) + POST `referral-discount` / `referral-profiles` | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem`, POST `partners/referral-discount`, GET `partners/resolve` | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
+
+Типы фида продублированы локальными zod-схемами на обеих сторонах; в `packages/contracts`
+не вынесены. Любое изменение фида правит обе стороны — см. протокол контрактов в `AGENTS.md`.
+
+### Прочие связи между контекстами
+
+| Производитель | Контракт / канал | Потребители | Документ контракта |
+|---|---|---|---|
+| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, `B2C_PRICING_TIERS`, `CURRENT_*_CANONICAL_MODELS` | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | — (сам пакет и есть контракт) |
+| `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
+| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key` | `apps/admin` | `docs/product/ADMIN_PANEL.md` |
+| `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
+| `apps/sales-api` (публичный + админ API) | `partners.apitoken.sale/v1/*`; `/v1/admin` через Caddy `admin.apitoken.sale/partner-admin/*`, заголовок `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |
+| `packages/payments` | адаптеры провайдеров: Platega (дефолт), Cryptomus; вебхуки `POST /v1/payments/{platega,cryptomus}/webhook` в `apps/api`; reconcile-поллинг в `apps/worker` | `apps/api`, `apps/worker` (единственные потребители) | `docs/commerce/CRYPTOMUS_INTEGRATION.md`, `docs/commerce/DIGISELLER_INTEGRATION.md` |
+
+## 2. Внутри движка (кратко)
+
+Слои и инварианты — `CLAUDE.md` (таблица слоёв) и `docs/engine/ARCHITECTURE.md`. Здесь только
+то, что нужно для обхода связей при изменениях:
+
+- **`crates/metering` — authority цен движка.** Захардкоженные effective-dated таблицы в
+  nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI), `src/gemini.rs` (Gemini).
+  Изменение цены/модели — ревьюимый коммит сюда. Потребители: `crates/forward` (основной),
+  `crates/server` (типы/тарифные идентификаторы).
+- `crates/registry/src/pricing/` — НЕ прайс-лист, а durable-идентичности multi-discount:
+  каталоги/свитчи/политики, admission-снапшоты (`docs/commerce/MULTI-DISCOUNT.md`).
+- `crates/forward/src/pricing*` — shadow-evaluation конвейер (dormant), рантайм-вызовов нет.
+- `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
+
+## 3. Модели и цены — где ещё зеркалятся
+
+Authority — `crates/metering` (выше). Всё нижеописанное — зеркала, которые надо трогать
+вместе с ним (полный обход — чеклист «Новая модель» / «Изменение цены» в
+`docs/CHANGE_CHECKLISTS.md`):
+
+- `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, `B2C_PRICING_TIERS`, pricing-схемы.
+- `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
+  шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.
+- `apps/web/src/lib/pricing-tiers.ts` — витринная B2C-скидка (хардкод).
+- `apps/openkeys/src/lib/openkeys-pricing.ts` — сверяет каталог движка с
+  `CURRENT_PRODUCT_CATALOG_ENTRIES` из `packages/contracts` (fail closed при расхождении).
+- `apps/admin/src/app/sales/calculator/calculation.ts` — захардкоженный `PRODUCT_CATALOG`
+  подписочных продуктов (nanoUSD, bigint).
+- Политика включения новых моделей: `docs/commerce/MULTI-DISCOUNT.md` §7 (каталоги), §15
+  (расчёт стоимости); клиентский прайсинг — `docs/commerce/PRICING.md`.
+
+## 4. Границы баз данных
+
+| БД | Пакет | Открывают |
+|---|---|---|
+| engine PostgreSQL/SQLite | `crates/registry` | только движок; из TS — никто (только Control API) |
+| commerce PostgreSQL (`DATABASE_URL`) | `packages/db` | только `apps/api`, `apps/worker` |
+| sales (`SALES_DATABASE_URL`) | `packages/sales-db` | только `apps/sales-api` |
+| OpenKeys | `packages/openkeys-db` | только `apps/openkeys` |
+
+## 5. Инфраструктурные связи
+
+### Caddy (`deploy/Caddyfile`) — домен → upstream
+
+| Домен | Upstream |
+|---|---|
+| `api.apitoken.sale` | engine `127.0.0.1:8790` (blue-green слоты 8787/8788) |
+| `openai.api.apitoken.sale` | OpenAI-runtime `:8792` (слоты 8793/8797) |
+| `gemini.api.apitoken.sale` | Gemini-runtime `:8794` (слоты 8795/8799); `/oauth/callback` → authbot `:8796` |
+| `router.apitoken.sale` | claude-router `:8798` |
+| `backend.apitoken.sale` | commerce `apps/api` `:8791` (слоты 3000/3001) |
+| `admin.apitoken.sale` | managed auth; data-роуты → engine 8790/8792/8794, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100; остальное → `apps/admin` `:3700` |
+| `partners.apitoken.sale` | `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
+| `openkeys.apitoken.sale` | `apps/openkeys` `:3410` |
+| `content-studio.apitoken.sale` | `/v1/*` → commerce 8791; остальное → `apps/content-studio` `:3500` |
+| `crm.apitoken.sale` | `/v1/ingest/*`, `/r/*` → crm-api `:3400` (без admin-auth); `/v1/*` и остальное → managed auth → crm-api 3400 / crm-web `:3300`. CRM живёт в отдельном репозитории — роутинг НЕ удалять |
+| `monitoring.apitoken.sale` | Grafana `:3600`; `support.apitoken.sale` → Chatwoot `:3010` |
+
+### systemd (`systemd/`) — сервис → приложение
+
+`claude-api{,-openai,-gemini}[@]` → движок (Anthropic 8787/8788, OpenAI 8793/8797,
+Gemini 8795/8799) · `claude-router` → 8798 · `claude-authbot` → authbot ·
+`apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
+`apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·
+`apitoken-sales-api` → 3100 · `apitoken-sales-web` → 3200 · `apitoken-crm-{api,web}` → внешняя
+CRM (3400/3300, НЕ удалять) · плюс infra-юниты: postgres, affinity-redis, deploy-watchdog,
+monitoring-collector, candidate-validator, backup, fingerprint.
+
+### Мониторинг — петля «метрика → алерт → runbook»
+
+`observability/prometheus/rules/{application,operations}.yml` (~58 алертов) — у каждого
+аннотация `runbook: 'docs/ops/MONITORING.md#<alert>'`, и секция `## <Alert>` обязана
+существовать в `docs/ops/MONITORING.md`. Согласованность механически проверяет
+`deploy/monitoring-config.test.sh` (часть статического merge-gate). Это образцовый пример
+замкнутой связи «код ↔ документация» — новые связи оформлять по тому же принципу.
+
+### Доставка
+
+`deploy/agent-merge.sh` — единственный путь в `master`; path-aware gate (классификаторы в
+`deploy/watchdog-lib.sh`), машинный merge-lock, зелёный `deploy/watchdog` на production-хосте.
+Полное описание — `deploy/README.md`, `CONTRIBUTING.md`.
