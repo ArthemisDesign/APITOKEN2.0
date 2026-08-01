@@ -285,7 +285,7 @@ function geminiWindowCell(profile: GeminiProfile, kind: string, nowSec: number):
         <Bar spec={barFromRemaining(window.remaining_fraction)} />
       </div>
       <div className="sub">
-        остаток · сброс {window.resets_at ? duration(Math.max(0, window.resets_at - nowSec)) : "—"}
+        сброс {window.resets_at ? duration(Math.max(0, window.resets_at - nowSec)) : "—"}
       </div>
     </>
   );
@@ -455,7 +455,7 @@ function modelQuotaCell(model: GeminiModel, profiles: GeminiProfile[]): ReactNod
         <Bar spec={barFromRemaining(remaining)} />
       </div>
       <div className="sub">
-        минимум · metadata {profileFractions.length}/{profiles.length} профилей
+        осталось {Math.round(remaining * 100)}% · metadata {profileFractions.length}/{profiles.length} профилей
       </div>
     </>
   );

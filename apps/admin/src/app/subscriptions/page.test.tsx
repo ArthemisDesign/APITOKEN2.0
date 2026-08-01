@@ -175,6 +175,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("active");
     expect(html).toContain("workload envelope");
     expect(html).toContain("0.40000%"); // Δquota
+    expect(plain(html)).toContain("40%"); // использовано: 1 − remaining_fraction 0.6
     expect(html).toContain("<b>7/7</b> доступны");
     expect(html).not.toContain("gemini-model-1");
     // header + две подписки: семь моделей не создают ещё 14 строк.
@@ -208,7 +209,8 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("gemini-3-pro");
     expect(plain(html)).toContain("1 healthy");
     expect(html).toContain("официальная quota");
-    expect(plain(html)).toContain("25%");
+    expect(plain(html)).toContain("75%"); // использовано при 25% остатка
+    expect(plain(html)).toContain("осталось 25%");
     expect(html).toContain("1ч 0м");
   });
 
@@ -271,10 +273,13 @@ describe("бары окон", () => {
     expect(barFromPercent(null)).toEqual({ percent: 0, kind: "" });
   });
 
-  it("barFromRemaining: остаток — тёплые тона при истощении (30/5)", () => {
-    expect(barFromRemaining(0.8)).toEqual({ percent: 80, kind: "" });
-    expect(barFromRemaining(0.3)).toEqual({ percent: 30, kind: "warn" });
-    expect(barFromRemaining(0.05)).toEqual({ percent: 5, kind: "bad" });
+  it("barFromRemaining: остаток инвертируется в расход с общими порогами 70/95", () => {
+    expect(barFromRemaining(1)).toEqual({ percent: 0, kind: "" });
+    expect(barFromRemaining(0.8)).toEqual({ percent: 20, kind: "" });
+    expect(barFromRemaining(0.3)).toEqual({ percent: 70, kind: "warn" });
+    expect(barFromRemaining(0.05)).toEqual({ percent: 95, kind: "bad" });
+    expect(barFromRemaining(0)).toEqual({ percent: 100, kind: "bad" });
+    expect(barFromRemaining(undefined)).toEqual({ percent: 0, kind: "" });
   });
 });
 

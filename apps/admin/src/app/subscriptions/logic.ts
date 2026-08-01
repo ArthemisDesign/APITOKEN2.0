@@ -33,10 +33,12 @@ export function barFromPercent(value: number | null | undefined): BarSpec {
   return { percent, kind: percent >= 95 ? "bad" : percent >= 70 ? "warn" : "" };
 }
 
-// remainingBar(fraction): ОСТАТОК 0..1 → процент; тёплые тона при истощении.
+// remainingBar(fraction): остаток 0..1 преобразуется в ИСПОЛЬЗОВАННУЮ долю.
+// Во всех трёх флотах заполненная полоса означает расход, а не доступный остаток.
 export function barFromRemaining(fraction: number | null | undefined): BarSpec {
-  const percent = clampPercent((Number(fraction) || 0) * 100);
-  return { percent, kind: percent <= 5 ? "bad" : percent <= 30 ? "warn" : "" };
+  const remaining = fraction == null || !Number.isFinite(Number(fraction)) ? 1 : Number(fraction);
+  const percent = clampPercent((1 - remaining) * 100);
+  return { percent, kind: percent >= 95 ? "bad" : percent >= 70 ? "warn" : "" };
 }
 
 // Отображаемый host прокси: порт обрезается, пустое значение → тире.
