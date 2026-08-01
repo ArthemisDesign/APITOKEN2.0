@@ -12,6 +12,7 @@ export class BusinessInvitationNotFoundError extends Error {}
 export class BusinessInvitationConflictError extends Error {}
 export class BusinessCustomerNotFoundError extends Error {}
 export class CustomerProfileNotFoundError extends Error {}
+export class PricingLedgerAttributionError extends Error {}
 
 export interface PricingSyncTarget {
   userId: string;
@@ -54,6 +55,329 @@ export function tierForTopups(cumulativeNano: bigint): number {
 /** Тридцатидневное окно удержания в миллисекундах. */
 const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const PRICING_LEDGER_PAGE_SIZE = 1000;
+const POSTGRES_INTEGER_MAX = 2_147_483_647n;
+const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION = 1n;
+
+type LedgerAttribution = NonNullable<EngineLedgerEntry["attribution"]>;
+type LedgerFundingAllocation = NonNullable<EngineLedgerEntry["funding_allocations"]>[number];
+
+interface ValidatedLedgerAttribution {
+  attribution: LedgerAttribution;
+  allocations: Array<{
+    ordinal: number;
+    engineBucketId: string;
+    bucketVersion: string;
+    sourceType: string;
+    sourceRef: string;
+    amountNano: string;
+  }>;
+  paidFundedNano: bigint | null;
+  nonPaidFundedNano: bigint | null;
+  retentionEligible: boolean;
+}
+
+interface ValidatedPolicyFunding {
+  allocations: ValidatedLedgerAttribution["allocations"];
+  paidFundedNano: bigint;
+  bonusFundedNano: bigint;
+  otherFundedNano: bigint;
+}
+
+function requiredLedgerText(value: string | null | undefined, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
+  }
+  return value;
+}
+
+function requiredLedgerInteger(
+  value: string | null | undefined,
+  field: string,
+  allowZero = false,
+): bigint {
+  if (value === null || value === undefined || !/^\d+$/.test(value)) {
+    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
+  }
+  const parsed = BigInt(value);
+  if (allowZero ? parsed < 0n : parsed <= 0n) {
+    throw new PricingLedgerAttributionError(`engine ledger attribution has invalid ${field}`);
+  }
+  return parsed;
+}
+
+function requiredLedgerBoolean(value: boolean | null | undefined, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
+  }
+  return value;
+}
+
+function epochSecondsDate(value: string, field: string): Date {
+  const seconds = BigInt(value);
+  // JavaScript Date is bounded to +/-8.64e15 milliseconds. Engine timestamps are non-negative.
+  if (seconds < 0n || seconds > 8_640_000_000_000n) {
+    throw new PricingLedgerAttributionError(`engine ledger ${field} is outside the Date range`);
+  }
+  const result = new Date(Number(seconds) * 1000);
+  if (Number.isNaN(result.getTime())) {
+    throw new PricingLedgerAttributionError(`engine ledger ${field} is invalid`);
+  }
+  return result;
+}
+
+function allocationOrdinal(value: string | null, index: number): number {
+  if (value === null) {
+    throw new PricingLedgerAttributionError(
+      `policy funding allocation ${index} is missing its durable allocation order`,
+    );
+  }
+  const ordinal = requiredLedgerInteger(value, `funding allocation ${index} order`, true);
+  if (ordinal > POSTGRES_INTEGER_MAX) {
+    throw new PricingLedgerAttributionError(`funding allocation ${index} order is too large`);
+  }
+  return Number(ordinal);
+}
+
+function validatePolicyFundingAllocations(
+  attribution: LedgerAttribution,
+  allocations: readonly LedgerFundingAllocation[],
+  chargedNano: bigint,
+): ValidatedPolicyFunding {
+  if (!Array.isArray(attribution.funding_allocation_json)) {
+    throw new PricingLedgerAttributionError("policy attribution is missing raw funding evidence");
+  }
+  let previousOrder: bigint | null = null;
+  const seenBuckets = new Set<string>();
+  let paidFundedNano = 0n;
+  let bonusFundedNano = 0n;
+  let otherFundedNano = 0n;
+  const chargedEvidence = attribution.funding_allocation_json.filter((allocation, index) => {
+    const bucketId = requiredLedgerText(allocation.bucket_id, `raw funding allocation ${index} bucket`);
+    const sourceType = requiredLedgerText(
+      allocation.source_type,
+      `raw funding allocation ${index} source type`,
+    );
+    const bucketVersion = requiredLedgerInteger(
+      allocation.bucket_version,
+      `raw funding allocation ${index} bucket version`,
+    );
+    const reservedNano = requiredLedgerInteger(
+      allocation.reserved_nano,
+      `raw funding allocation ${index} reserved amount`,
+    );
+    const evidenceChargedNano = requiredLedgerInteger(
+      allocation.charged_nano,
+      `raw funding allocation ${index} charged amount`,
+      true,
+    );
+    const releasedNano = requiredLedgerInteger(
+      allocation.released_nano,
+      `raw funding allocation ${index} released amount`,
+      true,
+    );
+    const order = requiredLedgerInteger(
+      allocation.allocation_order,
+      `raw funding allocation ${index} order`,
+      true,
+    );
+    if (reservedNano !== evidenceChargedNano + releasedNano) {
+      throw new PricingLedgerAttributionError(
+        `raw funding allocation ${index} does not reconcile reserved, charged, and released amounts`,
+      );
+    }
+    if (previousOrder !== null && order <= previousOrder) {
+      throw new PricingLedgerAttributionError("raw funding allocation order is not strictly increasing");
+    }
+    previousOrder = order;
+    const bucketIdentity = `${bucketId}\u0000${sourceType}\u0000${bucketVersion}`;
+    if (seenBuckets.has(bucketIdentity)) {
+      throw new PricingLedgerAttributionError("raw funding evidence repeats one bucket version");
+    }
+    seenBuckets.add(bucketIdentity);
+    if (sourceType === "paid") paidFundedNano += evidenceChargedNano;
+    else if (sourceType === "welcome_track_bonus") bonusFundedNano += evidenceChargedNano;
+    else otherFundedNano += evidenceChargedNano;
+    return evidenceChargedNano > 0n;
+  });
+  if (chargedEvidence.length !== allocations.length) {
+    throw new PricingLedgerAttributionError(
+      "normalized funding allocations do not match raw charged allocations",
+    );
+  }
+
+  let normalizedTotal = 0n;
+  const normalized = allocations.map((allocation, index) => {
+    const evidence = chargedEvidence[index]!;
+    const amountNano = requiredLedgerInteger(
+      allocation.amount_nano,
+      `funding allocation ${index} amount`,
+    );
+    const bucketVersion = requiredLedgerInteger(
+      allocation.bucket_version,
+      `funding allocation ${index} bucket version`,
+    );
+    const ordinal = allocationOrdinal(allocation.allocation_order, index);
+    if (
+      allocation.direction !== "debit"
+      || allocation.bucket_id !== evidence.bucket_id
+      || allocation.source_type !== evidence.source_type
+      || bucketVersion !== BigInt(evidence.bucket_version)
+      || amountNano !== BigInt(evidence.charged_nano)
+      || BigInt(ordinal) !== BigInt(evidence.allocation_order)
+    ) {
+      throw new PricingLedgerAttributionError(
+        `normalized funding allocation ${index} differs from immutable settlement evidence`,
+      );
+    }
+    normalizedTotal += amountNano;
+    return {
+      ordinal,
+      engineBucketId: requiredLedgerText(allocation.bucket_id, `funding allocation ${index} bucket`),
+      bucketVersion: bucketVersion.toString(),
+      sourceType: requiredLedgerText(allocation.source_type, `funding allocation ${index} source type`),
+      sourceRef: allocation.source_ref,
+      amountNano: amountNano.toString(),
+    };
+  });
+  if (normalizedTotal !== chargedNano) {
+    throw new PricingLedgerAttributionError(
+      "normalized funding allocations do not cover the charged amount",
+    );
+  }
+  return {
+    allocations: normalized,
+    paidFundedNano,
+    bonusFundedNano,
+    otherFundedNano,
+  };
+}
+
+function validateLedgerAttribution(
+  entry: EngineLedgerEntry,
+  chargedNano: bigint,
+): ValidatedLedgerAttribution | null {
+  const attribution = entry.attribution ?? null;
+  const allocations = entry.funding_allocations ?? [];
+  if (!attribution) {
+    if (allocations.length > 0) {
+      throw new PricingLedgerAttributionError(
+        "engine ledger returned funding allocations without attribution",
+      );
+    }
+    return null;
+  }
+
+  const attributionSchemaVersion = requiredLedgerInteger(
+    attribution.attribution_schema_version,
+    "attribution schema version",
+  );
+  if (attributionSchemaVersion !== SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION) {
+    throw new PricingLedgerAttributionError("engine ledger attribution schema version is unsupported");
+  }
+  requiredLedgerText(attribution.snapshot_digest, "snapshot digest");
+  const retentionEligible = requiredLedgerBoolean(
+    attribution.retention_eligible,
+    "retention eligibility",
+  );
+  const trackEligible = requiredLedgerBoolean(attribution.track_eligible, "track eligibility");
+  const commissionEligible = requiredLedgerBoolean(
+    attribution.commission_eligible,
+    "commission eligibility",
+  );
+  if (commissionEligible && !trackEligible) {
+    throw new PricingLedgerAttributionError("commission eligibility requires track eligibility");
+  }
+
+  if (attribution.snapshot_kind === "legacy_scalar") {
+    if (
+      attribution.pricing_mode !== "legacy_scalar"
+      || attribution.rule_origin !== "legacy"
+      || attribution.payable_multiplier_bp === null
+      || trackEligible
+      || retentionEligible
+      || commissionEligible
+      || allocations.length > 0
+    ) {
+      throw new PricingLedgerAttributionError("legacy scalar attribution has policy-only fields");
+    }
+    return {
+      attribution,
+      allocations: [],
+      paidFundedNano: null,
+      nonPaidFundedNano: null,
+      retentionEligible: false,
+    };
+  }
+  if (attribution.snapshot_kind !== "policy_v1") {
+    throw new PricingLedgerAttributionError("engine ledger attribution has an unknown snapshot kind");
+  }
+
+  requiredLedgerText(entry.request_id, "engine request id");
+  const providerId = requiredLedgerText(attribution.provider_id, "provider id");
+  const officialNano = requiredLedgerInteger(attribution.official_nano, "official amount", true);
+  if (entry.provider !== providerId || entry.official_nano === null || entry.official_nano === undefined) {
+    throw new PricingLedgerAttributionError("ledger and attribution provider/official identity differ");
+  }
+  if (BigInt(entry.official_nano) !== officialNano) {
+    throw new PricingLedgerAttributionError("ledger and attribution monetary identity differ");
+  }
+
+  requiredLedgerText(attribution.product_id, "product id");
+  requiredLedgerText(attribution.account_class, "account class");
+  requiredLedgerText(attribution.requested_model_id, "requested model id");
+  requiredLedgerText(attribution.canonical_model_id, "canonical model id");
+  requiredLedgerInteger(attribution.alias_generation, "alias generation");
+  requiredLedgerText(attribution.rule_id, "rule id");
+  requiredLedgerText(attribution.rule_digest, "rule digest");
+  requiredLedgerText(attribution.rule_scope, "rule scope");
+  requiredLedgerText(attribution.pricing_mode, "pricing mode");
+  requiredLedgerText(attribution.rule_origin, "rule origin");
+  if (attribution.payable_multiplier_bp === null) {
+    throw new PricingLedgerAttributionError("policy attribution is missing payable multiplier");
+  }
+  requiredLedgerText(attribution.policy_id, "policy id");
+  requiredLedgerInteger(attribution.policy_version, "policy version");
+  requiredLedgerInteger(attribution.effective_policy_version, "effective policy version");
+  requiredLedgerText(attribution.policy_digest, "effective policy digest");
+  requiredLedgerText(attribution.source_policy_digest, "source policy digest");
+  requiredLedgerInteger(attribution.catalog_generation, "catalog generation");
+  requiredLedgerInteger(attribution.switch_generation, "switch generation");
+  requiredLedgerInteger(attribution.admission_catalog_generation, "admission catalog generation");
+  requiredLedgerText(attribution.admission_catalog_digest, "admission catalog digest");
+  requiredLedgerInteger(attribution.admission_switch_generation, "admission switch generation");
+  requiredLedgerText(attribution.admission_switch_digest, "admission switch digest");
+  requiredLedgerInteger(attribution.runtime_manifest_generation, "runtime manifest generation");
+  requiredLedgerText(attribution.runtime_manifest_digest, "runtime manifest digest");
+  requiredLedgerText(attribution.tariff_schedule_id, "tariff schedule id");
+  requiredLedgerInteger(attribution.tariff_priced_ts, "tariff priced timestamp", true);
+  if (attribution.official_cost_json === null) {
+    throw new PricingLedgerAttributionError("policy attribution is missing official cost evidence");
+  }
+
+  const paidFundedNano = requiredLedgerInteger(attribution.paid_funded_nano, "paid funding", true);
+  const bonusFundedNano = requiredLedgerInteger(attribution.bonus_funded_nano, "bonus funding", true);
+  const otherFundedNano = requiredLedgerInteger(attribution.other_funded_nano, "other funding", true);
+  if (paidFundedNano + bonusFundedNano + otherFundedNano !== chargedNano) {
+    throw new PricingLedgerAttributionError("funding categories do not cover the charged amount");
+  }
+  const funding = validatePolicyFundingAllocations(attribution, allocations, chargedNano);
+  if (
+    funding.paidFundedNano !== paidFundedNano
+    || funding.bonusFundedNano !== bonusFundedNano
+    || funding.otherFundedNano !== otherFundedNano
+  ) {
+    throw new PricingLedgerAttributionError(
+      "funding categories do not match immutable bucket allocations",
+    );
+  }
+  return {
+    attribution,
+    allocations: funding.allocations,
+    paidFundedNano,
+    nonPaidFundedNano: bonusFundedNano + otherFundedNano,
+    retentionEligible,
+  };
+}
 
 export interface BusinessInviteRecord {
   id: string;
@@ -704,6 +1028,202 @@ export async function completePricingUsageSync(
   `, [target.engineAccountId, target.userId]);
 }
 
+async function resolveAttributionBinding(
+  client: PoolClient,
+  target: PricingSyncTarget,
+  validated: ValidatedLedgerAttribution,
+): Promise<string | null> {
+  const attribution = validated.attribution;
+  if (attribution.snapshot_kind !== "policy_v1") return null;
+  const result = await client.query<{ id: string }>(`
+    SELECT binding.id
+    FROM account_policy_bindings binding
+    JOIN account_policy_versions version
+      ON version.binding_id = binding.id
+     AND version.effective_version = $3
+    JOIN account_policy_rules rule
+      ON rule.binding_id = version.binding_id
+     AND rule.effective_version = version.effective_version
+     AND rule.rule_id = $12
+    JOIN product_catalog_versions admission_catalog
+      ON admission_catalog.product_id = version.product_id
+     AND admission_catalog.generation = $24
+     AND admission_catalog.content_digest = $25
+    JOIN provider_switch_versions admission_switch
+      ON admission_switch.generation = $26
+     AND admission_switch.content_digest = $27
+    WHERE binding.user_id = $1
+      AND binding.engine_account_id = $2
+      AND binding.policy_id = $4
+      AND binding.product_id = $7
+      AND binding.account_class = $8
+      AND version.policy_id = $4
+      AND version.policy_version = $5
+      AND version.policy_digest = $6
+      AND version.product_id = $7
+      AND version.account_class = $8
+      AND version.catalog_generation = $9
+      AND version.switch_generation = $10
+      AND version.content_digest = $11
+      AND rule.rule_digest = $13
+      AND rule.scope_type = $14
+      AND rule.provider_id = $15
+      AND rule.canonical_model_id IS NOT DISTINCT FROM $16::text
+      AND rule.pricing_mode = $17
+      AND rule.rule_origin = $18
+      AND rule.discount_bps IS NOT DISTINCT FROM $19::integer
+      AND rule.payable_multiplier_bp = $20
+      AND rule.track_eligible = $21
+      AND rule.retention_eligible = $22
+      AND rule.commission_eligible = $23
+  `, [
+    target.userId,
+    target.engineAccountId,
+    attribution.effective_policy_version,
+    attribution.policy_id,
+    attribution.policy_version,
+    attribution.source_policy_digest,
+    attribution.product_id,
+    attribution.account_class,
+    attribution.catalog_generation,
+    attribution.switch_generation,
+    attribution.policy_digest,
+    attribution.rule_id,
+    attribution.rule_digest,
+    attribution.rule_scope,
+    attribution.provider_id,
+    attribution.rule_scope === "model" ? attribution.canonical_model_id : null,
+    attribution.pricing_mode,
+    attribution.rule_origin,
+    attribution.discount_bps,
+    attribution.payable_multiplier_bp,
+    attribution.track_eligible,
+    attribution.retention_eligible,
+    attribution.commission_eligible,
+    attribution.admission_catalog_generation,
+    attribution.admission_catalog_digest,
+    attribution.admission_switch_generation,
+    attribution.admission_switch_digest,
+  ]);
+  if (result.rows.length !== 1) {
+    throw new PricingLedgerAttributionError(
+      "engine policy attribution does not match one immutable commerce policy version",
+    );
+  }
+  return result.rows[0]!.id;
+}
+
+async function insertPricingUsageAttribution(
+  client: PoolClient,
+  target: PricingSyncTarget,
+  eventId: string,
+  entry: EngineLedgerEntry,
+  chargedNano: bigint,
+  validated: ValidatedLedgerAttribution,
+): Promise<void> {
+  const attribution = validated.attribution;
+  const bindingId = await resolveAttributionBinding(client, target, validated);
+  const effectivePolicyDigest = attribution.snapshot_kind === "policy_v1"
+    ? attribution.policy_digest
+    : null;
+  const legacyPolicyDigest = attribution.snapshot_kind === "policy_v1"
+    ? attribution.source_policy_digest
+    : null;
+  const tariffPricedAt = attribution.tariff_priced_ts === null
+    ? null
+    : epochSecondsDate(attribution.tariff_priced_ts, "tariff priced timestamp");
+  await client.query(`
+    INSERT INTO pricing_usage_attributions (
+      pricing_usage_event_id, attribution_schema_version, snapshot_kind,
+      engine_request_id, provider_id, product_id, account_class, binding_id,
+      requested_model_id, canonical_model_id, served_model_id,
+      served_canonical_model_id, billing_invariant_code, alias_generation,
+      rule_id, rule_digest, rule_scope, pricing_mode, rule_origin, discount_bps,
+      payable_multiplier_bp, policy_id, policy_version, effective_policy_version,
+      effective_policy_digest, policy_digest, source_policy_digest,
+      catalog_generation, switch_generation, admission_catalog_generation,
+      admission_catalog_digest, admission_switch_generation, admission_switch_digest,
+      runtime_manifest_generation, runtime_manifest_digest, tariff_schedule_id,
+      tariff_priced_at, official_nano, charged_nano, official_cost_json,
+      paid_funded_nano, bonus_funded_nano, other_funded_nano,
+      funding_allocation_json, track_eligible, retention_eligible,
+      commission_eligible, snapshot_digest
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+      $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
+      $33,$34,$35,$36,$37,$38,$39,$40::jsonb,$41,$42,$43,$44::jsonb,
+      $45,$46,$47,$48
+    )
+  `, [
+    eventId,
+    attribution.attribution_schema_version,
+    attribution.snapshot_kind,
+    entry.request_id ?? null,
+    attribution.provider_id,
+    attribution.product_id,
+    attribution.account_class,
+    bindingId,
+    attribution.requested_model_id,
+    attribution.canonical_model_id,
+    attribution.served_model_id,
+    attribution.served_canonical_model_id,
+    attribution.billing_invariant_code,
+    attribution.alias_generation,
+    attribution.rule_id,
+    attribution.rule_digest,
+    attribution.rule_scope,
+    attribution.pricing_mode,
+    attribution.rule_origin,
+    attribution.discount_bps,
+    attribution.payable_multiplier_bp,
+    attribution.policy_id,
+    attribution.policy_version,
+    attribution.effective_policy_version,
+    effectivePolicyDigest,
+    legacyPolicyDigest,
+    attribution.source_policy_digest,
+    attribution.catalog_generation,
+    attribution.switch_generation,
+    attribution.admission_catalog_generation,
+    attribution.admission_catalog_digest,
+    attribution.admission_switch_generation,
+    attribution.admission_switch_digest,
+    attribution.runtime_manifest_generation,
+    attribution.runtime_manifest_digest,
+    attribution.tariff_schedule_id,
+    tariffPricedAt,
+    attribution.official_nano,
+    chargedNano.toString(),
+    attribution.official_cost_json === null ? null : JSON.stringify(attribution.official_cost_json),
+    attribution.paid_funded_nano,
+    attribution.bonus_funded_nano,
+    attribution.other_funded_nano,
+    attribution.funding_allocation_json === null
+      ? null
+      : JSON.stringify(attribution.funding_allocation_json),
+    attribution.track_eligible,
+    attribution.retention_eligible,
+    attribution.commission_eligible,
+    attribution.snapshot_digest,
+  ]);
+  for (const allocation of validated.allocations) {
+    await client.query(`
+      INSERT INTO pricing_usage_funding_allocations (
+        pricing_usage_event_id, ordinal, engine_bucket_id, bucket_version,
+        source_type, source_ref, amount_nano
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [
+      eventId,
+      allocation.ordinal,
+      allocation.engineBucketId,
+      allocation.bucketVersion,
+      allocation.sourceType,
+      allocation.sourceRef,
+      allocation.amountNano,
+    ]);
+  }
+}
+
 export async function applyPricingLedgerPage(
   database: Database,
   target: PricingSyncTarget,
@@ -760,19 +1280,53 @@ export async function applyPricingLedgerPage(
       // и завязан на engine-компенсацию рефанда). Игнорирование безопасно по направлению: оно
       // может только НЕ доплатить, но не переплачивает.
       if (entry.kind !== "charge" || amount <= 0n) continue;
-      const occurredAt = new Date(Number(BigInt(entry.ts)) * 1000);
-      // Бесплатное тратится первым: real_funded — часть, покрытая реальными деньгами.
-      const fromFree = amount < freeBalance ? amount : freeBalance;
-      const realFunded = amount - fromFree;
+      const occurredAt = epochSecondsDate(entry.ts, "event timestamp");
+      const validatedAttribution = validateLedgerAttribution(entry, amount);
+      // New policy-aware rows trust only the engine's immutable settlement funding. The local
+      // free-first projection remains solely for pre-attribution rows during rolling compatibility.
+      const legacyFromFree = validatedAttribution === null
+        ? amount < freeBalance ? amount : freeBalance
+        : 0n;
+      const attributedNonPaid = validatedAttribution?.nonPaidFundedNano ?? 0n;
+      if (validatedAttribution?.attribution.snapshot_kind === "policy_v1" && attributedNonPaid > freeBalance) {
+        throw new PricingLedgerAttributionError(
+          "engine policy funding exceeds the local immutable free-credit projection",
+        );
+      }
+      const projectedFreeDebit = validatedAttribution === null
+        ? legacyFromFree
+        : attributedNonPaid;
+      const realFunded = validatedAttribution === null
+        ? amount - legacyFromFree
+        : validatedAttribution.attribution.commission_eligible === true
+          ? validatedAttribution.paidFundedNano ?? 0n
+          : 0n;
+      const retentionSpend = validatedAttribution === null || validatedAttribution.retentionEligible
+        ? amount
+        : 0n;
+      const eventId = randomUUID();
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
           id, user_id, engine_account_id, ledger_entry_id, amount_nano, real_funded_nano, occurred_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
         RETURNING id
-      `, [randomUUID(), target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, realFunded.toString(), occurredAt]);
+      `, [eventId, target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, realFunded.toString(), occurredAt]);
       if (!inserted.rows[0]) continue; // уже обработано — бесплатный баланс не трогаем повторно
-      if (fromFree > 0n) { freeBalance -= fromFree; freeBalanceChanged = true; }
+      if (validatedAttribution !== null) {
+        await insertPricingUsageAttribution(
+          client,
+          target,
+          eventId,
+          entry,
+          amount,
+          validatedAttribution,
+        );
+      }
+      if (projectedFreeDebit > 0n) {
+        freeBalance -= projectedFreeDebit;
+        freeBalanceChanged = true;
+      }
       insertedCharge = true;
       const monthStart = utcMonthStart(occurredAt);
       await client.query(`
@@ -781,7 +1335,7 @@ export async function applyPricingLedgerPage(
         ) VALUES ($1, $2, $3, $4, $4, $5)
         ON CONFLICT (user_id, month_start) DO UPDATE
         SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
-      `, [randomUUID(), target.userId, monthStart, profile.current_tier, entry.amount_nano]);
+      `, [randomUUID(), target.userId, monthStart, profile.current_tier, retentionSpend.toString()]);
     }
     if (freeBalanceChanged) {
       await client.query(
@@ -878,10 +1432,16 @@ export async function closeElapsedTierWindows(
       }
       const windowEnd = new Date(row.tier_window_start.getTime() + HOLD_WINDOW_MS);
       const spentResult = await client.query<{ spent_nano: string }>(`
-        SELECT COALESCE(SUM(amount_nano), 0)::text AS spent_nano
-        FROM pricing_usage_events
-        WHERE user_id = $1 AND engine_account_id = $2
-          AND occurred_at >= $3 AND occurred_at < $4
+        SELECT COALESCE(SUM(event.amount_nano), 0)::text AS spent_nano
+        FROM pricing_usage_events event
+        LEFT JOIN pricing_usage_attributions attribution
+          ON attribution.pricing_usage_event_id = event.id
+        WHERE event.user_id = $1 AND event.engine_account_id = $2
+          AND event.occurred_at >= $3 AND event.occurred_at < $4
+          AND (
+            attribution.pricing_usage_event_id IS NULL
+            OR attribution.retention_eligible
+          )
       `, [row.user_id, row.engine_account_id, row.tier_window_start, windowEnd]);
       const windowSpent = BigInt(spentResult.rows[0]?.spent_nano ?? "0");
       const held = windowSpent >= B2C_PRICING_TIERS[row.current_tier]!.holdNano;
@@ -1291,11 +1851,17 @@ async function refreshTierWindowSpend(
           ELSE COALESCE((
             SELECT SUM(pue.amount_nano)
             FROM pricing_usage_events pue
+            LEFT JOIN pricing_usage_attributions attribution
+              ON attribution.pricing_usage_event_id = pue.id
             WHERE pue.user_id = cp.user_id AND pue.engine_account_id = ea.engine_account_id
               AND pue.occurred_at >= cp.tier_window_start
               AND pue.occurred_at < LEAST(
                 $2::timestamptz,
                 cp.tier_window_start + interval '30 days'
+              )
+              AND (
+                attribution.pricing_usage_event_id IS NULL
+                OR attribution.retention_eligible
               )
           ), 0)
         END,
