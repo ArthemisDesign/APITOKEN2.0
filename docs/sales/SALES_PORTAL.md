@@ -5,7 +5,7 @@
 стиль (никак не связан с apitoken.sale). Бренд в UI: **APIToken Partners**.
 
 ```
-engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sales feed─  sales (sales-api + sales-web)
+engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sales API (SALES_CONTROL_KEY)→  sales (sales-api + sales-web)
 ```
 
 ## Что это
@@ -36,27 +36,110 @@ engine (Rust)  ←Control API─  commerce (apps/api + worker)  ←internal sale
 
 ## Граница sales ↔ commerce (единственная)
 
-HTTP-фид в `apps/api` под ключом `SALES_CONTROL_KEY` (заголовок `x-api-key`), выключен пока env
-не задан. Курсорная модель `after_id` как у ledger-фида движка; строки моложе 10 с скрыты
-(лаг закрывает гонку bigserial/commit):
+Контур **двусторонний**, оба направления под одним серверным ключом `SALES_CONTROL_KEY`
+(заголовок `x-api-key`, сравнение timing-safe). Ключ один и тот же в env обоих сервисов
+(`/etc/apitoken/api.env` и `/etc/apitoken/sales.env`); без него контур выключен, причём
+стороны ведут себя по-разному: commerce-фид без env отвечает **404** (гард прячет эндпоинты),
+sales-internal без env — **401**.
 
-- `GET /v1/internal/sales/attributions?after_id&limit` — из `referral_attributions`
-  (пишется при регистрации с `referralCode`).
-- `GET /v1/internal/sales/usage-events?after_id&limit` — из `pricing_usage_events`
-  (курсор — новая колонка `feed_seq bigserial`, миграция 0012).
-- `GET /v1/internal/sales/topups?after_id&limit` — оплаченные `payments`; курсор —
-  микросекунды `paid_at` (не `feed_seq`: оплата наступает позже insert).
+### Commerce → Sales: фиды и профили (`apps/api/src/sales-feed.controller.ts`)
+
+`@Controller("internal/sales")` под гардом `SalesFeedGuard`. Курсорная модель `after_id` как у
+ledger-фида движка; строки моложе 10 с скрыты (лаг закрывает гонку bigserial/commit). Мусор в
+`after_id`/`limit` — не ошибка, а дефолт (курсор 0, дефолтный лимит).
+
+- `GET /v1/internal/sales/attributions?after_id&limit` (лимит дефолт 500, макс 1000) — из
+  `referral_attributions` (пишется при регистрации с `referralCode`, уникальна по user_id).
+  Ответ `{items:[{id,userId,code,createdAt}]}`; `nextCursor` нет — курсор читателя = max `id`
+  страницы (строки идут по возрастанию `id`).
+- `GET /v1/internal/sales/usage-events?after_id&limit` (дефолт 1000, макс 2000) — из
+  `pricing_usage_events`; курсор — колонка `feed_seq bigserial` (миграция 0012). Ответ
+  `{items:[{id,userId,amountNano,occurredAt}], nextCursor}`. `amountNano` = `real_funded`:
+  реально-оплаченная часть списания (бесплатная вычтена по принципу «бесплатное тратится
+  первым»), комиссия считается только с неё. Фид отдаёт **только атрибутированных** юзеров
+  (join с `referral_attributions` на стороне commerce): расход обычных клиентов не копится в
+  буфере sales, а `nextCursor` движется по watermark страницы, чтобы отфильтрованный хвост не
+  пересканировался вечно.
+- `GET /v1/internal/sales/topups?after_id&limit` (дефолт 500, макс 1000) — оплаченные
+  `payments`; курсор — микросекунды epoch от `paid_at` (не `feed_seq`: оплата наступает позже
+  insert, и просроченный `feed_seq` выпал бы из курсора навсегда). Тоже фильтруется по
+  атрибуции. Ответ `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`.
+- `POST /v1/internal/sales/referral-discount` — «пол» скидки сейлза для реферала партнёра.
+  Тело `{userId, floorBps (0..9500), override?, actorId?}` → `{applied, multiplierBp}`.
+  Клиент остаётся b2c и идёт по обычным тир-правилам; floor лишь гарантирует цену не хуже
+  скидки сейлза: эффективный mult = `min(тир-mult, 10000 − floorBps)`. По умолчанию пол
+  **монотонен** (`GREATEST`, лучшее клиенту) — его пишут три независимых источника (промо,
+  партнёрская ссылка, sales-фид); `override=true` — абсолютная запись с понижением (партнёр или
+  админ из sales-кабинета), `floorBps=0` — явный сброс. Только b2c-профили (business-b2b или
+  нет тира → `applied:false`). Идемпотентно; мультипликатор доставляется в движок через
+  durable `engine_pricing_jobs`.
+- `POST /v1/internal/sales/referral-profiles` — профили рефералов для витрины партнёра. Тело
+  `{userIds: uuid[] (макс 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
+  discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Только по
+  явному списку user_id, который sales-api формирует из закреплённых за партнёром рефералов —
+  партнёр видит лишь своих. `balanceNano` и живой `multiplierBp` читаются из движка
+  (авторитет денег) с параллелизмом 8; недоступный движок-аккаунт не роняет страницу — поля
+  деградируют до `null`/значений из `customer_profiles`.
+
+Потребители на стороне sales (`apps/sales-api`, ходят по `COMMERCE_BASE_URL`):
+
+- `sync.service.ts` — синк-цикл по курсорам (хранятся в sales-БД, интервал `SYNC_INTERVAL_MS`,
+  дефолт 60 с): атрибуции → закрепление юзера за партнёром + атомарный claim одноразовой
+  скидочной ссылки (победитель получает floor через `POST referral-discount` — либо впервые,
+  либо как идемпотентный backfill, если синхронное применение при регистрации упало);
+  топапы → `referred_topups` (только история/аналитика, комиссий не создают); usage-события →
+  комиссии (идемпотентны по `commerce_event_id`); события, пришедшие раньше атрибуции их
+  юзера, буферизуются в `pending_referral_events` и догоняются replay. 404 фида (сторона
+  commerce ещё не задеплоена) — не ошибка, повтор на следующем тике; курсор продвигается
+  только по успешно обработанным строкам (at-least-once).
+- `commerce.service.ts` — `referralProfiles` для витрины партнёра (**best-effort**: при
+  недоступности commerce возвращается пустая карта, витрина деградирует до локальных полей —
+  траты/комиссия) и `setReferralDiscount` (шлёт `override=true`; **не** best-effort — ошибки
+  транспорта пробрасываются вызывающему, партнёр должен знать результат).
+
+### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
+
+Commerce ходит в sales-api по `SALES_API_URL` тем же `SALES_CONTROL_KEY`.
+
+- `POST /v1/internal/promo/redeem` — погашение партнёрского промокода (вызывается из
+  `apps/api/src/promo.service.ts`, публичный `POST /v1/promo/redeem`). Тело
+  `{code, commerceUserId}` → `{valueNano, partnerId, referralCode, redemptionRef, discountBps,
+  alreadyRedeemed}`. Атомарно и идемпотентно по (code, user): повторное погашение тем же
+  юзером возвращает тот же `redemptionRef`, поэтому кредит движка на стороне commerce
+  идемпотентен по ref (ретраи безопасны). Одноразовый код; один промо на юзера (409); код
+  недоступен, если партнёр не active или промо выключено. Commerce дальше сам: кредитует
+  движок (до 3 попыток), best-effort атрибутирует незакреплённого юзера к владельцу кода, при
+  `discountBps>0` применяет скидку-«пол» с локальными ретраями — async-фид промо-скидку **не**
+  переприменяет (он деривит floor только из `partner_discount_links`).
+- `POST /v1/internal/partners/referral-discount` — атомарный claim персональной скидочной
+  ссылки. Тело `{code, commerceUserId}` → `{discountBps}`. First-wins, идемпотентно по
+  (code, user): ссылка закрепляется за первым владельцем одним UPDATE и НИКОГДА не даёт скидку
+  второму; обычный реф-код или ссылка, погашенная другим, → 0. Вызывается из
+  `apps/api/src/auth.service.ts` при первой активации движок-аккаунта (парольная регистрация,
+  подтверждение email, OAuth) — синхронно, чтобы реферал видел свою ставку с первого захода; полностью best-effort
+  (таймаут 4 с, сбой → async-фид применит floor владельцу на следующем тике).
+- `GET /v1/internal/partners/resolve?code` → `{found:false}` либо `{found:true, partnerId,
+  referralDiscountBps}` — резолв реф-кода активного партнёра (`Cache-Control: no-store`).
+  Эндпоинт жив, но текущий код commerce его **не вызывает**: claim-эндпоинт выше заменил пару
+  resolve+consume, закрыв окно, где read-only резолв выдавал floor нескольким регистрациям
+  одной ссылки.
 
 Правила: sales не открывает commerce/engine PostgreSQL и не импортирует `@claude-api/db`;
-деньги — только integer nanoUSD decimal-строками; email конечных пользователей партнёру не
-отдаются (в кабинете только маска user-id).
+commerce симметрично не открывает sales-БД — всё через HTTP под ключом. Деньги — только
+integer nanoUSD decimal-строками; email конечных пользователей партнёру не отдаются (в
+кабинете только маска user-id).
 
 ## Атрибуция на главном сайте
 
 `apps/web`: `?ref=CODE` на `/register` сохраняется в localStorage на 30 дней (первый код
 побеждает), при регистрации уходит как `referralCode`. Коммерция пишет её best-effort в
-`referral_attributions` (уникальна по user_id). TODO: пронести ref через OAuth-регистрацию
-(сейчас только парольная).
+`referral_attributions` (уникальна по user_id). Ref пробрасывается и через OAuth-регистрацию:
+соцкнопки передают его в `oauthUrl` (`apps/web/src/lib/api.ts`), `beginOAuth` сохраняет код в
+OAuth-транзакции (переживает редирект к провайдеру), а `completeOAuth` для **нового** аккаунта
+пишет атрибуцию и синхронно применяет скидку-«пол» через `POST
+/v1/internal/partners/referral-discount` — как и парольный путь, реферал видит ставку с первого
+захода. Ограничение «только новый аккаунт» принципиально: иначе существующий клиент мог бы
+залогиниться с чужим `?ref=` и само-выдать себе скидку + сжечь чужую одноразовую ссылку.
 
 Полное продуктовое руководство по всей программе (вход, атрибуция, комиссия, уровни, кошелёк,
 периоды, кабинет, админка, языки) — `docs/sales/PARTNER_PROGRAM.md`.
@@ -123,7 +206,7 @@ https://partners.apitoken.sale работает. Как устроено на 84
 
 ## Идеи развития (не реализовано)
 
-- Реф через OAuth-регистрацию; серверная кука атрибуции вместо localStorage.
+- Серверная кука атрибуции вместо localStorage.
 - Промо-материалы в кабинете (баннеры, UTM-конструктор), витрина статистики кликов
   (сейчас считаем только регистрации и расход).
 - Автовыплаты USDT через провайдера; минимальный порог выплаты.
