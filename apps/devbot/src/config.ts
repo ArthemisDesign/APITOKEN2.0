@@ -2,6 +2,16 @@ import { z } from "zod";
 
 /** Репозиторий, за которым следит поллер (origin remote этого репо). */
 export const DEFAULT_GITHUB_REPO = "3xcalibur-tech/Claude_API";
+export const DEFAULT_TIME_ZONE = "Asia/Tbilisi";
+
+const timeZone = z.string().refine((value) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}, "DEVBOT_TIME_ZONE must be a valid IANA time zone");
 
 const optionalSecret = (min: number) =>
   z.preprocess(
@@ -36,6 +46,7 @@ const configSchema = z.object({
   DEVBOT_GITHUB_TOKEN: optionalSecret(10),
   DEVBOT_GITHUB_REPO: z.string().regex(/^[\w.-]+\/[\w.-]+$/).default(DEFAULT_GITHUB_REPO),
   DEVBOT_POLL_GITHUB_MS: z.coerce.number().int().min(5_000).default(45_000),
+  DEVBOT_TIME_ZONE: timeZone.default(DEFAULT_TIME_ZONE),
   DEVBOT_ALERTMANAGER_URL: z.string().url().default("http://127.0.0.1:9093"),
   DEVBOT_ENGINE_READONLY_KEY: optionalSecret(16),
   DEVBOT_ENGINE_CONTROL_KEY: optionalSecret(16),
@@ -68,6 +79,7 @@ export interface DevbotConfig {
   githubToken?: string;
   githubRepo: string;
   pollGithubMs: number;
+  timeZone: string;
   alertmanagerUrl: string;
   engineReadonlyKey?: string;
   engineControlKey?: string;
@@ -97,6 +109,7 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
     amSecret: raw.DEVBOT_AM_SECRET,
     githubRepo: raw.DEVBOT_GITHUB_REPO,
     pollGithubMs: raw.DEVBOT_POLL_GITHUB_MS,
+    timeZone: raw.DEVBOT_TIME_ZONE,
     alertmanagerUrl: raw.DEVBOT_ALERTMANAGER_URL.replace(/\/+$/, ""),
     engineBaseUrl: raw.DEVBOT_ENGINE_BASE_URL.replace(/\/+$/, ""),
     stateFile: raw.DEVBOT_STATE_FILE,

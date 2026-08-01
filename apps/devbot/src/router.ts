@@ -18,7 +18,7 @@ export const COMMERCE_ALERTS = new Set([
   "EngineExpiredLeasePresent",
 ]);
 
-const DEPLOY_PHASES = ["tests", "migration", "engine", "backend", "sales", "openkeys", "admin"];
+const DEPLOY_PHASES = ["tests", "migration", "engine", "backend", "sales", "openkeys", "admin", "devbot"];
 const DESCRIPTION_LIMIT = 1000;
 
 export function escapeHtml(text: string): string {
@@ -30,8 +30,8 @@ export function truncate(text: string, limit: number): string {
   return `${text.slice(0, limit - 1)}…`;
 }
 
-function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+function fmtTime(ts: number, timeZone: string): string {
+  return new Date(ts).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone });
 }
 
 function fmtDuration(ms: number): string {
@@ -57,6 +57,8 @@ export interface RouterDeps {
   logger?: Logger;
   /** owner/repo — для ссылок на коммиты и runbook. */
   repoSlug: string;
+  /** IANA time zone for all operator-facing timestamps. */
+  timeZone: string;
   now?: () => number;
   /** Метрика devbot_events_total{topic,kind}. */
   onEvent?: (topic: TopicKey, kind: string) => void;
@@ -92,8 +94,8 @@ export class Router {
     if (alert.summary) lines.push(`<i>${escapeHtml(alert.summary)}</i>`);
     if (alert.description) lines.push(escapeHtml(truncate(alert.description, DESCRIPTION_LIMIT)));
     lines.push(`Runbook: <a href="${this.runbookUrl(alert.alertname)}">MONITORING.md#${alert.alertname.toLowerCase()}</a>`);
-    let footer = `Started: ${fmtTime(Date.parse(alert.startsAt) || now)} · fp: ${escapeHtml(alert.fingerprint.slice(0, 8))}`;
-    if (count > 1) footer += ` · ×${count}, last: ${fmtTime(now)}`;
+    let footer = `Started: ${fmtTime(Date.parse(alert.startsAt) || now, this.deps.timeZone)} · fp: ${escapeHtml(alert.fingerprint.slice(0, 8))}`;
+    if (count > 1) footer += ` · ×${count}, last: ${fmtTime(now, this.deps.timeZone)}`;
     lines.push(footer);
     return lines.join("\n");
   }
@@ -246,10 +248,10 @@ export class Router {
 
     const meta = [
       author,
-      finished ? `<i>failed in ${fmtDuration(finished.durationMs)}</i>` : `<i>Started ${fmtTime(deploy.startedAt)}</i>`,
+      finished ? `<i>failed in ${fmtDuration(finished.durationMs)}</i>` : `<i>Started ${fmtTime(deploy.startedAt, this.deps.timeZone)}</i>`,
       commitLink,
     ].filter(text);
-    // Чеклист — две фиксированные строки 4+3, чтобы перенос не рвал фазы посередине.
+    // Чеклист — две фиксированные строки 4+4, чтобы перенос не рвал фазы посередине.
     const icons = DEPLOY_PHASES.map((phase) => `${phaseIcon(deploy.phases[phase])} ${phase}`);
     const lines = [header, meta.join(" · "), icons.slice(0, 4).join(" · "), icons.slice(4).join(" · ")];
     if (deploy.failedPhase) lines.push(`❌ failed phase: <b>${escapeHtml(deploy.failedPhase)}</b>`);
@@ -277,6 +279,17 @@ export class Router {
       }
     } catch (error) {
       this.deps.logger?.error(`router: deploy event ${event.kind} failed: ${errorMessage(error)}`);
+    }
+  }
+
+  /**
+   * Один GitHub snapshot может принести new-sha, несколько фаз и watchdog-финал.
+   * Обрабатываем пакет строго последовательно: message_id нового Telegram-сообщения
+   * должен появиться до первой фазовой или финальной правки.
+   */
+  async handleDeployEvents(events: DeployEvent[]): Promise<void> {
+    for (const event of events) {
+      await this.handleDeployEvent(event);
     }
   }
 
@@ -352,6 +365,9 @@ export class Router {
   private async deployQuarantine(sha: string, phase?: string): Promise<void> {
     const { state, tg, chatId, topics } = this.deps;
     const deploy = this.findDeploy(sha);
+    // Phase failure and watchdog failure can arrive in separate polls. The first
+    // terminal event owns both the message edit and the Critical notification.
+    if (deploy?.done) return;
     const now = this.now();
     if (deploy) {
       deploy.done = true;

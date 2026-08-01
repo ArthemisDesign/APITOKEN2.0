@@ -35,6 +35,7 @@ async function main(): Promise<void> {
     dedup,
     logger,
     repoSlug: config.githubRepo,
+    timeZone: config.timeZone,
     onEvent: (topic, kind) => metrics.incEvent(topic, kind),
   });
 
@@ -61,9 +62,7 @@ async function main(): Promise<void> {
       state,
       logger,
       intervalMs: config.pollGithubMs,
-      onEvents: (events) => {
-        for (const event of events) void router.handleDeployEvent(event);
-      },
+      onEvents: (events) => router.handleDeployEvents(events),
     });
     poller.start();
   } else {
@@ -118,7 +117,7 @@ async function main(): Promise<void> {
         void state.save();
         scheduleDigest();
       });
-    }, msUntilNext(10, 0, Date.now()));
+    }, msUntilNext(10, 0, Date.now(), config.timeZone));
     digestTimer.unref();
   };
   scheduleDigest();

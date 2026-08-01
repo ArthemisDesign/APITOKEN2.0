@@ -61,12 +61,24 @@ export function parseDuration(input: string): number | null {
   return ms;
 }
 
-/** Миллисекунды до ближайших hh:mm локального времени (для ежедневного дайджеста). */
-export function msUntilNext(hour: number, minute: number, now: number): number {
-  const target = new Date(now);
-  target.setHours(hour, minute, 0, 0);
-  if (target.getTime() <= now) target.setDate(target.getDate() + 1);
-  return target.getTime() - now;
+/** Миллисекунды до ближайших hh:mm в заданной IANA time zone. */
+export function msUntilNext(hour: number, minute: number, now: number, timeZone: string): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const firstMinute = Math.floor(now / 60_000) * 60_000 + 60_000;
+  // 48h covers even a skipped wall-clock hour on a DST transition day.
+  for (let offsetMinutes = 0; offsetMinutes < 48 * 60; offsetMinutes += 1) {
+    const candidate = firstMinute + offsetMinutes * 60_000;
+    const parts = formatter.formatToParts(candidate);
+    const candidateHour = Number(parts.find((part) => part.type === "hour")?.value);
+    const candidateMinute = Number(parts.find((part) => part.type === "minute")?.value);
+    if (candidateHour === hour && candidateMinute === minute) return candidate - now;
+  }
+  throw new Error(`cannot find next ${hour}:${minute} in time zone ${timeZone}`);
 }
 
 function fmtAge(ts: number, now: number): string {

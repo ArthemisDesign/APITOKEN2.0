@@ -6,6 +6,12 @@ import type { GithubSnapshot, PhaseState, StateStore } from "./state.js";
 const STATUS_PHASES: Record<string, string> = {
   "deploy/tests": "tests",
   "deploy/migration": "migration",
+  "deploy/engine": "engine",
+  "deploy/backend": "backend",
+  "deploy/sales": "sales",
+  "deploy/openkeys": "openkeys",
+  "deploy/admin": "admin",
+  "deploy/devbot": "devbot",
 };
 
 /** Компонентные окружения Deployments API → фазы чеклиста. */
@@ -15,6 +21,7 @@ const DEPLOY_PHASE_ENVS: Record<string, string> = {
   "production-sales": "sales",
   "production-openkeys": "openkeys",
   "production-admin": "admin",
+  "production-devbot": "devbot",
 };
 
 const CI_ENVS = new Set(["candidate-validation"]);
@@ -54,6 +61,8 @@ export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot)
   if (!prev) return [];
   const events: DeployEvent[] = [];
   const newSha = next.sha !== prev.sha;
+  let failedPhase: string | undefined;
+  let watchdogTerminal: PhaseState | undefined;
   if (newSha) {
     events.push({ kind: "new-sha", sha: next.sha, title: next.title, ...(next.author ? { author: next.author } : {}) });
   }
@@ -62,10 +71,9 @@ export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot)
     const phase = STATUS_PHASES[context];
     if (phase) {
       events.push({ kind: "phase", sha: next.sha, phase, state });
-      if (state === "failure") events.push({ kind: "quarantine", sha: next.sha, phase });
+      if (state === "failure" && failedPhase === undefined) failedPhase = phase;
     } else if (context === "deploy/watchdog") {
-      if (state === "success") events.push({ kind: "green", sha: next.sha });
-      if (state === "failure") events.push({ kind: "quarantine", sha: next.sha });
+      if (state === "success" || state === "failure") watchdogTerminal = state;
     }
   }
   for (const [env, deployment] of Object.entries(next.deployments)) {
@@ -79,10 +87,24 @@ export function diffSnapshots(prev: GithubSnapshot | null, next: GithubSnapshot)
       continue;
     }
     const phase = DEPLOY_PHASE_ENVS[env];
-    if (phase && changed && belongsToSha) {
+    // Commit status is the canonical component verdict (including explicit
+    // "no changes"). Deployments are a fallback for a rollout that appeared
+    // before its matching deploy/* context, never a reason to regress it.
+    const hasStatusVerdict = phase !== undefined && Object.entries(STATUS_PHASES)
+      .some(([context, mappedPhase]) => mappedPhase === phase && context in next.statuses);
+    if (phase && changed && belongsToSha && !hasStatusVerdict) {
       events.push({ kind: "phase", sha: next.sha, phase, state: deployment.state });
-      if (deployment.state === "failure") events.push({ kind: "quarantine", sha: next.sha, phase });
+      if (deployment.state === "failure" && failedPhase === undefined) failedPhase = phase;
     }
+  }
+  // A failed phase must be rendered before the terminal summary. GitHub returns
+  // statuses newest-first, so deploy/watchdog is commonly encountered first.
+  if (failedPhase !== undefined) {
+    events.push({ kind: "quarantine", sha: next.sha, phase: failedPhase });
+  } else if (watchdogTerminal === "failure") {
+    events.push({ kind: "quarantine", sha: next.sha });
+  } else if (watchdogTerminal === "success") {
+    events.push({ kind: "green", sha: next.sha });
   }
   return events;
 }
@@ -91,7 +113,7 @@ export interface GithubPollerDeps {
   token: string;
   repo: string;
   state: StateStore;
-  onEvents: (events: DeployEvent[]) => void;
+  onEvents: (events: DeployEvent[]) => void | Promise<void>;
   logger?: Logger;
   intervalMs?: number;
   fetchFn?: typeof fetch;
@@ -207,7 +229,7 @@ export class GithubPoller {
 
     state.data.github = snapshot;
     if (events.length > 0) {
-      this.deps.onEvents(events);
+      await this.deps.onEvents(events);
     }
     await state.save();
   }

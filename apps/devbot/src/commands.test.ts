@@ -212,10 +212,10 @@ describe("helpers", () => {
     expect(report).not.toContain("Old");
   });
 
-  it("msUntilNext targets the next local hh:mm", () => {
-    const morning = new Date("2026-08-01T09:00:00").getTime();
-    expect(msUntilNext(10, 0, morning)).toBe(3600_000);
-    const evening = new Date("2026-08-01T23:00:00").getTime();
-    expect(msUntilNext(10, 0, evening)).toBe(11 * 3600_000);
+  it("msUntilNext targets the next hh:mm in the configured time zone", () => {
+    const morningInTbilisi = Date.parse("2026-08-01T05:00:00Z");
+    expect(msUntilNext(10, 0, morningInTbilisi, "Asia/Tbilisi")).toBe(3600_000);
+    const eveningInTbilisi = Date.parse("2026-08-01T19:00:00Z");
+    expect(msUntilNext(10, 0, eveningInTbilisi, "Asia/Tbilisi")).toBe(11 * 3600_000);
   });
 });

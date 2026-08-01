@@ -69,17 +69,59 @@ describe("github diffSnapshots", () => {
       .toEqual([{ kind: "quarantine", sha: SHA1 }]);
   });
 
+  it("maps every deploy component status, including no-change and devbot verdicts", () => {
+    const contexts = {
+      "deploy/tests": "success",
+      "deploy/migration": "success",
+      "deploy/engine": "success",
+      "deploy/backend": "success",
+      "deploy/sales": "success",
+      "deploy/openkeys": "success",
+      "deploy/admin": "success",
+      "deploy/devbot": "success",
+    } as const;
+    const events = diffSnapshots(snapshot(), snapshot({ statuses: contexts }));
+    expect(events.filter((event) => event.kind === "phase").map((event) => event.phase)).toEqual([
+      "tests", "migration", "engine", "backend", "sales", "openkeys", "admin", "devbot",
+    ]);
+  });
+
+  it("renders failed phases before one terminal quarantine even when watchdog is newest", () => {
+    const prev = snapshot({ statuses: { "deploy/watchdog": "pending", "deploy/tests": "pending" } });
+    const next = snapshot({ statuses: { "deploy/watchdog": "failure", "deploy/tests": "failure" } });
+    expect(diffSnapshots(prev, next)).toEqual([
+      { kind: "phase", sha: SHA1, phase: "tests", state: "failure" },
+      { kind: "quarantine", sha: SHA1, phase: "tests" },
+    ]);
+  });
+
   it("maps production deployments to deploy phases and candidate-validation to CI", () => {
     const prev = snapshot();
     const next = snapshot({
       deployments: {
         "production-engine": { id: 1, state: "success", sha: SHA1 },
         "candidate-validation": { id: 2, state: "failure" },
+        "production-devbot": { id: 3, state: "pending", sha: SHA1 },
       },
     });
     const events = diffSnapshots(prev, next);
     expect(events).toContainEqual({ kind: "phase", sha: SHA1, phase: "engine", state: "success" });
+    expect(events).toContainEqual({ kind: "phase", sha: SHA1, phase: "devbot", state: "pending" });
     expect(events).toContainEqual({ kind: "ci", environment: "candidate-validation", state: "failure" });
+  });
+
+  it("uses commit status as authority over an older deployment state", () => {
+    const prev = snapshot({
+      statuses: { "deploy/engine": "pending" },
+      deployments: { "production-engine": { id: 1, state: "pending", sha: SHA1 } },
+    });
+    const next = snapshot({
+      statuses: { "deploy/engine": "success" },
+      deployments: { "production-engine": { id: 2, state: "pending", sha: SHA1 } },
+    });
+    expect(diffSnapshots(prev, next)).toEqual([
+      { kind: "phase", sha: SHA1, phase: "engine", state: "success" },
+    ]);
   });
 
   it("ignores deployments of a different SHA (no premature phase paint)", () => {
@@ -119,7 +161,11 @@ function commitPayload(sha: string, message: string) {
 }
 
 describe("GithubPoller tail polling", () => {
-  async function makePoller(routes: Record<string, unknown>, calls: string[] = []) {
+  async function makePoller(
+    routes: Record<string, unknown>,
+    calls: string[] = [],
+    handleEvents?: (events: DeployEvent[]) => void | Promise<void>,
+  ) {
     const dir = await mkdtemp(path.join(tmpdir(), "devbot-poller-"));
     const state = new StateStore(path.join(dir, "state.json"));
     await state.load();
@@ -128,11 +174,31 @@ describe("GithubPoller tail polling", () => {
       token: "x",
       repo: "acme/repo",
       state,
-      onEvents: (batch) => events.push(...batch),
+      onEvents: handleEvents ?? ((batch) => {
+        events.push(...batch);
+      }),
       fetchFn: ghMock(routes, calls),
     });
     return { poller, state, events };
   }
+
+  it("awaits asynchronous event routing before a poll completes", async () => {
+    const routes: Record<string, unknown> = {
+      "/commits/master": commitPayload(SHA1, "feat: one"),
+      [`/commits/${SHA1}/statuses?per_page=100`]: [{ context: "deploy/watchdog", state: "pending" }],
+      [`/commits/${SHA2}/statuses?per_page=100`]: [{ context: "deploy/watchdog", state: "success" }],
+      "/deployments?per_page=30": [],
+    };
+    let routed = false;
+    const { poller } = await makePoller(routes, [], async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      routed = true;
+    });
+    await poller.pollOnce();
+    routes["/commits/master"] = commitPayload(SHA2, "feat: two");
+    await poller.pollOnce();
+    expect(routed).toBe(true);
+  });
 
   it("keeps polling the previous SHA after HEAD moves and emits its green exactly once", async () => {
     const calls: string[] = [];

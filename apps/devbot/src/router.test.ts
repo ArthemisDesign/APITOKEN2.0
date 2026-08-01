@@ -24,13 +24,18 @@ interface EditedMessage {
   text: string;
 }
 
-async function makeRouter(now: () => number = () => T0) {
+async function makeRouter(
+  now: () => number = () => T0,
+  timeZone = "Asia/Tbilisi",
+  sendDelayMs = 0,
+) {
   const sent: SentMessage[] = [];
   const edited: EditedMessage[] = [];
   let nextId = 100;
   const tg = {
     sendMessage: vi.fn(async (chatId: number, text: string, options: { threadId?: number; replyTo?: number }) => {
       sent.push({ chatId, text, options });
+      if (sendDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, sendDelayMs));
       nextId += 1;
       return nextId;
     }),
@@ -49,6 +54,7 @@ async function makeRouter(now: () => number = () => T0) {
     state,
     dedup: new Dedup(state.data.fingerprints),
     repoSlug: "acme/repo",
+    timeZone,
     now,
   });
   return { router, sent, edited, state, tg };
@@ -174,8 +180,8 @@ describe("Router deploy events", () => {
     expect(sent[0]?.options.threadId).toBe(TOPICS.deploys);
     expect(sent[0]?.text).toContain("🚀 <b>Deploy</b>");
     expect(sent[0]?.text).toContain("<code>1bd14c3</code>");
-    // Чеклист — две фиксированные строки 4+3.
-    expect(sent[0]?.text).toContain("⏳ tests · ⏳ migration · ⏳ engine · ⏳ backend\n⏳ sales · ⏳ openkeys · ⏳ admin");
+    // Чеклист — две фиксированные строки 4+4.
+    expect(sent[0]?.text).toContain("⏳ tests · ⏳ migration · ⏳ engine · ⏳ backend\n⏳ sales · ⏳ openkeys · ⏳ admin · ⏳ devbot");
 
     await router.handleDeployEvent({ kind: "phase", sha: "1bd14c3deadbeef", phase: "tests", state: "success" });
     expect(sent).toHaveLength(1);
@@ -187,6 +193,31 @@ describe("Router deploy events", () => {
     const { router, sent } = await makeRouter();
     await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x", author: "3xcalibur @3xcalibur-tech" });
     expect(sent[0]?.text).toContain("👤 <b>3xcalibur @3xcalibur-tech</b>");
+  });
+
+  it("renders operator-facing times in the configured time zone", async () => {
+    const startedAt = Date.parse("2026-08-01T19:39:00Z");
+    const { router, sent } = await makeRouter(() => startedAt, "Asia/Tbilisi");
+    await router.handleDeployEvent({ kind: "new-sha", sha: "1bd14c3deadbeef", title: "feat: x" });
+    expect(sent[0]?.text).toContain("Started 23:39");
+  });
+
+  it("serializes a same-snapshot new SHA and green final behind Telegram message creation", async () => {
+    const { router, sent, edited, state } = await makeRouter(() => T0, "Asia/Tbilisi", 10);
+    const sha = "ba8fddb272fce950655f6efb2461c4f73536d3fd";
+    await router.handleDeployEvents([
+      { kind: "new-sha", sha, title: "docs(engine): design" },
+      // GitHub returns newest statuses first, so watchdog commonly precedes phases.
+      { kind: "green", sha },
+      { kind: "phase", sha, phase: "migration", state: "success" },
+      { kind: "phase", sha, phase: "tests", state: "success" },
+    ]);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toContain("⏳ tests");
+    expect(edited).toHaveLength(1);
+    expect(edited[0]?.text).toContain("✅ <b>Deployed</b>");
+    expect(state.data.deploy).toMatchObject({ sha, done: true, messageId: 101 });
   });
 
   it("collapses a green deploy to a compact two-line summary without the phase checklist", async () => {
@@ -221,6 +252,18 @@ describe("Router deploy events", () => {
     expect(criticalMessage?.text).toContain("quarantined");
     expect(criticalMessage?.text).toContain("tests");
     expect(criticalMessage?.text).toContain("👤 qqjamba");
+  });
+
+  it("does not duplicate quarantine when watchdog failure follows a phase failure", async () => {
+    const { router, sent } = await makeRouter();
+    const sha = "1bd14c3deadbeef";
+    await router.handleDeployEvents([
+      { kind: "new-sha", sha, title: "feat: x" },
+      { kind: "phase", sha, phase: "tests", state: "failure" },
+      { kind: "quarantine", sha, phase: "tests" },
+      { kind: "quarantine", sha },
+    ]);
+    expect(sent.filter((message) => message.options.threadId === TOPICS.critical)).toHaveLength(1);
   });
 
   it("finalizes the previous deploy from tail events after HEAD moves on", async () => {

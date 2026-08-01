@@ -26,6 +26,7 @@ describe("parseConfig", () => {
     expect(config.port).toBe(3800);
     expect(config.githubRepo).toBe("3xcalibur-tech/Claude_API");
     expect(config.pollGithubMs).toBe(45_000);
+    expect(config.timeZone).toBe("Asia/Tbilisi");
     expect(config.alertmanagerUrl).toBe("http://127.0.0.1:9093");
     expect(config.journaldEnabled).toBe(false);
     expect(config.logLevel).toBe("info");
@@ -47,5 +48,10 @@ describe("parseConfig", () => {
 
   it("validates the admin id list shape", () => {
     expect(() => parseConfig({ ...minimalEnv(), DEVBOT_ADMIN_IDS: "not-a-number" })).toThrow();
+  });
+
+  it("accepts only valid IANA time zones", () => {
+    expect(parseConfig({ ...minimalEnv(), DEVBOT_TIME_ZONE: "Europe/Berlin" }).timeZone).toBe("Europe/Berlin");
+    expect(() => parseConfig({ ...minimalEnv(), DEVBOT_TIME_ZONE: "Tbilisi-ish" })).toThrow();
   });
 });

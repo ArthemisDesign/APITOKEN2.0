@@ -173,12 +173,15 @@ resolved идёт отдельным сообщением всегда (важн
 🚀 <b>Deploy</b> <code>1bd14c3</code> — feat(registry): expand provider calibration…
 👤 <b>3xcalibur @3xcalibur-tech</b> · <i>Started 13:44</i> · <a href="{commit url}">commit</a>
 ✅ tests · ✅ migration · 🔄 engine · ⏳ backend
-⏳ sales · ⏳ openkeys · ⏳ admin
+⏳ sales · ⏳ openkeys · ⏳ admin · ⏳ devbot
 ```
 
 👤 — автор коммита: git author name, плюс `@login`, когда email коммита привязан к
 GitHub-аккаунту (для агентских адресов GitHub отдаёт `author: null` — остаётся git-имя).
-Чеклист — две фиксированные строки 4+3, чтобы перенос не рвал фазы посередине.
+Чеклист — две фиксированные строки 4+4, чтобы перенос не рвал фазы посередине. Для всех
+восьми фаз authority — соответствующий commit status `deploy/*`: так зелёный skip/no-change
+виден сразу. Deployment `production-*` используется только как ранний fallback, пока commit
+status этой фазы ещё не опубликован, и не может откатить уже известный status назад в pending.
 
 Каждый фазовый статус — правка этого сообщения (счётчик правок не ограничен). Финал по
 зелёному `deploy/watchdog` — компактная сводка без промежуточных фаз:
@@ -203,6 +206,14 @@ quarantine; роутер хранит `previousDeploy`, и события хво
 деплоя. Одного слота достаточно: следующий master не может быть запушен, пока предыдущий
 не дойдёт до терминала (merge-lock + проверка зелени в agent-merge). Поздняя фаза для
 завершённого деплоя игнорируется — финальная сводка не разворачивается обратно.
+
+События одного snapshot обрабатываются строго последовательно и поллер ждёт весь пакет до
+сохранения snapshot: `new-sha` сначала получает Telegram `message_id`, затем выполняются
+фазовые правки, а terminal watchdog — последним. Это исключает потерю финала быстрого
+no-change/docs-деплоя и перестановку конкурентных `editMessageText`.
+
+Все операторские отметки времени и ежедневный дайджест используют IANA-зону
+`DEVBOT_TIME_ZONE` (по умолчанию `Asia/Tbilisi`), независимо от timezone production-хоста.
 
 ### 4.3 Дедупликация и сворачивание
 
@@ -240,7 +251,7 @@ quarantine; роутер хранит `previousDeploy`, и события хво
 | `/pool` | Пул подписок: живые/cooling/dead по провайдерам (Anthropic `/pool`, `/codex-subs`, `/gemini-subs`) | Control API движка readonly-ключом |
 | `/settlement` | Денежная диагностика `/settlement-health`: outbox по состояниям, failed за 24 ч, backlog | Control API движка control-ключом |
 | `/silence <alertname> <длительность>` (этап 3) | Создание silence в Alertmanager | Alertmanager API `POST /api/v2/silences` |
-| `/digest` (и ежедневно в 10:00) | Сводка за 24 ч в топик 📊 Digest: деплои (успех/карантин), сработавшие алерты по count, топ повторяющихся warning | Журнал событий самого бота (state-файл) |
+| `/digest` (и ежедневно в 10:00 `DEVBOT_TIME_ZONE`) | Сводка за 24 ч в топик 📊 Digest: деплои (успех/карантин), сработавшие алерты по count, топ повторяющихся warning | Журнал событий самого бота (state-файл) |
 | `/help` | Список команд | — |
 
 Ответы на команды идут в тот топик, где команда вызвана (`message_thread_id` из апдейта).
@@ -275,7 +286,8 @@ apps/devbot/src/
    Alertmanager — бот получает уже сгруппированные нотификации.
 2. **GitHub поллер**: читает statuses для `origin/master` HEAD и список deployments
    (`production-*`, `candidate-validation`); diff против последнего известного состояния в
-   state-файле → вехи деплоя. Токен — отдельный read-only PAT (см. раздел 7), не
+   state-файле → упорядоченный пакет вех деплоя, который роутер полностью обрабатывает до
+   следующего snapshot. Токен — отдельный read-only PAT (см. раздел 7), не
    переиспользует `/etc/apitoken/github-watchdog.env` (root-only, чужой владелец).
 3. **Journald** (этап 3): `journalctl -f -o json` с фильтрами по syslog-идентификаторам
    watchdog/deploy-скриптов; события «rolled back», «manual intervention», `retry`, запуск
@@ -311,6 +323,8 @@ devbot` добавляются в `docs/DEPENDENCIES.md`, а `apps/devbot` — �
   другую группу с эффектом: чужой chat_id игнорируется молча.
 - **GitHub**: fine-grained PAT, scope только read commit statuses/deployments/repository
   metadata; хранится в том же env-файле.
+- **Временная зона**: `DEVBOT_TIME_ZONE` — валидная IANA-зона для времени в сообщениях и
+  ежедневного дайджеста; default `Asia/Tbilisi`, timezone хоста на вывод не влияет.
 - **Control API**: для `/pool`, `/settlement` — readonly/control ключи движка через env;
   используется только GET-эндпоинты.
 - Исходящие соединения только к `api.telegram.org` и `api.github.com`; systemd-юнит с
