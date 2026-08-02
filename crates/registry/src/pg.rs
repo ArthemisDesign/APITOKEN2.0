@@ -379,7 +379,7 @@ pub struct ImportReport {
 }
 
 pub struct PgStore {
-    client: Client,
+    pub(crate) client: Client,
 }
 
 /// Error class used by the async actor. Logical/invariant failures must never be retried forever;
@@ -3184,6 +3184,31 @@ impl PgStore {
             &mut self.client,
             approved_plan_digest,
             allow_exceptions,
+        )
+    }
+
+    /// Build one content-addressed, read-only Stage 6 funding-v2 plan. The snapshot is account
+    /// local and never waits for unrelated accounts or changes live money state.
+    pub fn funding_normalization_plan_v2(
+        &mut self,
+        account_id: &str,
+    ) -> Result<Option<crate::funding_normalization_v2::FundingNormalizationPlanV2>> {
+        crate::funding_normalization_v2::postgres_funding_normalization_plan_v2(
+            &mut self.client,
+            account_id,
+        )
+    }
+
+    /// Apply one exact Stage 6 plan under the same account lock as reserve, settlement, and top-up.
+    pub fn apply_funding_normalization_v2(
+        &mut self,
+        account_id: &str,
+        request: &crate::funding_normalization_v2::FundingNormalizationApplyRequestV2,
+    ) -> Result<Option<crate::funding_normalization_v2::FundingNormalizationApplyResultV2>> {
+        crate::funding_normalization_v2::postgres_apply_funding_normalization_v2(
+            &mut self.client,
+            account_id,
+            request,
         )
     }
 

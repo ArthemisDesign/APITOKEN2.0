@@ -433,6 +433,8 @@ POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
+GET  /admin/pricing/v2/funding/{account_id}/normalization
+POST /admin/pricing/v2/funding/{account_id}/normalization
 ```
 
 There is no activation route in this producer checkpoint. Policy/release/link rows are append-only
@@ -490,13 +492,38 @@ contains status, legacy scalar, integer balance/reserved/spent and nullable fund
 It contains no key secret. Consumers must exhaust the cursor and join this engine inventory with the
 authoritative commerce/OpenKeys inventories; a partial page is never release evidence.
 
-Later checkpoints add account-local funding normalization, dual-compatible money writers, runtime
-release snapshots, Stage 8 evidence and finally one activation CAS. Account creation/activation and
-that future CAS share the same control-plane lock; data-plane reserve/settlement never takes it.
+Funding normalization is an account-local content-addressed producer and cannot activate pricing.
+`GET .../normalization` returns:
+
+```text
+normalization = {
+  account_id, account_status,
+  status = ready|blocked|normalized,
+  source = aggregate_paid_only|ledger_replay|legacy_buckets|stored_generation,
+  source_state_digest = sha256:v2:...,
+  normalization_digest?, funding_generation?, funding_head_version?,
+  balance_nano, reserved_nano, spent_nano,
+  lots[] = {lot_id, source_type=paid|welcome_bonus, source_ref,
+            balance_nano, reserved_nano, spent_nano, version, status},
+  blockers[] = {code, detail}
+}
+```
+
+`POST` принимает strict body
+`{expected_source_state_digest, expected_normalization_digest}`. Успешный ответ имеет
+`result.status=stored|unchanged`; `stale|blocked|conflict` возвращают HTTP 409 вместе с заново
+построенным `result.normalization`, неизвестный account — 404, malformed digest/body — 400/422.
+Apply берёт тот же account funding lock, что reserve/settlement/top-up, и атомарно пишет generation,
+lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
+перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
+
+Поздние checkpoints подключают typed TS consumer, runtime release snapshots, Stage 8 evidence и
+наконец один activation CAS. Account creation/activation и тот future CAS share the same
+control-plane lock; data-plane reserve/settlement never takes it.
 After the producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict v2 wire schemas and `packages/engine-client` gained typed prepare/read methods. The client
-surface still has no activation method, and no application job consumes it until the later
-inventory/materialization checkpoint.
+surface still has no activation method. Funding-normalization wire schemas/client calls and the
+bounded application job are intentionally a separate consumer SHA after this producer is green.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

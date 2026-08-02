@@ -24,6 +24,8 @@ Stage 3C versioned pricing control follows the same ownership: catalog/switch/po
 activate commands share the single writer, while immutable-version/head/bundle reads use the normal
 bounded reader pool. SQLite and PostgreSQL dispatch the same registry typed outcomes; no HTTP
 handler opens a second connection or assembles a policy bundle from separate reads.
+Funding-v2 normalization follows that split: read-only account plans use a bounded reader, exact
+apply uses the existing single writer and PostgreSQL account lock, and SQLite fails closed.
 Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имеют OR-семантику без
 приоритета заголовка: достаточно любого валидного. Это критично для Claude Code,
 который может одновременно прислать stale `ANTHROPIC_API_KEY` и актуальный `ANTHROPIC_AUTH_TOKEN`.

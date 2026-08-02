@@ -29,9 +29,10 @@ use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
     BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
     CodexTurnCalibrationEvent, CodexWindowObservation, GeminiExactCalibrationRow,
-    GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
-    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
-    ProviderTurnCalibrationEvent,
+    GeminiExactWindowObservation, FundingNormalizationApplyRequestV2,
+    FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, KeyActivationPolicyAck,
+    KeyAuth, KeyPolicyUpdate, KeyRow, ProviderCalibrationSubjectSpend,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -1210,6 +1211,11 @@ enum WriteCmd {
         link: PricingReleaseRecoveryLinkV2,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
+    ApplyFundingNormalizationV2 {
+        account_id: String,
+        request: FundingNormalizationApplyRequestV2,
+        reply: oneshot::Sender<anyhow::Result<Option<FundingNormalizationApplyResultV2>>>,
+    },
     CancelReserve {
         request_id: String,
         account_id: String,
@@ -1431,6 +1437,10 @@ enum ReadCmd {
         after_account_id: Option<String>,
         limit: i64,
         reply: oneshot::Sender<anyhow::Result<PricingReleaseInventoryPageV2>>,
+    },
+    FundingNormalizationPlanV2 {
+        account_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<FundingNormalizationPlanV2>>>,
     },
     SpendByModel {
         since_ts: i64,
@@ -2372,6 +2382,11 @@ impl AsyncBilling {
                             "pricing release v2 authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::ApplyFundingNormalizationV2 { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "funding normalization v2 authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -2653,6 +2668,11 @@ impl AsyncBilling {
                             ReadCmd::PricingReleaseInventoryV2 { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::FundingNormalizationPlanV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "funding normalization v2 authority requires PostgreSQL"
                                 )));
                             }
                             ReadCmd::SpendByModel {
@@ -3192,6 +3212,20 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::ApplyFundingNormalizationV2 {
+                            account_id,
+                            request,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "account-local funding normalization v2",
+                                |pg| pg.apply_funding_normalization_v2(&account_id, &request),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
                                 RESERVE_HANDOFF_CANCELED, RESERVE_HANDOFF_REFUNDING,
@@ -3562,6 +3596,9 @@ impl AsyncBilling {
                                     limit,
                                 )
                             ),
+                            ReadCmd::FundingNormalizationPlanV2 { account_id, reply } => {
+                                answer!(reply, pg.funding_normalization_plan_v2(&account_id))
+                            }
                             ReadCmd::SpendByModel {
                                 since_ts,
                                 until_ts,
@@ -3822,6 +3859,25 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    pub async fn apply_funding_normalization_v2(
+        &self,
+        account_id: &str,
+        request: FundingNormalizationApplyRequestV2,
+    ) -> anyhow::Result<Option<FundingNormalizationApplyResultV2>> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::ApplyFundingNormalizationV2 {
+                account_id: account_id.to_owned(),
+                request,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     pub async fn pricing_catalog_by_generation(
         &self,
         product_id: &str,
@@ -4008,6 +4064,23 @@ impl AsyncBilling {
             .send(ReadCmd::PricingReleaseInventoryV2 {
                 after_account_id: after_account_id.map(str::to_owned),
                 limit,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn funding_normalization_plan_v2(
+        &self,
+        account_id: &str,
+    ) -> anyhow::Result<Option<FundingNormalizationPlanV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::FundingNormalizationPlanV2 {
+                account_id: account_id.to_owned(),
                 reply,
             })
             .await

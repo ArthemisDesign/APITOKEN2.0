@@ -347,6 +347,20 @@ define_admin_routes!(
         "/admin/pricing/v2/inventory",
         admin::pricing_release_inventory_v2
     ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/funding/{account_id}/normalization",
+        "/admin/pricing/v2/funding/test-account/normalization",
+        admin::funding_normalization_plan_v2
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/v2/funding/{account_id}/normalization",
+        "/admin/pricing/v2/funding/test-account/normalization",
+        admin::apply_funding_normalization_v2
+    ),
 );
 
 async fn require_control_auth(
@@ -5313,7 +5327,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 35);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 37);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 

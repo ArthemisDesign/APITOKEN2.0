@@ -26,10 +26,12 @@
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
 (catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read под `/admin/pricing/v2/*`.
-Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory и
-nullable head; activation mutation намеренно пока отсутствует. После зелёного exact producer SHA
-`packages/contracts` валидирует strict v2 wire shape, а `packages/engine-client` является
-единственным typed prepare/read consumer; application jobs подключаются отдельным поздним этапом.
+Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
+nullable head и account-local funding normalization plan/apply; activation mutation намеренно пока
+отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
+exact producer SHA `packages/contracts` валидирует новый strict wire shape, а
+`packages/engine-client` становится единственным typed consumer; bounded application job
+подключается отдельным consumer checkpoint.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

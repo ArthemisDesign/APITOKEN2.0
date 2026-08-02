@@ -1,7 +1,8 @@
 # Stage 6 — online funding normalization
 
-Статус: целевой контракт. Stage 6 не требует maintenance window, остановки money writers, нуля всех
-reservations или ручной проверки аккаунтов.
+Статус: engine producer реализован; orchestration consumer подключается отдельным producer-first
+checkpoint после зелёного `deploy/watchdog`. Stage 6 не требует maintenance window, остановки money
+writers, нуля всех reservations или ручной проверки аккаунтов.
 
 ## Source policy
 
@@ -81,6 +82,27 @@ release-связанные таблицы migration 0023; pre-cutover rows пр�
 Planner строит content-addressed plan по всему inventory. Ручной resolution/reviewer artifact не
 используется. Для каждого аккаунта plan содержит source-state/ledger digests, точные target lots и
 структурные blockers.
+
+Engine producer предоставляет только account-local операции под control key:
+
+```text
+GET  /admin/pricing/v2/funding/{account_id}/normalization
+POST /admin/pricing/v2/funding/{account_id}/normalization
+     {expected_source_state_digest, expected_normalization_digest}
+```
+
+`GET` работает в `REPEATABLE READ READ ONLY` и возвращает `ready|blocked|normalized`, canonical
+`sha256:v2` source/target identities, exact lots и typed blockers. `POST` выполняется в
+`SERIALIZABLE`, сначала берёт тот же funding-account advisory lock, затем полностью перестраивает
+plan. Ответ `stored|unchanged|stale|blocked|conflict` не допускает применения отредактированного или
+устаревшего JSON. SQLite отвечает fail closed: live authority этого перехода только PostgreSQL.
+
+При наличии согласованных legacy `funding_buckets` exact historical `welcome_track_bonus`
+переносится в provider-independent `welcome_bonus`, а все остальные buckets схлопываются в `paid`.
+Если legacy buckets отсутствуют, planner восстанавливает welcome по immutable
+`signup-bonus:*` top-up и `balance_after_nano`; удалённые retention-ом charge rows учитываются как
+точные отрицательные gaps между сохранившимися money rows. Без welcome evidence весь aggregate
+становится paid. В каждом варианте создаётся нулевой paid anchor.
 
 Apply идёт bounded batches. Каждая account-local `SERIALIZABLE` transaction:
 

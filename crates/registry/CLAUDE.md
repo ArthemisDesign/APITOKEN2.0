@@ -248,6 +248,15 @@ side effect. `serve` may only perform the read-only schema verification before c
   top-up создаёт welcome lot, остальные credits и negative adjustments — paid lot. Реальный
   PostgreSQL gate: `pg::tests::pre_cutover_funding_v2_writer_postgres_matrix`; он доказывает
   replay/cancel/settle/overrun/outbox recovery и обе lock-order гонки.
+- **Online account-local funding normalization:** `funding_normalization_v2` строит read-only
+  content-addressed `sha256:v2` plan и применяет только exact source/target identity в одной
+  `SERIALIZABLE` PostgreSQL transaction под тем же funding-account advisory lock. Legacy active
+  reservation блокирует только свой account; stale state перепланируется, exact replay возвращает
+  `unchanged`. Exact старый welcome bucket переносится в `welcome_bonus`, иначе остаток
+  восстанавливается по `signup-bonus:*` и immutable balance gaps; весь прочий residual — `paid`,
+  включая обязательный zero paid anchor. Apply атомарно создаёт generation/lots/head и не двигает
+  pricing release. Real-PG gate:
+  `funding_normalization_v2::tests::postgres_online_funding_normalization_v2_matrix`.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact active-account coverage и готовые funding dependencies. Ни один метод не

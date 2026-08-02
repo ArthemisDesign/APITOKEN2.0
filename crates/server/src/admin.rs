@@ -19,6 +19,7 @@ use registry::pricing::{
     PricingCatalogSpec, PricingMutation, PricingRejection, PricingReleasePolicyV2,
     PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
 };
+use registry::{FundingNormalizationApplyRequestV2, FundingNormalizationApplyStatusV2};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -1729,6 +1730,72 @@ pub async fn pricing_release_inventory_v2(
     {
         Ok(page) => Json(json!({"inventory": page})).into_response(),
         Err(error) => authority_unavailable("pricing release inventory v2 read", error),
+    }
+}
+
+/// GET /admin/pricing/v2/funding/{account_id}/normalization — one read-only account plan.
+pub async fn funding_normalization_plan_v2(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid funding normalization account_id");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.funding_normalization_plan_v2(&account_id).await {
+        Ok(Some(normalization)) => Json(json!({"normalization": normalization})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown funding normalization account"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("funding normalization v2 plan", error),
+    }
+}
+
+/// POST /admin/pricing/v2/funding/{account_id}/normalization — apply one exact account plan.
+pub async fn apply_funding_normalization_v2(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(request): Json<FundingNormalizationApplyRequestV2>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid funding normalization account_id");
+    }
+    if let Err(error) = request.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response();
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .apply_funding_normalization_v2(&account_id, request)
+        .await
+    {
+        Ok(Some(result)) => {
+            let status = match result.status {
+                FundingNormalizationApplyStatusV2::Stored
+                | FundingNormalizationApplyStatusV2::Unchanged => StatusCode::OK,
+                FundingNormalizationApplyStatusV2::Stale
+                | FundingNormalizationApplyStatusV2::Blocked
+                | FundingNormalizationApplyStatusV2::Conflict => StatusCode::CONFLICT,
+            };
+            (status, Json(json!({"result": result}))).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown funding normalization account"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("funding normalization v2 apply", error),
     }
 }
 

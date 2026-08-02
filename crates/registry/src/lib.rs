@@ -9,12 +9,14 @@
 
 pub mod authority;
 pub mod funding;
+pub mod funding_normalization_v2;
 mod funding_v2;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;
 pub mod stage8;
 
+pub use funding_normalization_v2::*;
 pub use provider_calibration::*;
 
 use anyhow::{bail, Context, Result};

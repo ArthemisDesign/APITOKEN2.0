@@ -108,7 +108,7 @@ fn funding_snapshot_digest_v2(
     hex_digest(hasher, "v2")
 }
 
-fn funding_lot_id_v2(
+pub(crate) fn funding_lot_id_v2(
     account_id: &str,
     generation: i64,
     source_type: &str,

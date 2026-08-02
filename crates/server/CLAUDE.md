@@ -45,6 +45,10 @@
   capability lineage and binding identity; typed CAS errors stay distinguishable. Routes only
   expose the registry contract through `AsyncBilling` actors and cannot backfill, issue keys,
   enable strict enforcement or reorder catalog → switches → policy activation.
+  Account-local `/admin/pricing/v2/funding/{account_id}/normalization` is the narrow exception to
+  “cannot backfill”: GET builds a read-only content-addressed plan, POST applies only its exact
+  source/target digests under the registry funding lock. It cannot activate a pricing release and
+  never performs a global drain.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
@@ -174,9 +178,10 @@
   full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
   assignment matrix, canary accounts, maintenance window и zero-active-reservations gate не
   используются; authoritative inventories обязаны покрыть все accounts exact.
-- `/admin/pricing/v2/*` пока является producer-first prepare/read surface: immutable policy,
-  release, recovery link, cursor inventory и nullable head. Activation нельзя добавлять до
-  реализации Stage 8 freshness/runtime-floor/provisioning-race проверок и одного global CAS.
+- `/admin/pricing/v2/*` пока является producer-first surface: immutable policy/release/recovery,
+  cursor inventory, nullable head и account-local funding normalization. Activation нельзя
+  добавлять до реализации Stage 8 freshness/runtime-floor/provisioning-race проверок и одного
+  global CAS.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер
