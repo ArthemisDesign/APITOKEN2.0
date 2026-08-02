@@ -129,7 +129,7 @@
 - Router auth preflight использует тот же `authed`/`resolve_client_key`, что live admission:
   inactive/unknown credential получает 401, сбой billing authority — 503, а success не раскрывает
   key/account identity и не делает reserve/settle. Endpoint одинаков на всех fixed planes и
-  loopback-only; router подключается к нему только отдельным consumer-коммитом после GREEN producer.
+  loopback-only; `crates/router` вызывает его до materialization каждого universal request body.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
   `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого

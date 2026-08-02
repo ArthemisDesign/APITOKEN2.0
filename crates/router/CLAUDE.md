@@ -27,7 +27,10 @@
   удаляются; native и universal single-attempt paths оба заголовка не отправляют. Caddy независимо
   стирает их на внешнем ingress. Identity допустима только во внутренних router→plane запросах и
   никогда не возвращается клиенту.
-- **Никаких очередей, semaphore, circuit breaker, rate limits** (инвариант 3).
+- **Никаких execution-очередей, semaphore, circuit breaker, rate limits** (инвариант 3).
+  Единственное исключение — 64 MiB fail-fast budget с шагом 1 MiB на buffered universal request
+  bodies: известный `Content-Length` округляется вверх, неизвестный резервирует полные 32 MiB;
+  budget никогда не ждёт, освобождается после response headers и не держит native/SSE response.
   Readiness (`/health`, `/live`, `/ready`) — router-local, никогда не
   конъюнкция health плоскостей; синхронных health-check'ов на пути запроса нет.
 - **SSE не буферизуется.** Тела запроса и ответа — потоки
@@ -58,13 +61,19 @@
 
 - `config.rs` — единственное место чтения env (`CLAUDE_ROUTER_*`), включая
   строгий off-by-default флаг `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`).
+- `auth.rs` — uncached bodyless early-auth клиент: до чтения universal body перебирает fixed
+  origins, принимает только exact schema-v1 success, считает 401 терминальным и fail closed
+  обрабатывает mixed-version/transport/5xx.
 - `proxy.rs` — байт-в-байт proxy native lanes, auth passthrough и классификация
   одной попытки до публичных headers: exact `not_started` / source-chain
-  `ConnectionRefused`; внутренний заголовок снимается до сборки ответа. Перед
+  `ConnectionRefused`; 30-секундный deadline ограничивает только ожидание response headers и
+  никогда не включает retry, response body остаётся без total timeout. Внутренний заголовок снимается до сборки ответа. Перед
   любой плоскостью также снимается публичный router capability-header
   `x-apitoken-service-tier`.
 - `routing.rs` — общий model dispatch и serial fallback для всех universal
-  поверхностей. Обычный запрос без `models`, `provider` и `preset/*` сохраняет
+  поверхностей. Сначала выполняет bodyless auth, затем fail-fast резервирует размер body в общем
+  64 MiB budget и держит его до plane response headers; overload возвращает lane-shaped 503 без
+  billable call. Обычный запрос без `models`, `provider` и `preset/*` сохраняет
   исходные байты и прямой namespaced dispatch. Расширенный planner раскрывает preset,
   получает один aggregate catalog snapshot, canonical-дедуплицирует цепочку, применяет
   provider filters/order/reviewed sort и `allow_fallbacks`, затем account-policy preflight.
@@ -136,7 +145,9 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 ```
 
 Интеграционные тесты поднимают mock-плоскости на реальных loopback-сокетах и
-покрывают: passthrough тела/заголовков, небуферизованный SSE, транзитивный
+покрывают: early auth до незавершённого большого body, terminal 401 и mixed-version failover,
+weighted 64 MiB overload без очереди, release permit при parse error и после SSE headers,
+pre-header deadline без retry, passthrough тела/заголовков, небуферизованный SSE, транзитивный
 disconnect, агрегацию/деградацию/stale capability-каталога, uncached key-scoped pricing для двух
 ключей при одном shared cache, terminal pricing 401/503, canonical wire validation, alias-
 разрешение моделей, 404/405, model-based dispatch chat-, responses- и

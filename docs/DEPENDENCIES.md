@@ -151,10 +151,12 @@ Control API движка использует только на чтение. С
   `crates/server::router_auth` на каждой fixed runtime: loopback-only bodyless
   `POST /internal/router/auth/preflight` проверяет forwarding-admin/customer credential через тот
   же `authed`/`AsyncBilling` resolver, что live admission, и возвращает только закрытый success
-  marker либо 401/503 без reserve, pricing/policy read и identity. Потребитель — `crates/router`
-  (подключается отдельным consumer-коммитом после GREEN producer): до materialization 32 MiB
-  universal body последовательно перебирает fixed origins, принимает только exact schema-v1
-  success, считает 401 терминальным, а mixed-version/transport/5xx fail closed. Контракт —
+  marker либо 401/503 без reserve, pricing/policy read и identity. Потребитель — `crates/router`:
+  до materialization 32 MiB universal body последовательно перебирает fixed origins, принимает
+  только exact schema-v1 success, считает 401 терминальным, а mixed-version/transport/5xx fail
+  closed; fail-fast 64 MiB budget с шагом 1 MiB ограничивает raw-body residency без
+  execution-очереди и сохраняет concurrency малых запросов.
+  Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §«Ранний auth и граница памяти request body».
 - **Контракт catalog pricing (provider planes → router).** Производитель — одинаковый
   `crates/server::router_pricing` на каждой fixed runtime: authenticated loopback-only

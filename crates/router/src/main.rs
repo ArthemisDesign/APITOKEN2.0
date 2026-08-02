@@ -5,11 +5,13 @@
 //! импортирует их и общается с плоскостями только по HTTP через stable
 //! loopback origins (8790/8792/8794). Router не резервирует и не списывает
 //! деньги (инвариант 1), не ретраит неоднозначные исходы (инвариант 2), не
-//! имеет очередей, semaphore и breaker (инвариант 3) и не буферизует SSE
-//! (инвариант 4).
+//! имеет execution-очередей, semaphore и breaker (инвариант 3); fail-fast
+//! 64 MiB budget ограничивает только universal request bodies. SSE не
+//! буферизуется (инвариант 4).
 //! Universal fallback выключен по умолчанию и разрешён только по fencing-
 //! сигналам из docs/engine/ROUTING_FENCING.md.
 
+mod auth;
 mod catalog;
 mod chat;
 mod config;
@@ -33,25 +35,30 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::Router;
 use reqwest::Client;
+use tokio::sync::Semaphore;
 
 use catalog::{Catalog, PlaneOrigins};
 use config::Config;
 use error::Lane;
 use metrics::RouterMetrics;
 
-/// Состояние процесса: HTTP-клиент и кэш каталога. Денег, ключей, очередей и
-// лимитов здесь нет — всё это остаётся в плоскостях.
+/// Состояние процесса: HTTP-клиент, кэш каталога и fail-fast 64 MiB budget для universal
+/// request bodies. Денег, ключей и execution-очередей здесь нет.
 pub struct AppState {
     cfg: Config,
     client: Client,
     catalog: Catalog,
     metrics: RouterMetrics,
+    /// Raw request-body admission only. Weighted units remain held until the buffered universal
+    /// body has been uploaded and response headers arrive; response streams and native lanes never
+    /// use them.
+    body_admission: Arc<Semaphore>,
 }
 
 /// HTTP-клиент плоскостей. Только loopback HTTP: TLS не нужен. Redirect не
 /// следуем — нативный ответ плоскости отдаётся клиенту как есть. Таймаут
-/// только на connect: длительные SSE-стримы не должны умирать по общему
-/// таймауту; их жизненным циклом управляет клиентский disconnect.
+/// на клиенте только connect: отдельный deadline до response headers применяется
+/// в proxy.rs, а длительные SSE-стримы не имеют общего timeout.
 fn build_client() -> anyhow::Result<Client> {
     Ok(Client::builder()
         .connect_timeout(Duration::from_secs(2))
@@ -304,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
         client: build_client()?,
         catalog: Catalog::new(),
         metrics: RouterMetrics::new(),
+        body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
         cfg,
     });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
@@ -330,7 +338,7 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body, Bytes};
     use axum::http::{Request as AxumRequest, Response as AxumResponse, StatusCode};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_stream::wrappers::ReceiverStream;
@@ -439,6 +447,7 @@ mod tests {
             client,
             catalog: Catalog::with_ttl(ttl),
             metrics: RouterMetrics::new(),
+            body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
         }))
     }
 
@@ -449,6 +458,9 @@ mod tests {
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
             let log = state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
                 let recorded = record_of(&req);
                 log.lock().unwrap().push(recorded);
                 let bytes = to_bytes(req.into_body(), 16 * 1024 * 1024).await.unwrap();
@@ -545,6 +557,16 @@ mod tests {
             .unwrap()
     }
 
+    fn authenticated_response() -> AxumResponse<Body> {
+        AxumResponse::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"schema_version":1,"authenticated":true}"#,
+            ))
+            .unwrap()
+    }
+
     /// Каталог-плоскость: отдаёт fixture на свой catalog path, логирует запрос.
     /// `mode`: "ok" — fixture, "fail" — всегда 500, "auth" — всегда 401.
     async fn catalog_plane(body: &'static str, path: &'static str, mode: &'static str) -> (String, SharedLog) {
@@ -553,6 +575,16 @@ mod tests {
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
             let log = state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return if mode == "auth" {
+                        AxumResponse::builder()
+                            .status(StatusCode::UNAUTHORIZED)
+                            .body(Body::from("{}"))
+                            .unwrap()
+                    } else {
+                        authenticated_response()
+                    };
+                }
                 let recorded = record_of(&req);
                 log.lock().unwrap().push(recorded);
                 if req.uri().path() == "/internal/router/catalog/pricing" {
@@ -638,6 +670,9 @@ mod tests {
             let bodies = body_state.clone();
             let log = log_state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
                 log.lock().unwrap().push(record_of(&req));
                 if req.uri().path() == catalog_path {
                     return AxumResponse::builder()
@@ -690,6 +725,9 @@ mod tests {
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
             let bodies = state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
                 if req.uri().path() == catalog_path {
                     return AxumResponse::builder()
                         .status(StatusCode::OK)
@@ -732,6 +770,9 @@ mod tests {
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
             let log = state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
                 if req.uri().path() == catalog_path {
                     return AxumResponse::builder()
                         .status(StatusCode::OK)
@@ -762,24 +803,37 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut received = Vec::new();
-            let mut chunk = [0_u8; 1024];
-            while !received.windows(4).any(|window| window == b"\r\n\r\n") {
-                let count = stream.read(&mut chunk).await.unwrap();
-                if count == 0 {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut received = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    if count == 0 {
+                        return;
+                    }
+                    received.extend_from_slice(&chunk[..count]);
+                }
+                let is_auth = received
+                    .windows(b" /internal/router/auth/preflight ".len())
+                    .any(|window| window == b" /internal/router/auth/preflight ");
+                let response_body = if is_auth {
+                    r#"{"schema_version":1,"authenticated":true}"#
+                } else {
+                    body
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body,
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+                if !is_auth {
+                    drop(listener);
                     return;
                 }
-                received.extend_from_slice(&chunk[..count]);
             }
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body,
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-            stream.shutdown().await.unwrap();
-            drop(listener);
         });
         format!("http://{addr}")
     }
@@ -967,7 +1021,10 @@ mod tests {
         // Плоскость пометила отказ авторитетной семантикой исполнения. Router снимает
         // заголовок с транзита (за его условия отвечает только сам движок), а статус,
         // тело и остальные заголовки доезжают до клиента без изменений.
-        let plane = spawn(Router::new().fallback(any(|| async {
+        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+            if req.uri().path() == "/internal/router/auth/preflight" {
+                return authenticated_response();
+            }
             AxumResponse::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header("content-type", "application/json")
@@ -1015,7 +1072,10 @@ mod tests {
     async fn sse_stream_first_chunk_is_not_buffered() {
         // SSE-плоскость: первый чанк сразу, второй через 700 мс. Если router
         // буферизует, первый чанк клиент увидит только после полного ответа.
-        let plane = spawn(Router::new().fallback(any(|| async {
+        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+            if req.uri().path() == "/internal/router/auth/preflight" {
+                return authenticated_response();
+            }
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
             tokio::spawn(async move {
                 let _ = tx.send(Ok(Bytes::from("event: message_start\ndata: {}\n\n"))).await;
@@ -1146,16 +1206,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unreachable_plane_is_honest_502_without_retry() {
+    async fn unavailable_auth_authority_fails_before_universal_body_dispatch() {
         let dead = dead_origin().await;
-        let router = spawn(make_router(&dead, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &dead,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/messages"))
             .body(r#"{"model":"anthropic/claude-opus-4-8","max_tokens":64,"messages":[]}"#)
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "api_error");
     }
@@ -2149,6 +2215,9 @@ mod tests {
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
             let log = state.clone();
             async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
                 log.lock().unwrap().push(record_of(&req));
                 if req.uri().path() == path {
                     return AxumResponse::builder()
@@ -2289,6 +2358,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unauthorized_client_is_rejected_while_large_body_stream_is_still_open() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempt_state = attempts.clone();
+        let plane = spawn(Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let attempts = attempt_state.clone();
+            async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return AxumResponse::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Body::from("{}"))
+                        .unwrap();
+                }
+                attempts.fetch_add(1, Ordering::SeqCst);
+                AxumResponse::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from("{}"))
+                    .unwrap()
+            }
+        })))
+        .await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+        let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
+        body_tx
+            .send(Ok(Bytes::from_static(
+                b"{\"model\":\"anthropic/claude-opus-4-8\",",
+            )))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_millis(500),
+            reqwest::Client::new()
+                .post(format!("{router}/v1/chat/completions"))
+                .body(reqwest::Body::wrap_stream(ReceiverStream::new(body_rx)))
+                .send(),
+        )
+        .await
+        .expect("auth rejection must not wait for the unfinished body")
+        .unwrap();
+        drop(body_tx);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn universal_body_budget_fails_fast_without_becoming_an_execution_queue() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempt_state = attempts.clone();
+        let plane = spawn(Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let attempts = attempt_state.clone();
+            async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
+                attempts.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<AxumResponse<Body>>().await
+            }
+        })))
+        .await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+        let payload = Bytes::from_static(br#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#);
+        let streaming_body = |payload: Bytes| {
+            reqwest::Body::wrap_stream(tokio_stream::iter(vec![Ok::<Bytes, std::io::Error>(
+                payload,
+            )]))
+        };
+        let first_router = router.clone();
+        let first_payload = payload.clone();
+        let first = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{first_router}/v1/chat/completions"))
+                .body(streaming_body(first_payload))
+                .send()
+                .await
+        });
+        let second_router = router.clone();
+        let second_payload = payload.clone();
+        let second = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{second_router}/v1/chat/completions"))
+                .body(streaming_body(second_payload))
+                .send()
+                .await
+        });
+        for _ in 0..100 {
+            if attempts.load(Ordering::SeqCst) == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        let third = tokio::time::timeout(
+            Duration::from_millis(500),
+            reqwest::Client::new()
+                .post(format!("{router}/v1/chat/completions"))
+                .body(streaming_body(payload))
+                .send(),
+        )
+        .await
+        .expect("body admission overload must fail without queueing")
+        .unwrap();
+        first.abort();
+        second.abort();
+
+        assert_eq!(third.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = third.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "router_overloaded");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn body_permit_releases_after_headers_while_sse_bodies_remain_open() {
+        type OpenStreams = Arc<StdMutex<Vec<tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>>>>;
+        let open_streams: OpenStreams = Arc::new(StdMutex::new(Vec::new()));
+        let stream_state = open_streams.clone();
+        let plane = spawn(Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let open_streams = stream_state.clone();
+            async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
+                let (tx, rx) =
+                    tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
+                tx.try_send(Ok(Bytes::from_static(b"data: open\n\n")))
+                    .unwrap();
+                open_streams.lock().unwrap().push(tx);
+                AxumResponse::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(ReceiverStream::new(rx)))
+                    .unwrap()
+            }
+        })))
+        .await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+        let mut responses = Vec::new();
+        for _ in 0..3 {
+            let request_body =
+                reqwest::Body::wrap_stream(tokio_stream::iter(vec![Ok::<Bytes, std::io::Error>(
+                    Bytes::from_static(br#"{"model":"anthropic/claude-opus-4-8","stream":true}"#),
+                )]));
+            let response = tokio::time::timeout(
+                Duration::from_millis(500),
+                reqwest::Client::new()
+                    .post(format!("{router}/v1/chat/completions"))
+                    .body(request_body)
+                    .send(),
+            )
+            .await
+            .expect("an open SSE response must not retain the request-body permit")
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            responses.push(response);
+        }
+        assert_eq!(open_streams.lock().unwrap().len(), 3);
+        drop(responses);
+        open_streams.lock().unwrap().clear();
+    }
+
+    #[tokio::test]
     async fn chat_namespaced_dispatch_survives_dead_catalog_alias_is_503() {
         let (a, _) = echo_plane().await;
         let (d1, d2) = (dead_origin().await, dead_origin().await);
@@ -2353,7 +2601,10 @@ mod tests {
     #[tokio::test]
     async fn chat_sse_response_first_chunk_is_not_buffered() {
         // Буферизуется только тело запроса; ответ стримится, как в native lanes.
-        let plane = spawn(Router::new().fallback(any(|| async {
+        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+            if req.uri().path() == "/internal/router/auth/preflight" {
+                return authenticated_response();
+            }
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
             tokio::spawn(async move {
                 let _ = tx.send(Ok(Bytes::from("data: {\"delta\":{}}\n\n"))).await;

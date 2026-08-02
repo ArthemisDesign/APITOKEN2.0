@@ -17,12 +17,15 @@
 //!   проверяет его до снятия, но клиент внутренний сигнал не видит.
 
 use std::error::Error as StdError;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode};
 use reqwest::Client;
 
 use crate::error::{self, Lane};
+
+const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Hop-by-hop заголовки (RFC 9110 §7.6.1) плюс `host` (reqwest выставляет по
 // URL апстрима). `content-length` не трогаем: reqwest сам заменит его на
@@ -110,8 +113,8 @@ pub fn strip_hop_by_hop(headers: &HeaderMap) -> HeaderMap {
 }
 
 /// Проксирование одного запроса в `origin` (stable balancer плоскости).
-/// Никакого таймаута на весь запрос: SSE-стримы живут минуты. Единственный
-/// таймаут — connect (2 с) на клиенте; дальше жизнью соединения управляет
+/// Никакого таймаута на response body: SSE-стримы живут минуты. Connect ограничен клиентом,
+/// ожидание response headers — отдельным deadline; после заголовков жизнью body управляют
 /// клиентский disconnect и плоскость.
 pub async fn proxy_attempt(
     client: &Client,
@@ -120,6 +123,27 @@ pub async fn proxy_attempt(
     error_lane: Lane,
     req: Request<Body>,
     execution: Option<&ExecutionAttemptHeaders>,
+) -> ProxyAttempt {
+    proxy_attempt_with_header_timeout(
+        client,
+        origin,
+        target_lane,
+        error_lane,
+        req,
+        execution,
+        RESPONSE_HEADER_TIMEOUT,
+    )
+    .await
+}
+
+async fn proxy_attempt_with_header_timeout(
+    client: &Client,
+    origin: &str,
+    target_lane: Lane,
+    error_lane: Lane,
+    req: Request<Body>,
+    execution: Option<&ExecutionAttemptHeaders>,
+    response_header_timeout: Duration,
 ) -> ProxyAttempt {
     let path_query = req
         .uri()
@@ -153,12 +177,30 @@ pub async fn proxy_attempt(
     }
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
 
-    let upstream = client
-        .request(method, &url)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await;
+    let upstream = match tokio::time::timeout(
+        response_header_timeout,
+        client
+            .request(method, &url)
+            .headers(headers)
+            .body(body)
+            .send(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!(
+                "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
+            );
+            return ProxyAttempt {
+                response: error::upstream_unavailable(
+                    error_lane,
+                    "The provider plane did not return response headers in time.",
+                ),
+                retry_reason: None,
+            };
+        }
+    };
 
     match upstream {
         Ok(res) => {
@@ -284,6 +326,7 @@ pub async fn ready() -> (StatusCode, axum::Json<serde_json::Value>) {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use tokio::io::AsyncReadExt;
 
     #[test]
     fn strip_removes_hop_by_hop_host_and_connection_tokens() {
@@ -345,6 +388,37 @@ mod tests {
             let error = std::io::Error::from(kind);
             assert!(!error_chain_has_connection_refused(&error), "{kind:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn response_header_deadline_is_terminal_and_never_enables_retry() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .body(Body::from("{}"))
+            .unwrap();
+        let result = proxy_attempt_with_header_timeout(
+            &Client::new(),
+            &format!("http://{address}"),
+            Lane::Anthropic,
+            Lane::Anthropic,
+            request,
+            None,
+            Duration::from_millis(50),
+        )
+        .await;
+        server.abort();
+
+        assert_eq!(result.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(result.retry_reason, None);
     }
 
     #[test]

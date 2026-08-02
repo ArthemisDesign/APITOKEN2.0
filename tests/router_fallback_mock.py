@@ -93,6 +93,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         key = self.headers.get("x-api-key", "")
         scenario = POLICY_KEYS.get(key, "unknown")
+        if self.path == "/internal/router/auth/preflight":
+            self.reply(200, {"schema_version": 1, "authenticated": True})
+            return
         if self.path == "/internal/router/policy/preflight":
             candidates = [candidate.get("id") for candidate in body.get("candidates", [])]
             record("preflight", scenario, candidates=candidates)

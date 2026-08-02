@@ -290,11 +290,14 @@ settlement и effective-tier evidence по-прежнему принадлежа
    `x-apitoken-execution-state: not_started`, которым плоскость гарантирует отсутствие
    charge. 401/402 и клиентские 4xx не ретраятся; signed 429 — capacity-исключение.
    Подробности — «Семантика fallback».
-3. **Никаких общих очередей, semaphore и circuit breaker в router.** Concurrency limits,
+3. **Никаких общих execution-очередей, semaphore и circuit breaker в router.** Concurrency limits,
    breaker и cooling живут в плоскостях (процессная изоляция, см.
    `docs/engine/ARCHITECTURE.md`). Router не добавляет глобальный лимит — иначе
    перегруженная плоскость съест capacity остальных. Readiness router никогда не является
-   конъюнкцией health всех плоскостей; синхронных health-check'ов на пути запроса нет.
+   конъюнкцией health всех плоскостей; синхронных health-check'ов на пути запроса нет. Единственное
+   исключение — fail-fast 64 MiB memory admission для materialized universal request bodies:
+   известный размер округляется вверх с шагом 1 MiB, неизвестный резервирует максимум 32 MiB;
+   admission не ждёт в очереди, освобождается до response body и не ограничивает native/SSE response.
 4. **SSE не буферизуется** ни в router, ни в Caddy перед ним (требование Claude Code
    gateway protocol). Disconnect клиента транзитивно рвёт соединение router→плоскость,
    чтобы существующий TeeMeter drain дочитывал authoritative usage и settle корректно.
@@ -321,16 +324,19 @@ pricing policy и возвращает только:
 - `503 auth_unavailable` при недоступной billing authority.
 
 Публичные provider vhost'ы не маршрутизируют `/internal/*`; router обращается только к stable
-loopback origins. Consumer подключается отдельным коммитом после GREEN producer на всех плоскостях:
-последовательно перебирает transport/404/5xx для mixed-version availability, но 401 считает
-терминальным и исполняет universal request только после exact schema-v1 success. Success не
-кэшируется между запросами и credential.
+loopback origins. Consumer последовательно перебирает transport/404/5xx для mixed-version
+availability, но 401 считает терминальным и исполняет universal request только после exact
+schema-v1 success. Success не кэшируется между запросами и credential.
 
-После auth consumer получает краткоживущий permit только на materialization одного universal body;
-совокупный memory budget ограничен независимо от provider execution. Permit освобождается сразу
-после parse/rewrite, до ожидания plane response, поэтому это не общая очередь provider capacity и
-не меняет запрет на execution semaphore/circuit breaker. Native request/response bodies и SSE не
-буферизуются.
+После auth consumer делает fail-fast reservation в 64 MiB budget с шагом 1 MiB. Валидный
+`Content-Length` округляется вверх; chunked/неизвестный размер резервирует полный 32 MiB максимум.
+При исчерпании router сразу возвращает lane-shaped 503 без очереди и billable call. Reservation
+удерживает body и его parsed/rewritten representation до получения response headers, затем
+освобождается; открытый SSE body его не держит. Поэтому worst-case materialization ограничена,
+но малые запросы сохраняют нормальную concurrency; native request/response bodies и SSE не
+буферизуются. Отдельный 30-секундный deadline ограничивает
+только ожидание plane response headers; после заголовков response body не имеет total timeout.
+Истечение deadline неоднозначно и не разрешает fallback/retry billable request.
 
 ## Миграционная политика (мягкий переезд)
 

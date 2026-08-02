@@ -128,6 +128,24 @@ pub fn pricing_unavailable() -> Response {
     )
 }
 
+/// 503 bodyless auth authority unavailable before request-body materialization.
+pub fn auth_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "Authentication is temporarily unavailable.",
+            "type": "server_error", "code": "authentication_unavailable"}}),
+    )
+}
+
+/// 503 worst-case universal request-body budget exhausted. This is admission, not execution.
+pub fn body_admission_overloaded() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "The router request-body budget is temporarily exhausted.",
+            "type": "server_error", "code": "router_overloaded"}}),
+    )
+}
+
 /// 503 account-policy authority unavailable before execution.
 pub fn policy_unavailable() -> Response {
     json_response(
@@ -206,6 +224,24 @@ pub fn messages_auth_rejected() -> Response {
         StatusCode::UNAUTHORIZED,
         json!({"type": "error", "error": {"type": "authentication_error",
             "message": "Invalid or missing API key."}}),
+    )
+}
+
+/// 503 bodyless auth authority unavailable in the Anthropic Messages envelope.
+pub fn messages_auth_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"type": "error", "error": {"type": "api_error",
+            "message": "Authentication is temporarily unavailable."}}),
+    )
+}
+
+/// 503 request-body admission overload in the Anthropic Messages envelope.
+pub fn messages_body_admission_overloaded() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"type": "error", "error": {"type": "api_error",
+            "message": "The router request-body budget is temporarily exhausted."}}),
     )
 }
 
@@ -288,6 +324,20 @@ mod tests {
         assert!(json["error"]["message"].as_str().unwrap().contains("gpt-9"));
     }
 
+    #[tokio::test]
+    async fn early_auth_and_body_overload_are_openai_shaped_503s() {
+        let response = auth_unavailable();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "authentication_unavailable"
+        );
+
+        let response = body_admission_overloaded();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_json(response).await["error"]["code"], "router_overloaded");
+    }
+
     // ---------- universal messages dispatch: Anthropic-конверт (этап 5.1) ----------
 
     #[tokio::test]
@@ -318,5 +368,15 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
         assert_eq!(json["error"]["type"], "authentication_error");
+
+        for response in [
+            messages_auth_unavailable(),
+            messages_body_admission_overloaded(),
+        ] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let json = body_json(response).await;
+            assert_eq!(json["type"], "error");
+            assert_eq!(json["error"]["type"], "api_error");
+        }
     }
 }

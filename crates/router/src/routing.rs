@@ -16,6 +16,7 @@ use axum::extract::Request;
 use axum::http::{request::Parts, HeaderMap};
 use axum::response::Response;
 
+use crate::auth::{self, AuthError};
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_OPENAI};
 use crate::error::{self, Lane};
 use crate::policy::{
@@ -24,6 +25,9 @@ use crate::policy::{
 use crate::{presets, proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
+pub const BODY_ADMISSION_UNIT_BYTES: usize = 1024 * 1024;
+pub const BODY_ADMISSION_UNITS: usize = 64;
+const MAX_BODY_ADMISSION_UNITS: u32 = (BODY_LIMIT / BODY_ADMISSION_UNIT_BYTES) as u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
@@ -77,6 +81,20 @@ impl Surface {
         }
     }
 
+    fn auth_unavailable(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::auth_unavailable(),
+            Self::Messages => error::messages_auth_unavailable(),
+        }
+    }
+
+    fn overloaded(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::body_admission_overloaded(),
+            Self::Messages => error::messages_body_admission_overloaded(),
+        }
+    }
+
     fn policy_unavailable(self) -> Response {
         match self {
             Self::Chat | Self::Responses => error::policy_unavailable(),
@@ -113,6 +131,21 @@ struct ExpandedCandidate {
 /// Shared universal handler. The response body is never buffered; only the
 /// already-required 32 MiB request body is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
+    let auth_headers = proxy::auth_passthrough(req.headers());
+    match auth::preflight(&state.client, &crate::origins(&state), &auth_headers).await {
+        Ok(()) => {}
+        Err(AuthError::Unauthorized) => return surface.auth_rejected(),
+        Err(AuthError::Unavailable) => return surface.auth_unavailable(),
+    }
+    let admission_units = body_admission_units(req.headers());
+    let _body_permit = match state
+        .body_admission
+        .clone()
+        .try_acquire_many_owned(admission_units)
+    {
+        Ok(permit) => permit,
+        Err(_) => return surface.overloaded(),
+    };
     let (mut parts, body) = req.into_parts();
     let bytes = match to_bytes(body, BODY_LIMIT).await {
         Ok(bytes) => bytes,
@@ -157,7 +190,8 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         .await;
     }
 
-    // Fail before catalog/auth/network work when rollout is disabled.
+    // Fail before catalog, policy, or billable network work when rollout is disabled. Early auth
+    // has already run so an unauthenticated caller cannot use this parse path as a memory oracle.
     if !state.cfg.fallback_enabled {
         let (message, param) = if has_models {
             ("Parameter `models` is disabled on this router.", "models")
@@ -459,6 +493,25 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     // `models` is non-empty and `model` is mandatory, so the chain cannot be
     // empty. Keep a lane-shaped guard instead of panicking on malformed state.
     surface.invalid("The fallback chain is empty.", Some("models"))
+}
+
+/// Reserve by declared wire size before reading the body. HTTP framing enforces a valid
+/// Content-Length; chunked, absent, malformed, and oversized lengths reserve the full 32 MiB
+/// allowance. One-unit rounding preserves normal concurrency for small harness requests while
+/// two worst-case bodies still exhaust the 64 MiB raw-body budget.
+fn body_admission_units(headers: &HeaderMap) -> u32 {
+    let Some(length) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return MAX_BODY_ADMISSION_UNITS;
+    };
+    length
+        .saturating_add(BODY_ADMISSION_UNIT_BYTES - 1)
+        .checked_div(BODY_ADMISSION_UNIT_BYTES)
+        .unwrap_or(MAX_BODY_ADMISSION_UNITS as usize)
+        .clamp(1, MAX_BODY_ADMISSION_UNITS as usize) as u32
 }
 
 async fn proxy_single(
@@ -832,5 +885,29 @@ mod tests {
             "serviceTier": "priority"
         });
         assert!(normalize_fast_service_tier(&mut messages_alias, Surface::Messages, false).is_err());
+    }
+
+    #[test]
+    fn body_admission_is_weighted_and_unknown_size_reserves_the_maximum() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(body_admission_units(&headers), MAX_BODY_ADMISSION_UNITS);
+
+        headers.insert(
+            axum::http::header::CONTENT_LENGTH,
+            HeaderValue::from_static("1"),
+        );
+        assert_eq!(body_admission_units(&headers), 1);
+
+        headers.insert(
+            axum::http::header::CONTENT_LENGTH,
+            HeaderValue::from_static("1048577"),
+        );
+        assert_eq!(body_admission_units(&headers), 2);
+
+        headers.insert(
+            axum::http::header::CONTENT_LENGTH,
+            HeaderValue::from_static("999999999"),
+        );
+        assert_eq!(body_admission_units(&headers), MAX_BODY_ADMISSION_UNITS);
     }
 }
