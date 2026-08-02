@@ -14,6 +14,11 @@ import {
   pricingCatalogSpecSchema,
   pricingMutationAckSchema,
   pricingPolicySnapshotSchema,
+  pricingReleaseHeadV2Schema,
+  pricingReleaseInventoryPageV2Schema,
+  pricingReleasePolicyV2Schema,
+  pricingReleaseRecoveryLinkV2Schema,
+  pricingReleaseV2Schema,
   providerSwitchSpecSchema,
   type AccountPolicyBinding,
   type AccountPolicySpec,
@@ -29,6 +34,11 @@ import {
   type PricingCatalogSpec,
   type PricingMutationAck,
   type PricingPolicySnapshot,
+  type PricingReleaseHeadV2,
+  type PricingReleaseInventoryPageV2,
+  type PricingReleasePolicyV2,
+  type PricingReleaseRecoveryLinkV2,
+  type PricingReleaseV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { z } from "zod";
@@ -78,6 +88,11 @@ export interface ReplaceEngineKeyPolicyOptions {
   expiresAt: Date | null;
 }
 
+export interface PricingReleaseInventoryV2Options {
+  afterAccountId?: string;
+  limit?: number;
+}
+
 export type TypedPricingMutationAck<Identity> =
   | { result: "stored" | "applied" | "unchanged"; identity: Identity }
   | (Extract<PricingMutationAck, { result: "rejected" }> & { identity: Identity });
@@ -104,6 +119,22 @@ const policyActivationIdentitySchema = z.object({
   }).strict(),
   expectation: policyActiveExpectationSchema,
 }).strict();
+const releasePolicyV2PrepareIdentitySchema = pricingReleasePolicyV2Schema.pick({
+  policy_id: true,
+  policy_version: true,
+  content_digest: true,
+});
+const releaseV2PrepareIdentitySchema = pricingReleaseV2Schema.pick({
+  generation: true,
+  content_digest: true,
+  release_kind: true,
+});
+const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2Schema.pick({
+  target_generation: true,
+  recovery_generation: true,
+  link_digest: true,
+});
+const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
 
 export class EngineClient {
   private readonly baseUrl: string;
@@ -547,6 +578,164 @@ export class EngineClient {
     return ack;
   }
 
+  async preparePricingReleasePolicyV2(
+    input: PricingReleasePolicyV2,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof releasePolicyV2PrepareIdentitySchema>>> {
+    const policy = pricingReleasePolicyV2Schema.parse(input);
+    const identity = releasePolicyV2PrepareIdentitySchema.parse({
+      policy_id: policy.policy_id,
+      policy_version: policy.policy_version,
+      content_digest: policy.content_digest,
+    });
+    return this.pricingMutation(
+      "/admin/pricing/v2/policy/prepare",
+      policy,
+      releasePolicyV2PrepareIdentitySchema,
+      identity,
+    );
+  }
+
+  async getPricingReleasePolicyV2(
+    policyId: string,
+    policyVersion: number,
+  ): Promise<PricingReleasePolicyV2 | null> {
+    const target = releasePolicyV2PrepareIdentitySchema
+      .omit({ content_digest: true })
+      .parse({ policy_id: policyId, policy_version: policyVersion });
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/policy/${encodeURIComponent(target.policy_id)}/version/${target.policy_version}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const policy = this.parsePricingResponse(
+      z.object({ policy: pricingReleasePolicyV2Schema }).strict(),
+      payload,
+      response,
+    ).policy;
+    if (policy.policy_id !== target.policy_id || policy.policy_version !== target.policy_version) {
+      throw new EngineClientError("engine returned a different pricing release policy", response.status, false);
+    }
+    return policy;
+  }
+
+  async preparePricingReleaseV2(
+    input: PricingReleaseV2,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof releaseV2PrepareIdentitySchema>>> {
+    const release = pricingReleaseV2Schema.parse(input);
+    const identity = releaseV2PrepareIdentitySchema.parse({
+      generation: release.generation,
+      content_digest: release.content_digest,
+      release_kind: release.release_kind,
+    });
+    return this.pricingMutation(
+      "/admin/pricing/v2/release/prepare",
+      release,
+      releaseV2PrepareIdentitySchema,
+      identity,
+    );
+  }
+
+  async getPricingReleaseV2(generation: number): Promise<PricingReleaseV2 | null> {
+    const targetGeneration = pricingReleaseV2Schema.shape.generation.parse(generation);
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/release/${targetGeneration}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const release = this.parsePricingResponse(
+      z.object({ release: pricingReleaseV2Schema }).strict(),
+      payload,
+      response,
+    ).release;
+    if (release.generation !== targetGeneration) {
+      throw new EngineClientError("engine returned a different pricing release", response.status, false);
+    }
+    return release;
+  }
+
+  async preparePricingReleaseRecoveryLinkV2(
+    input: PricingReleaseRecoveryLinkV2,
+  ): Promise<TypedPricingMutationAck<z.infer<typeof releaseRecoveryLinkV2PrepareIdentitySchema>>> {
+    const recoveryLink = pricingReleaseRecoveryLinkV2Schema.parse(input);
+    if (recoveryLink.recovery_generation <= recoveryLink.target_generation) {
+      throw new RangeError("recovery_generation must be newer than target_generation");
+    }
+    const identity = releaseRecoveryLinkV2PrepareIdentitySchema.parse({
+      target_generation: recoveryLink.target_generation,
+      recovery_generation: recoveryLink.recovery_generation,
+      link_digest: recoveryLink.link_digest,
+    });
+    return this.pricingMutation(
+      "/admin/pricing/v2/recovery-link/prepare",
+      recoveryLink,
+      releaseRecoveryLinkV2PrepareIdentitySchema,
+      identity,
+    );
+  }
+
+  async getPricingReleaseRecoveryLinkV2(
+    targetGeneration: number,
+    recoveryGeneration: number,
+  ): Promise<PricingReleaseRecoveryLinkV2 | null> {
+    const generations = releaseRecoveryLinkV2PrepareIdentitySchema
+      .omit({ link_digest: true })
+      .parse({
+        target_generation: targetGeneration,
+        recovery_generation: recoveryGeneration,
+      });
+    if (generations.recovery_generation <= generations.target_generation) {
+      throw new RangeError("recoveryGeneration must be newer than targetGeneration");
+    }
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/recovery-link/${generations.target_generation}/${generations.recovery_generation}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const recoveryLink = this.parsePricingResponse(
+      z.object({ recovery_link: pricingReleaseRecoveryLinkV2Schema }).strict(),
+      payload,
+      response,
+    ).recovery_link;
+    if (recoveryLink.target_generation !== generations.target_generation ||
+        recoveryLink.recovery_generation !== generations.recovery_generation) {
+      throw new EngineClientError("engine returned a different pricing recovery link", response.status, false);
+    }
+    return recoveryLink;
+  }
+
+  async getPricingReleaseHeadV2(): Promise<PricingReleaseHeadV2 | null> {
+    const { response, payload } = await this.request("/admin/pricing/v2/head");
+    return this.parsePricingResponse(
+      z.object({ head: pricingReleaseHeadV2Schema.nullable() }).strict(),
+      payload,
+      response,
+    ).head;
+  }
+
+  /** Returns one bounded page. Callers building release evidence must exhaust the cursor. */
+  async getPricingReleaseInventoryV2(
+    options: PricingReleaseInventoryV2Options = {},
+  ): Promise<PricingReleaseInventoryPageV2> {
+    const query: string[] = [];
+    if (options.afterAccountId !== undefined) {
+      const cursor = pricingReleaseInventoryPageV2Schema.shape.next_after_account_id
+        .unwrap()
+        .parse(options.afterAccountId);
+      query.push(`after_account_id=${encodeURIComponent(cursor)}`);
+    }
+    if (options.limit !== undefined) {
+      const limit = releaseInventoryLimitV2Schema.parse(options.limit);
+      query.push(`limit=${limit}`);
+    }
+    const suffix = query.length === 0 ? "" : `?${query.join("&")}`;
+    const { response, payload } = await this.request(`/admin/pricing/v2/inventory${suffix}`);
+    return this.parsePricingResponse(
+      z.object({ inventory: pricingReleaseInventoryPageV2Schema }).strict(),
+      payload,
+      response,
+    ).inventory;
+  }
+
   async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {
     if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
       throw new RangeError("multiplierBp must be an integer from 0 to 10000");
@@ -622,12 +811,16 @@ export class EngineClient {
     } as TypedPricingMutationAck<Identity>;
   }
 
-  private parsePricingResponse<T>(schema: z.ZodType<T>, payload: unknown, response: Response): T {
+  private parsePricingResponse<Schema extends z.ZodTypeAny>(
+    schema: Schema,
+    payload: unknown,
+    response: Response,
+  ): z.output<Schema> {
     const result = schema.safeParse(payload);
     if (!result.success) {
       throw new EngineClientError("engine returned a malformed pricing response", response.status, false);
     }
-    return result.data;
+    return result.data as z.output<Schema>;
   }
 
   private assertAccount(actualAccountId: string, expectedAccountId: string, response: Response): void {

@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  PricingReleasePolicyV2,
+  PricingReleaseRecoveryLinkV2,
+  PricingReleaseV2,
+} from "@claude-api/contracts";
 import { EngineClient, EngineClientError } from "./index.js";
 
 afterEach(() => vi.useRealTimers());
@@ -613,6 +618,208 @@ describe("EngineClient", () => {
       status: 423,
       retryable: false,
     });
+  });
+
+  it("uses the strict dormant release-v2 prepare/read contract without an activation call", async () => {
+    const policy: PricingReleasePolicyV2 = {
+      policy_id: "global-b2c-v2",
+      policy_version: 1,
+      owner_type: "global_b2c",
+      owner_id: "global-b2c",
+      account_class: "b2c",
+      product_id: "main",
+      billing_mode: "balance",
+      schema_version: 2,
+      capability_generation: 2,
+      capability_digest: "capability-v2",
+      catalog_generation: 2,
+      catalog_digest: "main-catalog-v2",
+      switch_generation: 2,
+      switch_digest: "switches-v2",
+      content_digest: "global-b2c-policy-v2",
+      rules: [{
+        rule_id: "global-50",
+        rule_digest: "global-50-v1",
+        scope: { scope: "global" },
+        discount_bps: 5_000,
+        payable_multiplier_bp: 5_000,
+      }],
+    };
+    const release: PricingReleaseV2 = {
+      generation: 10,
+      release_kind: "target",
+      schema_version: 2,
+      capability_generation: 2,
+      capability_digest: "capability-v2",
+      main_catalog_generation: 2,
+      main_catalog_digest: "main-catalog-v2",
+      openkeys_catalog_generation: 2,
+      openkeys_catalog_digest: "openkeys-catalog-v2",
+      switch_generation: 2,
+      switch_digest: "switches-v2",
+      inventory_digest: "inventory-v2",
+      policy_manifest_digest: "policy-manifest-v2",
+      assignment_manifest_digest: "assignment-manifest-v2",
+      funding_manifest_digest: "funding-manifest-v2",
+      minimum_runtime_schema_version: 2,
+      content_digest: "target-release-v2",
+      assignments: [{
+        account_id: "acct_test",
+        account_class: "b2c",
+        policy_id: policy.policy_id,
+        policy_version: policy.policy_version,
+        policy_digest: policy.content_digest,
+        billing_mode: "balance",
+        funding_generation: 3,
+        purpose: null,
+        responsible: null,
+        assignment_digest: "assignment-acct-test-v2",
+      }],
+    };
+    const recoveryLink: PricingReleaseRecoveryLinkV2 = {
+      target_generation: 10,
+      target_digest: "target-release-v2",
+      recovery_generation: 11,
+      recovery_digest: "recovery-release-v2",
+      link_digest: "target-recovery-link-v2",
+    };
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        const url = String(input);
+        const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+        requests.push({ url, method: init?.method ?? "GET", body });
+        if (url.endsWith("/pricing/v2/policy/prepare")) {
+          return Response.json({
+            result: "stored",
+            identity: {
+              policy_id: policy.policy_id,
+              policy_version: policy.policy_version,
+              content_digest: policy.content_digest,
+            },
+          });
+        }
+        if (url.endsWith("/pricing/v2/policy/global-b2c-v2/version/1")) {
+          return Response.json({ policy });
+        }
+        if (url.endsWith("/pricing/v2/release/prepare")) {
+          return Response.json({
+            result: "unchanged",
+            identity: {
+              generation: release.generation,
+              content_digest: release.content_digest,
+              release_kind: release.release_kind,
+            },
+          });
+        }
+        if (url.endsWith("/pricing/v2/release/10")) {
+          return Response.json({ release });
+        }
+        if (url.endsWith("/pricing/v2/recovery-link/prepare")) {
+          return Response.json({
+            result: "stored",
+            identity: {
+              target_generation: recoveryLink.target_generation,
+              recovery_generation: recoveryLink.recovery_generation,
+              link_digest: recoveryLink.link_digest,
+            },
+          });
+        }
+        if (url.endsWith("/pricing/v2/recovery-link/10/11")) {
+          return Response.json({ recovery_link: recoveryLink });
+        }
+        if (url.endsWith("/pricing/v2/head")) {
+          return Response.json({ head: null });
+        }
+        if (url.endsWith("/pricing/v2/inventory?after_account_id=acct_before&limit=500")) {
+          return new Response('{"inventory":{"accounts":[{"account_id":"acct_test","status":"active",' +
+            '"multiplier_bp":5000,"balance_nano":9007199254740993123,"reserved_nano":7,' +
+            '"spent_nano":11,"funding_generation":3,"funding_head_version":4}],' +
+            '"next_after_account_id":null}}');
+        }
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+
+    await expect(client.preparePricingReleasePolicyV2(policy)).resolves.toMatchObject({ result: "stored" });
+    await expect(client.getPricingReleasePolicyV2(policy.policy_id, 1)).resolves.toEqual(policy);
+    await expect(client.preparePricingReleaseV2(release)).resolves.toMatchObject({ result: "unchanged" });
+    await expect(client.getPricingReleaseV2(10)).resolves.toEqual(release);
+    await expect(client.preparePricingReleaseRecoveryLinkV2(recoveryLink)).resolves.toMatchObject({ result: "stored" });
+    await expect(client.getPricingReleaseRecoveryLinkV2(10, 11)).resolves.toEqual(recoveryLink);
+    await expect(client.getPricingReleaseHeadV2()).resolves.toBeNull();
+    await expect(client.getPricingReleaseInventoryV2({
+      afterAccountId: "acct_before",
+      limit: 500,
+    })).resolves.toMatchObject({
+      accounts: [{
+        account_id: "acct_test",
+        balance_nano: "9007199254740993123",
+        reserved_nano: "7",
+        spent_nano: "11",
+      }],
+      next_after_account_id: null,
+    });
+    expect(requests.find((request) => request.url.endsWith("/pricing/v2/policy/prepare")))
+      .toMatchObject({ method: "POST", body: policy });
+    expect(requests.find((request) => request.url.endsWith("/pricing/v2/release/prepare")))
+      .toMatchObject({ method: "POST", body: release });
+    expect(requests.some((request) => request.url.includes("activate"))).toBe(false);
+
+    const forgedReadClient = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({ release: { ...release, generation: 12 } }),
+    });
+    await expect(forgedReadClient.getPricingReleaseV2(10)).rejects.toThrow("different pricing release");
+  });
+
+  it("rejects malformed release-v2 scopes and cursor bounds before contacting the engine", async () => {
+    let calls = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => {
+        calls += 1;
+        throw new Error("validation should happen before fetch");
+      },
+    });
+    const malformedPolicy = {
+      policy_id: "global-b2c-v2",
+      policy_version: 1,
+      owner_type: "global_b2c",
+      owner_id: "global-b2c",
+      account_class: "b2c",
+      product_id: "main",
+      billing_mode: "balance",
+      schema_version: 2,
+      capability_generation: 2,
+      capability_digest: "capability-v2",
+      catalog_generation: 2,
+      catalog_digest: "main-catalog-v2",
+      switch_generation: 2,
+      switch_digest: "switches-v2",
+      content_digest: "global-b2c-policy-v2",
+      rules: [{
+        rule_id: "google-provider",
+        rule_digest: "google-provider-v1",
+        scope: {
+          scope: "provider",
+          provider_id: "google",
+          canonical_model_id: "must-not-be-a-provider-sibling",
+        },
+        discount_bps: 6_000,
+        payable_multiplier_bp: 4_000,
+      }],
+    } as unknown as PricingReleasePolicyV2;
+
+    await expect(client.preparePricingReleasePolicyV2(malformedPolicy)).rejects.toThrow();
+    await expect(client.getPricingReleaseInventoryV2({ limit: 501 })).rejects.toThrow();
+    await expect(client.getPricingReleaseInventoryV2({ afterAccountId: "not-an-account" })).rejects.toThrow();
+    await expect(client.getPricingReleaseRecoveryLinkV2(10, 10)).rejects.toThrow("newer");
+    expect(calls).toBe(0);
   });
 
   it("updates account status through the control API", async () => {

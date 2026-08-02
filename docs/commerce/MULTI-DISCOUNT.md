@@ -214,8 +214,9 @@ production migration/watchdog exact schema SHA.
 Первый зависимый engine producer добавляет PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
 immutable policy/release/recovery link, полный cursor inventory и nullable release head. В нём нет
 activation route и он не публикует v2 runtime-capability claim, поэтому подготовленные rows остаются
-dormant и не могут изменить data-plane. Commerce/client consumer подключается только после зелёного
-`deploy/watchdog` exact producer SHA.
+dormant и не могут изменить data-plane. После зелёного `deploy/watchdog` exact producer SHA строгие
+wire-схемы и typed prepare/read methods добавляются в `packages/contracts` и
+`packages/engine-client`; activation method и вызывающий application job по-прежнему отсутствуют.
 
 - продолжает обслуживать текущий active legacy release;
 - умеет читать новый release schema;

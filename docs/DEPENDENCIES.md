@@ -27,9 +27,9 @@
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
 (catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read под `/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory и
-nullable head; activation mutation намеренно пока отсутствует. `packages/contracts` и
-`packages/engine-client` подключаются отдельным consumer-коммитом только после зелёного exact
-producer SHA.
+nullable head; activation mutation намеренно пока отсутствует. После зелёного exact producer SHA
+`packages/contracts` валидирует strict v2 wire shape, а `packages/engine-client` является
+единственным typed prepare/read consumer; application jobs подключаются отдельным поздним этапом.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

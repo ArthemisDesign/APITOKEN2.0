@@ -493,8 +493,10 @@ authoritative commerce/OpenKeys inventories; a partial page is never release evi
 Later checkpoints add account-local funding normalization, dual-compatible money writers, runtime
 release snapshots, Stage 8 evidence and finally one activation CAS. Account creation/activation and
 that future CAS share the same control-plane lock; data-plane reserve/settlement never takes it.
-Consumers in `packages/contracts` and `packages/engine-client` are added only after the producer SHA
-has a green exact-SHA `deploy/watchdog` verdict.
+After the producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
+strict v2 wire schemas and `packages/engine-client` gained typed prepare/read methods. The client
+surface still has no activation method, and no application job consumes it until the later
+inventory/materialization checkpoint.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

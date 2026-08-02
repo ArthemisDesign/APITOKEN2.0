@@ -590,6 +590,136 @@ export const pricingMutationAckSchema = z.union([
 ]);
 export type PricingMutationAck = z.infer<typeof pricingMutationAckSchema>;
 
+/**
+ * Additive prepare/read contract for the dormant pricing-release v2 authority.
+ * These schemas intentionally contain no activation request: a consumer can
+ * materialize and inspect immutable data, but cannot change the live release head.
+ */
+export const PRICING_RELEASE_SCHEMA_VERSION_V2 = 2 as const;
+export const pricingReleaseBillingModeV2Schema = z.enum(["balance", "meter_only"]);
+export const pricingReleaseKindV2Schema = z.enum(["target", "recovery"]);
+export const pricingReleaseAccountClassV2Schema = z.enum(["b2c", "b2b", "open_keys", "service"]);
+export const pricingReleasePolicyOwnerTypeV2Schema = z.enum([
+  "global_b2c",
+  "b2b_client",
+  "open_keys",
+  "service",
+]);
+
+export const pricingReleaseRuleScopeV2Schema = z.discriminatedUnion("scope", [
+  z.object({ scope: z.literal("global") }).strict(),
+  z.object({
+    scope: z.literal("provider"),
+    provider_id: pricingIdentifierSchema,
+  }).strict(),
+  z.object({
+    scope: z.literal("model"),
+    provider_id: pricingIdentifierSchema,
+    canonical_model_id: pricingIdentifierSchema,
+  }).strict(),
+]);
+export type PricingReleaseRuleScopeV2 = z.infer<typeof pricingReleaseRuleScopeV2Schema>;
+
+export const pricingReleasePolicyRuleV2Schema = z.object({
+  rule_id: pricingIdentifierSchema,
+  rule_digest: pricingIdentifierSchema,
+  scope: pricingReleaseRuleScopeV2Schema,
+  discount_bps: z.number().int().min(0).max(10_000),
+  payable_multiplier_bp: z.number().int().min(0).max(10_000),
+}).strict();
+export type PricingReleasePolicyRuleV2 = z.infer<typeof pricingReleasePolicyRuleV2Schema>;
+
+export const pricingReleasePolicyV2Schema = z.object({
+  policy_id: pricingIdentifierSchema,
+  policy_version: pricingVersionSchema,
+  owner_type: pricingReleasePolicyOwnerTypeV2Schema,
+  owner_id: pricingIdentifierSchema,
+  account_class: pricingReleaseAccountClassV2Schema,
+  product_id: pricingIdentifierSchema.nullable(),
+  billing_mode: pricingReleaseBillingModeV2Schema,
+  schema_version: z.literal(PRICING_RELEASE_SCHEMA_VERSION_V2),
+  capability_generation: pricingVersionSchema,
+  capability_digest: pricingIdentifierSchema,
+  catalog_generation: pricingVersionSchema.nullable(),
+  catalog_digest: pricingIdentifierSchema.nullable(),
+  switch_generation: pricingVersionSchema.nullable(),
+  switch_digest: pricingIdentifierSchema.nullable(),
+  content_digest: pricingIdentifierSchema,
+  rules: z.array(pricingReleasePolicyRuleV2Schema),
+}).strict();
+export type PricingReleasePolicyV2 = z.infer<typeof pricingReleasePolicyV2Schema>;
+
+export const pricingReleaseAssignmentV2Schema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  account_class: pricingReleaseAccountClassV2Schema,
+  policy_id: pricingIdentifierSchema,
+  policy_version: pricingVersionSchema,
+  policy_digest: pricingIdentifierSchema,
+  billing_mode: pricingReleaseBillingModeV2Schema,
+  funding_generation: pricingVersionSchema.nullable(),
+  purpose: pricingIdentifierSchema.nullable(),
+  responsible: pricingIdentifierSchema.nullable(),
+  assignment_digest: pricingIdentifierSchema,
+}).strict();
+export type PricingReleaseAssignmentV2 = z.infer<typeof pricingReleaseAssignmentV2Schema>;
+
+export const pricingReleaseV2Schema = z.object({
+  generation: pricingVersionSchema,
+  release_kind: pricingReleaseKindV2Schema,
+  schema_version: z.literal(PRICING_RELEASE_SCHEMA_VERSION_V2),
+  capability_generation: pricingVersionSchema,
+  capability_digest: pricingIdentifierSchema,
+  main_catalog_generation: pricingVersionSchema,
+  main_catalog_digest: pricingIdentifierSchema,
+  openkeys_catalog_generation: pricingVersionSchema,
+  openkeys_catalog_digest: pricingIdentifierSchema,
+  switch_generation: pricingVersionSchema,
+  switch_digest: pricingIdentifierSchema,
+  inventory_digest: pricingIdentifierSchema,
+  policy_manifest_digest: pricingIdentifierSchema,
+  assignment_manifest_digest: pricingIdentifierSchema,
+  funding_manifest_digest: pricingIdentifierSchema,
+  minimum_runtime_schema_version: pricingVersionSchema,
+  content_digest: pricingIdentifierSchema,
+  assignments: z.array(pricingReleaseAssignmentV2Schema),
+}).strict();
+export type PricingReleaseV2 = z.infer<typeof pricingReleaseV2Schema>;
+
+export const pricingReleaseRecoveryLinkV2Schema = z.object({
+  target_generation: pricingVersionSchema,
+  target_digest: pricingIdentifierSchema,
+  recovery_generation: pricingVersionSchema,
+  recovery_digest: pricingIdentifierSchema,
+  link_digest: pricingIdentifierSchema,
+}).strict();
+export type PricingReleaseRecoveryLinkV2 = z.infer<typeof pricingReleaseRecoveryLinkV2Schema>;
+
+export const pricingReleaseHeadV2Schema = z.object({
+  active_generation: pricingVersionSchema,
+  active_digest: pricingIdentifierSchema,
+  head_version: pricingVersionSchema,
+  updated_ts: z.number().int().safe().nonnegative(),
+}).strict();
+export type PricingReleaseHeadV2 = z.infer<typeof pricingReleaseHeadV2Schema>;
+
+export const pricingReleaseInventoryAccountV2Schema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  status: z.enum(["active", "disabled"]),
+  multiplier_bp: z.number().int().safe().nonnegative(),
+  balance_nano: decimalIntegerSchema,
+  reserved_nano: nonNegativeIntegerSchema,
+  spent_nano: nonNegativeIntegerSchema,
+  funding_generation: pricingVersionSchema.nullable(),
+  funding_head_version: pricingVersionSchema.nullable(),
+}).strict();
+export type PricingReleaseInventoryAccountV2 = z.infer<typeof pricingReleaseInventoryAccountV2Schema>;
+
+export const pricingReleaseInventoryPageV2Schema = z.object({
+  accounts: z.array(pricingReleaseInventoryAccountV2Schema).max(500),
+  next_after_account_id: z.string().startsWith("acct_").max(200).nullable(),
+}).strict();
+export type PricingReleaseInventoryPageV2 = z.infer<typeof pricingReleaseInventoryPageV2Schema>;
+
 export const enqueueCreditSchema = z.object({
   paymentId: z.string().uuid(),
   engineAccountId: z.string().startsWith("acct_"),
