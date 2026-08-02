@@ -76,6 +76,12 @@ const PRICING_RELEASE_V2_TABLES = [
   "service_account_inventory_v2",
 ] as const;
 
+const PRICING_STAGE5_EVIDENCE_TABLES = [
+  "pricing_stage5_blockers_v2",
+  "pricing_stage5_prepare_acks_v2",
+  "pricing_stage5_runs_v2",
+] as const;
+
 const LEGACY_STATE_TABLES = [
   "business_invites",
   "customer_profiles",
@@ -280,7 +286,11 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
 }
 
 async function expectExpandedTablesEmpty(client: Client): Promise<void> {
-  const expectedTables = [...MULTI_DISCOUNT_TABLES, ...PRICING_RELEASE_V2_TABLES];
+  const expectedTables = [
+    ...MULTI_DISCOUNT_TABLES,
+    ...PRICING_RELEASE_V2_TABLES,
+    ...PRICING_STAGE5_EVIDENCE_TABLES,
+  ];
   const existing = await client.query<{ table_name: string }>(`
     SELECT table_name
     FROM information_schema.tables
@@ -789,12 +799,12 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(28);
+        expect(await migrationCount(client)).toBe(29);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(28);
+        expect(await migrationCount(client)).toBe(29);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
@@ -829,7 +839,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(28);
+        expect(await migrationCount(client)).toBe(29);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status
@@ -1190,6 +1200,68 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
       await database.pool.end();
       await temporary.close();
     }
+  }, TEST_TIMEOUT_MS);
+
+  it("rejects unstable Stage 5 scans and prepare ACKs without exact readback", async () => {
+    await withTemporaryDatabase("stage5-evidence", async (client) => {
+      await applyMigrations(client, MIGRATIONS_FOLDER);
+      const digest = (character: string, version = 2) =>
+        `sha256:v${version}:${character.repeat(64)}`;
+      const runId = randomUUID();
+      const insertRun = async (engineSecondDigest: string): Promise<void> => {
+        await client.query(`
+          INSERT INTO pricing_stage5_runs_v2 (
+            run_id, schema_version, plan_digest, commerce_inventory_digest,
+            engine_scan_first_digest, engine_scan_second_digest,
+            openkeys_scan_first_digest, openkeys_scan_second_digest,
+            service_inventory_digest, funding_plan_digest,
+            target_generation, target_digest, recovery_generation, recovery_digest,
+            inventory_artifact, plan_artifact, blocker_count, status
+          ) VALUES (
+            $1, 2, $2, $3, $4, $5, $6, $6, $7, $8,
+            1, $9, 2, $10, '{}'::jsonb, '{}'::jsonb, 0, 'planned'
+          )
+        `, [
+          runId,
+          digest("1"),
+          digest("2"),
+          digest("3"),
+          engineSecondDigest,
+          digest("4"),
+          digest("5"),
+          digest("6"),
+          digest("7"),
+          digest("8"),
+        ]);
+      };
+
+      await expectDatabaseFailure(client, async () => {
+        await insertRun(digest("9"));
+      }, { code: "23514", constraint: "pricing_stage5_runs_v2_shape_check" });
+
+      await insertRun(digest("3"));
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          INSERT INTO pricing_stage5_prepare_acks_v2 (
+            run_id, artifact_kind, artifact_id, artifact_version,
+            expected_digest, mutation_result, readback_digest, ack_digest
+          ) VALUES ($1, 'capability', 'pricing-capability', 3, $2, 'stored', $3, $4)
+        `, [runId, digest("a", 1), digest("b", 1), digest("c")]);
+      }, { code: "23514", constraint: "pricing_stage5_prepare_acks_v2_shape_check" });
+
+      await client.query(`
+        INSERT INTO pricing_stage5_prepare_acks_v2 (
+          run_id, artifact_kind, artifact_id, artifact_version,
+          expected_digest, mutation_result, readback_digest, ack_digest
+        ) VALUES ($1, 'capability', 'pricing-capability', 3, $2, 'stored', $2, $3)
+      `, [runId, digest("a", 1), digest("c")]);
+      const stored = await client.query<{ runs: number; acks: number }>(`
+        SELECT
+          (SELECT count(*)::int FROM pricing_stage5_runs_v2) AS runs,
+          (SELECT count(*)::int FROM pricing_stage5_prepare_acks_v2) AS acks
+      `);
+      expect(stored.rows).toEqual([{ runs: 1, acks: 1 }]);
+    });
   }, TEST_TIMEOUT_MS);
 
   it("accepts a complete structural graph and rejects schema-level corruption", async () => {

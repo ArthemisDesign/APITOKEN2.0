@@ -79,6 +79,13 @@ runtime-capability-gated and `meter_only`. The migration does not seed a policy,
 activate a release; dependent readers and writers are delivered only after this schema SHA has
 green `deploy/migration` and `deploy/watchdog` in production.
 
+The separate expand-only migration `packages/db/migrations/0028_pricing_stage5_evidence.sql`
+adds empty Stage 5 run, typed-blocker and prepare/readback-ACK tables. It preserves the exact
+validated inventories and plan needed to prove a later apply was rebuilt from stable engine and
+OpenKeys scans; checks reject unequal scan digests and mismatched ACK readbacks. It neither seeds a
+run nor enqueues or activates any release, and its consumer follows only after the migration SHA is
+green in production.
+
 The Stage 6 worker consumer claims only explicitly staged `normalize_funding` target-release jobs.
 It performs two stable full cursor scans, excludes exact `meter_only` service inventory, then plans
 and applies a bounded number of balance accounts per slice with durable leases and account-local

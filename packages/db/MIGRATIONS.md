@@ -50,3 +50,11 @@ generation. Target identity is nullable only while the row is unfinished; a `rea
 requires an applied digest equal to its target. The additive `normalization_source` and `blockers`
 fields preserve the producer's typed technical evidence for retry or fail-closed handling. The
 orchestration consumer is delivered only after this migration SHA is green in production.
+
+Migration `0028_pricing_stage5_evidence.sql` adds empty operational evidence tables for the new
+Stage 5 consumer. One immutable run stores the exact validated inventory and plan artifacts plus
+both engine/OpenKeys scan digests; child rows retain typed blockers and successful prepare/readback
+ACKs. Database checks require the two scans of each external inventory to match and require every
+durable ACK readback digest to equal its expected digest. The migration cannot create a pricing
+release, control job or active head, and the Stage 5 consumer is delivered only after this schema
+SHA has green `deploy/migration` and `deploy/watchdog`.

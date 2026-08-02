@@ -50,6 +50,12 @@ const PRICING_RELEASE_V2_TABLES = [
   "service_account_inventory_v2",
 ] as const;
 
+const PRICING_STAGE5_EVIDENCE_TABLES = [
+  "pricing_stage5_blockers_v2",
+  "pricing_stage5_prepare_acks_v2",
+  "pricing_stage5_runs_v2",
+] as const;
+
 describe("migration configuration", () => {
   it("keeps the advisory lock key stable", () => {
     expect(MIGRATION_LOCK_KEY).toBe("719471115124720130");
@@ -480,5 +486,65 @@ describe("migration configuration", () => {
     expect(funding.columns.target_funding_digest).toMatchObject({ notNull: false });
     expect(funding.columns.normalization_source).toMatchObject({ notNull: false, type: "text" });
     expect(funding.columns.blockers).toMatchObject({ notNull: false, type: "jsonb" });
+  });
+
+  it("adds dormant exact Stage 5 inventory, blocker, and prepare ACK evidence", () => {
+    const migrationName = "0028_pricing_stage5_evidence.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 27);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 28);
+
+    expect(currentEntry).toMatchObject({
+      idx: 28,
+      version: "7",
+      tag: "0028_pricing_stage5_evidence",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/\b(?:track|tier|retention)\b/i);
+
+    const createdTables = [...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm)]
+      .map((match) => match[1])
+      .sort();
+    expect(createdTables).toEqual([...PRICING_STAGE5_EVIDENCE_TABLES].sort());
+    expect(migrationSql).toContain(
+      '"engine_scan_second_digest" = "pricing_stage5_runs_v2"."engine_scan_first_digest"',
+    );
+    expect(migrationSql).toContain(
+      '"openkeys_scan_second_digest" = "pricing_stage5_runs_v2"."openkeys_scan_first_digest"',
+    );
+    expect(migrationSql).toContain(
+      '"readback_digest" = "pricing_stage5_prepare_acks_v2"."expected_digest"',
+    );
+    expect(migrationSql).toContain("'blocked', 'planned', 'materializing', 'prepared', 'failed'");
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0028_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, { notNull: boolean; type: string }>;
+        foreignKeys: Record<string, unknown>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0027_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    for (const table of PRICING_STAGE5_EVIDENCE_TABLES) {
+      expect(snapshot.tables).toHaveProperty(`public.${table}`);
+    }
+    expect(snapshot.tables["public.pricing_stage5_runs_v2"]!.columns.inventory_artifact)
+      .toMatchObject({ notNull: true, type: "jsonb" });
+    expect(snapshot.tables["public.pricing_stage5_runs_v2"]!.columns.plan_artifact)
+      .toMatchObject({ notNull: true, type: "jsonb" });
+    expect(snapshot.tables["public.pricing_stage5_blockers_v2"]!.foreignKeys)
+      .toHaveProperty("pricing_stage5_blockers_v2_run_fk");
+    expect(snapshot.tables["public.pricing_stage5_prepare_acks_v2"]!.foreignKeys)
+      .toHaveProperty("pricing_stage5_prepare_acks_v2_run_fk");
   });
 });

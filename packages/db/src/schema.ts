@@ -2048,6 +2048,126 @@ export const serviceAccountInventoryV2 = pgTable("service_account_inventory_v2",
   `),
 ]);
 
+/**
+ * Immutable Stage 5 source/plan evidence. The JSON artifacts contain the exact
+ * validated inventories and plan; searchable blockers and prepare/read ACKs
+ * live in child tables below. Updating status never permits source identity to
+ * be replaced because the consumer uses the plan digest as its exact CAS.
+ */
+export const pricingStage5RunsV2 = pgTable("pricing_stage5_runs_v2", {
+  runId: uuid("run_id").primaryKey().default(sql`gen_random_uuid()`),
+  schemaVersion: bigint("schema_version", { mode: "bigint" }).notNull(),
+  planDigest: text("plan_digest").notNull().unique(),
+  commerceInventoryDigest: text("commerce_inventory_digest").notNull(),
+  engineScanFirstDigest: text("engine_scan_first_digest").notNull(),
+  engineScanSecondDigest: text("engine_scan_second_digest").notNull(),
+  openkeysScanFirstDigest: text("openkeys_scan_first_digest").notNull(),
+  openkeysScanSecondDigest: text("openkeys_scan_second_digest").notNull(),
+  serviceInventoryDigest: text("service_inventory_digest").notNull(),
+  fundingPlanDigest: text("funding_plan_digest").notNull(),
+  targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
+  targetDigest: text("target_digest").notNull(),
+  recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
+  recoveryDigest: text("recovery_digest").notNull(),
+  inventoryArtifact: jsonb("inventory_artifact").$type<Record<string, unknown>>().notNull(),
+  planArtifact: jsonb("plan_artifact").$type<Record<string, unknown>>().notNull(),
+  blockerCount: bigint("blocker_count", { mode: "bigint" }).notNull(),
+  status: text("status").notNull().default("planned"),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  unique("pricing_stage5_runs_v2_target_unique")
+    .on(table.targetGeneration, table.targetDigest),
+  unique("pricing_stage5_runs_v2_recovery_unique")
+    .on(table.recoveryGeneration, table.recoveryDigest),
+  check("pricing_stage5_runs_v2_shape_check", sql`
+    ${table.schemaVersion} = 2
+    AND ${table.planDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.commerceInventoryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.engineScanFirstDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.engineScanSecondDigest} = ${table.engineScanFirstDigest}
+    AND ${table.openkeysScanFirstDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.openkeysScanSecondDigest} = ${table.openkeysScanFirstDigest}
+    AND ${table.serviceInventoryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.fundingPlanDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.targetGeneration} > 0
+    AND ${table.targetDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.recoveryGeneration} > ${table.targetGeneration}
+    AND ${table.recoveryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND jsonb_typeof(${table.inventoryArtifact}) = 'object'
+    AND jsonb_typeof(${table.planArtifact}) = 'object'
+    AND ${table.blockerCount} >= 0
+    AND ${table.status} IN ('blocked', 'planned', 'materializing', 'prepared', 'failed')
+    AND (
+      (${table.status} = 'blocked' AND ${table.blockerCount} > 0)
+      OR (${table.status} <> 'blocked' AND ${table.blockerCount} = 0)
+    )
+  `),
+]);
+
+export const pricingStage5BlockersV2 = pgTable("pricing_stage5_blockers_v2", {
+  runId: uuid("run_id").notNull(),
+  blockerDigest: text("blocker_digest").notNull(),
+  blockerCode: text("blocker_code").notNull(),
+  blockerContext: text("blocker_context").notNull(),
+  subjectId: text("subject_id").notNull(),
+  detail: text("detail").notNull(),
+  createdAt,
+}, (table) => [
+  primaryKey({
+    columns: [table.runId, table.blockerDigest],
+    name: "pricing_stage5_blockers_v2_pk",
+  }),
+  foreignKey({
+    columns: [table.runId],
+    foreignColumns: [pricingStage5RunsV2.runId],
+    name: "pricing_stage5_blockers_v2_run_fk",
+  }).onDelete("restrict"),
+  index("pricing_stage5_blockers_v2_subject_idx")
+    .on(table.runId, table.blockerContext, table.subjectId),
+  check("pricing_stage5_blockers_v2_shape_check", sql`
+    ${table.blockerDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.blockerCode} <> ''
+    AND ${table.blockerContext} IN ('commerce', 'engine', 'openkeys', 'service', 'funding', 'release')
+    AND ${table.subjectId} <> ''
+    AND ${table.detail} <> ''
+  `),
+]);
+
+export const pricingStage5PrepareAcksV2 = pgTable("pricing_stage5_prepare_acks_v2", {
+  runId: uuid("run_id").notNull(),
+  artifactKind: text("artifact_kind").notNull(),
+  artifactId: text("artifact_id").notNull(),
+  artifactVersion: bigint("artifact_version", { mode: "bigint" }).notNull(),
+  expectedDigest: text("expected_digest").notNull(),
+  mutationResult: text("mutation_result").notNull(),
+  readbackDigest: text("readback_digest").notNull(),
+  ackDigest: text("ack_digest").notNull().unique(),
+  createdAt,
+}, (table) => [
+  primaryKey({
+    columns: [table.runId, table.artifactKind, table.artifactId, table.artifactVersion],
+    name: "pricing_stage5_prepare_acks_v2_pk",
+  }),
+  foreignKey({
+    columns: [table.runId],
+    foreignColumns: [pricingStage5RunsV2.runId],
+    name: "pricing_stage5_prepare_acks_v2_run_fk",
+  }).onDelete("restrict"),
+  check("pricing_stage5_prepare_acks_v2_shape_check", sql`
+    ${table.artifactKind} IN (
+      'capability', 'main_catalog', 'openkeys_catalog', 'switches', 'policy',
+      'target_release', 'recovery_release', 'recovery_link'
+    )
+    AND ${table.artifactId} <> ''
+    AND ${table.artifactVersion} > 0
+    AND ${table.expectedDigest} ~ '^sha256:v[12]:[0-9a-f]{64}$'
+    AND ${table.mutationResult} IN ('stored', 'unchanged')
+    AND ${table.readbackDigest} = ${table.expectedDigest}
+    AND ${table.ackDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+  `),
+]);
+
 export const pricingReleasePlansV2 = pgTable("pricing_release_plans_v2", {
   generation: bigint("generation", { mode: "bigint" }).primaryKey(),
   releaseKind: text("release_kind").notNull(),

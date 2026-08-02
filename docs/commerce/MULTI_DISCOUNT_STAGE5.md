@@ -82,5 +82,12 @@ Same-version/same-digest replay возвращает `unchanged`. Same-version/d
 - target/recovery release manifests;
 - durable ACK всех prepared identities.
 
+Migration `packages/db/migrations/0028_pricing_stage5_evidence.sql` заранее создаёт пустое
+хранилище этих доказательств: `pricing_stage5_runs_v2` удерживает exact inventory/plan artifacts и
+обе пары scan digests, `pricing_stage5_blockers_v2` — типизированные расхождения, а
+`pricing_stage5_prepare_acks_v2` — только успешные prepare+readback identities. DB constraint не
+даёт принять нестабильные engine/OpenKeys scans или ACK с отличающимся readback digest. Наличие
+таблиц не запускает planner, не создаёт release/control job и не двигает head.
+
 Stage 5 не меняет цены, балансы, ключи и доступ. Live behavior меняется только single-head CAS на
 Stage 9 по `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
