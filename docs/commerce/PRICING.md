@@ -1,153 +1,103 @@
 # Customer pricing
 
-Pricing is owned by the commercial PostgreSQL service and enforced by the Rust engine's account
-multiplier. Confirmed top-ups are authoritative for B2C tier advancement; idempotently consumed
-engine charge-ledger rows are authoritative for usage and rolling retention spend.
+Целевой контракт утверждён 2026-08-02. До атомарного Stage 9 cutover production может продолжать
+исполнять старый scalar/progressive путь, но его нельзя расширять: implementation обязана прийти к
+контракту ниже по zero-downtime плану `docs/commerce/MULTI-DISCOUNT.md`.
 
-## B2C progressive pricing
+## B2C
 
-B2C advancement is based on cumulative confirmed top-ups, not usage spend or UTC calendar-month
-charges. Promotions apply immediately when cumulative top-ups reach a threshold. Above Starter,
-the customer retains the tier by spending at least its `holdUsd` during each rolling 30-day window.
-Missing the hold moves the customer down exactly one tier and resets eligible cumulative progress to
-the lower tier's threshold. Starter has no retention requirement.
-
-### B2C signup usage
-
-Each newly provisioned B2C account receives **$10 of usage at official API prices**. Starter charges
-40% of official prices, so the engine receives an exact `$4.000000000` balance credit. The credit
-uses the stable `signup-bonus:<commercial user UUID>` reference and is therefore safe to retry
-without double-crediting. Invited B2B accounts do not receive this B2C offer.
-
-| Tier | Client discount | Cumulative top-ups | 30-day hold (`holdUsd`) | Rounded official API usage shown to client |
-|---|---:|---:|---:|---:|
-| Starter | 60% | $0 | $0 | $0 |
-| Builder | 62.5% | $100 | $50 | $267 |
-| Pro | 65% | $250 | $125 | $714 |
-| Studio | 67.5% | $500 | $250 | $1,538 |
-| Scale | 70% | $1,000 | $500 | $3,333 |
-
-The displayed official API usage milestone is calculated from the threshold and discount on the
-same row: `cumulative top-up threshold / (1 - discount)`, then rounded for presentation. Billing
-keeps exact integer nanoUSD values. For example, Scale charges 30% of official API prices, so the
-`$1,000 / 0.30` milestone is displayed as `$3,333` of official API usage.
-
-Money is stored as integer nanoUSD. Client contracts carry nanoUSD as decimal strings; browser code
-must sum, compare, and format them with integer/BigInt logic, never through JavaScript `number`.
-Requests are metered as official API spend first, then the engine applies the account multiplier to
-determine the local balance charge. The multiplier is the percentage the client pays: Starter is
-`4000` (40%), Builder `3750`, Pro `3500`, Studio `3250`, and Scale `3000`.
-
-### Effective official model pricing
-
-Claude Sonnet 5 uses Anthropic's **introductory official pricing** of **$2 input / $10 output per
-1M tokens through 2026-08-31**. At `2026-09-01T00:00:00Z`, it returns to **$3 input / $15 output per
-1M tokens**. The engine applies the current effective-dated official rate automatically before the
-customer's account multiplier.
-
-The pricing worker paginates `GET /admin/account/{id}/ledger?after_id=...`, deduplicates charge rows
-by engine account and ledger ID, assigns exact spend to the active 30-day retention window, and
-creates a durable pricing job when the tier changes. A separate job step calls the engine pricing
-endpoint. Failed synchronization is retried; PostgreSQL and the engine never need a distributed
-transaction.
-
-### Immutable ledger attribution checkpoint
-
-When an engine charge carries attribution schema version 1, commerce validates the complete raw
-settlement evidence before advancing its ledger cursor: local binding/policy/rule identity, source
-and effective digests, admission catalog/switch generations and digests, ordered bucket versions,
-`reserved = charged + released`, normalized debit allocations, and independently recomputed paid,
-welcome-bonus and other funding totals. An unsupported schema or any mismatch rolls back the event,
-retention aggregates, free-balance projection, and cursor together.
-
-`pricing_usage_events.amount_nano` remains the full local charge. For an eligible attributed event,
-`real_funded_nano` is the exact immutable `paid_funded_nano` commission basis; a static or otherwise
-ineligible event stores `real_funded_nano=0` even when its attribution records paid funding for
-audit. Retention totals include only `retention_eligible` attribution. A historical row with no
-attribution retains the temporary legacy free-first calculation. The sales feed accepts only
-referred schema-v1 `policy_v1` B2C `track` rows with `commission_eligible=true` and positive paid
-funding, while preserving the all-null legacy form for pre-attribution history.
-
-This checkpoint consumes evidence emitted by the already policy-capable engine. It does not seed or
-activate production policies, perform Stage 5/6 data application, enable strict bindings, or change
-the current public tier and welcome-offer behavior described above.
-
-### Atomic legacy snapshot bridge rollout
-
-The engine can durably attach an immutable legacy pricing snapshot to a sampled Anthropic/OpenAI
-reservation without changing the scalar price or settlement formula. This is rollout plumbing for
-`docs/commerce/MULTI-DISCOUNT.md`, not policy enforcement: it does not read policy state, enable Gemini, change
-`/ready`, or make a shadow result affect a customer response.
-
-The only valid configuration pairs are:
-
-- `CLAUDE_API_PRICING_BRIDGE_ENABLED=false` and
-  `CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=0` (the production default);
-- `CLAUDE_API_PRICING_BRIDGE_ENABLED=true` and an integer sample from `1` through `10000` basis
-  points.
-
-Activation is staged at `100`, `1000`, then `10000` basis points, with at least one complete peak
-traffic interval observed between stages. Before each increase, compare the fixed-provider atomic
-reserve histogram `claude_api_pricing_bridge_atomic_reserve_duration_seconds` with the pre-bridge
-request/reserve baseline and inspect PostgreSQL connections, locks, CPU, memory, customer 5xx, and
-the bounded bridge counters. `failure_total > 0` or `conflict_total > 0` is an immediate stop;
-unexpected constraint errors, a material p95/p99 regression, DB pressure, or a customer-visible
-status/body difference also requires returning to `false/0`. Disabling the bridge restores the
-scalar reserve path without rolling back schema. The bridge must cover all eligible fixed-plane
-traffic before the separate shadow worker can claim 100% coverage.
-
-### Versioned full-policy delivery checkpoint
-
-The multi-discount rollout keeps the scalar multiplier authoritative until production policy data
-is seeded and reconciled. In parallel, commerce can now stage immutable full catalog, switch and
-effective account-policy snapshots for the authenticated engine Control API. Delivery is durable
-and dependency ordered: a policy cannot be claimed until its referenced catalog and switch
-generation have confirmed engine ACKs. Versions are monotonic, the same version and digest replay
-idempotently, and the same version with a different digest is a permanent conflict.
-
-Once an account binding has a desired effective policy version and digest, pending/retry scalar
-jobs for that account are retained as confirmed audit rows with a drained reason and are no longer
-sent to the engine. This fence is deliberately per-account: before Stage 5 creates desired policy
-state, all existing scalar pricing behavior remains unchanged. New-key provisioning is gated on a
-confirmed policy only after the corresponding authority data has been seeded, so this checkpoint
-does not strand new users against empty version streams.
-
-## B2B pricing
-
-B2B accounts bypass the progressive table. An operator creates a one-time, email-bound invitation
-with an expiry and an integer discount percentage. Only the SHA-256 token hash is stored. A matching
-registration consumes it atomically and provisions the engine account with the configured price.
-Operators can later change that user's discount; the update is persisted locally and synchronized
-to the engine through the same durable job path.
-Existing B2C customers can be converted atomically to B2B manual pricing. The conversion preserves
-their exact effective multiplier (including a referral floor if one was active), clears the live
-B2C tier controls, enqueues an idempotent engine sync, and records the operator and reason.
-
-Administrative routes require `x-admin-key: <COMMERCIAL_ADMIN_KEY>`:
+Обычный B2C платит 50% официальной стоимости любой модели из main product catalog:
 
 ```text
-POST  /v1/admin/business-invites
-      {"email":"founder@example.com","discountPercent":85,"expiresInDays":7}
-
-PATCH /v1/admin/business-users/{userId}/pricing
-      {"discountPercent":87}
-
-POST  /v1/admin/users/{userId}/convert-to-business
-      {"reason":"customer requested business terms"}
+global discount_bps = 5000
+global payable_multiplier_bp = 5000
 ```
 
-The invite URL is returned only from the create call. The registration endpoint accepts it as
-`inviteToken`; it is not accepted on login. Unsafe requests still require the configured app origin.
+Прогрессивных tiers, порогов top-up, 30-day retention и month-close pricing behavior в целевой
+системе нет. Пополнение увеличивает только баланс и не меняет процент скидки.
 
-## Operations
+Оператор может задать B2C provider/model override. Приоритет всегда:
 
-- `PRICING_POLL_MS` controls ledger and pricing-job polling (default 60 seconds).
-- `PRICING_CLOSE_GRACE_MS` gates retention-window closure during the UTC month-close grace period (default 1 hour).
-- Existing users are backfilled as Starter and active engine accounts receive a durable sync job.
-- Editing the `B2C_PRICING_TIERS` ladder is picked up automatically: on pricing-worker start,
-  `reconcileTierLadderMultipliers` re-derives every b2c profile's multiplier from its current tier
-  (referral floors preserved) and pushes changes to the engine through the durable job path. B2B
-  pricing is never touched by this reconciliation.
-- Account responses expose a safe `pricing` view with tier, cumulative top-up progress, next
-  threshold, rolling-window retention spend, and discount. B2B responses expose only manual pricing
-  and the current discount.
+1. exact model rule;
+2. provider rule;
+3. global 50%.
+
+Например, Gemini 60% и отдельная Gemini image model 55% дают 55% именно image-модели и 60% всем
+остальным Gemini-моделям. Скидки не суммируются.
+
+Официальная стоимость вычисляется `crates/metering` по immutable effective-dated tariff и только
+затем умножается на integer `payable_multiplier_bp`. Все суммы — nanoUSD/decimal strings; float и
+JavaScript `number` для денег запрещены.
+
+## Welcome bonus
+
+После rollout новая eligible Google/GitHub B2C-регистрация получает ровно `$5.000000000` с
+идемпотентным `signup-bonus:<commercial-user-id>`. Password, invited B2B, OpenKeys и service
+аккаунты бонус не получают. Ранее выданные `$4` сохраняются без ретроактивного увеличения.
+
+Welcome bonus может оплачивать любую разрешённую B2C-модель Anthropic/OpenAI/Gemini. Funding
+расходуется bonus-first, затем paid. Номинал показывается как денежный баланс, без маркетингового
+пересчёта в «официальный usage».
+
+## Provider/model pricing authority
+
+Pricing policy и model admission независимы. Catalog включает модель в продукт, switch может
+аварийно закрыть provider, policy задаёт процент. Отсутствующий applicable rule после Stage 9 —
+fail closed; scalar fallback запрещён.
+
+Policy versions immutable, content-addressed и доставляются catalog → switches → policy. Все
+аккаунты переключаются одним active release head, а не последовательным обновлением bindings.
+
+## B2B
+
+B2B не наследует global B2C и её provider/model overrides. У клиента собственная immutable policy,
+которая копируется из invitation snapshot и далее редактируется полным CAS replacement.
+
+Существующий scalar `mult_bp` при миграции становится только Anthropic provider-rule:
+
+```text
+provider_id = anthropic
+discount_bps = 10000 - mult_bp
+```
+
+OpenAI/Gemini не появляются у существующего B2B автоматически. Их добавляет оператор явными
+provider/model rules.
+
+## OpenKeys
+
+Все существующие и новые OpenKeys работают 1:1: `discount_bps=0`,
+`payable_multiplier_bp=10000`. Они не наследуют B2C/B2B скидки и не участвуют в referral
+commission. Новая модель требует явного OpenKeys catalog enablement.
+
+## Service
+
+Service accounts имеют `billing_mode=meter_only`: все runtime-capable модели доступны, official
+usage и tariff lineage сохраняются, но reserve/debit баланса не выполняется и нулевой баланс не
+даёт 402. Ограничения конкретного домена находятся в коде этого домена, не в pricing policy.
+
+## Referral commission
+
+Referral eligibility больше не зависит от pricing mode. Для referred B2C settlement commerce
+передаёт exact `paid_funded_nano`; bonus-funded часть, B2B, OpenKeys и service исключены. Sales
+применяет существующие `commission_bps`/`sub_commission_bps` к этой integer базе.
+
+Immutable ledger attribution должна содержать pricing release/policy/rule/tariff identities,
+official и charged cost, ordered funding allocations и exact paid/bonus totals. Commerce валидирует
+evidence и cursor в одной transaction; sales feed получает только подтверждённое событие.
+
+## Zero-downtime activation
+
+Новая policy не активируется по аккаунтам. Dual-compatible runtime и funding writers сначала
+выкатываются dormant, funding нормализуется online account-local transactions, а full-inventory
+shadow работает на 100% traffic. Затем Stage 9 одним CAS меняет global active release head.
+
+Активные v2 reservations могут пересекать cutover и settle'ятся по immutable reserve snapshot.
+Глобальный drain, maintenance window и canary-account rollout запрещены. Полный runbook —
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
+
+## Известный временный разрыв
+
+До завершения rollout старый код/схема могут содержать tier, retention, `track`, `$4` grant и
+scalar jobs. Это migration source, а не целевой контракт. Новый код не должен добавлять к ним
+функциональность. После переключения readers/writers удаляются; immutable history и уже применённые
+append-only migrations не переписываются.

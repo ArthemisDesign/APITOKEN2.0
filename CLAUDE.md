@@ -59,8 +59,10 @@ Human credentials и domain grants хранятся в commerce PostgreSQL и п
   neither tokens nor verification/reset URLs may be logged.
 - Публичный production API коммерческого слоя: `https://backend.apitoken.sale`; клиентский домен:
   `https://apitoken.sale`.
-- B2C pricing derives only from idempotently consumed engine charge-ledger rows. Tier/month state and
-  B2B invite/manual pricing live in commerce PostgreSQL; engine multiplier changes use durable jobs.
+- B2C target pricing is a global 50% discount with provider/model overrides; progressive tiers,
+  retention and `track` are being removed under `docs/commerce/MULTI-DISCOUNT.md`. B2B
+  invite/manual policies live in commerce PostgreSQL and do not inherit B2C. Pricing changes use
+  durable versioned jobs and the final rollout switches one global release head without downtime.
 
 Локальная карта и запуск — `docs/commerce/COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
 

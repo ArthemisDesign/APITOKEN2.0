@@ -20,6 +20,13 @@ The Gemini runtime, router, OAuth credentials, proxy clients, health/cooling sta
 are independent from Claude and OpenAI. The three providers share only the fenced billing authority
 and opaque affinity infrastructure.
 
+Product decision (2026-08-02): Gemini is part of the target multi-provider product. B2C inherits
+global 50% unless a Gemini provider/model override exists; exact model override wins (for example,
+provider 60%, image model 55% → image uses 55%). B2B receives Gemini only through its own explicit
+policy, OpenKeys only through an explicit 1:1 catalog entry, and service accounts can use every
+runtime-capable Gemini model under `meter_only`. Activation is the global zero-downtime release in
+`docs/commerce/MULTI-DISCOUNT.md`, not an independent Gemini client canary.
+
 ## Accepted subscriptions
 
 Authbot asks Google for the actual tier and accepts only known Code Assist-compatible paid plans:

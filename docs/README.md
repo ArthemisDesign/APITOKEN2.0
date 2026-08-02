@@ -26,11 +26,12 @@ context'ов. Правила размещения и обновления — в
 
 - [COMMERCIAL_BACKEND.md](commerce/COMMERCIAL_BACKEND.md) — карта и локальный запуск коммерческого бэкенда.
 - [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — аутентификация и авторизация.
-- [PRICING.md](commerce/PRICING.md) — клиентский прайсинг и тиры.
-- [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — контракт мультипровайдерных скидок и политик доступа.
+- [PRICING.md](commerce/PRICING.md) — B2C 50%/overrides, B2B, OpenKeys, service, bonus и referral.
+- [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — итоговый контракт скидок и zero-downtime full-inventory cutover.
 - [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5: multi-discount backfill.
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation.
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover.
+- [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — Stage 9: zero-downtime atomic full-inventory cutover.
 - [MULTI_DISCOUNT_CATALOG_GEN2.md](commerce/MULTI_DISCOUNT_CATALOG_GEN2.md) — catalog generation 2 (`claude-opus-5`, `claude-fable-5`): инертная доставка и активация.
 - [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — приём платежей через Cryptomus.
 - [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — приём платежей через Platega (дефолтный провайдер).

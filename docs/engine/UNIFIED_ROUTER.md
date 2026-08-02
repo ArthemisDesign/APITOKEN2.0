@@ -836,7 +836,7 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
   маркируется заголовком `x-apitoken-catalog-degraded` со списком namespace'ов; пустой
   каталог плоскости считается сбоем и не кэшируется; 401/403 любой плоскости → единый 401
   `invalid_api_key`; все плоскости недоступны без кэша → 503 `catalog_unavailable`.
-- Продуктовый охват Gemini: OpenKeys и commerce-контракты сейчас фиксируют только
-  Anthropic/OpenAI (`docs/product/OPENKEYS.md`, `packages/contracts`) — расширение
-  enum/каталогов идёт отдельным expand-only шагом до публичного включения Gemini
-  в unified endpoint.
+- ~~Продуктовый охват Gemini~~ — решение принято 2026-08-02: Gemini входит в целевой main product
+  и pricing release. Service получает все runtime-capable Gemini-модели; OpenKeys включает Gemini
+  только явной OpenKeys catalog generation и всегда 1:1. Producer schema/catalog expansion
+  доставляется до consumer и до единого Stage 9 cutover.

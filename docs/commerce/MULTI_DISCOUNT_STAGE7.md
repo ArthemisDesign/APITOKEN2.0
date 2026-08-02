@@ -1,80 +1,40 @@
-# Stage 7 OpenKeys 1:1 cutover
+# Stage 7 — OpenKeys canonical 1:1
 
-Stage 7 closes every application-level path that could issue a new discounted OpenKeys key. It
-does not rewrite, reprice, top up, disable, or otherwise mutate an existing key. Rows backfilled as
-`legacy` continue to use their stored `mult_bp` for balance and usage presentation.
+Stage 7 закрывает все пути выпуска OpenKeys с ценой, отличной от официальной 1:1, и готовит всё
+существующее inventory к общему Stage 9 cutover.
 
-## New issuance contract
+## New issuance
 
-Every new batch and key is written explicitly as `official_1_to_1` with `mult_bp=10000`. The engine
-account is created with the same fixed multiplier and its credit is exactly the requested face
-value in nanoUSD. `OPENKEYS_DEFAULT_MULT_BP` is no longer read; request fields such as `multBp`,
-`mult_bp`, discount, multiplier, or pricing-contract overrides are rejected before any database or
-engine write. `api_type` remains presentation/routing metadata and is not an input to policy
-construction or access control.
+Каждый новый batch/key имеет contract `official_1_to_1`, `discount_bps=0` и
+`payable_multiplier_bp=10000`. Request/env поля multiplier, discount или pricing override
+отклоняются до database/engine write. Face-value credit остаётся точным integer nanoUSD.
 
-The reviewed OpenKeys catalog is shared with the Stage 5 catalog builder. It contains the current
-Anthropic and OpenAI canonical models and no Gemini entry. Issuance first reads the active catalog
-and global provider-switch generation and requires the exact reviewed OpenKeys product scope. The
-OpenKeys application never invents or overwrites global catalog/switch authority.
+Issuance использует текущий OpenKeys product catalog. Новая Anthropic/OpenAI/Gemini модель
+появляется только после явной catalog generation; наличие модели в engine capability не включает
+её автоматически.
 
-## Policy ACK gate
+До выдачи usable secret приложение обязано получить exact prepared/active policy ACK, повторно
+прочитать binding и сохранить matching OpenKeys row. Lost-process compensation отключает
+незавершённый engine account.
 
-For each newly created engine account, issuance proceeds in this order:
+## Existing inventory
 
-1. prepare an immutable OpenKeys current policy with provider-level zero-discount rules for
-   Anthropic and OpenAI;
-2. activate it from the exact `unbound` state and validate the typed ACK identity;
-3. read the active policy back and require exact policy and binding equality;
-4. credit the exact face value using the idempotent `openkeys:<batch>:<index>` reference;
-5. issue the engine key, encrypt the secret, and persist the matching OpenKeys row.
+Все существующие OpenKeys, включая ранее считавшиеся legacy, получают target canonical 1:1 policy.
+Их прошлые ledger rows и списания не переписываются. Текущий live reserve остаётся на старом active
+release до Stage 9; затем весь inventory одновременно начинает списываться 1:1.
 
-Any missing/drifted authority, rejected/malformed ACK, readback mismatch, multiplier mismatch,
-credit failure, or key failure aborts the item. A created account is disabled by the existing saga
-compensation path, and no usable secret is returned. Lost-process reconciliation likewise disables
-unfinished accounts.
+Stage 7 dry run сверяет OpenKeys DB inventory с engine accounts, Stage 5 plan и canonical policy
+digest. Missing/duplicate/source collision или любой discount в target policy блокирует complete
+apply до первой записи.
 
-The Stage 7 binding remains `policy_enforcement=shadow`,
-`funding_enforcement=legacy_single`, and `reconciliation_state=pending`; Stages 8 and 9 own the
-shadow/strict runtime transition. If the reviewed Stage 5 catalog/switch authority has not yet been
-activated, new issuance deliberately returns unavailable rather than falling back to scalar
-pricing. Existing inventory remains readable and usable under its immutable legacy contract.
+Apply идемпотентно materialize'ит exact target bindings и подтверждает readback. Он не двигает
+global active release head, не меняет balance/key/status и не выполняет отдельный OpenKeys cutover.
 
-## Existing inventory policy cutover
+## Invariants
 
-`@claude-api/openkeys` exposes the bounded-context batch command that consumes the exact retained
-Stage 5 dry-run result and its approved assignment matrix:
-
-```text
-ENGINE_BASE_URL=... ENGINE_CONTROL_KEY=... \
-pnpm --filter @claude-api/openkeys pricing:stage7 -- \
-  dry_run <stage5-dry-run.json> <assignment-matrix.json>
-```
-
-The command rejects any invalid matrix/draft digest, stale plan identity, changed OpenKeys
-reference, duplicate account/source, non-canonical official policy, malformed legacy policy, or
-active engine catalog/switch authority different from the Stage 5 artifact. It inventories every
-OpenKeys account from the artifact, including disabled rows, and reports each as `unbound`, `exact`,
-or `conflict`. Dry-run performs no prepare or activation call. A conflict blocks the complete apply
-before its first write.
-
-After retaining the conflict-free report, apply uses the same two immutable artifacts:
-
-```text
-ENGINE_BASE_URL=... ENGINE_CONTROL_KEY=... \
-pnpm --filter @claude-api/openkeys pricing:stage7 -- \
-  apply <stage5-dry-run.json> <assignment-matrix.json>
-```
-
-For each `unbound` account it prepares the exact candidate, rechecks the CAS precondition,
-activates from `unbound`, and requires exact active policy/binding readback. Accounts already exact
-are left untouched, so a complete replay returns `unchanged`; an interrupted run is resumed with
-the same artifacts. A final full-inventory readback must still find every account exact before the
-report succeeds. The command calls only versioned pricing endpoints. It never edits OpenKeys rows,
-scalar multipliers, balances, keys, statuses, or history.
-
-Legacy policy IDs remain `policy:openkeys:legacy:<source-id>` with source-specific locked digests.
-All `official_1_to_1` rows use `policy:openkeys:official-1-to-1`, owner `official-1-to-1`, and the
-same Stage 7 digest domain as live issuance. The fixed production digest test vector is retained in
-`docs/commerce/fixtures/openkeys-official-policy-v1.json` and exercised from both Stage 5 and
-OpenKeys tests.
+- В target release нет source-specific discounted legacy policy.
+- Existing и new OpenKeys имеют одну экономику 1:1.
+- OpenKeys не наследует global B2C/provider/model discounts.
+- OpenKeys usage не участвует в referral commission.
+- Ни admin API, ни batch issuance не принимают multiplier field.
+- Live change происходит только общим CAS из `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

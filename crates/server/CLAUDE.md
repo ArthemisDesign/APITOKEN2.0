@@ -165,9 +165,10 @@
   Anthropic exact-capacity/coverage/delivery gauges, а также три execution-not-started series.
   Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity и
   subscription IDs в Redis/метрики не попадают.
-- Stage 9 runtime delivery не активирует production bindings и не применяет account assignments.
-  Production Stage 5/6 data application, Stage 8 evidence и strict activation остаются
-  заблокированы до reviewed B2B/service/OpenKeys assignment matrix.
+- Stage 9 runtime delivery не активирует production pricing release. Stage 5/6 materialization и
+  full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
+  assignment matrix, canary accounts, maintenance window и zero-active-reservations gate не
+  используются; authoritative inventories обязаны покрыть все accounts exact.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер

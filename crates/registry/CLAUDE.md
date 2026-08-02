@@ -209,6 +209,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   exact integer nanoUSD и canonical typed sample; внешний Gemini admission aggregate сверяется с
   durable provider=`google` usage/outbox. Subject identities выходят только как SHA-256 digests.
   Report ничего не активирует и не исправляет; любой blocker должен остановить Stage 9.
+- **Целевой Stage 5/6/9 контракт:** authoritative inventories полностью заменяют ручную assignment
+  matrix. Funding normalizes online account-local transactions: exact historical welcome остаётся
+  bonus, residual считается paid; новые grants `$5`, reviewer artifact и global money drain не
+  нужны. Prepared pricing release связывает весь inventory, а Stage 9 меняет один global active
+  head. Registry обязан атомарно сохранить reserve-time release/funding snapshot, разрешить
+  in-flight v2 settlement через cutover и поддержать service `meter_only` без balance debit.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

@@ -63,11 +63,17 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   legacy `real_funded` free-first projection. Лимит применяется к исходным строкам до фильтрации,
   поэтому `nextCursor` движется по watermark всей страницы, включая static/service/unreferred
   хвост, и он не пересканируется бесконечно.
+
+  Это описание текущего schema-v1 consumer. До Stage 9 производитель expand-only добавляет
+  schema v2 без зависимости от `pricingMode`: eligible item определяется referred B2C authority,
+  `commissionEligible=true` и положительным exact `paidFundedNano`. Bonus-funded usage, B2B,
+  OpenKeys и service исключаются. Новый sales consumer сначала принимает обе схемы, затем после
+  зелёного producer SHA переключает расчёт на v2; поле `track` не является target authority.
 - `GET /v1/internal/sales/topups?after_id&limit` (дефолт 500, макс 1000) — оплаченные
   `payments`; курсор — микросекунды epoch от `paid_at` (не `feed_seq`: оплата наступает позже
   insert, и просроченный `feed_seq` выпал бы из курсора навсегда). Тоже фильтруется по
   атрибуции. Ответ `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`.
-- `POST /v1/internal/sales/referral-discount` — «пол» скидки сейлза для реферала партнёра.
+- `POST /v1/internal/sales/referral-discount` — текущий legacy «пол» скидки сейлза для реферала.
   Тело `{userId, floorBps (0..9500), override?, actorId?}` → `{applied, multiplierBp}`.
   Клиент остаётся b2c и идёт по обычным тир-правилам; floor лишь гарантирует цену не хуже
   скидки сейлза: эффективный mult = `min(тир-mult, 10000 − floorBps)`. По умолчанию пол
@@ -76,6 +82,10 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   админ из sales-кабинета), `floorBps=0` — явный сброс. Только b2c-профили (business-b2b или
   нет тира → `applied:false`). Идемпотентно; мультипликатор доставляется в движок через
   durable `engine_pricing_jobs`.
+  Этот tier-linked контракт удаляется вместе с progressive pricing: target B2C получает global
+  50%/provider/model policy, а партнёрская связь влияет на commission, но не создаёт персональную
+  цену. Route остаётся только на producer-first период совместимости и затем удаляется последним
+  контрактным шагом.
 - `POST /v1/internal/sales/referral-profiles` — профили рефералов для витрины партнёра. Тело
   `{userIds: uuid[] (макс 500)}` → `{items:[{userId, customerType (b2c/b2b), multiplierBp,
   discountPercent, referralFloorBps, cumulativeTopupNano, balanceNano, status}]}`. Только по
@@ -83,6 +93,9 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   партнёр видит лишь своих. `balanceNano` и живой `multiplierBp` читаются из движка
   (авторитет денег) с параллелизмом 8; недоступный движок-аккаунт не роняет страницу — поля
   деградируют до `null`/значений из `customer_profiles`.
+  Target response удаляет tier-only `referralFloorBps`/`cumulativeTopupNano` из business logic и
+  показывает effective B2C discount/source либо independent B2B policy. Поля текущей схемы могут
+  оставаться nullable на expand-only переходе, но consumer не использует их для цены.
 
 Потребители на стороне sales (`apps/sales-api`, ходят по `COMMERCE_BASE_URL`):
 
@@ -92,7 +105,7 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   либо как идемпотентный backfill, если синхронное применение при регистрации упало);
   топапы → `referred_topups` (только история/аналитика, комиссий не создают); usage-события →
   комиссии (идемпотентны по `commerce_event_id`). Новый attributed payload принимается только в
-  полной B2C track форме, а его exact paid basis и immutable поля атомарно сохраняются в
+  текущей полной B2C schema-v1 форме, а его exact paid basis и immutable поля атомарно сохраняются в
   `partner_usage_events`; частичный/ineligible payload останавливает страницу до cursor advance.
   События, пришедшие раньше атрибуции их юзера, буферизуются в `pending_referral_events` вместе с
   той же authority и догоняются replay без потери полей. Точный повтор идемпотентен, all-null row
@@ -113,6 +126,11 @@ Sales-миграция `0014_usage_attribution_buffer.sql` была достав
 Сопутствующий constraint на `partner_usage_events` запрещает атрибутированную комиссию вне той же
 B2C track authority; application writer и replay теперь соблюдают эту форму.
 
+Target schema v2 сохраняет ту же immutable paid-funding гарантию, но заменяет условие
+`pricing_mode=track` на независимую `commission_eligible` referred-B2C authority. Старые строки и
+constraints не переписываются; новая expand migration и dual-schema consumer доставляются до
+Stage 9.
+
 ### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
 
 Commerce ходит в sales-api по `SALES_API_URL` тем же `SALES_CONTROL_KEY`.
@@ -127,6 +145,9 @@ Commerce ходит в sales-api по `SALES_API_URL` тем же `SALES_CONTROL
   движок (до 3 попыток), best-effort атрибутирует незакреплённого юзера к владельцу кода, при
   `discountBps>0` применяет скидку-«пол» с локальными ретраями — async-фид промо-скидку **не**
   переприменяет (он деривит floor только из `partner_discount_links`).
+  В target contract промо сохраняет credit/referral attribution, но не меняет B2C цену:
+  `discountBps` становится deprecated producer field и затем удаляется producer-last после
+  переключения consumers.
 - `POST /v1/internal/partners/referral-discount` — атомарный claim персональной скидочной
   ссылки. Тело `{code, commerceUserId}` → `{discountBps}`. First-wins, идемпотентно по
   (code, user): ссылка закрепляется за первым владельцем одним UPDATE и НИКОГДА не даёт скидку
@@ -134,6 +155,8 @@ Commerce ходит в sales-api по `SALES_API_URL` тем же `SALES_CONTROL
   `apps/api/src/auth.service.ts` при первой активации движок-аккаунта (парольная регистрация,
   подтверждение email, OAuth) — синхронно, чтобы реферал видел свою ставку с первого захода; полностью best-effort
   (таймаут 4 с, сбой → async-фид применит floor владельцу на следующем тике).
+  Route и скидочные ссылки — legacy tier-linked surface; target registration их не вызывает.
+  Реферальная ссылка сохраняет attribution/commission, но не персональную скидку.
 - `GET /v1/internal/partners/resolve?code` → `{found:false}` либо `{found:true, partnerId,
   referralDiscountBps}` — резолв реф-кода активного партнёра (`Cache-Control: no-store`).
   Эндпоинт жив, но текущий код commerce его **не вызывает**: claim-эндпоинт выше заменил пару
@@ -152,10 +175,9 @@ integer nanoUSD decimal-строками; email конечных пользов�
 `referral_attributions` (уникальна по user_id). Ref пробрасывается и через OAuth-регистрацию:
 соцкнопки передают его в `oauthUrl` (`apps/web/src/lib/api.ts`), `beginOAuth` сохраняет код в
 OAuth-транзакции (переживает редирект к провайдеру), а `completeOAuth` для **нового** аккаунта
-пишет атрибуцию и синхронно применяет скидку-«пол» через `POST
-/v1/internal/partners/referral-discount` — как и парольный путь, реферал видит ставку с первого
-захода. Ограничение «только новый аккаунт» принципиально: иначе существующий клиент мог бы
-залогиниться с чужим `?ref=` и само-выдать себе скидку + сжечь чужую одноразовую ссылку.
+пишет атрибуцию. Текущий код также вызывает legacy `POST
+/v1/internal/partners/referral-discount`; до Stage 9 этот вызов удаляется. В target contract ref
+влияет только на commission, а B2C цена определяется global/provider/model policy.
 
 Полное продуктовое руководство по всей программе (вход, атрибуция, комиссия, уровни, кошелёк,
 периоды, кабинет, админка, языки) — `docs/sales/PARTNER_PROGRAM.md`.
@@ -170,8 +192,9 @@ OAuth-транзакции (переживает редирект к прова�
 
 ## Комиссионная математика (sales-db)
 
-Для нового usage-события `A` — exact `paid_funded_nano` из immutable B2C track attribution;
-static/B2B/service/ineligible строки до расчёта не доходят. Только для исторической all-null формы
+Для target schema-v2 usage-события `A` — exact `paid_funded_nano` из immutable referred-B2C
+attribution; bonus-funded/B2B/OpenKeys/service/ineligible строки до расчёта не доходят. Только для
+исторической all-null формы
 `A` временно остаётся legacy `real_funded` free-first projection. У пользователя партнёра P0:
 - level 0: `A * P0.commission_bps / 10000` (целочисленный floor);
 - level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` вверх по цепочке родителей;

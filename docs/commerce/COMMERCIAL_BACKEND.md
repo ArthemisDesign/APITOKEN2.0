@@ -57,8 +57,10 @@ Email/password authentication, authorization invariants and the future email/Goo
 boundaries are documented in `docs/commerce/AUTHENTICATION.md`.
 Transactional email and self-hosted SMTP configuration are documented in `docs/commerce/EMAIL_INTEGRATION.md`.
 
-B2C progressive tiers, B2B invitations/manual pricing, month-close behavior and the engine sync
-pipeline are documented in `docs/commerce/PRICING.md`.
+B2C global/provider/model discounts, B2B invitations/manual policies, OpenKeys/service boundaries
+and the zero-downtime engine sync pipeline are documented in `docs/commerce/PRICING.md` and
+`docs/commerce/MULTI-DISCOUNT.md`. Progressive tiers, retention and `track` are migration-only
+legacy and must not receive new behavior.
 
 The multi-discount rollout adds a second, versioned synchronization lane beside the legacy scalar
 multiplier lane. Commerce remains the policy authority: immutable catalog, provider-switch and
@@ -98,7 +100,9 @@ GET/PATCH /admin/service-policies/{id}?product_id=...
 
 Policy writes are full CAS replacements over provider/model rules. Their responses include source
 actor/reason/version, desired/applied target versions, durable delivery state and the latest error.
-Service inventory spans all products and carries the reviewed Stage 5 purpose/responsible evidence.
+Service inventory spans all runtime-capable models, carries authoritative purpose/responsible
+evidence and materializes `billing_mode=meter_only`; it is not restricted by product pricing rules
+and never depends on account balance.
 An invitation may use either a complete policy or the legacy scalar compatibility input, never both;
 policy-based invitations persist a neutral `10000` placeholder. Edit, resend and redemption preserve
 independent exact snapshots, and redemption copies the selected invitation version into the new B2B
@@ -111,13 +115,13 @@ DATABASE_URL=postgresql://... pnpm --filter @claude-api/db pricing:stage8-eviden
 ```
 
 The command observes one `REPEATABLE READ READ ONLY` snapshot and prints a canonical JSON report.
-It verifies latest capability/catalog/switch heads, the complete Anthropic/OpenAI graph without
-Gemini, every active account classification, desired/applied policy parity, exact durable ACKs,
-invitation-policy heads, stale generations and the absence of pending/processing/retry/dead control
-jobs. Account and binding subjects are emitted only as SHA-256 digests. A report with blockers is
-still printed and exits non-zero. This command never seeds policies, advances a head, retries a job,
-or substitutes for the reviewed Stage 5 assignment matrix; inject the DSN through the usual
-protected environment rather than placing production credentials in shell history.
+The target report verifies Anthropic/OpenAI/Gemini capability and catalogs, complete authoritative
+classification, B2C/B2B/OpenKeys/service target policies, funding generation, desired/applied ACKs,
+prepared target/recovery releases, stale generations and the absence of pending control jobs.
+Account and binding subjects are emitted only as SHA-256 digests. A report with blockers is still
+printed and exits non-zero. It never seeds policies, advances a head or retries a job. The old
+reviewed Stage 5 assignment matrix is replaced by exact authoritative inventory coverage; inject
+the DSN through protected environment rather than placing production credentials in shell history.
 
 ## Authenticated client API
 
@@ -143,12 +147,11 @@ creation idempotent. API-key revocation uses the engine's non-secret `key_id`; P
 commercial UUID, engine `key_id`, and mask, never the usable key. A key issued by the engine is
 immediately disabled as compensation if its commercial record cannot be committed.
 
-New Google/GitHub B2C provisioning also sends one idempotent `$4.000000000` signup credit using
-`signup-bonus:<commercial UUID>`. The customer offer is exactly a **$4 track-only welcome bonus**;
-it is not projected into an official-price usage equivalent and cannot fund static discount rules.
-Password accounts are ineligible even when their address is hosted by Gmail. Recovery derives
-eligibility from the stored OAuth identity and repeats the same reference, so it cannot double-credit;
-B2B invitation provisioning skips it.
+The target Google/GitHub B2C provisioning sends one idempotent `$5.000000000` signup credit using
+`signup-bonus:<commercial UUID>`. It can fund every model allowed by the B2C policy. Password
+accounts are ineligible even when their address is hosted by Gmail. Recovery derives eligibility
+from the stored OAuth identity and repeats the same reference, so it cannot double-credit; B2B
+invitation provisioning skips it. Existing `$4` grants remain unchanged.
 
 ## Top-up money contract
 
@@ -170,11 +173,10 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
 - Store requested whole USD and engine nanoUSD as PostgreSQL `bigint`; never use floating point.
 - A payment webhook may enqueue at most one credit; an engine credit reference may confirm once.
 - The worker may retry indefinitely until the engine confirms the credit or an operator marks it dead.
-- B2C tier progress comes only from authoritative engine `charge` ledger rows and is deduplicated by
-  `(engine_account_id, ledger_entry_id)`. Attributed rows are accepted only after exact local
-  policy/admission/funding reconciliation; retention uses immutable `retention_eligible`, and sales
-  receives only exact B2C-track `paid_funded_nano`. Pre-attribution history keeps the bounded legacy
-  free-first fallback.
+- B2C usage rows are deduplicated by `(engine_account_id, ledger_entry_id)` and accepted only after
+  exact local policy/admission/funding validation. Sales receives exact referred-B2C
+  `paid_funded_nano`; commission eligibility is independent of pricing mode, and welcome-funded
+  usage is excluded.
 - Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
   updated. Once an account has a desired full policy, that scalar lane is audit-drained and only
   the monotonic versioned policy lane may advance its engine pricing state.

@@ -174,16 +174,14 @@ mark-delivering/cancel/settlement lifecycle. Default config остаётся `fa
 atomic reserve latency histogram. Gemini, policy read/resolver, shadow queue, readiness и
 settlement pricing этим caller не затронуты.
 
-**Stage 9 strict runtime:** ключ с verified `strict/strict` binding больше не входит в scalar path.
-Anthropic и OpenAI читают один coherent `PricingReadBundle`, фиксируют provider-owned canonical
-model/tariff identity, вызывают fail-closed resolver и атомарно сохраняют policy snapshot вместе с
-резервом и ordered funding allocations. `track` видит bonus+paid и расходует welcome bonus первым;
-`discount` видит только paid. Settlement использует pinned multiplier, tariff timestamp и premium
-modifiers; cancel/RAII возвращает каждую allocation в исходный bucket. OpenAI over-hold usage не
-создаёт заведомо невалидный settlement, а оставляет durable reservation для full-hold recovery.
-Gemini metered strict admission запрещён до отдельного продуктового catalog/rule launch. Нулевой
-strict multiplier пока fail-closed: zero-charge snapshot не получает выдуманную funding identity,
-пока отдельный контракт явно не определит такой lifecycle.
+**Целевой Stage 9 runtime:** active pricing release выбирается одним global head. B2C использует
+discount rules с приоритетом model → provider → global 50%; B2B имеет независимую policy,
+OpenKeys — строго 1:1. Anthropic/OpenAI/Gemini фиксируют provider-owned canonical model/tariff,
+release/policy rule и ordered funding allocations в одном immutable reserve snapshot. Welcome
+bonus доступен любому B2C discount rule и расходуется раньше paid; commission eligibility от
+pricing mode не зависит. Service `meter_only` сохраняет official usage без balance reserve/debit.
+Settlement использует pinned multiplier/tariff; cancel/RAII возвращает allocations. Старый
+`track`/tier path — только migration source и не должен получать новую логику.
 
 Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
 `RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один
@@ -192,11 +190,11 @@ quote/snapshot, не резервирует деньги и не меняет ad
 unrestricted, strict Gemini — запрещён в соответствии с live admission выше.
 
 Strict counters имеют только фиксированные `provider`, `mode`, `scope`, `reason`; Gemini входит в
-фиксированный provider set и его admitted series обязана оставаться нулевой. Typed resolver
+фиксированный provider set и после product activation обязан иметь наблюдаемое admitted coverage. Typed resolver
 rejections сводятся к bounded operational classes (missing policy/rule, unavailable model/switch,
 unsupported capability, invalid contract), без account/model labels. Наличие этого runtime-кода
-само по себе не переводит production bindings в strict и не заменяет reviewed assignment matrix,
-Stage 8 evidence или Stage 5/6 data application.
+само по себе не переводит active release и не заменяет full-inventory Stage 8 evidence или Stage
+5/6 materialization. Финальное включение — single-head CAS без canary и traffic drain.
 
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),

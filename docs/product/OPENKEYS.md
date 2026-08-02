@@ -27,7 +27,8 @@ Control API из `docs/engine/CONTROL_API.md` — как и весь остал�
 
 `openkeys_batches.api_type` различает `anthropic` и `openai` только как историческую/витринную
 метку. Исторические строки с `NULL` интерпретируются как `anthropic`; поле не ограничивает модели,
-не выбирает pricing rule и не меняет универсальный доступ одного ключа к Claude и GPT.
+не выбирает pricing rule и не меняет универсальный доступ одного ключа. Целевой product catalog
+может явно добавить Gemini без использования `api_type` как pricing/admission authority.
 
 Полный секрет `sk-pool-…` хранится на складе только в AES-256-GCM шифротексте и стирается после
 выдачи или снятия. Для истории остаются `engine_account_id`, `engine_key_id`, маска и `view_token` —
@@ -35,8 +36,8 @@ Control API из `docs/engine/CONTROL_API.md` — как и весь остал�
 
 Новый выпуск всегда имеет `pricing_contract=official_1_to_1`, `mult_bp=10000`: ключ с номиналом
 $50 получает ровно $50 engine balance, а $1 полной официальной стоимости модели списывает $1.
-Исторический расчёт `face_value_nano * mult_bp / 10000` сохраняется только для строк
-`pricing_contract=legacy`, чтобы не менять их баланс, расход и показанный официальный эквивалент.
+До общего Stage 9 cutover historical `pricing_contract=legacy` остаётся migration source. Target
+release переводит все существующие и новые OpenKeys на 1:1; прошлые ledger rows не пересчитываются.
 
 ## Переменные окружения (`/etc/apitoken/openkeys.env`, root-only, 0600)
 
@@ -63,14 +64,14 @@ $50 получает ровно $50 engine balance, а $1 полной офиц�
 учётки из env немедленно инвалидирует её сессии: имя проверяется по списку на каждом запросе.
 
 Экономика нового выпуска не настраивается через env или запрос: номинал зачисляется в engine
-ровно 1:1 и сохраняется как `official_1_to_1`. Старые `legacy`-ключи продолжают читаться с их
-историческим множителем, но этот контракт нельзя выбрать для новой партии.
+ровно 1:1 и сохраняется как `official_1_to_1`. Старые `legacy`-ключи могут читаться с historical
+multiplier только до Stage 9. После global cutover live reserve любого OpenKeys использует
+canonical 1:1; legacy contract нельзя выбрать для новой партии и нельзя переносить в target release.
 
-Stage 7 policy backfill существующего inventory запускается только явной командой
-`pnpm --filter @claude-api/openkeys pricing:stage7` с сохранёнными Stage 5 dry-run и approved
-matrix. Сначала обязателен `dry_run`, затем `apply` с теми же файлами. Команда включает disabled
-accounts, применяет только versioned policy Control API и не меняет OpenKeys rows, balances,
-multiplier, key status или history. Полный fail-closed протокол и replay semantics описаны в
+Stage 7 target materialization запускается только явной командой с exact Stage 5 plan/release
+digest. Сначала обязателен `dry_run`, затем idempotent `apply`. Команда включает disabled accounts,
+готовит canonical 1:1 bindings и не меняет OpenKeys rows, balances, key status или history. Она не
+активирует live цену: всё inventory переключается одним Stage 9 release-head CAS. Полный протокол —
 `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ## Административные интерфейсы

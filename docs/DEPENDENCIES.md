@@ -24,8 +24,9 @@
 | `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
-provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для pricing-worker), usage,
-ключи, versioned pricing (catalog/switches/policy, prepare→activate CAS).
+provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
+(catalog/switches/policy). Целевое producer-first расширение добавляет immutable pricing release и
+один global prepare→activate CAS; до зелёного producer SHA потребители его не предполагают.
 
 ### Sales feed (коммерция ↔ партнёрка)
 
@@ -33,8 +34,8 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`); usage несёт all-null legacy либо exact B2C track paid-funding authority + POST `referral-discount` / `referral-profiles` | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
-| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem`, POST `partners/referral-discount`; GET `partners/resolve` жив, но сейчас никем не вызывается (claim через POST `referral-discount` заменил пару resolve+consume) | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`); target usage schema v2 несёт exact referred-B2C `paid_funded_nano` независимо от pricing mode; schema v1/`referral-discount` живут только на producer-first переходе | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` сохраняется для credit/attribution; `partners/referral-discount` и discount-поля — legacy compatibility до удаления tier-linked персональной цены | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
 
 Типы фида продублированы локальными zod-схемами на обеих сторонах; в `packages/contracts`
 не вынесены. Любое изменение фида правит обе стороны — см. протокол контрактов в `AGENTS.md`.
@@ -43,7 +44,7 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack` для
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, `B2C_PRICING_TIERS`, `CURRENT_*_CANONICAL_MODELS`, пины `MULTI_DISCOUNT_GEN2_*` (catalog generation 2) | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | — (сам пакет и есть контракт) |
+| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, canonical models и catalog pins; target pricing — global B2C/provider/model rules, B2B, OpenKeys 1:1, service `meter_only`, pricing releases | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | `docs/commerce/MULTI-DISCOUNT.md` |
 | `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
 | `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md` |
 | `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
@@ -146,19 +147,20 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 вместе с ним (полный обход — чеклист «Новая модель» / «Изменение цены» в
 `docs/CHANGE_CHECKLISTS.md`):
 
-- `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, `MULTI_DISCOUNT_GEN2_*` (catalog
-  generation 2: `claude-opus-5`, `claude-fable-5`), `B2C_PRICING_TIERS`, pricing-схемы.
+- `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, catalog generations и pricing release
+  schemas. `B2C_PRICING_TIERS` — cleanup target, не authority нового pricing.
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.
-- `apps/web/src/lib/pricing-tiers.ts` — витринная B2C-скидка (хардкод).
+- `apps/web/src/lib/pricing-tiers.ts` — legacy cleanup target; витрина должна читать/показывать
+  global 50% и effective provider/model discount без tier ladder.
 - `packages/engine-client/src/openkeys-policy.ts` — canonical OpenKeys policy identity/digest и
   сверка каталога с точной reviewed identity поколения 1 или 2
   (`CURRENT_PRODUCT_CATALOG_ENTRIES` / `MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES`);
   `apps/openkeys` и Stage 5 planner используют один builder (fail closed при расхождении).
 - `apps/admin/src/app/sales/calculator/calculation.ts` — захардкоженный `PRODUCT_CATALOG`
   подписочных продуктов (nanoUSD, bigint).
-- Политика включения новых моделей: `docs/commerce/MULTI-DISCOUNT.md` §7 (каталоги), §15
-  (расчёт стоимости); клиентский прайсинг — `docs/commerce/PRICING.md`.
+- Политика включения моделей и расчёт скидки: `docs/commerce/MULTI-DISCOUNT.md` §§2–4;
+  клиентский прайсинг — `docs/commerce/PRICING.md`.
 
 ## 4. Границы баз данных
 

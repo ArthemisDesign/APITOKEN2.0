@@ -36,14 +36,22 @@
       `CLAUDE.md`); протокол — versioned pricing в `docs/engine/CONTROL_API.md`. Машинерия:
       `packages/db/src/pricing-control-jobs.ts`, `apps/worker/src/pricing-worker.service.ts`,
       `packages/engine-client` (ledger/ack), исполнение в `crates/forward/src/**/billing.rs`.
-- [ ] `packages/contracts` — `B2C_PRICING_TIERS` / pricing-схемы; `packages/db/src/pricing.ts`.
-- [ ] `apps/web` — витринные числа: `src/lib/pricing-tiers.ts` + `src/lib/models.ts` и вся
+- [ ] `packages/contracts` — global/provider/model discount и pricing release schemas;
+      `packages/db/src/pricing.ts`. `B2C_PRICING_TIERS` не сохранять как target authority.
+- [ ] `apps/web` — витринные числа: удалить зависимости от `src/lib/pricing-tiers.ts`, проверить
+      `src/lib/models.ts` и всю
       витринная копия (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
       `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
       Радиус проверять grep'ом по старому числу, а не по памяти.
-- [ ] `docs/commerce/PRICING.md` — клиентский прайсинг и тиры.
+- [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service и bonus.
+- [ ] `docs/commerce/MULTI-DISCOUNT.md` + Stage 5/6/8/9 — target/recovery release, full inventory,
+      100% shadow и one-head activation; per-account canary/maintenance rollout не добавлять.
+- [ ] B2B current discount остаётся independent Anthropic rule; OpenKeys остаётся 1:1; service
+      остаётся `meter_only` и all-model. Явно отметить неприменимые классы.
 - [ ] Партнёрские расчёты: `docs/sales/SALES_PAYOUT_PERIODS.md`, логика `apps/sales-api` —
       если цена входит в базу выплат.
+- [ ] Sales feed/commission: exact `paid_funded_nano` не должен зависеть от pricing mode; welcome
+      bonus исключается. При изменении wire schema пройти отдельный чеклист sales feed.
 - [ ] `apps/admin/src/app/sales/calculator/calculation.ts` — `PRODUCT_CATALOG`.
 
 ## Новый провайдер подписки

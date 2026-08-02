@@ -168,11 +168,13 @@ workload-dollar blend. Профиль содержит только bounded emai
   запросом и возвращает разницу после). Ты это не трогаешь — просто знай, что «в моменте» баланс
   может быть чуть меньше на сумму летящих запросов.
 - **spent_nano** — суммарно потрачено (монотонно растёт).
-- **mult_bp** — наценка в basis points: `2000 = ×0.20` (клиент платит 20% от реального API-эквивалента).
-  Это твоя маржа/цена. Задаётся на аккаунт.
+- **mult_bp** — текущий legacy scalar в basis points: `2000 = ×0.20`. После Stage 9 клиентская
+  цена берётся из immutable release/policy rule; scalar остаётся migration/audit source и не
+  является fallback. Service использует отдельный `meter_only`, а не `mult_bp=0`.
 
-Клиент физически **не может уйти в минус**: если денег не хватит — движок урежет ответ под баланс или
-вернёт `402`. Тебе не нужно следить за «перерасходом» — его не бывает.
+B2C/B2B/OpenKeys физически не могут уйти в минус: если денег не хватит, движок урежет ответ под
+баланс или вернёт `402`. Service — явное исключение: official usage учитывается durable, но баланс
+не резервируется и не дебетуется.
 
 ---
 
@@ -266,13 +268,18 @@ GET  /admin/account/{id}/usage?window=30d                            → 200 {ac
 ```
 
 Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
-returned oldest-first with `id > after_id`; this is the durable worker cursor for progressive pricing.
+returned oldest-first with `id > after_id`; this is the durable worker cursor for usage attribution,
+funding validation and referral commission. It is no longer a tier/progressive-pricing authority in
+the target contract.
 
 `funding` читается вместе со scalar account aggregates из одного snapshot. Он содержит
 `account_class`, `funding_enforcement`, `reconciliation_state`, `bucket_count` и для
 `balance/reserved/spent` отдельные `paid_*_nano`, `bonus_*_nano`, `other_*_nano` и
-`unattributed_*_nano`. `bonus` означает только durable `welcome_track_bonus`, `paid` — только
-durable `paid`; до фактического reconciliation остаток остаётся `unattributed`, а не угадывается.
+`unattributed_*_nano`. В текущем schema `bonus` может ссылаться на исторический
+`welcome_track_bonus`; target writers создают provider-independent `welcome_bonus`, доступный любой
+B2C-модели. `paid` означает durable paid funding. Online Stage 6 классифицирует exact welcome
+остаток, а весь прочий legacy residual — paid по утверждённому контракту; ручной reviewer artifact
+не используется.
 
 Новая ledger row сохраняет expand-совместимые top-level `request_id`, `provider` и `official_nano`.
 `attribution` равен `null` для исторической строки без `attribution_schema_version`; иначе он
@@ -411,6 +418,34 @@ typed and retain evidence:
 `GET .../state` reads the live scalar, policy binding, pinned policy catalog/switches, and current
 admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
 enable strict enforcement, or bypass the catalog → switches → policy order.
+
+### Planned pricing-release extension (producer-first, not yet deployed)
+
+Per-account prepare/activate endpoints above remain the currently deployed Stage 3C producer
+surface. The approved zero-downtime target adds an aggregate immutable release protocol before any
+consumer depends on it:
+
+```text
+POST /admin/pricing/release/prepare
+GET  /admin/pricing/release/version/{generation}
+GET  /admin/pricing/release/active
+POST /admin/pricing/release/activate
+```
+
+A release binds exact capability/catalog/switch identities, global B2C policy, every B2B/OpenKeys/
+service assignment, funding generation, minimum runtime capability and recovery generation under
+one content digest. Prepare never changes traffic. Activate revalidates fresh Stage 8 evidence and
+CAS-advances one global head in a short `SERIALIZABLE` transaction; it does not update N accounts.
+
+Account create/activation and release activation share a control-plane advisory lock so an account
+cannot appear between coverage validation and head commit. Data-plane reserve/settlement never takes
+that global lock. New reservations persist release/policy/funding snapshot; in-flight v2 requests may
+cross activation safely. Service extends account authority with `billing_mode=meter_only`: usage is
+durable, but balance reserve/debit and 402 are skipped.
+
+These fields/routes must be introduced expand-only in an engine producer commit and documented with
+their exact DTOs before `packages/contracts` or `packages/engine-client` consumes them. Until that
+producer SHA is deployed green, no caller may synthesize or assume this API.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

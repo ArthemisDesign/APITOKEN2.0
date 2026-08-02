@@ -83,16 +83,15 @@ OAuth, Google project или proxy. Защита относится ко все�
 
 Страница `/pricing` — операторская поверхность versioned multi-discount authority:
 
-- Global B2C редактируется полным CAS replacement-набором provider/model rules. Для B2C разрешены
-  `track` и точные static overrides; exact model rule имеет приоритет над provider rule;
+- Global B2C редактируется полным CAS replacement-набором: default 50%, provider overrides и exact
+  model overrides. Exact model rule имеет приоритет над provider, provider — над global default;
 - provider switches показывают master, product, B2C и B2B gates. Master визуально отделён, а его
   изменение и любое выключение gate требуют отдельного browser confirmation. Сохранённые policy
   rules при выключении не удаляются;
 - provider rule не включает будущие модели автоматически. Редактор предлагает только модели из
   активного product catalog; Gemini не появляется без явной catalog entry;
-- service inventory охватывает все products, показывает `purpose` и `responsible` из утверждённой
-  Stage 5 matrix и открывает product-aware policy editor. Service и B2B принимают только static
-  discount rules, не `track`;
+- service inventory показывает `purpose`, `responsible`, all-runtime-model access и
+  `billing_mode=meter_only`. Service не редактирует product discounts и не зависит от balance;
 - каждое сохранение показывает новую source version и не объявляется применённым, пока targets не
   имеют совпадающие desired/applied versions и exact ACK. В UI видны job state, последняя ошибка,
   actor, reason и время версии.
@@ -105,8 +104,9 @@ policy. Preview/email/registration описывают provider/model досту�
 engine ACK; usable key до подтверждения policy не выдаётся.
 
 Админка не выполняет Stage 5 assignment/backfill сама и не выводит назначения B2B/service/OpenKeys
-из имён. Пока catalog/policy foundation отсутствует, соответствующие редакторы fail closed и явно
-показывают, что materialization ещё не выполнена.
+из имён. Она показывает prepared target/recovery releases, freshness Stage 8 и единственный global
+active release head. Пока foundation отсутствует, редакторы fail closed; кнопки per-account canary
+activation и maintenance-mode cutover отсутствуют.
 
 ## GPT capacity board на странице подписок
 

@@ -206,6 +206,11 @@ checkpoint after the default-off SHA has a green exact-SHA `deploy/watchdog`. Th
 only on the PostgreSQL-backed fixed Anthropic or OpenAI plane with billing enabled. It must never be
 enabled on Gemini or a live SQLite composition.
 
+That restriction describes the currently delivered Stage 3 shadow and is a known implementation
+gap for the approved target. Stage 8/9 must not proceed until a producer-first extension supports
+Gemini and the new release/funding snapshot, then demonstrates 100% target shadow coverage. Do not
+misreport the current Anthropic/OpenAI-only sampler as full-inventory evidence.
+
 The startup validator rejects unknown boolean spellings, incoherent enabled/sample pairs, and every
 value outside these bounds:
 
@@ -254,17 +259,15 @@ never metric labels or error storms.
 
 ## Stage 8 synchronization evidence
 
-Stage 8 is a read-only evidence checkpoint, not permission to seed assignments, change heads, enable
-strict enforcement, migrate data, or deploy manually. Do not start the production window until the
-reviewed B2B/service/OpenKeys assignment matrix exists and the corresponding Stage 5 catalog/policy
-and Stage 6 funding applications are complete. Never infer protected assignments from neighboring
-accounts or naming conventions.
+Stage 8 is read-only full-inventory evidence for the zero-downtime release described in
+`docs/commerce/MULTI-DISCOUNT.md`. It does not seed data, change a head, migrate funding or deploy
+manually. There is no reviewed assignment matrix: authoritative commerce/OpenKeys/service
+inventories must cover every engine account exactly once.
 
-Choose a `window_start_ts` after the last catalog, switch, policy, or binding update. Freeze those
-authority updates through report capture, keep bridge and shadow coverage at the approved target,
-observe at least one complete peak interval, and choose its exclusive `window_end_ts`. Traffic and
-money continue normally. An authority update after `window_end_ts` but before report capture still
-invalidates the evidence and requires a new window.
+Choose a `window_start_ts` after the last target release materialization. Authority updates do not
+require a traffic freeze, but any update changes the source generation and makes a captured report
+stale. Keep bridge and target shadow at 100% coverage, observe at least one complete peak interval,
+and choose its exclusive `window_end_ts`. Traffic, top-ups and v2 reservations continue normally.
 
 Run the commerce report with the normal protected commerce database environment:
 
@@ -280,23 +283,36 @@ client-edge observation for the same half-open window and must never contain ide
 claude-api db stage8-evidence \
   --window-start-ts <inclusive-epoch-seconds> \
   --window-end-ts <exclusive-epoch-seconds> \
-  --min-samples-per-provider <reviewed-minimum> \
-  --financial-sample-size <reviewed-size-1-to-1000> \
+  --min-samples-per-provider <required-minimum> \
+  --financial-sample-size <bounded-size-1-to-1000> \
   --gemini-client-admissions <aggregate-count> \
   > stage8-engine-evidence.json
 ```
 
 Both commands use one `REPEATABLE READ READ ONLY` snapshot, print JSON before returning a non-zero
 exit on blockers, hash account/request/binding subjects, and never print a database DSN. Store both
-reports in the protected release evidence location and record their `sha256:v1` digests. Stop the
-cutover on any blocker, including stale/missing heads or ACKs, an unclassified account, funding
-reconciliation mismatch, control-job backlog, insufficient provider samples, missing/late/non-
-resolved shadow rows, runtime/lineage drift, nanoUSD mismatch, canonical sample failure, or any
-Gemini observation. Do not edit rows to make a report green.
+reports in the protected release evidence location and record their `sha256:v1` digests.
 
-Immediately before Stage 9, rerun both reports and require fresh `passed=true` results under the
-same no-drift rule. A previously green report is historical evidence, not authorization after an
-authority change.
+Required target evidence includes:
+
+- Anthropic, OpenAI and Gemini capability/catalog/switch lineages;
+- global B2C 50% plus exact provider/model override vectors;
+- every B2B policy, canonical OpenKeys 1:1 and service `meter_only` assignment;
+- Stage 6 funding generation for every account;
+- zero unfinished legacy-format reservations/outbox rows (active v2 rows are allowed);
+- 100% shadow coverage, exact nanoUSD parity and no unresolved outcome;
+- exact prepared target and recovery release digests;
+- runtime capability on the serving slot, inactive slot and allowed rollback floor;
+- no pending/processing/retry/dead pricing control jobs.
+
+Gemini traffic is required product evidence, not a blocker. Any missing provider sample, stale ACK,
+unclassified account, funding mismatch, runtime drift or catalog/policy mismatch fails the report.
+Do not edit rows to make it green.
+
+Immediately before Stage 9, rerun both reports and require fresh `passed=true` results. Stage 9
+changes one global active release head; it does not select a canary list and does not require a
+maintenance window or zero active v2 reservations. The complete apply/recovery procedure is
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
 
 ## Local pre-push test gate
 

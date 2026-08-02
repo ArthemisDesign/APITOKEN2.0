@@ -22,16 +22,21 @@ Registration normalizes email to lowercase and hashes passwords with Argon2id (`
 engine account and creates a session without queuing verification mail. Set the flag to `true` once
 SMTP is available to restore the durable verification job and pre-session verification gate.
 
-Without an invitation, registration creates a B2C Starter profile at 60% off. A valid B2B token is
-single-use, bound to the normalized registration email, expires, and is consumed in the same
-transaction as the user. Only its SHA-256 hash is stored. B2B accounts receive the invitation's
-manual price and do not participate in progressive B2C tiers. See `docs/commerce/PRICING.md`.
+The approved target contract creates a B2C profile with the global 50% policy; there is no Starter
+or progressive tier. A valid B2B token is single-use, bound to the normalized registration email,
+expires, and is consumed in the same transaction as the user. Only its SHA-256 hash is stored. B2B
+accounts receive the invitation's independent policy and never inherit the global B2C discount.
+See `docs/commerce/PRICING.md`.
 
-On the first successful engine provisioning, a new Google/GitHub B2C account receives an idempotent
-`$4.000000000` engine balance credit. At the Starter rate (60% off), this gives the client **$10 of
-Claude usage at official API prices**. Password accounts—including addresses hosted by Gmail—never
-receive this credit, and invited B2B accounts are excluded. Recovery derives eligibility from the
-stored Google/GitHub identity and reuses the same idempotency reference.
+After the zero-downtime pricing rollout, the first successful engine provisioning of a new
+Google/GitHub B2C account grants an idempotent `$5.000000000` credit. The bonus is ordinary B2C
+funding across every allowed provider/model; it is not converted into a larger advertised amount of
+official-price usage. Password accounts—including addresses hosted by Gmail—remain ineligible, as
+do invited B2B accounts. Recovery derives eligibility from the stored Google/GitHub identity and
+reuses the same idempotency reference. Existing `$4` grants are not topped up retroactively.
+
+Current production code may still expose Starter/60% and issue `$4` until Stage 9 is implemented;
+that behavior is a documented migration gap, not permission to preserve it in the target runtime.
 
 Login failures use the same external response for an unknown email and a wrong password. A dummy
 Argon2 verification reduces timing-based email discovery. Password login is blocked until verification

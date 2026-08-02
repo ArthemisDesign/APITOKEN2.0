@@ -1,83 +1,83 @@
-# Stage 6 funding reconciliation
+# Stage 6 — online funding normalization
 
-Stage 6 adds a deterministic, engine-owned migration from the legacy aggregate account balance to
-`funding_buckets`. It does not change live reserve, settlement, top-up, admission, or refund
-behavior. Production application therefore belongs to a drained maintenance window immediately
-before the later shadow/strict funding rollout; applying the plan while legacy money writers keep
-running would make the buckets stale.
+Статус: целевой контракт. Stage 6 не требует maintenance window, остановки money writers, нуля всех
+reservations или ручной проверки аккаунтов.
 
-## Classification contract
+## Source policy
 
-The source policy is compiled into the engine and included in every content-addressed plan:
+Funding normalization нужна для paid/bonus attribution и реферальной математики, а не для
+ограничения доступных моделей.
 
-- `cryptomus:` and `platega:` are paid only for reviewed B2C/B2B accounts;
-- `openkeys:` is paid only for reviewed OpenKeys accounts;
-- one exact `signup-bonus:*` credit of `4_000_000_000` nanoUSD is a B2C
-  `welcome_track_bonus`;
-- every other positive credit is `legacy_restricted`, never paid;
-- known charges replay chronologically, consuming free lots before paid funds.
+- точный неотозванный `signup-bonus:<subject>` сохраняется как `welcome_bonus`;
+- существующая выдача сохраняет фактический номинал `$4`;
+- новые выдачи после изменения контракта имеют номинал `$5`;
+- весь остальной существующий остаток по решению владельца классифицируется `paid`;
+- bonus разрешён для любой модели, доступной B2C policy;
+- reserve расходует bonus-first, затем paid;
+- referral commission получает только paid-funded settlement amount.
 
-An opening balance, a positive ledger gap, or an unknown positive credit is preserved in a
-restricted bucket and leaves the account in `reconciliation_state=exception`. A negative gap,
-adjustment, malformed welcome credit, missing `balance_after_nano`, or unsupported ledger row is
-not guessed: the planner conservatively quarantines the current non-negative balance and reports a
-typed exception. Accounts with live reservations, no reviewed Stage 5 binding, or conflicting
-existing buckets are blocked. They receive no new buckets.
+Режим `track`, eligibility `track` и bucket `welcome_track_bonus` не создаются новым кодом.
+Immutable historical rows могут сохранять старые значения только как audit evidence.
 
-For every applicable account the planned bucket balance sum must equal `accounts.balance_nano`
-exactly. Negative balances can exist only in the paid bucket and remain non-spendable. No floating
-point arithmetic is used.
+## Подготовка writers
 
-## Read-only plan
+До backfill production runtime должен:
 
-Run against the engine PostgreSQL authority:
+1. сохранять v2 pricing/funding snapshot в каждой новой reservation;
+2. dual-write topup, bonus, reserve, cancel, settlement и refund в aggregate и funding lots одной
+   account transaction;
+3. брать тот же account row/advisory lock, что и backfill;
+4. после ожидания lock повторно читать funding generation;
+5. уметь завершать старую reservation по её immutable legacy snapshot.
 
-```bash
-claude-api db plan-funding-reconciliation > funding-plan.json
-```
+Это приложение выкатывается blue-green при старом active release и само по себе не меняет цену.
 
-The command uses a serializable read-only transaction and prints:
+## Online plan/apply
 
-- the immutable source-policy digest;
-- one source-state and account-plan digest per account;
-- exact bucket rows and the target reconciliation state;
-- typed issues and ready/exception/blocked/replay counts;
-- a digest of the whole plan.
+Planner строит content-addressed plan по всему inventory. Ручной resolution/reviewer artifact не
+используется. Для каждого аккаунта plan содержит source-state/ledger digests, точные target lots и
+структурные blockers.
 
-Review the complete report. A missing protected B2B/OpenKeys/service policy binding is a blocker,
-not an invitation to infer the account class. Re-run the plan after every remediation; never edit
-the JSON or reuse its digest after money state changes.
+Apply идёт bounded batches. Каждая account-local `SERIALIZABLE` transaction:
 
-## Apply
+1. берёт account money lock;
+2. перечитывает aggregate, ledger, reservations и existing lots;
+3. проверяет expected source digest;
+4. вычисляет точный неиспользованный welcome остаток;
+5. относит residual balance/reserved/spent к paid;
+6. проверяет суммы и overflow;
+7. атомарно пишет lots и funding generation.
 
-Prerequisites:
+Другие аккаунты не блокируются. Запрос текущего аккаунта может кратко ждать его money lock, после
+чего целиком выполняется по состоянию до или после normalization.
 
-1. The Stage 5 assignment matrix is reviewed and fully applied.
-2. Legacy money writers are stopped and all reservations/outbox work is drained.
-3. The latest read-only plan is reviewed and its exact `plan_digest` is approved.
-4. A rollback backup and the policy-capable deployment floor are verified.
+Apply resumable и idempotent: exact account replay не создаёт дубликаты. Stale account
+перепланируется без отката уже завершённых аккаунтов. Глобальный partial-result допустим во время
+backfill, потому что active release остаётся legacy; Stage 9 требует 100% readiness.
 
-Safe apply (all accounts must be ready or an exact replay):
+## In-flight contract
 
-```bash
-claude-api db apply-funding-reconciliation --plan-digest 'sha256:...'
-```
+Ноль всех reservations не требуется. До Stage 8 должны естественно завершиться только
+legacy-format reservations/outbox rows, созданные до dual-compatible runtime. Новые запросы
+продолжают поступать и уже несут v2 snapshot, поэтому могут пересечь Stage 9 без пересчёта цены или
+funding allocation.
 
-If the reviewed report intentionally contains restricted/blocked accounts, partial application
-requires the explicit `--allow-exceptions` flag. Applicable exception accounts receive conservative
-buckets and remain `exception`; blocked accounts remain outside strict mode. The engine recomputes
-the entire plan under a serializable transaction and advisory lock. Any balance, ledger, binding,
-reservation, or existing-bucket drift changes the digest and aborts before mutation. Inserts do not
-ignore conflicts. Exact replays insert no duplicate buckets.
+## Blockers
 
-After application, verify per-account bucket sums, zero outstanding reservations, exception count,
-and a fresh plan consisting only of expected `replay` rows. Do not resume legacy money traffic with
-these buckets treated as authoritative; Stage 8 shadow writers/readiness and Stage 9 strict funding
-enforcement complete that cutover.
+Ручной финансовой ревизии нет, но автоматическая арифметика остаётся fail closed. Stage 6 не может
+объявить account ready при:
 
-## Rollback boundary
+- несовпадении aggregate и суммы lots;
+- negative/overflow, нарушающем money invariants;
+- конфликтующем idempotency reference;
+- незавершённой legacy reservation, для которой нет честного snapshot;
+- изменении account state после построения expected digest.
 
-Before strict funding activation, rollback is to keep `funding_enforcement=legacy_single` and
-ignore the dormant buckets. Bucket rows and exception evidence stay durable for audit/remediation;
-they are not deleted or rewritten. Once provider/model policies and strict funding are active,
-scalar-only binaries are outside the allowed rollback floor.
+Такой blocker исправляется кодом или повторным планом на свежем state; production traffic ради него
+не останавливается.
+
+## Completion evidence
+
+Stage 6 завершён, когда каждый account target release имеет exact funding generation, все новые
+writers dual-compatible, legacy-format inflight count равен нулю и full replay возвращает только
+`unchanged`. Evidence digest входит в Stage 8 и target release.
