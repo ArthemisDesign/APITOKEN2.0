@@ -1,7 +1,7 @@
 import dataclasses
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tools.claude_calibration.run_live import (
     CalibrationError,
@@ -15,6 +15,7 @@ from tools.claude_calibration.run_live import (
     canonical_rate_id,
     count_body,
     coverage_failure,
+    discover_models,
     evidence_rows,
     guarded_input_tokens,
     model_profitability,
@@ -218,7 +219,19 @@ class BudgetTests(unittest.TestCase):
         expected_bound = len(
             json.dumps(server_tools, separators=(",", ":")).encode("utf-8")
         )
-        self.assertEqual(guarded_input_tokens(body, 17), 17 + expected_bound)
+        self.assertEqual(
+            guarded_input_tokens(body, 17, 200_000),
+            max(17 + expected_bound, 200_000),
+        )
+
+    def test_server_tool_guard_fails_closed_without_an_advertised_context_limit(self):
+        body = {
+            "tools": [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}
+            ]
+        }
+        with self.assertRaisesRegex(CalibrationError, "advertised model input limit"):
+            guarded_input_tokens(body, 17)
 
     def test_guarded_tokens_are_unchanged_without_server_tools(self):
         body = {
@@ -329,6 +342,28 @@ class CatalogueAndPlanTests(unittest.TestCase):
             rates_for_model(catalog, ceiling, "future-model", "standard").output_nano,
             50_000,
         )
+
+    def test_model_discovery_keeps_authoritative_input_context_limits(self):
+        api = Mock()
+        api.request.return_value = {
+            "data": [
+                {"id": "claude-opus-5", "max_input_tokens": 1_000_000},
+                {"id": "claude-haiku-4-5-20251001", "max_input_tokens": 200_000},
+                {"id": "not-claude", "max_input_tokens": 9},
+            ]
+        }
+        models, limits = discover_models(api)
+        self.assertEqual(models, ["claude-haiku-4-5-20251001", "claude-opus-5"])
+        self.assertEqual(
+            limits,
+            {"claude-opus-5": 1_000_000, "claude-haiku-4-5-20251001": 200_000},
+        )
+
+    def test_model_discovery_rejects_missing_context_limits(self):
+        api = Mock()
+        api.request.return_value = {"data": [{"id": "claude-opus-5"}]}
+        with self.assertRaisesRegex(CalibrationError, "max_input_tokens"):
+            discover_models(api)
 
     def test_coverage_contains_every_model_tier_and_token_class(self):
         catalog, _ = rate_catalog(self.payload)

@@ -18,9 +18,10 @@ immutable `calibration_evidence` и provider quota snapshots.
 - `--budget-usd` принимает не больше `40`; деньги переводятся в integer nanoUSD без float.
 - Перед каждым generation выполняется бесплатный `/v1/messages/count_tokens`. Anthropic отклоняет
   server-side Web Search в этом endpoint, поэтому runner убирает только эту tool-схему из preflight,
-  а затем консервативно добавляет к возвращённому input полную длину её compact JSON в UTF-8 байтах
-  (число непустых токенов не может превышать число байт). Worst-case по-прежнему отдельно включает
-  полный cache miss нужного TTL, весь `max_tokens` output и все разрешённые Web Search calls.
+  а затем резервирует полный `max_input_tokens` этой модели из `/v1/models`: поисковая выдача
+  добавляется уже после preflight и тоже тарифицируется как input. Отсутствующий/противоречивый
+  model limit останавливает прогон. Worst-case отдельно включает полный cache miss нужного TTL,
+  весь `max_tokens` output и все разрешённые Web Search calls.
 - Guard проверяет свободный бюджет **каждой** healthy-подписки, а не только ожидаемого sticky home:
   неожиданный affinity rebind не может перелить запрос на уже исчерпавший тестовый лимит аккаунт.
 - После generation следующий запрос запрещён, пока exact token vector не появился ровно в одном

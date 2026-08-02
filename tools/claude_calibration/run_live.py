@@ -461,12 +461,12 @@ def count_body(body: dict[str, Any]) -> dict[str, Any]:
     return counted
 
 
-def guarded_input_tokens(body: dict[str, Any], counted_input_tokens: int) -> int:
-    """Cover server-tool schema overhead that Anthropic refuses to count for us.
-
-    UTF-8 bytes are a conservative token upper bound, so adding the complete compact JSON payload
-    cannot under-reserve even if the provider injects the server tool into its effective prompt.
-    """
+def guarded_input_tokens(
+    body: dict[str, Any],
+    counted_input_tokens: int,
+    model_max_input_tokens: int | None = None,
+) -> int:
+    """Cover server-tool schemas and results that Anthropic refuses to pre-count."""
 
     server_tools = [
         tool
@@ -475,8 +475,12 @@ def guarded_input_tokens(body: dict[str, Any], counted_input_tokens: int) -> int
     ]
     if not server_tools:
         return counted_input_tokens
+    if model_max_input_tokens is None or model_max_input_tokens < counted_input_tokens:
+        raise CalibrationError("Web Search requires a valid advertised model input limit")
     schema_bytes = len(json.dumps(server_tools, separators=(",", ":")).encode())
-    return counted_input_tokens + schema_bytes
+    # A server tool can inject search results after count_tokens. Reserving the model's complete
+    # advertised input context covers both that unknown result and the omitted tool schema.
+    return max(counted_input_tokens + schema_bytes, model_max_input_tokens)
 
 
 def supported_tiers(
@@ -734,6 +738,7 @@ class Runner:
         budget: ProfileBudget,
         catalog: dict[tuple[str, str], TokenRates],
         ceiling: TokenRates,
+        model_input_limits: dict[str, int],
         evidence_timeout: int,
         profile_delay: float,
         run_id: str,
@@ -744,6 +749,7 @@ class Runner:
         self.budget = budget
         self.catalog = catalog
         self.ceiling = ceiling
+        self.model_input_limits = model_input_limits
         self.evidence_timeout = evidence_timeout
         self.profile_delay = profile_delay
         self.run_id = run_id
@@ -780,7 +786,10 @@ class Runner:
             target_profile=expected_profile if self.exact_profile_routing else None,
         )
         input_tokens = as_int(count.get("input_tokens"), "count_tokens.input_tokens")
-        guarded_tokens = guarded_input_tokens(body, input_tokens)
+        model_max_input_tokens = self.model_input_limits.get(leg.model)
+        guarded_tokens = guarded_input_tokens(
+            body, input_tokens, model_max_input_tokens
+        )
         rates = rates_for_model(self.catalog, self.ceiling, leg.model, leg.tier)
         web_uses = sum(
             as_int(tool.get("max_uses", 0), "tool.max_uses")
@@ -862,6 +871,7 @@ class Runner:
             "session_hash": hashlib.sha256(session_id.encode()).hexdigest()[:12],
             "counted_input_tokens": input_tokens,
             "guarded_input_tokens": guarded_tokens,
+            "model_max_input_tokens": model_max_input_tokens,
             "upper_bound_nano": str(upper),
             "actual_nano": str(delta["api_total_nanousd"]),
             "profile_test_spend_nano": str(self.budget.spent_nano[profile]),
@@ -927,16 +937,21 @@ def coverage_failure(records: list[dict[str, Any]]) -> str | None:
     return f"token-class coverage incomplete for {len(misses)} {noun}: {preview}{suffix}"
 
 
-def discover_models(api: JsonHttpClient) -> list[str]:
+def discover_models(api: JsonHttpClient) -> tuple[list[str], dict[str, int]]:
     payload = api.request("/v1/models")
-    models = []
+    limits: dict[str, int] = {}
     for entry in payload.get("data", []):
         model = entry.get("id") if isinstance(entry, dict) else None
         if isinstance(model, str) and model.startswith("claude-"):
-            models.append(model)
-    if not models:
+            limit = as_int(entry.get("max_input_tokens"), f"models.{model}.max_input_tokens")
+            if limit <= 0:
+                raise CalibrationError(f"advertised model has no input limit: {model}")
+            if model in limits and limits[model] != limit:
+                raise CalibrationError(f"advertised model has conflicting input limits: {model}")
+            limits[model] = limit
+    if not limits:
         raise CalibrationError("/v1/models returned no Claude models")
-    return sorted(set(models))
+    return sorted(limits), limits
 
 
 def usd_to_nano(value: str) -> int:
@@ -1031,7 +1046,13 @@ def main(argv: list[str] | None = None) -> int:
     require_healthy_delivery(baseline, require_empty=True)
 
     catalog, ceiling = rate_catalog(baseline)
-    models = args.models or discover_models(api)
+    advertised_models, model_input_limits = discover_models(api)
+    models = args.models or advertised_models
+    unadvertised = sorted(set(models) - set(model_input_limits))
+    if unadvertised:
+        raise CalibrationError(
+            "requested model has no advertised input limit: " + ", ".join(unadvertised)
+        )
     budget_nano = usd_to_nano(args.budget_usd)
     if budget_nano <= 0 or budget_nano > DEFAULT_BUDGET_NANO:
         raise CalibrationError("--budget-usd must be positive and no greater than 40")
@@ -1043,6 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
         budget,
         catalog,
         ceiling,
+        model_input_limits,
         args.evidence_timeout,
         args.profile_delay,
         run_id,
