@@ -535,7 +535,10 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    — граница патча app-server теперь структурная. `store:false`, stateless полный input на
    turn; tenant continuity — `prompt_cache_key` digest плюс выведенные из него opaque
    session/thread/window UUID (никогда raw customer key).
-   Custom tool выполняет клиент: gateway возвращает raw call item и никогда не исполняет его.
+   Current Codex top-level `tools` и legacy `additional_tools` принимают client-executed function,
+   Lark custom и `tool_search` формы через один bounded parser; custom/tool-search call выполняет
+   клиент, gateway возвращает raw call item и никогда не исполняет его. Hosted `web_search` не
+   превращается в бесплатный client tool и fail-closed отклоняется.
 4. **Провайдерские окна — из `/wham/usage` и live-заголовков/SSE `codex.rate_limits`.**
    Снапшот принимается только с реальными duration+reset; stale не отклоняет и не выигрывает
    тай-брейк, никогда не приходивший равен свежему. Схема `/wham/usage` и имена заголовков

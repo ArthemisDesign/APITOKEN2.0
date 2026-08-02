@@ -173,7 +173,11 @@ account-policy preflight; `models` и `provider` никогда не доход�
   требует `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (Claude Code v2.1.129+).
 
 Codex: требуется полноценный Responses API, а не адаптация Chat Completions — custom
-provider поддерживает только `wire_api="responses"` (это дефолт при omitted).
+provider поддерживает только `wire_api="responses"` (это дефолт при omitted). Codex 0.146
+передаёт function, Lark custom и client-executed `tool_search` в top-level `tools`; Codex plane
+принимает эти формы тем же bounded parser, что legacy `additional_tools`, и возвращает client tool
+calls без исполнения на gateway. Hosted `web_search` не является client tool и fail-closed
+отклоняется, поэтому изолированный custom-provider профиль harness отключает его явно.
 
 Namespaced ID из агрегированного каталога — исполнимый контракт, а не только discovery metadata:
 router сохраняет universal request body, поэтому каждая плоскость снимает свой префикс до

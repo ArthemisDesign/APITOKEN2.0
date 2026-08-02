@@ -92,7 +92,12 @@ token on every refresh with strict family reuse detection. The pool therefore:
 
 - **Wire.** One `POST {base}/responses` per turn: Responses body with explicit base
   instructions (`""` when the client supplied none), replayed history, new input and client
-  tools; `store:false`, `stream:true`, `include:["reasoning.encrypted_content"]`, tenant-scoped
+  tools. Codex 0.146 emits function, Lark custom and client-executed `tool_search` definitions in
+  top-level `tools`; the public parser accepts the same bounded forms as the legacy
+  `additional_tools` item and translates them to one internal dynamic-tool vocabulary. Hosted
+  `web_search` remains unsupported and fails closed, so custom-provider harnesses disable it in
+  their isolated config. The upstream request keeps `store:false`, `stream:true`,
+  `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client
   identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
   `ChatGPT-Account-ID` from the envelope) plus stable opaque installation/session/thread/window

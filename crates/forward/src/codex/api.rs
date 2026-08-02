@@ -1240,6 +1240,21 @@ fn parse_additional_tools(
             Some(param.to_string()),
         )
     })?;
+    let dynamic = parse_dynamic_tools(tools, param, ToolListSource::Additional)?;
+    Ok((tools.clone(), dynamic))
+}
+
+#[derive(Clone, Copy)]
+enum ToolListSource {
+    TopLevel,
+    Additional,
+}
+
+fn parse_dynamic_tools(
+    tools: &[Value],
+    param: &str,
+    source: ToolListSource,
+) -> Result<Vec<Value>, ApiError> {
     let mut dynamic = Vec::with_capacity(tools.len());
     let mut names = HashSet::new();
     let mut namespaces = HashSet::new();
@@ -1248,16 +1263,25 @@ fn parse_additional_tools(
         let tool_param = format!("{param}.{index}");
         let object = tool.as_object().ok_or_else(|| {
             ApiError::invalid(
-                "Each additional tool must be an object.",
+                match source {
+                    ToolListSource::TopLevel => "Each tool must be an object.",
+                    ToolListSource::Additional => "Each additional tool must be an object.",
+                },
                 Some(tool_param.clone()),
             )
         })?;
         match object.get("type").and_then(Value::as_str) {
             Some("function") => {
-                let parsed = parse_additional_function(object, &tool_param)?;
+                let parsed = match source {
+                    ToolListSource::TopLevel => parse_top_level_function(object, &tool_param)?,
+                    ToolListSource::Additional => parse_additional_function(object, &tool_param)?,
+                };
                 if !names.insert(parsed["name"].as_str().unwrap_or_default().to_string()) {
                     return Err(ApiError::invalid(
-                        "Additional tool names must be unique.",
+                        match source {
+                            ToolListSource::TopLevel => "Tool names must be unique.",
+                            ToolListSource::Additional => "Additional tool names must be unique.",
+                        },
                         Some(format!("{tool_param}.name")),
                     ));
                 }
@@ -1268,7 +1292,10 @@ fn parse_additional_tools(
                 let parsed = parse_additional_custom(object, &tool_param)?;
                 if !names.insert(parsed["name"].as_str().unwrap_or_default().to_string()) {
                     return Err(ApiError::invalid(
-                        "Additional tool names must be unique.",
+                        match source {
+                            ToolListSource::TopLevel => "Tool names must be unique.",
+                            ToolListSource::Additional => "Additional tool names must be unique.",
+                        },
                         Some(format!("{tool_param}.name")),
                     ));
                 }
@@ -1281,7 +1308,12 @@ fn parse_additional_tools(
                 validate_dynamic_tool_identifier(name, &format!("{tool_param}.name"), 64)?;
                 if !namespaces.insert(name.to_string()) {
                     return Err(ApiError::invalid(
-                        "Additional tool namespace names must be unique.",
+                        match source {
+                            ToolListSource::TopLevel => "Tool namespace names must be unique.",
+                            ToolListSource::Additional => {
+                                "Additional tool namespace names must be unique."
+                            }
+                        },
                         Some(format!("{tool_param}.name")),
                     ));
                 }
@@ -1293,7 +1325,14 @@ fn parse_additional_tools(
                     .filter(|children| !children.is_empty())
                     .ok_or_else(|| {
                         ApiError::invalid(
-                            "Additional tool namespaces require a non-empty tools array.",
+                            match source {
+                                ToolListSource::TopLevel => {
+                                    "Tool namespaces require a non-empty tools array."
+                                }
+                                ToolListSource::Additional => {
+                                    "Additional tool namespaces require a non-empty tools array."
+                                }
+                            },
                             Some(format!("{tool_param}.tools")),
                         )
                     })?;
@@ -1335,28 +1374,36 @@ fn parse_additional_tools(
                 let parsed = parse_additional_tool_search(object, &tool_param)?;
                 if !names.insert(TOOL_SEARCH_DYNAMIC_NAME.to_string()) {
                     return Err(ApiError::invalid(
-                        "Additional tool names must be unique.",
+                        match source {
+                            ToolListSource::TopLevel => "Tool names must be unique.",
+                            ToolListSource::Additional => "Additional tool names must be unique.",
+                        },
                         Some(format!("{tool_param}.type")),
                     ));
                 }
                 callable_count += 1;
                 dynamic.push(parsed);
             }
-            _ => {
-                return Err(ApiError::invalid(
-                    "Additional tool type must be function, custom, namespace, or tool_search.",
-                    Some(format!("{tool_param}.type")),
-                ))
-            }
+            _ => return Err(ApiError::invalid(
+                match source {
+                    ToolListSource::TopLevel => {
+                        "Tool type must be function, custom, namespace, or tool_search."
+                    }
+                    ToolListSource::Additional => {
+                        "Additional tool type must be function, custom, namespace, or tool_search."
+                    }
+                },
+                Some(format!("{tool_param}.type")),
+            )),
         }
         if callable_count > MAX_TOOLS {
             return Err(ApiError::invalid(
-                format!("additional_tools may contain at most {MAX_TOOLS} callable tools."),
+                format!("{param} may contain at most {MAX_TOOLS} callable tools."),
                 Some(param.to_string()),
             ));
         }
     }
-    Ok((tools.clone(), dynamic))
+    Ok(dynamic)
 }
 
 fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
@@ -1534,54 +1581,36 @@ fn parse_responses_tools(value: Option<&Value>) -> Result<(Vec<Value>, Vec<Value
             Some("tools".to_string()),
         ));
     }
-    let mut dynamic = Vec::with_capacity(tools.len());
-    let mut names = HashSet::new();
-    for (index, tool) in tools.iter().enumerate() {
-        let object = tool.as_object().ok_or_else(|| {
-            ApiError::invalid(
-                "Each tool must be an object.",
-                Some(format!("tools.{index}")),
-            )
-        })?;
-        if object.get("type").and_then(Value::as_str) != Some("function") {
-            return Err(ApiError::invalid(
-                "Only function tools are supported.",
-                Some(format!("tools.{index}.type")),
-            ));
-        }
-        // Extra tool fields (strict, additionalProperties flags, future additions) are ignored;
-        // strict=true silently degrades to non-strict rather than failing the request.
-        let name = required_string(object, "name")?;
-        validate_tool_name(name, &format!("tools.{index}.name"))?;
-        if !names.insert(name.to_string()) {
-            return Err(ApiError::invalid(
-                format!("Duplicate tool name {name:?}."),
-                Some(format!("tools.{index}.name")),
-            ));
-        }
-        let description = object
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let parameters = object
-            .get("parameters")
-            .cloned()
-            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-        if !parameters.is_object() {
-            return Err(ApiError::invalid(
-                "Function parameters must be a JSON Schema object.",
-                Some(format!("tools.{index}.parameters")),
-            ));
-        }
-        dynamic.push(json!({
-            "type": "function",
-            "name": name,
-            "description": description,
-            "inputSchema": parameters,
-            "deferLoading": false
-        }));
-    }
+    let dynamic = parse_dynamic_tools(tools, "tools", ToolListSource::TopLevel)?;
     Ok((tools.clone(), dynamic))
+}
+
+fn parse_top_level_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
+    // Extra tool fields (strict, additionalProperties flags, future additions) are ignored;
+    // strict=true silently degrades to non-strict rather than failing the request.
+    let name = required_string(object, "name")?;
+    validate_tool_name(name, &format!("{param}.name"))?;
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let parameters = object
+        .get("parameters")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    if !parameters.is_object() {
+        return Err(ApiError::invalid(
+            "Function parameters must be a JSON Schema object.",
+            Some(format!("{param}.parameters")),
+        ));
+    }
+    Ok(json!({
+        "type": "function",
+        "name": name,
+        "description": description,
+        "inputSchema": parameters,
+        "deferLoading": false
+    }))
 }
 
 fn validate_tool_name(name: &str, param: &str) -> Result<(), ApiError> {
@@ -3899,6 +3928,86 @@ mod tests {
         assert_eq!(
             parsed.dynamic_tools[0]["inputSchema"]["required"],
             json!(["city"])
+        );
+    }
+
+    #[test]
+    fn codex_0146_top_level_tools_translate_current_client_forms() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "Reply briefly.",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "list_mcp_resources",
+                        "description": "List resources",
+                        "parameters": {"type": "object", "properties": {}},
+                        "strict": false
+                    },
+                    {
+                        "type": "function",
+                        "name": "read_mcp_resource",
+                        "description": "Read a resource",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"uri": {"type": "string"}},
+                            "required": ["uri"]
+                        },
+                        "strict": false
+                    },
+                    {
+                        "type": "custom",
+                        "name": "apply_patch",
+                        "description": "Apply a patch",
+                        "format": {
+                            "type": "grammar",
+                            "syntax": "lark",
+                            "definition": "start: /[\\s\\S]+/"
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "name": "view_image",
+                        "description": "View an image",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"]
+                        },
+                        "strict": false
+                    },
+                    {
+                        "type": "tool_search",
+                        "execution": "client",
+                        "description": "Search available tools",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"]
+                        }
+                    }
+                ]
+            }),
+        )
+        .expect("Codex 0.146 top-level client tools must parse");
+
+        assert_eq!(parsed.original_tools.len(), 5);
+        assert_eq!(parsed.dynamic_tools.len(), 5);
+        assert_eq!(parsed.dynamic_tools[0]["type"], "function");
+        assert_eq!(parsed.dynamic_tools[0]["name"], "list_mcp_resources");
+        assert_eq!(parsed.dynamic_tools[2]["type"], "custom");
+        assert_eq!(parsed.dynamic_tools[2]["name"], "apply_patch");
+        assert_eq!(
+            parsed.dynamic_tools[2]["format"]["definition"],
+            "start: /[\\s\\S]+/"
+        );
+        assert_eq!(parsed.dynamic_tools[4]["type"], "function");
+        assert_eq!(parsed.dynamic_tools[4]["name"], TOOL_SEARCH_DYNAMIC_NAME);
+        assert_eq!(
+            parsed.dynamic_tools[4]["inputSchema"]["required"],
+            json!(["query"])
         );
     }
 
