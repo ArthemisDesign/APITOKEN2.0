@@ -7989,10 +7989,18 @@ mod tests {
         let mut lock_holder = PgStore::connect(&url).unwrap();
         lock_holder
             .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
             .query_one(
                 "SELECT pg_advisory_lock($1)",
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
             )
+            .unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
@@ -8239,10 +8247,18 @@ mod tests {
         let mut lock_holder = PgStore::connect(&url).unwrap();
         lock_holder
             .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
             .query_one(
                 "SELECT pg_advisory_lock($1)",
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
             )
+            .unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
