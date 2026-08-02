@@ -273,6 +273,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   равный текущему owner epoch. Это не даёт старому binary унаследовать v2 identity предыдущего
   процесса через `ON CONFLICT`. Dependent claim writer доставляется только после GREEN migration
   SHA.
+- **Stage 9 zero-drain/provisioning schema checkpoint:** migration `0026` ослабляет только
+  DB-ограничение Stage 8 evidence: `legacy_inflight_count` остаётся обязательным audit count, но
+  будущий producer сможет выдать `passed=true` при нуле реальных blockers, пока запросы старого
+  формата штатно завершаются по своим immutable snapshots. Та же migration создаёт пустую
+  append-only `pricing_release_assignment_extensions_v2` для аккаунтов, появившихся после cutover.
+  Каждая extension привязана к exact текущему head activation и атомарной active/recovery pair;
+  manifest assignments не мутируются. Ни resolver, ни provisioning writer не используют таблицу
+  до отдельного dependent runtime SHA после GREEN migration/watchdog.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact full-account coverage (`active` + `disabled`) и готовые funding

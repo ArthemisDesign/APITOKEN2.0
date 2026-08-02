@@ -596,4 +596,40 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_stage5_runs_v2"]!.columns.recovery_digest)
       .toMatchObject({ notNull: false, type: "text" });
   });
+
+  it("keeps Stage 8 legacy inflight observable without requiring a traffic drain", () => {
+    const migrationName = "0030_pricing_stage8_zero_drain.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 29);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 30);
+
+    expect(currentEntry).toMatchObject({
+      idx: 30,
+      version: "7",
+      tag: "0030_pricing_stage8_zero_drain",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).toContain(
+      'DROP CONSTRAINT "pricing_stage8_evidence_v2_shape_check"',
+    );
+    expect(migrationSql).toContain('"legacy_inflight_count" >= 0');
+    expect(migrationSql).toContain(
+      '"passed" AND "pricing_stage8_evidence_v2"."blocker_count" = 0',
+    );
+    expect(migrationSql).not.toContain(
+      '"passed" AND "pricing_stage8_evidence_v2"."legacy_inflight_count" = 0',
+    );
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0030_snapshot.json"), "utf8"),
+    ) as { prevId: string };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0029_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+  });
 });

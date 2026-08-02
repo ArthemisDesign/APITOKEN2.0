@@ -169,9 +169,11 @@ const MIGRATION_0024: &str =
     include_str!("../migrations_pg/0024_pre_cutover_funding_snapshots_v2.sql");
 const MIGRATION_0025: &str =
     include_str!("../migrations_pg/0025_pricing_release_runtime_epoch_fence.sql");
+const MIGRATION_0026: &str =
+    include_str!("../migrations_pg/0026_pricing_release_zero_drain_extensions.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 25;
+pub const CURRENT_SCHEMA_VERSION: i64 = 26;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -200,6 +202,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (23, MIGRATION_0023),
     (24, MIGRATION_0024),
     (25, MIGRATION_0025),
+    (26, MIGRATION_0026),
 ];
 
 #[cfg(test)]
@@ -8412,6 +8415,29 @@ mod tests {
     }
 
     #[test]
+    fn pricing_release_zero_drain_migration_preserves_observation_and_adds_dormant_extensions() {
+        let normalized = MIGRATION_0026
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(normalized.contains("CREATE TABLE pricing_release_assignment_extensions_v2"));
+        assert!(normalized.contains("pricing_release_assignment_extension_v2_pair"));
+        assert!(normalized.contains("DEFERRABLE INITIALLY DEFERRED"));
+        assert!(normalized
+            .contains("pricing assignment extension requires the exact current release head"));
+        assert!(normalized.contains("pricing assignment extension pair is incomplete"));
+        assert!(normalized.contains("must cover a prepared recovery release"));
+        assert!(normalized.contains("DROP CONSTRAINT pricing_stage8_evidence_v2_check1"));
+        assert!(!normalized.contains("DROP CONSTRAINT pricing_stage8_evidence_v2_check;"));
+        assert!(normalized.contains("pricing_stage8_evidence_v2_passed_check"));
+        assert!(normalized.contains("passed AND blocker_count = 0"));
+        assert!(!normalized.contains("passed AND blocker_count = 0 AND legacy_inflight_count = 0"));
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+    }
+
+    #[test]
     fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         assert!(
             ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
@@ -8531,7 +8557,7 @@ mod tests {
                      observed_ts,valid_until_ts
                  ) VALUES(
                      'evidence-v2',101,'release-target-v2',102,'release-recovery-v2',
-                     'inventory-v2','funding-v2','shadow-v2','runtime-v2',0,0,true,100,1000
+                     'inventory-v2','funding-v2','shadow-v2','runtime-v2',2,0,true,100,1000
                  );
 
                  INSERT INTO engine_instances(
@@ -8618,6 +8644,109 @@ mod tests {
                      'snapshot-service-v2'
                  );
                  SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute(
+                "INSERT INTO accounts(
+                     id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created
+                 ) VALUES(
+                     'v2-post-cutover-b2c','v2-post-cutover-b2c',0,0,0,5000,'active',501,'matrix'
+                 );
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'v2-post-cutover-b2c',1,2,'post-cutover-source-v2',
+                     'post-cutover-normalization-v2',0,0,0,0,501,501
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'v2-post-cutover-paid','v2-post-cutover-b2c',1,'paid','provision:v2',
+                     0,0,0,0,'exhausted',501,501
+                 );
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('v2-post-cutover-b2c',1,1,501);
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT incomplete_assignment_extension")
+            .unwrap();
+        let incomplete_extension = pg
+            .client
+            .batch_execute(
+                "INSERT INTO pricing_release_assignment_extensions_v2(
+                     release_generation,account_id,account_class,policy_id,policy_version,
+                     policy_digest,billing_mode,funding_generation,purpose,responsible,
+                     assignment_digest,provisioning_head_generation,provisioning_head_digest,
+                     provisioning_head_version,paired_recovery_generation,paired_recovery_digest,
+                     extension_group_digest,extension_digest,created_ts
+                 ) VALUES(
+                     101,'v2-post-cutover-b2c','b2c','v2-policy-b2c',1,'policy-b2c-v2',
+                     'balance',1,NULL,NULL,'post-cutover-target-assignment',101,
+                     'release-target-v2',1,102,'release-recovery-v2','post-cutover-group',
+                     'post-cutover-target-extension',501
+                 );
+                 SET CONSTRAINTS pricing_release_assignment_extension_v2_pair IMMEDIATE;",
+            )
+            .expect_err("an active-only post-cutover extension must not strand recovery");
+        assert!(incomplete_extension
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("extension pair is incomplete")));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT incomplete_assignment_extension;
+                 RELEASE SAVEPOINT incomplete_assignment_extension;
+                 SET CONSTRAINTS ALL DEFERRED;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_release_assignment_extensions_v2(
+                     release_generation,account_id,account_class,policy_id,policy_version,
+                     policy_digest,billing_mode,funding_generation,purpose,responsible,
+                     assignment_digest,provisioning_head_generation,provisioning_head_digest,
+                     provisioning_head_version,paired_recovery_generation,paired_recovery_digest,
+                     extension_group_digest,extension_digest,created_ts
+                 ) VALUES
+                     (101,'v2-post-cutover-b2c','b2c','v2-policy-b2c',1,'policy-b2c-v2',
+                      'balance',1,NULL,NULL,'post-cutover-target-assignment',101,
+                      'release-target-v2',1,102,'release-recovery-v2','post-cutover-group',
+                      'post-cutover-target-extension',501),
+                     (102,'v2-post-cutover-b2c','b2c','v2-policy-b2c',1,'policy-b2c-v2',
+                      'balance',1,NULL,NULL,'post-cutover-recovery-assignment',101,
+                      'release-target-v2',1,102,'release-recovery-v2','post-cutover-group',
+                      'post-cutover-recovery-extension',501);
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT immutable_assignment_extension")
+            .unwrap();
+        let immutable_extension = pg
+            .client
+            .batch_execute(
+                "UPDATE pricing_release_assignment_extensions_v2
+                    SET assignment_digest='changed'
+                  WHERE release_generation=101 AND account_id='v2-post-cutover-b2c';",
+            )
+            .expect_err("post-cutover assignment extensions must be immutable");
+        assert!(immutable_extension
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("immutable pricing v2 authority")));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT immutable_assignment_extension;
+                 RELEASE SAVEPOINT immutable_assignment_extension;",
             )
             .unwrap();
 

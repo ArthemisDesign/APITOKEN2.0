@@ -210,6 +210,9 @@ Engine хранит prepared releases и один active release head. Подг�
   добавляет nullable owner-epoch identity для release-v2 claim. До первого head старые binaries
   остаются совместимыми; после head каждый claim/heartbeat обязан подтвердить v2 runtime и
   привязать это подтверждение к свежему owner epoch, а не унаследовать его от предыдущего процесса;
+- engine migration `crates/registry/migrations_pg/0026_pricing_release_zero_drain_extensions.sql`
+  оставляет legacy inflight наблюдаемым, но снимает DB-требование traffic drain для passed Stage 8
+  evidence, и добавляет пустую append-only authority для post-cutover assignment extensions;
 - commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
   inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
   receipt authority;
@@ -217,7 +220,9 @@ Engine хранит prepared releases и один active release head. Подг�
   `0028_pricing_stage5_evidence.sql` добавляют честные nullable blocker plans и immutable Stage 5
   inventory/prepare evidence; `0029_pricing_release_two_phase_finalize.sql` разрывает цикл между
   live funding state и release identity: source/policy/assignment plan создаётся первым, funding и
-  engine release identities финализируются позже под DB guards;
+  engine release identities финализируются позже под DB guards; commerce migration
+  `0030_pricing_stage8_zero_drain.sql` совместимо разрешает passed combined evidence при ненулевом
+  наблюдаемом legacy inflight count;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
@@ -298,9 +303,10 @@ commerce PostgreSQL, а release head всё это время остаётся �
 они либо полностью проходят по legacy+dual-write пути до backfill, либо полностью по новому пути
 после него; потерянного промежуточного write нет.
 
-Legacy-format reservations и outbox rows естественно завершаются на работающей системе. Новые
-reservations уже несут release/funding snapshot. Stage 8 требует ноль незавершённых legacy-format
-rows, но не ноль всех активных запросов.
+Legacy-format reservations и outbox rows естественно завершаются на работающей системе, в том числе
+после head CAS, по своей сохранённой format-aware identity. Новые reservations уже несут
+release/funding snapshot. Stage 8 учитывает оба legacy count, но не ждёт их нуля и не останавливает
+новый traffic.
 
 ### 7.4. Защита provisioning race
 
@@ -331,7 +337,8 @@ Stage 9 выполняет одну короткую `SERIALIZABLE` транза
 
 1. перечитывает exact Stage 8 evidence и prepared release digest;
 2. проверяет minimum runtime capability на обоих blue-green слотах и rollback floor;
-3. проверяет все active accounts, funding generations и отсутствие legacy-format inflight rows;
+3. проверяет все active accounts/funding generations и format-aware settlement readiness для
+   наблюдаемого legacy inflight;
 4. проверяет отсутствие pending/retry/dead control jobs и policy ACK drift;
 5. CAS-переводит единственный active release head на target generation;
 6. фиксирует operator/reason/time и evidence digests в activation record.
@@ -377,7 +384,8 @@ runtime capability и prepared/recovery release digests. Engine report v2
 target funding manifest, shadow evaluation set и live runtime floor. Он требует одинаковую
 funding/runtime lineage у target/recovery, полное assignment-покрытие active и disabled accounts,
 паритет funding heads/lots с aggregate, соответствие каждого shadow result exact target rule и
-ноль незавершённого legacy-format inflight. Commerce consumer проверяет canonical Rust digest без
+наблюдаемые legacy-format inflight counts без требования traffic drain. Commerce consumer
+проверяет canonical Rust digest без
 потери i64, дважды сканирует OpenKeys, перечитывает текущие commerce/service identities и
 semantic target/recovery assignments, после чего сохраняет schema-v2 identity на 300 секунд.
 Blocked evidence сохраняется с `passed=false`, а отсутствие local release pair не создаёт строку.
@@ -433,7 +441,7 @@ consumer, но новый consumer их не использует; удален�
   lock order без reservation-row lock до funding-account lock.
 - In-flight cutover: reserve до activation и settlement после неё используют один snapshot.
 - Provisioning race: новый active account не может отсутствовать в target release.
-- Stage 8: 100% inventory/shadow, Gemini, no legacy-format inflight, exact runtime floor.
+- Stage 8: 100% inventory/shadow, Gemini, format-aware legacy inflight audit, exact runtime floor.
 - Stage 9: single-head atomicity, no N-account writes, exact replay, stale evidence rejection.
 - Recovery: forward activation recovery generation без старого binary и без traffic stop.
 - Cleanup: active code/API/UI не создают и не читают tier/retention/track semantics.

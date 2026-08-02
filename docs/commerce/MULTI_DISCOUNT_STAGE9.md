@@ -17,13 +17,15 @@ live mutation — compare-and-set одного global active pricing release hea
 - sales v2 runtime/consumer отдельно подтверждает commission только с `paid_funded_nano` и
   исключение welcome bonus; `sales_contract_digest` в Stage 8 сам по себе это не доказывает;
 - shadow evaluation покрывает 100% поддержанных запросов;
-- нет legacy-format reservations/outbox rows;
+- legacy-format reservations/outbox rows учтены как audit count и продолжают завершаться по
+  reserve-time snapshot; отсутствие таких строк не является precondition;
 - нет pending/processing/retry/dead pricing control jobs;
 - каждый active/disabled account имеет ровно одну B2C/B2B/OpenKeys/service assignment;
 - account creation/activation использует общий release control-plane lock.
 
-Active v2 reservations могут существовать: их immutable snapshot позволяет безопасно пересечь
-cutover. Ноль всех reservations не является precondition.
+Active v2 и legacy-format reservations могут существовать: каждый формат settle'ится по своей
+immutable reserve-time identity. Ноль reservations или искусственная пауза traffic не являются
+precondition.
 
 ## Apply
 
@@ -36,6 +38,10 @@ freshness/coverage checks и CAS-продвигает одну head row на tar
 Apply не обновляет account bindings, balances, reservations или ledger rows по одному. После
 commit новый reserve любого аккаунта читает target release. Reservation, созданная до commit,
 settle'ится по сохранённому прежнему snapshot.
+
+Аккаунт, созданный после cutover, до выдачи usable key получает append-only assignment extension,
+привязанную к exact текущему head и его prepared recovery. Исходный full-inventory manifest не
+переписывается; exact extension pair добавляется одной транзакцией под тем же control-plane lock.
 
 Exact replay возвращает `unchanged`. Stale evidence, inventory drift, неподдержанный runtime или
 унаследованный от чужого owner epoch claim, неполная funding generation либо CAS mismatch

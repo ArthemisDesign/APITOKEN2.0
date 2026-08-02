@@ -2393,7 +2393,7 @@ export const pricingStage8EvidenceV2 = pgTable("pricing_stage8_evidence_v2", {
     AND ${table.legacyInflightCount} >= 0
     AND ${table.blockerCount} >= 0
     AND ${table.validUntil} > ${table.observedAt}
-    AND ((${table.passed} AND ${table.legacyInflightCount} = 0 AND ${table.blockerCount} = 0) OR NOT ${table.passed})
+    AND ((${table.passed} AND ${table.blockerCount} = 0) OR NOT ${table.passed})
   `),
 ]);
 

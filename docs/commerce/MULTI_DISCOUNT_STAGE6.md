@@ -210,10 +210,10 @@ FUNDING_NORMALIZATION_RETRY_MS=15000              # 1s..1h
 
 ## In-flight contract
 
-Ноль всех reservations не требуется. До Stage 8 должны естественно завершиться только
-legacy-format reservations/outbox rows, созданные до dual-compatible runtime. Новые запросы
-продолжают поступать и уже несут v2 snapshot, поэтому могут пересечь Stage 9 без пересчёта цены или
-funding allocation.
+Ноль reservations не требуется. Legacy-format reservations/outbox rows, созданные до
+dual-compatible runtime, продолжают естественно завершаться до или после Stage 9 по своей
+reserve-time identity. Новые запросы продолжают поступать и уже несут v2 snapshot; оба формата
+пересекают Stage 9 без пересчёта цены или funding allocation.
 
 ## Blockers
 
@@ -238,7 +238,7 @@ Durable queue хранит точные `source_state_digest`, `source`, `blocke
 
 Stage 6 завершён, когда confirmed parent доказывает exact full-inventory funding manifest, каждый
 balance account target и recovery plan имеет exact immutable funding generation, final manifest
-атомарно сохранён, все новые writers dual-compatible, legacy-format inflight count равен нулю и
-full replay возвращает только `unchanged`. После engine prepare/readback evidence входит в Stage 8 и
+атомарно сохранён, все новые writers dual-compatible, legacy-format inflight count наблюдается и
+format-aware settlement доказан, а full replay возвращает только `unchanged`. После engine prepare/readback evidence входит в Stage 8 и
 обе финальные release identities. Наличие runner-кода без staged/confirmed production job
 завершением не считается.

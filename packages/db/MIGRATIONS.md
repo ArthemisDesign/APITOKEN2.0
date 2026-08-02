@@ -78,3 +78,9 @@ current commerce/service authority to exact prepared target/recovery releases in
 rows; a missing release pair is reported as `not_persisted`. The row has a five-minute TTL and does
 not mutate a release head, balance, policy or account. Its sales-contract digest is an identity,
 not proof of a deployed sales consumer.
+
+Migration `0030_pricing_stage8_zero_drain.sql` expands the combined-evidence contract for the
+traffic-preserving Stage 9 cutover. `legacy_inflight_count` remains mandatory and non-negative audit
+evidence, but a passed row now depends on zero blockers rather than an impossible moment with no
+pre-head traffic. The dependent producer change is delivered only after this migration SHA is green;
+old consumers continue writing the stricter subset and remain valid.

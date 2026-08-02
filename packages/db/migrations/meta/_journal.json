@@ -211,6 +211,13 @@
       "when": 1785689984278,
       "tag": "0029_pricing_release_two_phase_finalize",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785709541445,
+      "tag": "0030_pricing_stage8_zero_drain",
+      "breakpoints": true
     }
   ]
 }
