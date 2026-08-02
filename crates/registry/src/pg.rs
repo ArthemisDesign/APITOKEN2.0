@@ -834,6 +834,208 @@ fn postgres_process_policy_settlement(
     Ok(balance)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn postgres_process_pricing_release_settlement_v2(
+    tx: &mut Transaction<'_>,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    actual_nano: i64,
+    disposition: &str,
+    reference: Option<&str>,
+    usage: Option<&UsageEventInput>,
+    snapshot: &crate::pricing::PricingRequestSnapshotV2,
+    timestamp: i64,
+) -> Result<i64> {
+    use crate::pricing::BillingModeV2;
+
+    if snapshot.request_id != request_id
+        || snapshot.account_id != account_id
+        || snapshot.charged_hold_nano != hold_nano
+        || actual_nano < 0
+        || (snapshot.billing_mode == BillingModeV2::MeterOnly
+            && (hold_nano != 0 || actual_nano != 0))
+    {
+        bail!("pricing release settlement does not match its immutable request snapshot");
+    }
+    let balance: i64 = match snapshot.billing_mode {
+        BillingModeV2::Balance => {
+            let released = hold_nano
+                .checked_sub(actual_nano)
+                .context("pricing release settlement release overflow")?;
+            let balance: i64 = tx
+                .query_one(
+                    "UPDATE accounts
+                        SET balance_nano=balance_nano+$1,spent_nano=spent_nano+$2,
+                            reserved_nano=reserved_nano-$3
+                      WHERE id=$4 AND reserved_nano >= $3
+                      RETURNING balance_nano",
+                    &[&released, &actual_nano, &hold_nano, &account_id],
+                )
+                .context("pricing release reservation/account aggregate invariant failed")?
+                .get(0);
+            if tx.execute(
+                "UPDATE api_keys
+                    SET spent_nano=spent_nano+$1,reserved_nano=reserved_nano-$2
+                  WHERE key=$3 AND account_id=$4 AND reserved_nano >= $2",
+                &[&actual_nano, &hold_nano, &key, &account_id],
+            )? != 1
+            {
+                let key_still_exists = tx
+                    .query_opt("SELECT 1 FROM api_keys WHERE key=$1", &[&key])?
+                    .is_some();
+                if key_still_exists {
+                    bail!("pricing release reservation/key aggregate invariant failed");
+                }
+            }
+            balance
+        }
+        BillingModeV2::MeterOnly => tx
+            .query_opt(
+                "SELECT balance_nano FROM accounts WHERE id=$1",
+                &[&account_id],
+            )?
+            .context("meter-only pricing release account disappeared")?
+            .get(0),
+    };
+
+    let lineage = (
+        snapshot.release_schema_version,
+        snapshot.release_generation,
+        snapshot.release_digest.as_str(),
+        snapshot.billing_mode.as_str(),
+        snapshot.funding_generation,
+        snapshot.snapshot_digest.as_str(),
+    );
+    if actual_nano > 0 {
+        let model = usage
+            .map(|event| event.model.as_str())
+            .unwrap_or(snapshot.canonical_model_id.as_str());
+        let official_nano = usage
+            .map(|event| event.real_nano)
+            .unwrap_or(snapshot.official_hold_nano);
+        tx.execute(
+            "INSERT INTO ledger(
+                 account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                 provider,official_nano,release_schema_version,release_generation,release_digest,
+                 release_billing_mode,release_funding_generation,release_snapshot_digest)
+             VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16)",
+            &[
+                &account_id,
+                &key,
+                &request_id,
+                &actual_nano,
+                &reference,
+                &balance,
+                &timestamp,
+                &model,
+                &snapshot.provider_id,
+                &official_nano,
+                &lineage.0,
+                &lineage.1,
+                &lineage.2,
+                &lineage.3,
+                &lineage.4,
+                &lineage.5,
+            ],
+        )?;
+    }
+    if disposition == "settle" {
+        if let Some(usage) = usage {
+            tx.execute(
+                "INSERT INTO usage_events(
+                     request_id,account_id,key,model,input_tokens,output_tokens,cache_read_tokens,
+                     cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,
+                     charge_nano,ref,ts,speed,inference_geo,input_nano,output_nano,cache_read_nano,
+                     cache_write_5m_nano,cache_write_1h_nano,web_search_nano,priced_ts,provider,
+                     release_schema_version,release_generation,release_digest,
+                     release_billing_mode,release_funding_generation,release_snapshot_digest)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)",
+                &[
+                    &request_id,
+                    &account_id,
+                    &key,
+                    &usage.model,
+                    &usage.input_tokens,
+                    &usage.output_tokens,
+                    &usage.cache_read_tokens,
+                    &usage.cache_write_5m_tokens,
+                    &usage.cache_write_1h_tokens,
+                    &usage.web_search_requests,
+                    &usage.real_nano,
+                    &actual_nano,
+                    &reference,
+                    &timestamp,
+                    &usage.speed,
+                    &usage.inference_geo,
+                    &usage.input_nano,
+                    &usage.output_nano,
+                    &usage.cache_read_nano,
+                    &usage.cache_write_5m_nano,
+                    &usage.cache_write_1h_nano,
+                    &usage.web_search_nano,
+                    &usage.priced_ts,
+                    &usage.provider,
+                    &lineage.0,
+                    &lineage.1,
+                    &lineage.2,
+                    &lineage.3,
+                    &lineage.4,
+                    &lineage.5,
+                ],
+            )?;
+        }
+    }
+    Ok(balance)
+}
+
+fn pricing_release_settlement_actual_v2(
+    snapshot: &crate::pricing::PricingRequestSnapshotV2,
+    hold_nano: i64,
+    requested_actual_nano: i64,
+    disposition: &str,
+    usage: Option<&UsageEventInput>,
+) -> Result<i64> {
+    use crate::pricing::BillingModeV2;
+
+    if let Some(event) = usage {
+        if event.provider != snapshot.provider_id {
+            bail!("pricing release settlement provider differs from its reserve snapshot");
+        }
+        if event.real_nano < 0 {
+            bail!("pricing release settlement provider usage is negative");
+        }
+    }
+    if disposition == "cancel" {
+        if requested_actual_nano != 0 || usage.is_some() {
+            bail!("pricing release cancellation carried usage or a customer charge");
+        }
+        return Ok(0);
+    }
+    if disposition != "settle" || requested_actual_nano < 0 {
+        bail!("pricing release settlement disposition or amount is invalid");
+    }
+    if snapshot.billing_mode == BillingModeV2::MeterOnly {
+        if requested_actual_nano != 0 {
+            bail!("meter-only pricing release settlement attempted a customer debit");
+        }
+        return Ok(0);
+    }
+    let ceiling = hold_nano
+        .checked_add(1_000_000_000)
+        .context("pricing release settlement ceiling overflow")?;
+    if requested_actual_nano > ceiling {
+        bail!("pricing release settlement exceeds the reserved hold plus overdraft");
+    }
+    // Provider adapters own tariff math. In particular, Codex may report real output above the
+    // client-requested cap while charging only the capped output. Recomputing from `real_nano`
+    // here would silently undo that contract; the immutable release snapshot still pins the exact
+    // multiplier and the outbox stores both official usage and the adapter-derived customer debit.
+    Ok(requested_actual_nano)
+}
+
 impl PgStore {
     pub fn connect(url: &str) -> Result<Self> {
         Self::connect_with_application_name(url, DEFAULT_APPLICATION_NAME)
@@ -1085,14 +1287,20 @@ impl PgStore {
         tx.execute(
             "INSERT INTO engine_instances(
                  instance_id,owner_epoch,lease_until,started_ts,updated_ts,pricing_schema_version,
-                 pricing_runtime_manifest_generation,pricing_runtime_manifest_digest)
-             VALUES($1,$2,$3,$4,$4,$5,$6,$7)
+                 pricing_runtime_manifest_generation,pricing_runtime_manifest_digest,
+                 pricing_release_schema_version,funding_schema_version,
+                 pricing_release_runtime_digest,pricing_release_claim_epoch)
+             VALUES($1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$2)
              ON CONFLICT(instance_id) DO UPDATE SET
                  owner_epoch=EXCLUDED.owner_epoch,lease_until=EXCLUDED.lease_until,
                  started_ts=EXCLUDED.started_ts,updated_ts=EXCLUDED.updated_ts,
                  pricing_schema_version=EXCLUDED.pricing_schema_version,
                  pricing_runtime_manifest_generation=EXCLUDED.pricing_runtime_manifest_generation,
-                 pricing_runtime_manifest_digest=EXCLUDED.pricing_runtime_manifest_digest",
+                 pricing_runtime_manifest_digest=EXCLUDED.pricing_runtime_manifest_digest,
+                 pricing_release_schema_version=EXCLUDED.pricing_release_schema_version,
+                 funding_schema_version=EXCLUDED.funding_schema_version,
+                 pricing_release_runtime_digest=EXCLUDED.pricing_release_runtime_digest,
+                 pricing_release_claim_epoch=EXCLUDED.pricing_release_claim_epoch",
             &[
                 &instance_id,
                 &epoch,
@@ -1101,6 +1309,9 @@ impl PgStore {
                 &crate::pricing::PRICING_SCHEMA_VERSION,
                 &manifest.manifest_generation(),
                 &manifest.manifest_digest(),
+                &crate::pricing::PRICING_RELEASE_SCHEMA_VERSION,
+                &crate::pricing::FUNDING_SCHEMA_VERSION_V2,
+                &crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2,
             ],
         )?;
         tx.commit()?;
@@ -1137,11 +1348,14 @@ impl PgStore {
             return Ok(false);
         }
         let changed = tx.execute(
-            "UPDATE engine_instances SET lease_until=$3,updated_ts=$4
+            "UPDATE engine_instances SET lease_until=$3,updated_ts=$4,
+                    pricing_release_schema_version=$8,funding_schema_version=$9,
+                    pricing_release_runtime_digest=$10,pricing_release_claim_epoch=$2
               WHERE instance_id=$1 AND owner_epoch=$2
                 AND pricing_schema_version=$5
                 AND pricing_runtime_manifest_generation=$6
-                AND pricing_runtime_manifest_digest=$7",
+                AND pricing_runtime_manifest_digest=$7
+                AND pricing_release_claim_epoch=$2",
             &[
                 &owner.instance_id,
                 &owner.epoch,
@@ -1150,6 +1364,9 @@ impl PgStore {
                 &crate::pricing::PRICING_SCHEMA_VERSION,
                 &manifest.manifest_generation(),
                 &manifest.manifest_digest(),
+                &crate::pricing::PRICING_RELEASE_SCHEMA_VERSION,
+                &crate::pricing::FUNDING_SCHEMA_VERSION_V2,
+                &crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2,
             ],
         )? == 1;
         tx.commit()?;
@@ -1184,6 +1401,19 @@ impl PgStore {
             bail!("engine owner lease is stale or fenced");
         }
         Ok(())
+    }
+
+    /// Existing request IDs remain replayable after cutover, but no new legacy-format reserve may
+    /// cross a committed global release head. The check runs in the same transaction immediately
+    /// before any new money mutation; an overlapping head activation can be linearized after this
+    /// reserve without serializing unrelated data-plane transactions on a global lock.
+    fn legacy_pricing_path_is_closed(tx: &mut Transaction<'_>) -> Result<bool> {
+        Ok(tx
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pricing_release_head_v2 WHERE singleton=1)",
+                &[],
+            )?
+            .get(0))
     }
 
     /// Atomically reserve money for one generated request ID. An exact retry is idempotent.
@@ -1259,6 +1489,10 @@ impl PgStore {
             Self::assert_owner_locked(&mut tx, owner, now())?;
             tx.commit()?;
             return Ok(Some(balance));
+        }
+        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+            tx.rollback()?;
+            return Err(crate::pricing::LegacyPricingPathClosedV2.into());
         }
         // Овердрафт-буфер: funded-запрос НЕ роняем из-за гонки конкурентных резервов. Пускаем, пока
         // ПОСЛЕ-баланс не ниже пола −OVERDRAFT_NANO (`balance-hold >= -OVERDRAFT` ⇔ `balance >= hold-OVERDRAFT`).
@@ -1479,11 +1713,7 @@ impl PgStore {
             if matches!(&outcome, Outcome::Unchanged(_)) {
                 if let Some(head) = funding_head.as_ref() {
                     crate::funding_v2::validate_active_reservation_funding_v2(
-                        &mut tx,
-                        head,
-                        request_id,
-                        account_id,
-                        hold,
+                        &mut tx, head, request_id, account_id, hold,
                     )?;
                 }
                 Self::assert_owner_locked(&mut tx, owner, now())?;
@@ -1494,6 +1724,11 @@ impl PgStore {
             }
             tx.commit()?;
             return Ok(outcome);
+        }
+
+        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(Conflict::ActivePricingRelease));
         }
 
         let reservation_ts = now();
@@ -1726,11 +1961,7 @@ impl PgStore {
             if matches!(&outcome, Outcome::Unchanged(_)) {
                 if let Some(head) = funding_head.as_ref() {
                     crate::funding_v2::validate_active_reservation_funding_v2(
-                        &mut tx,
-                        head,
-                        request_id,
-                        account_id,
-                        hold,
+                        &mut tx, head, request_id, account_id, hold,
                     )?;
                 }
                 Self::assert_owner_locked(&mut tx, owner, now())?;
@@ -1741,6 +1972,11 @@ impl PgStore {
             }
             tx.commit()?;
             return Ok(outcome);
+        }
+
+        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(Conflict::ActivePricingRelease));
         }
 
         let reservation_ts = now();
@@ -1946,7 +2182,8 @@ impl PgStore {
               WHERE id=$2 AND status='active' AND balance_nano >= $1
               RETURNING balance_nano",
             &[&hold, &account_id],
-        )? else {
+        )?
+        else {
             tx.rollback()?;
             return Ok(Outcome::NotReserved);
         };
@@ -2052,6 +2289,293 @@ impl PgStore {
         Ok(Outcome::Inserted(Receipt {
             balance_after_reserve_nano: balance,
             snapshot: snapshot.clone(),
+        }))
+    }
+
+    pub fn reserve_request_with_pricing_release_v2(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        resolution: &crate::pricing::PricingReleaseResolutionV2,
+        quote: &crate::pricing::PricingReleaseQuoteV2,
+    ) -> Result<crate::pricing::PricingReleaseReserveOutcomeV2> {
+        self.reserve_request_with_pricing_release_v2_for_execution(
+            owner,
+            key,
+            lease_secs,
+            resolution,
+            quote,
+            &crate::ExecutionAttempt::direct(),
+        )
+    }
+
+    pub fn reserve_request_with_pricing_release_v2_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        resolution: &crate::pricing::PricingReleaseResolutionV2,
+        quote: &crate::pricing::PricingReleaseQuoteV2,
+        execution: &crate::ExecutionAttempt,
+    ) -> Result<crate::pricing::PricingReleaseReserveOutcomeV2> {
+        self.reserve_request_with_pricing_release_v2_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            resolution,
+            quote,
+            execution,
+            || true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_request_with_pricing_release_v2_guarded_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        resolution: &crate::pricing::PricingReleaseResolutionV2,
+        quote: &crate::pricing::PricingReleaseQuoteV2,
+        execution: &crate::ExecutionAttempt,
+        mut commit_gate: impl FnMut() -> bool,
+    ) -> Result<crate::pricing::PricingReleaseReserveOutcomeV2> {
+        use crate::pricing::{
+            BillingModeV2, PricingReleaseReserveConflictV2 as Conflict,
+            PricingReleaseReserveOutcomeV2 as Outcome, PricingReleaseReserveReceiptV2 as Receipt,
+        };
+
+        quote.validate()?;
+        if key.trim().is_empty() || lease_secs <= 0 {
+            bail!("invalid PostgreSQL pricing release reservation parameters");
+        }
+        let window_conflict = |trusted_now_ts: i64| -> Result<Option<Conflict>> {
+            if trusted_now_ts <= 0 {
+                bail!("trusted PostgreSQL pricing release reservation clock is invalid");
+            }
+            let age = trusted_now_ts
+                .checked_sub(quote.admission_ts())
+                .context("pricing release reservation clock overflow")?;
+            if age < 0 {
+                Ok(Some(Conflict::AdmissionTimestampInFuture))
+            } else if age >= crate::pricing::LEGACY_SCALAR_REPLAY_MAX_AGE_SECS {
+                Ok(Some(Conflict::ExpiredIdempotencyWindow))
+            } else {
+                Ok(None)
+            }
+        };
+        let preflight_ts = now();
+        if let Some(conflict) = window_conflict(preflight_ts)? {
+            return Ok(Outcome::Conflict(conflict));
+        }
+
+        let request_id = quote.request_id();
+        let account_id = quote.account_id();
+        let mut tx = self.client.transaction()?;
+        Self::assert_owner(&mut tx, owner, preflight_ts)?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&request_id],
+        )?;
+        crate::funding_v2::lock_funding_account_v2(&mut tx, account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, account_id)?;
+        let fence_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
+        if let Some(conflict) = window_conflict(fence_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
+
+        if let Some(row) = tx.query_opt(
+            "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
+                    owner_epoch,state,group_id,attempt
+               FROM reservations WHERE request_id=$1 FOR UPDATE",
+            &[&request_id],
+        )? {
+            let stored = crate::pricing::postgres::pricing_request_snapshot_v2_in_transaction(
+                &mut tx, request_id,
+            )?;
+            let outcome = if row.get::<_, String>(0) != account_id
+                || row.get::<_, String>(1) != key
+                || row.get::<_, String>(4) != owner.instance_id
+                || row.get::<_, i64>(5) != owner.epoch
+                || row.get::<_, Option<String>>(7).as_deref() != execution.group_id()
+                || row.get::<_, i32>(8) != execution.attempt()
+            {
+                Outcome::Conflict(Conflict::ReservationIdentity)
+            } else if !matches!(row.get::<_, String>(6).as_str(), "reserved" | "delivering") {
+                Outcome::Conflict(Conflict::TerminalReservation)
+            } else if let Some(snapshot) = stored {
+                let quote_matches = snapshot.account_id == quote.account_id()
+                    && snapshot.provider_id == quote.provider_id()
+                    && snapshot.canonical_model_id == quote.canonical_model_id()
+                    && snapshot.tariff_schedule_id == quote.tariff_schedule_id()
+                    && snapshot.tariff_priced_ts == quote.tariff_priced_ts()
+                    && snapshot.official_hold_nano == quote.official_hold_nano()
+                    && snapshot.official_cost_json == *quote.official_cost_json()
+                    && snapshot.charged_hold_nano == row.get::<_, i64>(2);
+                if quote_matches {
+                    Outcome::Unchanged(Receipt {
+                        balance_after_reserve_nano: (snapshot.billing_mode
+                            == BillingModeV2::Balance)
+                            .then(|| row.get(3)),
+                        snapshot,
+                    })
+                } else {
+                    Outcome::Conflict(Conflict::SnapshotPayload)
+                }
+            } else {
+                Outcome::Conflict(Conflict::ExistingReservationWithoutReleaseSnapshot)
+            };
+            if matches!(&outcome, Outcome::Unchanged(_)) {
+                let snapshot = match &outcome {
+                    Outcome::Unchanged(receipt) => &receipt.snapshot,
+                    _ => unreachable!("pricing release replay outcome changed"),
+                };
+                crate::funding_v2::validate_active_pricing_release_funding_v2(
+                    &mut tx,
+                    request_id,
+                    account_id,
+                    snapshot.funding_generation,
+                    row.get(2),
+                )?;
+                Self::assert_owner_locked(&mut tx, owner, now())?;
+                if !commit_gate() {
+                    tx.rollback()?;
+                    return Ok(Outcome::AbortedBeforeCommit);
+                }
+            }
+            tx.commit()?;
+            return Ok(outcome);
+        }
+
+        let Some(current_resolution) =
+            crate::pricing::postgres::pricing_release_resolution_v2_in_transaction(
+                &mut tx,
+                account_id,
+                quote.provider_id(),
+                quote.canonical_model_id(),
+            )?
+        else {
+            tx.rollback()?;
+            return Ok(Outcome::NoActiveRelease);
+        };
+        if &current_resolution != resolution {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(Conflict::ActiveReleaseChanged));
+        }
+
+        let reservation_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
+        if let Some(conflict) = window_conflict(reservation_ts)? {
+            tx.rollback()?;
+            return Ok(Outcome::Conflict(conflict));
+        }
+        let snapshot =
+            crate::pricing::build_pricing_request_snapshot_v2(resolution, quote, reservation_ts)?;
+        let hold = snapshot.charged_hold_nano;
+        let balance = match snapshot.billing_mode {
+            BillingModeV2::Balance => {
+                const OVERDRAFT_NANO: i64 = 1_000_000_000;
+                let head = funding_head
+                    .as_ref()
+                    .context("pricing release balance assignment lacks an active funding head")?;
+                if snapshot.funding_generation != Some(head.generation) {
+                    bail!("pricing release assignment funding generation is not active");
+                }
+                let Some(row) = tx.query_opt(
+                    "UPDATE accounts
+                        SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1
+                      WHERE id=$2 AND status='active' AND balance_nano+$3 >= $1
+                      RETURNING balance_nano",
+                    &[&hold, &account_id, &OVERDRAFT_NANO],
+                )?
+                else {
+                    tx.rollback()?;
+                    return Ok(Outcome::NotReserved);
+                };
+                let balance: i64 = row.get(0);
+                if tx.execute(
+                    "UPDATE api_keys SET reserved_nano=reserved_nano+$1
+              WHERE key=$2 AND account_id=$3 AND status='active'
+                AND (expires_ts IS NULL OR expires_ts>
+                    floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint)
+                AND (spend_limit_nano IS NULL OR
+                    spent_nano+reserved_nano+$1<=spend_limit_nano)",
+                    &[&hold, &key, &account_id],
+                )? != 1
+                {
+                    tx.rollback()?;
+                    return Ok(Outcome::NotReserved);
+                }
+                balance
+            }
+            BillingModeV2::MeterOnly => {
+                if hold != 0 || snapshot.funding_generation.is_some() {
+                    bail!("meter-only pricing release snapshot attempted to reserve funding");
+                }
+                let Some(row) = tx.query_opt(
+                    "SELECT account.balance_nano
+                       FROM accounts account
+                       JOIN api_keys key ON key.account_id=account.id
+                      WHERE account.id=$1 AND account.status='active'
+                        AND key.key=$2 AND key.status='active'
+                        AND (key.expires_ts IS NULL OR key.expires_ts>
+                             floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint)",
+                    &[&account_id, &key],
+                )?
+                else {
+                    tx.rollback()?;
+                    return Ok(Outcome::NotReserved);
+                };
+                row.get(0)
+            }
+        };
+
+        tx.execute(
+            "INSERT INTO reservations(request_id,account_id,key,hold_nano,
+                 balance_after_reserve_nano,owner_instance,owner_epoch,lease_until,state,
+                 created_ts,updated_ts,group_id,attempt)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
+            &[
+                &request_id,
+                &account_id,
+                &key,
+                &hold,
+                &balance,
+                &owner.instance_id,
+                &owner.epoch,
+                &reservation_ts.saturating_add(lease_secs),
+                &reservation_ts,
+                &execution.group_id(),
+                &execution.attempt(),
+            ],
+        )?;
+        crate::pricing::postgres::insert_pricing_request_snapshot_v2(&mut tx, &snapshot)?;
+        if snapshot.billing_mode == BillingModeV2::Balance {
+            crate::funding_v2::reserve_pricing_release_funding_v2(
+                &mut tx,
+                funding_head.as_ref().expect("balance head checked"),
+                request_id,
+                account_id,
+                snapshot
+                    .funding_generation
+                    .expect("balance generation checked"),
+                hold,
+                reservation_ts,
+            )?;
+        }
+        Self::assert_owner_locked(&mut tx, owner, now())?;
+        if !commit_gate() {
+            tx.rollback()?;
+            return Ok(Outcome::AbortedBeforeCommit);
+        }
+        tx.commit()?;
+        Ok(Outcome::Inserted(Receipt {
+            balance_after_reserve_nano: (snapshot.billing_mode == BillingModeV2::Balance)
+                .then_some(balance),
+            snapshot,
         }))
     }
 
@@ -2194,15 +2718,46 @@ impl PgStore {
         }
         let hold: i64 = reservation.get(1);
         let state: String = reservation.get(2);
+        let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
+            &mut tx, request_id, true,
+        )? {
+            crate::pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
+            crate::pricing::PolicySnapshotLookup::Missing
+            | crate::pricing::PolicySnapshotLookup::NonPolicy => None,
+        };
+        let release_snapshot =
+            crate::pricing::postgres::pricing_request_snapshot_v2_in_transaction(
+                &mut tx, request_id,
+            )?;
+        let terminal_actual = reservation.get::<_, Option<i64>>(3);
         if matches!(state.as_str(), "settled" | "canceled") {
-            crate::funding_v2::validate_terminal_reservation_funding_v2(
+            let terminal_actual =
+                terminal_actual.context("terminal reservation lacks actual amount")?;
+            if let Some(snapshot) = release_snapshot.as_ref() {
+                crate::funding_v2::validate_terminal_pricing_release_funding_v2(
+                    &mut tx,
+                    request_id,
+                    &account_id,
+                    snapshot.funding_generation,
+                    hold,
+                    terminal_actual,
+                )?;
+            } else {
+                crate::funding_v2::validate_terminal_reservation_funding_v2(
+                    &mut tx,
+                    request_id,
+                    &account_id,
+                    hold,
+                    terminal_actual,
+                )?;
+            }
+        } else if let Some(snapshot) = release_snapshot.as_ref() {
+            crate::funding_v2::validate_active_pricing_release_funding_v2(
                 &mut tx,
                 request_id,
                 &account_id,
+                snapshot.funding_generation,
                 hold,
-                reservation
-                    .get::<_, Option<i64>>(3)
-                    .context("terminal reservation lacks actual amount")?,
             )?;
         } else if let Some(head) = funding_head.as_ref() {
             crate::funding_v2::validate_active_reservation_funding_v2(
@@ -2213,41 +2768,60 @@ impl PgStore {
                 hold,
             )?;
         }
-        let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
-            &mut tx, request_id, true,
-        )? {
-            crate::pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
-            crate::pricing::PolicySnapshotLookup::Missing
-            | crate::pricing::PolicySnapshotLookup::NonPolicy => None,
-        };
-        let actual = if let Some(snapshot) = policy_snapshot.as_ref() {
+        let actual = if let Some(snapshot) = release_snapshot.as_ref() {
+            pricing_release_settlement_actual_v2(snapshot, hold, actual_nano, disposition, usage)?
+        } else if let Some(snapshot) = policy_snapshot.as_ref() {
             crate::validate_policy_settlement(snapshot, hold, actual_nano, usage, disposition)?;
             actual_nano
         } else {
             actual_nano.max(0)
         };
         let u = usage.cloned().unwrap_or_default();
+        let (
+            release_schema_version,
+            release_generation,
+            release_digest,
+            release_billing_mode,
+            release_funding_generation,
+            release_snapshot_digest,
+        ) = release_snapshot
+            .as_ref()
+            .map_or((None, None, None, None, None, None), |snapshot| {
+                (
+                    Some(snapshot.release_schema_version),
+                    Some(snapshot.release_generation),
+                    Some(snapshot.release_digest.as_str()),
+                    Some(snapshot.billing_mode.as_str()),
+                    snapshot.funding_generation,
+                    Some(snapshot.snapshot_digest.as_str()),
+                )
+            });
         let inserted = tx.execute(
             "INSERT INTO settlement_outbox(request_id,actual_nano,disposition,reference,model,input_tokens, \
              output_tokens,cache_read_tokens,cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests, \
              real_nano,speed,inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
-             cache_write_1h_nano,web_search_nano,priced_ts,provider,state,created_ts,updated_ts) \
+             cache_write_1h_nano,web_search_nano,priced_ts,provider,release_schema_version,
+             release_generation,release_digest,release_billing_mode,release_funding_generation,
+             release_snapshot_digest,state,created_ts,updated_ts) \
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, \
-                    'pending',$23,$23) \
+                    $23,$24,$25,$26,$27,$28,'pending',$29,$29) \
              ON CONFLICT(request_id) DO NOTHING",
             &[&request_id, &actual, &disposition, &reference, &u.model, &u.input_tokens,
               &u.output_tokens, &u.cache_read_tokens, &u.cache_write_5m_tokens,
               &u.cache_write_1h_tokens, &u.web_search_requests, &u.real_nano, &u.speed,
               &u.inference_geo, &u.input_nano, &u.output_nano, &u.cache_read_nano,
               &u.cache_write_5m_nano, &u.cache_write_1h_nano, &u.web_search_nano, &u.priced_ts,
-              &u.provider, &ts],
+              &u.provider, &release_schema_version, &release_generation, &release_digest,
+              &release_billing_mode, &release_funding_generation, &release_snapshot_digest, &ts],
         )?;
         if inserted == 0 {
             let row = tx.query_one(
                 "SELECT actual_nano,disposition,reference,model,input_tokens,output_tokens,cache_read_tokens, \
                  cache_write_5m_tokens,cache_write_1h_tokens,web_search_requests,real_nano,speed, \
                  inference_geo,input_nano,output_nano,cache_read_nano,cache_write_5m_nano, \
-                 cache_write_1h_nano,web_search_nano,priced_ts \
+                 cache_write_1h_nano,web_search_nano,priced_ts,provider,
+                 release_schema_version,release_generation,release_digest,release_billing_mode,
+                 release_funding_generation,release_snapshot_digest \
                  FROM settlement_outbox WHERE request_id=$1",
                 &[&request_id],
             )?;
@@ -2270,7 +2844,14 @@ impl PgStore {
                 && row.get::<_, i64>(16) == u.cache_write_5m_nano
                 && row.get::<_, i64>(17) == u.cache_write_1h_nano
                 && row.get::<_, i64>(18) == u.web_search_nano
-                && row.get::<_, i64>(19) == u.priced_ts;
+                && row.get::<_, i64>(19) == u.priced_ts
+                && row.get::<_, String>(20) == u.provider
+                && row.get::<_, Option<i64>>(21) == release_schema_version
+                && row.get::<_, Option<i64>>(22) == release_generation
+                && row.get::<_, Option<String>>(23).as_deref() == release_digest
+                && row.get::<_, Option<String>>(24).as_deref() == release_billing_mode
+                && row.get::<_, Option<i64>>(25) == release_funding_generation
+                && row.get::<_, Option<String>>(26).as_deref() == release_snapshot_digest;
             if !exact {
                 bail!("settlement request ID conflicts with different outbox payload");
             }
@@ -2333,8 +2914,7 @@ impl PgStore {
         };
         let locked_account_id: String = account_row.get(0);
         crate::funding_v2::lock_funding_account_v2(&mut tx, &locked_account_id)?;
-        let funding_head =
-            crate::funding_v2::active_funding_head_v2(&mut tx, &locked_account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, &locked_account_id)?;
         let Some(row) = tx.query_opt(
             "SELECT o.actual_nano,o.disposition,o.reference,o.model,o.input_tokens,o.output_tokens, \
              o.cache_read_tokens,o.cache_write_5m_tokens,o.cache_write_1h_tokens,o.web_search_requests, \
@@ -2359,6 +2939,10 @@ impl PgStore {
         let actual: i64 = row.get(0);
         let effective_group_id: String = row.get(26);
         let execution_attempt: i32 = row.get(27);
+        let release_snapshot =
+            crate::pricing::postgres::pricing_request_snapshot_v2_in_transaction(
+                &mut tx, request_id,
+            )?;
         if outbox_state == "done" || matches!(reservation_state.as_str(), "settled" | "canceled") {
             let winner = if actual > 0 {
                 tx.query_opt(
@@ -2377,13 +2961,24 @@ impl PgStore {
             if row.get::<_, Option<i64>>(28) != Some(expected_actual) {
                 bail!("stored settlement differs from durable execution-group winner");
             }
-            crate::funding_v2::validate_terminal_reservation_funding_v2(
-                &mut tx,
-                request_id,
-                &account_id,
-                row.get(24),
-                expected_actual,
-            )?;
+            if let Some(snapshot) = release_snapshot.as_ref() {
+                crate::funding_v2::validate_terminal_pricing_release_funding_v2(
+                    &mut tx,
+                    request_id,
+                    &account_id,
+                    snapshot.funding_generation,
+                    row.get(24),
+                    expected_actual,
+                )?;
+            } else {
+                crate::funding_v2::validate_terminal_reservation_funding_v2(
+                    &mut tx,
+                    request_id,
+                    &account_id,
+                    row.get(24),
+                    expected_actual,
+                )?;
+            }
             let balance = tx
                 .query_opt(
                     "SELECT balance_nano FROM accounts WHERE id=$1",
@@ -2459,17 +3054,82 @@ impl PgStore {
         } else {
             disposition.as_str()
         };
-        let funding_v2 = crate::funding_v2::settle_funding_v2(
-            &mut tx,
-            funding_head.as_ref(),
-            request_id,
-            &account_id,
-            hold,
-            effective_actual,
-            ts,
-        )?;
+        let release_usage = (release_snapshot.is_some()
+            && disposition == "settle"
+            && losing_attempt.is_none()
+            && !model.is_empty())
+        .then(|| UsageEventInput {
+            model: model.clone(),
+            provider: provider.clone(),
+            input_tokens: row.get(4),
+            output_tokens: row.get(5),
+            cache_read_tokens: row.get(6),
+            cache_write_5m_tokens: row.get(7),
+            cache_write_1h_tokens: row.get(8),
+            web_search_requests: row.get(9),
+            real_nano: row.get(10),
+            speed: row.get(11),
+            inference_geo: row.get(12),
+            input_nano: row.get(13),
+            output_nano: row.get(14),
+            cache_read_nano: row.get(15),
+            cache_write_5m_nano: row.get(16),
+            cache_write_1h_nano: row.get(17),
+            web_search_nano: row.get(18),
+            priced_ts: row.get(19),
+        });
+        let funding_v2 = if let Some(snapshot) = release_snapshot.as_ref() {
+            match snapshot.billing_mode {
+                crate::pricing::BillingModeV2::Balance => {
+                    Some(crate::funding_v2::settle_pricing_release_funding_v2(
+                        &mut tx,
+                        funding_head.as_ref().context(
+                            "pricing release balance settlement lacks an active funding head",
+                        )?,
+                        request_id,
+                        &account_id,
+                        snapshot
+                            .funding_generation
+                            .context("pricing release balance snapshot lacks funding generation")?,
+                        hold,
+                        effective_actual,
+                        ts,
+                    )?)
+                }
+                crate::pricing::BillingModeV2::MeterOnly => {
+                    if effective_actual != 0 || hold != 0 {
+                        bail!("meter-only pricing release settlement attempted a customer debit");
+                    }
+                    None
+                }
+            }
+        } else {
+            crate::funding_v2::settle_funding_v2(
+                &mut tx,
+                funding_head.as_ref(),
+                request_id,
+                &account_id,
+                hold,
+                effective_actual,
+                ts,
+            )?
+        };
         let balance: i64;
-        if let Some(snapshot) = policy_snapshot.as_ref() {
+        if let Some(snapshot) = release_snapshot.as_ref() {
+            balance = postgres_process_pricing_release_settlement_v2(
+                &mut tx,
+                request_id,
+                &account_id,
+                &account_key,
+                hold,
+                effective_actual,
+                effective_disposition,
+                reference.as_deref(),
+                release_usage.as_ref(),
+                snapshot,
+                ts,
+            )?;
+        } else if let Some(snapshot) = policy_snapshot.as_ref() {
             balance = postgres_process_policy_settlement(
                 &mut tx,
                 request_id,
@@ -2556,10 +3216,7 @@ impl PgStore {
                     &mut tx,
                     ledger_id,
                     &account_id,
-                    funding_head
-                        .as_ref()
-                        .context("funding v2 settlement lacks an active head")?
-                        .generation,
+                    funding.funding_generation,
                     funding,
                 )?;
             }
@@ -3141,10 +3798,9 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
         )?;
-        let affected = transaction.execute(
-            "UPDATE accounts SET status=$1 WHERE id=$2",
-            &[&status, &id],
-        )? as usize;
+        let affected = transaction
+            .execute("UPDATE accounts SET status=$1 WHERE id=$2", &[&status, &id])?
+            as usize;
         transaction.commit()?;
         Ok(affected)
     }
@@ -3367,6 +4023,10 @@ impl PgStore {
             .transpose()?;
         let ts = now();
         let mut tx = self.client.transaction()?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
+        )?;
         let policy_state = tx.query_opt(
             "SELECT binding.policy_enforcement,binding.active_effective_version,policy.content_digest
                FROM account_policy_bindings binding
@@ -3586,6 +4246,12 @@ impl PgStore {
             .map(crate::KeyActivationPolicyAck::validate)
             .transpose()?;
         let mut tx = self.client.transaction()?;
+        if status == "active" {
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
+            )?;
+        }
         let query = format!(
             "SELECT binding.policy_enforcement,binding.active_effective_version,
                     policy.content_digest
@@ -6200,10 +6866,7 @@ impl PgStore {
         &mut self,
         release: &crate::pricing::PricingReleaseV2,
     ) -> Result<crate::pricing::PricingMutation> {
-        crate::pricing::postgres::postgres_prepare_pricing_release_v2(
-            &mut self.client,
-            release,
-        )
+        crate::pricing::postgres::postgres_prepare_pricing_release_v2(&mut self.client, release)
     }
 
     pub fn prepare_pricing_release_recovery_link_v2(
@@ -6234,6 +6897,20 @@ impl PgStore {
         crate::pricing::postgres::postgres_pricing_release_head_v2(&mut self.client)
     }
 
+    pub fn pricing_release_resolution_v2(
+        &mut self,
+        account_id: &str,
+        provider_id: &str,
+        canonical_model_id: &str,
+    ) -> Result<Option<crate::pricing::PricingReleaseResolutionV2>> {
+        crate::pricing::postgres::postgres_pricing_release_resolution_v2(
+            &mut self.client,
+            account_id,
+            provider_id,
+            canonical_model_id,
+        )
+    }
+
     pub fn pricing_release_inventory_v2(
         &mut self,
         after_account_id: Option<&str>,
@@ -6251,6 +6928,104 @@ impl PgStore {
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    fn release_settlement_snapshot(
+        billing_mode: crate::pricing::BillingModeV2,
+        provider_id: &str,
+    ) -> crate::pricing::PricingRequestSnapshotV2 {
+        let balance = billing_mode == crate::pricing::BillingModeV2::Balance;
+        crate::pricing::PricingRequestSnapshotV2 {
+            request_id: "release-settlement-request".into(),
+            account_id: "release-settlement-account".into(),
+            release_schema_version: 2,
+            release_generation: 1,
+            release_digest: "release-digest".into(),
+            assignment_digest: "assignment-digest".into(),
+            account_class: if balance {
+                crate::pricing::AccountClass::B2c
+            } else {
+                crate::pricing::AccountClass::Service
+            },
+            policy_id: "release-policy".into(),
+            policy_version: 1,
+            policy_digest: "release-policy-digest".into(),
+            billing_mode,
+            funding_generation: balance.then_some(1),
+            provider_id: provider_id.into(),
+            canonical_model_id: "provider-model".into(),
+            rule: balance.then(|| crate::pricing::PricingReleasePolicyRuleV2 {
+                rule_id: "global-rule".into(),
+                rule_digest: "global-rule-digest".into(),
+                scope: crate::pricing::PricingReleaseRuleScopeV2::Global,
+                discount_bps: 5_000,
+                payable_multiplier_bp: 5_000,
+            }),
+            tariff_schedule_id: "provider-tariff".into(),
+            tariff_priced_ts: 1,
+            official_hold_nano: 8_000_000,
+            charged_hold_nano: if balance { 4_000_000 } else { 0 },
+            official_cost_json: serde_json::json!({}),
+            snapshot_digest: "snapshot-digest".into(),
+            created_ts: 1,
+        }
+    }
+
+    #[test]
+    fn release_settlement_preserves_provider_adapter_customer_cap() {
+        let snapshot = release_settlement_snapshot(
+            crate::pricing::BillingModeV2::Balance,
+            crate::PROVIDER_OPENAI,
+        );
+        let usage = UsageEventInput {
+            model: "provider-model".into(),
+            provider: crate::PROVIDER_OPENAI.into(),
+            real_nano: 30_500_000,
+            output_tokens: 1_000,
+            ..UsageEventInput::default()
+        };
+        assert_eq!(
+            pricing_release_settlement_actual_v2(
+                &snapshot,
+                4_000_000,
+                3_500_000,
+                "settle",
+                Some(&usage),
+            )
+            .unwrap(),
+            3_500_000
+        );
+    }
+
+    #[test]
+    fn release_settlement_fails_closed_on_lineage_and_meter_only_debit() {
+        let balance = release_settlement_snapshot(
+            crate::pricing::BillingModeV2::Balance,
+            crate::PROVIDER_OPENAI,
+        );
+        let wrong_provider = UsageEventInput {
+            provider: crate::PROVIDER_GOOGLE.into(),
+            real_nano: 1,
+            ..UsageEventInput::default()
+        };
+        assert!(pricing_release_settlement_actual_v2(
+            &balance,
+            100,
+            1,
+            "settle",
+            Some(&wrong_provider),
+        )
+        .is_err());
+
+        let service = release_settlement_snapshot(
+            crate::pricing::BillingModeV2::MeterOnly,
+            crate::PROVIDER_GOOGLE,
+        );
+        assert!(pricing_release_settlement_actual_v2(&service, 0, 1, "settle", None).is_err());
+        assert_eq!(
+            pricing_release_settlement_actual_v2(&service, 0, 0, "settle", None).unwrap(),
+            0
+        );
+    }
 
     fn assert_postgres_batch_rejected(client: &mut Client, sql: &str, expected_message: &str) {
         let error = client
@@ -7761,10 +8536,12 @@ mod tests {
             )
             .unwrap();
         pg.client
-            .batch_execute(
+            .execute(
                 "UPDATE engine_instances SET pricing_release_schema_version=2, \
-                   funding_schema_version=2,pricing_release_runtime_digest='stage8-v2-runtime' \
-                 WHERE instance_id='stage8-engine';",
+                   funding_schema_version=2,pricing_release_runtime_digest=$1, \
+                   pricing_release_claim_epoch=owner_epoch \
+                 WHERE instance_id='stage8-engine'",
+                &[&crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2],
             )
             .unwrap();
 
@@ -8398,18 +9175,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        assert!(normalized.contains(
-            "ADD COLUMN IF NOT EXISTS pricing_release_claim_epoch bigint"
-        ));
+        assert!(normalized.contains("ADD COLUMN IF NOT EXISTS pricing_release_claim_epoch bigint"));
         assert!(!normalized.contains("pricing_release_claim_epoch bigint NOT NULL"));
         assert!(normalized.contains("engine_instances_release_v2_epoch_shape"));
         assert!(normalized.contains("engine_instances_release_v2_epoch_fence"));
-        assert!(normalized.contains(
-            "SELECT 1 FROM pricing_release_head_v2 WHERE singleton = 1"
-        ));
-        assert!(normalized.contains(
-            "NEW.pricing_release_claim_epoch IS DISTINCT FROM NEW.owner_epoch"
-        ));
+        assert!(normalized.contains("SELECT 1 FROM pricing_release_head_v2 WHERE singleton = 1"));
+        assert!(
+            normalized.contains("NEW.pricing_release_claim_epoch IS DISTINCT FROM NEW.owner_epoch")
+        );
         assert!(!normalized.contains(" DROP TABLE "));
         assert!(!normalized.contains(" TRUNCATE "));
     }
@@ -8750,7 +9523,9 @@ mod tests {
             )
             .unwrap();
 
-        pg.client.batch_execute("SAVEPOINT stale_runtime_claim").unwrap();
+        pg.client
+            .batch_execute("SAVEPOINT stale_runtime_claim")
+            .unwrap();
         let stale_runtime_claim = pg
             .client
             .batch_execute(
@@ -8759,11 +9534,9 @@ mod tests {
                   WHERE instance_id='v2-epoch-fence';",
             )
             .expect_err("an active release accepted a runtime without an epoch-bound v2 claim");
-        assert!(stale_runtime_claim.as_db_error().is_some_and(|error| {
-            error
-                .message()
-                .contains("owner-epoch-bound runtime claim")
-        }));
+        assert!(stale_runtime_claim
+            .as_db_error()
+            .is_some_and(|error| { error.message().contains("owner-epoch-bound runtime claim") }));
         pg.client
             .batch_execute(
                 "ROLLBACK TO SAVEPOINT stale_runtime_claim;
@@ -8807,11 +9580,9 @@ mod tests {
                   WHERE instance_id='v2-epoch-fence';",
             )
             .expect_err("a new owner epoch inherited the previous runtime's v2 claim");
-        assert!(inherited_runtime_claim.as_db_error().is_some_and(|error| {
-            error
-                .message()
-                .contains("owner-epoch-bound runtime claim")
-        }));
+        assert!(inherited_runtime_claim
+            .as_db_error()
+            .is_some_and(|error| { error.message().contains("owner-epoch-bound runtime claim") }));
         pg.client
             .batch_execute(
                 "ROLLBACK TO SAVEPOINT inherited_runtime_claim;
@@ -8878,6 +9649,534 @@ mod tests {
         pg.client.batch_execute("ROLLBACK").unwrap();
         lock_holder
             .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::pricing_release_runtime_v2_postgres_matrix`
+    #[test]
+    fn pricing_release_runtime_v2_postgres_matrix() {
+        use crate::pricing::{
+            BillingModeV2, PricingMutation, PricingReleaseAssignmentV2, PricingReleaseKindV2,
+            PricingReleasePolicyRuleV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
+            PricingReleaseReserveOutcomeV2, PricingReleaseRuleScopeV2, PricingReleaseV2,
+        };
+
+        const TARGET_GENERATION: i64 = 91_001;
+        const RECOVERY_GENERATION: i64 = 91_002;
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping pricing release runtime v2 PostgreSQL matrix: test URL is unset");
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg
+            .claim_instance_with_pricing_manifest("release-runtime-v2", 600, &stage8_pg_manifest())
+            .unwrap();
+        pg.account_create("release-runtime-b2c", None, 5_000)
+            .unwrap();
+        pg.account_topup("release-runtime-b2c", 2_000, Some("runtime-seed"))
+            .unwrap();
+        pg.key_issue("release-runtime-b2c-key", "release-runtime-b2c", None)
+            .unwrap();
+        pg.account_create("release-runtime-service", None, 10_000)
+            .unwrap();
+        pg.key_issue(
+            "release-runtime-service-key",
+            "release-runtime-service",
+            None,
+        )
+        .unwrap();
+
+        for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
+            assert_eq!(
+                pg.prepare_pricing_catalog(&catalog).unwrap(),
+                PricingMutation::Stored
+            );
+            assert_eq!(
+                pg.activate_pricing_catalog(
+                    &catalog.product_id,
+                    &catalog.target(),
+                    &crate::pricing::ActiveExpectation::Absent,
+                )
+                .unwrap(),
+                PricingMutation::Applied
+            );
+        }
+        let switches = stage8_pg_switches();
+        assert_eq!(
+            pg.prepare_provider_switches(&switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.activate_provider_switches(
+                &switches.target(),
+                &crate::pricing::ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-b2c',1,2,'runtime-source','runtime-normalization',
+                     2000,0,0,1,100,100
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-paid','release-runtime-b2c',1,'paid','runtime-seed',
+                     2000,0,0,1,'active',100,100
+                 );
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('release-runtime-b2c',1,1,100);
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;",
+            )
+            .unwrap();
+
+        let b2c_policy = PricingReleasePolicyV2 {
+            policy_id: "release-runtime-b2c-policy".into(),
+            policy_version: 1,
+            owner_type: crate::pricing::PolicyOwnerType::GlobalB2c,
+            owner_id: "global".into(),
+            account_class: crate::pricing::AccountClass::B2c,
+            product_id: Some("main".into()),
+            billing_mode: BillingModeV2::Balance,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            catalog_generation: Some(1),
+            catalog_digest: Some("stage8-main-catalog-1".into()),
+            switch_generation: Some(1),
+            switch_digest: Some("stage8-switches-1".into()),
+            content_digest: "release-runtime-b2c-policy-digest".into(),
+            rules: vec![PricingReleasePolicyRuleV2 {
+                rule_id: "release-runtime-global-50".into(),
+                rule_digest: "release-runtime-global-50-digest".into(),
+                scope: PricingReleaseRuleScopeV2::Global,
+                discount_bps: 5_000,
+                payable_multiplier_bp: 5_000,
+            }],
+        };
+        let service_policy = PricingReleasePolicyV2 {
+            policy_id: "release-runtime-service-policy".into(),
+            policy_version: 1,
+            owner_type: crate::pricing::PolicyOwnerType::Service,
+            owner_id: "release-runtime-service".into(),
+            account_class: crate::pricing::AccountClass::Service,
+            product_id: None,
+            billing_mode: BillingModeV2::MeterOnly,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            catalog_generation: None,
+            catalog_digest: None,
+            switch_generation: None,
+            switch_digest: None,
+            content_digest: "release-runtime-service-policy-digest".into(),
+            rules: Vec::new(),
+        };
+        for policy in [&b2c_policy, &service_policy] {
+            assert_eq!(
+                pg.prepare_pricing_release_policy_v2(policy).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+
+        let assignments = vec![
+            PricingReleaseAssignmentV2 {
+                account_id: "release-runtime-b2c".into(),
+                account_class: crate::pricing::AccountClass::B2c,
+                policy_id: b2c_policy.policy_id.clone(),
+                policy_version: 1,
+                policy_digest: b2c_policy.content_digest.clone(),
+                billing_mode: BillingModeV2::Balance,
+                funding_generation: Some(1),
+                purpose: None,
+                responsible: None,
+                assignment_digest: "release-runtime-b2c-assignment".into(),
+            },
+            PricingReleaseAssignmentV2 {
+                account_id: "release-runtime-service".into(),
+                account_class: crate::pricing::AccountClass::Service,
+                policy_id: service_policy.policy_id.clone(),
+                policy_version: 1,
+                policy_digest: service_policy.content_digest.clone(),
+                billing_mode: BillingModeV2::MeterOnly,
+                funding_generation: None,
+                purpose: Some("internal-runtime".into()),
+                responsible: Some("runtime-team".into()),
+                assignment_digest: "release-runtime-service-assignment".into(),
+            },
+        ];
+        let release = |generation, release_kind, digest: &str| PricingReleaseV2 {
+            generation,
+            release_kind,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            main_catalog_generation: 1,
+            main_catalog_digest: "stage8-main-catalog-1".into(),
+            openkeys_catalog_generation: 1,
+            openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+            switch_generation: 1,
+            switch_digest: "stage8-switches-1".into(),
+            inventory_digest: "release-runtime-inventory".into(),
+            policy_manifest_digest: format!("release-runtime-policies-{generation}"),
+            assignment_manifest_digest: format!("release-runtime-assignments-{generation}"),
+            funding_manifest_digest: "release-runtime-funding".into(),
+            minimum_runtime_schema_version: 2,
+            content_digest: digest.into(),
+            assignments: assignments.clone(),
+        };
+        let target = release(
+            TARGET_GENERATION,
+            PricingReleaseKindV2::Target,
+            "release-runtime-target",
+        );
+        let recovery = release(
+            RECOVERY_GENERATION,
+            PricingReleaseKindV2::Recovery,
+            "release-runtime-recovery",
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_v2(&target).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_v2(&recovery).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_recovery_link_v2(&PricingReleaseRecoveryLinkV2 {
+                target_generation: TARGET_GENERATION,
+                target_digest: target.content_digest.clone(),
+                recovery_generation: RECOVERY_GENERATION,
+                recovery_digest: recovery.content_digest.clone(),
+                link_digest: "release-runtime-recovery-link".into(),
+            })
+            .unwrap(),
+            PricingMutation::Stored
+        );
+
+        let activated_ts = now();
+        pg.client
+            .execute(
+                "INSERT INTO pricing_stage8_evidence_v2(
+                     evidence_digest,target_generation,target_digest,recovery_generation,
+                     recovery_digest,inventory_digest,funding_digest,shadow_digest,
+                     runtime_floor_digest,legacy_inflight_count,blocker_count,passed,
+                     observed_ts,valid_until_ts
+                 ) VALUES(
+                     'release-runtime-evidence',$1,$2,$3,$4,'release-runtime-inventory',
+                     'release-runtime-funding','release-runtime-shadow','release-runtime-floor',
+                     0,0,true,$5,$6
+                 )",
+                &[
+                    &TARGET_GENERATION,
+                    &target.content_digest,
+                    &RECOVERY_GENERATION,
+                    &recovery.content_digest,
+                    &activated_ts,
+                    &activated_ts.saturating_add(600),
+                ],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute(&format!(
+                "BEGIN;
+                 INSERT INTO pricing_release_activations_v2(
+                     activation_kind,from_generation,from_digest,to_generation,to_digest,
+                     expected_head_version,resulting_head_version,evidence_digest,operator_id,
+                     reason,activated_ts
+                 ) VALUES(
+                     'cutover',NULL,NULL,{TARGET_GENERATION},'release-runtime-target',0,1,
+                     'release-runtime-evidence','runtime-test','runtime matrix',{activated_ts}
+                 );
+                 INSERT INTO pricing_release_head_v2(
+                     singleton,active_generation,active_digest,head_version,updated_ts
+                 ) VALUES(1,{TARGET_GENERATION},'release-runtime-target',1,{activated_ts});
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;"
+            ))
+            .unwrap();
+
+        let resolution = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-b2c",
+                crate::PROVIDER_GOOGLE,
+                "gemini-3-flash-preview",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.payable_multiplier_bp(), Some(5_000));
+        let admission_ts = now();
+        let legacy_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "release-runtime-b2c-request".into(),
+                account_id: "release-runtime-b2c".into(),
+                provider: crate::pricing::SnapshotProvider::Google,
+                requested_model_id: "gemini-3-flash-preview".into(),
+                canonical_model_id: "gemini-3-flash-preview".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "google/runtime-test/v1".into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 5_000,
+                official_hold_nano: 200,
+                charged_hold_nano: 100,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                    context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                    grounding_enabled: false,
+                    search_reserve_units: 0,
+                },
+            },
+        )
+        .unwrap();
+        let quote =
+            crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&legacy_snapshot).unwrap();
+        let receipt = match pg
+            .reserve_request_with_pricing_release_v2(
+                &owner,
+                "release-runtime-b2c-key",
+                600,
+                &resolution,
+                &quote,
+            )
+            .unwrap()
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt) => receipt,
+            other => panic!("unexpected release-v2 reserve outcome: {other:?}"),
+        };
+        assert_eq!(receipt.snapshot.charged_hold_nano, 100);
+        assert!(matches!(
+            pg.reserve_request_with_pricing_release_v2(
+                &owner,
+                "release-runtime-b2c-key",
+                600,
+                &resolution,
+                &quote,
+            )
+            .unwrap(),
+            PricingReleaseReserveOutcomeV2::Unchanged(_)
+        ));
+
+        let usage = UsageEventInput {
+            model: "gemini-3-flash-preview".into(),
+            provider: crate::PROVIDER_GOOGLE.into(),
+            input_tokens: 8,
+            output_tokens: 4,
+            real_nano: 80,
+            input_nano: 40,
+            output_nano: 40,
+            priced_ts: admission_ts,
+            ..UsageEventInput::default()
+        };
+        assert_eq!(
+            pg.settle_request(
+                "release-runtime-b2c-request",
+                40,
+                Some("runtime-settle"),
+                Some(&usage),
+            )
+            .unwrap(),
+            Some(1_960)
+        );
+        assert_eq!(
+            pg.settle_request(
+                "release-runtime-b2c-request",
+                40,
+                Some("runtime-settle"),
+                Some(&usage),
+            )
+            .unwrap(),
+            Some(1_960)
+        );
+        let b2c = pg
+            .client
+            .query_one(
+                "SELECT account.balance_nano,account.reserved_nano,account.spent_nano,
+                        event.charge_nano,event.real_nano,allocation.charged_nano,
+                        allocation.released_nano
+                   FROM accounts account
+                   JOIN usage_events event ON event.account_id=account.id
+                   JOIN pricing_request_funding_allocations_v2 allocation
+                     ON allocation.request_id=event.request_id
+                  WHERE account.id='release-runtime-b2c'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                b2c.get::<_, i64>(0),
+                b2c.get::<_, i64>(1),
+                b2c.get::<_, i64>(2),
+                b2c.get::<_, i64>(3),
+                b2c.get::<_, i64>(4),
+                b2c.get::<_, Option<i64>>(5),
+                b2c.get::<_, Option<i64>>(6),
+            ),
+            (1_960, 0, 40, 40, 80, Some(40), Some(60))
+        );
+
+        let service_resolution = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-service",
+                crate::PROVIDER_GOOGLE,
+                "runtime-only-future-model",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(service_resolution.billing_mode(), BillingModeV2::MeterOnly);
+        assert_eq!(service_resolution.payable_multiplier_bp(), None);
+        let service_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "release-runtime-service-request".into(),
+                account_id: "release-runtime-service".into(),
+                provider: crate::pricing::SnapshotProvider::Google,
+                requested_model_id: "runtime-only-future-model".into(),
+                canonical_model_id: "runtime-only-future-model".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "google/runtime-service/v1".into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 10_000,
+                official_hold_nano: 500,
+                charged_hold_nano: 500,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                    context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                    grounding_enabled: false,
+                    search_reserve_units: 0,
+                },
+            },
+        )
+        .unwrap();
+        let service_quote =
+            crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&service_snapshot).unwrap();
+        let service_receipt = match pg
+            .reserve_request_with_pricing_release_v2(
+                &owner,
+                "release-runtime-service-key",
+                600,
+                &service_resolution,
+                &service_quote,
+            )
+            .unwrap()
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt) => receipt,
+            other => panic!("unexpected service release-v2 reserve outcome: {other:?}"),
+        };
+        assert_eq!(service_receipt.snapshot.charged_hold_nano, 0);
+        assert_eq!(service_receipt.balance_after_reserve_nano, None);
+        let service_usage = UsageEventInput {
+            model: "runtime-only-future-model".into(),
+            provider: crate::PROVIDER_GOOGLE.into(),
+            input_tokens: 10,
+            real_nano: 500,
+            input_nano: 500,
+            priced_ts: admission_ts,
+            ..UsageEventInput::default()
+        };
+        assert_eq!(
+            pg.settle_request(
+                "release-runtime-service-request",
+                0,
+                None,
+                Some(&service_usage),
+            )
+            .unwrap(),
+            Some(0)
+        );
+        let service = pg
+            .client
+            .query_one(
+                "SELECT account.balance_nano,account.reserved_nano,account.spent_nano,
+                        event.charge_nano,event.real_nano,
+                        (SELECT count(*)::bigint FROM ledger
+                          WHERE account_id='release-runtime-service')
+                   FROM accounts account
+                   JOIN usage_events event ON event.account_id=account.id
+                  WHERE account.id='release-runtime-service'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                service.get::<_, i64>(0),
+                service.get::<_, i64>(1),
+                service.get::<_, i64>(2),
+                service.get::<_, i64>(3),
+                service.get::<_, i64>(4),
+                service.get::<_, i64>(5),
+            ),
+            (0, 0, 0, 0, 500, 0)
+        );
+
+        let legacy_error = pg
+            .reserve_request(
+                &owner,
+                "release-runtime-new-legacy-request",
+                "release-runtime-b2c",
+                "release-runtime-b2c-key",
+                1,
+                600,
+            )
+            .expect_err("active release accepted a new legacy-format reserve");
+        assert!(legacy_error
+            .downcast_ref::<crate::pricing::LegacyPricingPathClosedV2>()
+            .is_some());
+
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        pg.client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",
                 &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
@@ -9168,7 +10467,10 @@ mod tests {
         let balance_nano: i64 = account.get(0);
         let reserved_nano: i64 = account.get(1);
         let spent_nano: i64 = account.get(2);
-        assert_eq!(reserved_nano, 0, "test normalization requires no active hold");
+        assert_eq!(
+            reserved_nano, 0,
+            "test normalization requires no active hold"
+        );
         assert_eq!(spent_nano, 0, "test normalization starts before usage");
         let lot_balance = lots.iter().try_fold(0_i64, |total, lot| {
             total.checked_add(lot.3).ok_or("test lot balance overflow")
@@ -9349,12 +10651,8 @@ mod tests {
             Some(5 * BILLION)
         );
         assert_eq!(
-            pg.account_topup(
-                "funding-v2-main",
-                10 * BILLION,
-                Some("platega:writer-seed"),
-            )
-            .unwrap(),
+            pg.account_topup("funding-v2-main", 10 * BILLION, Some("platega:writer-seed"),)
+                .unwrap(),
             Some(15 * BILLION)
         );
         pg.key_issue("funding-v2-main-key", "funding-v2-main", None)
@@ -9400,10 +10698,7 @@ mod tests {
             )
             .unwrap()
             .get(0);
-        assert_eq!(
-            allocation_order,
-            "welcome_bonus:5000000000,paid:2000000000"
-        );
+        assert_eq!(allocation_order, "welcome_bonus:5000000000,paid:2000000000");
         let reserved_state =
             funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle");
         assert_eq!(
@@ -9463,7 +10758,10 @@ mod tests {
             )
             .unwrap()
             .get(0);
-        assert_eq!(settlement_ledger, "welcome_bonus:5000000000,paid:1000000000");
+        assert_eq!(
+            settlement_ledger,
+            "welcome_bonus:5000000000,paid:1000000000"
+        );
         let terminal_state =
             funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle");
         assert_eq!(
@@ -9638,9 +10936,7 @@ mod tests {
             ("settled".into(), "done".into(), 13 * BILLION, 13 * BILLION)
         );
         let generation_advance_ts = now();
-        pg.client
-            .batch_execute("BEGIN")
-            .unwrap();
+        pg.client.batch_execute("BEGIN").unwrap();
         pg.client
             .execute(
                 "INSERT INTO account_funding_generations_v2(
@@ -9774,14 +11070,9 @@ mod tests {
             "welcome_bonus:1000000000:1000000000:0,paid:0:500000000:0"
         );
 
-        pg.account_create("funding-v2-wait", None, 5_000)
+        pg.account_create("funding-v2-wait", None, 5_000).unwrap();
+        pg.account_topup("funding-v2-wait", 2 * BILLION, Some("platega:wait-seed"))
             .unwrap();
-        pg.account_topup(
-            "funding-v2-wait",
-            2 * BILLION,
-            Some("platega:wait-seed"),
-        )
-        .unwrap();
         pg.key_issue("funding-v2-wait-key", "funding-v2-wait", None)
             .unwrap();
         let mut normalizer = PgStore::connect(&url).unwrap();

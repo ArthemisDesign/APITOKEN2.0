@@ -188,6 +188,20 @@ pricing mode не зависит. Service `meter_only` сохраняет offici
 Settlement использует pinned multiplier/tariff; cancel/RAII возвращает allocations. Старый
 `track`/tier path — только migration source и не должен получать новую логику.
 
+**Stage 9 release-v2 runtime foundation:** каждый metered admission сначала читает global head.
+Пока head отсутствует, Anthropic/OpenAI/Google продолжают прежний scalar/bridge/strict путь без
+изменения цены. После появления head новый reserve обязан повторно разрешить exact
+release/assignment/policy/rule под money locks и атомарно сохранить release/funding snapshot;
+legacy writer после своей request-id replay-проверки больше не создаёт новую строку. Потерянный
+ответ старого reserve остаётся replayable через исходный format-aware writer. Settlement выбирает
+формат по immutable request snapshot и принимает provider-adapter customer debit отдельно от
+полного official usage (это сохраняет Codex requested-output cap). Активный settlement требует,
+чтобы pinned funding generation всё ещё была current: account head нельзя продвинуть поверх
+незавершённых allocations. После monotonic advance разрешён только terminal replay без повторной
+money mutation. `meter_only` пишет usage с нулевым customer debit и не читает баланс как admission
+gate. Этот checkpoint не создаёт и не двигает release head; runtime остаётся dormant до отдельного
+producer-first Stage 9 activation.
+
 Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
 `RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один
 coherent bundle фильтруют bounded catalog chain до первой router-attempt. Этот caller не строит

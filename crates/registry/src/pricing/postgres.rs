@@ -101,8 +101,7 @@ fn shadow_evaluation_advisory_lock(
 }
 
 const SWITCH_LOCK_KEY: &str = "multi-discount:switches";
-pub(crate) const PRICING_RELEASE_CONTROL_LOCK_V2: &str =
-    "pricing-release-v2:control-plane";
+pub(crate) const PRICING_RELEASE_CONTROL_LOCK_V2: &str = "pricing-release-v2:control-plane";
 
 fn postgres_legacy_scalar_snapshot_lookup_inner<C: GenericClient>(
     client: &mut C,
@@ -2338,8 +2337,8 @@ fn release_policy_v2_in_transaction<C: GenericClient>(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Some(super::release_v2::normalize_pricing_release_policy_v2(
-        &super::PricingReleasePolicyV2 {
+    Ok(Some(
+        super::release_v2::normalize_pricing_release_policy_v2(&super::PricingReleasePolicyV2 {
             policy_id: row.get(0),
             policy_version: row.get(1),
             owner_type: super::PolicyOwnerType::from_db(&row.get::<_, String>(2))?,
@@ -2356,8 +2355,8 @@ fn release_policy_v2_in_transaction<C: GenericClient>(
             switch_digest: row.get(13),
             content_digest: row.get(14),
             rules,
-        },
-    )))
+        }),
+    ))
 }
 
 pub(crate) fn postgres_pricing_release_policy_v2(
@@ -2417,22 +2416,35 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
         }
     }
 
-    if let (Some(product_id), Some(catalog_generation), Some(catalog_digest), Some(switch_generation), Some(switch_digest)) = (
+    if let (
+        Some(product_id),
+        Some(catalog_generation),
+        Some(catalog_digest),
+        Some(switch_generation),
+        Some(switch_digest),
+    ) = (
         policy.product_id.as_deref(),
         policy.catalog_generation,
         policy.catalog_digest.as_deref(),
         policy.switch_generation,
         policy.switch_digest.as_deref(),
     ) {
-        let catalog_ready: bool = transaction.query_one(
-            "SELECT EXISTS(
+        let catalog_ready: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
                  SELECT 1 FROM pricing_catalog_versions
                   WHERE product_id=$1 AND generation=$2 AND content_digest=$3
                     AND capability_generation=$4 AND capability_digest=$5
              )",
-            &[&product_id, &catalog_generation, &catalog_digest,
-              &policy.capability_generation, &policy.capability_digest],
-        )?.get(0);
+                &[
+                    &product_id,
+                    &catalog_generation,
+                    &catalog_digest,
+                    &policy.capability_generation,
+                    &policy.capability_digest,
+                ],
+            )?
+            .get(0);
         if !catalog_ready {
             return commit_mutation(
                 transaction,
@@ -2440,15 +2452,21 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
                 "pricing release policy v2 missing catalog",
             );
         }
-        let switches_ready: bool = transaction.query_one(
-            "SELECT EXISTS(
+        let switches_ready: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
                  SELECT 1 FROM provider_switch_versions
                   WHERE generation=$1 AND content_digest=$2
                     AND capability_generation=$3 AND capability_digest=$4
              )",
-            &[&switch_generation, &switch_digest,
-              &policy.capability_generation, &policy.capability_digest],
-        )?.get(0);
+                &[
+                    &switch_generation,
+                    &switch_digest,
+                    &policy.capability_generation,
+                    &policy.capability_digest,
+                ],
+            )?
+            .get(0);
         if !switches_ready {
             return commit_mutation(
                 transaction,
@@ -2461,14 +2479,21 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
             let Some(provider_id) = provider_id else {
                 continue;
             };
-            let rule_dependency_ready: bool = transaction.query_one(
-                "SELECT EXISTS(
+            let rule_dependency_ready: bool = transaction
+                .query_one(
+                    "SELECT EXISTS(
                      SELECT 1 FROM pricing_catalog_entries
                       WHERE product_id=$1 AND generation=$2 AND provider_id=$3
                         AND ($4::text IS NULL OR canonical_model_id=$4)
                  )",
-                &[&product_id, &catalog_generation, &provider_id, &canonical_model_id],
-            )?.get(0);
+                    &[
+                        &product_id,
+                        &catalog_generation,
+                        &provider_id,
+                        &canonical_model_id,
+                    ],
+                )?
+                .get(0);
             if !rule_dependency_ready {
                 return commit_mutation(
                     transaction,
@@ -2486,12 +2511,24 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
              schema_version,capability_generation,capability_digest,catalog_generation,
              catalog_digest,switch_generation,switch_digest,content_digest,created_ts
          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
-        &[&policy.policy_id, &policy.policy_version, &policy.owner_type.as_str(),
-          &policy.owner_id, &policy.account_class.as_str(), &policy.product_id,
-          &policy.billing_mode.as_str(), &policy.schema_version,
-          &policy.capability_generation, &policy.capability_digest, &policy.catalog_generation,
-          &policy.catalog_digest, &policy.switch_generation, &policy.switch_digest,
-          &policy.content_digest, &created_ts],
+        &[
+            &policy.policy_id,
+            &policy.policy_version,
+            &policy.owner_type.as_str(),
+            &policy.owner_id,
+            &policy.account_class.as_str(),
+            &policy.product_id,
+            &policy.billing_mode.as_str(),
+            &policy.schema_version,
+            &policy.capability_generation,
+            &policy.capability_digest,
+            &policy.catalog_generation,
+            &policy.catalog_digest,
+            &policy.switch_generation,
+            &policy.switch_digest,
+            &policy.content_digest,
+            &created_ts,
+        ],
     )?;
     for rule in &policy.rules {
         let (scope_type, provider_id, canonical_model_id) = rule.scope.db_parts();
@@ -2500,9 +2537,17 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
                  policy_id,policy_version,rule_id,rule_digest,scope_type,provider_id,
                  canonical_model_id,discount_bps,payable_multiplier_bp
              ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-            &[&policy.policy_id, &policy.policy_version, &rule.rule_id, &rule.rule_digest,
-              &scope_type, &provider_id, &canonical_model_id, &rule.discount_bps,
-              &rule.payable_multiplier_bp],
+            &[
+                &policy.policy_id,
+                &policy.policy_version,
+                &rule.rule_id,
+                &rule.rule_digest,
+                &scope_type,
+                &provider_id,
+                &canonical_model_id,
+                &rule.discount_bps,
+                &rule.payable_multiplier_bp,
+            ],
         )?;
     }
     commit_mutation(
@@ -2524,29 +2569,34 @@ pub(crate) fn pricing_release_v2_in_transaction<C: GenericClient>(
                 funding_manifest_digest,minimum_runtime_schema_version,content_digest
            FROM pricing_release_versions WHERE generation=$1",
         &[&generation],
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
-    let assignments = client.query(
-        "SELECT account_id,account_class,policy_id,policy_version,policy_digest,billing_mode,
+    let assignments = client
+        .query(
+            "SELECT account_id,account_class,policy_id,policy_version,policy_digest,billing_mode,
                 funding_generation,purpose,responsible,assignment_digest
            FROM pricing_release_assignments
           WHERE release_generation=$1 ORDER BY account_id",
-        &[&generation],
-    )?.into_iter().map(|assignment| {
-        Ok(super::PricingReleaseAssignmentV2 {
-            account_id: assignment.get(0),
-            account_class: super::AccountClass::from_db(&assignment.get::<_, String>(1))?,
-            policy_id: assignment.get(2),
-            policy_version: assignment.get(3),
-            policy_digest: assignment.get(4),
-            billing_mode: super::BillingModeV2::from_db(&assignment.get::<_, String>(5))?,
-            funding_generation: assignment.get(6),
-            purpose: assignment.get(7),
-            responsible: assignment.get(8),
-            assignment_digest: assignment.get(9),
+            &[&generation],
+        )?
+        .into_iter()
+        .map(|assignment| {
+            Ok(super::PricingReleaseAssignmentV2 {
+                account_id: assignment.get(0),
+                account_class: super::AccountClass::from_db(&assignment.get::<_, String>(1))?,
+                policy_id: assignment.get(2),
+                policy_version: assignment.get(3),
+                policy_digest: assignment.get(4),
+                billing_mode: super::BillingModeV2::from_db(&assignment.get::<_, String>(5))?,
+                funding_generation: assignment.get(6),
+                purpose: assignment.get(7),
+                responsible: assignment.get(8),
+                assignment_digest: assignment.get(9),
+            })
         })
-    }).collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
     Ok(Some(super::PricingReleaseV2 {
         generation: row.get(0),
         release_kind: super::PricingReleaseKindV2::from_db(&row.get::<_, String>(1))?,
@@ -2591,7 +2641,8 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
         .transaction()
         .context("begin PostgreSQL pricing release v2 prepare")?;
     advisory_lock(&mut transaction, PRICING_RELEASE_CONTROL_LOCK_V2)?;
-    if let Some(existing) = pricing_release_v2_in_transaction(&mut transaction, release.generation)? {
+    if let Some(existing) = pricing_release_v2_in_transaction(&mut transaction, release.generation)?
+    {
         let outcome = if existing == release {
             PricingMutation::Unchanged
         } else {
@@ -2617,18 +2668,33 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
     }
 
     for (product_id, generation, digest) in [
-        ("main", release.main_catalog_generation, release.main_catalog_digest.as_str()),
-        ("openkeys", release.openkeys_catalog_generation, release.openkeys_catalog_digest.as_str()),
+        (
+            "main",
+            release.main_catalog_generation,
+            release.main_catalog_digest.as_str(),
+        ),
+        (
+            "openkeys",
+            release.openkeys_catalog_generation,
+            release.openkeys_catalog_digest.as_str(),
+        ),
     ] {
-        let exists: bool = transaction.query_one(
-            "SELECT EXISTS(
+        let exists: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
                  SELECT 1 FROM pricing_catalog_versions
                   WHERE product_id=$1 AND generation=$2 AND content_digest=$3
                     AND capability_generation=$4 AND capability_digest=$5
              )",
-            &[&product_id, &generation, &digest, &release.capability_generation,
-              &release.capability_digest],
-        )?.get(0);
+                &[
+                    &product_id,
+                    &generation,
+                    &digest,
+                    &release.capability_generation,
+                    &release.capability_digest,
+                ],
+            )?
+            .get(0);
         if !exists {
             return commit_mutation(
                 transaction,
@@ -2637,15 +2703,21 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
             );
         }
     }
-    let switches_exist: bool = transaction.query_one(
-        "SELECT EXISTS(
+    let switches_exist: bool = transaction
+        .query_one(
+            "SELECT EXISTS(
              SELECT 1 FROM provider_switch_versions
               WHERE generation=$1 AND content_digest=$2
                 AND capability_generation=$3 AND capability_digest=$4
          )",
-        &[&release.switch_generation, &release.switch_digest,
-          &release.capability_generation, &release.capability_digest],
-    )?.get(0);
+            &[
+                &release.switch_generation,
+                &release.switch_digest,
+                &release.capability_generation,
+                &release.capability_digest,
+            ],
+        )?
+        .get(0);
     if !switches_exist {
         return commit_mutation(
             transaction,
@@ -2654,10 +2726,9 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
         );
     }
 
-    let inventory_count: i64 = transaction.query_one(
-        "SELECT count(*)::bigint FROM accounts",
-        &[],
-    )?.get(0);
+    let inventory_count: i64 = transaction
+        .query_one("SELECT count(*)::bigint FROM accounts", &[])?
+        .get(0);
     if inventory_count != release.assignments.len() as i64 {
         return commit_mutation(
             transaction,
@@ -2668,8 +2739,9 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
         );
     }
     for assignment in &release.assignments {
-        let assignment_ready: bool = transaction.query_one(
-            "SELECT EXISTS(
+        let assignment_ready: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
                  SELECT 1
                    FROM accounts account
                    JOIN pricing_release_policy_versions policy
@@ -2686,10 +2758,17 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
                         ))
                     )
              )",
-            &[&assignment.account_id, &assignment.policy_id, &assignment.policy_version,
-              &assignment.policy_digest, &assignment.account_class.as_str(),
-              &assignment.billing_mode.as_str(), &assignment.funding_generation],
-        )?.get(0);
+                &[
+                    &assignment.account_id,
+                    &assignment.policy_id,
+                    &assignment.policy_version,
+                    &assignment.policy_digest,
+                    &assignment.account_class.as_str(),
+                    &assignment.billing_mode.as_str(),
+                    &assignment.funding_generation,
+                ],
+            )?
+            .get(0);
         if !assignment_ready {
             return commit_mutation(
                 transaction,
@@ -2708,14 +2787,26 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
              policy_manifest_digest,assignment_manifest_digest,funding_manifest_digest,
              minimum_runtime_schema_version,content_digest,created_ts
          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
-        &[&release.generation, &release.release_kind.as_str(), &release.schema_version,
-          &release.capability_generation, &release.capability_digest,
-          &release.main_catalog_generation, &release.main_catalog_digest,
-          &release.openkeys_catalog_generation, &release.openkeys_catalog_digest,
-          &release.switch_generation, &release.switch_digest, &release.inventory_digest,
-          &release.policy_manifest_digest, &release.assignment_manifest_digest,
-          &release.funding_manifest_digest, &release.minimum_runtime_schema_version,
-          &release.content_digest, &created_ts],
+        &[
+            &release.generation,
+            &release.release_kind.as_str(),
+            &release.schema_version,
+            &release.capability_generation,
+            &release.capability_digest,
+            &release.main_catalog_generation,
+            &release.main_catalog_digest,
+            &release.openkeys_catalog_generation,
+            &release.openkeys_catalog_digest,
+            &release.switch_generation,
+            &release.switch_digest,
+            &release.inventory_digest,
+            &release.policy_manifest_digest,
+            &release.assignment_manifest_digest,
+            &release.funding_manifest_digest,
+            &release.minimum_runtime_schema_version,
+            &release.content_digest,
+            &created_ts,
+        ],
     )?;
     for assignment in &release.assignments {
         transaction.execute(
@@ -2724,10 +2815,19 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
                  policy_digest,billing_mode,funding_generation,purpose,responsible,
                  assignment_digest
              ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-            &[&release.generation, &assignment.account_id, &assignment.account_class.as_str(),
-              &assignment.policy_id, &assignment.policy_version, &assignment.policy_digest,
-              &assignment.billing_mode.as_str(), &assignment.funding_generation,
-              &assignment.purpose, &assignment.responsible, &assignment.assignment_digest],
+            &[
+                &release.generation,
+                &assignment.account_id,
+                &assignment.account_class.as_str(),
+                &assignment.policy_id,
+                &assignment.policy_version,
+                &assignment.policy_digest,
+                &assignment.billing_mode.as_str(),
+                &assignment.funding_generation,
+                &assignment.purpose,
+                &assignment.responsible,
+                &assignment.assignment_digest,
+            ],
         )?;
     }
     commit_mutation(
@@ -2757,7 +2857,11 @@ pub(crate) fn postgres_prepare_pricing_release_recovery_link_v2(
             && row.get::<_, String>(2) == link.link_digest;
         return commit_mutation(
             transaction,
-            if exact { PricingMutation::Unchanged } else { version_conflict() },
+            if exact {
+                PricingMutation::Unchanged
+            } else {
+                version_conflict()
+            },
             "pricing release recovery link v2 replay",
         );
     }
@@ -2780,7 +2884,8 @@ pub(crate) fn postgres_prepare_pricing_release_recovery_link_v2(
                FROM pricing_release_versions
               WHERE generation=$1",
             &[&generation],
-        )? else {
+        )?
+        else {
             return commit_mutation(
                 transaction,
                 missing(label),
@@ -2824,8 +2929,14 @@ pub(crate) fn postgres_prepare_pricing_release_recovery_link_v2(
              target_generation,target_digest,recovery_generation,recovery_digest,
              link_digest,created_ts
          ) VALUES($1,$2,$3,$4,$5,$6)",
-        &[&link.target_generation, &link.target_digest, &link.recovery_generation,
-          &link.recovery_digest, &link.link_digest, &now()],
+        &[
+            &link.target_generation,
+            &link.target_digest,
+            &link.recovery_generation,
+            &link.recovery_digest,
+            &link.link_digest,
+            &now(),
+        ],
     )?;
     commit_mutation(
         transaction,
@@ -2842,33 +2953,462 @@ pub(crate) fn postgres_pricing_release_recovery_link_v2(
     if target_generation <= 0 || recovery_generation <= target_generation {
         bail!("invalid pricing release recovery link generations");
     }
-    Ok(client.query_opt(
-        "SELECT target_generation,target_digest,recovery_generation,recovery_digest,link_digest
+    Ok(client
+        .query_opt(
+            "SELECT target_generation,target_digest,recovery_generation,recovery_digest,link_digest
            FROM pricing_release_recovery_links
           WHERE target_generation=$1 AND recovery_generation=$2",
-        &[&target_generation, &recovery_generation],
-    )?.map(|row| super::PricingReleaseRecoveryLinkV2 {
-        target_generation: row.get(0),
-        target_digest: row.get(1),
-        recovery_generation: row.get(2),
-        recovery_digest: row.get(3),
-        link_digest: row.get(4),
-    }))
+            &[&target_generation, &recovery_generation],
+        )?
+        .map(|row| super::PricingReleaseRecoveryLinkV2 {
+            target_generation: row.get(0),
+            target_digest: row.get(1),
+            recovery_generation: row.get(2),
+            recovery_digest: row.get(3),
+            link_digest: row.get(4),
+        }))
 }
 
 pub(crate) fn postgres_pricing_release_head_v2(
     client: &mut Client,
 ) -> Result<Option<super::PricingReleaseHeadV2>> {
-    Ok(client.query_opt(
-        "SELECT active_generation,active_digest,head_version,updated_ts
+    Ok(client
+        .query_opt(
+            "SELECT active_generation,active_digest,head_version,updated_ts
            FROM pricing_release_head_v2 WHERE singleton=1",
-        &[],
-    )?.map(|row| super::PricingReleaseHeadV2 {
+            &[],
+        )?
+        .map(|row| super::PricingReleaseHeadV2 {
+            active_generation: row.get(0),
+            active_digest: row.get(1),
+            head_version: row.get(2),
+            updated_ts: row.get(3),
+        }))
+}
+
+pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
+    client: &mut C,
+    account_id: &str,
+    provider_id: &str,
+    canonical_model_id: &str,
+) -> Result<Option<super::PricingReleaseResolutionV2>> {
+    for (label, value) in [
+        ("pricing release account id", account_id),
+        ("pricing release provider id", provider_id),
+        ("pricing release canonical model id", canonical_model_id),
+    ] {
+        super::require_id(label, value)?;
+    }
+    if !matches!(provider_id, "anthropic" | "openai" | "google") {
+        bail!("pricing release provider is outside the fixed runtime plane");
+    }
+
+    let Some(row) = client.query_opt(
+        "SELECT head.active_generation,head.active_digest,head.head_version,head.updated_ts,
+                release.schema_version,
+                assignment.account_class,assignment.policy_id,assignment.policy_version,
+                assignment.policy_digest,assignment.billing_mode,assignment.funding_generation,
+                assignment.purpose,assignment.responsible,assignment.assignment_digest,
+                release.capability_generation,release.capability_digest,
+                release.main_catalog_generation,release.main_catalog_digest,
+                release.openkeys_catalog_generation,release.openkeys_catalog_digest,
+                release.switch_generation,release.switch_digest
+           FROM pricing_release_head_v2 head
+           JOIN pricing_release_versions release
+             ON release.generation=head.active_generation
+            AND release.content_digest=head.active_digest
+           JOIN pricing_release_assignments assignment
+             ON assignment.release_generation=release.generation
+            AND assignment.account_id=$1
+          WHERE head.singleton=1",
+        &[&account_id],
+    )?
+    else {
+        let head_exists: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pricing_release_head_v2 WHERE singleton=1)",
+                &[],
+            )?
+            .get(0);
+        if head_exists {
+            bail!("active pricing release does not cover the requested account");
+        }
+        return Ok(None);
+    };
+
+    let head = super::PricingReleaseHeadV2 {
         active_generation: row.get(0),
         active_digest: row.get(1),
         head_version: row.get(2),
         updated_ts: row.get(3),
+    };
+    let release_schema_version: i64 = row.get(4);
+    let assignment = super::PricingReleaseAssignmentV2 {
+        account_id: account_id.to_owned(),
+        account_class: super::AccountClass::from_db(&row.get::<_, String>(5))?,
+        policy_id: row.get(6),
+        policy_version: row.get(7),
+        policy_digest: row.get(8),
+        billing_mode: super::BillingModeV2::from_db(&row.get::<_, String>(9))?,
+        funding_generation: row.get(10),
+        purpose: row.get(11),
+        responsible: row.get(12),
+        assignment_digest: row.get(13),
+    };
+    let release_capability_generation: i64 = row.get(14);
+    let release_capability_digest: String = row.get(15);
+    let main_catalog_generation: i64 = row.get(16);
+    let main_catalog_digest: String = row.get(17);
+    let openkeys_catalog_generation: i64 = row.get(18);
+    let openkeys_catalog_digest: String = row.get(19);
+    let release_switch_generation: i64 = row.get(20);
+    let release_switch_digest: String = row.get(21);
+
+    let policy =
+        release_policy_v2_in_transaction(client, &assignment.policy_id, assignment.policy_version)?
+            .context("active pricing release assignment policy is missing")?;
+    if policy.content_digest != assignment.policy_digest
+        || policy.account_class != assignment.account_class
+        || policy.billing_mode != assignment.billing_mode
+        || policy.capability_generation != release_capability_generation
+        || policy.capability_digest != release_capability_digest
+        || policy
+            .switch_generation
+            .is_some_and(|generation| generation != release_switch_generation)
+        || policy
+            .switch_digest
+            .as_deref()
+            .is_some_and(|digest| digest != release_switch_digest)
+    {
+        bail!("active pricing release assignment/policy identity is inconsistent");
+    }
+
+    let master_enabled = client
+        .query_opt(
+            "SELECT entry.enabled
+               FROM provider_switch_versions switches
+               JOIN provider_switch_entries entry ON entry.generation=switches.generation
+              WHERE switches.generation=$1 AND switches.content_digest=$2
+                AND switches.capability_generation=$3 AND switches.capability_digest=$4
+                AND entry.provider_id=$5 AND entry.scope_type='master'
+                AND entry.product_id='' AND entry.segment=''",
+            &[
+                &release_switch_generation,
+                &release_switch_digest,
+                &release_capability_generation,
+                &release_capability_digest,
+                &provider_id,
+            ],
+        )?
+        .context("active pricing release lacks the provider master switch")?
+        .get::<_, bool>(0);
+    if !master_enabled {
+        bail!("active pricing release provider master switch is disabled");
+    }
+
+    let rule = if assignment.billing_mode == super::BillingModeV2::MeterOnly {
+        if assignment.account_class != super::AccountClass::Service
+            || !policy.rules.is_empty()
+            || policy.product_id.is_some()
+        {
+            bail!("active meter-only release policy is not a canonical service policy");
+        }
+        None
+    } else {
+        let product_id = policy
+            .product_id
+            .as_deref()
+            .context("active balance release policy lacks a product id")?;
+        let catalog_generation = policy
+            .catalog_generation
+            .context("active balance release policy lacks a catalog generation")?;
+        let catalog_digest = policy
+            .catalog_digest
+            .as_deref()
+            .context("active balance release policy lacks a catalog digest")?;
+        let (release_catalog_generation, release_catalog_digest) = match product_id {
+            "main" => (main_catalog_generation, main_catalog_digest.as_str()),
+            "openkeys" => (
+                openkeys_catalog_generation,
+                openkeys_catalog_digest.as_str(),
+            ),
+            _ => bail!("active pricing release policy references an unsupported product"),
+        };
+        if catalog_generation != release_catalog_generation
+            || catalog_digest != release_catalog_digest
+        {
+            bail!("active pricing release policy catalog differs from the release pin");
+        }
+        let model_enabled: bool = client
+            .query_opt(
+                "SELECT entry.enabled
+                   FROM pricing_catalog_versions catalog
+                   JOIN pricing_catalog_entries entry
+                     ON entry.product_id=catalog.product_id
+                    AND entry.generation=catalog.generation
+                  WHERE catalog.product_id=$1 AND catalog.generation=$2
+                    AND catalog.content_digest=$3
+                    AND catalog.capability_generation=$4 AND catalog.capability_digest=$5
+                    AND entry.provider_id=$6 AND entry.canonical_model_id=$7",
+                &[
+                    &product_id,
+                    &catalog_generation,
+                    &catalog_digest,
+                    &release_capability_generation,
+                    &release_capability_digest,
+                    &provider_id,
+                    &canonical_model_id,
+                ],
+            )?
+            .context("active pricing release model is absent from the pinned catalog")?
+            .get(0);
+        if !model_enabled {
+            bail!("active pricing release model is disabled in the pinned catalog");
+        }
+
+        let (scope_type, segment) = match assignment.account_class {
+            super::AccountClass::B2c => ("segment", "b2c"),
+            super::AccountClass::B2b => ("segment", "b2b"),
+            super::AccountClass::OpenKeys => ("product", ""),
+            super::AccountClass::Service => {
+                bail!("service assignment cannot use balance billing")
+            }
+        };
+        let scoped_switch = client
+            .query_opt(
+                "SELECT enabled,catalog_generation
+                   FROM provider_switch_entries
+                  WHERE generation=$1 AND provider_id=$2 AND scope_type=$3
+                    AND product_id=$4 AND segment=$5",
+                &[
+                    &release_switch_generation,
+                    &provider_id,
+                    &scope_type,
+                    &product_id,
+                    &segment,
+                ],
+            )?
+            .context("active pricing release lacks the required scoped provider switch")?;
+        if !scoped_switch.get::<_, bool>(0)
+            || scoped_switch.get::<_, Option<i64>>(1) != Some(catalog_generation)
+        {
+            bail!("active pricing release scoped provider switch is disabled or stale");
+        }
+
+        let selected = policy
+            .rules
+            .iter()
+            .find(|rule| {
+                matches!(
+                    &rule.scope,
+                    super::PricingReleaseRuleScopeV2::Model {
+                        provider_id: rule_provider,
+                        canonical_model_id: rule_model,
+                    } if rule_provider == provider_id && rule_model == canonical_model_id
+                )
+            })
+            .or_else(|| {
+                policy.rules.iter().find(|rule| {
+                    matches!(
+                        &rule.scope,
+                        super::PricingReleaseRuleScopeV2::Provider {
+                            provider_id: rule_provider,
+                        } if rule_provider == provider_id
+                    )
+                })
+            })
+            .or_else(|| {
+                policy
+                    .rules
+                    .iter()
+                    .find(|rule| matches!(&rule.scope, super::PricingReleaseRuleScopeV2::Global))
+            })
+            .cloned()
+            .context("active pricing release has no applicable model/provider/global rule")?;
+        Some(selected)
+    };
+
+    Ok(Some(super::PricingReleaseResolutionV2 {
+        release_digest: head.active_digest.clone(),
+        head,
+        release_schema_version,
+        assignment,
+        policy,
+        rule,
     }))
+}
+
+pub(crate) fn postgres_pricing_release_resolution_v2(
+    client: &mut Client,
+    account_id: &str,
+    provider_id: &str,
+    canonical_model_id: &str,
+) -> Result<Option<super::PricingReleaseResolutionV2>> {
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .context("begin PostgreSQL pricing release resolution v2")?;
+    let resolved = pricing_release_resolution_v2_in_transaction(
+        &mut transaction,
+        account_id,
+        provider_id,
+        canonical_model_id,
+    )?;
+    transaction.commit()?;
+    Ok(resolved)
+}
+
+pub(crate) fn pricing_request_snapshot_v2_in_transaction<C: GenericClient>(
+    client: &mut C,
+    request_id: &str,
+) -> Result<Option<super::PricingRequestSnapshotV2>> {
+    super::require_id("pricing release request id", request_id)?;
+    let Some(row) = client.query_opt(
+        "SELECT account_id,release_schema_version,release_generation,release_digest,
+                assignment_digest,account_class,policy_id,policy_version,policy_digest,
+                billing_mode,funding_generation,provider_id,canonical_model_id,rule_id,
+                rule_digest,rule_scope,discount_bps,payable_multiplier_bp,tariff_schedule_id,
+                tariff_priced_ts,official_hold_nano,charged_hold_nano,official_cost_json::text,
+                snapshot_digest,created_ts
+           FROM pricing_request_snapshots_v2 WHERE request_id=$1",
+        &[&request_id],
+    )?
+    else {
+        return Ok(None);
+    };
+    let provider_id: String = row.get(11);
+    let canonical_model_id: String = row.get(12);
+    let rule_id: Option<String> = row.get(13);
+    let rule_digest: Option<String> = row.get(14);
+    let rule_scope: Option<String> = row.get(15);
+    let discount_bps: Option<i64> = row.get(16);
+    let payable_multiplier_bp: Option<i64> = row.get(17);
+    let rule = match (
+        rule_id,
+        rule_digest,
+        rule_scope.as_deref(),
+        discount_bps,
+        payable_multiplier_bp,
+    ) {
+        (None, None, None, None, None) => None,
+        (Some(rule_id), Some(rule_digest), Some(scope), Some(discount_bps), Some(multiplier)) => {
+            let scope = match scope {
+                "global" => super::PricingReleaseRuleScopeV2::Global,
+                "provider" => super::PricingReleaseRuleScopeV2::Provider {
+                    provider_id: provider_id.clone(),
+                },
+                "model" => super::PricingReleaseRuleScopeV2::Model {
+                    provider_id: provider_id.clone(),
+                    canonical_model_id: canonical_model_id.clone(),
+                },
+                _ => bail!("stored pricing release request rule scope is invalid"),
+            };
+            Some(super::PricingReleasePolicyRuleV2 {
+                rule_id,
+                rule_digest,
+                scope,
+                discount_bps,
+                payable_multiplier_bp: multiplier,
+            })
+        }
+        _ => bail!("stored pricing release request rule identity is partial"),
+    };
+    let snapshot = super::PricingRequestSnapshotV2 {
+        request_id: request_id.to_owned(),
+        account_id: row.get(0),
+        release_schema_version: row.get(1),
+        release_generation: row.get(2),
+        release_digest: row.get(3),
+        assignment_digest: row.get(4),
+        account_class: super::AccountClass::from_db(&row.get::<_, String>(5))?,
+        policy_id: row.get(6),
+        policy_version: row.get(7),
+        policy_digest: row.get(8),
+        billing_mode: super::BillingModeV2::from_db(&row.get::<_, String>(9))?,
+        funding_generation: row.get(10),
+        provider_id,
+        canonical_model_id,
+        rule,
+        tariff_schedule_id: row.get(18),
+        tariff_priced_ts: row.get(19),
+        official_hold_nano: row.get(20),
+        charged_hold_nano: row.get(21),
+        official_cost_json: serde_json::from_str(&row.get::<_, String>(22))
+            .context("decode stored pricing release request official cost")?,
+        snapshot_digest: row.get(23),
+        created_ts: row.get(24),
+    };
+    if snapshot.snapshot_digest != super::release_v2::pricing_request_snapshot_digest_v2(&snapshot)?
+    {
+        bail!("stored pricing release request snapshot digest mismatch");
+    }
+    Ok(Some(snapshot))
+}
+
+pub(crate) fn insert_pricing_request_snapshot_v2<C: GenericClient>(
+    client: &mut C,
+    snapshot: &super::PricingRequestSnapshotV2,
+) -> Result<()> {
+    if snapshot.snapshot_digest != super::release_v2::pricing_request_snapshot_digest_v2(snapshot)?
+    {
+        bail!("pricing release request snapshot digest is invalid");
+    }
+    let (rule_id, rule_digest, rule_scope, discount_bps, payable_multiplier_bp) =
+        if let Some(rule) = snapshot.rule.as_ref() {
+            let (scope, _, _) = rule.scope.db_parts();
+            (
+                Some(rule.rule_id.as_str()),
+                Some(rule.rule_digest.as_str()),
+                Some(scope),
+                Some(rule.discount_bps),
+                Some(rule.payable_multiplier_bp),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+    let official_cost_json = serde_json::to_string(&snapshot.official_cost_json)
+        .context("encode pricing release request official cost")?;
+    client.execute(
+        "INSERT INTO pricing_request_snapshots_v2(
+             request_id,account_id,release_schema_version,release_generation,release_digest,
+             assignment_digest,account_class,policy_id,policy_version,policy_digest,billing_mode,
+             funding_generation,provider_id,canonical_model_id,rule_id,rule_digest,rule_scope,
+             discount_bps,payable_multiplier_bp,tariff_schedule_id,tariff_priced_ts,
+             official_hold_nano,charged_hold_nano,official_cost_json,snapshot_digest,created_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                $21,$22,$23,$24::text::jsonb,$25,$26)",
+        &[
+            &snapshot.request_id,
+            &snapshot.account_id,
+            &snapshot.release_schema_version,
+            &snapshot.release_generation,
+            &snapshot.release_digest,
+            &snapshot.assignment_digest,
+            &snapshot.account_class.as_str(),
+            &snapshot.policy_id,
+            &snapshot.policy_version,
+            &snapshot.policy_digest,
+            &snapshot.billing_mode.as_str(),
+            &snapshot.funding_generation,
+            &snapshot.provider_id,
+            &snapshot.canonical_model_id,
+            &rule_id,
+            &rule_digest,
+            &rule_scope,
+            &discount_bps,
+            &payable_multiplier_bp,
+            &snapshot.tariff_schedule_id,
+            &snapshot.tariff_priced_ts,
+            &snapshot.official_hold_nano,
+            &snapshot.charged_hold_nano,
+            &official_cost_json,
+            &snapshot.snapshot_digest,
+            &snapshot.created_ts,
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn postgres_pricing_release_inventory_v2(
@@ -2883,27 +3423,35 @@ pub(crate) fn postgres_pricing_release_inventory_v2(
         super::require_id("pricing release inventory cursor", after_account_id)?;
     }
     let fetch_limit = limit + 1;
-    let mut accounts = client.query(
-        "SELECT account.id,account.status,account.mult_bp,account.balance_nano,
+    let mut accounts = client
+        .query(
+            "SELECT account.id,account.status,account.mult_bp,account.balance_nano,
                 account.reserved_nano,account.spent_nano,head.active_generation,head.head_version
            FROM accounts account
            LEFT JOIN account_funding_head_v2 head ON head.account_id=account.id
           WHERE ($1::text IS NULL OR account.id>$1)
           ORDER BY account.id LIMIT $2",
-        &[&after_account_id, &fetch_limit],
-    )?.into_iter().map(|row| super::PricingReleaseInventoryAccountV2 {
-        account_id: row.get(0),
-        status: row.get(1),
-        multiplier_bp: row.get(2),
-        balance_nano: row.get(3),
-        reserved_nano: row.get(4),
-        spent_nano: row.get(5),
-        funding_generation: row.get(6),
-        funding_head_version: row.get(7),
-    }).collect::<Vec<_>>();
+            &[&after_account_id, &fetch_limit],
+        )?
+        .into_iter()
+        .map(|row| super::PricingReleaseInventoryAccountV2 {
+            account_id: row.get(0),
+            status: row.get(1),
+            multiplier_bp: row.get(2),
+            balance_nano: row.get(3),
+            reserved_nano: row.get(4),
+            spent_nano: row.get(5),
+            funding_generation: row.get(6),
+            funding_head_version: row.get(7),
+        })
+        .collect::<Vec<_>>();
     let next_after_account_id = (accounts.len() > limit as usize).then(|| {
         accounts.truncate(limit as usize);
-        accounts.last().expect("non-empty paginated inventory").account_id.clone()
+        accounts
+            .last()
+            .expect("non-empty paginated inventory")
+            .account_id
+            .clone()
     });
     Ok(super::PricingReleaseInventoryPageV2 {
         accounts,

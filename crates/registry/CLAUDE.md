@@ -287,6 +287,19 @@ side effect. `serve` may only perform the read-only schema verification before c
   dependencies. Disabled account намеренно остаётся в immutable release, чтобы последующее
   включение не создавало дыру в policy/funding authority. Ни один метод не создаёт
   `pricing_release_head_v2`; SQLite возвращает unavailable вместо локальной authority.
+- **Pricing release v2 runtime foundation:** PostgreSQL resolver читает head, assignment, policy,
+  catalog/switch gates и rule precedence `model → provider → global` одним snapshot; service
+  `meter_only` обходит product catalog, но сохраняет provider master-switch. Reserve повторно
+  разрешает exact head под `request → funding-account → owner` locks, атомарно пишет reservation,
+  immutable pricing snapshot и bonus-first pricing funding allocations. После появления head новые
+  legacy-format reserves fail closed, но exact старые request IDs replay'ятся своим прежним writer.
+  Outbox/settlement выбирает только один funding format по snapshot: release-v2 не требует
+  pre-cutover funding snapshot и пишет exact paid/bonus ledger allocations. Незавершённый release
+  settlement требует, чтобы pinned generation всё ещё была active; после monotonic advance
+  разрешён только exact terminal replay без повторной money mutation. Provider adapter передаёт уже
+  рассчитанный customer debit; registry проверяет provider, non-negative usage и потолок
+  `hold+$1`, но не пересчитывает debit из full official usage (Codex может честно ограничить billed
+  output). Этот runtime не активирует head и до отдельного Stage 9 producer остаётся dormant.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

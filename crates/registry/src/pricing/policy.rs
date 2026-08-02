@@ -410,6 +410,7 @@ impl PolicyAdmissionSnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyReserveConflict {
+    ActivePricingRelease,
     ReservationIdentity,
     ExistingReservationWithoutSnapshot,
     ExistingNonPolicySnapshot,

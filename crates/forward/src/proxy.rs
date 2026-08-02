@@ -28,8 +28,10 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{Stream, StreamExt};
 use registry::pricing::{
-    LegacyScalarReserveOutcome, PolicyReserveOutcome, PolicyRuleScope, PricingMode,
-    SnapshotProvider,
+    BillingModeV2, LegacyPricingPathClosedV2, LegacyScalarReserveConflict,
+    LegacyScalarReserveOutcome, PolicyReserveConflict, PolicyReserveOutcome, PolicyRuleScope,
+    PricingMode, PricingReleaseQuoteV2, PricingReleaseReserveConflictV2,
+    PricingReleaseReserveOutcomeV2, SnapshotProvider,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -714,6 +716,147 @@ fn cap_to_balance(
     Some((eff_mt, hold))
 }
 
+enum AnthropicReleaseReserveResult {
+    NoActiveRelease,
+    LowBalance,
+    Reserved {
+        effective_max_output_tokens: u64,
+        hold_nano: i64,
+        payable_multiplier_bp: i64,
+        tariff_priced_ts: i64,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_anthropic_release_v2(
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    requested_model_id: &str,
+    quote_ts: i64,
+    modifiers: metering::AnthropicAdmissionModifiers,
+    input_token_upper_bound: u64,
+    web_search_requests: u64,
+    requested_max_output_tokens: u64,
+    available_nano: i128,
+    request_id: &str,
+    execution: &registry::ExecutionAttempt,
+) -> anyhow::Result<AnthropicReleaseReserveResult> {
+    for _ in 0..3 {
+        // An absent head returns None before catalog lookup, preserving unknown-model legacy
+        // behavior. If an active release rejects an alias, canonicalize it and retry exactly.
+        let first = billing
+            .pricing_release_resolution_v2(
+                account_id,
+                SnapshotProvider::Anthropic.as_str(),
+                requested_model_id,
+            )
+            .await;
+        let resolution = match first {
+            Ok(None) => return Ok(AnthropicReleaseReserveResult::NoActiveRelease),
+            Ok(Some(resolution)) => resolution,
+            Err(first_error) => {
+                let identity = metering::anthropic_tariff_capability_at(
+                    requested_model_id,
+                    quote_ts,
+                    modifiers,
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "Anthropic release canonical model is unavailable after resolution failure ({first_error:#}): {error:?}"
+                    )
+                })?;
+                billing
+                    .pricing_release_resolution_v2(
+                        account_id,
+                        SnapshotProvider::Anthropic.as_str(),
+                        identity.canonical_model_id,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Anthropic release head disappeared during canonical resolution"
+                        )
+                    })?
+            }
+        };
+        let multiplier = resolution.payable_multiplier_bp().unwrap_or(10_000);
+        let typed_request_id = EnginePricingRequestId::from_engine_uuid_v4(request_id)
+            .ok_or_else(|| anyhow::anyhow!("invalid engine-owned Anthropic request identity"))?;
+        let prepared = match prepare_anthropic_legacy_quote(AnthropicLegacyQuoteInput {
+            request_id: typed_request_id,
+            account_id: account_id.to_owned(),
+            requested_model_id: requested_model_id.to_owned(),
+            quote_ts,
+            payable_multiplier_bp: multiplier,
+            modifiers,
+            input_token_upper_bound,
+            web_search_requests,
+            requested_max_output_tokens,
+        })? {
+            PricingBridgePrepare::Eligible(prepared) => prepared,
+            PricingBridgePrepare::Fallback(reason) => anyhow::bail!(
+                "Anthropic release-v2 quote rejected canonical input: {}",
+                reason.code()
+            ),
+        };
+        let quote_budget = match resolution.billing_mode() {
+            BillingModeV2::Balance => available_nano,
+            BillingModeV2::MeterOnly => i128::from(i64::MAX),
+        };
+        let Some(quote) = prepared.quote(quote_budget)? else {
+            return Ok(if resolution.billing_mode() == BillingModeV2::Balance {
+                AnthropicReleaseReserveResult::LowBalance
+            } else {
+                anyhow::bail!("meter-only Anthropic release quote unexpectedly required balance")
+            });
+        };
+        let effective_max_output_tokens = quote.effective_max_output_tokens();
+        let release_quote = PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot())?;
+        match billing
+            .reserve_request_with_pricing_release_v2_for_execution(
+                key,
+                resolution,
+                release_quote,
+                execution.clone(),
+            )
+            .await?
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt)
+            | PricingReleaseReserveOutcomeV2::Unchanged(receipt) => {
+                let snapshot = receipt.snapshot;
+                return Ok(AnthropicReleaseReserveResult::Reserved {
+                    effective_max_output_tokens,
+                    hold_nano: snapshot.charged_hold_nano,
+                    payable_multiplier_bp: snapshot
+                        .rule
+                        .as_ref()
+                        .map(|rule| rule.payable_multiplier_bp)
+                        .unwrap_or(0),
+                    tariff_priced_ts: snapshot.tariff_priced_ts,
+                });
+            }
+            PricingReleaseReserveOutcomeV2::NotReserved => {
+                return Ok(AnthropicReleaseReserveResult::LowBalance)
+            }
+            PricingReleaseReserveOutcomeV2::Conflict(
+                PricingReleaseReserveConflictV2::ActiveReleaseChanged,
+            )
+            | PricingReleaseReserveOutcomeV2::NoActiveRelease => continue,
+            PricingReleaseReserveOutcomeV2::Conflict(
+                PricingReleaseReserveConflictV2::ExistingReservationWithoutReleaseSnapshot,
+            ) => return Ok(AnthropicReleaseReserveResult::NoActiveRelease),
+            PricingReleaseReserveOutcomeV2::Conflict(conflict) => {
+                anyhow::bail!("Anthropic release-v2 reserve conflict: {conflict:?}")
+            }
+            PricingReleaseReserveOutcomeV2::AbortedBeforeCommit => {
+                anyhow::bail!("Anthropic release-v2 reserve handoff was aborted")
+            }
+        }
+    }
+    anyhow::bail!("Anthropic release-v2 head changed repeatedly during admission")
+}
+
 /// Инжект Claude Code identity первым system-блоком (если его там ещё нет).
 /// Первый system-блок уже несёт Claude-Code-идентичность? (billing-header/identity — как шлёт
 /// САМ Claude Code). Тогда повторно инжектить не надо — иначе получим двойную identity.
@@ -937,9 +1080,8 @@ pub async fn forward(
     if !is_supported_endpoint(&parts.method, parts.uri.path()) {
         return local_err(LocalErr::NotFound, None);
     }
-    if billable && matches!(&authz, Authz::Metered { available_nano, .. } if *available_nano <= 0) {
-        return local_err(LocalErr::LowBalance, None);
-    }
+    // Model-specific release resolution below decides balance vs service meter_only. Rejecting a
+    // zero balance here would incorrectly block service accounts before their release assignment.
     Metrics::inc(&app.metrics.requests);
     let method: Method = parts.method.clone();
     let pq = parts
@@ -1192,408 +1334,586 @@ pub async fn forward(
         let mut reserved_pair: Option<(u64, i64)> = None;
         let mut settlement_mult_bp = *mult_bp;
         let mut settlement_priced_ts = None;
-        if *strict_policy {
-            let canonical = match metering::anthropic_tariff_capability_at(
-                &model,
-                price_ts,
-                admission_modifiers,
-            ) {
-                Ok(identity) => identity,
-                Err(metering::TariffIdentityError::UnsupportedModelIdentity)
-                | Err(metering::TariffIdentityError::UnsupportedModifier) => {
+        match reserve_anthropic_release_v2(
+            billing,
+            account_id,
+            key,
+            &model,
+            price_ts,
+            admission_modifiers,
+            (raw.len() + app.cfg.identity.len())
+                .max(1)
+                .min(u64::MAX as usize) as u64,
+            web_uses,
+            max_tokens,
+            bal,
+            &engine_request_id,
+            &execution,
+        )
+        .await
+        {
+            Ok(AnthropicReleaseReserveResult::NoActiveRelease) => {}
+            Ok(AnthropicReleaseReserveResult::LowBalance) => {
+                return local_err(LocalErr::LowBalance, None)
+            }
+            Ok(AnthropicReleaseReserveResult::Reserved {
+                effective_max_output_tokens,
+                hold_nano,
+                payable_multiplier_bp,
+                tariff_priced_ts,
+            }) => {
+                reserved_pair = Some((effective_max_output_tokens, hold_nano));
+                settlement_mult_bp = payable_multiplier_bp;
+                settlement_priced_ts = Some(tariff_priced_ts);
+            }
+            Err(error) => {
+                eprintln!("Anthropic pricing release admission failed: {error:#}");
+                return local_err_for(
+                    LocalErr::Overloaded,
+                    "pricing_release_admission_unavailable",
+                    Some(2),
+                );
+            }
+        }
+        if reserved_pair.is_none() && bal <= 0 {
+            return local_err(LocalErr::LowBalance, None);
+        }
+        if reserved_pair.is_none() {
+            if *strict_policy {
+                let canonical = match metering::anthropic_tariff_capability_at(
+                    &model,
+                    price_ts,
+                    admission_modifiers,
+                ) {
+                    Ok(identity) => identity,
+                    Err(metering::TariffIdentityError::UnsupportedModelIdentity)
+                    | Err(metering::TariffIdentityError::UnsupportedModifier) => {
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::UnsupportedModel,
+                        );
+                        return local_err_for(
+                            LocalErr::NotFound,
+                            "strict_pricing_unsupported_model",
+                            None,
+                        );
+                    }
+                    Err(metering::TariffIdentityError::InvalidPricedTimestamp) => {
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::InvalidContract,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_invalid_clock",
+                            Some(2),
+                        );
+                    }
+                };
+                let bundle = match billing.pricing_read_bundle(account_id).await {
+                    Ok(bundle) => bundle,
+                    Err(error) => {
+                        eprintln!("strict Anthropic pricing bundle read failed: {error:#}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::ReadUnavailable,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_read_unavailable",
+                            Some(2),
+                        );
+                    }
+                };
+                let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
+                let resolved = match crate::pricing::resolve_pricing(
+                    &bundle,
+                    &PricingResolutionRequest {
+                        account_id: account_id.clone(),
+                        provider_id: bridge_provider.as_str().to_owned(),
+                        requested_model_id: model.clone(),
+                        canonical_model_id: canonical.canonical_model_id.to_owned(),
+                    },
+                    &manifest,
+                ) {
+                    PricingResolution::Resolved(resolved) => resolved,
+                    PricingResolution::Rejected(reason) => {
+                        eprintln!(
+                            "strict Anthropic admission rejected by pricing policy: {}",
+                            reason.code()
+                        );
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::from_resolution(reason),
+                        );
+                        return local_err_for(LocalErr::NotFound, "strict_pricing_rejected", None);
+                    }
+                };
+                let strict_model_scope =
+                    matches!(&resolved.rule.scope, PolicyRuleScope::Model { .. });
+                let current_balance = match resolved.rule.pricing_mode {
+                    PricingMode::Track => track_available_nano.unwrap_or(0),
+                    PricingMode::Discount => paid_available_nano.unwrap_or(0),
+                };
+                if current_balance <= 0 {
                     app.metrics.strict_pricing_rejected(
                         StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::UnsupportedModel,
+                        StrictPricingRejectionReason::LowBalance,
                     );
-                    return local_err_for(
-                        LocalErr::NotFound,
-                        "strict_pricing_unsupported_model",
-                        None,
-                    );
+                    return local_err(LocalErr::LowBalance, None);
                 }
-                Err(metering::TariffIdentityError::InvalidPricedTimestamp) => {
+                let Some(request_id) =
+                    EnginePricingRequestId::from_engine_uuid_v4(&engine_request_id)
+                else {
                     app.metrics.strict_pricing_rejected(
                         StrictPricingProvider::Anthropic,
                         StrictPricingRejectionReason::InvalidContract,
                     );
                     return local_err_for(
                         LocalErr::Overloaded,
-                        "strict_pricing_invalid_clock",
+                        "strict_pricing_request_identity",
                         Some(2),
                     );
-                }
-            };
-            let bundle = match billing.pricing_read_bundle(account_id).await {
-                Ok(bundle) => bundle,
-                Err(error) => {
-                    eprintln!("strict Anthropic pricing bundle read failed: {error:#}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::ReadUnavailable,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_read_unavailable",
-                        Some(2),
-                    );
-                }
-            };
-            let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
-            let resolved = match crate::pricing::resolve_pricing(
-                &bundle,
-                &PricingResolutionRequest {
+                };
+                let prepared = match prepare_anthropic_legacy_quote(AnthropicLegacyQuoteInput {
+                    request_id,
                     account_id: account_id.clone(),
-                    provider_id: bridge_provider.as_str().to_owned(),
                     requested_model_id: model.clone(),
-                    canonical_model_id: canonical.canonical_model_id.to_owned(),
-                },
-                &manifest,
-            ) {
-                PricingResolution::Resolved(resolved) => resolved,
-                PricingResolution::Rejected(reason) => {
-                    eprintln!(
-                        "strict Anthropic admission rejected by pricing policy: {}",
-                        reason.code()
-                    );
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::from_resolution(reason),
-                    );
-                    return local_err_for(LocalErr::NotFound, "strict_pricing_rejected", None);
-                }
-            };
-            let strict_model_scope = matches!(&resolved.rule.scope, PolicyRuleScope::Model { .. });
-            let current_balance = match resolved.rule.pricing_mode {
-                PricingMode::Track => track_available_nano.unwrap_or(0),
-                PricingMode::Discount => paid_available_nano.unwrap_or(0),
-            };
-            if current_balance <= 0 {
-                app.metrics.strict_pricing_rejected(
-                    StrictPricingProvider::Anthropic,
-                    StrictPricingRejectionReason::LowBalance,
-                );
-                return local_err(LocalErr::LowBalance, None);
-            }
-            let Some(request_id) = EnginePricingRequestId::from_engine_uuid_v4(&engine_request_id)
-            else {
-                app.metrics.strict_pricing_rejected(
-                    StrictPricingProvider::Anthropic,
-                    StrictPricingRejectionReason::InvalidContract,
-                );
-                return local_err_for(
-                    LocalErr::Overloaded,
-                    "strict_pricing_request_identity",
-                    Some(2),
-                );
-            };
-            let prepared = match prepare_anthropic_legacy_quote(AnthropicLegacyQuoteInput {
-                request_id,
-                account_id: account_id.clone(),
-                requested_model_id: model.clone(),
-                quote_ts: price_ts,
-                payable_multiplier_bp: resolved.rule.payable_multiplier_bp,
-                modifiers: admission_modifiers,
-                input_token_upper_bound: (raw.len() + app.cfg.identity.len())
-                    .max(1)
-                    .min(u64::MAX as usize) as u64,
-                web_search_requests: web_uses,
-                requested_max_output_tokens: max_tokens,
-            }) {
-                Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
-                Ok(PricingBridgePrepare::Fallback(reason)) => {
-                    eprintln!(
-                        "strict Anthropic quote rejected canonical input: {}",
-                        reason.code()
-                    );
-                    let metric_reason = match reason {
-                        crate::PricingBridgeFallbackReason::UnsupportedModelIdentity
-                        | crate::PricingBridgeFallbackReason::UnsupportedModifier => {
-                            StrictPricingRejectionReason::UnsupportedModel
-                        }
-                        crate::PricingBridgeFallbackReason::BridgeDisabled
-                        | crate::PricingBridgeFallbackReason::NotSampled
-                        | crate::PricingBridgeFallbackReason::SnapshotIdentityOversized
-                        | crate::PricingBridgeFallbackReason::OfficialHoldOutOfRange => {
-                            StrictPricingRejectionReason::QuoteInvariant
-                        }
-                    };
-                    app.metrics
-                        .strict_pricing_rejected(StrictPricingProvider::Anthropic, metric_reason);
-                    return local_err_for(
-                        LocalErr::NotFound,
-                        "strict_pricing_quote_rejected",
-                        None,
-                    );
-                }
-                Err(error) => {
-                    eprintln!("strict Anthropic quote failed: {error:#}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::QuoteInvariant,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_quote_invariant",
-                        Some(2),
-                    );
-                }
-            };
-            let quote = match prepared.quote(i128::from(current_balance)) {
-                Ok(Some(quote)) => quote,
-                Ok(None) => {
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::LowBalance,
-                    );
-                    return local_err(LocalErr::LowBalance, None);
-                }
-                Err(error) => {
-                    eprintln!("strict Anthropic balance quote failed: {error:#}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::QuoteInvariant,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_quote_invariant",
-                        Some(2),
-                    );
-                }
-            };
-            let eff_mt = quote.effective_max_output_tokens();
-            let hold = quote.snapshot().charged_hold_nano();
-            let policy_snapshot = match build_policy_admission_snapshot(
-                account_id,
-                resolved.clone(),
-                quote.into_snapshot(),
-            ) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    eprintln!("strict Anthropic snapshot build failed: {error:#}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::SnapshotInvariant,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_snapshot_invariant",
-                        Some(2),
-                    );
-                }
-            };
-            match billing
-                .reserve_request_with_policy_snapshot_for_execution(
-                    key,
-                    policy_snapshot,
-                    execution.clone(),
-                )
-                .await
-            {
-                Ok(PolicyReserveOutcome::Inserted(_)) | Ok(PolicyReserveOutcome::Unchanged(_)) => {
-                    app.metrics.strict_pricing_admitted(
-                        StrictPricingProvider::Anthropic,
-                        resolved.rule.pricing_mode,
-                        strict_model_scope,
-                    );
-                    settlement_mult_bp = resolved.rule.payable_multiplier_bp;
-                    settlement_priced_ts = Some(price_ts);
-                    reserved_pair = Some((eff_mt, hold));
-                }
-                Ok(PolicyReserveOutcome::NotReserved) => {
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::LowBalance,
-                    );
-                    return local_err(LocalErr::LowBalance, None);
-                }
-                Ok(PolicyReserveOutcome::Conflict(conflict)) => {
-                    eprintln!("strict Anthropic reserve conflict: {conflict:?}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::ReserveConflict,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_reserve_conflict",
-                        Some(2),
-                    );
-                }
-                Ok(PolicyReserveOutcome::AbortedBeforeCommit) => {
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::HandoffAborted,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_handoff_aborted",
-                        Some(2),
-                    );
-                }
-                Err(error) => {
-                    eprintln!("strict Anthropic reserve failed: {error:#}");
-                    app.metrics.strict_pricing_rejected(
-                        StrictPricingProvider::Anthropic,
-                        StrictPricingRejectionReason::ReserveUnavailable,
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "strict_pricing_reserve_unavailable",
-                        Some(2),
-                    );
-                }
-            }
-        } else if let Some(prepared) = bridge_prepared {
-            let _bridge_latency = app.metrics.pricing_bridge_latency_timer(bridge_provider);
-            let mut current_balance = bal;
-            for _ in 0..4 {
-                let quote = match prepared.quote(current_balance) {
-                    Ok(Some(quote)) => quote,
-                    Ok(None) => break,
+                    quote_ts: price_ts,
+                    payable_multiplier_bp: resolved.rule.payable_multiplier_bp,
+                    modifiers: admission_modifiers,
+                    input_token_upper_bound: (raw.len() + app.cfg.identity.len())
+                        .max(1)
+                        .min(u64::MAX as usize) as u64,
+                    web_search_requests: web_uses,
+                    requested_max_output_tokens: max_tokens,
+                }) {
+                    Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
+                    Ok(PricingBridgePrepare::Fallback(reason)) => {
+                        eprintln!(
+                            "strict Anthropic quote rejected canonical input: {}",
+                            reason.code()
+                        );
+                        let metric_reason = match reason {
+                            crate::PricingBridgeFallbackReason::UnsupportedModelIdentity
+                            | crate::PricingBridgeFallbackReason::UnsupportedModifier => {
+                                StrictPricingRejectionReason::UnsupportedModel
+                            }
+                            crate::PricingBridgeFallbackReason::BridgeDisabled
+                            | crate::PricingBridgeFallbackReason::NotSampled
+                            | crate::PricingBridgeFallbackReason::SnapshotIdentityOversized
+                            | crate::PricingBridgeFallbackReason::OfficialHoldOutOfRange => {
+                                StrictPricingRejectionReason::QuoteInvariant
+                            }
+                        };
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            metric_reason,
+                        );
+                        return local_err_for(
+                            LocalErr::NotFound,
+                            "strict_pricing_quote_rejected",
+                            None,
+                        );
+                    }
                     Err(error) => {
-                        app.metrics.pricing_bridge_failure(bridge_provider);
-                        eprintln!("Anthropic pricing bridge quote failed: {error:#}");
+                        eprintln!("strict Anthropic quote failed: {error:#}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::QuoteInvariant,
+                        );
                         return local_err_for(
                             LocalErr::Overloaded,
-                            "pricing_bridge_invariant",
+                            "strict_pricing_quote_invariant",
+                            Some(2),
+                        );
+                    }
+                };
+                let quote = match prepared.quote(i128::from(current_balance)) {
+                    Ok(Some(quote)) => quote,
+                    Ok(None) => {
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::LowBalance,
+                        );
+                        return local_err(LocalErr::LowBalance, None);
+                    }
+                    Err(error) => {
+                        eprintln!("strict Anthropic balance quote failed: {error:#}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::QuoteInvariant,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_quote_invariant",
                             Some(2),
                         );
                     }
                 };
                 let eff_mt = quote.effective_max_output_tokens();
                 let hold = quote.snapshot().charged_hold_nano();
+                let policy_snapshot = match build_policy_admission_snapshot(
+                    account_id,
+                    resolved.clone(),
+                    quote.into_snapshot(),
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        eprintln!("strict Anthropic snapshot build failed: {error:#}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::SnapshotInvariant,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_snapshot_invariant",
+                            Some(2),
+                        );
+                    }
+                };
                 match billing
-                    .reserve_request_with_legacy_snapshot_for_execution(
+                    .reserve_request_with_policy_snapshot_for_execution(
                         key,
-                        quote.into_snapshot(),
+                        policy_snapshot,
                         execution.clone(),
                     )
                     .await
                 {
-                    Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
-                        app.metrics.pricing_bridge_inserted(bridge_provider);
-                        if let Some(shadow) = &app.pricing_shadow {
-                            shadow.try_enqueue(&receipt.snapshot);
-                        }
+                    Ok(PolicyReserveOutcome::Inserted(_))
+                    | Ok(PolicyReserveOutcome::Unchanged(_)) => {
+                        app.metrics.strict_pricing_admitted(
+                            StrictPricingProvider::Anthropic,
+                            resolved.rule.pricing_mode,
+                            strict_model_scope,
+                        );
+                        settlement_mult_bp = resolved.rule.payable_multiplier_bp;
+                        settlement_priced_ts = Some(price_ts);
                         reserved_pair = Some((eff_mt, hold));
-                        break;
                     }
-                    Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
-                        app.metrics.pricing_bridge_unchanged(bridge_provider);
-                        if let Some(shadow) = &app.pricing_shadow {
-                            shadow.try_enqueue(&receipt.snapshot);
-                        }
-                        reserved_pair = Some((eff_mt, hold));
-                        break;
-                    }
-                    Ok(LegacyScalarReserveOutcome::NotReserved) => {
-                        app.metrics.pricing_bridge_not_reserved(bridge_provider);
-                    }
-                    Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
-                        app.metrics.pricing_bridge_conflict(bridge_provider);
-                        eprintln!("Anthropic pricing bridge reserve conflict: {conflict:?}");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "pricing_bridge_conflict",
-                            Some(2),
+                    Ok(PolicyReserveOutcome::NotReserved) => {
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::LowBalance,
                         );
+                        return local_err(LocalErr::LowBalance, None);
                     }
-                    Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
-                        app.metrics.pricing_bridge_failure(bridge_provider);
-                        eprintln!("Anthropic pricing bridge commit handoff was aborted");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "pricing_bridge_handoff_aborted",
-                            Some(2),
-                        );
-                    }
-                    Err(error) => {
-                        app.metrics.pricing_bridge_failure(bridge_provider);
-                        eprintln!("Anthropic pricing bridge reservation failed: {error:#}");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "pricing_bridge_reservation_unavailable",
-                            Some(2),
-                        );
-                    }
-                }
-                let fresh = match billing.account(account_id).await {
-                    Ok(Some(account)) => account.balance_nano as i128,
-                    Ok(None) => 0,
-                    Err(error) => {
-                        app.metrics.pricing_bridge_failure(bridge_provider);
-                        eprintln!("billing balance refresh failed: {error:#}");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "billing_balance_refresh_unavailable",
-                            Some(2),
-                        );
-                    }
-                };
-                let next_hold = match prepared.quote(fresh) {
-                    Ok(Some(quote)) => quote.snapshot().charged_hold_nano(),
-                    Ok(None) => break,
-                    Err(error) => {
-                        app.metrics.pricing_bridge_failure(bridge_provider);
-                        eprintln!("Anthropic pricing bridge requote failed: {error:#}");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "pricing_bridge_invariant",
-                            Some(2),
-                        );
-                    }
-                };
-                if next_hold < hold {
-                    current_balance = fresh;
-                } else {
-                    break;
-                }
-            }
-        } else {
-            let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
-            for _ in 0..4 {
-                let (eff_mt, hold) = match cur {
-                    Some(x) => x,
-                    None => break,
-                };
-                match billing
-                    .reserve_request_for_execution(
-                        &engine_request_id,
+                    Ok(PolicyReserveOutcome::Conflict(
+                        PolicyReserveConflict::ActivePricingRelease,
+                    )) => match reserve_anthropic_release_v2(
+                        billing,
                         account_id,
                         key,
-                        hold,
-                        execution.clone(),
+                        &model,
+                        price_ts,
+                        admission_modifiers,
+                        (raw.len() + app.cfg.identity.len())
+                            .max(1)
+                            .min(u64::MAX as usize) as u64,
+                        web_uses,
+                        max_tokens,
+                        bal,
+                        &engine_request_id,
+                        &execution,
                     )
                     .await
-                {
-                    Ok(Some(_)) => {
-                        reserved_pair = Some((eff_mt, hold));
-                        break;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        eprintln!("billing reservation failed: {error:#}");
+                    {
+                        Ok(AnthropicReleaseReserveResult::Reserved {
+                            effective_max_output_tokens,
+                            hold_nano,
+                            payable_multiplier_bp,
+                            tariff_priced_ts,
+                        }) => {
+                            reserved_pair = Some((effective_max_output_tokens, hold_nano));
+                            settlement_mult_bp = payable_multiplier_bp;
+                            settlement_priced_ts = Some(tariff_priced_ts);
+                        }
+                        Ok(AnthropicReleaseReserveResult::LowBalance) => {
+                            return local_err(LocalErr::LowBalance, None)
+                        }
+                        Ok(AnthropicReleaseReserveResult::NoActiveRelease) | Err(_) => {
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_release_cutover_retry_failed",
+                                Some(2),
+                            )
+                        }
+                    },
+                    Ok(PolicyReserveOutcome::Conflict(conflict)) => {
+                        eprintln!("strict Anthropic reserve conflict: {conflict:?}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::ReserveConflict,
+                        );
                         return local_err_for(
                             LocalErr::Overloaded,
-                            "billing_reservation_unavailable",
+                            "strict_pricing_reserve_conflict",
+                            Some(2),
+                        );
+                    }
+                    Ok(PolicyReserveOutcome::AbortedBeforeCommit) => {
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::HandoffAborted,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_handoff_aborted",
+                            Some(2),
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("strict Anthropic reserve failed: {error:#}");
+                        app.metrics.strict_pricing_rejected(
+                            StrictPricingProvider::Anthropic,
+                            StrictPricingRejectionReason::ReserveUnavailable,
+                        );
+                        return local_err_for(
+                            LocalErr::Overloaded,
+                            "strict_pricing_reserve_unavailable",
                             Some(2),
                         );
                     }
                 }
-                let fresh = match billing.account(account_id).await {
-                    Ok(Some(account)) => account.balance_nano as i128,
-                    Ok(None) => 0,
-                    Err(error) => {
-                        eprintln!("billing balance refresh failed: {error:#}");
-                        return local_err_for(
-                            LocalErr::Overloaded,
-                            "billing_balance_refresh_unavailable",
-                            Some(2),
-                        );
+            } else if let Some(prepared) = bridge_prepared {
+                let _bridge_latency = app.metrics.pricing_bridge_latency_timer(bridge_provider);
+                let mut current_balance = bal;
+                for _ in 0..4 {
+                    let quote = match prepared.quote(current_balance) {
+                        Ok(Some(quote)) => quote,
+                        Ok(None) => break,
+                        Err(error) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("Anthropic pricing bridge quote failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_invariant",
+                                Some(2),
+                            );
+                        }
+                    };
+                    let eff_mt = quote.effective_max_output_tokens();
+                    let hold = quote.snapshot().charged_hold_nano();
+                    match billing
+                        .reserve_request_with_legacy_snapshot_for_execution(
+                            key,
+                            quote.into_snapshot(),
+                            execution.clone(),
+                        )
+                        .await
+                    {
+                        Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
+                            app.metrics.pricing_bridge_inserted(bridge_provider);
+                            if let Some(shadow) = &app.pricing_shadow {
+                                shadow.try_enqueue(&receipt.snapshot);
+                            }
+                            reserved_pair = Some((eff_mt, hold));
+                            break;
+                        }
+                        Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
+                            app.metrics.pricing_bridge_unchanged(bridge_provider);
+                            if let Some(shadow) = &app.pricing_shadow {
+                                shadow.try_enqueue(&receipt.snapshot);
+                            }
+                            reserved_pair = Some((eff_mt, hold));
+                            break;
+                        }
+                        Ok(LegacyScalarReserveOutcome::NotReserved) => {
+                            app.metrics.pricing_bridge_not_reserved(bridge_provider);
+                        }
+                        Ok(LegacyScalarReserveOutcome::Conflict(
+                            LegacyScalarReserveConflict::ActivePricingRelease,
+                        )) => match reserve_anthropic_release_v2(
+                            billing,
+                            account_id,
+                            key,
+                            &model,
+                            price_ts,
+                            admission_modifiers,
+                            (raw.len() + app.cfg.identity.len())
+                                .max(1)
+                                .min(u64::MAX as usize) as u64,
+                            web_uses,
+                            max_tokens,
+                            bal,
+                            &engine_request_id,
+                            &execution,
+                        )
+                        .await
+                        {
+                            Ok(AnthropicReleaseReserveResult::Reserved {
+                                effective_max_output_tokens,
+                                hold_nano,
+                                payable_multiplier_bp,
+                                tariff_priced_ts,
+                            }) => {
+                                reserved_pair = Some((effective_max_output_tokens, hold_nano));
+                                settlement_mult_bp = payable_multiplier_bp;
+                                settlement_priced_ts = Some(tariff_priced_ts);
+                                break;
+                            }
+                            Ok(AnthropicReleaseReserveResult::LowBalance) => {
+                                return local_err(LocalErr::LowBalance, None)
+                            }
+                            Ok(AnthropicReleaseReserveResult::NoActiveRelease) | Err(_) => {
+                                return local_err_for(
+                                    LocalErr::Overloaded,
+                                    "pricing_release_cutover_retry_failed",
+                                    Some(2),
+                                )
+                            }
+                        },
+                        Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
+                            app.metrics.pricing_bridge_conflict(bridge_provider);
+                            eprintln!("Anthropic pricing bridge reserve conflict: {conflict:?}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_conflict",
+                                Some(2),
+                            );
+                        }
+                        Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("Anthropic pricing bridge commit handoff was aborted");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_handoff_aborted",
+                                Some(2),
+                            );
+                        }
+                        Err(error)
+                            if error.downcast_ref::<LegacyPricingPathClosedV2>().is_some() =>
+                        {
+                            match reserve_anthropic_release_v2(
+                                billing,
+                                account_id,
+                                key,
+                                &model,
+                                price_ts,
+                                admission_modifiers,
+                                (raw.len() + app.cfg.identity.len())
+                                    .max(1)
+                                    .min(u64::MAX as usize) as u64,
+                                web_uses,
+                                max_tokens,
+                                bal,
+                                &engine_request_id,
+                                &execution,
+                            )
+                            .await
+                            {
+                                Ok(AnthropicReleaseReserveResult::Reserved {
+                                    effective_max_output_tokens,
+                                    hold_nano,
+                                    payable_multiplier_bp,
+                                    tariff_priced_ts,
+                                }) => {
+                                    reserved_pair = Some((effective_max_output_tokens, hold_nano));
+                                    settlement_mult_bp = payable_multiplier_bp;
+                                    settlement_priced_ts = Some(tariff_priced_ts);
+                                    break;
+                                }
+                                Ok(AnthropicReleaseReserveResult::LowBalance) => {
+                                    return local_err(LocalErr::LowBalance, None)
+                                }
+                                Ok(AnthropicReleaseReserveResult::NoActiveRelease) | Err(_) => {
+                                    return local_err_for(
+                                        LocalErr::Overloaded,
+                                        "pricing_release_cutover_retry_failed",
+                                        Some(2),
+                                    )
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("Anthropic pricing bridge reservation failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_reservation_unavailable",
+                                Some(2),
+                            );
+                        }
                     }
-                };
-                match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
-                    Some((e, h)) if h < hold => cur = Some((e, h)),
-                    _ => break,
+                    let fresh = match billing.account(account_id).await {
+                        Ok(Some(account)) => account.balance_nano as i128,
+                        Ok(None) => 0,
+                        Err(error) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("billing balance refresh failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "billing_balance_refresh_unavailable",
+                                Some(2),
+                            );
+                        }
+                    };
+                    let next_hold = match prepared.quote(fresh) {
+                        Ok(Some(quote)) => quote.snapshot().charged_hold_nano(),
+                        Ok(None) => break,
+                        Err(error) => {
+                            app.metrics.pricing_bridge_failure(bridge_provider);
+                            eprintln!("Anthropic pricing bridge requote failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "pricing_bridge_invariant",
+                                Some(2),
+                            );
+                        }
+                    };
+                    if next_hold < hold {
+                        current_balance = fresh;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
+                for _ in 0..4 {
+                    let (eff_mt, hold) = match cur {
+                        Some(x) => x,
+                        None => break,
+                    };
+                    match billing
+                        .reserve_request_for_execution(
+                            &engine_request_id,
+                            account_id,
+                            key,
+                            hold,
+                            execution.clone(),
+                        )
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            reserved_pair = Some((eff_mt, hold));
+                            break;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("billing reservation failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "billing_reservation_unavailable",
+                                Some(2),
+                            );
+                        }
+                    }
+                    let fresh = match billing.account(account_id).await {
+                        Ok(Some(account)) => account.balance_nano as i128,
+                        Ok(None) => 0,
+                        Err(error) => {
+                            eprintln!("billing balance refresh failed: {error:#}");
+                            return local_err_for(
+                                LocalErr::Overloaded,
+                                "billing_balance_refresh_unavailable",
+                                Some(2),
+                            );
+                        }
+                    };
+                    match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
+                        Some((e, h)) if h < hold => cur = Some((e, h)),
+                        _ => break,
+                    }
                 }
             }
         }
@@ -2603,7 +2923,10 @@ mod tests {
             serde_json::json!({"model": "anthropic/claude-haiku-4-5-20251001", "max_tokens": 16});
         let model = strip_own_namespace(&mut body);
         assert_eq!(model, "claude-haiku-4-5-20251001");
-        assert_eq!(body["model"], serde_json::json!("claude-haiku-4-5-20251001"));
+        assert_eq!(
+            body["model"],
+            serde_json::json!("claude-haiku-4-5-20251001")
+        );
         // Остальное тело не тронуто.
         assert_eq!(body["max_tokens"], serde_json::json!(16));
     }
@@ -2979,6 +3302,66 @@ mod tests {
             .unwrap();
         assert_eq!(account.balance_nano, 20_000_000);
         assert_eq!(account.reserved_nano, 0);
+
+        drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn dormant_release_keeps_the_anthropic_zero_balance_gate() {
+        const ACCOUNT: &str = "anthropic-zero-balance";
+        const KEY: &str = "anthropic-zero-balance-key";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_ANTHROPIC_BRIDGE_DB.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-anthropic-zero-balance-{}-{unique}-{sequence}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start Anthropic zero-balance test billing"),
+        );
+        billing.create_account(ACCOUNT, None, 2_000).await.unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let app = anthropic_bridge_app(Arc::clone(&billing), PricingBridgeConfig::disabled());
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", KEY)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let account = billing.account(ACCOUNT).await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (0, 0));
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let reservations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM billing_reservations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(reservations, 0);
 
         drop(connection);
         drop(app);
@@ -3434,7 +3817,10 @@ mod tests {
             .unwrap();
         assert_eq!(account.balance_nano, 20_000_000);
         assert_eq!(account.reserved_nano, 0);
-        let ledger = billing.ledger("anthropic-bridge-account", 10).await.unwrap();
+        let ledger = billing
+            .ledger("anthropic-bridge-account", 10)
+            .await
+            .unwrap();
         assert!(!ledger.iter().any(|row| row.kind == "charge"));
 
         drop(app);
@@ -3462,7 +3848,10 @@ mod tests {
             AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
                 .expect("start not_started test billing"),
         );
-        billing.create_account(NS_ACCOUNT, None, 2_000).await.unwrap();
+        billing
+            .create_account(NS_ACCOUNT, None, 2_000)
+            .await
+            .unwrap();
         billing
             .topup(NS_ACCOUNT, NS_TOPUP, Some("not-started-seed"))
             .await

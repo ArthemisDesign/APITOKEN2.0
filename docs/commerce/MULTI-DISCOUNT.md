@@ -279,6 +279,18 @@ runtime до полного состояния, которое:
 
 Новый release остаётся dormant. Поэтому deploy runtime сам по себе не меняет ни цену, ни доступ.
 
+Release-v2 runtime checkpoint подключает этот dormant schema ко всем трём provider billing paths,
+но не добавляет activation writer. До head admission остаётся на текущем scalar/bridge/strict
+формате. После head новый reserve атомарно фиксирует exact release/policy/rule/tariff и funding
+allocations; старые request IDs сначала replay'ятся в своём исходном формате. Settlement определяет
+формат только по reserve-time snapshot, поэтому legacy и release-v2 outbox rows могут завершаться
+одновременно без drain. Release-v2 balance settlement использует pinned funding generation через
+global release-head cutover; account funding head нельзя продвинуть поверх незавершённых
+allocations. После monotonic funding-head advance допустим exact terminal replay без повторного
+money write. Service `meter_only` сохраняет полный official usage при нулевом customer debit.
+Provider adapter остаётся authority customer debit: это важно для Codex, где upstream может
+сообщить output сверх requested cap, а клиент оплачивает capped output.
+
 До появления global release head точная pricing identity остаётся в существующем immutable
 `pricing_admission_snapshots`, а funding generation/bonus-first allocations — в отдельном
 `funding_reservation_{snapshots,allocations}_v2`. После активации release новые requests используют

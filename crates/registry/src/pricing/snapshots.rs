@@ -578,6 +578,7 @@ impl LegacyScalarAdmissionSnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LegacyScalarReserveConflict {
+    ActivePricingRelease,
     ReservationIdentity,
     ExistingReservationWithoutSnapshot,
     ExistingNonLegacySnapshot,

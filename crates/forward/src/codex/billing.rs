@@ -12,8 +12,10 @@ use crate::state::AppState;
 use anyhow::Context as _;
 use axum::http::HeaderMap;
 use registry::pricing::{
-    LegacyScalarReserveOutcome, PolicyReserveOutcome, PolicyRuleScope, PricingMode,
-    SnapshotProvider,
+    BillingModeV2, LegacyPricingPathClosedV2, LegacyScalarReserveConflict,
+    LegacyScalarReserveOutcome, PolicyReserveConflict, PolicyReserveOutcome, PolicyRuleScope,
+    PricingMode, PricingReleaseQuoteV2, PricingReleaseReserveConflictV2,
+    PricingReleaseReserveOutcomeV2, SnapshotProvider,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -25,6 +27,20 @@ pub(crate) enum AdmissionError {
     LowBalance,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodexSettlementPricing {
+    LegacyScalar,
+    LegacyStrict,
+    ReleaseV2,
+}
+
+type CodexReserveResult = (String, i64, i64, Option<i64>, CodexSettlementPricing);
+
+enum LegacyCodexReserveResult {
+    Reserved(CodexReserveResult),
+    ReleaseActivated,
+}
+
 struct Reservation {
     billing: std::sync::Arc<crate::billing::AsyncBilling>,
     account_id: String,
@@ -33,6 +49,7 @@ struct Reservation {
     hold: i64,
     tariff_priced_ts: Option<i64>,
     policy_fast: Option<bool>,
+    settlement_pricing: CodexSettlementPricing,
     request_id: String,
     guard: HoldGuard,
 }
@@ -78,9 +95,8 @@ impl PendingCodexAdmission {
                 },
                 Some(billing),
             ) => {
-                let provider = SnapshotProvider::OpenAi;
-                let (request_id, hold, reservation_mult_bp, tariff_priced_ts) = if *strict_policy {
-                    reserve_codex_strict(
+                let (request_id, hold, reservation_mult_bp, tariff_priced_ts, settlement_pricing) =
+                    reserve_codex_metered(
                         app,
                         billing,
                         account_id,
@@ -90,172 +106,14 @@ impl PendingCodexAdmission {
                         requested_output_tokens,
                         reserve_overhead_tokens,
                         fast,
+                        *mult_bp,
+                        *available_nano,
+                        *strict_policy,
                         *paid_available_nano,
                         *track_available_nano,
                         &self.execution,
                     )
-                    .await?
-                } else {
-                    let bridge_result = if app.cfg.pricing_bridge.enabled() {
-                        let request_id = crate::upstream::fresh_request_id();
-                        let Some(typed_request_id) =
-                            EnginePricingRequestId::from_engine_uuid_v4(&request_id)
-                        else {
-                            app.metrics.pricing_bridge_failure(provider);
-                            eprintln!("pricing bridge rejected the engine-owned request identity");
-                            return Err(AdmissionError::Unavailable);
-                        };
-                        match app.cfg.pricing_bridge.decision(provider, &typed_request_id) {
-                            PricingBridgeDecision::Fallback(reason) => {
-                                app.metrics.pricing_bridge_fallback(provider, reason);
-                                reserve_codex_legacy(
-                                    billing,
-                                    account_id,
-                                    key,
-                                    model,
-                                    estimated_input_tokens,
-                                    requested_output_tokens,
-                                    reserve_overhead_tokens,
-                                    fast,
-                                    *mult_bp,
-                                    *available_nano,
-                                    Some(request_id),
-                                    &self.execution,
-                                )
-                                .await?
-                            }
-                            PricingBridgeDecision::Selected => {
-                                app.metrics.pricing_bridge_selected(provider);
-                                let quote_ts = pool::now();
-                                match prepare_codex_legacy_quote(CodexLegacyQuoteInput {
-                                    request_id: typed_request_id,
-                                    account_id: account_id.clone(),
-                                    model: model.clone(),
-                                    quote_ts,
-                                    payable_multiplier_bp: *mult_bp,
-                                    estimated_input_tokens,
-                                    reserve_overhead_tokens,
-                                    requested_output_tokens,
-                                    fast,
-                                }) {
-                                    Ok(PricingBridgePrepare::Eligible(prepared)) => {
-                                        let _bridge_latency =
-                                            app.metrics.pricing_bridge_latency_timer(provider);
-                                        let quote = match prepared.quote(*available_nano) {
-                                            Ok(Some(quote)) => quote,
-                                            Ok(None) => {
-                                                app.metrics.pricing_bridge_not_reserved(provider);
-                                                return Err(AdmissionError::LowBalance);
-                                            }
-                                            Err(error) => {
-                                                app.metrics.pricing_bridge_failure(provider);
-                                                eprintln!(
-                                                    "OpenAI pricing bridge quote failed: {error:#}"
-                                                );
-                                                return Err(AdmissionError::Unavailable);
-                                            }
-                                        };
-                                        let hold = quote.snapshot().charged_hold_nano();
-                                        match billing
-                                            .reserve_request_with_legacy_snapshot_for_execution(
-                                                key,
-                                                quote.into_snapshot(),
-                                                self.execution.clone(),
-                                            )
-                                            .await
-                                        {
-                                            Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
-                                                app.metrics.pricing_bridge_inserted(provider);
-                                                if let Some(shadow) = &app.pricing_shadow {
-                                                    shadow.try_enqueue(&receipt.snapshot);
-                                                }
-                                                (request_id, hold)
-                                            }
-                                            Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
-                                                app.metrics.pricing_bridge_unchanged(provider);
-                                                if let Some(shadow) = &app.pricing_shadow {
-                                                    shadow.try_enqueue(&receipt.snapshot);
-                                                }
-                                                (request_id, hold)
-                                            }
-                                            Ok(LegacyScalarReserveOutcome::NotReserved) => {
-                                                app.metrics.pricing_bridge_not_reserved(provider);
-                                                return Err(AdmissionError::LowBalance);
-                                            }
-                                            Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
-                                                app.metrics.pricing_bridge_conflict(provider);
-                                                eprintln!(
-                                                "OpenAI pricing bridge reserve conflict: {conflict:?}"
-                                            );
-                                                return Err(AdmissionError::Unavailable);
-                                            }
-                                            Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
-                                                app.metrics.pricing_bridge_failure(provider);
-                                                eprintln!(
-                                                "OpenAI pricing bridge commit handoff was aborted"
-                                            );
-                                                return Err(AdmissionError::Unavailable);
-                                            }
-                                            Err(error) => {
-                                                app.metrics.pricing_bridge_failure(provider);
-                                                eprintln!(
-                                                "OpenAI pricing bridge reservation failed: {error:#}"
-                                            );
-                                                return Err(AdmissionError::Unavailable);
-                                            }
-                                        }
-                                    }
-                                    Ok(PricingBridgePrepare::Fallback(reason)) => {
-                                        app.metrics.pricing_bridge_fallback(provider, reason);
-                                        reserve_codex_legacy(
-                                            billing,
-                                            account_id,
-                                            key,
-                                            model,
-                                            estimated_input_tokens,
-                                            requested_output_tokens,
-                                            reserve_overhead_tokens,
-                                            fast,
-                                            *mult_bp,
-                                            *available_nano,
-                                            Some(request_id),
-                                            &self.execution,
-                                        )
-                                        .await?
-                                    }
-                                    Err(error) => {
-                                        app.metrics.pricing_bridge_failure(provider);
-                                        eprintln!(
-                                            "OpenAI pricing bridge preparation failed: {error:#}"
-                                        );
-                                        return Err(AdmissionError::Unavailable);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        app.metrics.pricing_bridge_fallback(
-                            provider,
-                            crate::pricing::PricingBridgeFallbackReason::BridgeDisabled,
-                        );
-                        reserve_codex_legacy(
-                            billing,
-                            account_id,
-                            key,
-                            model,
-                            estimated_input_tokens,
-                            requested_output_tokens,
-                            reserve_overhead_tokens,
-                            fast,
-                            *mult_bp,
-                            *available_nano,
-                            None,
-                            &self.execution,
-                        )
-                        .await?
-                    };
-                    (bridge_result.0, bridge_result.1, *mult_bp, None)
-                };
+                    .await?;
                 Some(Reservation {
                     billing: billing.clone(),
                     account_id: account_id.clone(),
@@ -264,6 +122,7 @@ impl PendingCodexAdmission {
                     hold,
                     tariff_priced_ts,
                     policy_fast: tariff_priced_ts.map(|_| fast),
+                    settlement_pricing,
                     request_id: request_id.clone(),
                     guard: HoldGuard::new(
                         Some(billing.clone()),
@@ -281,6 +140,394 @@ impl PendingCodexAdmission {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn reserve_codex_metered(
+    app: &AppState,
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    model: &CodexModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: Option<u64>,
+    reserve_overhead_tokens: u64,
+    fast: bool,
+    legacy_mult_bp: i64,
+    available_nano: i64,
+    strict_policy: bool,
+    paid_available_nano: Option<i64>,
+    track_available_nano: Option<i64>,
+    execution: &registry::ExecutionAttempt,
+) -> Result<CodexReserveResult, AdmissionError> {
+    let request_id = crate::upstream::fresh_request_id();
+    for pass in 0..2 {
+        if let Some(reserved) = reserve_codex_release_v2(
+            billing,
+            account_id,
+            key,
+            model,
+            estimated_input_tokens,
+            requested_output_tokens,
+            reserve_overhead_tokens,
+            fast,
+            available_nano,
+            &request_id,
+            execution,
+        )
+        .await?
+        {
+            return Ok(reserved);
+        }
+        if pass != 0 {
+            eprintln!("OpenAI legacy reserve closed but no active release could be resolved");
+            return Err(AdmissionError::Unavailable);
+        }
+        if available_nano <= 0 {
+            return Err(AdmissionError::LowBalance);
+        }
+
+        let legacy = if strict_policy {
+            reserve_codex_strict(
+                app,
+                billing,
+                account_id,
+                key,
+                model,
+                estimated_input_tokens,
+                requested_output_tokens,
+                reserve_overhead_tokens,
+                fast,
+                paid_available_nano,
+                track_available_nano,
+                &request_id,
+                execution,
+            )
+            .await?
+        } else {
+            reserve_codex_legacy_mode(
+                app,
+                billing,
+                account_id,
+                key,
+                model,
+                estimated_input_tokens,
+                requested_output_tokens,
+                reserve_overhead_tokens,
+                fast,
+                legacy_mult_bp,
+                available_nano,
+                &request_id,
+                execution,
+            )
+            .await?
+        };
+        match legacy {
+            LegacyCodexReserveResult::Reserved(reserved) => return Ok(reserved),
+            LegacyCodexReserveResult::ReleaseActivated => continue,
+        }
+    }
+    Err(AdmissionError::Unavailable)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_codex_release_v2(
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    model: &CodexModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: Option<u64>,
+    reserve_overhead_tokens: u64,
+    fast: bool,
+    available_nano: i64,
+    request_id: &str,
+    execution: &registry::ExecutionAttempt,
+) -> Result<Option<CodexReserveResult>, AdmissionError> {
+    for _ in 0..3 {
+        let resolution = billing
+            .pricing_release_resolution_v2(
+                account_id,
+                SnapshotProvider::OpenAi.as_str(),
+                &model.upstream,
+            )
+            .await
+            .map_err(|error| {
+                eprintln!("OpenAI pricing release resolution failed: {error:#}");
+                AdmissionError::Unavailable
+            })?;
+        let Some(resolution) = resolution else {
+            return Ok(None);
+        };
+        let multiplier = resolution.payable_multiplier_bp().unwrap_or(10_000);
+        let typed_request_id = EnginePricingRequestId::from_engine_uuid_v4(request_id)
+            .ok_or(AdmissionError::Unavailable)?;
+        let prepared = match prepare_codex_legacy_quote(CodexLegacyQuoteInput {
+            request_id: typed_request_id,
+            account_id: account_id.to_owned(),
+            model: model.clone(),
+            quote_ts: pool::now(),
+            payable_multiplier_bp: multiplier,
+            estimated_input_tokens,
+            reserve_overhead_tokens,
+            requested_output_tokens,
+            fast,
+        }) {
+            Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
+            Ok(PricingBridgePrepare::Fallback(reason)) => {
+                eprintln!(
+                    "OpenAI release-v2 quote rejected canonical input: {}",
+                    reason.code()
+                );
+                return Err(AdmissionError::Unavailable);
+            }
+            Err(error) => {
+                eprintln!("OpenAI release-v2 quote preparation failed: {error:#}");
+                return Err(AdmissionError::Unavailable);
+            }
+        };
+        let quote_budget = match resolution.billing_mode() {
+            BillingModeV2::Balance => available_nano,
+            BillingModeV2::MeterOnly => i64::MAX,
+        };
+        let quote = match prepared.quote(quote_budget) {
+            Ok(Some(quote)) => quote,
+            Ok(None) if resolution.billing_mode() == BillingModeV2::Balance => {
+                return Err(AdmissionError::LowBalance)
+            }
+            Ok(None) => return Err(AdmissionError::Unavailable),
+            Err(error) => {
+                eprintln!("OpenAI release-v2 quote failed: {error:#}");
+                return Err(AdmissionError::Unavailable);
+            }
+        };
+        let release_quote =
+            PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot()).map_err(|error| {
+                eprintln!("OpenAI release-v2 quote conversion failed: {error:#}");
+                AdmissionError::Unavailable
+            })?;
+        match billing
+            .reserve_request_with_pricing_release_v2_for_execution(
+                key,
+                resolution,
+                release_quote,
+                execution.clone(),
+            )
+            .await
+        {
+            Ok(PricingReleaseReserveOutcomeV2::Inserted(receipt))
+            | Ok(PricingReleaseReserveOutcomeV2::Unchanged(receipt)) => {
+                let snapshot = receipt.snapshot;
+                let settlement_multiplier = snapshot
+                    .rule
+                    .as_ref()
+                    .map(|rule| rule.payable_multiplier_bp)
+                    .unwrap_or(0);
+                return Ok(Some((
+                    request_id.to_owned(),
+                    snapshot.charged_hold_nano,
+                    settlement_multiplier,
+                    Some(snapshot.tariff_priced_ts),
+                    CodexSettlementPricing::ReleaseV2,
+                )));
+            }
+            Ok(PricingReleaseReserveOutcomeV2::NotReserved) => {
+                return Err(AdmissionError::LowBalance)
+            }
+            Ok(PricingReleaseReserveOutcomeV2::Conflict(
+                PricingReleaseReserveConflictV2::ActiveReleaseChanged,
+            )) => continue,
+            Ok(PricingReleaseReserveOutcomeV2::Conflict(
+                PricingReleaseReserveConflictV2::ExistingReservationWithoutReleaseSnapshot,
+            )) => return Ok(None),
+            Ok(PricingReleaseReserveOutcomeV2::NoActiveRelease) => continue,
+            Ok(PricingReleaseReserveOutcomeV2::Conflict(conflict)) => {
+                eprintln!("OpenAI release-v2 reserve conflict: {conflict:?}");
+                return Err(AdmissionError::Unavailable);
+            }
+            Ok(PricingReleaseReserveOutcomeV2::AbortedBeforeCommit) => {
+                return Err(AdmissionError::Unavailable)
+            }
+            Err(error) => {
+                eprintln!("OpenAI release-v2 reserve failed: {error:#}");
+                return Err(AdmissionError::Unavailable);
+            }
+        }
+    }
+    eprintln!("OpenAI release-v2 head changed repeatedly during admission");
+    Err(AdmissionError::Unavailable)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_codex_legacy_mode(
+    app: &AppState,
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    model: &CodexModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: Option<u64>,
+    reserve_overhead_tokens: u64,
+    fast: bool,
+    mult_bp: i64,
+    available_nano: i64,
+    request_id: &str,
+    execution: &registry::ExecutionAttempt,
+) -> Result<LegacyCodexReserveResult, AdmissionError> {
+    let provider = SnapshotProvider::OpenAi;
+    if !app.cfg.pricing_bridge.enabled() {
+        app.metrics.pricing_bridge_fallback(
+            provider,
+            crate::pricing::PricingBridgeFallbackReason::BridgeDisabled,
+        );
+        return reserve_codex_legacy(
+            billing,
+            account_id,
+            key,
+            model,
+            estimated_input_tokens,
+            requested_output_tokens,
+            reserve_overhead_tokens,
+            fast,
+            mult_bp,
+            available_nano,
+            request_id,
+            execution,
+        )
+        .await;
+    }
+    let typed_request_id = EnginePricingRequestId::from_engine_uuid_v4(request_id)
+        .ok_or(AdmissionError::Unavailable)?;
+    match app.cfg.pricing_bridge.decision(provider, &typed_request_id) {
+        PricingBridgeDecision::Fallback(reason) => {
+            app.metrics.pricing_bridge_fallback(provider, reason);
+            reserve_codex_legacy(
+                billing,
+                account_id,
+                key,
+                model,
+                estimated_input_tokens,
+                requested_output_tokens,
+                reserve_overhead_tokens,
+                fast,
+                mult_bp,
+                available_nano,
+                request_id,
+                execution,
+            )
+            .await
+        }
+        PricingBridgeDecision::Selected => {
+            app.metrics.pricing_bridge_selected(provider);
+            let quote_ts = pool::now();
+            let prepared = match prepare_codex_legacy_quote(CodexLegacyQuoteInput {
+                request_id: typed_request_id,
+                account_id: account_id.to_owned(),
+                model: model.clone(),
+                quote_ts,
+                payable_multiplier_bp: mult_bp,
+                estimated_input_tokens,
+                reserve_overhead_tokens,
+                requested_output_tokens,
+                fast,
+            }) {
+                Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
+                Ok(PricingBridgePrepare::Fallback(reason)) => {
+                    app.metrics.pricing_bridge_fallback(provider, reason);
+                    return reserve_codex_legacy(
+                        billing,
+                        account_id,
+                        key,
+                        model,
+                        estimated_input_tokens,
+                        requested_output_tokens,
+                        reserve_overhead_tokens,
+                        fast,
+                        mult_bp,
+                        available_nano,
+                        request_id,
+                        execution,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    app.metrics.pricing_bridge_failure(provider);
+                    eprintln!("OpenAI pricing bridge preparation failed: {error:#}");
+                    return Err(AdmissionError::Unavailable);
+                }
+            };
+            let _bridge_latency = app.metrics.pricing_bridge_latency_timer(provider);
+            let quote = match prepared.quote(available_nano) {
+                Ok(Some(quote)) => quote,
+                Ok(None) => {
+                    app.metrics.pricing_bridge_not_reserved(provider);
+                    return Err(AdmissionError::LowBalance);
+                }
+                Err(error) => {
+                    app.metrics.pricing_bridge_failure(provider);
+                    eprintln!("OpenAI pricing bridge quote failed: {error:#}");
+                    return Err(AdmissionError::Unavailable);
+                }
+            };
+            let hold = quote.snapshot().charged_hold_nano();
+            match billing
+                .reserve_request_with_legacy_snapshot_for_execution(
+                    key,
+                    quote.into_snapshot(),
+                    execution.clone(),
+                )
+                .await
+            {
+                Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
+                    app.metrics.pricing_bridge_inserted(provider);
+                    if let Some(shadow) = &app.pricing_shadow {
+                        shadow.try_enqueue(&receipt.snapshot);
+                    }
+                    Ok(LegacyCodexReserveResult::Reserved((
+                        request_id.to_owned(),
+                        hold,
+                        mult_bp,
+                        None,
+                        CodexSettlementPricing::LegacyScalar,
+                    )))
+                }
+                Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
+                    app.metrics.pricing_bridge_unchanged(provider);
+                    if let Some(shadow) = &app.pricing_shadow {
+                        shadow.try_enqueue(&receipt.snapshot);
+                    }
+                    Ok(LegacyCodexReserveResult::Reserved((
+                        request_id.to_owned(),
+                        hold,
+                        mult_bp,
+                        None,
+                        CodexSettlementPricing::LegacyScalar,
+                    )))
+                }
+                Ok(LegacyScalarReserveOutcome::Conflict(
+                    LegacyScalarReserveConflict::ActivePricingRelease,
+                )) => Ok(LegacyCodexReserveResult::ReleaseActivated),
+                Ok(LegacyScalarReserveOutcome::NotReserved) => {
+                    app.metrics.pricing_bridge_not_reserved(provider);
+                    Err(AdmissionError::LowBalance)
+                }
+                Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
+                    app.metrics.pricing_bridge_conflict(provider);
+                    eprintln!("OpenAI pricing bridge reserve conflict: {conflict:?}");
+                    Err(AdmissionError::Unavailable)
+                }
+                Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
+                    app.metrics.pricing_bridge_failure(provider);
+                    Err(AdmissionError::Unavailable)
+                }
+                Err(error) => {
+                    app.metrics.pricing_bridge_failure(provider);
+                    eprintln!("OpenAI pricing bridge reservation failed: {error:#}");
+                    Err(AdmissionError::Unavailable)
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn reserve_codex_strict(
     app: &AppState,
     billing: &crate::billing::AsyncBilling,
@@ -293,8 +540,9 @@ async fn reserve_codex_strict(
     fast: bool,
     paid_available_nano: Option<i64>,
     track_available_nano: Option<i64>,
+    request_id: &str,
     execution: &registry::ExecutionAttempt,
-) -> Result<(String, i64, i64, Option<i64>), AdmissionError> {
+) -> Result<LegacyCodexReserveResult, AdmissionError> {
     let provider = SnapshotProvider::OpenAi;
     let quote_ts = pool::now();
     let bundle = billing
@@ -344,8 +592,7 @@ async fn reserve_codex_strict(
         );
         return Err(AdmissionError::LowBalance);
     }
-    let request_id = crate::upstream::fresh_request_id();
-    let Some(typed_request_id) = EnginePricingRequestId::from_engine_uuid_v4(&request_id) else {
+    let Some(typed_request_id) = EnginePricingRequestId::from_engine_uuid_v4(request_id) else {
         app.metrics.strict_pricing_rejected(
             StrictPricingProvider::OpenAi,
             StrictPricingRejectionReason::InvalidContract,
@@ -433,12 +680,13 @@ async fn reserve_codex_strict(
                 resolved.rule.pricing_mode,
                 strict_model_scope,
             );
-            Ok((
-                request_id,
+            Ok(LegacyCodexReserveResult::Reserved((
+                request_id.to_owned(),
                 hold,
                 resolved.rule.payable_multiplier_bp,
                 Some(quote_ts),
-            ))
+                CodexSettlementPricing::LegacyStrict,
+            )))
         }
         Ok(PolicyReserveOutcome::NotReserved) => {
             app.metrics.strict_pricing_rejected(
@@ -446,6 +694,9 @@ async fn reserve_codex_strict(
                 StrictPricingRejectionReason::LowBalance,
             );
             Err(AdmissionError::LowBalance)
+        }
+        Ok(PolicyReserveOutcome::Conflict(PolicyReserveConflict::ActivePricingRelease)) => {
+            Ok(LegacyCodexReserveResult::ReleaseActivated)
         }
         Ok(PolicyReserveOutcome::Conflict(conflict)) => {
             eprintln!("strict OpenAI reserve conflict: {conflict:?}");
@@ -485,22 +736,30 @@ async fn reserve_codex_legacy(
     fast: bool,
     mult_bp: i64,
     available_nano: i64,
-    request_id: Option<String>,
+    request_id: &str,
     execution: &registry::ExecutionAttempt,
-) -> Result<(String, i64), AdmissionError> {
+) -> Result<LegacyCodexReserveResult, AdmissionError> {
     let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
     let base = reserve_cost(model, estimated, requested_output_tokens, pool::now(), fast);
     let hold = metering::apply_multiplier(base, mult_bp).clamp(1, i64::MAX as i128) as i64;
     // Preserve the scalar admission contract exactly: a conservative full-output estimate is
     // capped to the account balance, while exact settlement remains bounded by hold + overdraft.
     let hold = hold.min(available_nano.max(1));
-    let request_id = request_id.unwrap_or_else(crate::upstream::fresh_request_id);
     match billing
-        .reserve_request_for_execution(&request_id, account_id, key, hold, execution.clone())
+        .reserve_request_for_execution(request_id, account_id, key, hold, execution.clone())
         .await
     {
-        Ok(Some(_)) => Ok((request_id, hold)),
+        Ok(Some(_)) => Ok(LegacyCodexReserveResult::Reserved((
+            request_id.to_owned(),
+            hold,
+            mult_bp,
+            None,
+            CodexSettlementPricing::LegacyScalar,
+        ))),
         Ok(None) => Err(AdmissionError::LowBalance),
+        Err(error) if error.downcast_ref::<LegacyPricingPathClosedV2>().is_some() => {
+            Ok(LegacyCodexReserveResult::ReleaseActivated)
+        }
         Err(error) => {
             eprintln!("Codex billing reservation failed: {error:#}");
             Err(AdmissionError::Unavailable)
@@ -535,7 +794,7 @@ impl CodexAdmission {
         };
         let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
         let effective_fast = reservation.policy_fast.unwrap_or(fast);
-        let strict = reservation.tariff_priced_ts.is_some();
+        let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
         let (charge, usage_event) = settled_charge(
             model,
             usage,
@@ -646,12 +905,9 @@ pub(crate) async fn begin_admission(
     let authz = authorize(app, headers, peer).await;
     let tenant_scope = match &authz {
         Authz::Admin { affinity_scope } => affinity_scope.clone(),
-        Authz::Metered {
-            account_id,
-            available_nano,
-            ..
-        } if *available_nano > 0 => account_id.clone(),
-        Authz::Metered { .. } => return Err(AdmissionError::LowBalance),
+        // Balance is enforced only after model-specific release resolution. Service assignments
+        // use meter_only and must remain admissible at zero balance.
+        Authz::Metered { account_id, .. } => account_id.clone(),
         Authz::Unauthorized => {
             Metrics::inc(&app.metrics.auth_failures);
             return Err(AdmissionError::Unauthorized);
@@ -1213,6 +1469,7 @@ mod tests {
                 hold,
                 tariff_priced_ts: None,
                 policy_fast: None,
+                settlement_pricing: CodexSettlementPricing::LegacyScalar,
                 request_id: request_id.to_string(),
                 guard: HoldGuard::new(
                     Some(Arc::clone(&billing)),
@@ -1401,6 +1658,50 @@ mod tests {
         let event = event.expect("positive usage must produce a usage event");
         assert_eq!(event.output_tokens, 1_000);
         assert_eq!(event.real_nano, 100 * 5_000 + 1_000 * 30_000);
+    }
+
+    #[tokio::test]
+    async fn release_v2_settlement_keeps_the_requested_output_cap_and_does_not_use_strict_recovery()
+    {
+        const TOPUP: i64 = 50_000_000;
+        const HOLD: i64 = 4_000_000;
+        let (mut admission, billing, path) =
+            reserved_admission(10_000, TOPUP, HOLD, "codex-release-v2-settle").await;
+        let reservation = admission.reservation.as_mut().unwrap();
+        reservation.tariff_priced_ts = Some(1);
+        reservation.policy_fast = Some(false);
+        reservation.settlement_pricing = CodexSettlementPricing::ReleaseV2;
+
+        admission.settle(
+            &settlement_model(),
+            &CodexUsage {
+                input_tokens: 100,
+                output_tokens: 1_000,
+                ..CodexUsage::default()
+            },
+            Some(100),
+            false,
+        );
+        billing.flush().await.unwrap();
+
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, TOPUP - 3_500_000);
+        assert_eq!(account.spent_nano, 3_500_000);
+        assert_eq!(account.reserved_nano, 0);
+        let usage = billing
+            .usage_by_model("codex-settlement-account", 0)
+            .await
+            .unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].charge_nano, 3_500_000);
+        assert_eq!(usage[0].real_nano, 30_500_000);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1709,10 +2010,11 @@ mod tests {
             false,
             Some(100_000),
             Some(100_000),
+            "123e4567-e89b-42d3-a456-426614174000",
             &registry::ExecutionAttempt::direct(),
         )
         .await;
-        assert_eq!(result, Err(AdmissionError::Unavailable));
+        assert!(matches!(result, Err(AdmissionError::Unavailable)));
         assert_eq!(
             app.metrics.strict_pricing_rejected_count(
                 crate::StrictPricingProvider::OpenAi,
@@ -1791,6 +2093,66 @@ mod tests {
         )
         .unwrap()
         .is_some());
+
+        drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn dormant_release_keeps_the_legacy_zero_balance_gate() {
+        const ACCOUNT: &str = "codex-zero-balance";
+        const KEY: &str = "codex-zero-balance-key";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_SETTLEMENT_DB.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-codex-zero-balance-{}-{unique}-{sequence}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start zero-balance test billing"),
+        );
+        billing.create_account(ACCOUNT, None, 2_000).await.unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let app = bridge_app(Arc::clone(&billing), PricingBridgeConfig::disabled());
+
+        let result = reserve_codex_metered(
+            &app,
+            &billing,
+            ACCOUNT,
+            KEY,
+            &model(),
+            100,
+            Some(10),
+            0,
+            false,
+            2_000,
+            0,
+            false,
+            None,
+            None,
+            &registry::ExecutionAttempt::direct(),
+        )
+        .await;
+        assert!(matches!(result, Err(AdmissionError::LowBalance)));
+        let account = billing.account(ACCOUNT).await.unwrap().unwrap();
+        assert_eq!((account.balance_nano, account.reserved_nano), (0, 0));
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let reservations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM billing_reservations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(reservations, 0);
 
         drop(connection);
         drop(app);

@@ -57,6 +57,7 @@ pub(crate) struct FundingLedgerAllocationV2 {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SettlementFundingV2 {
+    pub(crate) funding_generation: i64,
     pub(crate) allocations: Vec<FundingLedgerAllocationV2>,
     pub(crate) paid_funded_nano: i64,
     pub(crate) bonus_funded_nano: i64,
@@ -541,6 +542,176 @@ pub(crate) fn reserve_funding_v2(
     Ok(())
 }
 
+/// Allocate a release-v2 balance reservation against the generation pinned by the immutable
+/// release assignment. This intentionally writes the post-cutover allocation table rather than
+/// the pre-cutover bridge table; both paths mutate the same aggregate/lots with identical
+/// bonus-first and paid-overdraft semantics.
+pub(crate) fn reserve_pricing_release_funding_v2(
+    tx: &mut Transaction<'_>,
+    head: &ActiveFundingHeadV2,
+    request_id: &str,
+    account_id: &str,
+    expected_generation: i64,
+    hold_nano: i64,
+    timestamp: i64,
+) -> Result<()> {
+    if hold_nano < 0 || head.generation != expected_generation {
+        bail!("pricing release funding generation/hold does not match the active account head");
+    }
+    let available_floor = head
+        .balance_nano
+        .checked_add(OVERDRAFT_NANO)
+        .context("pricing release funding overdraft gate overflow")?;
+    if available_floor < hold_nano {
+        bail!("pricing release funding generation cannot cover the hold");
+    }
+    let lots: Vec<FundingLotV2> = tx
+        .query(
+            "SELECT lot_id,source_type,version,balance_nano
+               FROM funding_lots_v2
+              WHERE account_id=$1 AND funding_generation=$2 AND status<>'retired'
+              ORDER BY CASE source_type WHEN 'welcome_bonus' THEN 0 ELSE 1 END,
+                       created_ts,lot_id
+              FOR UPDATE",
+            &[&account_id, &head.generation],
+        )?
+        .into_iter()
+        .map(|row| FundingLotV2 {
+            lot_id: row.get(0),
+            source_type: row.get(1),
+            version: row.get(2),
+            balance_nano: row.get(3),
+        })
+        .collect();
+    let paid_anchor = lots.iter().find(|lot| lot.source_type == "paid").cloned();
+    let mut remaining = hold_nano;
+    let mut selected: Vec<(FundingLotV2, i64)> = Vec::new();
+    for lot in lots.iter().filter(|lot| lot.balance_nano > 0) {
+        if remaining == 0 {
+            break;
+        }
+        let reserved = remaining.min(lot.balance_nano);
+        selected.push((lot.clone(), reserved));
+        remaining -= reserved;
+    }
+    if remaining > 0 {
+        if remaining > OVERDRAFT_NANO {
+            bail!("pricing release funding lots cannot cover the hold");
+        }
+        if let Some((_, reserved)) = selected
+            .last_mut()
+            .filter(|(lot, _)| lot.source_type == "paid")
+        {
+            *reserved = reserved
+                .checked_add(remaining)
+                .context("pricing release funding paid overrun overflow")?;
+        } else {
+            selected.push((
+                paid_anchor
+                    .clone()
+                    .context("pricing release funding overdraft requires a paid lot")?,
+                remaining,
+            ));
+        }
+    }
+    if selected
+        .last()
+        .is_none_or(|(lot, _)| lot.source_type != "paid")
+    {
+        selected.push((
+            paid_anchor.context("pricing release funding reserve requires a paid lot")?,
+            0,
+        ));
+    }
+
+    let mut allocations = Vec::with_capacity(selected.len());
+    for (index, (lot, reserved_nano)) in selected.into_iter().enumerate() {
+        let lot_version = if reserved_nano == 0 {
+            lot.version
+        } else {
+            let next_version = lot
+                .version
+                .checked_add(1)
+                .context("pricing release funding lot version overflow")?;
+            let row = tx
+                .query_opt(
+                    "UPDATE funding_lots_v2
+                        SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1,
+                            version=$2,updated_ts=$3,
+                            status=CASE WHEN balance_nano-$1>0 THEN 'active' ELSE 'exhausted' END
+                      WHERE lot_id=$4 AND account_id=$5 AND funding_generation=$6
+                        AND source_type=$7 AND version=$8
+                        AND (source_type='paid' OR balance_nano >= $1)
+                      RETURNING version",
+                    &[
+                        &reserved_nano,
+                        &next_version,
+                        &timestamp,
+                        &lot.lot_id,
+                        &account_id,
+                        &head.generation,
+                        &lot.source_type,
+                        &lot.version,
+                    ],
+                )?
+                .context("pricing release funding lot changed during reserve")?;
+            row.get(0)
+        };
+        allocations.push(ReservationAllocationV2 {
+            allocation_order: index as i64 + 1,
+            lot_id: lot.lot_id,
+            lot_source_type: lot.source_type,
+            lot_version,
+            reserved_nano,
+            charged_nano: None,
+            released_nano: None,
+        });
+    }
+
+    if hold_nano > 0 {
+        let next_version = head
+            .generation_version
+            .checked_add(1)
+            .context("pricing release funding generation version overflow")?;
+        if tx.execute(
+            "UPDATE account_funding_generations_v2
+                SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1,
+                    version=$2,updated_ts=$3
+              WHERE account_id=$4 AND generation=$5 AND version=$6",
+            &[
+                &hold_nano,
+                &next_version,
+                &timestamp,
+                &account_id,
+                &head.generation,
+                &head.generation_version,
+            ],
+        )? != 1
+        {
+            bail!("pricing release funding generation changed during reserve");
+        }
+    }
+    for allocation in &allocations {
+        tx.execute(
+            "INSERT INTO pricing_request_funding_allocations_v2(
+                 request_id,account_id,funding_generation,allocation_order,lot_id,
+                 lot_source_type,lot_version,reserved_nano)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+            &[
+                &request_id,
+                &account_id,
+                &head.generation,
+                &allocation.allocation_order,
+                &allocation.lot_id,
+                &allocation.lot_source_type,
+                &allocation.lot_version,
+                &allocation.reserved_nano,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn settle_funding_v2(
     tx: &mut Transaction<'_>,
     head: Option<&ActiveFundingHeadV2>,
@@ -598,7 +769,10 @@ pub(crate) fn settle_funding_v2(
         allocation.released_nano = Some(0);
     }
 
-    let mut evidence = SettlementFundingV2::default();
+    let mut evidence = SettlementFundingV2 {
+        funding_generation: snapshot.funding_generation,
+        ..SettlementFundingV2::default()
+    };
     for allocation in &snapshot.allocations {
         let charged = allocation
             .charged_nano
@@ -696,6 +870,281 @@ pub(crate) fn settle_funding_v2(
         )?;
     }
     Ok(Some(evidence))
+}
+
+pub(crate) fn settle_pricing_release_funding_v2(
+    tx: &mut Transaction<'_>,
+    head: &ActiveFundingHeadV2,
+    request_id: &str,
+    account_id: &str,
+    expected_generation: i64,
+    hold_nano: i64,
+    actual_nano: i64,
+    timestamp: i64,
+) -> Result<SettlementFundingV2> {
+    if actual_nano < 0
+        || head.generation != expected_generation
+        || actual_nano
+            > hold_nano
+                .checked_add(OVERDRAFT_NANO)
+                .context("pricing release settlement ceiling overflow")?
+    {
+        bail!("pricing release funding settlement identity/amount is invalid");
+    }
+    let mut allocations: Vec<ReservationAllocationV2> = tx
+        .query(
+            "SELECT allocation.allocation_order,allocation.lot_id,
+                    allocation.lot_source_type,allocation.lot_version,
+                    allocation.reserved_nano,allocation.charged_nano,
+                    allocation.released_nano
+               FROM pricing_request_funding_allocations_v2 allocation
+               JOIN funding_lots_v2 lot
+                 ON lot.lot_id=allocation.lot_id
+                AND lot.account_id=allocation.account_id
+                AND lot.funding_generation=allocation.funding_generation
+                AND lot.source_type=allocation.lot_source_type
+              WHERE allocation.request_id=$1 AND allocation.account_id=$2
+                AND allocation.funding_generation=$3
+              ORDER BY allocation.allocation_order
+              FOR UPDATE OF allocation,lot",
+            &[&request_id, &account_id, &expected_generation],
+        )?
+        .into_iter()
+        .map(|row| ReservationAllocationV2 {
+            allocation_order: row.get(0),
+            lot_id: row.get(1),
+            lot_source_type: row.get(2),
+            lot_version: row.get(3),
+            reserved_nano: row.get(4),
+            charged_nano: row.get(5),
+            released_nano: row.get(6),
+        })
+        .collect();
+    let mut reserved_total = 0_i64;
+    let mut paid_seen = false;
+    for (index, allocation) in allocations.iter().enumerate() {
+        if allocation.allocation_order != index as i64 + 1
+            || allocation.charged_nano.is_some()
+            || allocation.released_nano.is_some()
+            || (paid_seen && allocation.lot_source_type == "welcome_bonus")
+        {
+            bail!("pricing release funding allocations are invalid or terminal");
+        }
+        paid_seen |= allocation.lot_source_type == "paid";
+        reserved_total = reserved_total
+            .checked_add(allocation.reserved_nano)
+            .context("pricing release reserved funding total overflow")?;
+    }
+    if reserved_total != hold_nano || (hold_nano > 0 && allocations.is_empty()) {
+        bail!("pricing release funding allocations do not cover the request hold");
+    }
+
+    let mut remaining = actual_nano;
+    for allocation in &mut allocations {
+        let charged = remaining.min(allocation.reserved_nano);
+        allocation.charged_nano = Some(charged);
+        allocation.released_nano = Some(allocation.reserved_nano - charged);
+        remaining -= charged;
+    }
+    if remaining > 0 {
+        let allocation = allocations
+            .last_mut()
+            .filter(|allocation| allocation.lot_source_type == "paid")
+            .context("pricing release funding overrun requires a final paid allocation")?;
+        allocation.charged_nano = Some(
+            allocation
+                .charged_nano
+                .unwrap_or(0)
+                .checked_add(remaining)
+                .context("pricing release funding overrun overflow")?,
+        );
+        allocation.released_nano = Some(0);
+    }
+
+    let mut evidence = SettlementFundingV2 {
+        funding_generation: expected_generation,
+        ..SettlementFundingV2::default()
+    };
+    for allocation in &allocations {
+        let charged = allocation
+            .charged_nano
+            .context("pricing release funding charge was not derived")?;
+        let released = allocation
+            .released_nano
+            .context("pricing release funding release was not derived")?;
+        let lot_delta = allocation
+            .reserved_nano
+            .checked_sub(charged)
+            .context("pricing release funding lot delta overflow")?;
+        let lot_version = if allocation.reserved_nano == 0 && charged == 0 {
+            allocation.lot_version
+        } else {
+            tx.query_one(
+                "UPDATE funding_lots_v2
+                    SET balance_nano=balance_nano+$1,reserved_nano=reserved_nano-$2,
+                        spent_nano=spent_nano+$3,version=version+1,updated_ts=$4,
+                        status=CASE
+                          WHEN status='retired' THEN status
+                          WHEN balance_nano+$1>0 THEN 'active'
+                          ELSE 'exhausted'
+                        END
+                  WHERE lot_id=$5 AND account_id=$6 AND funding_generation=$7
+                    AND source_type=$8 AND reserved_nano >= $2
+                  RETURNING version",
+                &[
+                    &lot_delta,
+                    &allocation.reserved_nano,
+                    &charged,
+                    &timestamp,
+                    &allocation.lot_id,
+                    &account_id,
+                    &expected_generation,
+                    &allocation.lot_source_type,
+                ],
+            )?
+            .get(0)
+        };
+        if tx.execute(
+            "UPDATE pricing_request_funding_allocations_v2
+                SET charged_nano=$1,released_nano=$2
+              WHERE request_id=$3 AND account_id=$4 AND allocation_order=$5
+                AND charged_nano IS NULL AND released_nano IS NULL",
+            &[
+                &charged,
+                &released,
+                &request_id,
+                &account_id,
+                &allocation.allocation_order,
+            ],
+        )? != 1
+        {
+            bail!("pricing release funding allocation was already terminalized");
+        }
+        if allocation.lot_source_type == "paid" {
+            evidence.paid_funded_nano = evidence
+                .paid_funded_nano
+                .checked_add(charged)
+                .context("pricing release paid-funded total overflow")?;
+        } else {
+            evidence.bonus_funded_nano = evidence
+                .bonus_funded_nano
+                .checked_add(charged)
+                .context("pricing release bonus-funded total overflow")?;
+        }
+        if charged > 0 {
+            evidence.allocations.push(FundingLedgerAllocationV2 {
+                allocation_order: evidence.allocations.len() as i64 + 1,
+                lot_id: allocation.lot_id.clone(),
+                lot_source_type: allocation.lot_source_type.clone(),
+                lot_version,
+                amount_nano: charged,
+            });
+        }
+    }
+    let balance_delta = hold_nano
+        .checked_sub(actual_nano)
+        .context("pricing release settlement balance delta overflow")?;
+    if hold_nano != 0 || actual_nano != 0 {
+        tx.query_one(
+            "UPDATE account_funding_generations_v2
+                SET balance_nano=balance_nano+$1,reserved_nano=reserved_nano-$2,
+                    spent_nano=spent_nano+$3,version=version+1,updated_ts=$4
+              WHERE account_id=$5 AND generation=$6 AND reserved_nano >= $2
+              RETURNING version",
+            &[
+                &balance_delta,
+                &hold_nano,
+                &actual_nano,
+                &timestamp,
+                &account_id,
+                &expected_generation,
+            ],
+        )?;
+    }
+    Ok(evidence)
+}
+
+pub(crate) fn validate_active_pricing_release_funding_v2(
+    tx: &mut Transaction<'_>,
+    request_id: &str,
+    account_id: &str,
+    funding_generation: Option<i64>,
+    hold_nano: i64,
+) -> Result<()> {
+    let row = tx.query_one(
+        "SELECT count(*)::bigint,COALESCE(sum(reserved_nano),0)::bigint,
+                count(*) FILTER (WHERE charged_nano IS NOT NULL OR released_nano IS NOT NULL)::bigint,
+                count(DISTINCT funding_generation)::bigint
+           FROM pricing_request_funding_allocations_v2
+          WHERE request_id=$1 AND account_id=$2",
+        &[&request_id, &account_id],
+    )?;
+    let count: i64 = row.get(0);
+    if let Some(generation) = funding_generation {
+        let matching_generation_count: i64 = tx
+            .query_one(
+                "SELECT count(*)::bigint
+                   FROM pricing_request_funding_allocations_v2
+                  WHERE request_id=$1 AND account_id=$2 AND funding_generation=$3",
+                &[&request_id, &account_id, &generation],
+            )?
+            .get(0);
+        if count == 0
+            || row.get::<_, i64>(1) != hold_nano
+            || row.get::<_, i64>(2) != 0
+            || row.get::<_, i64>(3) != 1
+            || matching_generation_count != count
+        {
+            bail!("active pricing release funding allocations changed");
+        }
+    } else if count != 0 || hold_nano != 0 {
+        bail!("active meter-only pricing release request mutated funding");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_terminal_pricing_release_funding_v2(
+    tx: &mut Transaction<'_>,
+    request_id: &str,
+    account_id: &str,
+    funding_generation: Option<i64>,
+    hold_nano: i64,
+    actual_nano: i64,
+) -> Result<()> {
+    let row = tx.query_one(
+        "SELECT count(*)::bigint,COALESCE(sum(reserved_nano),0)::bigint,
+                COALESCE(sum(charged_nano),0)::bigint,
+                COALESCE(sum(released_nano),0)::bigint,
+                count(*) FILTER (WHERE charged_nano IS NULL OR released_nano IS NULL)::bigint,
+                count(DISTINCT funding_generation)::bigint
+           FROM pricing_request_funding_allocations_v2
+          WHERE request_id=$1 AND account_id=$2",
+        &[&request_id, &account_id],
+    )?;
+    let count: i64 = row.get(0);
+    if let Some(generation) = funding_generation {
+        let matching_generation_count: i64 = tx
+            .query_one(
+                "SELECT count(*)::bigint
+                   FROM pricing_request_funding_allocations_v2
+                  WHERE request_id=$1 AND account_id=$2 AND funding_generation=$3",
+                &[&request_id, &account_id, &generation],
+            )?
+            .get(0);
+        if row.get::<_, i64>(1) != hold_nano
+            || row.get::<_, i64>(2) != actual_nano
+            || row.get::<_, i64>(3) != hold_nano.saturating_sub(actual_nano).max(0)
+            || row.get::<_, i64>(4) != 0
+            || (count > 0 && row.get::<_, i64>(5) != 1)
+            || matching_generation_count != count
+            || (hold_nano > 0 && count == 0)
+        {
+            bail!("terminal pricing release funding allocations changed");
+        }
+    } else if count != 0 || hold_nano != 0 || actual_nano != 0 {
+        bail!("terminal meter-only pricing release request mutated funding");
+    }
+    Ok(())
 }
 
 pub(crate) fn insert_settlement_ledger_allocations_v2(

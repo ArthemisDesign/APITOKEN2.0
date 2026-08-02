@@ -4,11 +4,31 @@
 //! create the singleton release head and therefore cannot change live admission or customer money.
 
 use super::{require_id, AccountClass, PolicyOwnerType};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::fmt;
 
 pub const PRICING_RELEASE_SCHEMA_VERSION: i64 = 2;
+pub const FUNDING_SCHEMA_VERSION_V2: i64 = 2;
+pub const PRICING_RELEASE_RUNTIME_DIGEST_V2: &str =
+    "sha256:v2:afd0bae49dbd4ab9ac1a1eace5a147052800fb3ad3545f59e11d27732ba69137";
+
+const REQUEST_SNAPSHOT_DIGEST_DOMAIN_V2: &[u8] = b"apitoken:pricing-release-request-snapshot:v2\0";
+
+/// A new legacy PostgreSQL reserve reached its money mutation after the global release head
+/// became visible. Runtime callers must resolve that head and retry through release-v2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LegacyPricingPathClosedV2;
+
+impl fmt::Display for LegacyPricingPathClosedV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("legacy pricing reserve is closed by the active release head")
+    }
+}
+
+impl std::error::Error for LegacyPricingPathClosedV2 {}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +163,344 @@ pub struct PricingReleaseInventoryAccountV2 {
 pub struct PricingReleaseInventoryPageV2 {
     pub accounts: Vec<PricingReleaseInventoryAccountV2>,
     pub next_after_account_id: Option<String>,
+}
+
+/// One exact immutable global-head decision for a provider/model admission.
+///
+/// Readers build this value in one repeatable-read transaction. The reserve writer re-resolves
+/// the same identity under its request/account locks before persisting money, so a concurrent
+/// target -> recovery transition is a typed stale decision rather than a torn snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PricingReleaseResolutionV2 {
+    pub head: PricingReleaseHeadV2,
+    pub release_schema_version: i64,
+    pub release_digest: String,
+    pub assignment: PricingReleaseAssignmentV2,
+    pub policy: PricingReleasePolicyV2,
+    pub rule: Option<PricingReleasePolicyRuleV2>,
+}
+
+impl PricingReleaseResolutionV2 {
+    pub fn billing_mode(&self) -> BillingModeV2 {
+        self.assignment.billing_mode
+    }
+
+    pub fn payable_multiplier_bp(&self) -> Option<i64> {
+        self.rule.as_ref().map(|rule| rule.payable_multiplier_bp)
+    }
+}
+
+/// Provider-owned official reserve quote consumed by the release-v2 writer.
+///
+/// The public constructor accepts only an already validated legacy-provider snapshot. That keeps
+/// canonical model/tariff/modifier provenance in the existing Anthropic/OpenAI/Google builders;
+/// the release writer owns only immutable policy resolution and customer charging.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PricingReleaseQuoteV2 {
+    request_id: String,
+    account_id: String,
+    provider_id: String,
+    canonical_model_id: String,
+    tariff_schedule_id: String,
+    tariff_priced_ts: i64,
+    official_hold_nano: i64,
+    official_cost_json: serde_json::Value,
+    admission_ts: i64,
+}
+
+impl PricingReleaseQuoteV2 {
+    pub fn from_legacy_snapshot(snapshot: &super::LegacyScalarAdmissionSnapshot) -> Result<Self> {
+        snapshot.validate()?;
+        let official_cost_json = serde_json::json!({
+            "alias_generation": snapshot.alias_generation(),
+            "premium_modifiers": snapshot.premium_modifiers(),
+            "requested_model_id": snapshot.requested_model_id(),
+        });
+        let quote = Self {
+            request_id: snapshot.request_id().to_owned(),
+            account_id: snapshot.account_id().to_owned(),
+            provider_id: snapshot.provider().as_str().to_owned(),
+            canonical_model_id: snapshot.canonical_model_id().to_owned(),
+            tariff_schedule_id: snapshot.tariff_schedule_id().to_owned(),
+            tariff_priced_ts: snapshot.tariff_priced_ts(),
+            official_hold_nano: snapshot.official_hold_nano(),
+            official_cost_json,
+            admission_ts: snapshot.admission_ts(),
+        };
+        quote.validate()?;
+        Ok(quote)
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn canonical_model_id(&self) -> &str {
+        &self.canonical_model_id
+    }
+
+    pub fn tariff_schedule_id(&self) -> &str {
+        &self.tariff_schedule_id
+    }
+
+    pub fn tariff_priced_ts(&self) -> i64 {
+        self.tariff_priced_ts
+    }
+
+    pub fn official_hold_nano(&self) -> i64 {
+        self.official_hold_nano
+    }
+
+    pub fn official_cost_json(&self) -> &serde_json::Value {
+        &self.official_cost_json
+    }
+
+    pub fn admission_ts(&self) -> i64 {
+        self.admission_ts
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("release quote request id", self.request_id.as_str()),
+            ("release quote account id", self.account_id.as_str()),
+            ("release quote provider id", self.provider_id.as_str()),
+            (
+                "release quote canonical model id",
+                self.canonical_model_id.as_str(),
+            ),
+            (
+                "release quote tariff schedule id",
+                self.tariff_schedule_id.as_str(),
+            ),
+        ] {
+            require_id(label, value)?;
+        }
+        if !matches!(self.provider_id.as_str(), "anthropic" | "openai" | "google") {
+            bail!("release quote provider is outside the fixed runtime plane");
+        }
+        if self.tariff_priced_ts <= 0 || self.admission_ts <= 0 || self.official_hold_nano < 0 {
+            bail!("release quote timestamps/official hold are invalid");
+        }
+        if !self.official_cost_json.is_object() {
+            bail!("release quote official cost must be a JSON object");
+        }
+        let encoded = serde_json::to_vec(&self.official_cost_json)
+            .context("encode release quote official cost")?;
+        if encoded.len() > 16 * 1024 {
+            bail!("release quote official cost exceeds the storage bound");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PricingRequestSnapshotV2 {
+    pub request_id: String,
+    pub account_id: String,
+    pub release_schema_version: i64,
+    pub release_generation: i64,
+    pub release_digest: String,
+    pub assignment_digest: String,
+    pub account_class: AccountClass,
+    pub policy_id: String,
+    pub policy_version: i64,
+    pub policy_digest: String,
+    pub billing_mode: BillingModeV2,
+    pub funding_generation: Option<i64>,
+    pub provider_id: String,
+    pub canonical_model_id: String,
+    pub rule: Option<PricingReleasePolicyRuleV2>,
+    pub tariff_schedule_id: String,
+    pub tariff_priced_ts: i64,
+    pub official_hold_nano: i64,
+    pub charged_hold_nano: i64,
+    pub official_cost_json: serde_json::Value,
+    pub snapshot_digest: String,
+    pub created_ts: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PricingReleaseReserveReceiptV2 {
+    pub balance_after_reserve_nano: Option<i64>,
+    pub snapshot: PricingRequestSnapshotV2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PricingReleaseReserveConflictV2 {
+    ActiveReleaseChanged,
+    ReservationIdentity,
+    ExistingReservationWithoutReleaseSnapshot,
+    SnapshotPayload,
+    TerminalReservation,
+    ExpiredIdempotencyWindow,
+    AdmissionTimestampInFuture,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PricingReleaseReserveOutcomeV2 {
+    NoActiveRelease,
+    Inserted(PricingReleaseReserveReceiptV2),
+    Unchanged(PricingReleaseReserveReceiptV2),
+    NotReserved,
+    Conflict(PricingReleaseReserveConflictV2),
+    AbortedBeforeCommit,
+}
+
+fn digest_bytes(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn digest_string(hasher: &mut Sha256, value: &str) {
+    digest_bytes(hasher, value.as_bytes());
+}
+
+fn digest_optional_string(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            digest_string(hasher, value);
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn digest_optional_i64(hasher: &mut Sha256, value: Option<i64>) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hasher.update(value.to_be_bytes());
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn finish_digest(hasher: Sha256) -> String {
+    let bytes = hasher.finalize();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    format!("sha256:v2:{hex}")
+}
+
+pub(crate) fn pricing_request_snapshot_digest_v2(
+    snapshot: &PricingRequestSnapshotV2,
+) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(REQUEST_SNAPSHOT_DIGEST_DOMAIN_V2);
+    digest_string(&mut hasher, &snapshot.request_id);
+    digest_string(&mut hasher, &snapshot.account_id);
+    hasher.update(snapshot.release_schema_version.to_be_bytes());
+    hasher.update(snapshot.release_generation.to_be_bytes());
+    digest_string(&mut hasher, &snapshot.release_digest);
+    digest_string(&mut hasher, &snapshot.assignment_digest);
+    digest_string(&mut hasher, snapshot.account_class.as_str());
+    digest_string(&mut hasher, &snapshot.policy_id);
+    hasher.update(snapshot.policy_version.to_be_bytes());
+    digest_string(&mut hasher, &snapshot.policy_digest);
+    digest_string(&mut hasher, snapshot.billing_mode.as_str());
+    digest_optional_i64(&mut hasher, snapshot.funding_generation);
+    digest_string(&mut hasher, &snapshot.provider_id);
+    digest_string(&mut hasher, &snapshot.canonical_model_id);
+    if let Some(rule) = snapshot.rule.as_ref() {
+        let (scope, provider_id, canonical_model_id) = rule.scope.db_parts();
+        hasher.update([1]);
+        digest_string(&mut hasher, &rule.rule_id);
+        digest_string(&mut hasher, &rule.rule_digest);
+        digest_string(&mut hasher, scope);
+        digest_optional_string(&mut hasher, provider_id);
+        digest_optional_string(&mut hasher, canonical_model_id);
+        hasher.update(rule.discount_bps.to_be_bytes());
+        hasher.update(rule.payable_multiplier_bp.to_be_bytes());
+    } else {
+        hasher.update([0]);
+    }
+    digest_string(&mut hasher, &snapshot.tariff_schedule_id);
+    hasher.update(snapshot.tariff_priced_ts.to_be_bytes());
+    hasher.update(snapshot.official_hold_nano.to_be_bytes());
+    hasher.update(snapshot.charged_hold_nano.to_be_bytes());
+    let official_cost = serde_json::to_vec(&snapshot.official_cost_json)
+        .context("encode release request official cost for digest")?;
+    digest_bytes(&mut hasher, &official_cost);
+    hasher.update(snapshot.created_ts.to_be_bytes());
+    Ok(finish_digest(hasher))
+}
+
+pub(crate) fn build_pricing_request_snapshot_v2(
+    resolution: &PricingReleaseResolutionV2,
+    quote: &PricingReleaseQuoteV2,
+    created_ts: i64,
+) -> Result<PricingRequestSnapshotV2> {
+    quote.validate()?;
+    if created_ts <= 0
+        || resolution.release_schema_version < PRICING_RELEASE_SCHEMA_VERSION
+        || resolution.assignment.account_id != quote.account_id
+        || resolution.assignment.policy_id != resolution.policy.policy_id
+        || resolution.assignment.policy_version != resolution.policy.policy_version
+        || resolution.assignment.policy_digest != resolution.policy.content_digest
+        || resolution.assignment.account_class != resolution.policy.account_class
+        || resolution.assignment.billing_mode != resolution.policy.billing_mode
+    {
+        bail!("release request resolution identity is inconsistent");
+    }
+    let charged_hold_nano = match resolution.assignment.billing_mode {
+        BillingModeV2::Balance => {
+            let multiplier = resolution
+                .rule
+                .as_ref()
+                .context("balance release resolution lacks a pricing rule")?
+                .payable_multiplier_bp;
+            i64::try_from(
+                i128::from(quote.official_hold_nano)
+                    .checked_mul(i128::from(multiplier))
+                    .context("release request hold multiplication overflow")?
+                    / 10_000,
+            )
+            .context("release request charged hold is outside i64")?
+        }
+        BillingModeV2::MeterOnly => {
+            if resolution.rule.is_some() {
+                bail!("meter-only release resolution cannot carry a pricing rule");
+            }
+            0
+        }
+    };
+    let mut snapshot = PricingRequestSnapshotV2 {
+        request_id: quote.request_id.clone(),
+        account_id: quote.account_id.clone(),
+        release_schema_version: resolution.release_schema_version,
+        release_generation: resolution.head.active_generation,
+        release_digest: resolution.release_digest.clone(),
+        assignment_digest: resolution.assignment.assignment_digest.clone(),
+        account_class: resolution.assignment.account_class,
+        policy_id: resolution.policy.policy_id.clone(),
+        policy_version: resolution.policy.policy_version,
+        policy_digest: resolution.policy.content_digest.clone(),
+        billing_mode: resolution.assignment.billing_mode,
+        funding_generation: resolution.assignment.funding_generation,
+        provider_id: quote.provider_id.clone(),
+        canonical_model_id: quote.canonical_model_id.clone(),
+        rule: resolution.rule.clone(),
+        tariff_schedule_id: quote.tariff_schedule_id.clone(),
+        tariff_priced_ts: quote.tariff_priced_ts,
+        official_hold_nano: quote.official_hold_nano,
+        charged_hold_nano,
+        official_cost_json: quote.official_cost_json.clone(),
+        snapshot_digest: String::new(),
+        created_ts,
+    };
+    snapshot.snapshot_digest = pricing_request_snapshot_digest_v2(&snapshot)?;
+    Ok(snapshot)
 }
 
 impl BillingModeV2 {

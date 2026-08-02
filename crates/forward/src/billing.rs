@@ -20,19 +20,19 @@ use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
     PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
-    PricingReadBundle, PricingReleaseHeadV2, PricingReleaseInventoryPageV2,
-    PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2, PricingReleaseV2,
-    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, ProviderSwitchSpec,
-    VersionTarget,
+    PricingReadBundle, PricingReleaseHeadV2, PricingReleaseInventoryPageV2, PricingReleasePolicyV2,
+    PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
+    PricingReleaseResolutionV2, PricingReleaseV2, PricingShadowAdmissionEvaluationInput,
+    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
     BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
-    CodexTurnCalibrationEvent, CodexWindowObservation, GeminiExactCalibrationRow,
-    GeminiExactWindowObservation, FundingNormalizationApplyRequestV2,
-    FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, KeyActivationPolicyAck,
-    KeyAuth, KeyPolicyUpdate, KeyRow, ProviderCalibrationSubjectSpend,
-    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
+    CodexTurnCalibrationEvent, CodexWindowObservation, FundingNormalizationApplyRequestV2,
+    FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, GeminiExactCalibrationRow,
+    GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -642,6 +642,43 @@ fn finish_policy_snapshot_reserve(
     }
 }
 
+fn finish_pricing_release_reserve(
+    handoff: &AtomicU8,
+    reply: oneshot::Sender<anyhow::Result<PricingReleaseReserveOutcomeV2>>,
+    result: anyhow::Result<PricingReleaseReserveOutcomeV2>,
+) {
+    match result {
+        Ok(outcome @ PricingReleaseReserveOutcomeV2::Inserted(_))
+        | Ok(outcome @ PricingReleaseReserveOutcomeV2::Unchanged(_)) => {
+            if let Err(state) = handoff.compare_exchange(
+                SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED,
+                SNAPSHOT_RESERVE_HANDOFF_COMMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                let _ = reply.send(Err(anyhow::anyhow!(
+                    "pricing release reservation committed with unexpected handoff state {state}"
+                )));
+                return;
+            }
+            let _ = reply.send(Ok(outcome));
+        }
+        Ok(outcome) => {
+            if !matches!(
+                &outcome,
+                PricingReleaseReserveOutcomeV2::AbortedBeforeCommit
+            ) {
+                mark_snapshot_reserve_failed(handoff);
+            }
+            let _ = reply.send(Ok(outcome));
+        }
+        Err(error) => {
+            mark_snapshot_reserve_failed(handoff);
+            let _ = reply.send(Err(error));
+        }
+    }
+}
+
 #[derive(Default)]
 struct DetachedDispatchTracker {
     pending: AtomicUsize,
@@ -889,6 +926,69 @@ fn run_pg_policy_snapshot_reserve_with_retry(
                     );
                 }
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pg_pricing_release_reserve_with_retry(
+    pg: &mut registry::pg::PgStore,
+    url: &str,
+    owner: &registry::pg::Owner,
+    key: &str,
+    resolution: &PricingReleaseResolutionV2,
+    quote: &PricingReleaseQuoteV2,
+    execution: &registry::ExecutionAttempt,
+    handoff: &AtomicU8,
+    lease_secs: i64,
+) -> anyhow::Result<PricingReleaseReserveOutcomeV2> {
+    let deadline = Instant::now() + PG_OPERATION_RETRY_DEADLINE;
+    loop {
+        match pg.reserve_request_with_pricing_release_v2_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            resolution,
+            quote,
+            execution,
+            || authorize_snapshot_reserve_commit(handoff),
+        ) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let class = registry::pg::classify_failure(&error);
+                if handoff.load(Ordering::Acquire) != SNAPSHOT_RESERVE_HANDOFF_PENDING
+                    || class != registry::pg::FailureClass::Transient
+                    || Instant::now() >= deadline
+                {
+                    return Err(error);
+                }
+                eprintln!(
+                    "billing PostgreSQL pricing release reserve transient failure: {error:#}"
+                );
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        match registry::pg::PgStore::connect(url) {
+            Ok(mut next) => match next.heartbeat_instance(owner, 30) {
+                Ok(true) => *pg = next,
+                Ok(false) => {
+                    return Err(anyhow::anyhow!(
+                        "engine owner was fenced during pricing release reserve"
+                    ))
+                }
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(
+                        error.context("heartbeat failed while retrying pricing release reserve")
+                    );
+                }
+                Err(_) => {}
+            },
+            Err(error) if Instant::now() >= deadline => {
+                return Err(
+                    error.context("reconnect deadline exceeded for pricing release reserve")
+                );
+            }
+            Err(_) => {}
         }
     }
 }
@@ -1166,6 +1266,14 @@ enum WriteCmd {
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<PolicyReserveOutcome>>,
     },
+    ReserveWithPricingReleaseV2 {
+        key: String,
+        resolution: PricingReleaseResolutionV2,
+        quote: PricingReleaseQuoteV2,
+        execution: registry::ExecutionAttempt,
+        handoff: Arc<AtomicU8>,
+        reply: oneshot::Sender<anyhow::Result<PricingReleaseReserveOutcomeV2>>,
+    },
     InsertPricingShadowEvaluation {
         input: PricingShadowAdmissionEvaluationInput,
         timeout_ms: u64,
@@ -1432,6 +1540,12 @@ enum ReadCmd {
     },
     PricingReleaseHeadV2 {
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseHeadV2>>>,
+    },
+    PricingReleaseResolutionV2 {
+        account_id: String,
+        provider_id: String,
+        canonical_model_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseResolutionV2>>>,
     },
     PricingReleaseInventoryV2 {
         after_account_id: Option<String>,
@@ -2336,6 +2450,13 @@ impl AsyncBilling {
                         );
                         finish_policy_snapshot_reserve(&handoff, reply, result);
                     }
+                    WriteCmd::ReserveWithPricingReleaseV2 { handoff, reply, .. } => {
+                        finish_pricing_release_reserve(
+                            &handoff,
+                            reply,
+                            Ok(PricingReleaseReserveOutcomeV2::NoActiveRelease),
+                        );
+                    }
                     WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms: _, reply } => {
                         let _ = reply.send(
                             registry::pricing::sqlite_insert_pricing_shadow_admission_evaluation(
@@ -2664,6 +2785,11 @@ impl AsyncBilling {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "pricing release v2 authority requires PostgreSQL"
                                 )));
+                            }
+                            ReadCmd::PricingReleaseResolutionV2 { reply, .. } => {
+                                // SQLite cannot own a release head. Runtime resolution therefore
+                                // preserves the legacy path while producer/head reads stay closed.
+                                let _ = reply.send(Ok(None));
                             }
                             ReadCmd::PricingReleaseInventoryV2 { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
@@ -3106,6 +3232,35 @@ impl AsyncBilling {
                                 );
                             }
                             finish_policy_snapshot_reserve(&handoff, reply, result);
+                        }
+                        WriteCmd::ReserveWithPricingReleaseV2 {
+                            key, resolution, quote, execution, handoff, reply,
+                        } => {
+                            if handoff.load(Ordering::Acquire)
+                                == SNAPSHOT_RESERVE_HANDOFF_CANCELED
+                            {
+                                let _ = reply.send(Ok(
+                                    PricingReleaseReserveOutcomeV2::AbortedBeforeCommit,
+                                ));
+                                continue;
+                            }
+                            let result = run_pg_pricing_release_reserve_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                &key,
+                                &resolution,
+                                &quote,
+                                &execution,
+                                &handoff,
+                                RESERVATION_LEASE_SECS,
+                            );
+                            if let Err(error) = &result {
+                                eprintln!(
+                                    "billing PostgreSQL pricing release reserve failed: {error:#}"
+                                );
+                            }
+                            finish_pricing_release_reserve(&handoff, reply, result);
                         }
                         WriteCmd::InsertPricingShadowEvaluation { input, timeout_ms, reply } => {
                             // Shadow is deliberately best-effort: one bounded database attempt,
@@ -3585,6 +3740,19 @@ impl AsyncBilling {
                             ReadCmd::PricingReleaseHeadV2 { reply } => {
                                 answer!(reply, pg.pricing_release_head_v2())
                             }
+                            ReadCmd::PricingReleaseResolutionV2 {
+                                account_id,
+                                provider_id,
+                                canonical_model_id,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_release_resolution_v2(
+                                    &account_id,
+                                    &provider_id,
+                                    &canonical_model_id,
+                                )
+                            ),
                             ReadCmd::PricingReleaseInventoryV2 {
                                 after_account_id,
                                 limit,
@@ -4041,12 +4209,31 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
-    pub async fn pricing_release_head_v2(
-        &self,
-    ) -> anyhow::Result<Option<PricingReleaseHeadV2>> {
+    pub async fn pricing_release_head_v2(&self) -> anyhow::Result<Option<PricingReleaseHeadV2>> {
         let (reply, result) = oneshot::channel();
         self.reader()
             .send(ReadCmd::PricingReleaseHeadV2 { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_resolution_v2(
+        &self,
+        account_id: &str,
+        provider_id: &str,
+        canonical_model_id: &str,
+    ) -> anyhow::Result<Option<PricingReleaseResolutionV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseResolutionV2 {
+                account_id: account_id.to_owned(),
+                provider_id: provider_id.to_owned(),
+                canonical_model_id: canonical_model_id.to_owned(),
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result
@@ -4349,6 +4536,45 @@ impl AsyncBilling {
         {
             return Err(anyhow::anyhow!(
                 "policy snapshot reservation handoff was not claimable"
+            ));
+        }
+        Ok(outcome)
+    }
+
+    pub async fn reserve_request_with_pricing_release_v2_for_execution(
+        &self,
+        key: &str,
+        resolution: PricingReleaseResolutionV2,
+        quote: PricingReleaseQuoteV2,
+        execution: registry::ExecutionAttempt,
+    ) -> anyhow::Result<PricingReleaseReserveOutcomeV2> {
+        let (reply, result) = oneshot::channel();
+        let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
+        let guard = SnapshotReserveHandoffGuard {
+            handoff: Arc::clone(&handoff),
+        };
+        self.writer
+            .send(WriteCmd::ReserveWithPricingReleaseV2 {
+                key: key.to_owned(),
+                resolution,
+                quote,
+                execution,
+                handoff,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        let outcome = result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))??;
+        if matches!(
+            &outcome,
+            PricingReleaseReserveOutcomeV2::Inserted(_)
+                | PricingReleaseReserveOutcomeV2::Unchanged(_)
+        ) && !guard.claim()
+        {
+            return Err(anyhow::anyhow!(
+                "pricing release reservation handoff was not claimable"
             ));
         }
         Ok(outcome)

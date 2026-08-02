@@ -1210,7 +1210,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
 
     let live_runtime_rows = transaction.query(
         "SELECT instance_id,pricing_release_schema_version,funding_schema_version, \
-                pricing_release_runtime_digest \
+                pricing_release_runtime_digest,owner_epoch,pricing_release_claim_epoch \
          FROM engine_instances WHERE lease_until >= $1 \
          ORDER BY instance_id COLLATE \"C\"",
         &[&captured_ts],
@@ -1227,9 +1227,9 @@ pub(crate) fn postgres_stage8_engine_evidence(
                 && row
                     .get::<_, Option<i64>>(2)
                     .is_some_and(|version| version >= PRICING_RELEASE_SCHEMA_VERSION)
-                && row
-                    .get::<_, Option<String>>(3)
-                    .is_some_and(|digest| !digest.is_empty())
+                && row.get::<_, Option<String>>(3).as_deref()
+                    == Some(crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2)
+                && row.get::<_, Option<i64>>(5) == Some(row.get::<_, i64>(4))
         })
         .count() as i64;
     if release_capable_runtime_instances != live_runtime_rows.len() as i64 {
@@ -1239,10 +1239,14 @@ pub(crate) fn postgres_stage8_engine_evidence(
                 let release_schema = row.get::<_, Option<i64>>(1);
                 let funding_schema = row.get::<_, Option<i64>>(2);
                 let runtime_digest = row.get::<_, Option<String>>(3);
+                let owner_epoch = row.get::<_, i64>(4);
+                let claim_epoch = row.get::<_, Option<i64>>(5);
                 (release_schema.is_none_or(|version| version < minimum_runtime_schema_version)
                     || funding_schema
                         .is_none_or(|version| version < PRICING_RELEASE_SCHEMA_VERSION)
-                    || runtime_digest.as_deref().is_none_or(str::is_empty))
+                    || runtime_digest.as_deref()
+                        != Some(crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2)
+                    || claim_epoch != Some(owner_epoch))
                 .then(|| row.get::<_, String>(0))
             })
             .collect();
@@ -1263,7 +1267,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
         .iter()
         .map(|row| {
             format!(
-                "{}\0{}\0{}\0{}",
+                "{}\0{}\0{}\0{}\0{}\0{}",
                 row.get::<_, String>(0),
                 row.get::<_, Option<i64>>(1)
                     .map(|value| value.to_string())
@@ -1272,6 +1276,10 @@ pub(crate) fn postgres_stage8_engine_evidence(
                     .map(|value| value.to_string())
                     .unwrap_or_default(),
                 row.get::<_, Option<String>>(3).unwrap_or_default(),
+                row.get::<_, i64>(4),
+                row.get::<_, Option<i64>>(5)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
             )
         })
         .chain(std::iter::once(format!(
