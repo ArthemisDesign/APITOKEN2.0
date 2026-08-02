@@ -126,10 +126,14 @@ Sales-миграция `0014_usage_attribution_buffer.sql` была достав
 Сопутствующий constraint на `partner_usage_events` запрещает атрибутированную комиссию вне той же
 B2C track authority; application writer и replay теперь соблюдают эту форму.
 
-Target schema v2 сохраняет ту же immutable paid-funding гарантию, но заменяет условие
-`pricing_mode=track` на независимую `commission_eligible` referred-B2C authority. Старые строки и
-constraints не переписываются; новая expand migration и dual-schema consumer доставляются до
-Stage 9.
+Target migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` создаёт отдельные
+`partner_usage_events_v2`, `pending_referral_usage_events_v2` и `commission_entries_v2`. В них нет
+pricing-mode поля: eligibility задаётся referred-B2C authority, `commission_eligible=true` и
+положительным exact `paid_funded_nano`; trigger связывает direct partner, активную parent-chain,
+зафиксированные bps и integer-floor суммы. Usage/commission evidence immutable. Старые строки и
+constraints не переписываются, а новые таблицы остаются пустыми и dormant до отдельного
+dual-consumer checkpoint после зелёных production `deploy/migration` и `deploy/watchdog` на SHA
+миграции. Только затем schema-v2 consumer доставляется до Stage 9.
 
 ### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
 

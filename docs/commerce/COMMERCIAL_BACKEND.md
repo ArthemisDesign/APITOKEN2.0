@@ -70,6 +70,15 @@ CAS expectation from the engine's active state, and stores the complete durable 
 the desired binding confirmed. Expired leases replay safely, including a lost ACK after the engine
 commit; same-version/different-digest and malformed protocol responses are permanent failures.
 
+Commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` is the dormant
+migration-first foundation for the target Stage 5/6/8/9 flow. It adds versioned target policy and
+rule documents, B2B invitation snapshots, service inventory, target/recovery plans, full-inventory
+assignments, resumable funding/control jobs, Stage 8 evidence and activation receipts. Service
+policies intentionally have no product catalog or product-switch pins because their access is
+runtime-capability-gated and `meter_only`. The migration does not seed a policy, enqueue a job or
+activate a release; dependent readers and writers are delivered only after this schema SHA has
+green `deploy/migration` and `deploy/watchdog` in production.
+
 This application checkpoint does not seed production policies or enable the engine's strict runtime.
 A legacy scalar job is drained only after its account has a non-null desired full-policy version and
 digest, so empty version streams cannot alter current users. Application provisioning is now

@@ -183,6 +183,13 @@
       "when": 1785586919972,
       "tag": "0025_multi_discount_history_expand",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785667200000,
+      "tag": "0026_pricing_release_expand",
+      "breakpoints": true
     }
   ]
 }

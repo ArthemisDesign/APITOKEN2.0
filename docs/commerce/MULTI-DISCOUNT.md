@@ -198,6 +198,19 @@ Engine хранит prepared releases и один active release head. Подг�
 Сначала отдельными migration-first коммитами добавляются только новые структуры. Затем blue-green
 выкатывается runtime, который:
 
+- engine migration `crates/registry/migrations_pg/0023_pricing_release_funding_v2.sql` добавляет
+  release/funding authority, request snapshots, deferred aggregate/allocation invariants и nullable
+  v2 lineage старых writer surfaces;
+- commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
+  inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
+  receipt authority;
+- sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
+  отдельные immutable usage/commission v2 tables без pricing-mode поля.
+
+Все три migration surfaces пусты и dormant: наличие таблиц не создаёт policy, release head,
+funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных
+production migration/watchdog exact schema SHA.
+
 - продолжает обслуживать текущий active legacy release;
 - умеет читать новый release schema;
 - сохраняет immutable pricing/funding snapshot в каждой новой reservation;

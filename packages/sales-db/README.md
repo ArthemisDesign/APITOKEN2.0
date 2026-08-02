@@ -31,6 +31,14 @@ the first suspended partner (no entry, chain ends), at amount 0, or after level 
 `recordUsageEvent` inserts the usage event and its full commission chain in one transaction,
 idempotent via the unique `commerce_event_id`.
 
+Migration `0015_paid_funded_commission_v2.sql` adds the dormant target authority in separate
+`partner_usage_events_v2`, `pending_referral_usage_events_v2` and `commission_entries_v2` tables.
+It has no pricing-mode field: eligibility is referred B2C plus positive exact
+`paid_funded_nano`. A database trigger binds level 0 to the event's direct partner and each next
+level to the previous partner's active parent, exact configured basis points and integer-floor
+amount; usage and commission rows are immutable. The dual-schema consumer is a later checkpoint
+after this migration's production watchdog is green.
+
 ## Commands
 
 ```bash

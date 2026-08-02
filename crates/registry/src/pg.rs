@@ -164,9 +164,10 @@ const MIGRATION_0020: &str = include_str!("../migrations_pg/0020_anthropic_windo
 const MIGRATION_0021: &str = include_str!("../migrations_pg/0021_execution_group_fencing.sql");
 const MIGRATION_0022: &str =
     include_str!("../migrations_pg/0022_gemini_exact_window_calibration.sql");
+const MIGRATION_0023: &str = include_str!("../migrations_pg/0023_pricing_release_funding_v2.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 22;
+pub const CURRENT_SCHEMA_VERSION: i64 = 23;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -192,6 +193,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (20, MIGRATION_0020),
     (21, MIGRATION_0021),
     (22, MIGRATION_0022),
+    (23, MIGRATION_0023),
 ];
 
 #[cfg(test)]
@@ -7780,11 +7782,313 @@ mod tests {
     }
 
     #[test]
+    fn pricing_release_funding_v2_migration_is_additive_and_one_head() {
+        let normalized = MIGRATION_0023
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for table in [
+            "pricing_release_policy_versions",
+            "pricing_release_policy_rules",
+            "pricing_release_versions",
+            "pricing_release_recovery_links",
+            "pricing_release_assignments",
+            "account_funding_generations_v2",
+            "account_funding_head_v2",
+            "funding_lots_v2",
+            "pricing_stage8_evidence_v2",
+            "pricing_release_head_v2",
+            "pricing_release_activations_v2",
+            "pricing_request_snapshots_v2",
+            "pricing_request_funding_allocations_v2",
+            "funding_ledger_allocations_v2",
+        ] {
+            assert!(
+                normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing pricing/funding v2 table {table}",
+            );
+        }
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+        assert!(!normalized.contains(" pricing_mode "));
+        assert!(!normalized.contains(" track "));
+        assert!(!normalized.contains(" tier "));
+        assert!(!normalized.contains(" retention "));
+        assert!(normalized.contains("scope_type IN ('global', 'provider', 'model')"));
+        assert!(normalized.contains("source_type IN ('paid', 'welcome_bonus')"));
+        assert!(normalized.contains("billing_mode = 'meter_only'"));
+        assert!(normalized.contains("charged_hold_nano = floor("));
+        assert!(normalized
+            .contains("released_total <> GREATEST(reservation_hold - reservation_actual, 0)"));
+        assert!(normalized.contains("pricing_release_head_step_v2"));
+        assert!(normalized.contains("pricing_release_head_audit_v2"));
+        assert!(normalized.contains("initial pricing v2 release head version must be 1"));
+        assert!(normalized.contains(
+            "FOREACH table_name IN ARRAY ARRAY['settlement_outbox', 'usage_events', 'ledger']"
+        ));
+        assert!(normalized.contains("ADD COLUMN IF NOT EXISTS release_schema_version bigint"));
+        assert!(
+            !normalized.contains("ADD COLUMN IF NOT EXISTS release_schema_version bigint NOT NULL")
+        );
+    }
+
+    #[test]
     fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         assert!(
             ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
             "an untyped `$22 + 1` makes PostgreSQL infer int4 and reject the Rust i64 version",
         );
+    }
+
+    /// Run with an isolated database, for example:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::pricing_release_funding_v2_postgres_matrix`
+    #[test]
+    fn pricing_release_funding_v2_postgres_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping pricing/funding v2 PostgreSQL matrix: test URL is unset");
+            return;
+        };
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        pg.client.batch_execute("BEGIN").unwrap();
+        pg.client
+            .batch_execute(
+                "INSERT INTO accounts(
+                     id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created
+                 ) VALUES
+                     ('v2-matrix-b2c','v2-matrix-b2c',900,0,100,5000,'active',100,'matrix'),
+                     ('v2-matrix-service','v2-matrix-service',0,0,0,10000,'active',100,'matrix');
+
+                 INSERT INTO pricing_release_policy_versions(
+                     policy_id,policy_version,owner_type,owner_id,account_class,product_id,
+                     billing_mode,schema_version,capability_generation,capability_digest,
+                     catalog_generation,catalog_digest,switch_generation,switch_digest,
+                     content_digest,created_ts
+                 ) VALUES
+                     ('v2-policy-b2c',1,'global_b2c','global','b2c','main','balance',2,
+                      1,'capability-v2',1,'catalog-main-v2',1,'switch-v2','policy-b2c-v2',100),
+                     ('v2-policy-service',1,'service','service-domain','service',NULL,
+                      'meter_only',2,1,'capability-v2',NULL,NULL,NULL,NULL,
+                      'policy-service-v2',100);
+                 INSERT INTO pricing_release_policy_rules(
+                     policy_id,policy_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,discount_bps,payable_multiplier_bp
+                 ) VALUES(
+                     'v2-policy-b2c',1,'global-50','global-50-digest','global',NULL,NULL,5000,5000
+                 );
+
+                 INSERT INTO pricing_release_versions(
+                     generation,release_kind,schema_version,capability_generation,
+                     capability_digest,main_catalog_generation,main_catalog_digest,
+                     openkeys_catalog_generation,openkeys_catalog_digest,switch_generation,
+                     switch_digest,inventory_digest,policy_manifest_digest,
+                     assignment_manifest_digest,funding_manifest_digest,
+                     minimum_runtime_schema_version,content_digest,created_ts
+                 ) VALUES
+                     (101,'target',2,1,'capability-v2',1,'catalog-main-v2',1,
+                      'catalog-openkeys-v2',1,'switch-v2','inventory-v2','policies-v2',
+                      'assignments-v2','funding-v2',2,'release-target-v2',100),
+                     (102,'recovery',2,1,'capability-v2',1,'catalog-main-v2',1,
+                      'catalog-openkeys-v2',1,'switch-v2','inventory-v2','policies-recovery-v2',
+                      'assignments-recovery-v2','funding-v2',2,'release-recovery-v2',100);
+                 INSERT INTO pricing_release_recovery_links(
+                     target_generation,target_digest,recovery_generation,recovery_digest,
+                     link_digest,created_ts
+                 ) VALUES(101,'release-target-v2',102,'release-recovery-v2','recovery-link-v2',100);
+
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES('v2-matrix-b2c',1,2,'source-v2','normalization-v2',900,100,0,0,100,100);
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'v2-paid-lot','v2-matrix-b2c',1,'paid','payment:v2',900,100,0,0,'active',100,100
+                 );
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('v2-matrix-b2c',1,1,100);
+
+                 INSERT INTO pricing_release_assignments(
+                     release_generation,account_id,account_class,policy_id,policy_version,
+                     policy_digest,billing_mode,funding_generation,purpose,responsible,
+                     assignment_digest
+                 ) VALUES
+                     (101,'v2-matrix-b2c','b2c','v2-policy-b2c',1,'policy-b2c-v2',
+                      'balance',1,NULL,NULL,'assignment-b2c-v2'),
+                     (101,'v2-matrix-service','service','v2-policy-service',1,
+                      'policy-service-v2','meter_only',NULL,'internal-domain','owner-team',
+                      'assignment-service-v2');
+
+                 INSERT INTO pricing_stage8_evidence_v2(
+                     evidence_digest,target_generation,target_digest,recovery_generation,
+                     recovery_digest,inventory_digest,funding_digest,shadow_digest,
+                     runtime_floor_digest,legacy_inflight_count,blocker_count,passed,
+                     observed_ts,valid_until_ts
+                 ) VALUES(
+                     'evidence-v2',101,'release-target-v2',102,'release-recovery-v2',
+                     'inventory-v2','funding-v2','shadow-v2','runtime-v2',0,0,true,100,1000
+                 );
+                 ",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT missing_activation_audit")
+            .unwrap();
+        let missing_audit = pg
+            .client
+            .batch_execute(
+                "INSERT INTO pricing_release_head_v2(
+                     singleton,active_generation,active_digest,head_version,updated_ts
+                 ) VALUES(1,101,'release-target-v2',1,500);
+                 SET CONSTRAINTS pricing_release_head_audit_v2 IMMEDIATE;",
+            )
+            .expect_err("head without activation audit must fail");
+        assert!(missing_audit
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("lacks matching activation audit")));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT missing_activation_audit;
+                 RELEASE SAVEPOINT missing_activation_audit;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_release_activations_v2(
+                     activation_kind,from_generation,from_digest,to_generation,to_digest,
+                     expected_head_version,resulting_head_version,evidence_digest,operator_id,
+                     reason,activated_ts
+                 ) VALUES(
+                     'cutover',NULL,NULL,101,'release-target-v2',0,1,'evidence-v2',
+                     'matrix-operator','matrix cutover',500
+                 );
+                 INSERT INTO pricing_release_head_v2(
+                     singleton,active_generation,active_digest,head_version,updated_ts
+                 ) VALUES(1,101,'release-target-v2',1,500);
+
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,actual_nano,created_ts,updated_ts
+                 ) VALUES
+                     ('v2-request-b2c','v2-matrix-b2c','v2-key-b2c',100,900,
+                      'matrix-owner',1,1000,'reserved',NULL,500,500),
+                     ('v2-request-service','v2-matrix-service','v2-key-service',0,0,
+                      'matrix-owner',1,1000,'reserved',NULL,500,500);
+                 INSERT INTO pricing_request_snapshots_v2(
+                     request_id,account_id,release_schema_version,release_generation,
+                     release_digest,assignment_digest,account_class,policy_id,policy_version,
+                     policy_digest,billing_mode,funding_generation,provider_id,canonical_model_id,
+                     rule_id,rule_digest,rule_scope,discount_bps,payable_multiplier_bp,
+                     tariff_schedule_id,tariff_priced_ts,official_hold_nano,charged_hold_nano,
+                     official_cost_json,snapshot_digest,created_ts
+                 ) VALUES
+                     ('v2-request-b2c','v2-matrix-b2c',2,101,'release-target-v2',
+                      'assignment-b2c-v2','b2c','v2-policy-b2c',1,'policy-b2c-v2','balance',1,
+                      'google','gemini-2.5-pro','global-50','global-50-digest','global',5000,5000,
+                      'tariff-v2',500,200,100,'{}'::jsonb,'snapshot-b2c-v2',500),
+                     ('v2-request-service','v2-matrix-service',2,101,'release-target-v2',
+                      'assignment-service-v2','service','v2-policy-service',1,
+                      'policy-service-v2','meter_only',NULL,'google','gemini-2.5-pro',
+                      NULL,NULL,NULL,NULL,NULL,'tariff-v2',500,500,0,'{}'::jsonb,
+                      'snapshot-service-v2',500);
+                 INSERT INTO pricing_request_funding_allocations_v2(
+                     request_id,account_id,funding_generation,allocation_order,lot_id,
+                     lot_source_type,lot_version,reserved_nano,charged_nano,released_nano
+                 ) VALUES(
+                     'v2-request-b2c','v2-matrix-b2c',1,1,'v2-paid-lot','paid',0,100,NULL,NULL
+                 );
+                 INSERT INTO usage_events(
+                     request_id,account_id,key,model,real_nano,charge_nano,provider,ts,
+                     release_schema_version,release_generation,release_digest,
+                     release_billing_mode,release_funding_generation,release_snapshot_digest
+                 ) VALUES(
+                     'v2-request-service','v2-matrix-service','v2-key-service','gemini-2.5-pro',
+                     500,0,'google',500,2,101,'release-target-v2','meter_only',NULL,
+                     'snapshot-service-v2'
+                 );
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        pg.client.batch_execute("SAVEPOINT service_rule").unwrap();
+        let service_rule = pg
+            .client
+            .batch_execute(
+                "INSERT INTO pricing_release_policy_rules(
+                     policy_id,policy_version,rule_id,rule_digest,scope_type,provider_id,
+                     canonical_model_id,discount_bps,payable_multiplier_bp
+                 ) VALUES(
+                     'v2-policy-service',1,'invalid-service-rule','invalid-service-rule',
+                     'global',NULL,NULL,10000,0
+                 );",
+            )
+            .expect_err("service policy must not accept discount rules");
+        assert!(service_rule.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("forbidden for meter-only service policies")
+        }));
+        pg.client
+            .batch_execute("ROLLBACK TO SAVEPOINT service_rule; RELEASE SAVEPOINT service_rule")
+            .unwrap();
+
+        pg.client.batch_execute("SAVEPOINT service_charge").unwrap();
+        let service_charge = pg
+            .client
+            .batch_execute(
+                "UPDATE usage_events SET charge_nano=1
+                 WHERE request_id='v2-request-service';",
+            )
+            .expect_err("meter-only usage must not carry a customer charge");
+        assert!(service_charge
+            .as_db_error()
+            .is_some_and(|error| { error.message().contains("cannot carry customer charge") }));
+        pg.client
+            .batch_execute("ROLLBACK TO SAVEPOINT service_charge; RELEASE SAVEPOINT service_charge")
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT immutable_policy")
+            .unwrap();
+        let immutable = pg
+            .client
+            .batch_execute(
+                "UPDATE pricing_release_policy_versions
+                 SET owner_id='changed' WHERE policy_id='v2-policy-b2c';",
+            )
+            .expect_err("prepared pricing policy must be immutable");
+        assert!(immutable
+            .as_db_error()
+            .is_some_and(|error| { error.message().contains("immutable pricing v2 authority") }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT immutable_policy; RELEASE SAVEPOINT immutable_policy",
+            )
+            .unwrap();
+
+        pg.client.batch_execute("ROLLBACK").unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 
     /// Run with an isolated database, for example:

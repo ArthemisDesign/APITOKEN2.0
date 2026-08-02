@@ -10,6 +10,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   type AnyPgColumn,
@@ -321,6 +322,116 @@ export const commissionEntries = pgTable("commission_entries", {
   check("commission_entries_amount_check", sql`${table.amountNano} > 0`),
   check("commission_entries_one_source_check",
     sql`((${table.usageEventId} IS NOT NULL)::int + (${table.topupId} IS NOT NULL)::int) = 1`),
+]);
+
+// Schema-v2 paid-funding authority. The migration checkpoint declares the shape only; the
+// dual-schema feed consumer is delivered after this expansion is green in production.
+export const partnerUsageEventsV2 = pgTable("partner_usage_events_v2", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  commerceEventId: bigint("commerce_event_id", { mode: "bigint" }).notNull(),
+  commerceUserId: uuid("commerce_user_id").notNull(),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  providerId: text("provider_id").notNull(),
+  accountClass: text("account_class").notNull(),
+  officialNano: bigint("official_nano", { mode: "bigint" }).notNull(),
+  chargedNano: bigint("charged_nano", { mode: "bigint" }).notNull(),
+  paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }).notNull(),
+  bonusFundedNano: bigint("bonus_funded_nano", { mode: "bigint" }).notNull(),
+  otherFundedNano: bigint("other_funded_nano", { mode: "bigint" }).notNull(),
+  commissionEligible: boolean("commission_eligible").notNull(),
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  releaseDigest: text("release_digest").notNull(),
+  snapshotDigest: text("snapshot_digest").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique("partner_usage_events_v2_commerce_event_id_key").on(table.commerceEventId),
+  index("partner_usage_events_v2_partner_time_idx").on(table.partnerId, table.occurredAt),
+  index("partner_usage_events_v2_user_idx").on(table.commerceUserId, table.commerceEventId),
+  check("partner_usage_events_v2_shape_check", sql`
+    ${table.providerId} <> ''
+    AND ${table.accountClass} IN ('b2c', 'b2b', 'openkeys', 'service')
+    AND ${table.officialNano} >= 0
+    AND ${table.chargedNano} >= 0
+    AND ${table.paidFundedNano} >= 0
+    AND ${table.bonusFundedNano} >= 0
+    AND ${table.otherFundedNano} >= 0
+    AND ${table.paidFundedNano} + ${table.bonusFundedNano} + ${table.otherFundedNano} = ${table.chargedNano}
+    AND ${table.releaseGeneration} > 0
+    AND ${table.releaseDigest} <> ''
+    AND ${table.snapshotDigest} <> ''
+    AND (
+      NOT ${table.commissionEligible}
+      OR (${table.accountClass} = 'b2c' AND ${table.paidFundedNano} > 0)
+    )
+  `),
+]);
+
+export const pendingReferralUsageEventsV2 = pgTable("pending_referral_usage_events_v2", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  commerceRef: text("commerce_ref").notNull(),
+  commerceEventId: bigint("commerce_event_id", { mode: "bigint" }).notNull(),
+  commerceUserId: uuid("commerce_user_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  accountClass: text("account_class").notNull(),
+  officialNano: bigint("official_nano", { mode: "bigint" }).notNull(),
+  chargedNano: bigint("charged_nano", { mode: "bigint" }).notNull(),
+  paidFundedNano: bigint("paid_funded_nano", { mode: "bigint" }).notNull(),
+  bonusFundedNano: bigint("bonus_funded_nano", { mode: "bigint" }).notNull(),
+  otherFundedNano: bigint("other_funded_nano", { mode: "bigint" }).notNull(),
+  commissionEligible: boolean("commission_eligible").notNull(),
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  releaseDigest: text("release_digest").notNull(),
+  snapshotDigest: text("snapshot_digest").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  unique("pending_referral_usage_events_v2_commerce_ref_key").on(table.commerceRef),
+  unique("pending_referral_usage_events_v2_commerce_event_id_key").on(table.commerceEventId),
+  index("pending_referral_usage_events_v2_user_idx").on(table.commerceUserId, table.commerceEventId),
+  check("pending_referral_usage_events_v2_shape_check", sql`
+    ${table.commerceRef} <> ''
+    AND ${table.providerId} <> ''
+    AND ${table.accountClass} IN ('b2c', 'b2b', 'openkeys', 'service')
+    AND ${table.officialNano} >= 0
+    AND ${table.chargedNano} >= 0
+    AND ${table.paidFundedNano} >= 0
+    AND ${table.bonusFundedNano} >= 0
+    AND ${table.otherFundedNano} >= 0
+    AND ${table.paidFundedNano} + ${table.bonusFundedNano} + ${table.otherFundedNano} = ${table.chargedNano}
+    AND ${table.releaseGeneration} > 0
+    AND ${table.releaseDigest} <> ''
+    AND ${table.snapshotDigest} <> ''
+    AND (
+      NOT ${table.commissionEligible}
+      OR (${table.accountClass} = 'b2c' AND ${table.paidFundedNano} > 0)
+    )
+  `),
+]);
+
+export const commissionEntriesV2 = pgTable("commission_entries_v2", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  usageEventId: bigint("usage_event_id", { mode: "bigint" }).notNull()
+    .references(() => partnerUsageEventsV2.id, { onDelete: "restrict" }),
+  partnerId: uuid("partner_id").notNull().references(() => partners.id, { onDelete: "restrict" }),
+  level: integer("level").notNull(),
+  appliedBps: integer("applied_bps").notNull(),
+  basePaidFundedNano: bigint("base_paid_funded_nano", { mode: "bigint" }).notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  createdAt,
+}, (table) => [
+  unique("commission_entries_v2_source_partner_unique")
+    .on(table.usageEventId, table.partnerId),
+  unique("commission_entries_v2_source_level_unique")
+    .on(table.usageEventId, table.level),
+  index("commission_entries_v2_partner_time_idx").on(table.partnerId, table.createdAt),
+  check("commission_entries_v2_shape_check", sql`
+    ${table.level} BETWEEN 0 AND 10
+    AND ${table.appliedBps} BETWEEN 0 AND 10000
+    AND ${table.basePaidFundedNano} > 0
+    AND ${table.amountNano} > 0
+    AND ${table.amountNano} <= ${table.basePaidFundedNano}
+  `),
 ]);
 
 // Один прогон пакетных on-chain выплат: prepare → (админ смотрит) → send. Отправка возможна ТОЛЬКО

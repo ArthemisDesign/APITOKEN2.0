@@ -33,3 +33,13 @@ after production has the expanded schema, and keep the old release compatible th
 edit, rename, reorder, or delete a committed migration. Destructive contract changes require a
 later release after backfill and after all old processes no longer depend on the old shape. See the top-level [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and
 [`docs/ops/DEPLOYMENT.md`](../../docs/ops/DEPLOYMENT.md).
+
+## Pricing release v2 checkpoint
+
+Migration `0026_pricing_release_expand.sql` is the commerce half of the Stage 5/6/8/9 expansion.
+It creates empty policy documents/rules, B2B invitation snapshots, service inventory,
+target/recovery plans, full-inventory assignments, resumable funding-normalization/control jobs,
+Stage 8 evidence and activation receipts. Service policies deliberately have no product catalog or
+product switch pins: they are `meter_only` and capability-gated. The declarations in
+`packages/db/src/schema.ts` exist to keep Drizzle metadata exact; no deployed consumer may read or
+write these tables until this migration SHA has green `deploy/migration` and `deploy/watchdog`.

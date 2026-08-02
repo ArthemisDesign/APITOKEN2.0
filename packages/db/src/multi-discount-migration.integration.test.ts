@@ -63,6 +63,19 @@ const MULTI_DISCOUNT_TABLES = [
   "provider_switch_versions",
 ] as const;
 
+const PRICING_RELEASE_V2_TABLES = [
+  "business_invite_policy_snapshots_v2",
+  "pricing_funding_normalizations_v2",
+  "pricing_policy_documents_v2",
+  "pricing_policy_rules_v2",
+  "pricing_release_activation_receipts_v2",
+  "pricing_release_assignments_v2",
+  "pricing_release_control_jobs_v2",
+  "pricing_release_plans_v2",
+  "pricing_stage8_evidence_v2",
+  "service_account_inventory_v2",
+] as const;
+
 const LEGACY_STATE_TABLES = [
   "business_invites",
   "customer_profiles",
@@ -267,18 +280,19 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
 }
 
 async function expectExpandedTablesEmpty(client: Client): Promise<void> {
+  const expectedTables = [...MULTI_DISCOUNT_TABLES, ...PRICING_RELEASE_V2_TABLES];
   const existing = await client.query<{ table_name: string }>(`
     SELECT table_name
     FROM information_schema.tables
     WHERE table_schema = 'public'
       AND table_name = ANY($1::text[])
     ORDER BY table_name
-  `, [[...MULTI_DISCOUNT_TABLES]]);
+  `, [expectedTables]);
   expect(existing.rows.map((row) => row.table_name)).toEqual(
-    [...MULTI_DISCOUNT_TABLES].sort(),
+    expectedTables.sort(),
   );
 
-  for (const table of MULTI_DISCOUNT_TABLES) {
+  for (const table of expectedTables) {
     const result = await client.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(table)}`,
     );
@@ -775,12 +789,12 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(26);
+        expect(await migrationCount(client)).toBe(27);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(26);
+        expect(await migrationCount(client)).toBe(27);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });

@@ -1883,6 +1883,455 @@ export const accountPolicyReconciliations = pgTable("account_policy_reconciliati
   `),
 ]);
 
+// Schema-v2 authority for the one-head zero-downtime pricing/funding release. These declarations
+// intentionally have no runtime consumer in the migration checkpoint; the PostgreSQL expansion
+// must be green in production before the producer-first application release uses them.
+export const pricingPolicyDocumentsV2 = pgTable("pricing_policy_documents_v2", {
+  policyId: text("policy_id").notNull(),
+  policyVersion: bigint("policy_version", { mode: "bigint" }).notNull(),
+  ownerType: text("owner_type").notNull(),
+  ownerId: text("owner_id").notNull(),
+  accountClass: text("account_class").notNull(),
+  productId: text("product_id"),
+  billingMode: text("billing_mode").notNull(),
+  schemaVersion: bigint("schema_version", { mode: "bigint" }).notNull(),
+  capabilityGeneration: bigint("capability_generation", { mode: "bigint" }).notNull(),
+  capabilityDigest: text("capability_digest").notNull(),
+  catalogGeneration: bigint("catalog_generation", { mode: "bigint" }),
+  catalogDigest: text("catalog_digest"),
+  switchGeneration: bigint("switch_generation", { mode: "bigint" }),
+  switchDigest: text("switch_digest"),
+  contentDigest: text("content_digest").notNull(),
+  createdAt,
+}, (table) => [
+  primaryKey({
+    columns: [table.policyId, table.policyVersion],
+    name: "pricing_policy_documents_v2_pk",
+  }),
+  unique("pricing_policy_documents_v2_digest_unique")
+    .on(table.policyId, table.policyVersion, table.contentDigest),
+  check("pricing_policy_documents_v2_identity_check", sql`
+    ${table.policyId} <> ''
+    AND ${table.policyVersion} > 0
+    AND ${table.ownerId} <> ''
+    AND ${table.schemaVersion} >= 2
+    AND ${table.capabilityGeneration} > 0
+    AND ${table.capabilityDigest} <> ''
+    AND ${table.contentDigest} <> ''
+    AND (
+      (${table.ownerType} = 'global_b2c' AND ${table.accountClass} = 'b2c')
+      OR (${table.ownerType} = 'b2b_client' AND ${table.accountClass} = 'b2b')
+      OR (${table.ownerType} = 'openkeys' AND ${table.accountClass} = 'openkeys')
+      OR (${table.ownerType} = 'service' AND ${table.accountClass} = 'service')
+    )
+    AND (
+      (
+        ${table.accountClass} = 'service'
+        AND ${table.billingMode} = 'meter_only'
+        AND ${table.productId} IS NULL
+        AND ${table.catalogGeneration} IS NULL
+        AND ${table.catalogDigest} IS NULL
+        AND ${table.switchGeneration} IS NULL
+        AND ${table.switchDigest} IS NULL
+      )
+      OR (
+        ${table.accountClass} <> 'service'
+        AND ${table.billingMode} = 'balance'
+        AND ${table.productId} IS NOT NULL AND ${table.productId} <> ''
+        AND ${table.catalogGeneration} > 0
+        AND ${table.catalogDigest} IS NOT NULL AND ${table.catalogDigest} <> ''
+        AND ${table.switchGeneration} > 0
+        AND ${table.switchDigest} IS NOT NULL AND ${table.switchDigest} <> ''
+      )
+    )
+  `),
+]);
+
+export const pricingPolicyRulesV2 = pgTable("pricing_policy_rules_v2", {
+  policyId: text("policy_id").notNull(),
+  policyVersion: bigint("policy_version", { mode: "bigint" }).notNull(),
+  ruleId: text("rule_id").notNull(),
+  ruleDigest: text("rule_digest").notNull(),
+  scopeType: text("scope_type").notNull(),
+  providerId: text("provider_id"),
+  canonicalModelId: text("canonical_model_id"),
+  discountBps: bigint("discount_bps", { mode: "bigint" }).notNull(),
+  payableMultiplierBp: bigint("payable_multiplier_bp", { mode: "bigint" }).notNull(),
+}, (table) => [
+  primaryKey({
+    columns: [table.policyId, table.policyVersion, table.ruleId],
+    name: "pricing_policy_rules_v2_pk",
+  }),
+  unique("pricing_policy_rules_v2_digest_unique")
+    .on(table.policyId, table.policyVersion, table.ruleId, table.ruleDigest),
+  foreignKey({
+    columns: [table.policyId, table.policyVersion],
+    foreignColumns: [pricingPolicyDocumentsV2.policyId, pricingPolicyDocumentsV2.policyVersion],
+    name: "pricing_policy_rules_v2_policy_fk",
+  }).onDelete("restrict"),
+  uniqueIndex("pricing_policy_rules_v2_global_uidx")
+    .on(table.policyId, table.policyVersion)
+    .where(sql`${table.scopeType} = 'global'`),
+  uniqueIndex("pricing_policy_rules_v2_provider_uidx")
+    .on(table.policyId, table.policyVersion, table.providerId)
+    .where(sql`${table.scopeType} = 'provider'`),
+  uniqueIndex("pricing_policy_rules_v2_model_uidx")
+    .on(table.policyId, table.policyVersion, table.providerId, table.canonicalModelId)
+    .where(sql`${table.scopeType} = 'model'`),
+  check("pricing_policy_rules_v2_shape_check", sql`
+    ${table.ruleId} <> ''
+    AND ${table.ruleDigest} <> ''
+    AND ${table.discountBps} BETWEEN 0 AND 10000
+    AND ${table.payableMultiplierBp} = 10000 - ${table.discountBps}
+    AND (
+      (${table.scopeType} = 'global' AND ${table.providerId} IS NULL AND ${table.canonicalModelId} IS NULL)
+      OR (
+        ${table.scopeType} = 'provider'
+        AND ${table.providerId} IS NOT NULL AND ${table.providerId} <> ''
+        AND ${table.canonicalModelId} IS NULL
+      )
+      OR (
+        ${table.scopeType} = 'model'
+        AND ${table.providerId} IS NOT NULL AND ${table.providerId} <> ''
+        AND ${table.canonicalModelId} IS NOT NULL AND ${table.canonicalModelId} <> ''
+      )
+    )
+  `),
+]);
+
+export const businessInvitePolicySnapshotsV2 = pgTable("business_invite_policy_snapshots_v2", {
+  inviteId: uuid("invite_id").primaryKey(),
+  policyId: text("policy_id").notNull(),
+  policyVersion: bigint("policy_version", { mode: "bigint" }).notNull(),
+  policyDigest: text("policy_digest").notNull(),
+  snapshotDigest: text("snapshot_digest").notNull().unique(),
+  createdAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.inviteId],
+    foreignColumns: [businessInvites.id],
+    name: "business_invite_policy_snapshots_v2_invite_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.policyId, table.policyVersion, table.policyDigest],
+    foreignColumns: [
+      pricingPolicyDocumentsV2.policyId,
+      pricingPolicyDocumentsV2.policyVersion,
+      pricingPolicyDocumentsV2.contentDigest,
+    ],
+    name: "business_invite_policy_snapshots_v2_policy_fk",
+  }).onDelete("restrict"),
+  check("business_invite_policy_snapshots_v2_digest_check", sql`
+    ${table.policyDigest} <> '' AND ${table.snapshotDigest} <> ''
+  `),
+]);
+
+export const serviceAccountInventoryV2 = pgTable("service_account_inventory_v2", {
+  serviceId: text("service_id").primaryKey(),
+  engineAccountId: text("engine_account_id").notNull().unique(),
+  purpose: text("purpose").notNull(),
+  responsible: text("responsible").notNull(),
+  status: text("status").notNull(),
+  sourceVersion: bigint("source_version", { mode: "bigint" }).notNull(),
+  contentDigest: text("content_digest").notNull(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  check("service_account_inventory_v2_shape_check", sql`
+    ${table.serviceId} <> ''
+    AND ${table.engineAccountId} <> ''
+    AND ${table.purpose} <> ''
+    AND ${table.responsible} <> ''
+    AND ${table.status} IN ('active', 'disabled')
+    AND ${table.sourceVersion} > 0
+    AND ${table.contentDigest} <> ''
+  `),
+]);
+
+export const pricingReleasePlansV2 = pgTable("pricing_release_plans_v2", {
+  generation: bigint("generation", { mode: "bigint" }).primaryKey(),
+  releaseKind: text("release_kind").notNull(),
+  schemaVersion: bigint("schema_version", { mode: "bigint" }).notNull(),
+  commerceInventoryDigest: text("commerce_inventory_digest").notNull(),
+  engineInventoryDigest: text("engine_inventory_digest").notNull(),
+  openkeysInventoryDigest: text("openkeys_inventory_digest").notNull(),
+  serviceInventoryDigest: text("service_inventory_digest").notNull(),
+  policyManifestDigest: text("policy_manifest_digest").notNull(),
+  assignmentManifestDigest: text("assignment_manifest_digest").notNull(),
+  fundingManifestDigest: text("funding_manifest_digest").notNull(),
+  engineReleaseDigest: text("engine_release_digest").notNull(),
+  contentDigest: text("content_digest").notNull(),
+  status: text("status").notNull().default("planned"),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  unique("pricing_release_plans_v2_digest_unique").on(table.generation, table.contentDigest),
+  check("pricing_release_plans_v2_identity_check", sql`
+    ${table.generation} > 0
+    AND ${table.releaseKind} IN ('target', 'recovery')
+    AND ${table.schemaVersion} >= 2
+    AND ${table.commerceInventoryDigest} <> ''
+    AND ${table.engineInventoryDigest} <> ''
+    AND ${table.openkeysInventoryDigest} <> ''
+    AND ${table.serviceInventoryDigest} <> ''
+    AND ${table.policyManifestDigest} <> ''
+    AND ${table.assignmentManifestDigest} <> ''
+    AND ${table.fundingManifestDigest} <> ''
+    AND ${table.engineReleaseDigest} <> ''
+    AND ${table.contentDigest} <> ''
+    AND ${table.status} IN ('planned', 'materializing', 'prepared', 'active', 'superseded', 'failed')
+  `),
+]);
+
+export const pricingReleaseAssignmentsV2 = pgTable("pricing_release_assignments_v2", {
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  engineAccountId: text("engine_account_id").notNull(),
+  accountClass: text("account_class").notNull(),
+  ownerContext: text("owner_context").notNull(),
+  ownerId: text("owner_id").notNull(),
+  policyId: text("policy_id").notNull(),
+  policyVersion: bigint("policy_version", { mode: "bigint" }).notNull(),
+  policyDigest: text("policy_digest").notNull(),
+  billingMode: text("billing_mode").notNull(),
+  fundingGeneration: bigint("funding_generation", { mode: "bigint" }),
+  purpose: text("purpose"),
+  responsible: text("responsible"),
+  assignmentDigest: text("assignment_digest").notNull(),
+}, (table) => [
+  primaryKey({
+    columns: [table.releaseGeneration, table.engineAccountId],
+    name: "pricing_release_assignments_v2_pk",
+  }),
+  unique("pricing_release_assignments_v2_digest_unique")
+    .on(table.releaseGeneration, table.engineAccountId, table.assignmentDigest),
+  foreignKey({
+    columns: [table.releaseGeneration],
+    foreignColumns: [pricingReleasePlansV2.generation],
+    name: "pricing_release_assignments_v2_release_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.policyId, table.policyVersion, table.policyDigest],
+    foreignColumns: [
+      pricingPolicyDocumentsV2.policyId,
+      pricingPolicyDocumentsV2.policyVersion,
+      pricingPolicyDocumentsV2.contentDigest,
+    ],
+    name: "pricing_release_assignments_v2_policy_fk",
+  }).onDelete("restrict"),
+  index("pricing_release_assignments_v2_class_idx")
+    .on(table.releaseGeneration, table.accountClass, table.engineAccountId),
+  check("pricing_release_assignments_v2_shape_check", sql`
+    ${table.engineAccountId} <> ''
+    AND ${table.ownerId} <> ''
+    AND ${table.policyDigest} <> ''
+    AND ${table.assignmentDigest} <> ''
+    AND ${table.ownerContext} IN ('commerce', 'openkeys', 'service')
+    AND ${table.accountClass} IN ('b2c', 'b2b', 'openkeys', 'service')
+    AND (
+      (
+        ${table.accountClass} = 'service'
+        AND ${table.ownerContext} = 'service'
+        AND ${table.billingMode} = 'meter_only'
+        AND ${table.fundingGeneration} IS NULL
+        AND ${table.purpose} IS NOT NULL AND ${table.purpose} <> ''
+        AND ${table.responsible} IS NOT NULL AND ${table.responsible} <> ''
+      )
+      OR (
+        ${table.accountClass} = 'openkeys'
+        AND ${table.ownerContext} = 'openkeys'
+        AND ${table.billingMode} = 'balance'
+        AND ${table.fundingGeneration} > 0
+        AND ${table.purpose} IS NULL
+        AND ${table.responsible} IS NULL
+      )
+      OR (
+        ${table.accountClass} IN ('b2c', 'b2b')
+        AND ${table.ownerContext} = 'commerce'
+        AND ${table.billingMode} = 'balance'
+        AND ${table.fundingGeneration} > 0
+        AND ${table.purpose} IS NULL
+        AND ${table.responsible} IS NULL
+      )
+    )
+  `),
+]);
+
+export const pricingFundingNormalizationsV2 = pgTable("pricing_funding_normalizations_v2", {
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  engineAccountId: text("engine_account_id").notNull(),
+  fundingGeneration: bigint("funding_generation", { mode: "bigint" }).notNull(),
+  expectedSourceDigest: text("expected_source_digest").notNull(),
+  targetFundingDigest: text("target_funding_digest").notNull(),
+  appliedFundingDigest: text("applied_funding_digest"),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  primaryKey({
+    columns: [table.releaseGeneration, table.engineAccountId],
+    name: "pricing_funding_normalizations_v2_pk",
+  }),
+  foreignKey({
+    columns: [table.releaseGeneration],
+    foreignColumns: [pricingReleasePlansV2.generation],
+    name: "pricing_funding_normalizations_v2_release_fk",
+  }).onDelete("restrict"),
+  index("pricing_funding_normalizations_v2_claim_idx")
+    .on(table.status, table.nextAttemptAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retry')`),
+  check("pricing_funding_normalizations_v2_shape_check", sql`
+    ${table.engineAccountId} <> ''
+    AND ${table.fundingGeneration} > 0
+    AND ${table.expectedSourceDigest} <> ''
+    AND ${table.targetFundingDigest} <> ''
+    AND ${table.attempts} >= 0
+    AND ${table.status} IN ('pending', 'processing', 'retry', 'ready', 'blocker')
+    AND (${table.status} <> 'ready' OR (
+      ${table.appliedFundingDigest} IS NOT NULL
+      AND ${table.appliedFundingDigest} = ${table.targetFundingDigest}
+    ))
+  `),
+]);
+
+export const pricingStage8EvidenceV2 = pgTable("pricing_stage8_evidence_v2", {
+  evidenceDigest: text("evidence_digest").primaryKey(),
+  targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
+  targetDigest: text("target_digest").notNull(),
+  recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
+  recoveryDigest: text("recovery_digest").notNull(),
+  commerceInventoryDigest: text("commerce_inventory_digest").notNull(),
+  engineInventoryDigest: text("engine_inventory_digest").notNull(),
+  openkeysInventoryDigest: text("openkeys_inventory_digest").notNull(),
+  salesContractDigest: text("sales_contract_digest").notNull(),
+  fundingDigest: text("funding_digest").notNull(),
+  shadowDigest: text("shadow_digest").notNull(),
+  runtimeFloorDigest: text("runtime_floor_digest").notNull(),
+  legacyInflightCount: bigint("legacy_inflight_count", { mode: "bigint" }).notNull(),
+  blockerCount: bigint("blocker_count", { mode: "bigint" }).notNull(),
+  passed: boolean("passed").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.targetGeneration, table.targetDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_stage8_evidence_v2_target_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.recoveryGeneration, table.recoveryDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_stage8_evidence_v2_recovery_fk",
+  }).onDelete("restrict"),
+  check("pricing_stage8_evidence_v2_shape_check", sql`
+    ${table.evidenceDigest} <> ''
+    AND ${table.commerceInventoryDigest} <> ''
+    AND ${table.engineInventoryDigest} <> ''
+    AND ${table.openkeysInventoryDigest} <> ''
+    AND ${table.salesContractDigest} <> ''
+    AND ${table.fundingDigest} <> ''
+    AND ${table.shadowDigest} <> ''
+    AND ${table.runtimeFloorDigest} <> ''
+    AND ${table.legacyInflightCount} >= 0
+    AND ${table.blockerCount} >= 0
+    AND ${table.validUntil} > ${table.observedAt}
+    AND ((${table.passed} AND ${table.legacyInflightCount} = 0 AND ${table.blockerCount} = 0) OR NOT ${table.passed})
+  `),
+]);
+
+export const pricingReleaseControlJobsV2 = pgTable("pricing_release_control_jobs_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobKind: text("job_kind").notNull(),
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  releaseDigest: text("release_digest").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  payloadDigest: text("payload_digest").notNull(),
+  expectedHeadVersion: bigint("expected_head_version", { mode: "bigint" }),
+  stage8EvidenceDigest: text("stage8_evidence_digest"),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  resultDigest: text("result_digest"),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.releaseGeneration, table.releaseDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_release_control_jobs_v2_release_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.stage8EvidenceDigest],
+    foreignColumns: [pricingStage8EvidenceV2.evidenceDigest],
+    name: "pricing_release_control_jobs_v2_evidence_fk",
+  }).onDelete("restrict"),
+  index("pricing_release_control_jobs_v2_claim_idx")
+    .on(table.status, table.nextAttemptAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retry')`),
+  check("pricing_release_control_jobs_v2_shape_check", sql`
+    ${table.releaseDigest} <> ''
+    AND ${table.idempotencyKey} <> ''
+    AND ${table.payloadDigest} <> ''
+    AND ${table.attempts} >= 0
+    AND (${table.expectedHeadVersion} IS NULL OR ${table.expectedHeadVersion} >= 0)
+    AND ${table.jobKind} IN (
+      'materialize_release',
+      'normalize_funding',
+      'collect_stage8',
+      'activate_release',
+      'activate_recovery'
+    )
+    AND ${table.status} IN ('pending', 'processing', 'retry', 'confirmed', 'dead')
+    AND (
+      ${table.jobKind} NOT IN ('activate_release', 'activate_recovery')
+      OR (${table.expectedHeadVersion} IS NOT NULL AND ${table.stage8EvidenceDigest} IS NOT NULL)
+    )
+    AND (
+      (${table.status} = 'confirmed' AND ${table.resultDigest} IS NOT NULL AND ${table.confirmedAt} IS NOT NULL)
+      OR (${table.status} <> 'confirmed' AND ${table.confirmedAt} IS NULL)
+    )
+  `),
+]);
+
+export const pricingReleaseActivationReceiptsV2 = pgTable("pricing_release_activation_receipts_v2", {
+  activationId: text("activation_id").primaryKey(),
+  activationKind: text("activation_kind").notNull(),
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
+  releaseDigest: text("release_digest").notNull(),
+  evidenceDigest: text("evidence_digest").notNull(),
+  headVersion: bigint("head_version", { mode: "bigint" }).notNull(),
+  receiptDigest: text("receipt_digest").notNull().unique(),
+  activatedAt: timestamp("activated_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  unique("pricing_release_activation_receipts_v2_head_unique").on(table.headVersion),
+  foreignKey({
+    columns: [table.releaseGeneration, table.releaseDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_release_activation_receipts_v2_release_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.evidenceDigest],
+    foreignColumns: [pricingStage8EvidenceV2.evidenceDigest],
+    name: "pricing_release_activation_receipts_v2_evidence_fk",
+  }).onDelete("restrict"),
+  check("pricing_release_activation_receipts_v2_shape_check", sql`
+    ${table.activationId} <> ''
+    AND ${table.activationKind} IN ('cutover', 'recovery')
+    AND ${table.headVersion} > 0
+    AND ${table.receiptDigest} <> ''
+  `),
+]);
+
 export const checkoutSessions = pgTable("checkout_sessions", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),

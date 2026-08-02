@@ -37,6 +37,19 @@ const MULTI_DISCOUNT_TABLES = [
   "provider_switch_versions",
 ] as const;
 
+const PRICING_RELEASE_V2_TABLES = [
+  "business_invite_policy_snapshots_v2",
+  "pricing_funding_normalizations_v2",
+  "pricing_policy_documents_v2",
+  "pricing_policy_rules_v2",
+  "pricing_release_activation_receipts_v2",
+  "pricing_release_assignments_v2",
+  "pricing_release_control_jobs_v2",
+  "pricing_release_plans_v2",
+  "pricing_stage8_evidence_v2",
+  "service_account_inventory_v2",
+] as const;
+
 describe("migration configuration", () => {
   it("keeps the advisory lock key stable", () => {
     expect(MIGRATION_LOCK_KEY).toBe("719471115124720130");
@@ -338,11 +351,92 @@ describe("migration configuration", () => {
       "runtime_manifest_digest",
     ];
 
-    expect(migrationSql).not.toMatch(/\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
+    expect(migrationSql).not.toMatch(/^(?:DROP|UPDATE|DELETE|TRUNCATE)\b/im);
     for (const column of expectedColumns) {
       expect(migrationSql).toContain(`ADD COLUMN "${column}"`);
       expect(snapshot.tables["public.pricing_usage_attributions"]?.columns[column])
         .toMatchObject({ notNull: false });
     }
+  });
+
+  it("expands the one-head pricing release schema without activating or preserving legacy pricing semantics", () => {
+    const migrationName = "0026_pricing_release_expand.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 25);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 26);
+
+    expect(currentEntry).toMatchObject({
+      idx: 26,
+      version: "7",
+      tag: "0026_pricing_release_expand",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+
+    expect(migrationSql).not.toMatch(/^(?:DROP|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/\b(?:track|tier|retention)\b/i);
+    for (const scope of ["global", "provider", "model"]) {
+      expect(migrationSql).toContain(`"scope_type" = '${scope}'`);
+    }
+    expect(migrationSql).toContain("'meter_only'");
+    expect(migrationSql).toContain("'activate_release'");
+    expect(migrationSql).toContain("'activate_recovery'");
+    expect(migrationSql).toContain("pricing_release_activation_receipts_v2_head_unique");
+
+    const createdTables = [...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm)]
+      .map((match) => match[1])
+      .sort();
+    expect(createdTables).toEqual([...PRICING_RELEASE_V2_TABLES].sort());
+
+    const alteredTables = [...migrationSql.matchAll(/^ALTER TABLE "([^"]+)"/gm)]
+      .map((match) => match[1]);
+    expect(new Set(alteredTables)).toEqual(new Set(["pricing_release_control_jobs_v2"]));
+
+    const databaseObjectNames = [
+      ...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm),
+      ...migrationSql.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migrationSql.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+      ...migrationSql.matchAll(/^CREATE FUNCTION "([^"]+)"/gm),
+      ...migrationSql.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0026_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, { notNull: boolean }>;
+        foreignKeys: Record<string, unknown>;
+        uniqueConstraints: Record<string, unknown>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0025_snapshot.json"), "utf8"),
+    ) as { id: string };
+
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    for (const table of PRICING_RELEASE_V2_TABLES) {
+      expect(snapshot.tables).toHaveProperty(`public.${table}`);
+    }
+    const servicePolicy = snapshot.tables["public.pricing_policy_documents_v2"]!;
+    for (const column of [
+      "product_id",
+      "catalog_generation",
+      "catalog_digest",
+      "switch_generation",
+      "switch_digest",
+    ]) {
+      expect(servicePolicy.columns[column]).toMatchObject({ notNull: false });
+    }
+    expect(
+      snapshot.tables["public.pricing_release_control_jobs_v2"]?.foreignKeys,
+    ).toHaveProperty("pricing_release_control_jobs_v2_evidence_fk");
+    expect(
+      snapshot.tables["public.pricing_release_activation_receipts_v2"]?.uniqueConstraints,
+    ).toHaveProperty("pricing_release_activation_receipts_v2_head_unique");
   });
 });

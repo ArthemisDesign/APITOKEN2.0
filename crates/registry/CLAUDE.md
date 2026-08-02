@@ -215,6 +215,16 @@ side effect. `serve` may only perform the read-only schema verification before c
   нужны. Prepared pricing release связывает весь inventory, а Stage 9 меняет один global active
   head. Registry обязан атомарно сохранить reserve-time release/funding snapshot, разрешить
   in-flight v2 settlement через cutover и поддержать service `meter_only` без balance debit.
+- **Pricing release/funding v2 schema checkpoint:** PostgreSQL migration `0023` создаёт пустые
+  immutable policy/release/assignment/evidence authorities, один отсутствующий до activation
+  global head, per-account funding generations/lots/heads и request/ledger allocations. Deferred
+  constraints держат account↔generation↔lot и reservation↔allocation суммы, включая overrun
+  `charged > reserved` только при нулевом release; reserve snapshot закрепляет exact
+  release/assignment/policy/rule/tariff и не обновляется. Nullable lineage в
+  `settlement_outbox`/`usage_events`/`ledger` сохраняет старых writers валидными и обязана точно
+  ссылаться на snapshot для v2 rows. Service policy не имеет product catalog/switch/rules,
+  `meter_only` требует нулевой customer charge. Новый runtime не использует эти структуры до
+  отдельного producer SHA после зелёного migration/watchdog этого checkpoint.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

@@ -65,4 +65,47 @@ describe("sales multi-discount migration", () => {
     expect(migration).toContain('"commission_eligible" IS TRUE');
     expect(migration).toContain('"amount_nano" = "paid_funded_nano"');
   });
+
+  it("adds paid-funded schema v2 without pricing-mode or progressive-discount authority", () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_FOLDER, "0015_paid_funded_commission_v2.sql"),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const previous = journal.entries.find((entry) => entry.idx === 14);
+    const current = journal.entries.find((entry) => entry.idx === 15);
+
+    expect(current).toMatchObject({ idx: 15, tag: "0015_paid_funded_commission_v2" });
+    expect(current!.when).toBeGreaterThan(previous!.when);
+    expect(migration).not.toMatch(/^(?:DROP|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migration).not.toMatch(/\b(?:pricing_mode|track|tier|retention)\b/i);
+
+    const tables = [...migration.matchAll(/^CREATE TABLE "([^"]+)"/gm)]
+      .map((match) => match[1])
+      .sort();
+    expect(tables).toEqual([
+      "commission_entries_v2",
+      "partner_usage_events_v2",
+      "pending_referral_usage_events_v2",
+    ]);
+    expect(migration).toContain('"paid_funded_nano" + "bonus_funded_nano" + "other_funded_nano" = "charged_nano"');
+    expect(migration).toContain('event_paid_funded_nano <> NEW."base_paid_funded_nano"');
+    expect(migration).toContain('previous."level" = NEW."level" - 1');
+    expect(migration).toContain('partner."status" = \'active\'');
+    expect(migration).toContain('expected_input_nano::numeric * expected_bps::numeric / 10000');
+    expect(migration).toContain('"commission_entries_v2_source_level_unique"');
+    expect(migration).toContain('"partner_usage_events_v2_immutable"');
+    expect(migration).toContain('"commission_entries_v2_immutable"');
+
+    const databaseObjectNames = [
+      ...migration.matchAll(/^CREATE TABLE "([^"]+)"/gm),
+      ...migration.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migration.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE FUNCTION "([^"]+)"/gm),
+      ...migration.matchAll(/^CREATE TRIGGER "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+  });
 });
