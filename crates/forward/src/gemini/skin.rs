@@ -83,14 +83,16 @@
 //! (stop_reason + usage) → `message_stop`. functionCall приходит целиком (аргумент-дельт на
 //! wire нет) → tool_use-блок с ПОЛНЫМ input в content_block_start и сразу content_block_stop,
 //! БЕЗ input_json_delta (как 3.3 отдаёт tool_calls одним чанком; SDK накапливает input начиная
-//! со start-значения). Нормальное завершение Gemini-стрима — чистый EOF (message_stop на wire
-//! нет): терминальная пара message_delta/message_stop эмитится на EOF (как 4.3 — отличие от
-//! Anthropic-зеркала, где преждевременный EOF — отказ). Heartbeat `event: ping` каждые 15 с —
+//! со start-значения). Нормальное завершение Gemini-стрима — provider
+//! finishReason/blockReason + чистый EOF (message_stop на wire нет): терминальная пара
+//! message_delta/message_stop эмитится на EOF. EOF без terminal evidence — отказ.
+//! Heartbeat `event: ping` каждые 15 с —
 //! как 5.1 (на Gemini wire ping-кадров нет, генерируется локально). Mid-stream error-кадр
 //! плоскости `{error:{code,message,status}}` и транспортный сбой → `event: error`
 //! Anthropic-формата (тип по google.rpc status: RESOURCE_EXHAUSTED → rate_limit_error,
 //! UNAUTHENTICATED/PERMISSION_DENIED → authentication_error, иначе api_error — как 3.3) и
-//! конец стрима; неразборчивые кадры пропускаются.
+//! конец стрима; malformed known provider shape → `event: error`, неизвестные дополнительные
+//! JSON-поля допускаются.
 //!
 //! Все ответы этого пути — Anthropic-совместимый конверт `{"type":"error","error":{…}}`,
 //! включая ошибки: синтетические ошибки плоскости и пасsthrough-ошибки апстрима (Google-конверт
@@ -139,6 +141,7 @@ use crate::proxy::{
 };
 use crate::state::AppState;
 use crate::validation::optional_bool;
+use crate::gemini_stream::GeminiStreamState;
 
 /// Интервал heartbeat `event: ping` в Messages SSE — как у Codex skin 5.1
 /// (на Gemini wire ping-кадров нет, генерируется локально).
@@ -1214,6 +1217,7 @@ struct GeminiMessagesSseTranslator {
     name_counts: HashMap<String, u64>,
     /// Heartbeat `event: ping` (на Gemini wire ping-кадров нет — генерируется локально).
     heartbeat: tokio::time::Interval,
+    source: GeminiStreamState,
     /// Терминальное событие (message_stop/error) уже поставлено в `out`.
     finished: bool,
 }
@@ -1240,6 +1244,7 @@ impl GeminiMessagesSseTranslator {
             has_tool_use: false,
             name_counts: HashMap::new(),
             heartbeat,
+            source: GeminiStreamState::default(),
             finished: false,
         }
     }
@@ -1394,8 +1399,8 @@ impl GeminiMessagesSseTranslator {
         self.finished = true;
     }
 
-    /// Терминальная пара message_delta/message_stop на чистом EOF: нормальное завершение
-    /// Gemini-стрима (message_stop на wire нет — как 4.3). Открытый блок закрывается,
+    /// Терминальная пара message_delta/message_stop после provider finishReason/blockReason + EOF.
+    /// Gemini message_stop на wire не имеет. Открытый блок закрывается,
     /// message_delta несёт stop_reason и authoritative usage из последнего usageMetadata.
     fn push_completed(&mut self) {
         if self.finished {
@@ -1519,10 +1524,12 @@ impl GeminiMessagesSseTranslator {
                 continue;
             }
             let data = data_lines.join("\n");
-            // Неразборчивые кадры пропускаются: протокол апстрима может вырасти новыми
-            // полями, стрим от этого ломаться не должен.
-            if let Ok(data) = serde_json::from_str(&data) {
-                self.handle_data(data);
+            match self.source.accept(&data) {
+                Ok(data) => self.handle_data(data),
+                Err(()) => self.push_error(
+                    "The provider stream contained a malformed frame.",
+                    Some("protocol_error"),
+                ),
             }
             if self.finished {
                 self.buf.clear();
@@ -1561,9 +1568,21 @@ impl Stream for GeminiMessagesSseTranslator {
                     self.push_error("The provider stream was interrupted.", None);
                 }
                 Poll::Ready(None) => {
-                    // Нормальное завершение Gemini-стрима — чистый EOF: терминальная пара
-                    // message_delta/message_stop, клиент не висит.
-                    self.push_completed();
+                    if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                        self.buf.extend_from_slice(b"\n\n");
+                        self.drain_frames();
+                    }
+                    if self.finished {
+                        continue;
+                    }
+                    if self.source.is_complete() {
+                        self.push_completed();
+                    } else {
+                        self.push_error(
+                            "The provider stream ended before completion.",
+                            Some("protocol_error"),
+                        );
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -2967,19 +2986,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_clean_eof_without_finish_is_end_turn() {
-        // Чистый EOF — норма протокола Gemini (как 4.3): терминальная пара всё равно
-        // эмитится, клиент не висит.
+    async fn stream_clean_eof_without_finish_terminates_with_error() {
         let events = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n";
         let output = collect_stream(translate_events(events)).await;
         let frames = event_frames(&output);
-        assert_eq!(frames.last().unwrap().0, "message_stop");
-        let delta = frames
-            .iter()
-            .find(|(event, _)| event == "message_delta")
-            .unwrap();
-        assert_eq!(delta.1["delta"]["stop_reason"], "end_turn");
-        assert!(delta.1["usage"].is_null());
+        assert_eq!(frames.last().unwrap().0, "error", "{output}");
+        assert_eq!(frames.last().unwrap().1["error"]["type"], "api_error");
+        assert!(!event_names(&frames).contains(&"message_stop"));
     }
 
     #[tokio::test]
@@ -3004,7 +3017,7 @@ mod tests {
     #[tokio::test]
     async fn stream_transport_error_terminates_with_error_event() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}}\n\n")),
+            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n")),
             Err(std::io::Error::other("reset")),
         ];
         let translator = GeminiMessagesSseTranslator::new(
@@ -3022,9 +3035,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_frames_split_across_chunks_and_malformed_skipped() {
+    async fn stream_frames_split_across_chunks_are_reassembled() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("data: {not json}\n\ndata: {\"candidates\":[{\"content\":{\"par")),
+            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"par")),
             Ok(Bytes::from("ts\":[{\"text\":\"He")),
             Ok(Bytes::from("llo\"}]}}]}\n\ndata: {\"candidates\":[{\"fin")),
             Ok(Bytes::from("ishReason\":\"MAX_TOKENS\"}]}\n\n")),
@@ -3036,7 +3049,6 @@ mod tests {
         );
         let output = collect_stream(translator).await;
         let frames = event_frames(&output);
-        // Неразборчивый кадр пропущен; текст собрался через границы чанков.
         let delta = frames
             .iter()
             .find(|(_, data)| data["delta"]["text"].is_string())
@@ -3047,6 +3059,30 @@ mod tests {
             .find(|(event, _)| event == "message_delta")
             .unwrap();
         assert_eq!(message_delta.1["delta"]["stop_reason"], "max_tokens");
+    }
+
+    #[tokio::test]
+    async fn stream_malformed_frame_terminates_with_error() {
+        let events = concat!(
+            "data: {not json}\n\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n"
+        );
+        let output = collect_stream(translate_events(events)).await;
+        let frames = event_frames(&output);
+        assert_eq!(frames.last().unwrap().0, "error", "{output}");
+        assert!(!event_names(&frames).contains(&"message_stop"));
+    }
+
+    #[tokio::test]
+    async fn stream_unterminated_finish_frame_and_unknown_fields_are_accepted() {
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\",\"futurePartField\":true}]},\"futureCandidateField\":1}],\"futureTopLevelField\":{}}\n\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}"
+        );
+        let output = collect_stream(translate_events(events)).await;
+        let frames = event_frames(&output);
+        assert_eq!(frames.last().unwrap().0, "message_stop", "{output}");
+        assert!(output.contains("ok"), "{output}");
     }
 
     #[tokio::test]

@@ -595,8 +595,12 @@ request получает `400 invalid_request`, неизвестный/неак�
    изменений. Ответ переводится снаружи: Messages SSE → `chat.completion.chunk` (role/text/
    finish-чанки, ping→heartbeat, `event: error`→OpenAI error frame без `[DONE]`,
    usage-чанк по `stream_options.include_usage`), JSON message → `chat.completion`
-   (usage включает cache-токены с `prompt_tokens_details.cached_tokens`). Capability
-   matrix: structured/reasoning/penalties/n>1/store и прочие не-дефолтные
+   (usage включает cache-токены с `prompt_tokens_details.cached_tokens`).
+   Для успешного SSE обязателен валидный Messages lifecycle `message_start` → block events →
+   `message_delta` → `message_stop`; malformed known event, несовпадающий `data.type`,
+   невозможный порядок или преждевременный EOF → OpenAI protocol error без `[DONE]`.
+   Неизвестные именованные события игнорируются, последний незавершённый SSE frame разбирается
+   на EOF. Capability matrix: structured/reasoning/penalties/n>1/store и прочие не-дефолтные
    unsupported-параметры → `400 unsupported_parameter` до этапа 3.4; дефолтные
    значения принимаются, неизвестные поля проксируются. Все ошибки этого пути (включая
    `local_err` плоскости и пасsthrough апстрима) конвертируются в OpenAI-конверт с
@@ -649,9 +653,13 @@ request получает `400 invalid_request`, неизвестный/неак�
    `prompt_tokens_details.cached_tokens`), model = `modelVersion` либо запрошенная.
    SSE: data-only кадры GenerateContentResponse → role-чанк, content-дельты,
    functionCall целиком одним tool_calls-чанком (arguments-дельт на wire нет),
-   finishReason → finish-чанк, последний usageMetadata → usage-чанк на EOF (по
-   `stream_options.include_usage`) → `[DONE]`; санитизированный mid-stream
-   `{error}` → OpenAI error frame без `[DONE]`; неразборчивые кадры пропускаются.
+   finishReason → finish-чанк, последний usageMetadata → usage-чанк после подтверждённого
+   terminal state на EOF (по `stream_options.include_usage`) → `[DONE]`;
+   `promptFeedback.blockReason` также является terminal evidence. Malformed JSON/известный
+   provider shape и EOF без обоих terminal signals → OpenAI protocol error без `[DONE]`;
+   санитизированный mid-stream `{error}` → OpenAI error frame без `[DONE]`. Неизвестные
+   дополнительные JSON-поля сохраняют forward compatibility, последний data-frame без
+   завершающей пустой строки разбирается на EOF.
    Capability matrix — те же 17 правил Anthropic-плоскости плюс
    `parallel_tool_calls` и `user` (19 всего), и отличие плоскости: закрытый список
    top-level полей (неизвестное поле → `400 unsupported_parameter`, потому что
@@ -767,7 +775,8 @@ request получает `400 invalid_request`, неизвестный/неак�
    (`response.created` → `response.in_progress` → per-block `output_item.added` /
    `content_part.added` / `output_text.delta|done` / `function_call_arguments.delta|done` /
    `output_item.done` → `response.completed` с полным объектом и usage; ping → `: ping`
-   comment-кадр; mid-stream `event: error` и преждевременный EOF → `response.failed`;
+   comment-кадр; malformed known event/order, mid-stream `event: error` и преждевременный EOF →
+   `response.failed`; неизвестные именованные события игнорируются;
    output_index — плотный собственный счётчик, thinking-блоки позицию не занимают).
    Ошибки — общий с chat-адаптером OpenAI-конверт с сохранением статуса (402 LowBalance
    тоже) и `Retry-After`. Временные ограничения 4.1: `function_call`/
@@ -842,10 +851,12 @@ request получает `400 invalid_request`, неизвестный/неак�
    finishReason/blockReason → status через общий `map_finish_reason`: MAX_TOKENS →
    incomplete `max_output_tokens`, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII
    → incomplete `content_filter`. Stream: data-only SSE → Responses SSE; нормальное
-   завершение Gemini-стрима — чистый EOF (message_stop на wire нет): открытый item
+   завершение Gemini-стрима — `finishReason`/`promptFeedback.blockReason` + чистый EOF
+   (message_stop на wire нет): открытый item
    закрывается done-событиями и эмитится `response.completed` (отличие от
-   Anthropic-зеркала, где EOF без message_stop → `response.failed`); mid-stream
-   error-кадр `{error:{code,message,status}}` и транспортный сбой → `response.failed`
+   Anthropic-зеркала, где обязателен полный lifecycle до `message_stop`); malformed
+   provider frame, EOF без terminal evidence, mid-stream error-кадр
+   `{error:{code,message,status}}` и транспортный сбой → `response.failed`
    (error.code — google.rpc status). Ошибки — общий с chat-адаптером
    `convert_error_response` (Google-конверт → OpenAI-конверт, нативный
    `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`
@@ -929,8 +940,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    ограничение) → per-block `content_block_start`/`content_block_delta`
    (`text_delta`, `thinking_delta`, `input_json_delta`)/`content_block_stop` (плотные
    индексы, новый тип блока закрывает предыдущий) → `message_delta` (stop reason +
-   usage) → `message_stop`; heartbeat — `event: ping`, mid-stream отказ — `event:
-   error`; disconnect клиента не убивает turn — он добегает до authoritative usage для
+   usage) → `message_stop`, но только после source `finishReason`/`blockReason` + EOF;
+   heartbeat — `event: ping`, malformed/premature EOF и mid-stream отказ — `event: error`;
+   disconnect клиента не убивает turn — он добегает до authoritative usage для
    settlement (как chat.rs). Все ошибки endpoint'а (валидация адаптера, общий парсер,
    admission, billing) пересобираются в Anthropic-конверт с сохранением статуса и
    `Retry-After` (503 → 529 `overloaded_error`, 402 сохраняется — Claude Code

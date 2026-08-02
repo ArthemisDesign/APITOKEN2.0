@@ -57,6 +57,7 @@ use crate::proxy::{
     TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
+use crate::anthropic_stream::AnthropicStreamState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Лимит тела chat-запроса — тот же 32 MiB, что у native `/v1/messages`
@@ -1402,6 +1403,7 @@ struct ChatSseTranslator {
     /// нумерует все контент-блоки подряд, включая text).
     tool_ordinals: std::collections::HashMap<u64, u64>,
     next_tool_ordinal: u64,
+    source: AnthropicStreamState,
     /// Терминальный кадр (`[DONE]` или error) уже поставлен в `out`.
     finished: bool,
 }
@@ -1422,6 +1424,7 @@ impl ChatSseTranslator {
             role_sent: false,
             tool_ordinals: std::collections::HashMap::new(),
             next_tool_ordinal: 0,
+            source: AnthropicStreamState::default(),
             finished: false,
         }
     }
@@ -1468,14 +1471,8 @@ impl ChatSseTranslator {
         self.finished = true;
     }
 
-    /// Один SSE-кадр (`event:` + `data:`). Неразборчивые кадры пропускаются:
-    /// протокол апстрима может вырасти новыми событиями, стрим от этого
-    /// ломаться не должен.
-    fn handle_event(&mut self, event: &str, data: &str) {
-        let data: Value = match serde_json::from_str(data) {
-            Ok(data) => data,
-            Err(_) => return,
-        };
+    /// Один уже проверенный обязательной source-state machine SSE-кадр.
+    fn handle_event(&mut self, event: &str, data: Value) {
         match event {
             "message_start" => {
                 if let Some(message) = data.get("message") {
@@ -1649,7 +1646,11 @@ impl ChatSseTranslator {
                 continue;
             }
             let data = data_lines.join("\n");
-            self.handle_event(event, &data);
+            match self.source.accept(event, &data) {
+                Ok(Some(data)) => self.handle_event(event, data),
+                Ok(None) => {}
+                Err(()) => self.push_error("The provider stream contained a malformed event.", Some("protocol_error")),
+            }
             if self.finished {
                 self.buf.clear();
                 return;
@@ -1681,10 +1682,15 @@ impl Stream for ChatSseTranslator {
                     self.push_error("The provider stream was interrupted.", None);
                 }
                 Poll::Ready(None) => {
-                    // Чистый EOF без message_stop (апстрим закрылся раньше
-                    // протокола): добиваем [DONE], чтобы клиент не висел.
-                    self.out.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
-                    self.finished = true;
+                    // SSE dispatches a final unterminated event at EOF. Parse it once, then
+                    // require the Anthropic `message_stop` terminal event.
+                    if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                        self.buf.extend_from_slice(b"\n\n");
+                        self.drain_frames();
+                    }
+                    if !self.finished {
+                        self.push_error("The provider stream ended before completion.", Some("protocol_error"));
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -3059,13 +3065,23 @@ data: {"type":"message_stop"}"#;
 
     #[tokio::test]
     async fn sse_ping_becomes_heartbeat_chunk() {
-        let events = "event: ping\ndata: {\"type\":\"ping\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}";
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: ping\n",
+            "data: {\"type\":\"ping\"}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
         let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
         let output = collect_stream(translator).await;
         let frames = data_frames(&output);
-        assert_eq!(frames.len(), 1, "{output}");
-        assert_eq!(frames[0]["choices"][0]["delta"], serde_json::json!({}));
-        assert!(frames[0]["choices"][0]["finish_reason"].is_null());
+        assert!(frames.iter().any(|frame| {
+            frame["choices"][0]["delta"] == serde_json::json!({})
+                && frame["choices"][0]["finish_reason"].is_null()
+        }), "{output}");
         assert!(output.ends_with("data: [DONE]\n\n"));
     }
 
@@ -3088,18 +3104,33 @@ data: {"type":"message_stop"}"#;
     }
 
     #[tokio::test]
-    async fn sse_clean_eof_without_message_stop_still_terminates_with_done() {
-        let events = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}";
+    async fn sse_clean_eof_without_message_stop_terminates_with_error() {
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}"
+        );
         let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
         let output = collect_stream(translator).await;
         assert!(output.contains("partial"), "{output}");
-        assert!(output.ends_with("data: [DONE]\n\n"), "{output}");
+        assert!(output.contains("ended before completion"), "{output}");
+        assert!(!output.contains("[DONE]"), "{output}");
     }
 
     #[tokio::test]
     async fn sse_transport_error_is_not_silent() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n")),
+            Ok(Bytes::from(concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+                "event: content_block_start\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n"
+            ))),
             Err(std::io::Error::other("boom")),
         ];
         let translator = ChatSseTranslator::new(Box::pin(futures_util::stream::iter(chunks)), "m".into(), false);
@@ -3111,7 +3142,20 @@ data: {"type":"message_stop"}"#;
     #[tokio::test]
     async fn sse_split_frames_across_chunks_are_reassembled() {
         // Кадр, разрезанный посреди data-строки двумя сетевыми чанками.
-        let full = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"split ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let full = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"split ok\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
         let (head, tail) = full.split_at(37);
         let chunks: Vec<Result<Bytes, std::io::Error>> =
             vec![Ok(Bytes::from(head)), Ok(Bytes::from(tail))];

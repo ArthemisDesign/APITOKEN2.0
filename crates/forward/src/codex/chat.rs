@@ -431,14 +431,27 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
             "assistant" => {
                 // refusal/audio fields carry no model-visible history text; accepted and
                 // ignored so replayed official conversations never fail.
+                let reasoning_content = match object.get("reasoning_content") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(reasoning)) if reasoning.is_empty() => None,
+                    Some(Value::String(reasoning)) => Some(reasoning.as_str()),
+                    Some(_) => {
+                        return Err(ApiError::invalid(
+                            "assistant.reasoning_content must be a string.",
+                            Some(format!("messages.{index}.reasoning_content")),
+                        ))
+                    }
+                };
                 let content = chat_content_text(
                     object.get("content"),
                     true,
                     &format!("messages.{index}.content"),
                 )?;
-                if let Some(content) = content.as_ref().filter(|content| !content.is_empty()) {
+                let visible_content = content.as_ref().filter(|content| !content.is_empty());
+                if let Some(content) = visible_content {
                     input.push(chat_message_item("assistant", content));
                 }
+                let mut has_tool_calls = false;
                 if let Some(tool_calls) = object.get("tool_calls").filter(|value| !value.is_null())
                 {
                     let tool_calls = tool_calls.as_array().ok_or_else(|| {
@@ -447,6 +460,7 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                             Some(format!("messages.{index}.tool_calls")),
                         )
                     })?;
+                    has_tool_calls = !tool_calls.is_empty();
                     for (tool_index, call) in tool_calls.iter().enumerate() {
                         let call = call.as_object().ok_or_else(|| {
                             ApiError::invalid(
@@ -501,7 +515,13 @@ fn translate_messages(messages: &[Value]) -> Result<TranslatedChatMessages, ApiE
                         }));
                     }
                 }
-                if content.is_none() && object.get("tool_calls").is_none() {
+                if visible_content.is_none() && !has_tool_calls {
+                    // The public Chat response exposes display-only `reasoning_content` without
+                    // an upstream replay signature. Drop a reasoning-only assistant turn exactly
+                    // like the Anthropic/Gemini adapters; never turn it into model-visible text.
+                    if reasoning_content.is_some() {
+                        continue;
+                    }
                     return Err(ApiError::invalid(
                         "Assistant message requires content or tool_calls.",
                         Some(format!("messages.{index}")),
@@ -1508,6 +1528,52 @@ mod tests {
         assert_eq!(items[0]["type"], "function_call");
         assert_eq!(items[1]["type"], "function_call_output");
         assert_eq!(items[1]["output"], "sunny");
+    }
+
+    #[test]
+    fn reasoning_only_assistant_replay_is_display_only_and_empty_assistant_stays_invalid() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": null,
+                        "reasoning_content": "private summary"},
+                    {"role": "user", "content": "continue"}
+                ]
+            }),
+        )
+        .expect("the router's own reasoning-only response shape must replay");
+        assert_eq!(parsed.responses.input.prior_items.len(), 1);
+        assert_eq!(parsed.responses.input.prior_items[0]["role"], "user");
+        assert_eq!(parsed.responses.input.turn_input[0]["text"], "continue");
+        assert!(!format!("{:?}", parsed.responses.input.prior_items)
+            .contains("private summary"));
+
+        for message in [
+            json!({"role": "assistant", "content": null}),
+            json!({"role": "assistant", "content": ""}),
+            json!({"role": "assistant", "content": null, "reasoning_content": ""}),
+            json!({"role": "assistant", "content": null, "tool_calls": null}),
+            json!({"role": "assistant", "content": null, "tool_calls": []}),
+        ] {
+            let error = translate_messages(&[message])
+                .err()
+                .expect("a genuinely empty assistant turn must stay invalid");
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            assert!(error.message.contains("content or tool_calls"));
+        }
+
+        let error = translate_messages(&[json!({
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": {"summary": "wrong type"}
+        })])
+        .err()
+        .expect("malformed reasoning_content must not be ignored");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("reasoning_content"));
     }
 
     #[test]

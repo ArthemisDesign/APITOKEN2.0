@@ -96,7 +96,8 @@
 //!   {code, message} из санитизированной ошибки апстрима — как error frame
 //!   chat-адаптера, только в событийной форме) и завершение стрима; чистый
 //!   EOF до `message_stop` и транспортный сбой — тоже `response.failed`,
-//!   клиент не висит. Неразборчивые кадры пропускаются;
+//!   клиент не висит. Malformed known event/type/order → `response.failed`;
+//!   неизвестные именованные события игнорируются для forward compatibility;
 //! - output_index — плотный собственный счётчик: text/thinking/tool_use
 //!   блоки Messages позицию занимают, redacted_thinking и неизвестные —
 //!   пропускаются без позиции (решение 4); content_index всегда 0 (один
@@ -127,6 +128,7 @@ use crate::anthropic::{
     translate_reasoning_effort_for_model, translate_tool_function,
     unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
 };
+use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
@@ -1161,6 +1163,7 @@ struct ResponsesSseTranslator {
     next_output_index: u64,
     /// Финализированные output items — для output в response.completed/failed.
     completed_items: Vec<Value>,
+    source: AnthropicStreamState,
     /// Терминальное событие (completed/failed) уже поставлено в `out`.
     finished: bool,
 }
@@ -1183,6 +1186,7 @@ impl ResponsesSseTranslator {
             blocks: std::collections::HashMap::new(),
             next_output_index: 0,
             completed_items: Vec::new(),
+            source: AnthropicStreamState::default(),
             finished: false,
         }
     }
@@ -1257,14 +1261,8 @@ impl ResponsesSseTranslator {
         self.finished = true;
     }
 
-    /// Один SSE-кадр (`event:` + `data:`). Неразборчивые кадры пропускаются:
-    /// протокол апстрима может вырасти новыми событиями, стрим от этого
-    /// ломаться не должен.
-    fn handle_event(&mut self, event: &str, data: &str) {
-        let data: Value = match serde_json::from_str(data) {
-            Ok(data) => data,
-            Err(_) => return,
-        };
+    /// Один уже проверенный обязательной source-state machine SSE-кадр.
+    fn handle_event(&mut self, event: &str, data: Value) {
         match event {
             "message_start" => {
                 if let Some(message) = data.get("message") {
@@ -1658,7 +1656,14 @@ impl ResponsesSseTranslator {
                 continue;
             }
             let data = data_lines.join("\n");
-            self.handle_event(event, &data);
+            match self.source.accept(event, &data) {
+                Ok(Some(data)) => self.handle_event(event, data),
+                Ok(None) => {}
+                Err(()) => self.push_failed(
+                    "The provider stream contained a malformed event.",
+                    Some("protocol_error"),
+                ),
+            }
             if self.finished {
                 self.buf.clear();
                 return;
@@ -1690,9 +1695,16 @@ impl Stream for ResponsesSseTranslator {
                     self.push_failed("The provider stream was interrupted.", None);
                 }
                 Poll::Ready(None) => {
-                    // Чистый EOF без message_stop (апстрим закрылся раньше
-                    // протокола): честный response.failed, клиент не висит.
-                    self.push_failed("The provider stream ended before completion.", None);
+                    if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                        self.buf.extend_from_slice(b"\n\n");
+                        self.drain_frames();
+                    }
+                    if !self.finished {
+                        self.push_failed(
+                            "The provider stream ended before completion.",
+                            Some("protocol_error"),
+                        );
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -3180,6 +3192,8 @@ data: {"type":"message_stop"}"#;
             "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n",
             "event: ping\n",
             "data: {\"type\":\"ping\"}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}"
         );
@@ -3226,7 +3240,14 @@ data: {"type":"message_stop"}"#;
     async fn sse_clean_eof_without_message_stop_terminates_with_failed() {
         // Апстрим закрылся раньше протокола: честный response.failed, клиент
         // не висит (зеркало [DONE]-добивки chat-адаптера).
-        let events = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}";
+        let events = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}"
+        );
         let translator = ResponsesSseTranslator::new(sse_bytes(events), "m".into());
         let output = collect_stream(translator).await;
         assert!(!output.contains("response.completed"), "{output}");
@@ -3269,10 +3290,16 @@ data: {"type":"message_stop"}"#;
     async fn sse_split_frames_across_chunks_are_reassembled() {
         // Кадр, разрезанный посреди data-строки двумя сетевыми чанками.
         let full = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
             "event: content_block_start\n",
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
             "event: content_block_delta\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"split ok\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}\n\n"
         );
@@ -3284,5 +3311,35 @@ data: {"type":"message_stop"}"#;
         let output = collect_stream(translator).await;
         assert!(output.contains("split ok"), "{output}");
         assert!(output.contains("response.completed"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn malformed_or_mismatched_known_event_fails_closed() {
+        for events in [
+            "event: message_start\ndata: {not json}\n\n",
+            "event: message_start\ndata: {\"type\":\"ping\",\"message\":{}}\n\n",
+        ] {
+            let output = collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+            let frames = event_frames(&output);
+            assert_eq!(frames.last().unwrap().0, "response.failed", "{output}");
+            assert_eq!(frames.last().unwrap().1["error"]["code"], "protocol_error");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_named_event_is_ignored_and_unterminated_terminal_frame_is_accepted() {
+        let events = concat!(
+            "event: future_event\n",
+            "data: future-format\n\n",
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}"
+        );
+        let output = collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+        assert!(output.contains("response.completed"), "{output}");
+        assert!(!output.contains("response.failed"), "{output}");
     }
 }

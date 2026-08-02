@@ -266,6 +266,12 @@ Thinking-блоки/thinking_delta ответа → `message.reasoning_content`/
 превращает его в unsigned native thinking; assistant-turn только с непустым `reasoning_content`
 опускается, чтобы штатный AI SDK round-trip не отравлял следующую отправку, а действительно пустой
 assistant по-прежнему получает 400.
+Translated Messages SSE валидируется общей state machine до преобразования: известные события
+обязаны иметь совпадающий `data.type` и порядок `message_start` → lifecycle всех content blocks →
+`message_delta` со stop reason/usage → `message_stop`; malformed known event, невозможный порядок
+или EOF до `message_stop` становятся terminal OpenAI error без `[DONE]`. Неизвестное именованное
+событие игнорируется для forward compatibility, а последний валидный кадр без завершающей пустой
+строки разбирается на EOF.
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
 `anthropic_responses.rs` — universal Responses→Messages адаптер (этапы 4.1–4.2
@@ -382,6 +388,13 @@ Replay tool-истории работает stateless: каждый восста
 `thoughtSignature:"context_engineering_is_the_way_to_go"`. Реальные opaque signatures ответа
 по решению 4 по-прежнему не выставляются и не сохраняются; synthetic ids и публичные response
 shapes не меняются. Один helper обязателен для Chat, Responses и Messages skin.
+Все три translated Gemini SSE surface используют общую fail-closed проверку source frames:
+неизвестные дополнительные JSON-поля допускаются, но malformed JSON и неправильные типы известных
+`candidates`/`content.parts`/`functionCall`/`usageMetadata`/`promptFeedback`/`error` завершают
+клиентский stream protocol error. Чистый EOF успешен только после provider terminal evidence —
+непустого `finishReason` либо `promptFeedback.blockReason`; EOF раньше него не превращается в
+`[DONE]`, `response.completed` или `message_stop`. Последний валидный data-frame без `\n\n`
+обрабатывается перед terminal check.
 `gemini/responses.rs` — universal Responses→generateContent адаптер (этап 4.3
 docs/engine/UNIFIED_ROUTER.md, роут `POST /v1/responses` в `ProviderMode::Gemini`) —
 Gemini-зеркало `anthropic_responses.rs`: Responses-сторона словаря 4.1+4.2 (item-формы,
@@ -408,8 +421,9 @@ arguments-дельтой (functionCall приходит целиком), usage i
 output=`candidatesTokenCount`+`thoughtsTokenCount` (thoughts → `reasoning_tokens`),
 finishReason/blockReason → status через общий `map_finish_reason` (MAX_TOKENS →
 incomplete `max_output_tokens`, SAFETY и др. → incomplete `content_filter`); stream —
-data-only SSE → Responses SSE, чистый EOF — норма протокола (`response.completed`, не
-failed), mid-stream error-кадр → `response.failed`; ошибки — общий с chat-адаптером
+data-only SSE → Responses SSE, `finishReason`/`blockReason` + чистый EOF →
+`response.completed`, malformed frame или EOF без terminal evidence → `response.failed`,
+mid-stream error-кадр → `response.failed`; ошибки — общий с chat-адаптером
 `convert_error_response` (400 API_KEY_INVALID → 401). Общие хелперы (`chat_error`,
 `invalid_request`, `unsupported_parameter`, `convert_error_response`, `merge_or_push`,
 `gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` с именем
@@ -437,7 +451,8 @@ functionCall → `tool_use` с синтезируемым `toolu_<name>[_N]`, us
 `promptTokenCount` / output=`candidatesTokenCount`+`thoughtsTokenCount` (thoughts →
 `output_tokens_details.thinking_tokens`, cached → `cache_read_input_tokens`); SSE — тот
 же каркас 5.1 (message_start с нулевым usage → плотные content_block_* → message_delta →
-message_stop, heartbeat `event: ping`, mid-stream отказ `event: error`); ошибки —
+message_stop только после provider `finishReason`/`blockReason` + EOF, heartbeat `event: ping`,
+malformed/premature EOF и mid-stream отказ → `event: error`); ошибки —
 Anthropic-конверт (400 API_KEY_INVALID → 401, 503 → 529 `overloaded_error`, 402 и
 Retry-After сохраняются). Хендлеры идут через общий `gemini_api()` внутренним Request на
 `generateContent|streamGenerateContent?alt=sse|:countTokens` — admission, reserve,

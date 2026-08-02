@@ -108,7 +108,11 @@ Control API движка использует только на чтение. С
   После dispatch плоскости одинаково fail-closed валидируют optional execution controls:
   missing/null остаются absence, а malformed non-null boolean/output limit получает локальный
   400 до reserve/upstream; output alias precedence и точный OpenAI `error.param` являются частью
-  produced universal contract. Router не нормализует и не исправляет эти поля, а сохраняет body.
+  produced universal contract. Translated SSE также fail-closed на границе плоскости: Anthropic
+  требует полный Messages lifecycle до `message_stop`, Gemini — `finishReason` либо
+  `promptFeedback.blockReason` до EOF; malformed/premature stream превращается в lane-shaped
+  terminal error, а не в ложный success. Router не нормализует и не исправляет эти поля или
+  события, а сохраняет request body и streaming response.
   Codex Messages skin также принимает и снимает только bounded no-op `context_management`
   текущего Claude Code (`edits:[]` или exact `clear_thinking_20251015` + `keep:"all"`), а
   stateful/неизвестные формы оставляет fail-closed; exact ephemeral cache markers клиента

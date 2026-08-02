@@ -117,16 +117,15 @@
 //!   thought вперемешку дают серию items в порядке апстрима; output_index —
 //!   плотный собственный счётчик, content_index всегда 0, item-scoped
 //!   события несут `item_id`, `sequence_number` не выставляется;
-//! - нормальное завершение Gemini-стрима — чистый EOF (message_stop на wire
-//!   нет): открытый item закрывается и эмитится `response.completed` с полным
+//! - нормальное завершение Gemini-стрима — finishReason/blockReason + чистый EOF
+//!   (message_stop на wire нет): открытый item закрывается и эмитится `response.completed` с полным
 //!   Response object (status по сохранённому finishReason/blockReason, usage
 //!   из последнего usageMetadata — в Responses include-флага нет, usage
-//!   всегда в completed). Отличие от Anthropic-зеркала: там преждевременный
-//!   EOF → `response.failed`, здесь EOF — норма протокола;
+//!   всегда в completed). EOF без terminal evidence → `response.failed`;
 //! - mid-stream error-кадр плоскости `{error:{code,message,status}}` и
 //!   транспортный сбой → `response.failed` (status "failed", error {code:
-//!   google.rpc status, message}) и завершение стрима; неразборчивые кадры
-//!   пропускаются.
+//!   google.rpc status, message}) и завершение стрима; malformed known provider
+//!   shape → `response.failed`, неизвестные дополнительные поля допускаются.
 //!
 //! Все ответы этого пути — OpenAI-совместимый конверт, включая ошибки:
 //! синтетические ошибки плоскости и пасsthrough-ошибки апстрима переводятся
@@ -159,6 +158,7 @@ use crate::codex::new_id;
 use crate::proxy::{read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
+use crate::gemini_stream::GeminiStreamState;
 
 /// Хендлер `POST /v1/responses` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`). Точный паттерн `gemini_chat_completions`.
@@ -1227,6 +1227,7 @@ struct GeminiResponsesSseTranslator {
     /// Per-name счётчик синтезируемых call_id — та же схема
     /// `callu_<name>[_N]`, что в non-stream переводе и chat-адаптере.
     name_counts: HashMap<String, u64>,
+    source: GeminiStreamState,
     /// Терминальное событие (completed/failed) уже поставлено в `out`.
     finished: bool,
 }
@@ -1248,6 +1249,7 @@ impl GeminiResponsesSseTranslator {
             next_output_index: 0,
             completed_items: Vec::new(),
             name_counts: HashMap::new(),
+            source: GeminiStreamState::default(),
             finished: false,
         }
     }
@@ -1519,8 +1521,8 @@ impl GeminiResponsesSseTranslator {
         self.completed_items.push(item);
     }
 
-    /// Терминальное событие успеха на чистом EOF: нормальное завершение
-    /// Gemini-стрима — закрывается открытый item и эмитится
+    /// Терминальное событие успеха после provider finishReason/blockReason + EOF:
+    /// закрывается открытый item и эмитится
     /// `response.completed` с полным Response object (status по сохранённому
     /// finishReason/blockReason, usage из последнего usageMetadata).
     fn push_completed(&mut self) {
@@ -1696,10 +1698,12 @@ impl GeminiResponsesSseTranslator {
                 continue;
             }
             let data = data_lines.join("\n");
-            // Неразборчивые кадры пропускаются: протокол апстрима может
-            // вырасти новыми полями, стрим от этого ломаться не должен.
-            if let Ok(data) = serde_json::from_str(&data) {
-                self.handle_data(data);
+            match self.source.accept(&data) {
+                Ok(data) => self.handle_data(data),
+                Err(()) => self.push_failed(
+                    "The provider stream contained a malformed frame.",
+                    Some("protocol_error"),
+                ),
             }
             if self.finished {
                 self.buf.clear();
@@ -1732,10 +1736,21 @@ impl Stream for GeminiResponsesSseTranslator {
                     self.push_failed("The provider stream was interrupted.", None);
                 }
                 Poll::Ready(None) => {
-                    // Нормальное завершение Gemini-стрима — чистый EOF
-                    // (message_stop на wire нет): честный response.completed,
-                    // клиент не висит.
-                    self.push_completed();
+                    if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                        self.buf.extend_from_slice(b"\n\n");
+                        self.drain_frames();
+                    }
+                    if self.finished {
+                        continue;
+                    }
+                    if self.source.is_complete() {
+                        self.push_completed();
+                    } else {
+                        self.push_failed(
+                            "The provider stream ended before completion.",
+                            Some("protocol_error"),
+                        );
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -3213,9 +3228,8 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
 
     #[tokio::test]
     async fn sse_clean_eof_after_finish_emits_completed_with_last_usage() {
-        // Нормальное завершение Gemini-стрима — чистый EOF без финального
-        // протокольного события: response.completed обязателен (отличие от
-        // Anthropic-зеркала, где EOF без message_stop → response.failed);
+        // Нормальное завершение Gemini-стрима — provider finishReason + чистый EOF:
+        // response.completed обязателен;
         // usage — последнее usageMetadata нарастающего итога.
         let events = concat!(
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3}}\n",
@@ -3234,27 +3248,25 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[tokio::test]
-    async fn sse_empty_stream_completes_with_empty_output() {
-        // Стрим без единого кадра: клиент не висит — completed с пустым
-        // output и null usage.
+    async fn sse_empty_stream_terminates_with_failed() {
         let translator = GeminiResponsesSseTranslator::new(sse_bytes(""), "m".into());
         let output = collect_stream(translator).await;
         let frames = event_frames(&output);
         assert_eq!(
             event_names(&frames),
-            ["response.created", "response.in_progress", "response.completed"],
+            ["response.created", "response.in_progress", "response.failed"],
             "{output}"
         );
-        assert_eq!(frames[2].1["status"], "completed");
+        assert_eq!(frames[2].1["status"], "failed");
         assert_eq!(frames[2].1["output"], json!([]));
-        assert!(frames[2].1["usage"].is_null());
+        assert_eq!(frames[2].1["error"]["code"], "protocol_error");
     }
 
     #[tokio::test]
     async fn sse_transport_error_terminates_with_failed() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
             Ok(Bytes::from(
-                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n",
             )),
             Err(std::io::Error::other("reset")),
         ];
@@ -3311,17 +3323,29 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[tokio::test]
-    async fn sse_malformed_frames_are_skipped() {
+    async fn sse_malformed_frame_terminates_with_failed() {
         let events = concat!(
             "data: {not json}\n",
             "\n",
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n",
         );
         let translator = GeminiResponsesSseTranslator::new(sse_bytes(events), "m".into());
         let output = collect_stream(translator).await;
-        assert!(output.contains("ok"), "{output}");
         let frames = event_frames(&output);
-        let completed = frames.last().unwrap();
-        assert_eq!(completed.0, "response.completed");
+        let failed = frames.last().unwrap();
+        assert_eq!(failed.0, "response.failed", "{output}");
+        assert_eq!(failed.1["error"]["code"], "protocol_error");
+    }
+
+    #[tokio::test]
+    async fn sse_unterminated_finish_frame_and_unknown_fields_are_accepted() {
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\",\"futurePartField\":true}]},\"futureCandidateField\":1}],\"futureTopLevelField\":{}}\n\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}"
+        );
+        let output = collect_stream(GeminiResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+        let frames = event_frames(&output);
+        assert_eq!(frames.last().unwrap().0, "response.completed", "{output}");
+        assert!(output.contains("ok"), "{output}");
     }
 }

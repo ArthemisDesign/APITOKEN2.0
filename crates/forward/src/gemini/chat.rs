@@ -61,6 +61,7 @@ use crate::proxy::{
 };
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
+use crate::gemini_stream::GeminiStreamState;
 
 /// Лимит тела chat-запроса — как у нативного text-пути плоскости
 /// (`GEMINI_TEXT_REQUEST_BODY_LIMIT`). Общий с Responses-адаптером этапа 4.3
@@ -1474,6 +1475,7 @@ struct GeminiChatSseTranslator {
     /// та же схема `callu_<name>[_N]`, что в non-stream переводе.
     next_tool_index: u64,
     name_counts: HashMap<String, u64>,
+    source: GeminiStreamState,
     /// Терминальный кадр (`[DONE]` или error) уже поставлен в `out`.
     finished: bool,
 }
@@ -1493,6 +1495,7 @@ impl GeminiChatSseTranslator {
             role_sent: false,
             next_tool_index: 0,
             name_counts: HashMap::new(),
+            source: GeminiStreamState::default(),
             finished: false,
         }
     }
@@ -1669,10 +1672,12 @@ impl GeminiChatSseTranslator {
                 continue;
             }
             let data = data_lines.join("\n");
-            // Неразборчивые кадры пропускаются: протокол апстрима может
-            // вырасти новыми полями, стрим от этого ломаться не должен.
-            if let Ok(data) = serde_json::from_str(&data) {
-                self.handle_data(data);
+            match self.source.accept(&data) {
+                Ok(data) => self.handle_data(data),
+                Err(()) => self.push_error(
+                    "The provider stream contained a malformed frame.",
+                    Some("protocol_error"),
+                ),
             }
             if self.finished {
                 self.buf.clear();
@@ -1705,9 +1710,22 @@ impl Stream for GeminiChatSseTranslator {
                     self.push_error("The provider stream was interrupted.", None);
                 }
                 Poll::Ready(None) => {
-                    // Нормальное завершение Gemini-стрима — чистый EOF:
-                    // финальный usage-чанк (если просили include_usage) и
-                    // [DONE], чтобы клиент не висел.
+                    if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                        self.buf.extend_from_slice(b"\n\n");
+                        self.drain_frames();
+                    }
+                    if self.finished {
+                        continue;
+                    }
+                    if !self.source.is_complete() {
+                        self.push_error(
+                            "The provider stream ended before completion.",
+                            Some("protocol_error"),
+                        );
+                        continue;
+                    }
+                    // Gemini has no message_stop; a validated finishReason/blockReason plus EOF
+                    // is the success boundary.
                     if self.include_usage {
                         if let Some(usage) = self.last_usage.take() {
                             let chunk = json!({
@@ -2888,10 +2906,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_clean_eof_without_finish_still_done() {
+    async fn stream_clean_eof_without_finish_terminates_with_error() {
         let events = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n";
         let output = collect_stream(translate_events(events, false)).await;
-        assert!(output.ends_with("data: [DONE]\n\n"));
+        assert!(output.contains("ended before completion"), "{output}");
+        assert!(!output.contains("[DONE]"), "{output}");
     }
 
     #[tokio::test]
@@ -2915,22 +2934,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_malformed_frames_are_skipped() {
+    async fn stream_malformed_frame_terminates_with_error() {
         let events = concat!(
             "data: {not json}\n",
             "\n",
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n",
         );
         let output = collect_stream(translate_events(events, false)).await;
         let frames = data_frames(&output);
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[1]["choices"][0]["delta"], json!({"content": "ok"}));
+        assert_eq!(frames.last().unwrap()["error"]["code"], "protocol_error", "{output}");
+        assert!(!output.contains("[DONE]"), "{output}");
     }
 
     #[tokio::test]
     async fn stream_transport_error_terminates_with_error_frame() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}}\n\n")),
+            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n")),
             Err(std::io::Error::other("reset")),
         ];
         let translator = GeminiChatSseTranslator::new(
@@ -2945,5 +2964,16 @@ mod tests {
             frames.last().unwrap()["error"]["message"],
             "The provider stream was interrupted."
         );
+    }
+
+    #[tokio::test]
+    async fn final_unterminated_finish_frame_and_unknown_fields_are_accepted() {
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\",\"futurePartField\":true}]},\"futureCandidateField\":1}],\"futureTopLevelField\":{}}\n\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}"
+        );
+        let output = collect_stream(translate_events(events, false)).await;
+        assert!(output.contains("\"content\":\"ok\""), "{output}");
+        assert!(output.ends_with("data: [DONE]\n\n"), "{output}");
     }
 }
