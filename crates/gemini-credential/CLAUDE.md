@@ -12,7 +12,8 @@ secret-конвертов и канонизацией прокси. Здесь �
    key rotation и zeroization остаются fail-closed. Изменение wire-формата требует явной версии.
 3. План принимается только по reviewed tier evidence. Точный известный tier ID — authority и
    переживает изменение display name; точное известное имя другого плана конфликтует и отклоняется.
-   Неизвестный ID или знакомая подстрока (`Pro`, `Ultra`) сами по себе доступ не дают.
+   Неизвестный ID или знакомая подстрока (`Pro`, `Ultra`) сами по себе доступ не дают; exact
+   standalone name остаётся legacy evidence для уже совместимых sealed credentials.
 4. Прокси канонизируется обратимо: percent-encoded userinfo декодируется один раз и кодируется в
    unreserved-набор. Нельзя логировать, возвращать в ошибке или ослаблять проверку origin/path.
 5. Файловую атомарность, permissions, symlink/path guards и roster publication реализуют владельцы

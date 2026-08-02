@@ -55,7 +55,9 @@ Gemini CLI repository at commit
 `paidTier.name ?? currentTier.name`, while `types.ts` defines `UserTierId` as an open string union.
 Therefore this gateway treats only its exact reviewed IDs as stable authority, uses exact names as
 additional conflict/legacy evidence, and never promotes an unknown tier from a `Pro`/`Ultra`
-substring. This source explains client behavior; live generation remains the publication gate.
+substring. Exact standalone legacy names remain accepted for already compatible sealed credentials;
+they are not substring inference. This source explains client behavior; live generation remains
+the publication gate.
 
 ## OAuth and publication flow
 
@@ -91,12 +93,13 @@ Antigravity transaction remains a fresh client-bound consent rather than token c
    tier ID is authoritative even when Google changes its display name; an exact known name that
    points to another plan conflicts and fails closed. When Google returns both `paidTier` and
    `currentTier`, a reviewed mapping from either field is accepted, while contradictory reviewed
-   mappings, unknown IDs and substring-only matches are rejected. Before applying this evidence to
-   a new subject or issuing the Antigravity consent, Auth Bot scans the encrypted roster: an existing
-   Antigravity subject is reported as an already connected duplicate while its live refresh token is
-   still safe; a legacy profile may continue only through its exact subject, canonical proxy and
-   IPRoyal identity. Every `unsupported_plan` branch emits only structural diagnostics (project and
-   tier-field presence/classes plus allowed-tier count), never raw tier, project or identity.
+   mappings, unknown IDs without exact legacy-name evidence and substring-only matches are rejected.
+   Before applying this evidence to a new subject or issuing the Antigravity consent, Auth Bot scans
+   the encrypted roster: an existing Antigravity subject is reported as an already connected
+   duplicate while its live refresh token is still safe; a legacy profile may continue only through
+   its exact subject, canonical proxy and IPRoyal identity. Every `unsupported_plan` branch emits
+   only structural diagnostics (project and tier-field presence/classes plus allowed-tier count),
+   never raw tier, project or identity.
 6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
    phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
    are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement

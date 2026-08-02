@@ -279,15 +279,34 @@ pub fn supported_plan_for_tier_name(tier_name: &str) -> Option<&'static str> {
 
 /// Map only reviewed Code Assist tier evidence to the internal billing plan. A known id is the
 /// authority even when its display name is new. An exact known name that contradicts that id fails
-/// closed. Name-only compatibility is available only when Google omitted the id and remains exact
-/// (never substring based); a present unknown id cannot borrow a familiar plan name.
+/// closed. Name-only compatibility remains exact (never substring based): an omitted id may use
+/// any reviewed name, while older opaque ids may use only the short standalone labels that were
+/// already accepted in sealed credentials.
 pub fn supported_plan_for_tier(tier_id: &str, tier_name: &str) -> Option<&'static str> {
     let id_plan = supported_plan_for_tier_id(tier_id);
     let name_plan = supported_plan_for_tier_name(tier_name);
     match (id_plan, name_plan) {
         (Some(id_plan), Some(name_plan)) if id_plan != name_plan => None,
         (Some(id_plan), _) => Some(id_plan),
-        (None, Some(name_plan)) if tier_id.is_empty() => Some(name_plan),
+        (None, Some(name_plan))
+            if tier_id.is_empty()
+                || matches!(
+                    tier_name
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "google ai pro"
+                        | "google ai ultra"
+                        | "code assist standard"
+                        | "code assist enterprise"
+                        | "workspace ai ultra"
+                        | "google workspace ai ultra"
+                ) =>
+        {
+            Some(name_plan)
+        }
         _ => None,
     }
 }
@@ -650,7 +669,7 @@ mod tests {
         );
         assert_eq!(
             supported_plan_for_tier("future-pro-tier", "Google AI Pro"),
-            None
+            Some("google_ai_pro")
         );
         assert_eq!(
             supported_plan_for_tier("", "Google AI Pro"),
