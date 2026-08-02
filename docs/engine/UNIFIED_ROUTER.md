@@ -694,10 +694,12 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    adaptive → дефолт модели; enabled budget <4096 → low, <16384 → medium, иначе high;
    <1024 → 400), `stop_sequences` и `max_tokens` честно обрабатываются на доставленном
    тексте общим `StopFilter` и output-бюджетом ~4 chars/token (как chat.rs — транспорт
-   не умеет резать генерацию upstream). Capability matrix: не-дефолтный `cache_control`
-   где угодно (system, content-блоки, tools), stateful/неизвестный `context_management`,
+   не умеет резать генерацию upstream). Capability matrix: stateful/неизвестный
+   `cache_control` где угодно (system, content-блоки, tools), stateful/неизвестный `context_management`,
    `mcp_servers`, `container` → `400 invalid_request_error` с именем
-   параметра. Bounded no-op, который Claude Code 2.1.220 присылает по умолчанию
+   параметра. Exact Claude Code `cache_control:{type:"ephemeral"}` принимается и снимается:
+   Codex prompt caching автоматический; любое расширение marker'а остаётся fail-closed.
+   Bounded no-op, который Claude Code 2.1.220 присылает по умолчанию
    (`context_management.edits` пуст либо содержит ровно
    `{type:"clear_thinking_20251015",keep:"all"}`), принимается и снимается: stateless
    adapter уже дропает входные thinking-блоки; дополнительные поля, edits и значения

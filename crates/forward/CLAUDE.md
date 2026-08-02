@@ -274,8 +274,10 @@ top-level `system` → `instructions` со склейкой text-блоков ч
 thinking/redacted_thinking дропаются — решение 6; `tools[]` → function tools, `tool_choice`
 → default/required/none/named + `parallel_tool_calls`, `thinking` → `reasoning.effort`
 lossy по порогам <4096 → low / <16384 → medium / иначе high, <1024 → 400; capability
-matrix: не-дефолтный `cache_control` где угодно, stateful/неизвестный `context_management`,
-`mcp_servers`, `container` → `400 invalid_request_error`. Текущий bounded
+matrix: stateful/неизвестный `cache_control` где угодно, stateful/неизвестный
+`context_management`, `mcp_servers`, `container` → `400 invalid_request_error`. Exact
+Claude Code `cache_control:{type:"ephemeral"}` на system/content/tools принимается и снимается:
+Codex prompt caching автоматический, а расширенная retention-policy остаётся fail-closed. Текущий bounded
 no-op Claude Code `context_management` (`edits:[]` либо ровно
 `clear_thinking_20251015` + `keep:"all"`) принимается и игнорируется: входные thinking-блоки
 этот stateless adapter и так дропает, а любое расширение формы остаётся fail-closed.

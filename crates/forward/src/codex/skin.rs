@@ -28,13 +28,15 @@
 //! "high"; an effort the model does not advertise degrades to its default inside the shared
 //! Responses parser).
 //!
-//! Capability matrix (decision 3, fail-closed modulo defaults): non-default `cache_control`
-//! anywhere (system, content blocks, tools — Codex prompt caching is automatic), stateful or
-//! unknown `context_management`, `mcp_servers`, `container` →
+//! Capability matrix (decision 3, fail-closed modulo defaults): stateful or unknown
+//! `cache_control` anywhere (system, content blocks, tools — Codex prompt caching is automatic),
+//! stateful or unknown `context_management`, `mcp_servers`, `container` →
 //! `400 invalid_request_error` naming the parameter in the message. Claude Code's bounded
 //! no-op context form (`clear_thinking_20251015` with `keep:"all"`) and an empty edits list are
 //! accepted and ignored; the adapter already drops replayed thinking and never claims server-side
-//! context mutation. Native `output_config.effort` maps to Responses `reasoning.effort`, while
+//! context mutation. Claude Code's exact `{type:"ephemeral"}` cache breakpoints are also accepted
+//! and removed because Codex caching is automatic; extended cache policy remains fail-closed.
+//! Native `output_config.effort` maps to Responses `reasoning.effort`, while
 //! `output_config.format` maps to `text.format` with the same JSON Schema; both are bounded to the
 //! exact Messages GA shapes used by current Claude Code. `metadata` (including `user_id`),
 //! `temperature`/`top_p`/`top_k` and unknown fields are accepted and ignored, matching the Chat
@@ -417,10 +419,15 @@ fn translate_output_config(
     Ok((effort, format))
 }
 
-/// Non-default `cache_control` is rejected everywhere (system, content blocks, tools):
-/// Codex prompt caching is automatic and cannot be steered by client breakpoints.
+/// Codex prompt caching is automatic and cannot be steered by client breakpoints. Current Claude
+/// Code nevertheless annotates system and user blocks with the exact Anthropic ephemeral marker.
+/// Accept and remove only that stateless hint; any extended retention or future policy remains
+/// fail-closed instead of being silently misrepresented.
 fn reject_cache_control(block: &Value, param: &str) -> Result<(), Response> {
-    if block.get("cache_control").is_some_and(|value| !value.is_null()) {
+    if block
+        .get("cache_control")
+        .is_some_and(|value| !is_ignorable_cache_control(value))
+    {
         return Err(invalid_request(format!(
             "Unsupported parameter: 'cache_control' is not supported with this endpoint (in {param})."
         )));
@@ -428,9 +435,17 @@ fn reject_cache_control(block: &Value, param: &str) -> Result<(), Response> {
     Ok(())
 }
 
+fn is_ignorable_cache_control(value: &Value) -> bool {
+    value.is_null()
+        || value.as_object().is_some_and(|object| {
+            object.len() == 1
+                && object.get("type").and_then(Value::as_str) == Some("ephemeral")
+        })
+}
+
 /// Top-level `system` → joined instruction text: a plain string or an array of text blocks
-/// joined with "\n\n" (the `chat.rs` system join). Any other block type or a non-default
-/// `cache_control` → 400.
+/// joined with "\n\n" (the `chat.rs` system join). Any other block type or an unsupported
+/// `cache_control` shape → 400.
 fn translate_system(value: Option<Value>) -> Result<Option<String>, Response> {
     match value {
         None | Some(Value::Null) => Ok(None),
@@ -762,8 +777,8 @@ fn translate_tool_use(
 }
 
 /// Messages `tools[]` → Responses function tools: only custom tools (the default type) are
-/// supported; `input_schema` → `parameters`. Server tools (web_search etc.) and a non-default
-/// `cache_control` → 400.
+/// supported; `input_schema` → `parameters`. Server tools (web_search etc.) and an unsupported
+/// `cache_control` shape → 400.
 fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
     let tools = value.as_array().ok_or_else(|| {
         invalid_request("Invalid type for parameter: tools must be an array.")
@@ -1752,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn system_blocks_join_and_cache_control_is_rejected() {
+    fn system_blocks_join() {
         let parsed = ok_translated(json!({
             "model": "gpt-5.6",
             "system": [
@@ -1772,33 +1787,37 @@ mod tests {
         assert!(parsed.responses.get("instructions").is_none());
     }
 
-    #[tokio::test]
-    async fn cache_control_anywhere_is_400() {
-        for (container, value) in [
-            ("system", json!([{"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}])),
-            ("system", json!([{"type": "text", "text": "x", "cache_control": null}])),
-        ] {
-            let result = translate_messages_request(json!({
-                "model": "gpt-5.6", "max_tokens": 1,
-                "messages": [{"role": "user", "content": "hi"}],
-                container: value,
-            }), true);
-            if container == "system" && value[0]["cache_control"].is_null() {
-                assert!(result.is_ok(), "null cache_control is the default and must pass");
-            } else {
-                let (status, json) = err_parts(result.unwrap_err()).await;
-                assert_eq!(status, StatusCode::BAD_REQUEST);
-                assert_eq!(json["type"], "error");
-                assert_eq!(json["error"]["type"], "invalid_request_error");
-                assert!(json["error"]["message"].as_str().unwrap().contains("cache_control"));
-            }
-        }
-        // cache_control на content-блоке и на tool — тоже 400.
+    #[test]
+    fn claude_code_ephemeral_cache_controls_are_accepted_and_removed() {
         for body in [
+            json!({"model": "gpt-5.6", "max_tokens": 1,
+                "system": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "c", "cache_control": {"type": "ephemeral"}}
+                ],
+                "messages": [{"role": "user", "content": "hi"}]}),
             json!({"model": "gpt-5.6", "max_tokens": 1, "messages": [{"role": "user", "content": [
                 {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}]}),
             json!({"model": "gpt-5.6", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
                 "tools": [{"name": "f", "cache_control": {"type": "ephemeral"}}]}),
+        ] {
+            let parsed = ok_translated(body);
+            assert!(!parsed.responses.to_string().contains("cache_control"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_control_extended_shapes_stay_fail_closed_everywhere() {
+        for body in [
+            json!({"model": "gpt-5.6", "max_tokens": 1,
+                "system": [{"type": "text", "text": "x",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
+                "messages": [{"role": "user", "content": "hi"}]}),
+            json!({"model": "gpt-5.6", "max_tokens": 1, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "hi", "cache_control": {"type": "persistent"}}]}]}),
+            json!({"model": "gpt-5.6", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "f", "cache_control": "ephemeral"}]}),
         ] {
             let (status, json) = expect_err(body).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
