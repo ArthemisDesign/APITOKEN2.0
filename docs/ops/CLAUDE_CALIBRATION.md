@@ -37,6 +37,9 @@ immutable `calibration_evidence` и provider quota snapshots.
   Это даёт post-turn poll шанс связать exact spend с новой quota fraction.
 - Cache payload включает уникальный `run_id`: write/read одной пары делят один ключ, но новый
   запуск не может принять ещё живой 5m/1h cache предыдущего прогона за собственный cache write.
+- Краткий transport failure до исполнения автоматически повторяется до трёх раз только для
+  read-only `/models`, `count_tokens` и `/capacity`. Платный `/messages` после SSH/HTTP transport
+  ambiguity не повторяется: runner останавливается, чтобы исключить двойной расход.
 - API key и panel/control key читаются только из env/remote shell и в отчёт не попадают. Email уже
   приходит из `/capacity` в bounded mask без домена.
 - Production-режим отправляет generation через SSH прямо в стабильный loopback router с

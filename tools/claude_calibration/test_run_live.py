@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from tools.claude_calibration.run_live import (
     CalibrationError,
+    CapacityReader,
     Leg,
     ProfileBudget,
     ProductionSshJsonHttpClient,
@@ -472,6 +473,44 @@ class ProductionSshClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(CalibrationError, "bounded profile hint"):
             client.request("/v1/models", target_profile="too-long…")
+
+    @patch("tools.claude_calibration.run_live.time.sleep")
+    @patch("tools.claude_calibration.run_live.subprocess.run")
+    def test_count_tokens_retries_a_safe_transport_failure(self, run, sleep):
+        failed = Mock(returncode=255, stdout=b"", stderr=b"ssh timeout")
+        succeeded = Mock(returncode=0, stdout=b'{"input_tokens":17}\n200', stderr=b"")
+        run.side_effect = [failed, succeeded]
+
+        client = ProductionSshJsonHttpClient(30)
+        self.assertEqual(
+            client.request("/v1/messages/count_tokens", method="POST", body={}),
+            {"input_tokens": 17},
+        )
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once()
+
+    @patch("tools.claude_calibration.run_live.time.sleep")
+    @patch("tools.claude_calibration.run_live.subprocess.run")
+    def test_paid_messages_transport_failure_is_never_retried(self, run, sleep):
+        run.return_value = Mock(returncode=255, stdout=b"", stderr=b"ssh timeout")
+        client = ProductionSshJsonHttpClient(30)
+
+        with self.assertRaisesRegex(CalibrationError, "transport failed"):
+            client.request("/v1/messages", method="POST", body={})
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch("tools.claude_calibration.run_live.time.sleep")
+    @patch("tools.claude_calibration.run_live.subprocess.run")
+    def test_capacity_command_retries_a_read_only_transport_failure(self, run, sleep):
+        failed = Mock(returncode=255, stdout=b"", stderr=b"ssh timeout")
+        succeeded = Mock(returncode=0, stdout=b'{"calibration_delivery":{}}', stderr=b"")
+        run.side_effect = [failed, succeeded]
+
+        reader = CapacityReader("ssh production capacity", None, None, 30)
+        self.assertEqual(reader.read(), {"calibration_delivery": {}})
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once()
 
 
 if __name__ == "__main__":

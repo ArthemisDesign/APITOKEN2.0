@@ -34,6 +34,8 @@ NANO_PER_USD = 1_000_000_000
 DEFAULT_BUDGET_NANO = 40 * NANO_PER_USD
 DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_PROFILE_DELAY_SECONDS = 16.0
+SAFE_READ_ATTEMPTS = 3
+SAFE_READ_RETRY_DELAY_SECONDS = 2.0
 MIN_CACHE_WORDS = 2_048
 ANTHROPIC_BETAS = (
     "web-search-2025-03-05,extended-cache-ttl-2025-04-11,fast-mode-2026-02-01"
@@ -658,21 +660,33 @@ class ProductionSshJsonHttpClient:
             f"{shlex.quote('http://127.0.0.1:8790' + path)}"
         )
         data = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
-        try:
-            result = subprocess.run(
-                ["ssh", "apitokensale", remote],
-                input=data,
-                capture_output=True,
-                timeout=self.timeout + 30,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise CalibrationError(f"{path} timed out over production SSH") from error
-        if result.returncode != 0:
-            detail = result.stderr.decode(errors="replace")[-800:]
-            raise CalibrationError(
-                f"{path} production SSH transport failed ({result.returncode}): {detail}"
-            )
+        safe_to_retry = method == "GET" or path == "/v1/messages/count_tokens"
+        attempts = SAFE_READ_ATTEMPTS if safe_to_retry else 1
+        result = None
+        for attempt in range(attempts):
+            try:
+                result = subprocess.run(
+                    ["ssh", "apitokensale", remote],
+                    input=data,
+                    capture_output=True,
+                    timeout=self.timeout + 30,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                if attempt + 1 == attempts:
+                    raise CalibrationError(f"{path} timed out over production SSH") from error
+                time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
+                continue
+            if result.returncode == 0:
+                break
+            if attempt + 1 == attempts:
+                detail = result.stderr.decode(errors="replace")[-800:]
+                raise CalibrationError(
+                    f"{path} production SSH transport failed ({result.returncode}): {detail}"
+                )
+            time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
+        if result is None:
+            raise CalibrationError(f"{path} production SSH transport produced no result")
         raw, separator, status_raw = result.stdout.rpartition(b"\n")
         if not separator or not status_raw.isdigit():
             raise CalibrationError(f"{path} production SSH response has no HTTP status")
@@ -702,25 +716,44 @@ class CapacityReader:
 
     def read(self) -> dict[str, Any]:
         if self.command:
-            result = subprocess.run(
-                self.command,
-                check=False,
-                capture_output=True,
-                timeout=self.timeout,
-            )
-            if result.returncode != 0:
-                detail = result.stderr.decode(errors="replace")[-500:]
-                raise CalibrationError(f"capacity command failed ({result.returncode}): {detail}")
+            result = None
+            for attempt in range(SAFE_READ_ATTEMPTS):
+                try:
+                    result = subprocess.run(
+                        self.command,
+                        check=False,
+                        capture_output=True,
+                        timeout=self.timeout,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    if attempt + 1 == SAFE_READ_ATTEMPTS:
+                        raise CalibrationError("capacity command timed out") from error
+                    time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
+                    continue
+                if result.returncode == 0:
+                    break
+                if attempt + 1 == SAFE_READ_ATTEMPTS:
+                    detail = result.stderr.decode(errors="replace")[-500:]
+                    raise CalibrationError(
+                        f"capacity command failed ({result.returncode}): {detail}"
+                    )
+                time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
+            if result is None:
+                raise CalibrationError("capacity command produced no result")
             raw = result.stdout
         else:
             request = urllib.request.Request(
                 str(self.url), headers={"x-api-key": str(self.panel_key)}, method="GET"
             )
-            try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    raw = response.read()
-            except urllib.error.URLError as error:
-                raise CalibrationError(f"capacity read failed: {error}") from error
+            for attempt in range(SAFE_READ_ATTEMPTS):
+                try:
+                    with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                        raw = response.read()
+                    break
+                except urllib.error.URLError as error:
+                    if attempt + 1 == SAFE_READ_ATTEMPTS:
+                        raise CalibrationError(f"capacity read failed: {error}") from error
+                    time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
