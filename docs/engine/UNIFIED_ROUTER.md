@@ -713,6 +713,17 @@ request получает `400 invalid_request`, неизвестный/неак�
    replay-safe для `@ai-sdk/openai-compatible`, не подделывая provider signatures. Правило
    `reasoning_effort` удалено из
    capability matrix обеих плоскостей (Anthropic 17→16, Gemini 19→18).
+   Общий request-validation контракт Chat/Responses/Messages: missing и explicit `null`
+   optional control означают absence/default, но любой present non-null control валидируется
+   fail-closed до reserve/upstream. `stream` и `stream_options.include_usage` — только JSON
+   boolean; `max_completion_tokens`/`max_tokens`/`max_output_tokens` — только положительный
+   integer в диапазоне `u64` (zero, negative, fraction, string, compound value и overflow →
+   lane-shaped 400). Для Chat aliases первый non-null spelling имеет приоритет: `null`
+   preferred alias разрешает legacy fallback, malformed preferred alias терминален. OpenAI
+   Chat/Responses возвращают точный failing spelling в `error.param`; Anthropic Messages
+   envelope сохраняет свой штатный формат без `param`, с именем control в message. Семантика
+   реализована общим `crates/forward/src/validation.rs` и отдельно закреплена wiring-тестами
+   Anthropic/Gemini Chat и Responses, Codex Chat и native Responses, Codex/Gemini Messages skin.
 4. **Universal Responses для Codex-parity (2–4 недели).** `POST /v1/responses` для всех
    моделей каталога: text, images, tools, reasoning, usage, streaming. Реализуется по решениям
    1–5 раздела «Решения universal lanes»: адаптеры в плоскостях, router — только model-based

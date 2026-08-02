@@ -7,6 +7,7 @@ use super::{
 };
 use crate::proxy::{authorize, with_not_started, Authz, TerminalErrorReason};
 use crate::state::AppState;
+use crate::validation::{optional_bool as strict_optional_bool, optional_positive_u64};
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -937,15 +938,17 @@ pub(super) fn parse_responses_request(
     // parallel_tool_calls=false cannot be enforced by the transport; accept and run with the
     // default parallel behavior instead of rejecting the request.
     let parallel_tool_calls = optional_bool(object, "parallel_tool_calls")?.unwrap_or(true);
-    // Requested output cap. The transport cannot hard-stop generation, but the cap still bounds
-    // the reserve and the billed output (honest billing: never charge past the requested ceiling).
-    // A non-positive or malformed value is treated as absent rather than rejected, matching the
-    // lenient stance for controls the transport cannot enforce.
-    let max_output_tokens = object
-        .get("max_output_tokens")
-        .filter(|value| !value.is_null())
-        .and_then(Value::as_u64)
-        .filter(|tokens| *tokens > 0);
+    // Requested output cap bounds reserve and billed output. A present non-null value is strict:
+    // silently treating malformed/zero as absence would let billed generation diverge from the
+    // client's requested delivery limit.
+    let max_output_tokens = optional_positive_u64(object, &["max_output_tokens"]).map_err(
+        |field| {
+            ApiError::invalid(
+                "max_output_tokens must be a positive integer.",
+                Some(field.to_string()),
+            )
+        },
+    )?;
     let metadata = match object.get("metadata") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(metadata)) if metadata.len() <= 16 => Value::Object(metadata.clone()),
@@ -1035,15 +1038,16 @@ fn optional_string(object: &Map<String, Value>, field: &str) -> Result<Option<St
     }
 }
 
-fn optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool>, ApiError> {
-    match object.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        Some(_) => Err(ApiError::invalid(
+fn optional_bool(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<bool>, ApiError> {
+    strict_optional_bool(object, field).map_err(|field| {
+        ApiError::invalid(
             format!("{field} must be a boolean."),
             Some(field.to_string()),
-        )),
-    }
+        )
+    })
 }
 
 /// Normalize the public Responses/Chat spelling onto the value used by the pinned client.
@@ -3680,6 +3684,35 @@ mod tests {
         let response =
             response_object(&parsed, "resp_with_cap", 0, "in_progress", Vec::new(), None);
         assert_eq!(response["max_output_tokens"], 512);
+    }
+
+    #[test]
+    fn responses_output_limit_is_strict_but_null_remains_absent() {
+        for value in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("512"),
+            json!({}),
+            serde_json::from_str("18446744073709551616").unwrap(),
+        ] {
+            let error = parse_responses_request(
+                &gateway(),
+                json!({"model": "gpt-5.6", "input": "hi", "max_output_tokens": value}),
+            )
+            .unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            assert_eq!(error.param.as_deref(), Some("max_output_tokens"));
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({"model": "gpt-5.6", "input": "hi", "max_output_tokens": null}),
+        )
+        .unwrap();
+        assert_eq!(parsed.max_output_tokens, None);
     }
 
     #[test]

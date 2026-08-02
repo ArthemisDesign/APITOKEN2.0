@@ -83,6 +83,7 @@ use super::chat::{
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
 use crate::proxy::{with_not_started, without_not_started, TerminalErrorReason};
 use crate::state::AppState;
+use crate::validation::optional_bool;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -277,9 +278,8 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
     if max_tokens > 0 {
         responses.insert("max_output_tokens".to_string(), Value::from(max_tokens));
     }
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
+    let stream = optional_bool(&object, "stream")
+        .map_err(|_| invalid_request("stream must be a boolean."))?
         .unwrap_or(false);
     if stream {
         responses.insert("stream".to_string(), Value::Bool(true));
@@ -1733,6 +1733,29 @@ mod tests {
             body["input"],
             json!([{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}])
         );
+    }
+
+    #[tokio::test]
+    async fn messages_stream_requires_a_boolean() {
+        let (status, body) = expect_err(json!({
+            "model": "gpt-5.6",
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": "false"
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(body["error"]["message"].as_str().unwrap().contains("stream"));
+        assert!(body["error"].get("param").is_none());
+
+        let parsed = ok_translated(json!({
+            "model": "gpt-5.6",
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": null
+        }));
+        assert!(parsed.responses.get("stream").is_none());
     }
 
     #[test]

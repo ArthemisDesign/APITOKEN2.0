@@ -57,6 +57,7 @@ use crate::proxy::{
     TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
+use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Лимит тела chat-запроса — тот же 32 MiB, что у native `/v1/messages`
 /// (публичный предел Anthropic Messages; images этапа 3.4 в него вписываются).
@@ -263,20 +264,22 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     };
     let (system, conversation) = translate_messages(messages)?;
 
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
+    let stream = optional_bool(&object, "stream")
+        .map_err(|field| invalid_request("stream must be a boolean.", Some(field)))?
         .unwrap_or(false);
     let include_usage = parse_stream_options(object.get("stream_options"))?;
 
-    let max_tokens = match object
-        .get("max_completion_tokens")
-        .or_else(|| object.get("max_tokens"))
-        .and_then(Value::as_u64)
-    {
-        Some(tokens) if tokens > 0 => tokens,
-        _ => DEFAULT_MAX_TOKENS,
-    };
+    let max_tokens = optional_positive_u64(
+        &object,
+        &["max_completion_tokens", "max_tokens"],
+    )
+    .map_err(|field| {
+        invalid_request(
+            &format!("{field} must be a positive integer."),
+            Some(field),
+        )
+    })?
+    .unwrap_or(DEFAULT_MAX_TOKENS);
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.clone()));
@@ -1085,10 +1088,14 @@ fn translate_tool_choice(object: &Map<String, Value>) -> Result<Option<Value>, R
 fn parse_stream_options(value: Option<&Value>) -> Result<bool, Response> {
     match value.filter(|v| !v.is_null()) {
         None => Ok(false),
-        Some(Value::Object(object)) => Ok(object
-            .get("include_usage")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)),
+        Some(Value::Object(object)) => optional_bool(object, "include_usage")
+            .map(|value| value.unwrap_or(false))
+            .map_err(|_| {
+                invalid_request(
+                    "stream_options.include_usage must be a boolean.",
+                    Some("stream_options.include_usage"),
+                )
+            }),
         _ => Err(invalid_request(
             "Invalid stream_options: expected an object.",
             Some("stream_options"),
@@ -1785,6 +1792,59 @@ mod tests {
             "max_tokens": 100
         }));
         assert_eq!(translated.body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn null_optional_controls_keep_defaults_and_allow_legacy_token_alias() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "anthropic/claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": null,
+            "stream_options": {"include_usage": null},
+            "max_completion_tokens": null,
+            "max_tokens": 77
+        }));
+        assert!(!translated.stream);
+        assert!(!translated.include_usage);
+        assert_eq!(translated.body["max_tokens"], 77);
+    }
+
+    #[tokio::test]
+    async fn malformed_optional_controls_are_parameter_specific_400s() {
+        for (field, value, expected_param) in [
+            ("stream", serde_json::json!("false"), "stream"),
+            ("max_completion_tokens", serde_json::json!(0), "max_completion_tokens"),
+            ("max_completion_tokens", serde_json::json!(-1), "max_completion_tokens"),
+            ("max_completion_tokens", serde_json::json!(1.5), "max_completion_tokens"),
+            ("max_tokens", serde_json::json!("10"), "max_tokens"),
+            ("max_tokens", serde_json::json!({}), "max_tokens"),
+        ] {
+            let mut request = serde_json::json!({
+                "model": "anthropic/claude-opus-4-8",
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            request[field] = value;
+            let (status, body) = expect_err(request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"]["param"], expected_param, "{body}");
+        }
+
+        let (status, body) = expect_err(serde_json::json!({
+            "model": "anthropic/claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream_options": {"include_usage": "true"}
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["param"], "stream_options.include_usage");
+
+        let (status, body) = expect_err(serde_json::json!({
+            "model": "anthropic/claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 0,
+            "max_tokens": 77
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["param"], "max_completion_tokens");
     }
 
     #[test]

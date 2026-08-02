@@ -105,6 +105,10 @@ Control API движка использует только на чтение. С
   `serviceTier:"fast"|"priority"` только для исполняемой GPT-цепочки Chat/Responses, удаляет
   alias и передаёт плоскости canonical `service_tier:"priority"`; конфликтующие значения и
   non-GPT/surface misuse отклоняются до вызова плоскости.
+  После dispatch плоскости одинаково fail-closed валидируют optional execution controls:
+  missing/null остаются absence, а malformed non-null boolean/output limit получает локальный
+  400 до reserve/upstream; output alias precedence и точный OpenAI `error.param` являются частью
+  produced universal contract. Router не нормализует и не исправляет эти поля, а сохраняет body.
   Codex Messages skin также принимает и снимает только bounded no-op `context_management`
   текущего Claude Code (`edits:[]` или exact `clear_thinking_20251015` + `keep:"all"`), а
   stateful/неизвестные формы оставляет fail-closed; exact ephemeral cache markers клиента

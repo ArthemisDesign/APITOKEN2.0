@@ -25,6 +25,7 @@ mod pricing;
 mod proxy;
 mod state;
 mod upstream;
+mod validation;
 
 pub use affinity::{
     AffinityInput, AffinityResolution, AffinitySource, AffinityStats, AffinityStore,

@@ -130,6 +130,7 @@ use crate::anthropic::{
 use crate::codex::new_id;
 use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
+use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Хендлер `POST /v1/responses` (роут регистрируется в server только в
 /// `ProviderMode::Anthropic`). Точный паттерн `anthropic_chat_completions`.
@@ -303,17 +304,20 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
         }
     };
 
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
+    let stream = optional_bool(&object, "stream")
+        .map_err(|field| invalid_request("stream must be a boolean.", Some(field)))?
         .unwrap_or(false);
 
     // Messages требует max_tokens; дефолт — системная конвенция reserve-пути
     // (как в chat-адаптере).
-    let max_tokens = match object.get("max_output_tokens").and_then(Value::as_u64) {
-        Some(tokens) if tokens > 0 => tokens,
-        _ => DEFAULT_MAX_TOKENS,
-    };
+    let max_tokens = optional_positive_u64(&object, &["max_output_tokens"])
+        .map_err(|field| {
+            invalid_request(
+                "max_output_tokens must be a positive integer.",
+                Some(field),
+            )
+        })?
+        .unwrap_or(DEFAULT_MAX_TOKENS);
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.clone()));
@@ -1792,6 +1796,39 @@ mod tests {
             body["messages"],
             serde_json::json!([{"role": "user", "content": [{"type": "text", "text": "Hello"}]}])
         );
+    }
+
+    #[test]
+    fn null_optional_controls_keep_responses_defaults() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "anthropic/claude-opus-4-8",
+            "input": "Hello",
+            "stream": null,
+            "max_output_tokens": null
+        }));
+        assert!(!translated.stream);
+        assert_eq!(translated.body["max_tokens"], DEFAULT_MAX_TOKENS);
+    }
+
+    #[tokio::test]
+    async fn malformed_responses_controls_are_parameter_specific_400s() {
+        for (field, value) in [
+            ("stream", serde_json::json!("false")),
+            ("max_output_tokens", serde_json::json!(0)),
+            ("max_output_tokens", serde_json::json!(-1)),
+            ("max_output_tokens", serde_json::json!(1.5)),
+            ("max_output_tokens", serde_json::json!("10")),
+            ("max_output_tokens", serde_json::json!({})),
+        ] {
+            let mut request = serde_json::json!({
+                "model": "anthropic/claude-opus-4-8",
+                "input": "Hello"
+            });
+            request[field] = value;
+            let (status, body) = expect_err(request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"]["param"], field, "{body}");
+        }
     }
 
     #[test]

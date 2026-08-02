@@ -12,6 +12,7 @@ use super::api::{
 use super::billing::begin_admission;
 use super::{new_id, CodexGateway, CodexTurnResult, CodexUsage, TurnUpdate};
 use crate::state::AppState;
+use crate::validation::optional_positive_u64;
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
@@ -272,7 +273,7 @@ fn parse_chat_request(gateway: &CodexGateway, value: Value) -> Result<ParsedChat
     let max_output_chars = output_chars_for(max_output_tokens);
     // Route the token cap through the shared Responses parser so admission-reserve and honest
     // output billing see it exactly like a native Responses `max_output_tokens`.
-    if let Some(tokens) = max_output_tokens.filter(|tokens| *tokens > 0) {
+    if let Some(tokens) = max_output_tokens {
         responses.insert("max_output_tokens".to_string(), Value::from(tokens));
     }
     let include_usage = parse_stream_options(object.get("stream_options"))?;
@@ -330,20 +331,12 @@ fn parse_stop_sequences(value: Option<&Value>) -> Result<Vec<String>, ApiError> 
 /// both the admission reserve and the billed output (via the shared Responses field), and — scaled
 /// to ~4 chars/token — the delivered-text budget.
 fn parse_max_output_tokens(object: &Map<String, Value>) -> Result<Option<u64>, ApiError> {
-    let value = object
-        .get("max_completion_tokens")
-        .filter(|value| !value.is_null())
-        .or_else(|| object.get("max_tokens").filter(|value| !value.is_null()));
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let tokens = value.as_u64().ok_or_else(|| {
+    optional_positive_u64(object, &["max_completion_tokens", "max_tokens"]).map_err(|field| {
         ApiError::invalid(
-            "max_completion_tokens must be a positive integer.",
-            Some("max_completion_tokens".to_string()),
+            format!("{field} must be a positive integer."),
+            Some(field.to_string()),
         )
-    })?;
-    Ok(Some(tokens))
+    })
 }
 
 /// Token-to-character conversion for the delivered-text budget. Shared with the Messages skin
@@ -1701,6 +1694,61 @@ mod tests {
         .err()
         .expect("more than four stop sequences must be rejected like the official API");
         assert_eq!(too_many.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn chat_output_limit_aliases_are_strict_and_parameter_specific() {
+        for (field, value) in [
+            ("max_completion_tokens", json!(0)),
+            ("max_completion_tokens", json!(-1)),
+            ("max_completion_tokens", json!(1.5)),
+            ("max_tokens", json!("10")),
+            ("max_tokens", json!({})),
+            ("max_tokens", serde_json::from_str("18446744073709551616").unwrap()),
+        ] {
+            let mut request = json!({
+                "model": "gpt-5.6",
+                "messages": [{"role": "user", "content": "hello"}]
+            });
+            request[field] = value;
+            let error = parse_chat_request(&gateway(), request)
+                .err()
+                .expect("malformed output limit must be rejected");
+            let response = error.into_response();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"]["param"], field, "{body}");
+        }
+
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_completion_tokens": null,
+                "max_tokens": 7
+            }),
+        )
+        .unwrap();
+        assert_eq!(parsed.responses.max_output_tokens, Some(7));
+
+        let error = parse_chat_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_completion_tokens": 0,
+                "max_tokens": 7
+            }),
+        )
+        .err()
+        .expect("invalid preferred alias must be terminal");
+        let response = error.into_response();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["param"], "max_completion_tokens");
     }
 
     #[test]

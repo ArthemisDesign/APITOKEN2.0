@@ -204,6 +204,18 @@ unsupported capability, invalid contract), без account/model labels. Нали
 **Что внутри:** `ProxyConfig`, `AppState`, `Clients` (кэш http-клиентов по прокси),
 `limits_from_headers`/`Limits` (unified-ratelimit из ответа), `poll_sub` (активный опрос idle),
 `detect_plan` (тариф из /api/oauth/profile), `forward` (axum-хендлер), `authed`;
+`validation.rs` — единый fail-closed разбор optional JSON controls для universal adapters.
+Отсутствующее поле и явный `null` означают absence/default; любое присутствующее non-null
+значение обязано иметь точный тип и допустимый домен. `stream` и
+`stream_options.include_usage` принимают только JSON boolean. Output limits
+`max_completion_tokens`/`max_tokens`/`max_output_tokens` принимают только положительный integer,
+представимый как `u64`: zero, negative, fraction, string, object/array и overflow получают
+локальный lane-shaped 400 до reserve/upstream. Для aliases первый non-null spelling имеет
+приоритет: `null` у preferred spelling разрешает legacy fallback, а malformed preferred spelling
+терминален и не маскируется валидным legacy значением. Этот контракт одинаков для Anthropic и
+Gemini Chat/Responses, native Codex Chat/Responses и Codex/Gemini Messages skin; OpenAI surfaces
+возвращают точный `error.param`, Anthropic envelope по-прежнему хранит имя параметра только в
+message. Wiring закреплён contract-тестами каждого адаптера, а не только тестами helper'а;
 `anthropic.rs` — universal Chat Completions→Messages адаптер (этапы 3.1–3.4b
 docs/engine/UNIFIED_ROUTER.md): переводит chat-запрос в Messages JSON (strip
 `anthropic/`-префикса ДО admission, дефолт `max_tokens` 4096, склейка одноролевых

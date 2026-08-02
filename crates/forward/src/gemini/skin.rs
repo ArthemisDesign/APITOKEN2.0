@@ -138,6 +138,7 @@ use crate::proxy::{
     TerminalErrorReason,
 };
 use crate::state::AppState;
+use crate::validation::optional_bool;
 
 /// Интервал heartbeat `event: ping` в Messages SSE — как у Codex skin 5.1
 /// (на Gemini wire ping-кадров нет, генерируется локально).
@@ -324,9 +325,8 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
         ));
     }
 
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
+    let stream = optional_bool(&object, "stream")
+        .map_err(|_| invalid_request("stream must be a boolean."))?
         .unwrap_or(false);
 
     let mut generation_config = Map::new();
@@ -1737,6 +1737,29 @@ mod tests {
 
     async fn expect_err(value: Value) -> (StatusCode, Value) {
         err_parts(translate_messages_request(value, true).unwrap_err()).await
+    }
+
+    #[tokio::test]
+    async fn messages_stream_requires_a_boolean() {
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": "false"
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(body["error"]["message"].as_str().unwrap().contains("stream"));
+        assert!(body["error"].get("param").is_none());
+
+        let translated = ok_translated(json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": null
+        }));
+        assert!(!translated.stream);
     }
 
     fn upstream_json(value: Value) -> Response {
