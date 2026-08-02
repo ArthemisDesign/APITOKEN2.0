@@ -37,8 +37,11 @@
   `/v1/chat/completions`, `/v1/responses` и
   `/v1/messages{,/count_tokens}` читается целиком (лимит 32 MiB) ради поля
   `model`; тело ответа остаётся потоком. Дополнительное исключение — router-owned
-  `x-apitoken-service-tier: fast|priority`: на исполняемых GPT-запросах router
-  нормализует его в body `service_tier:"priority"`, а сам заголовок всегда снимает.
+  `x-apitoken-service-tier: fast|priority` и OpenAI-compatible body alias
+  `serviceTier:"fast"|"priority"`: на исполняемых GPT Chat/Responses-запросах router
+  нормализует selector в body `service_tier:"priority"`; alias и заголовок до плоскости
+  не доходят. Body alias на Messages/count_tokens и любой Fast selector на non-GPT
+  fail-closed отклоняются.
   Disconnect клиента обязан транзитивно рвать соединение к плоскости
   (TeeMeter drain): поэтому вокруг тела ответа нет detached-тасков.
 - **Внутренняя семантика исполнения не транслируется клиенту.** Заголовок
@@ -71,9 +74,11 @@
   модели capability headers не инжектируются.
   Логи attempts содержат только surface/index, публичный catalog ID, lane,
   status и bounded retry reason — без URL, headers, credentials и тел запросов.
-  Здесь же валидируется совместимый Fast-header: только GPT, не token counting,
-  конфликтующие `service_tier`/Messages `speed` отклоняются до вызова плоскости; GPT-only
-  проверка идёт после preferences/policy, то есть оценивает только исполняемые attempts.
+  Здесь же валидируются совместимые Fast selectors: header для Chat/Responses/Messages и
+  camelCase body alias только для OpenAI-compatible Chat/Responses. Они разрешены лишь для GPT,
+  не token counting; конфликтующие `serviceTier`/`service_tier`/Messages `speed` отклоняются до
+  вызова плоскости. GPT-only проверка идёт после preferences/policy, то есть оценивает только
+  исполняемые attempts.
 - `policy.rs` — закрытая схема OpenRouter-shaped `provider` preferences и bounded
   клиент engine-owned `/internal/router/policy/preflight`: все значения auth-заголовков
   передаются verbatim, fixed origins перебираются последовательно, `401` терминален,

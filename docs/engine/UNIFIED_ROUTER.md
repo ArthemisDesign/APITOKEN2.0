@@ -157,6 +157,13 @@ account-policy preflight; `models` и `provider` никогда не доход�
 | Aider, Continue, Roo/Kilo, большинство IDE agents | OpenAI Chat Completions | universal lane |
 | Native SDKs | Messages / Responses / Gemini Developer API | соответствующий native lane |
 
+Проверенная OpenAI-compatible выборка покрывает два разных класса клиентов. OpenCode 1.18.11
+(`@ai-sdk/openai-compatible` 2.0.41), Kilo 7.4.17 (2.0.48), Cline 3.0.49 (2.0.63) и Roo Code
+3.54.0 (2.0.28) используют один AI SDK transport; его неизвестные model options идут в JSON
+verbatim. Continue 1.5.47, Hermes 0.19.1 (OpenAI Python SDK 2.24.0) и Aider 0.86.2 (LiteLLM)
+проверяют независимые OpenAI-compatible реализации. Codex, Claude Code и Gemini CLI в этой же
+матрице намеренно используют native Responses, Messages и Gemini Developer API, а не Chat skin.
+
 Контролируемая production-матрица реальных harness-клиентов запускается только вручную
 (каждая успешная генерация платная):
 
@@ -184,13 +191,19 @@ evidence подтверждает сырой AI SDK `$schema`/exclusive bounds, 
 `opencode-claude-effort-xhigh` и `opencode-claude-effort-max` отдельно запускают Opus 5 без
 пользовательского plugin/request rewrite через реальные `--variant xhigh|max`; evidence требует
 HTTP 200 и подтверждает сырой `reasoning_effort` каждого уровня на router ingress.
-`opencode-fast` также работает без plugin/request rewrite: конфиг объявляет отдельный
-`openai/gpt-*-fast` с исходным API model ID и model option `service_tier:"priority"`, запускает
-его вместе с reasoning variant `low`, а evidence требует сырой body `service_tier:"priority"`,
-`reasoning_effort:"low"` и авторитетный response `usage.service_tier:"priority"`.
-Именно snake_case здесь является частью интеграционного контракта: AI SDK
-`@ai-sdk/openai-compatible` передаёт неизвестные model options в JSON verbatim, поэтому
-camelCase `serviceTier` не превращается в wire-поле и не включает Fast.
+`opencode-fast` и `kilo-fast` работают без plugin/request rewrite: конфиг объявляет отдельную
+Fast-модель с исходным API model ID и обычной для models.dev-style конфигов option
+`serviceTier:"priority"`. AI SDK передаёт неизвестную option в JSON verbatim; router принимает
+этот bounded camelCase alias на GPT Chat/Responses, снимает его и передаёт Codex plane canonical
+`service_tier:"priority"`. Evidence требует именно сырой ingress `serviceTier`, отсутствие
+клиентского canonical body и авторитетный response `usage.service_tier:"priority"`; OpenCode
+дополнительно проверяет reasoning variant `low`. Так исправляется общий transport-класс, а не
+конкретный пользовательский конфиг OpenCode. Cline и Continue проверяют header selector, Aider и
+Codex — canonical snake_case body. Hermes Fast проверяется через документированный
+`providers.<name>.extra_body.service_tier`: в Hermes 0.19.1 интерактивный `/fast` поддержан, но
+отдельный `--oneshot` path не передаёт `agent.service_tier` в создаваемый `AIAgent`, поэтому
+headless matrix не приписывает роутеру потерянную клиентом option и использует его native
+custom-provider body contract.
 
 Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
 Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
@@ -226,8 +239,10 @@ calls без исполнения на gateway. Hosted `web_search` не явл�
 
 Namespaced ID из агрегированного каталога — исполнимый контракт, а не только discovery metadata:
 router сохраняет universal request body, поэтому каждая плоскость снимает свой префикс до
-admission (`anthropic/`, `openai/`, `google/`). Для GPT Fast на Responses и Chat используются
-`service_tier: "fast"|"priority"`; Anthropic Messages harness может отправить нативный
+admission (`anthropic/`, `openai/`, `google/`). Для GPT Fast на Responses и Chat canonical-контракт
+использует `service_tier: "fast"|"priority"`; совместимый models.dev/AI SDK alias
+`serviceTier: "fast"|"priority"` router принимает только здесь и нормализует в canonical body.
+Anthropic Messages harness может отправить нативный
 `speed: "fast"`, а `service_tier: "fast"|"priority"` принимается как совместимый alias. Все
 варианты нормализуются в effective `priority`, который определяет reserve, settlement и публичный
 `usage.service_tier`. `GET /v1/models` по Codex `originator`/User-Agent после обычной проверки ключа
@@ -238,12 +253,16 @@ Harness, который умеет задавать custom headers, но не п
 Cline), выбирает GPT Fast заголовком `x-apitoken-service-tier: fast` (alias `priority` также
 принимается). Router разрешает его на исполняемых GPT-запросах Chat, Responses и Messages,
 нормализует в body `service_tier:"priority"` до admission и всегда снимает сам заголовок перед
-плоскостью. Для alias модель сначала разрешается каталогом; явная fallback-цепочка с этим
-заголовком обязана целиком состоять из `openai/*` моделей. `messages/count_tokens`, non-GPT модель,
-повторный/невалидный заголовок и противоречащие body `service_tier` либо Messages `speed` получают
-lane-shaped `400` до billable-вызова. Отсутствующее body-поле и эквивалентные `fast`/`priority`
-совместимы; canonical body всегда содержит `priority`. Reserve, settlement и effective-tier
-evidence по-прежнему принадлежат Codex plane — router только адаптирует клиентский ввод.
+плоскостью. CamelCase body alias `serviceTier` обслуживает harness'ы на
+`@ai-sdk/openai-compatible`, которые сериализуют models.dev-style options verbatim; он разрешён
+только на Chat/Responses. Для обоих alias модель сначала разрешается каталогом; явная
+fallback-цепочка обязана целиком состоять из `openai/*` моделей. `messages/count_tokens`,
+`serviceTier` на Messages, non-GPT модель, повторный/невалидный заголовок и противоречащие
+`serviceTier`/`service_tier` либо Messages `speed` получают lane-shaped `400` до billable-вызова.
+Отсутствующее canonical body-поле и эквивалентные `fast`/`priority` совместимы; в плоскость всегда
+уходит `service_tier:"priority"`, camelCase alias и capability-header снимаются. Reserve,
+settlement и effective-tier evidence по-прежнему принадлежат Codex plane — router только
+адаптирует клиентский ввод.
 
 ## Инварианты
 
@@ -307,9 +326,10 @@ evidence по-прежнему принадлежат Codex plane — router т�
 Bedrock, Vertex) route planner сможет выбирать между ними. Текущие нативные ID остаются
 однозначными aliases. GPT-записи дополнительно публикуют expand-only capability
 `service_tiers: ["standard","priority"]`. Клиенты с model-level options (в частности,
-OpenCode) могут на его основе показать отдельную Fast-модель, сохранив исходный API model ID
-и добавив `service_tier:"priority"`; Standard-модель и reasoning variants при этом остаются
-независимыми. У Anthropic/Gemini поле отсутствует. Источник правды для каталога —
+OpenCode/Kilo) могут на его основе показать отдельную Fast-модель, сохранив исходный API model ID
+и добавив canonical `service_tier:"priority"` либо совместимый `serviceTier:"priority"`;
+Standard-модель и reasoning variants при этом остаются независимыми. У Anthropic/Gemini поле
+отсутствует. Источник правды для каталога —
 существующий versioned multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 `crates/registry/src/pricing.rs`).
 

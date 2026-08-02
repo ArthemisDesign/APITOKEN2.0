@@ -275,6 +275,7 @@ def main() -> None:
             request_cache_control_types = []
             request_output_config_fields = []
             request_reasoning_effort = None
+            request_camel_service_tier = None
             request_has_structured_output_tool = False
             request_has_bash_tool = False
             if isinstance(request_json, dict) and isinstance(request_json.get("tools"), list):
@@ -291,6 +292,8 @@ def main() -> None:
                     tool_name(tool) == "bash" for tool in request_json["tools"]
                 )
             if isinstance(request_json, dict):
+                if isinstance(request_json.get("serviceTier"), str):
+                    request_camel_service_tier = request_json["serviceTier"][:32]
                 if isinstance(request_json.get("reasoning_effort"), str):
                     request_reasoning_effort = request_json["reasoning_effort"][:32]
                 request_control_fields = [
@@ -321,6 +324,7 @@ def main() -> None:
                     "request_cache_control_types": request_cache_control_types,
                     "request_output_config_fields": request_output_config_fields,
                     "request_reasoning_effort": request_reasoning_effort,
+                    "request_camel_service_tier": request_camel_service_tier,
                     "request_has_structured_output_tool": request_has_structured_output_tool,
                     "request_has_bash_tool": request_has_bash_tool,
                     "request_has_schema_dialect": has_nested_key(request_json, "$schema"),

@@ -174,12 +174,15 @@ for attempt in attempts:
         raise SystemExit(f"{label}: attempt {sequence} used unexpected model")
     request_header = attempt.get("request_fast_header")
     request_tiers = set(attempt.get("request_tiers") or [])
+    request_camel_tier = attempt.get("request_camel_service_tier")
     response_tiers = set(attempt.get("response_service_tiers") or [])
     if tier == "standard":
         if request_header not in (None, ""):
             raise SystemExit(f"{label}: Standard attempt {sequence} sent a Fast header")
         if request_tiers.intersection({"fast", "priority"}):
             raise SystemExit(f"{label}: Standard attempt {sequence} sent a Fast body tier")
+        if request_camel_tier in {"fast", "priority"}:
+            raise SystemExit(f"{label}: Standard attempt {sequence} sent a camelCase Fast tier")
         if "priority" in response_tiers:
             raise SystemExit(f"{label}: Standard attempt {sequence} executed as priority")
         if protocol != "gemini_native" and label not in {"opencode-gemini-tools", "opencode-claude-native"} and not label.startswith("opencode-claude-effort-") and not response_tiers.intersection({"standard", "default"}):
@@ -189,6 +192,8 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks the exact Fast header")
         if selector == "body" and not request_tiers.intersection({"fast", "priority"}):
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks a Fast body tier")
+        if selector == "camel_body" and request_camel_tier not in {"fast", "priority"}:
+            raise SystemExit(f"{label}: Fast attempt {sequence} lacks the camelCase Fast selector")
         if "priority" not in response_tiers:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks authoritative priority evidence")
         if label == "opencode-fast" and attempt.get("request_reasoning_effort") != "low":
@@ -350,13 +355,15 @@ run_continue() {
 
 openai_compatible_config() {
   local tier=$1
-  local header_json='{}'
+  local selected_model=$OPENAI_MODEL
+  local model_config='{"name":"Router GPT"}'
   if [[ $tier == fast ]]; then
-    header_json='{"x-apitoken-service-tier":"fast"}'
+    selected_model="$OPENAI_MODEL-fast"
+    model_config=$(printf '{"id":"%s","name":"Router GPT Fast","options":{"serviceTier":"priority"}}' "$OPENAI_MODEL")
   fi
-  printf '{"provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s","headers":%s},"models":{"%s":{"name":"Router GPT"}}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
-    "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$header_json" \
-    "$OPENAI_MODEL" "$OPENAI_MODEL" "$OPENAI_MODEL"
+  printf '{"provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s"},"models":{"%s":%s}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
+    "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$selected_model" "$model_config" \
+    "$selected_model" "$selected_model"
 }
 
 opencode_config() {
@@ -365,7 +372,7 @@ opencode_config() {
   local model_config='{"name":"Router GPT","reasoning":true,"variants":{"low":{"reasoningEffort":"low"}}}'
   if [[ $tier == fast ]]; then
     selected_model="$OPENAI_MODEL-fast"
-    model_config=$(printf '{"id":"%s","name":"Router GPT Fast","reasoning":true,"options":{"service_tier":"priority"},"variants":{"low":{"reasoningEffort":"low"}}}' "$OPENAI_MODEL")
+    model_config=$(printf '{"id":"%s","name":"Router GPT Fast","reasoning":true,"options":{"serviceTier":"priority"},"variants":{"low":{"reasoningEffort":"low"}}}' "$OPENAI_MODEL")
   fi
   printf '{"provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s"},"models":{"%s":%s}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
     "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$selected_model" "$model_config" \
@@ -488,6 +495,10 @@ run_opencode_claude_max() {
 run_kilo() {
   local tier=$1
   local config_content
+  local selected_model=$OPENAI_MODEL
+  if [[ $tier == fast ]]; then
+    selected_model="$OPENAI_MODEL-fast"
+  fi
   config_content=$(openai_compatible_config "$tier")
   run_quiet env \
     KILO_CONFIG_CONTENT="$config_content" \
@@ -501,7 +512,7 @@ run_kilo() {
     XDG_DATA_HOME="$CASE_DIR/xdg-data" \
     XDG_STATE_HOME="$CASE_DIR/xdg-state" \
     kilo run --pure --format json \
-      --model "apitoken/$OPENAI_MODEL" \
+      --model "apitoken/$selected_model" \
       --agent plan \
       --title router-harness \
       --dir "$CASE_DIR/work" \
@@ -587,26 +598,27 @@ run_gemini() {
 
 run_hermes() {
   local tier=$1
-  local default_headers=
-  local service_tier=
+  local extra_body=
   if [[ $tier == fast ]]; then
-    default_headers=$'  default_headers:\n    x-apitoken-service-tier: fast'
-    service_tier='  service_tier: fast'
+    extra_body=$'    extra_body:\n      service_tier: priority'
   fi
   printf '%s\n' \
     'model:' \
     "  default: $OPENAI_MODEL" \
-    '  provider: custom' \
-    '  api_mode: chat_completions' \
-    "  api_key: $PLACEHOLDER_API_KEY" \
-    "  base_url: $PROXY_BASE_URL/v1" \
+    '  provider: router-harness' \
     '  context_length: 131072' \
     '  max_tokens: 32' \
-    "$default_headers" \
+    'providers:' \
+    '  router-harness:' \
+    "    api: $PROXY_BASE_URL/v1" \
+    "    api_key: $PLACEHOLDER_API_KEY" \
+    '    transport: chat_completions' \
+    "    default_model: $OPENAI_MODEL" \
+    '    discover_models: false' \
+    "$extra_body" \
     'agent:' \
     '  max_turns: 1' \
-    '  reasoning_effort: low' \
-    "$service_tier" >"$CASE_DIR/config.yaml"
+    '  reasoning_effort: low' >"$CASE_DIR/config.yaml"
   run_quiet env \
     HERMES_HOME="$CASE_DIR" \
     CUSTOM_API_KEY="$PLACEHOLDER_API_KEY" \
@@ -662,20 +674,20 @@ run_matrix_case cline-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast
 run_matrix_case continue-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_continue
 run_matrix_case continue-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_continue
 run_matrix_case opencode-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_opencode
-run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast body run_opencode
+run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast camel_body run_opencode
 run_matrix_case opencode-claude-native openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_MODEL" standard none run_opencode_claude_native
 run_matrix_case opencode-claude-effort-xhigh openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_xhigh
 run_matrix_case opencode-claude-effort-max openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_max
 run_matrix_case opencode-gemini-tools openai_chat /v1/chat/completions "$OPENCODE_GEMINI_MODEL" standard none run_opencode_gemini_tools
 run_matrix_case kilo-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_kilo
-run_matrix_case kilo-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_kilo
+run_matrix_case kilo-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast camel_body run_kilo
 run_matrix_case codex-standard openai_responses /v1/responses "$OPENAI_MODEL" standard none run_codex
 run_matrix_case codex-fast openai_responses /v1/responses "$OPENAI_MODEL" fast body run_codex
 run_matrix_case claude-code-standard anthropic_messages /v1/messages "$OPENAI_MODEL" standard none run_claude
 run_matrix_case claude-code-fast anthropic_messages /v1/messages "$OPENAI_MODEL" fast header run_claude
 run_matrix_case gemini-cli-standard gemini_native "/v1beta/models/$GEMINI_MODEL:streamGenerateContent" "$GEMINI_MODEL" standard none run_gemini
 run_matrix_case hermes-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_hermes
-run_matrix_case hermes-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_hermes
+run_matrix_case hermes-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast body run_hermes
 run_matrix_case aider-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_aider
 run_matrix_case aider-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast body run_aider
 

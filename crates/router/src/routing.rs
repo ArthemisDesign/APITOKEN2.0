@@ -1,12 +1,12 @@
 //! Shared model routing and serial fallback for universal Chat, Responses and
 //! Messages surfaces (docs/engine/ROUTING_FENCING.md phase 6.2).
 //!
-//! Requests without `models`, `provider`, `preset/*` or the router-owned Fast header preserve the
-//! historical behavior and exact body bytes. Advanced plans expand reviewed presets, resolve one
-//! aggregate catalog snapshot, apply deterministic provider preferences and call the engine-owned
-//! account-policy preflight before attempt 1. Router-only fields are then removed and `model` is
-//! replaced for each serial attempt. A next attempt is allowed only by `proxy::RetryReason`'s
-//! fail-closed transport/execution proof.
+//! Requests without `models`, `provider`, `preset/*` or router-owned Fast compatibility selectors
+//! preserve the historical behavior and exact body bytes. Advanced plans expand reviewed presets,
+//! resolve one aggregate catalog snapshot, apply deterministic provider preferences and call the
+//! engine-owned account-policy preflight before attempt 1. Router-only fields are then removed and
+//! `model` is replaced for each serial attempt. A next attempt is allowed only by
+//! `proxy::RetryReason`'s fail-closed transport/execution proof.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -138,6 +138,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             Ok(present) => present,
             Err(response) => return response,
         };
+    let fast_body_alias = has_fast_service_tier_alias(&value);
 
     let has_models = value.get("models").is_some();
     let has_provider = value.get("provider").is_some();
@@ -151,6 +152,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             &model,
             surface,
             fast_header,
+            fast_body_alias,
         )
         .await;
     }
@@ -370,14 +372,18 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     let allowed: HashSet<_> = allowed.iter().map(String::as_str).collect();
     attempts.retain(|attempt| allowed.contains(attempt.catalog_id.as_str()));
 
-    if fast_header {
+    if fast_header || fast_body_alias {
         if attempts.iter().any(|attempt| attempt.lane != Lane::OpenAi) {
             return surface.invalid(
-                "Header `x-apitoken-service-tier` is supported only for GPT models.",
-                Some(proxy::SERVICE_TIER_HEADER.as_str()),
+                "Fast service-tier compatibility selectors are supported only for GPT models.",
+                Some(if fast_header {
+                    "x-apitoken-service-tier"
+                } else {
+                    "serviceTier"
+                }),
             );
         }
-        if let Err(response) = apply_fast_service_tier(&mut value, surface) {
+        if let Err(response) = normalize_fast_service_tier(&mut value, surface, fast_header) {
             return response;
         }
     }
@@ -463,6 +469,7 @@ async fn proxy_single(
     model: &str,
     surface: Surface,
     fast_header: bool,
+    fast_body_alias: bool,
 ) -> Response {
     let lane = match catalog::namespace_lane(model) {
         Some(lane) => lane,
@@ -488,14 +495,19 @@ async fn proxy_single(
             }
         }
     };
-    let bytes = if fast_header {
+    let fast_compat = fast_header || fast_body_alias;
+    let bytes = if fast_compat {
         if lane != Lane::OpenAi {
             return surface.invalid(
-                "Header `x-apitoken-service-tier` is supported only for GPT models.",
-                Some(proxy::SERVICE_TIER_HEADER.as_str()),
+                "Fast service-tier compatibility selectors are supported only for GPT models.",
+                Some(if fast_header {
+                    "x-apitoken-service-tier"
+                } else {
+                    "serviceTier"
+                }),
             );
         }
-        if let Err(response) = apply_fast_service_tier(value, surface) {
+        if let Err(response) = normalize_fast_service_tier(value, surface, fast_header) {
             return response;
         }
         match serde_json::to_vec(value) {
@@ -506,7 +518,7 @@ async fn proxy_single(
         bytes
     };
     let origin = origin_for_lane(state, lane);
-    let request = if fast_header {
+    let request = if fast_compat {
         request_from_parts(&parts, bytes)
     } else {
         Request::from_parts(parts, Body::from(bytes))
@@ -555,22 +567,50 @@ fn take_fast_service_tier_header(
     Ok(true)
 }
 
-fn apply_fast_service_tier(
+fn has_fast_service_tier_alias(value: &serde_json::Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key("serviceTier"))
+}
+
+fn normalize_fast_service_tier(
     value: &mut serde_json::Value,
     surface: Surface,
+    header_present: bool,
 ) -> Result<(), Response> {
     let Some(object) = value.as_object_mut() else {
         return Err(surface.invalid("Invalid JSON object in request body.", None));
     };
+    let alias_present = object.contains_key("serviceTier");
+    if !header_present && !alias_present {
+        return Ok(());
+    }
+    if alias_present {
+        if surface == Surface::Messages {
+            return Err(surface.invalid(
+                "Body parameter `serviceTier` is supported only on OpenAI-compatible Chat and Responses surfaces.",
+                Some("serviceTier"),
+            ));
+        }
+        if !matches!(
+            object.get("serviceTier").and_then(serde_json::Value::as_str),
+            Some("fast" | "priority")
+        ) {
+            return Err(surface.invalid(
+                "Body parameter `serviceTier` must be `fast` or `priority`.",
+                Some("serviceTier"),
+            ));
+        }
+    }
     if let Some(service_tier) = object.get("service_tier") {
         if !matches!(service_tier.as_str(), Some("fast" | "priority")) {
             return Err(surface.invalid(
-                "Header `x-apitoken-service-tier` conflicts with body parameter `service_tier`.",
+                "Fast service-tier compatibility selector conflicts with body parameter `service_tier`.",
                 Some("service_tier"),
             ));
         }
     }
-    if surface == Surface::Messages {
+    if header_present && surface == Surface::Messages {
         if let Some(speed) = object.get("speed") {
             if speed.as_str() != Some("fast") {
                 return Err(surface.invalid(
@@ -580,6 +620,7 @@ fn apply_fast_service_tier(
             }
         }
     }
+    object.remove("serviceTier");
     object.insert(
         "service_tier".to_string(),
         serde_json::Value::String("priority".to_string()),
@@ -732,13 +773,13 @@ mod tests {
     }
 
     #[test]
-    fn fast_header_normalizes_equivalent_body_values_and_rejects_conflicts() {
+    fn fast_selectors_normalize_equivalent_body_values_and_reject_conflicts() {
         for mut value in [
             serde_json::json!({"model": "openai/gpt-5.6"}),
             serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "fast"}),
             serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "priority"}),
         ] {
-            apply_fast_service_tier(&mut value, Surface::Responses).unwrap();
+            normalize_fast_service_tier(&mut value, Surface::Responses, true).unwrap();
             assert_eq!(value["service_tier"], "priority");
         }
 
@@ -746,7 +787,33 @@ mod tests {
             serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "default"}),
             serde_json::json!({"model": "openai/gpt-5.6", "service_tier": null}),
         ] {
-            let response = apply_fast_service_tier(&mut value, Surface::Chat).unwrap_err();
+            let response =
+                normalize_fast_service_tier(&mut value, Surface::Chat, true).unwrap_err();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        for alias in ["fast", "priority"] {
+            let mut value = serde_json::json!({
+                "model": "openai/gpt-5.6",
+                "serviceTier": alias,
+                "service_tier": "priority"
+            });
+            normalize_fast_service_tier(&mut value, Surface::Chat, false).unwrap();
+            assert_eq!(value["service_tier"], "priority");
+            assert!(value.get("serviceTier").is_none());
+        }
+
+        for mut value in [
+            serde_json::json!({"model": "openai/gpt-5.6", "serviceTier": "default"}),
+            serde_json::json!({"model": "openai/gpt-5.6", "serviceTier": null}),
+            serde_json::json!({
+                "model": "openai/gpt-5.6",
+                "serviceTier": "priority",
+                "service_tier": "default"
+            }),
+        ] {
+            let response =
+                normalize_fast_service_tier(&mut value, Surface::Responses, false).unwrap_err();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
 
@@ -754,10 +821,16 @@ mod tests {
             "model": "openai/gpt-5.6",
             "speed": "fast"
         });
-        apply_fast_service_tier(&mut messages, Surface::Messages).unwrap();
+        normalize_fast_service_tier(&mut messages, Surface::Messages, true).unwrap();
         assert_eq!(messages["service_tier"], "priority");
 
         messages["speed"] = serde_json::Value::String("standard".to_string());
-        assert!(apply_fast_service_tier(&mut messages, Surface::Messages).is_err());
+        assert!(normalize_fast_service_tier(&mut messages, Surface::Messages, true).is_err());
+
+        let mut messages_alias = serde_json::json!({
+            "model": "openai/gpt-5.6",
+            "serviceTier": "priority"
+        });
+        assert!(normalize_fast_service_tier(&mut messages_alias, Surface::Messages, false).is_err());
     }
 }

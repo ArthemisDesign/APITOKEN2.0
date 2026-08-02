@@ -729,6 +729,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn camel_service_tier_alias_normalizes_chat_and_responses_before_plane() {
+        let (openai, log) = echo_plane().await;
+        let router = spawn(make_router(
+            "http://127.0.0.1:1", &openai, "http://127.0.0.1:2", Duration::ZERO,
+        )).await;
+        let client = reqwest::Client::new();
+
+        for (path, body) in [
+            ("/v1/chat/completions", serde_json::json!({
+                "model": "openai/gpt-5.6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "serviceTier": "priority"
+            })),
+            ("/v1/responses", serde_json::json!({
+                "model": "openai/gpt-5.6",
+                "input": "hi",
+                "serviceTier": "fast",
+                "service_tier": "priority"
+            })),
+        ] {
+            let response = client.post(format!("{router}{path}"))
+                .json(&body).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let forwarded: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(forwarded["service_tier"], "priority", "{path}");
+            assert!(forwarded.get("serviceTier").is_none(), "{path}");
+        }
+
+        assert_eq!(log.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn camel_service_tier_alias_rejects_invalid_conflicting_and_non_gpt_requests() {
+        let (anthropic, log_a) = echo_plane().await;
+        let (openai, log_o) = echo_plane().await;
+        let (gemini, log_g) = echo_plane().await;
+        let router = spawn(make_router(&anthropic, &openai, &gemini, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for (path, body) in [
+            ("/v1/chat/completions", serde_json::json!({
+                "model": "openai/gpt-5.6", "messages": [], "serviceTier": "default"
+            })),
+            ("/v1/responses", serde_json::json!({
+                "model": "openai/gpt-5.6", "input": "hi",
+                "serviceTier": "priority", "service_tier": "default"
+            })),
+            ("/v1/chat/completions", serde_json::json!({
+                "model": "anthropic/claude-opus-4-8", "messages": [],
+                "serviceTier": "priority"
+            })),
+            ("/v1/messages", serde_json::json!({
+                "model": "openai/gpt-5.6", "max_tokens": 32, "messages": [],
+                "serviceTier": "priority"
+            })),
+            ("/v1/messages/count_tokens", serde_json::json!({
+                "model": "openai/gpt-5.6", "messages": [],
+                "serviceTier": "priority"
+            })),
+        ] {
+            let response = client.post(format!("{router}{path}"))
+                .json(&body).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+
+        assert!(log_a.lock().unwrap().is_empty());
+        assert!(log_o.lock().unwrap().is_empty());
+        assert!(log_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn fast_header_rejects_conflicts_non_gpt_and_token_count_before_plane_call() {
         let (anthropic, log_a) = echo_plane().await;
         let (openai, log_o) = echo_plane().await;
@@ -1518,7 +1589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_policy_filters_before_fast_validation_and_empty_policy_is_403() {
+    async fn strict_policy_filters_before_fast_selector_validation_and_empty_policy_is_403() {
         let strict_openai = r#"{"schema_version":1,"mode":"strict","allowed":["openai/gpt-5.6"]}"#;
         let (a, bodies_a, _) = policy_attempt_plane(
             ANTHROPIC_MODELS,
@@ -1547,8 +1618,7 @@ mod tests {
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/responses"))
-            .header("x-apitoken-service-tier", "fast")
-            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#)
+            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi","serviceTier":"priority"}"#)
             .send()
             .await
             .unwrap();
