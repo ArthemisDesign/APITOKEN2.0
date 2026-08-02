@@ -80,7 +80,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   provider-specific token/tool/search classes, tariff schedule, speed/geography и disjoint API-cost
   legs; native quota snapshots остаются в своих существующих Claude/Gemini authorities. Старый
   runtime таблицы не читает и не пишет, поэтому migration SHA безопасно выкатывается до dependent
-  application commit.
+  application commit. Операторский read отдельных событий всегда newest-first и bounded максимум
+  512 строками; безлимитный ledger scan в control-room запрещён.
 - Claude calibration migration 0020 expand-only создаёт отдельные fixed-point authority для 5h/7d
   окон: plan входит в identity, raw observation хранит реальное разрешение quota fraction, источник
   и optional request ID, а CAS-state — exact observed spend/fraction, low/high/confidence и

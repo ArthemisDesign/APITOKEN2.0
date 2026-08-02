@@ -1044,6 +1044,7 @@ enum ReadCmd {
             anyhow::Result<(
                 Vec<AnthropicCalibrationRow>,
                 Vec<ProviderTurnCalibrationAggregate>,
+                Vec<ProviderTurnCalibrationEvent>,
             )>,
         >,
     ),
@@ -1288,6 +1289,7 @@ impl AsyncBilling {
     ) -> anyhow::Result<(
         Vec<AnthropicCalibrationRow>,
         Vec<ProviderTurnCalibrationAggregate>,
+        Vec<ProviderTurnCalibrationEvent>,
     )> {
         let (reply, result) = oneshot::channel();
         let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
@@ -2015,6 +2017,11 @@ impl AsyncBilling {
                                         registry::provider_turn_calibration_report(
                                             &conn,
                                             registry::PROVIDER_ANTHROPIC,
+                                        )?,
+                                        registry::recent_provider_turn_calibration_events(
+                                            &conn,
+                                            registry::PROVIDER_ANTHROPIC,
+                                            registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
                                         )?,
                                     ))
                                 })();
@@ -2853,6 +2860,10 @@ impl AsyncBilling {
                                         pg.list_anthropic_calibrations()?,
                                         pg.provider_turn_calibration_report(
                                             registry::PROVIDER_ANTHROPIC,
+                                        )?,
+                                        pg.recent_provider_turn_calibration_events(
+                                            registry::PROVIDER_ANTHROPIC,
+                                            registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
                                         )?,
                                     ))
                                 })();
@@ -4568,11 +4579,13 @@ mod tests {
         drop(first);
 
         let restarted = AsyncBilling::start(path_string, 1).unwrap();
-        let (rows, evidence) = restarted.anthropic_calibration_report().await.unwrap();
+        let (rows, evidence, recent_turns) =
+            restarted.anthropic_calibration_report().await.unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].turns, 3);
         assert_eq!(evidence[0].api_total_nanousd, 3_000_000_001);
+        assert_eq!(recent_turns.len(), 3);
 
         restarted.flush().await.unwrap();
         drop(restarted);
@@ -4672,10 +4685,11 @@ mod tests {
         assert_eq!(five_hour.current_capacity_nano, Some(50_000_000_000));
         assert_eq!(weekly.current_capacity_nano, Some(200_000_000_000));
 
-        let (rows, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        let (rows, evidence, recent_turns) = billing.anthropic_calibration_report().await.unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].turns, 1);
+        assert_eq!(recent_turns[0].request_id, "post-turn-only");
         billing.flush().await.unwrap();
         drop(billing);
         let _ = std::fs::remove_file(path);
@@ -4821,9 +4835,10 @@ mod tests {
                 queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
             }
         );
-        let (_, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        let (_, evidence, recent_turns) = billing.anthropic_calibration_report().await.unwrap();
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].turns, 1);
+        assert_eq!(recent_turns.len(), 1);
 
         drop(billing);
         drop(control);

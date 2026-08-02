@@ -2496,6 +2496,41 @@ fn anthropic_calibration_aggregate_value(
     })
 }
 
+fn anthropic_calibration_event_value(row: &registry::ProviderTurnCalibrationEvent) -> Value {
+    json!({
+        "request_id": row.request_id,
+        "email": mask_claude_email(&row.subject_id),
+        "model": row.model_id,
+        "service_tier": row.service_tier,
+        "inference_geo": row.inference_geo,
+        "tariff_schedule_id": row.tariff_schedule_id,
+        "priced_ts": row.priced_ts,
+        "completed_at": row.completed_at,
+        "input_tokens": row.input_tokens.to_string(),
+        "audio_input_tokens": row.audio_input_tokens.to_string(),
+        "cache_read_tokens": row.cache_read_tokens.to_string(),
+        "cached_audio_input_tokens": row.cached_audio_input_tokens.to_string(),
+        "cache_write_5m_tokens": row.cache_write_5m_tokens.to_string(),
+        "cache_write_1h_tokens": row.cache_write_1h_tokens.to_string(),
+        "output_tokens": row.output_tokens.to_string(),
+        "thinking_output_tokens": row.thinking_output_tokens.to_string(),
+        "image_output_tokens": row.image_output_tokens.to_string(),
+        "tool_prompt_tokens": row.tool_prompt_tokens.to_string(),
+        "search_queries": row.search_queries.to_string(),
+        "grounded_search_prompts": row.grounded_search_prompts.to_string(),
+        "api_input_nanousd": row.api_input_nanousd.to_string(),
+        "api_audio_input_nanousd": row.api_audio_input_nanousd.to_string(),
+        "api_cache_read_nanousd": row.api_cache_read_nanousd.to_string(),
+        "api_cached_audio_input_nanousd": row.api_cached_audio_input_nanousd.to_string(),
+        "api_cache_write_5m_nanousd": row.api_cache_write_5m_nanousd.to_string(),
+        "api_cache_write_1h_nanousd": row.api_cache_write_1h_nanousd.to_string(),
+        "api_output_nanousd": row.api_output_nanousd.to_string(),
+        "api_image_output_nanousd": row.api_image_output_nanousd.to_string(),
+        "api_search_nanousd": row.api_search_nanousd.to_string(),
+        "api_total_nanousd": row.api_total_nanousd.to_string(),
+    })
+}
+
 /// Exact Claude capacity from durable request spend and fixed-point provider quota observations.
 /// No old pool prior, EMA or floating-point calibration is allowed into this response.
 async fn capacity(
@@ -2539,11 +2574,12 @@ pub(crate) fn capacity_value(
     report: Option<&(
         Vec<registry::AnthropicCalibrationRow>,
         Vec<registry::ProviderTurnCalibrationAggregate>,
+        Vec<registry::ProviderTurnCalibrationEvent>,
     )>,
     delivery: Option<forward::AnthropicCalibrationDeliveryStatus>,
     now: i64,
 ) -> serde_json::Value {
-    let rows = report.map_or(&[][..], |(rows, _)| rows.as_slice());
+    let rows = report.map_or(&[][..], |(rows, _, _)| rows.as_slice());
     let delivery_missing_reason = match delivery {
         Some(status) if status.pending_events > 0 => Some("calibration_delivery_pending"),
         Some(status) if !status.persistence_ok => Some("calibration_delivery_degraded"),
@@ -2722,8 +2758,12 @@ pub(crate) fn capacity_value(
         "plan_cohorts": claude_plan_cohort_values(&cohorts),
         "window_totals": window_totals,
         "conversion_models": anthropic_conversion_models(now),
-        "calibration_evidence": report.map_or_else(Vec::new, |(_, evidence)| {
+        "calibration_evidence": report.map_or_else(Vec::new, |(_, evidence, _)| {
             evidence.iter().map(anthropic_calibration_aggregate_value).collect::<Vec<_>>()
+        }),
+        "calibration_recent_turn_limit": registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+        "calibration_recent_turns": report.map_or_else(Vec::new, |(_, _, events)| {
+            events.iter().map(anthropic_calibration_event_value).collect::<Vec<_>>()
         }),
         "per_sub": subs,
     })
@@ -5382,6 +5422,50 @@ mod tests {
     }
 
     #[test]
+    fn claude_recent_turn_contract_masks_subject_and_preserves_exact_vector() {
+        let event = registry::ProviderTurnCalibrationEvent {
+            provider: registry::PROVIDER_ANTHROPIC.to_owned(),
+            request_id: "cal-request-1".to_owned(),
+            subject_id: "operator@example.test".to_owned(),
+            model_id: "claude-opus-4-8".to_owned(),
+            service_tier: "fast".to_owned(),
+            inference_geo: "global".to_owned(),
+            tariff_schedule_id: "anthropic/test/v1".to_owned(),
+            priced_ts: 99,
+            completed_at: 100,
+            input_tokens: 11,
+            audio_input_tokens: 0,
+            cache_read_tokens: 12,
+            cached_audio_input_tokens: 0,
+            cache_write_5m_tokens: 13,
+            cache_write_1h_tokens: 14,
+            output_tokens: 15,
+            thinking_output_tokens: 0,
+            image_output_tokens: 0,
+            tool_prompt_tokens: 0,
+            search_queries: 1,
+            grounded_search_prompts: 0,
+            api_input_nanousd: 110,
+            api_audio_input_nanousd: 0,
+            api_cache_read_nanousd: 12,
+            api_cached_audio_input_nanousd: 0,
+            api_cache_write_5m_nanousd: 130,
+            api_cache_write_1h_nanousd: 280,
+            api_output_nanousd: 750,
+            api_image_output_nanousd: 0,
+            api_search_nanousd: 10_000_000,
+            api_total_nanousd: 10_001_282,
+        };
+
+        let value = anthropic_calibration_event_value(&event);
+        assert_eq!(value["request_id"], "cal-request-1");
+        assert_eq!(value["email"], "oper…");
+        assert!(value.get("subject_id").is_none());
+        assert_eq!(value["cache_write_1h_tokens"], "14");
+        assert_eq!(value["api_total_nanousd"], "10001282");
+    }
+
+    #[test]
     fn claude_same_plan_capacity_is_pooled_and_unroutable_supply_is_excluded() {
         let caps = vec![
             capacity("first@example.test", 1.0, true, false),
@@ -5418,7 +5502,7 @@ mod tests {
                 20_000_000_000,
             ),
         ];
-        let report = (rows, Vec::new());
+        let report = (rows, Vec::new(), Vec::new());
         let value = capacity_value(&caps, Some(&report), claude_delivery(0), 100);
 
         assert_eq!(value["per_sub"][0]["cap5h_nano"], "16666666667");
@@ -5457,6 +5541,7 @@ mod tests {
                     10_000_000_000,
                 ),
             ],
+            Vec::new(),
             Vec::new(),
         );
         let measured = capacity_value(&caps, Some(&report), claude_delivery(0), 100);

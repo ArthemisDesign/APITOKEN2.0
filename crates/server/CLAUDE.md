@@ -108,6 +108,9 @@
   `10^8*Σspend/Σfraction`; другой routable plan без evidence, snapshot старше 900с или pending/
   degraded calibration delivery fail-closed для fleet remaining. Историческая capacity при этом
   не стирается. `calibration_delivery` раскрывает только bounded queue counts/integrity, без identity.
+  `/capacity` также отдаёт newest-first `calibration_recent_turns` максимум из 512 immutable
+  Anthropic events: opaque request ID, masked email и полный token/cost vector без prompt/credential.
+  Это backend evidence операторского runner; aggregate `calibration_evidence` остаётся статистикой.
   `/overview` и новые metrics.db snapshots берут capacity-facing поля из того же exact report;
   `pool::Cap` prior/EMA остаётся routing-only. Overview добавляет canonical decimal `*_nano`, а его
   старые float USD поля остаются только display compatibility.

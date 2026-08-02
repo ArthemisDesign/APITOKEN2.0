@@ -84,6 +84,12 @@ pending event или degraded integrity. `calibration_delivery` публикуе
 immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
 `calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
 token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
+`calibration_recent_turns` — bounded newest-first окно до 512 отдельных immutable Anthropic events.
+Каждая строка содержит opaque внутренний `request_id`, тот же masked email, полную model/tier/geo/
+tariff identity и все token/cost legs; prompt, полный email и credential не публикуются.
+`calibration_recent_turn_limit=512` фиксирует серверную границу. Это окно предназначено для точной
+операторской атрибуции live-теста через разность request-id sets; агрегаты для этого использовать
+нельзя, потому что параллельный customer traffic законно меняет ту же строку.
 
 Bounded production-прогон и правила интерпретации model-level quota deltas описаны в
 `docs/ops/CLAUDE_CALIBRATION.md`; runner использует только этот backend contract и не зависит от UI.

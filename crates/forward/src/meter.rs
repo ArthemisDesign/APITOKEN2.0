@@ -799,10 +799,11 @@ mod tests {
         );
 
         billing.flush().await.unwrap();
-        let (_, evidence) = billing.anthropic_calibration_report().await.unwrap();
+        let (_, evidence, recent_turns) = billing.anthropic_calibration_report().await.unwrap();
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].turns, 1);
         assert_eq!(evidence[0].subject_id, EMAIL);
+        assert_eq!(recent_turns.len(), 1);
 
         drop(billing);
         let _ = std::fs::remove_file(path);

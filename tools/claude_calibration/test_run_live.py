@@ -17,21 +17,21 @@ from tools.claude_calibration.run_live import (
     count_body,
     coverage_failure,
     discover_models,
-    evidence_rows,
     guarded_input_tokens,
     model_profitability,
     rate_catalog,
     rates_for_model,
     request_upper_bound_nano,
+    recent_turn_events,
     response_service_tier,
     require_healthy_delivery,
-    row_deltas,
     usage_from_response,
     usd_to_nano,
 )
 
 
-def aggregate(
+def event(
+    request_id="cal-1",
     email="alph…",
     model="claude-opus-4-8",
     tier="fast",
@@ -44,39 +44,54 @@ def aggregate(
     total=1_000,
 ):
     return {
+        "request_id": request_id,
         "email": email,
         "model": model,
         "service_tier": tier,
         "inference_geo": "global",
         "tariff_schedule_id": "tariff-v1",
+        "completed_at": 100,
         "input_tokens": str(input_tokens),
+        "audio_input_tokens": "0",
         "cache_read_tokens": str(cache_read_tokens),
+        "cached_audio_input_tokens": "0",
         "cache_write_5m_tokens": str(cache_write_5m_tokens),
         "cache_write_1h_tokens": str(cache_write_1h_tokens),
         "output_tokens": str(output_tokens),
+        "thinking_output_tokens": "0",
+        "image_output_tokens": "0",
+        "tool_prompt_tokens": "0",
         "search_queries": str(search_queries),
+        "grounded_search_prompts": "0",
         "api_input_nanousd": "100",
+        "api_audio_input_nanousd": "0",
         "api_cache_read_nanousd": "0",
+        "api_cached_audio_input_nanousd": "0",
         "api_cache_write_5m_nanousd": "0",
         "api_cache_write_1h_nanousd": "0",
         "api_output_nanousd": "900",
+        "api_image_output_nanousd": "0",
         "api_search_nanousd": "0",
         "api_total_nanousd": str(total),
     }
 
 
-def capacity(rows):
-    return {"calibration_evidence": rows}
+def capacity(events):
+    return {
+        "calibration_recent_turn_limit": 512,
+        "calibration_recent_turns": events,
+    }
 
 
 class EvidenceTests(unittest.TestCase):
     def test_exact_turn_is_attributed_despite_unrelated_concurrent_evidence(self):
-        before = evidence_rows(capacity([aggregate(), aggregate(email="beta…", model="x")]))
-        after = evidence_rows(
+        before = recent_turn_events(capacity([event()]))
+        after = recent_turn_events(
             capacity(
                 [
-                    aggregate(input_tokens=17, output_tokens=5, total=2_500),
-                    aggregate(email="beta…", model="x", input_tokens=99, total=9_000),
+                    event(),
+                    event(request_id="cal-target", input_tokens=7, output_tokens=3, total=1_000),
+                    event(request_id="cal-other", email="beta…", model="x", input_tokens=99),
                 ]
             )
         )
@@ -88,15 +103,26 @@ class EvidenceTests(unittest.TestCase):
             "output_tokens": 3,
             "search_queries": 0,
         }
-        matched = attribute_exact_turn(before, after, usage, "claude-opus-4-8", "fast")
+        matched = attribute_exact_turn(
+            set(before), after, usage, "claude-opus-4-8", "fast", "alph…"
+        )
         self.assertIsNotNone(matched)
-        profile, delta, _ = matched
+        profile, exact_event, request_id = matched
         self.assertEqual(profile, "alph…")
-        self.assertEqual(delta["api_total_nanousd"], 1_500)
+        self.assertEqual(request_id, "cal-target")
+        self.assertEqual(exact_event["api_total_nanousd"], 1_000)
 
-    def test_same_aggregate_concurrency_fails_closed_instead_of_guessing(self):
-        before = evidence_rows(capacity([aggregate()]))
-        after = evidence_rows(capacity([aggregate(input_tokens=18, output_tokens=5, total=3_000)]))
+    def test_identical_new_events_fail_closed_instead_of_guessing(self):
+        before = recent_turn_events(capacity([event()]))
+        after = recent_turn_events(
+            capacity(
+                [
+                    event(),
+                    event(request_id="cal-2", input_tokens=7, output_tokens=3),
+                    event(request_id="cal-3", input_tokens=7, output_tokens=3),
+                ]
+            )
+        )
         usage = {
             "input_tokens": 7,
             "cache_read_tokens": 0,
@@ -105,15 +131,26 @@ class EvidenceTests(unittest.TestCase):
             "output_tokens": 3,
             "search_queries": 0,
         }
-        self.assertIsNone(
-            attribute_exact_turn(before, after, usage, "claude-opus-4-8", "fast")
-        )
+        with self.assertRaisesRegex(CalibrationError, "multiple new immutable events"):
+            attribute_exact_turn(
+                set(before), after, usage, "claude-opus-4-8", "fast", "alph…"
+            )
 
-    def test_aggregate_moving_backwards_is_rejected(self):
-        before = evidence_rows(capacity([aggregate(total=2_000)]))
-        after = evidence_rows(capacity([aggregate(total=1_000)]))
-        with self.assertRaisesRegex(CalibrationError, "moved backwards"):
-            row_deltas(before, after)
+    def test_recent_event_requires_exact_cost_vector(self):
+        invalid = event(total=999)
+        with self.assertRaisesRegex(CalibrationError, "invalid cost legs"):
+            recent_turn_events(capacity([invalid]))
+
+    def test_missing_or_too_small_recent_event_window_stops_before_paid_traffic(self):
+        with self.assertRaisesRegex(CalibrationError, "recent_turn_limit"):
+            recent_turn_events({})
+        with self.assertRaisesRegex(CalibrationError, "too small"):
+            recent_turn_events(
+                {
+                    "calibration_recent_turn_limit": 16,
+                    "calibration_recent_turns": [],
+                }
+            )
 
     def test_response_usage_preserves_every_claude_token_class(self):
         parsed = usage_from_response(

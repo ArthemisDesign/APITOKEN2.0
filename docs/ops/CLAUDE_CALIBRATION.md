@@ -10,7 +10,9 @@ exact spend, движение 5ч/7д quota, реально недоступны
 наблюдённому API-dollar equivalent на 1% 5-часового окна.
 
 Это не frontend-тест и не расчёт по размеру prompt. Источники истины — backend `/capacity`,
-immutable `calibration_evidence` и provider quota snapshots.
+immutable `calibration_recent_turns` и provider quota snapshots. Aggregate
+`calibration_evidence` остаётся статистикой всей накопленной смеси, но не используется для
+атрибуции отдельного тестового запроса.
 
 ## Страховки
 
@@ -24,10 +26,12 @@ immutable `calibration_evidence` и provider quota snapshots.
   весь `max_tokens` output и все разрешённые Web Search calls.
 - Guard проверяет свободный бюджет **каждой** healthy-подписки, а не только ожидаемого sticky home:
   неожиданный affinity rebind не может перелить запрос на уже исчерпавший тестовый лимит аккаунт.
-- После generation следующий запрос запрещён, пока exact token vector не появился ровно в одном
-  backend evidence aggregate. Конкурентный трафик в другой model/tier строке не мешает; совпавший
-  конкурентный aggregate считается неоднозначностью и останавливает прогон.
-- Rebind, cooling/dead, degraded/pending delivery, движение aggregate назад или actual cost выше
+- До generation runner запоминает все видимые immutable `request_id`. После ответа следующий запрос
+  запрещён, пока среди новых backend events не появится ровно один exact
+  `profile + model + tier + полный token vector`. Поэтому любой параллельный customer traffic,
+  включая ту же aggregate-строку, не меняет стоимость тестового turn. Два новых полностью
+  одинаковых события остаются честной неоднозначностью и останавливают прогон fail closed.
+- Rebind, cooling/dead, degraded/pending delivery или actual cost выше
   preflight bound останавливают конкретную небезопасную ветку fail closed. Provider quota wall
   выводит только соответствующую подписку из оставшейся нагрузки, не лишая данных другие профили.
   Ожидаемый 400/403/429 первого Fast-запроса сохраняется как `unavailable_capabilities` и не
@@ -88,9 +92,9 @@ capacity placement. Если все homes получить не удалось, 
 python3 -m unittest tools.claude_calibration.test_run_live
 ```
 
-Тесты покрывают budget/rebind guard, exact attribution на фоне конкурентного evidence, fail-closed
-неоднозначность, все Claude token classes, tariff alias/ceiling, полный coverage plan и сортировку
-наблюдаемой profitability.
+Тесты покрывают budget/rebind guard, exact immutable-event attribution на фоне конкурентного
+traffic, fail-closed неоднозначность, целостность cost vector, все Claude token classes, tariff
+alias/ceiling, полный coverage plan и сортировку наблюдаемой profitability.
 
 ## Как читать результат
 

@@ -9,6 +9,9 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::{PROVIDER_ANTHROPIC, PROVIDER_GOOGLE};
 
+/// A control-room read must stay bounded even when the immutable ledger grows indefinitely.
+pub const MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS: usize = 512;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderTurnCalibrationEvent {
     pub provider: String,
@@ -551,6 +554,31 @@ pub fn provider_turn_calibration_report(
     Ok(rows)
 }
 
+pub fn recent_provider_turn_calibration_events(
+    conn: &Connection,
+    provider: &str,
+    limit: usize,
+) -> Result<Vec<ProviderTurnCalibrationEvent>> {
+    if !matches!(provider, PROVIDER_ANTHROPIC | PROVIDER_GOOGLE) {
+        bail!("invalid provider calibration event provider");
+    }
+    if !(1..=MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS).contains(&limit) {
+        bail!("invalid provider calibration event limit");
+    }
+    let limit = i64::try_from(limit).context("provider calibration event limit overflow")?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT {PROVIDER_TURN_EVENT_COLUMNS} FROM provider_turn_calibration_events \
+         WHERE provider=?1 ORDER BY completed_at DESC,request_id DESC LIMIT ?2"
+    ))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![provider, limit],
+            sqlite_provider_turn_event,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub(crate) const ANTHROPIC_CALIBRATION_COLUMNS: &str = "subject_id,plan,window_kind,\
     window_duration_mins,resets_at,anchor_used_fraction_units,\
     anchor_resolution_fraction_units,anchor_spend_nano,used_fraction_units,\
@@ -866,6 +894,27 @@ mod tests {
         assert_eq!(report[0].turns, 2);
         assert_eq!(report[0].api_total_nanousd, 22_400);
         assert_eq!(report[0].cache_read_tokens, 400);
+
+        let recent = recent_provider_turn_calibration_events(
+            &connection,
+            PROVIDER_ANTHROPIC,
+            MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+        )
+        .unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|event| event.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["request-2", "request-1"]
+        );
+        assert_eq!(recent[0], turn("request-2", 101));
+        assert!(recent_provider_turn_calibration_events(
+            &connection,
+            PROVIDER_ANTHROPIC,
+            MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS + 1,
+        )
+        .is_err());
     }
 
     #[test]

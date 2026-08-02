@@ -4147,6 +4147,33 @@ impl PgStore {
             .collect())
     }
 
+    pub fn recent_provider_turn_calibration_events(
+        &mut self,
+        provider: &str,
+        limit: usize,
+    ) -> Result<Vec<ProviderTurnCalibrationEvent>> {
+        if !matches!(provider, crate::PROVIDER_ANTHROPIC | crate::PROVIDER_GOOGLE) {
+            bail!("invalid provider calibration event provider");
+        }
+        if !(1..=crate::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS).contains(&limit) {
+            bail!("invalid provider calibration event limit");
+        }
+        let limit = i64::try_from(limit).context("provider calibration event limit overflow")?;
+        Ok(self
+            .client
+            .query(
+                &format!(
+                    "SELECT {} FROM provider_turn_calibration_events \
+                     WHERE provider=$1 ORDER BY completed_at DESC,request_id DESC LIMIT $2",
+                    crate::PROVIDER_TURN_EVENT_COLUMNS
+                ),
+                &[&provider, &limit],
+            )?
+            .iter()
+            .map(pg_provider_turn_event)
+            .collect())
+    }
+
     pub fn load_anthropic_calibration(
         &mut self,
         subject_id: &str,

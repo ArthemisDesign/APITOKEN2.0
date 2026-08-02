@@ -4,8 +4,8 @@
 The runner exercises real `/v1/messages` traffic, but treats backend `/capacity` evidence as the
 only spend authority. It never estimates the consumed budget from the customer balance. Every
 mutating request is preceded by a free `/v1/messages/count_tokens` call and an integer-nanoUSD
-worst-case guard; after the response, the exact usage must appear in one unambiguous backend
-aggregate before another request is allowed.
+worst-case guard; after the response, the exact usage must appear in one unambiguous new immutable
+backend turn event before another request is allowed.
 
 No request is sent without `--execute`. API/control credentials are read from the environment and
 are never included in the report.
@@ -37,33 +37,36 @@ DEFAULT_PROFILE_DELAY_SECONDS = 16.0
 SAFE_READ_ATTEMPTS = 3
 SAFE_READ_RETRY_DELAY_SECONDS = 2.0
 MIN_CACHE_WORDS = 2_048
+MIN_RECENT_TURN_LIMIT = 512
 ANTHROPIC_BETAS = (
     "web-search-2025-03-05,extended-cache-ttl-2025-04-11,fast-mode-2026-02-01"
 )
 
-TOKEN_FIELDS = (
+EVENT_TOKEN_FIELDS = (
     "input_tokens",
+    "audio_input_tokens",
     "cache_read_tokens",
+    "cached_audio_input_tokens",
     "cache_write_5m_tokens",
     "cache_write_1h_tokens",
     "output_tokens",
+    "thinking_output_tokens",
+    "image_output_tokens",
+    "tool_prompt_tokens",
     "search_queries",
+    "grounded_search_prompts",
 )
-MONEY_FIELDS = (
+EVENT_MONEY_FIELDS = (
     "api_input_nanousd",
+    "api_audio_input_nanousd",
     "api_cache_read_nanousd",
+    "api_cached_audio_input_nanousd",
     "api_cache_write_5m_nanousd",
     "api_cache_write_1h_nanousd",
     "api_output_nanousd",
+    "api_image_output_nanousd",
     "api_search_nanousd",
     "api_total_nanousd",
-)
-ROW_ID_FIELDS = (
-    "email",
-    "model",
-    "service_tier",
-    "inference_geo",
-    "tariff_schedule_id",
 )
 
 
@@ -181,43 +184,51 @@ def require_healthy_delivery(payload: dict[str, Any], require_empty: bool) -> No
         raise CalibrationError(f"calibration delivery still has {pending} pending events")
 
 
-def row_key(row: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(str(row.get(field, "")) for field in ROW_ID_FIELDS)
-
-
-def evidence_rows(payload: dict[str, Any]) -> dict[tuple[str, ...], dict[str, int]]:
-    rows: dict[tuple[str, ...], dict[str, int]] = {}
-    for raw in payload.get("calibration_evidence", []):
+def recent_turn_events(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    limit = as_int(
+        payload.get("calibration_recent_turn_limit"), "calibration_recent_turn_limit"
+    )
+    if limit < MIN_RECENT_TURN_LIMIT:
+        raise CalibrationError(
+            f"calibration recent-turn window is too small: {limit} < {MIN_RECENT_TURN_LIMIT}"
+        )
+    raw_events = payload.get("calibration_recent_turns")
+    if not isinstance(raw_events, list):
+        raise CalibrationError("capacity response has no calibration_recent_turns authority")
+    events: dict[str, dict[str, Any]] = {}
+    for raw in raw_events:
         if not isinstance(raw, dict):
-            raise CalibrationError("calibration_evidence contains a non-object")
-        key = row_key(raw)
-        if not all(key):
-            raise CalibrationError(f"calibration evidence has an incomplete identity: {key!r}")
-        parsed = {
-            field: as_int(raw.get(field, 0), f"calibration_evidence.{field}")
-            for field in TOKEN_FIELDS + MONEY_FIELDS
+            raise CalibrationError("calibration_recent_turns contains a non-object")
+        request_id = raw.get("request_id")
+        identity = {
+            field: raw.get(field)
+            for field in (
+                "email",
+                "model",
+                "service_tier",
+                "inference_geo",
+                "tariff_schedule_id",
+            )
         }
-        rows[key] = parsed
-    return rows
-
-
-def row_deltas(
-    before: dict[tuple[str, ...], dict[str, int]],
-    after: dict[tuple[str, ...], dict[str, int]],
-) -> dict[tuple[str, ...], dict[str, int]]:
-    deltas: dict[tuple[str, ...], dict[str, int]] = {}
-    for key in set(before) | set(after):
-        old = before.get(key, {})
-        new = after.get(key, {})
-        delta = {
-            field: new.get(field, 0) - old.get(field, 0)
-            for field in TOKEN_FIELDS + MONEY_FIELDS
+        if not isinstance(request_id, str) or not request_id or not all(
+            isinstance(value, str) and value for value in identity.values()
+        ):
+            raise CalibrationError("recent calibration turn has an incomplete identity")
+        if request_id in events:
+            raise CalibrationError(f"duplicate recent calibration request id: {request_id}")
+        parsed: dict[str, Any] = {
+            field: as_int(raw.get(field, 0), f"calibration_recent_turns.{field}")
+            for field in EVENT_TOKEN_FIELDS + EVENT_MONEY_FIELDS
         }
-        if any(value < 0 for value in delta.values()):
-            raise CalibrationError(f"calibration aggregate moved backwards: {key!r}")
-        if any(delta.values()):
-            deltas[key] = delta
-    return deltas
+        cost_sum = sum(parsed[field] for field in EVENT_MONEY_FIELDS[:-1])
+        if cost_sum != parsed["api_total_nanousd"] or cost_sum <= 0:
+            raise CalibrationError(f"recent calibration turn has invalid cost legs: {request_id}")
+        parsed.update(identity)
+        parsed["completed_at"] = as_int(
+            raw.get("completed_at"), "calibration_recent_turns.completed_at"
+        )
+        events[request_id] = parsed
+    return events
 
 
 def usage_from_response(payload: dict[str, Any]) -> dict[str, int]:
@@ -260,21 +271,28 @@ def response_service_tier(payload: dict[str, Any]) -> str:
 
 
 def attribute_exact_turn(
-    before: dict[tuple[str, ...], dict[str, int]],
-    after: dict[tuple[str, ...], dict[str, int]],
+    before_request_ids: set[str],
+    after: dict[str, dict[str, Any]],
     usage: dict[str, int],
     served_model: str,
     tier: str,
-) -> tuple[str, dict[str, int], tuple[str, ...]] | None:
+    expected_profile: str | None = None,
+) -> tuple[str, dict[str, Any], str] | None:
     matches = []
-    for key, delta in row_deltas(before, after).items():
-        email, model, service_tier, _, _ = key
-        if model != served_model or service_tier != tier:
+    for request_id, event in after.items():
+        if request_id in before_request_ids:
             continue
-        if all(delta[field] == usage[field] for field in TOKEN_FIELDS):
-            matches.append((email, delta, key))
+        if event["model"] != served_model or event["service_tier"] != tier:
+            continue
+        if expected_profile and event["email"] != expected_profile:
+            continue
+        # Claude currently emits six authoritative public usage classes. Every remaining class in
+        # the shared provider event is required to be zero, so this compares the complete stored
+        # token vector rather than a permissive subset.
+        if all(event[field] == usage.get(field, 0) for field in EVENT_TOKEN_FIELDS):
+            matches.append((event["email"], event, request_id))
     if len(matches) > 1:
-        raise CalibrationError("turn evidence is ambiguous across multiple profiles")
+        raise CalibrationError("turn evidence is ambiguous across multiple new immutable events")
     return matches[0] if matches else None
 
 
@@ -804,7 +822,7 @@ class Runner:
         before_payload = self.capacity.read()
         require_healthy_delivery(before_payload, require_empty=True)
         before_states = profile_state(before_payload)
-        before_rows = evidence_rows(before_payload)
+        before_request_ids = set(recent_turn_events(before_payload))
         if expected_profile:
             state = before_states.get(expected_profile)
             if not state or not state["routable"]:
@@ -859,7 +877,12 @@ class Runner:
             # the durable FIFO already reports that exact attribution cannot advance.
             require_healthy_delivery(after_payload, require_empty=False)
             match = attribute_exact_turn(
-                before_rows, evidence_rows(after_payload), usage, served_model, actual_tier
+                before_request_ids,
+                recent_turn_events(after_payload),
+                usage,
+                served_model,
+                actual_tier,
+                expected_profile,
             )
             if match:
                 break
@@ -869,16 +892,16 @@ class Runner:
                 f"{leg.name}: exact backend evidence did not become attributable within timeout"
             )
         require_healthy_delivery(after_payload, require_empty=True)
-        profile, delta, _ = match
+        profile, event, evidence_request_id = match
         if expected_profile and profile != expected_profile:
             raise CalibrationError(
                 f"{leg.name}: affinity rebound from {expected_profile} to {profile}; stopped"
             )
-        if delta["api_total_nanousd"] > upper:
+        if event["api_total_nanousd"] > upper:
             raise CalibrationError(
                 f"{leg.name}: actual backend cost exceeds pre-request upper bound"
             )
-        self.budget.charge(profile, delta["api_total_nanousd"])
+        self.budget.charge(profile, event["api_total_nanousd"])
         self.last_profile_turn[profile] = time.monotonic()
         coverage_error = None
         try:
@@ -901,12 +924,13 @@ class Runner:
             "requested_tier": leg.tier,
             "tier": actual_tier,
             "profile": profile,
+            "evidence_request_id": evidence_request_id,
             "session_hash": hashlib.sha256(session_id.encode()).hexdigest()[:12],
             "counted_input_tokens": input_tokens,
             "guarded_input_tokens": guarded_tokens,
             "model_max_input_tokens": model_max_input_tokens,
             "upper_bound_nano": str(upper),
-            "actual_nano": str(delta["api_total_nanousd"]),
+            "actual_nano": str(event["api_total_nanousd"]),
             "profile_test_spend_nano": str(self.budget.spent_nano[profile]),
             "usage": usage,
             "coverage_ok": coverage_error is None,
@@ -917,7 +941,7 @@ class Runner:
         self.records.append(record)
         suffix = "" if coverage_error is None else f"; COVERAGE MISS: {coverage_error}"
         print(
-            f"{profile} {leg.name}: ${delta['api_total_nanousd'] / NANO_PER_USD:.6f}; "
+            f"{profile} {leg.name}: ${event['api_total_nanousd'] / NANO_PER_USD:.6f}; "
             f"total=${self.budget.spent_nano[profile] / NANO_PER_USD:.6f}{suffix}",
             flush=True,
         )

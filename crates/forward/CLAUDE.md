@@ -137,7 +137,9 @@ loopback). Metered/control/panel credential этот заголовок игно
 вырезается. Pool принимает target только при ровно одном совпадении, обходит мягкий Reserve, но
 сохраняет hard cap/cooling/auth-dead и запрещает spill/rebind. PostgreSQL lease получает hard-cap
 семантику pinned continuation. Так exact API-nanoUSD и quota delta связываются с одной подпиской,
-не открывая клиентам ручной выбор профиля.
+не открывая клиентам ручной выбор профиля. Атрибуция самого тестового turn берётся не из aggregate
+delta, а из bounded множества новых immutable event request IDs с exact profile/model/tier/token
+vector; customer traffic в той же aggregate-строке поэтому не загрязняет результат.
 
 **Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** отдельный
 `ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` передаёт writer'у готовый owned
