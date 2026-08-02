@@ -156,7 +156,10 @@ Claude строится из `/capacity`:
   ёмкость окна выводится компактной строкой `из $…`.
   7д remaining/ёмкость остаются соседним сравнительным столбцом. Таблица также оставляет masked
   email/plan и routing state. Никакой prior не подставляется: до exact evidence выводится
-  `ждём данные`, при stale/missing snapshot или pending/degraded FIFO remaining остаётся `—`;
+  `ждём данные`. Свежая exact quota fraction из runtime даёт current remaining даже когда Anthropic
+  не прислал reset — тогда UI пишет `сброс уточняется`, а не ложное `0м`. При stale/missing snapshot
+  или pending/degraded FIFO строка показывает `обновляем`, не устаревший процент и не номинальную
+  ёмкость. Dead/non-routable аккаунт показывает `вне ротации` и не выглядит продаваемой supply;
 - `calibration_evidence` и `conversion_models` продолжают приходить с backend как audit/calculation
   contract, но основной Claude UI их не разворачивает в дополнительные таблицы.
 

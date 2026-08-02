@@ -119,7 +119,11 @@
   Claude full-window capacity pool-ится только внутри exact plan+duration по формуле
   `10^8*Σspend/Σfraction`; другой routable plan без evidence, snapshot старше 900с или pending/
   degraded calibration delivery fail-closed для fleet remaining. Историческая capacity при этом
-  не стирается. `calibration_delivery` раскрывает только bounded queue counts/integrity, без identity.
+  не стирается. Current per-sub/fleet remaining может использовать более новый ephemeral
+  `pool::QuotaSnapshot`: exact fixed-point utilization от response/count-tokens probe остаётся
+  полезным, даже если provider не прислал reset. Такой снимок живёт только в runtime, протухает через
+  900с и никогда не становится estimator/history evidence; horizon availability остаётся `null` без
+  реального reset. `calibration_delivery` раскрывает только bounded queue counts/integrity, без identity.
   `/capacity` также отдаёт newest-first `calibration_recent_turns` максимум из 512 immutable
   Anthropic events: opaque request ID, masked email и полный token/cost vector без prompt/credential.
   Это backend evidence операторского runner; aggregate `calibration_evidence` остаётся статистикой.

@@ -117,7 +117,10 @@ writer poll-команды перед observation сначала дрениру�
 переставляет quota раньше spend. Response snapshot и быстрый post-turn poll могут иметь одинаковую
 секунду: FIFO остаётся порядком истины, равный timestamp с изменившейся quota обрабатывается, а
 точный quota/reset/resolution дубль игнорируется. Decimal quota fractions парсятся в `10^-8` units без float;
-реальное разрешение каждого endpoint хранится отдельно.
+реальное разрешение каждого endpoint хранится отдельно. Response и бесплатный count-tokens probe
+публикуют exact fraction также без reset как ephemeral `pool::QuotaSnapshot`: server использует её
+только для свежего current remaining. Durable `observe_anthropic_window`, interval history и
+estimator по-прежнему требуют настоящий reset — runtime не выдумывает window identity.
 
 Окна 5h и 7d имеют независимые identity/history/reset и оцениваются без номинала подписки,
 prior/EMA/WLS: `capacity_nano = 100_000_000 × Σobserved_spend_nano /

@@ -238,6 +238,14 @@ fn calib_window(
 }
 
 /// Снимок доступности по подписке (USD real-API-эквивалента) на разные горизонты.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuotaSnapshot {
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub observed_at: i64,
+    pub resets_at: Option<i64>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Cap {
     pub email: String,
@@ -246,6 +254,11 @@ pub struct Cap {
     pub calibrated: bool, // была ли хоть одна реальная калибровка (иначе цифры — прайор)
     pub util5h: f64,      // «живая» утилизация (заголовок + наш расход − rollover)
     pub util7d: f64,
+    /// Latest exact fixed-point provider quota, including count-tokens probes that omit reset
+    /// headers. This is current-supply evidence only; durable calibration history remains owned by
+    /// registry and is never derived from these ephemeral snapshots.
+    pub quota5h: Option<QuotaSnapshot>,
+    pub quota7d: Option<QuotaSnapshot>,
     pub reset5h_in: i64, // секунд до сброса 5h окна (0 если неизвестно/прошло)
     pub reset7d_in: i64,
     pub cap5h_usd: f64, // калиброванная (или прайорная) ёмкость окна
@@ -413,6 +426,11 @@ pub struct Live {
     pub auth_token_fp: String,
     pub reset5h: i64,
     pub reset7d: i64,
+    /// Exact current quota from response headers or the free count-tokens probe. Anthropic may omit
+    /// reset headers on probes, so freshness and fixed-point utilization are tracked independently
+    /// from estimator-window identity.
+    pub quota5h: Option<QuotaSnapshot>,
+    pub quota7d: Option<QuotaSnapshot>,
     /// Сколько запросов сейчас «в полёте» на этой подписке (мягкий счётчик для веерного
     /// разброса параллельных запросов между опросами util). Инкремент на pick, декремент
     /// на завершении попытки. Клампится в 0 — это подсказка, а не точный учёт.
@@ -792,15 +810,18 @@ impl Pool {
         let now = now();
         g.live
             .retain(|k, v| keep.contains(k) || v.cooling_until > now);
-        // Смена токена существующей подписки (authbot заменил) → вердикт о СТАРОМ токене недействителен:
-        // авто-ревайв в ПАМЯТИ сразу (не ждём probe), чтобы забаненная-и-перевыпущенная вернулась в строй.
-        // Durable-строку в БД сбрасывает add/add_file (ON CONFLICT), здесь чиним in-memory зеркало.
+        // Смена токена существующей подписки (authbot заменил) → auth-вердикт и current quota
+        // СТАРОГО токена недействительны. Авто-ревайв и очистка quota происходят в памяти сразу,
+        // не дожидаясь probe. Durable-строку в БД сбрасывает add/add_file (ON CONFLICT), здесь
+        // чиним in-memory зеркало.
         for s in &subs {
             let fp = token_fp(&s.token);
             if let Some(l) = g.live.get_mut(&s.email) {
                 if !l.auth_token_fp.is_empty() && l.auth_token_fp != fp {
                     reset_auth_healthy(l);
                     l.auth_token_fp = fp;
+                    l.quota5h = None;
+                    l.quota7d = None;
                 }
             }
         }
@@ -1536,6 +1557,31 @@ impl Pool {
         l.polled_ts = now();
     }
 
+    /// Publish exact current quota independently from calibration-window persistence.
+    ///
+    /// The free count-tokens endpoint can return utilization without reset headers. Such evidence
+    /// is still authoritative for current remaining dollars, but must not be invented into a
+    /// durable estimator interval. Server may therefore use this bounded in-memory snapshot for
+    /// current supply while registry keeps ownership of all historical capacity evidence.
+    pub fn set_quota_snapshots(
+        &self,
+        email: &str,
+        quota5h: Option<QuotaSnapshot>,
+        quota7d: Option<QuotaSnapshot>,
+    ) {
+        if quota5h.is_none() && quota7d.is_none() {
+            return;
+        }
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let l = g.live.entry(email.to_string()).or_default();
+        if let Some(snapshot) = quota5h {
+            l.quota5h = Some(snapshot);
+        }
+        if let Some(snapshot) = quota7d {
+            l.quota7d = Some(snapshot);
+        }
+    }
+
     /// Доступность по каждой подписке (USD real-API-эквивалента) на горизонты 1ч/5ч/1д/7д.
     /// Чистая математика над состоянием — пересчитывается на каждый вызов, без сети.
     pub fn capacity(&self) -> Vec<Cap> {
@@ -1614,6 +1660,8 @@ impl Pool {
                     calibrated: l.calib_n > 0,
                     util5h: u5,
                     util7d: u7,
+                    quota5h: l.quota5h,
+                    quota7d: l.quota7d,
                     reset5h_in: (er5 - now).max(0),
                     reset7d_in: (er7 - now).max(0),
                     cap5h_usd: cap5,
@@ -2064,6 +2112,58 @@ mod tests {
         let cap = &p.capacity()[0];
         assert!(cap.calibrated);
         assert!((cap.cap5h_usd - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quota_snapshots_are_ephemeral_exact_current_supply_only() {
+        let p = pool(&["a"]);
+        p.record_probe("a", 200, &token_fp("t"));
+        let future5 = now() + WIN5_SECS;
+        let future7 = now() + WIN7_SECS;
+        p.set_util(
+            "a",
+            Some(0.10),
+            Some(0.20),
+            Some("healthy".to_owned()),
+            Some(future5),
+            Some(future7),
+        );
+        let before = p.capacity().remove(0);
+        let five = QuotaSnapshot {
+            used_fraction_units: 12_345_678,
+            measurement_resolution_fraction_units: 1_000,
+            observed_at: now(),
+            resets_at: None,
+        };
+        p.set_quota_snapshots("a", Some(five), None);
+
+        let after_five = p.capacity().remove(0);
+        assert_eq!(after_five.quota5h, Some(five));
+        assert_eq!(after_five.quota7d, None);
+        assert_eq!(after_five.calibrated, before.calibrated);
+        assert_eq!(after_five.cap5h_usd, before.cap5h_usd);
+        assert_eq!(after_five.cap7d_usd, before.cap7d_usd);
+
+        let weekly = QuotaSnapshot {
+            used_fraction_units: 87_654_321,
+            measurement_resolution_fraction_units: 10_000,
+            observed_at: now() + 1,
+            resets_at: Some(future7),
+        };
+        p.set_quota_snapshots("a", None, Some(weekly));
+        let after_weekly = p.capacity().remove(0);
+        assert_eq!(after_weekly.quota5h, Some(five));
+        assert_eq!(after_weekly.quota7d, Some(weekly));
+        assert_eq!(after_weekly.calibrated, before.calibrated);
+        assert_eq!(after_weekly.cap5h_usd, before.cap5h_usd);
+        assert_eq!(after_weekly.cap7d_usd, before.cap7d_usd);
+
+        let mut replacement = sub("a");
+        replacement.token = "replacement-token".to_owned();
+        p.replace_subs(vec![replacement]);
+        let after_replacement = p.capacity().remove(0);
+        assert_eq!(after_replacement.quota5h, None);
+        assert_eq!(after_replacement.quota7d, None);
     }
 
     /// Startup quarantines legacy poisoned calibration and the CAS rebase path cannot restore it.

@@ -1918,6 +1918,7 @@ pub async fn forward(
             // ПАССИВНЫЙ сбор лимитов из боевого ответа: свежий util/reset без лишних запросов
             // (обновляет polled_ts → активный поллер сам перестаёт трогать «живые» подписки).
             let lim = limits_from_headers(resp.headers());
+            let now = pool::now();
             if lim.has_util() {
                 app.pool.set_util(
                     &sub.email,
@@ -1927,9 +1928,25 @@ pub async fn forward(
                     lim.reset5h,
                     lim.reset7d,
                 );
+                app.pool.set_quota_snapshots(
+                    &sub.email,
+                    lim.quota5h.map(|quota| pool::QuotaSnapshot {
+                        used_fraction_units: quota.used_fraction_units,
+                        measurement_resolution_fraction_units: quota
+                            .measurement_resolution_fraction_units,
+                        observed_at: now,
+                        resets_at: lim.reset5h,
+                    }),
+                    lim.quota7d.map(|quota| pool::QuotaSnapshot {
+                        used_fraction_units: quota.used_fraction_units,
+                        measurement_resolution_fraction_units: quota
+                            .measurement_resolution_fraction_units,
+                        observed_at: now,
+                        resets_at: lim.reset7d,
+                    }),
+                );
             }
 
-            let now = pool::now();
             // Классификация вины (важно: НЕ студить подписку за чужую вину):
             if code == 429 {
                 // квота подписки: студим до сброса окна-виновника (см. cool_secs_429)

@@ -12,7 +12,8 @@
 **Что внутри:** `Pool` (RwLock-состояние: subs/live/legacy **bindings** + прайоры ёмкости), `Live` (util/reset/
 status/cooling/inflight + калибровка), `route_affinity`/legacy `route`, `pick` (ротация/
 спилл), `mark_used`/`mark_ok`/`mark_healthy`/`end_stream`/`mark_cooling`/`cool`, `set_util`,
-`record_spend`, `capacity`, `snapshot`. Общие предикаты — `select_best` (ротация) и `place_best`
+`set_quota_snapshots`, `record_spend`, `capacity`, `snapshot`. Общие предикаты — `select_best`
+(ротация) и `place_best`
 (capacity-weighted placement) как свободные функции над `Inner`.
 
 **Cache-first планировщик (lineage → персона):** shared binding принадлежит `forward::AffinityStore`;
@@ -74,6 +75,8 @@ per-email потолком; ослабление «не зависать» ис�
 `registry::SubHealth` ТОЛЬКО при изменении → server персистит owner-fenced), `import_health` (старт из
 БД), `revive`/`kill` (оператор), `is_auth_dead`, `token_fp`. Авто-ревайв: смена токена (`token_fp`
 изменился → `replace_subs`/`apply_probe` сбрасывают вердикт) или успешный медленный resurrection-probe.
+`replace_subs` одновременно удаляет token-scoped ephemeral quota snapshots, чтобы новый credential
+не наследовал current utilization старого.
 `403`→`permission_error` (бан), `401`→`authentication_error` (re-auth) в `dead_reason`. Живой 2xx-трафик
 через `mark_healthy` снимает подозрение В ПАМЯТИ (durable чинит ближайший чистый probe). Вердикт о
 живости выносит ТОЛЬКО поллер чистым probe — forward на живом 401/403 лишь `request_probe`, НЕ убивает.
@@ -97,6 +100,10 @@ per-email потолком; ослабление «не зависать» ис�
   Суммируется по флоту для любого числа подписок. `calibrated` флаг = была ли реальная калибровка;
   per-sub `Cap` несёт тот же безопасный `plan`, что и исходный `Sub`, чтобы защищённые отчёты
   группировали измерение без неоднозначного join по маскированному email.
+- `set_quota_snapshots` хранит отдельно exact fixed-point 5h/7d fraction, resolution, observed time
+  и optional reset от response/count-tokens. Это ephemeral current-supply evidence для server:
+  отсутствие reset не мешает посчитать текущий остаток через durable cohort capacity, но такой
+  снимок не калибрует legacy estimator, не персистится и не доказывает будущие horizon resets.
 
 **Инварианты логики выбора:**
 - Окна лимитов — источник истины Anthropic (unified-заголовки). Разные точки отсчёта 5h/7d НЕ

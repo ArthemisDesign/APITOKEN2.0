@@ -523,6 +523,107 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).not.toContain("5ч · доступно");
   });
 
+  it("ClaudeCapacityBoard: различает свежую квоту без reset, stale и аккаунт вне ротации", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 2_000,
+          per_sub: [
+            {
+              email: "fres…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0.99,
+              util7d: 0.99,
+              reset5h_in: null,
+              reset7d_in: null,
+              cap5h_nano: "60000000000",
+              cap7d_nano: "200000000000",
+              rem5h_nano: "45000000000",
+              rem7d_nano: "120000000000",
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: true,
+                  used_fraction_units: 25_000_000,
+                  resets_at: null,
+                  capacity_nano: "60000000000",
+                  remaining_nano: "45000000000",
+                  current_quota_source: "runtime_quota_snapshot",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: true,
+                  used_fraction_units: 40_000_000,
+                  resets_at: null,
+                  capacity_nano: "200000000000",
+                  remaining_nano: "120000000000",
+                  current_quota_source: "runtime_quota_snapshot",
+                },
+              ],
+            },
+            {
+              email: "stal…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0.18,
+              util7d: 0.93,
+              reset5h_in: 0,
+              reset7d_in: 0,
+              cap5h_nano: "216730000000",
+              cap7d_nano: "933330000000",
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: false,
+                  used_fraction_units: 18_000_000,
+                  capacity_nano: "216730000000",
+                  remaining_nano: null,
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: false,
+                  used_fraction_units: 93_000_000,
+                  capacity_nano: "933330000000",
+                  remaining_nano: null,
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+              ],
+            },
+            {
+              email: "dead…",
+              plan: "max20",
+              routable: false,
+              auth_state: "dead",
+              dead_reason: "permission_error",
+              util5h: 0,
+              util7d: 0,
+              cap5h_nano: "1222190000000",
+              cap7d_nano: "4444440000000",
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("fres…");
+    expect(text).toContain("25%");
+    expect(text).toContain("$45.00");
+    expect(text).toContain("сброс уточняется");
+    expect(text).toContain("stal…");
+    expect(text).toContain("обновляем");
+    expect(text).not.toContain("18%");
+    expect(text).not.toContain("$216.73");
+    expect(text).toContain("dead…");
+    expect(text).toContain("вне ротации");
+    expect(text).toContain("не входит в ёмкость");
+    expect(text).not.toContain("$1,222.19");
+    expect(text).not.toContain("99%");
+  });
+
   it("GeminiCapacityBoard: не выдумывает amount, выводит exact quota, тариф и masked email", () => {
     const nowMs = 1_800_000_000_000;
     const html = renderToString(

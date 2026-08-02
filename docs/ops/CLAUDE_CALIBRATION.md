@@ -12,7 +12,10 @@ exact spend, движение 5ч/7д quota, реально недоступны
 Это не frontend-тест и не расчёт по размеру prompt. Источники истины — backend `/capacity`,
 immutable `calibration_recent_turns` и provider quota snapshots. Aggregate
 `calibration_evidence` остаётся статистикой всей накопленной смеси, но не используется для
-атрибуции отдельного тестового запроса.
+атрибуции отдельного тестового запроса. `/capacity` разделяет два вида evidence: reset-bearing
+durable snapshots строят estimator/history, а свежая exact fraction без reset может определить
+только current remaining. Она не доказывает время следующего окна, поэтому horizon-поля остаются
+`null`, пока provider не вернёт настоящий reset.
 
 ## Страховки
 

@@ -33,9 +33,9 @@ export interface CapacitySub {
   cooling?: boolean;
   calibrated?: boolean;
   util5h?: number;
-  reset5h_in?: number;
+  reset5h_in?: number | null;
   util7d?: number;
-  reset7d_in?: number;
+  reset7d_in?: number | null;
   cap5h_nano?: string;
   cap7d_nano?: string;
   rem5h_nano?: string;
@@ -64,6 +64,7 @@ export interface ClaudeSubWindow {
   snapshot_fresh?: boolean;
   used_fraction_units?: number | null;
   measurement_resolution_fraction_units?: number | null;
+  current_quota_source?: string | null;
   capacity_nano?: string | null;
   remaining_nano?: string | null;
   low_nano?: string | null;

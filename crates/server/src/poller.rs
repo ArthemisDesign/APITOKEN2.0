@@ -475,6 +475,7 @@ async fn probe(
     }
     match poll_sub(&client, &app.cfg, &sub.token, &ua, &sub.email).await {
         Some(r) => {
+            let observed_at = pool::now();
             app.pool.set_util(
                 &sub.email,
                 r.util5h,
@@ -483,8 +484,24 @@ async fn probe(
                 r.reset5h,
                 r.reset7d,
             );
+            app.pool.set_quota_snapshots(
+                &sub.email,
+                r.quota5h.map(|quota| pool::QuotaSnapshot {
+                    used_fraction_units: quota.used_fraction_units,
+                    measurement_resolution_fraction_units: quota
+                        .measurement_resolution_fraction_units,
+                    observed_at,
+                    resets_at: r.reset5h,
+                }),
+                r.quota7d.map(|quota| pool::QuotaSnapshot {
+                    used_fraction_units: quota.used_fraction_units,
+                    measurement_resolution_fraction_units: quota
+                        .measurement_resolution_fraction_units,
+                    observed_at,
+                    resets_at: r.reset7d,
+                }),
+            );
             if let Some(billing) = &app.billing {
-                let observed_at = pool::now();
                 let plan = if calibration_plan.is_empty() {
                     "unknown"
                 } else {
