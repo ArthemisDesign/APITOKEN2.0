@@ -17,6 +17,7 @@ def event(request_id: str = "req-1", profile: str = "profile-a", model: str = "g
         "service_tier": "standard",
         "inference_geo": "global",
         "tariff_schedule_id": "google/test/v1",
+        "completed_at": "100",
     }
     value.update({field: "0" for field in run_live.EVENT_TOKEN_FIELDS})
     value.update({field: "0" for field in run_live.EVENT_MONEY_FIELDS})
@@ -286,6 +287,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 "actual_nanousd": "100",
                 "fraction_delta_5h": 10,
                 "profitability_eligible": True,
+                "quota_snapshot_resolved": True,
             },
             {
                 "plan": "google_ai_pro",
@@ -294,6 +296,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 "actual_nanousd": "300",
                 "fraction_delta_5h": 10,
                 "profitability_eligible": True,
+                "quota_snapshot_resolved": True,
             },
             {
                 "plan": "google_ai_pro",
@@ -302,6 +305,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 "actual_nanousd": "999999",
                 "fraction_delta_5h": 1,
                 "profitability_eligible": False,
+                "quota_snapshot_resolved": True,
             },
             {
                 "plan": "google_ai_pro",
@@ -310,6 +314,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 "actual_nanousd": "999999",
                 "fraction_delta_5h": 0,
                 "profitability_eligible": True,
+                "quota_snapshot_resolved": False,
             },
         ]
         rows = run_live.model_profitability(records)
@@ -338,12 +343,13 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         remote_command = invoked.call_args.args[0][2]
         self.assertNotIn("local-secret-must-not-leak", remote_command)
         self.assertIn("$calibration_key", remote_command)
+        self.assertIn("%header{x-apitoken-execution-state}", remote_command)
 
     def test_production_ssh_retries_only_quota_free_count(self):
         client = run_live.ProductionSshJsonHttpClient(timeout=10)
         failed = subprocess.CompletedProcess([], 255, stdout=b"", stderr=b"temporary")
         succeeded = subprocess.CompletedProcess(
-            [], 0, stdout=b'{"totalTokens":10}\n200', stderr=b""
+            [], 0, stdout=b'{"totalTokens":10}\n__CALIBRATION_HTTP__200\n', stderr=b""
         )
         with mock.patch.object(
             run_live.subprocess, "run", side_effect=[failed, succeeded]
@@ -357,19 +363,42 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertEqual(result, {"totalTokens": 10})
         self.assertEqual(invoked.call_count, 2)
 
-    def test_only_explicit_provider_stops_are_resume_safe(self):
-        retry_info = (
-            '{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo"}],'
-            '"status":"UNAVAILABLE"}}'
+    def test_production_ssh_preserves_authoritative_not_started_header(self):
+        client = run_live.ProductionSshJsonHttpClient(timeout=10)
+        refused = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                b'{"error":{"code":503,"status":"UNAVAILABLE"}}'
+                b"\n__CALIBRATION_HTTP__503\nnot_started"
+            ),
+            stderr=b"",
         )
+        with mock.patch.object(run_live.subprocess, "run", return_value=refused):
+            with self.assertRaises(run_live.HttpCalibrationError) as caught:
+                client.request(
+                    "/v1beta/models/gemini-2.5-flash:generateContent",
+                    "POST",
+                    {"contents": []},
+                    "profile-a",
+                    calibration_request_id="123e4567-e89b-42d3-a456-426614174000",
+                )
+        self.assertTrue(caught.exception.execution_not_started)
+        self.assertTrue(run_live.is_explicit_transient_stop(caught.exception))
+
+    def test_only_explicit_provider_stops_are_resume_safe(self):
         self.assertTrue(
             run_live.is_explicit_transient_stop(
-                run_live.HttpCalibrationError("/generate", 503, retry_info)
+                run_live.HttpCalibrationError(
+                    "/generate", 503, "generic sanitized failure", execution_not_started=True
+                )
             )
         )
         self.assertTrue(
             run_live.is_explicit_transient_stop(
-                run_live.HttpCalibrationError("/generate", 429, "quota reached")
+                run_live.HttpCalibrationError(
+                    "/generate", 429, "quota reached", execution_not_started=True
+                )
             )
         )
         self.assertFalse(
@@ -379,17 +408,20 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         )
         self.assertFalse(
             run_live.is_explicit_transient_stop(
-                run_live.HttpCalibrationError("/generate", 502, retry_info)
+                run_live.HttpCalibrationError(
+                    "/generate", 502, "bad gateway", execution_not_started=True
+                )
             )
         )
 
     def test_resume_rehydrates_exact_spend_and_rejects_ambiguous_paid_failure(self):
         payload = {
-            "schema": "gemini-live-calibration/v1",
+            "schema": "gemini-live-calibration/v2",
             "run_id": "gemini-cal-12345678-deadbeef",
             "complete": False,
             "failure": None,
             "resume_safe": True,
+            "resume_proof": "x-apitoken-execution-state:not_started",
             "budget_nanousd_total": "1000000000",
             "spent_nanousd_total": "100",
             "spent_nanousd_per_profile": {"profile-a": "100", "profile-b": "0"},
@@ -482,11 +514,12 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         ]
         baseline["conversion_models"] = [model]
         payload = {
-            "schema": "gemini-live-calibration/v1",
+            "schema": "gemini-live-calibration/v2",
             "run_id": "gemini-cal-12345678-deadbeef",
             "complete": False,
             "failure": None,
             "resume_safe": True,
+            "resume_proof": "x-apitoken-execution-state:not_started",
             "budget_nanousd_total": "1000000000",
             "spent_nanousd_total": "100",
             "spent_nanousd_per_profile": {"profile-a": "100", "profile-b": "0"},
@@ -503,8 +536,8 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 raise run_live.HttpCalibrationError(
                     "/generate",
                     503,
-                    '{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo"}],'
-                    '"status":"UNAVAILABLE"}',
+                    "sanitized unavailable",
+                    execution_not_started=True,
                 )
             record = report_record(
                 request_id=f"req-{len(calls) + 1}",
@@ -650,6 +683,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                     "authenticated": True,
                     "cooling_until": 0,
                     "calibration_persistence_ok": True,
+                    "quota_updated_at": 101 if self.api.request_id else 99,
                     "windows": [],
                 }]
                 return payload
@@ -691,6 +725,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             )
         self.assertRegex(api.request_id, r"^[0-9a-f-]{36}$")
         self.assertEqual(record["request_id"], api.request_id)
+        self.assertTrue(record["quota_snapshot_resolved"])
         self.assertEqual(budget.total_nano, 100)
         self.assertEqual(budget.by_profile["profile-a"], 100)
 

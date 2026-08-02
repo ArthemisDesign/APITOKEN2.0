@@ -108,15 +108,17 @@ Require all of these safeguards:
   paid-plan identity before traffic;
 - a unique run id and isolated cache keys; share only the intended write/read cache pair;
 - persist an incomplete machine-readable checkpoint and resume the same run id, aggregate budget,
-  completed outcome set, and cache lineage after an explicit provider quota/unavailable stop. Never
-  repeat completed legs, silently add a new profile/model, or resume a paid request whose outcome is
+  completed outcome set, and cache lineage only when the serving backend returns an authoritative
+  execution-not-started proof. A retry hint or sanitized status body is not proof. Never repeat
+  completed legs, silently add a new profile/model, or resume a paid request whose outcome is
   transport-ambiguous;
 - immutable-event attribution by the exact new request id plus profile/model/tier/full usage vector;
   concurrent unrelated traffic must not affect the record; ambiguity stops fail closed;
 - read-only retries only. Never automatically repeat a paid request after an ambiguous transport
   failure;
-- enough delay/polling for provider quota resolution and backend debounce without treating a missing
-  delta as zero;
+- enough delay/polling for provider quota resolution and backend debounce. Require a post-turn quota
+  observation whose authority timestamp is at or after immutable turn completion before assigning
+  its delta to a model/token class; an unresolved snapshot is not zero and is excluded from ranking;
 - include provider-owned hidden/system/tool prompt input in the pre-dispatch bound. If the free token
   counter omits any such leg and no smaller provider-enforced ceiling is proved, reserve the model's
   complete accepted input-context limit for every affected generation request;

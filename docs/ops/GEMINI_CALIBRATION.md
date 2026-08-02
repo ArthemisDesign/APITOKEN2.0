@@ -41,11 +41,13 @@ Backend estimator остаётся workload-dependent: он оценивает A
   ограниченные 1K/2K/4K SKU (1 120/1 680/2 520 токенов) плюс requested text-output ceiling.
 - Платный запрос после transport ambiguity не повторяется. GET и `countTokens` можно безопасно
   повторить, но generation имеет ровно одну попытку.
-- Явный provider `429` или `503 UNAVAILABLE` с `google.rpc.RetryInfo` останавливает только целевой
-  профиль, а не оставшуюся матрицу здоровых профилей. Partial report можно продолжить через
+- `429`/`503` останавливает только целевой профиль, а не оставшуюся матрицу здоровых профилей,
+  исключительно когда stable Gemini plane вернул авторитетный
+  `x-apitoken-execution-state: not_started`. `RetryInfo` и sanitized body сами по себе не являются
+  доказательством. Такой partial report можно продолжить через
   `--resume-report`: runner сохраняет тот же `run_id`, общий budget, cache lineage и exact spend,
   пропускает уже завершённые/доказанно недоступные legs и не добавляет новые профили или модели.
-  Generic 5xx, SSH/HTTP transport ambiguity и любой иной непроверенный failure помечаются
+  Generic 5xx без not-started proof, SSH/HTTP transport ambiguity и любой иной непроверенный failure помечаются
   `resume_safe=false`; такой платный leg повторять запрещено.
 - Для каждого платного turn runner заранее создаёт canonical UUIDv4 и передаёт его admin-only
   заголовком `x-apitoken-calibration-request-id` вместе с exact profile target. В immutable backend
@@ -54,8 +56,10 @@ Backend estimator остаётся workload-dependent: он оценивает A
   останавливают прогон fail closed; параллельный customer traffic не участвует в атрибуции.
 - Cache payload содержит уникальный `run_id`; write/read пары байт-в-байт одинаковы, но другой запуск
   не может принять старую cache warmth за свою.
-- Между turn выдерживается 16 секунд, чтобы backend quota poll успел связать durable spend с новой
-  fraction. Quota-only движение, повторившееся без spend, уходит в `unattributed_fraction_units`.
+- После turn runner выдерживает минимум 16 секунд и затем опрашивает backend до quota snapshot с
+  `quota_updated_at >= immutable completed_at`. До такого post-turn snapshot fraction delta не
+  считается model/token-class evidence и не попадает в profitability. Quota-only движение,
+  повторившееся без spend, уходит в `unattributed_fraction_units`.
 - API/control keys загружаются только локально или внутри production shell и не входят в report.
 
 ## Production-команда
@@ -84,7 +88,8 @@ python3 tools/gemini_calibration/run_live.py \
 ```
 
 `--budget-usd` при resume — исходный aggregate cap, а не добавочный бюджет; значение обязано точно
-совпадать с checkpoint. `complete=false`, `resume_safe=true` и `pending_legs` явно показывают, что
+совпадать с checkpoint. `complete=false`, `resume_safe=true`,
+`resume_proof=x-apitoken-execution-state:not_started` и `pending_legs` явно показывают, что
 ещё осталось после cooling. `resume_safe=false` означает терминальный ручной разбор без повторения
 платного запроса. Смена paid plan или effective tariff schedule между попытками также прекращает
 resume: evidence разных денежных identity в один прогон не объединяется.
@@ -104,7 +109,7 @@ capabilities, byte-identical cache/audio replay и fail-closed resume с точ�
 
 ## Результат
 
-Report `gemini-live-calibration/v1` сохраняет точный total и расход по opaque profile в nanoUSD,
+Report `gemini-live-calibration/v2` сохраняет точный total и расход по opaque profile в nanoUSD,
 полный token/API-cost vector каждого turn, 5h/7d fraction delta, недоступные capabilities, profile
 quota walls, before/after identity каждого окна, финальный backend snapshot и
 `model_profitability`, отсортированный по API nanoUSD на 1% соответствующего 5h/7d окна отдельно

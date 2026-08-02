@@ -67,11 +67,18 @@ class CalibrationError(RuntimeError):
 
 
 class HttpCalibrationError(CalibrationError):
-    def __init__(self, path: str, status: int, detail: str) -> None:
+    def __init__(
+        self,
+        path: str,
+        status: int,
+        detail: str,
+        execution_not_started: bool = False,
+    ) -> None:
         super().__init__(f"{path} returned HTTP {status}: {detail}")
         self.path = path
         self.status = status
         self.detail = detail
+        self.execution_not_started = execution_not_started
 
 
 class UnboundedCostError(CalibrationError):
@@ -113,13 +120,7 @@ def usd_to_nano(value: str) -> int:
 
 
 def is_explicit_transient_stop(error: HttpCalibrationError) -> bool:
-    if error.status == 429:
-        return True
-    return (
-        error.status == 503
-        and "type.googleapis.com/google.rpc.RetryInfo" in error.detail
-        and '"status":"UNAVAILABLE"' in error.detail.replace(" ", "")
-    )
+    return error.execution_not_started and error.status in {429, 503}
 
 
 def _string_list(value: Any, field: str) -> list[str]:
@@ -140,7 +141,10 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise CalibrationError(f"cannot read Gemini resume report: {path}") from error
-    if not isinstance(payload, dict) or payload.get("schema") != "gemini-live-calibration/v1":
+    if not isinstance(payload, dict) or payload.get("schema") not in {
+        "gemini-live-calibration/v1",
+        "gemini-live-calibration/v2",
+    }:
         raise CalibrationError("resume report has an unsupported schema")
     if payload.get("complete") is True:
         raise CalibrationError("refusing to resume an already complete Gemini report")
@@ -151,7 +155,26 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
         and "type.googleapis.com/google.rpc.RetryInfo" in failure
         and '"status":"UNAVAILABLE"' in failure.replace(" ", "")
     )
-    if payload.get("resume_safe") is not True and not legacy_explicit_stop:
+    legacy_stops = payload.get("profile_stops")
+    legacy_checkpoint = (
+        payload.get("schema") == "gemini-live-calibration/v1"
+        and payload.get("resume_safe") is True
+        and isinstance(legacy_stops, dict)
+        and bool(legacy_stops)
+        and all(
+            isinstance(stop, str)
+            and "returned HTTP 503:" in stop
+            and "type.googleapis.com/google.rpc.RetryInfo" in stop
+            and '"status":"UNAVAILABLE"' in stop.replace(" ", "")
+            for stop in legacy_stops.values()
+        )
+    )
+    proved_checkpoint = (
+        payload.get("schema") == "gemini-live-calibration/v2"
+        and payload.get("resume_safe") is True
+        and payload.get("resume_proof") == "x-apitoken-execution-state:not_started"
+    )
+    if not proved_checkpoint and not legacy_explicit_stop and not legacy_checkpoint:
         raise CalibrationError(
             "resume report is not proven safe; an ambiguous paid request must never be repeated"
         )
@@ -312,6 +335,9 @@ def profile_state(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "authenticated": raw.get("authenticated") is True,
             "cooling_until": as_int(raw.get("cooling_until", 0), "profile.cooling_until"),
             "persistence_ok": raw.get("calibration_persistence_ok") is True,
+            "quota_updated_at": optional_int(
+                raw.get("quota_updated_at"), "profile.quota_updated_at"
+            ),
             "used_5h": optional_int(
                 windows.get("5h", {}).get("used_fraction_units"), "profile.used_5h"
             ),
@@ -678,7 +704,13 @@ class JsonHttpClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            raise HttpCalibrationError(path, error.code, error.read(800).decode(errors="replace")) from error
+            raise HttpCalibrationError(
+                path,
+                error.code,
+                error.read(800).decode(errors="replace"),
+                error.headers is not None
+                and error.headers.get("x-apitoken-execution-state") == "not_started",
+            ) from error
         except urllib.error.URLError as error:
             raise CalibrationError(f"{path} transport failed: {error}") from error
         try:
@@ -725,7 +757,10 @@ class ProductionSshJsonHttpClient:
         remote = (
             "set -a && . /srv/claude-api/data/server.env && set +a && "
             "calibration_key=${CLAUDE_API_KEYS%%,*} && test -n \"$calibration_key\" && "
-            f"curl -sS --max-time {self.timeout} -w '\\n%{{http_code}}' -X {method} "
+            f"curl -sS --max-time {self.timeout} "
+            "-w '\\n__CALIBRATION_HTTP__%{http_code}\\n"
+            "%header{x-apitoken-execution-state}' "
+            f"-X {method} "
             f"-H \"x-goog-api-key: $calibration_key\" {header_args} {data_arg} "
             f"{shlex.quote('http://127.0.0.1:8794' + path)}"
         )
@@ -743,12 +778,18 @@ class ProductionSshJsonHttpClient:
             time.sleep(SAFE_READ_RETRY_DELAY_SECONDS)
         if result is None:
             raise CalibrationError(f"{path} produced no SSH result")
-        raw, separator, status_raw = result.stdout.rpartition(b"\n")
-        if not separator or not status_raw.isdigit():
+        raw, separator, trailer = result.stdout.rpartition(b"\n__CALIBRATION_HTTP__")
+        status_raw, header_separator, execution_state = trailer.partition(b"\n")
+        if not separator or not header_separator or not status_raw.isdigit():
             raise CalibrationError(f"{path} SSH response has no HTTP status")
         status = int(status_raw)
         if status >= 400:
-            raise HttpCalibrationError(path, status, raw[:800].decode(errors="replace"))
+            raise HttpCalibrationError(
+                path,
+                status,
+                raw[:800].decode(errors="replace"),
+                execution_state.strip() == b"not_started",
+            )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
@@ -871,11 +912,22 @@ class Runner:
             )
         actual = event["api_total_nanousd"]
         self.budget.charge(profile_id, actual, upper)
+        completed_at = as_int(event.get("completed_at"), f"{leg.name}.completed_at")
         if self.delay > 0:
             time.sleep(self.delay)
+        quota_deadline = time.monotonic() + self.timeout
+        quota_snapshot_resolved = False
+        while True:
             observed = self.capacity.read()
             require_healthy_delivery(observed)
-        after_state = profile_state(observed).get(profile_id, {})
+            after_state = profile_state(observed).get(profile_id, {})
+            quota_updated_at = after_state.get("quota_updated_at")
+            if quota_updated_at is not None and quota_updated_at >= completed_at:
+                quota_snapshot_resolved = True
+                break
+            if time.monotonic() >= quota_deadline:
+                break
+            time.sleep(2)
         after_events = recent_turn_events(observed)
         concurrent_profile_request_ids = sorted(
             request_id
@@ -885,7 +937,8 @@ class Runner:
             and candidate["profile_id"] == profile_id
         )
         profitability_eligible = (
-            calibration_request_id in after_events
+            quota_snapshot_resolved
+            and calibration_request_id in after_events
             and not concurrent_profile_request_ids
         )
         record = {
@@ -905,6 +958,7 @@ class Runner:
             "fraction_delta_5h": fraction_delta(state, after_state, "used_5h"),
             "fraction_delta_7d": fraction_delta(state, after_state, "used_7d"),
             "profitability_eligible": profitability_eligible,
+            "quota_snapshot_resolved": quota_snapshot_resolved,
             "concurrent_profile_request_ids": concurrent_profile_request_ids,
             "before_windows": {
                 "5h": {"used_fraction_units": state.get("used_5h"), "resets_at": state.get("reset_5h")},
@@ -928,7 +982,10 @@ def model_profitability(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lambda: {"nano": 0, "fraction": 0, "turns": 0}
     )
     for record in records:
-        if record.get("profitability_eligible") is not True:
+        if (
+            record.get("profitability_eligible") is not True
+            or record.get("quota_snapshot_resolved") is not True
+        ):
             continue
         for window, field in (("5h", "fraction_delta_5h"), ("7d", "fraction_delta_7d")):
             delta = record.get(field)
@@ -1009,7 +1066,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "full-input-context-ceiling-for-hidden-provider-prompts",
             "single-aggregate-budget",
             "no-paid-request-retry",
-            "resume-only-from-explicit-provider-stop",
+            "resume-only-from-authoritative-not-started-proof",
         ],
         "execute_requires": "--execute plus a capacity source and production/admin API access",
     }
@@ -1166,11 +1223,14 @@ def main(argv: list[str] | None = None) -> int:
     complete = failure is None and not pending
     resume_safe = failure is None and bool(pending)
     report = {
-        "schema": "gemini-live-calibration/v1",
+        "schema": "gemini-live-calibration/v2",
         "run_id": run_id,
         "complete": complete,
         "failure": failure,
         "resume_safe": resume_safe,
+        "resume_proof": (
+            "x-apitoken-execution-state:not_started" if resume_safe else None
+        ),
         "budget_nanousd_total": str(budget_nano),
         "spent_nanousd_total": str(budget.total_nano),
         "spent_nanousd_per_profile": {key: str(value) for key, value in sorted(budget.by_profile.items())},
