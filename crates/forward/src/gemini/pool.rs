@@ -265,6 +265,7 @@ impl GeminiProfile {
         url: &str,
         access_token: &str,
         user_agent: &str,
+        include_antigravity_metadata: bool,
         accept: Option<&'static str>,
         content_type: &'static str,
         body: bytes::Bytes,
@@ -283,7 +284,7 @@ impl GeminiProfile {
                 SecretString::new(self.google_api_client.clone()),
             ));
         }
-        if self.oauth_kind == OAuthKind::Antigravity {
+        if self.oauth_kind == OAuthKind::Antigravity && include_antigravity_metadata {
             // Match the reviewed Antigravity client identity for both generation methods. Live A/B
             // established that missing content roles and the private 65,536 output boundary were
             // the decisive INVALID_ARGUMENT causes; these headers are retained for wire fidelity,
@@ -906,6 +907,7 @@ impl GeminiProfile {
                     &url,
                     &token,
                     &cfg.background_user_agent(self.oauth_kind),
+                    true,
                     (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                     "application/json",
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
@@ -965,6 +967,7 @@ impl GeminiProfile {
                 &url,
                 token,
                 &cfg.background_user_agent(self.oauth_kind),
+                true,
                 (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
@@ -1028,6 +1031,7 @@ impl GeminiProfile {
                 &url,
                 token,
                 &cfg.background_user_agent(self.oauth_kind),
+                true,
                 None,
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),

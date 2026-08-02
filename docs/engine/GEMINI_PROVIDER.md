@@ -313,11 +313,13 @@ credentials ignore the Antigravity default and remain pinned to
 `https://daily-cloudcode-pa.googleapis.com`: the owned 2026-08-02 baseline proved that the sandbox
 host accepts `countTokens` but returns `404 NOT_FOUND` for every generation variant, while the
 signed Antigravity 2.4.3 artifact and two pinned independent implementations use the non-sandbox
-daily origin. The corrected-host matrix retained the same 404 with zero immutable turns, so this
-model alone also sends the signed `antigravity/hub/2.4.3 darwin/arm64` User-Agent; existing text
-models retain the live-proven configured 2.2.1 identity. The production systemd `ExecStart` pins
-the roster path, Antigravity default origin and insecure-loopback switch after all shared
-environment files; both preview-specific values are compile-fixed mappings, not caller input.
+daily origin. The corrected-host and signed-UA micro-smokes retained the same 404 with zero
+immutable turns, so this model alone now sends the minimal corroborated generation set:
+`Authorization`, `Content-Type` and `antigravity/hub/2.4.3 darwin/arm64`, without the older IDE
+`Client-Metadata`/`x-goog-api-client`. Existing text models and background health/quota calls retain
+their live-proven full 2.2.1 tuple. The production systemd `ExecStart` pins the roster path,
+Antigravity default origin and insecure-loopback switch after all shared environment files; the
+preview-specific host and identity are compile-fixed mappings, not caller input.
 
 The same argv-level boundary pins the attested official runtime profile:
 
@@ -564,7 +566,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash`; generation origin: non-sandbox daily; UA: signed 2.4.3 | exact-profile sandbox and corrected-host matrices: countTokens 2xx, every generation/thinking/SSE/cache/audio/tool leg 404 with no usage; signed Antigravity 2.4.3 plus pinned CLIProxyAPI and antigravity-oauth-proxy source corroborate the current host/UA tuple | candidate; publish only after the isolated current-UA live test proves output and authoritative usage |
+| `gemini-3-flash-preview` | wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash`; generation origin: non-sandbox daily; minimal signed 2.4.3 generation headers | exact-profile sandbox, corrected-host and signed-UA tests: countTokens 2xx, generation 404 with no usage; signed Antigravity 2.4.3 plus pinned CLIProxyAPI and antigravity-oauth-proxy source corroborate the final minimal header A/B | candidate; publish only after the isolated minimal-header live test proves output and authoritative usage |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -634,8 +636,11 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02:
   generation legs returned `404`, with zero immutable turns and zero spend. Working
   `gemini-3.6-flash` still returned 200 after cutover for `$0.000003`, so the shared transport and
   existing text route did not regress;
-- quota presence and a successful token count do not prove generation. The corrected-origin
-  and current-UA production smoke must target the owned
+- the signed-UA micro-smoke also returned `404` after a one-token count preflight, with no Preview
+  turn or spend in the immutable five-minute window. Host and release identity are therefore not
+  sufficient selectors;
+- quota presence and a successful token count do not prove generation. The final minimal-header
+  production smoke must target the owned
   opaque profile, cover non-stream, incremental SSE and countTokens, require non-zero authoritative
   usage, and then replace the candidate verdict in this matrix with dated live evidence. The full
   header/host audit and pinned independent source table live in the dossier below.

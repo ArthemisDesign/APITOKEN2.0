@@ -1655,6 +1655,7 @@ async fn send_upstream(
     body: Bytes,
     rejected_token: Option<&str>,
     user_agent: &str,
+    include_antigravity_metadata: bool,
 ) -> Result<(TransportResponse, gemini_credential::SecretString), SendError> {
     let access_token = match rejected_token {
         Some(rejected) => profile.access_token_after_rejection(rejected).await,
@@ -1682,6 +1683,7 @@ async fn send_upstream(
             url,
             &access_token,
             user_agent,
+            include_antigravity_metadata,
             accept,
             "application/json",
             body,
@@ -2225,6 +2227,11 @@ async fn api_inner(
         let profile = lease.profile().clone();
         let oauth_kind = profile.oauth_kind();
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
+        // Signed Antigravity 2.4.3 and both pinned independent clients send Preview generation
+        // without the older IDE metadata tuple. Keep the live-proven headers on every existing
+        // model and on background quota/health calls so this final A/B remains model-local.
+        let include_antigravity_metadata = !(oauth_kind == OAuthKind::Antigravity
+            && wire_model_id == "gemini-3-flash-preview");
         let mut url = format!(
             "{}/v1internal:{suffix}",
             gateway.config().generation_upstream_for(
@@ -2255,6 +2262,7 @@ async fn api_inner(
             upstream_body.clone(),
             None,
             &upstream_user_agent,
+            include_antigravity_metadata,
         )
         .await
         {
@@ -2295,6 +2303,7 @@ async fn api_inner(
                 upstream_body,
                 Some(&rejected_token),
                 &upstream_user_agent,
+                include_antigravity_metadata,
             )
             .await
             {
@@ -4430,6 +4439,50 @@ mod tests {
                 && request.client_metadata
                     == r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
         }));
+    }
+
+    #[tokio::test]
+    async fn flash_preview_uses_the_current_minimal_identity_without_changing_existing_models() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "candidates": [],
+                    "usageMetadata": {
+                        "promptTokenCount": 2,
+                        "candidatesTokenCount": 1
+                    }
+                }),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture_with_models(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+            64,
+            &["gemini-3-flash-preview"],
+        );
+        let response = invoke_uri(
+            app_state(fixture.gateway.clone(), None),
+            "/v1beta/models/gemini-3-flash-preview:generateContent",
+            json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].credential, PROFILE_A_KEY);
+        assert_eq!(
+            seen[0].user_agent,
+            "antigravity/hub/2.4.3 darwin/arm64"
+        );
+        assert!(seen[0].google_api_client.is_empty());
+        assert!(seen[0].client_metadata.is_empty());
     }
 
     #[tokio::test]
