@@ -18,6 +18,8 @@ export * from "./pricing-policy-write.js";
 export * from "./pricing-control-jobs.js";
 export * from "./funding-normalization-jobs.js";
 export * from "./service-account-inventory-v2.js";
+export * from "./pricing-stage5-materializer-v2.js";
+export * from "./pricing-stage5-materializer-v2-store.js";
 export * from "./multi-discount-backfill.js";
 export * from "./multi-discount-catalog-gen2.js";
 export * from "./multi-discount-stage8-evidence.js";

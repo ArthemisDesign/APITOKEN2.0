@@ -1,13 +1,11 @@
 # Stage 5 — materialization целевого pricing release
 
-Статус: целевой двухфазный контракт; OpenKeys authoritative cursor producer и admin-managed service
-inventory producer реализованы отдельными producer-first checkpoint. Compile-fixed runtime manifest
-сохраняет dormant capability generation 3 и публикует additive generation 4 с
-`gemini-3-flash-preview`: exact Anthropic/OpenAI/Gemini model identity разрешена
-для последующей подготовки, но ни один catalog/switch/release head этим не активируется. Migration
-`0029_pricing_release_two_phase_finalize.sql` должна быть GREEN до нового materializer consumer.
-Stage 5 готовит immutable source/ownership/policy authority, но не угадывает меняющиеся funding
-identities и не меняет live traffic.
+Статус: двухфазный consumer реализован в
+`packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` после отдельных GREEN producer и
+migration checkpoint. OpenKeys authoritative cursor, admin-managed service inventory, compile-fixed
+runtime capability generations 3/4 и migration `0029_pricing_release_two_phase_finalize.sql` уже
+являются его deployed prerequisites. Stage 5 готовит immutable source/ownership/policy authority,
+но не угадывает меняющиеся funding identities и не меняет live traffic.
 
 ## Входные inventories
 
@@ -66,8 +64,26 @@ Dry run работает в read-only repeatable snapshot и выводит:
 - зарезервированные target/recovery generations и отсутствие преждевременных release digests;
 - typed blockers и exact writes plan.
 
-Dry run ничего не пишет и не требует reviewer field. Любое изменение inventory делает результат
-stale; JSON нельзя редактировать вручную или применять по digest после изменения source state.
+Dry run ничего не пишет и не требует reviewer field. Любое изменение стабильной inventory identity
+делает результат stale; JSON нельзя редактировать вручную. Движущиеся деньги намеренно не входят в
+plan digest: apply сохраняет свой свежий полный snapshot как evidence, а replay того же immutable
+плана не подменяет уже записанное evidence более поздними balance/reserved/spent значениями.
+
+Штатная команда запускается только из защищённого runtime-окружения с `DATABASE_URL`,
+`ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY`; OpenKeys читается напрямую на loopback
+`OPENKEYS_INTERNAL_BASE_URL` (по умолчанию `http://127.0.0.1:3410`) с отдельным
+`OPENKEYS_CONTROL_KEY` либо тем же server credential:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage5-v2 dry_run
+pnpm --filter @claude-api/db pricing:stage5-v2 apply sha256:v2:<exact-dry-run-plan>
+```
+
+Engine cursor исчерпывается дважды. Стабильность Stage 5 identity включает `account_id`, status и
+legacy scalar multiplier, но намеренно не включает меняющиеся `balance/reserved/spent` и funding
+head: полные денежные snapshots сохраняются как evidence, а их финальная identity принадлежит
+Stage 6. OpenKeys cursor также исчерпывается дважды и обязан вернуть один неизменный full-manifest
+digest на всех страницах обоих проходов.
 
 ## Materialize
 
@@ -78,9 +94,20 @@ nullable; engine release и Stage 6 parent job в этом independently deliver
 создаются. Только после GREEN Stage 5 source/policy materialization отдельный consumer может
 запустить Stage 6 по exact plan digest. Active pricing release head не двигается.
 
+Local plan сначала фиксируется под advisory lock с повторной проверкой commerce/service snapshot;
+та же проверка обязательна перед сохранением terminal blocker evidence. Затем consumer делает
+только dormant engine prepare для main/OpenKeys catalog generation 3, provider switches generation
+3 и каждой v2 policy, немедленно читает exact version обратно и фиксирует ACK лишь для
+`stored|unchanged` с совпавшим digest. Capability generation 4 не имеет mutation endpoint: её
+compile-fixed digest проверяется локально и через catalog lineage, поэтому фиктивный capability ACK
+не создаётся. Target/recovery release prepare, recovery link и control job до Stage 6 отсутствуют.
+
 Same-version/same-digest replay возвращает `unchanged`. Same-version/different-digest, неполное
 покрытие inventory, stale source, policy collision или unsupported runtime capability отклоняются
 до commit. B2C/B2B/service/OpenKeys target готовится целиком; partial apply по классам запрещён.
+Стабильный план с ownership blockers может сохранить только terminal `blocked` run и typed blocker
+rows; catalog/policy/release skeleton и remote prepare при этом не создаются. Нестабильные парные
+сканы не сохраняются как ложное evidence и требуют нового полного прохода.
 
 ## Evidence для следующих этапов
 

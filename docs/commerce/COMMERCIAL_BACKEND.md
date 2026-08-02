@@ -172,6 +172,21 @@ policy-based invitations persist a neutral `10000` placeholder. Edit, resend and
 independent exact snapshots, and redemption copies the selected invitation version into the new B2B
 client policy before provisioning.
 
+Stage 5 v2 consumes the already deployed engine/OpenKeys/service producers without changing a live
+head. It requires a fresh dry-run digest and then performs one idempotent full-class apply:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage5-v2 dry_run
+pnpm --filter @claude-api/db pricing:stage5-v2 apply sha256:v2:<exact-plan-digest>
+```
+
+The command exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
+`REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact
+prepare+readback ACKs for dormant catalogs, switches and policies. It never creates a Stage 6 job,
+prepares an engine release or moves capability/catalog/switch/release heads. Runtime credentials
+come only from `DATABASE_URL`, `ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY` and optional loopback
+`OPENKEYS_INTERNAL_BASE_URL` / `OPENKEYS_CONTROL_KEY`; they are not command arguments or output.
+
 Stage 8 adds a read-only synchronization report for the commerce side:
 
 ```bash

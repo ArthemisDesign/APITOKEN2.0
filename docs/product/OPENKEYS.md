@@ -76,7 +76,7 @@ digest. Сначала обязателен `dry_run`, затем idempotent `ap
 
 ### Authoritative pricing inventory v2
 
-OpenKeys публикует additive read-only producer для будущего Stage 5 materializer только на
+OpenKeys публикует additive read-only producer для Stage 5 v2 materializer только на
 loopback/internal поверхности:
 
 ```text
@@ -96,10 +96,11 @@ Producer включает все durable `openkeys_keys`, в том числе d
 journal account считается active, compensated — disabled; появление итогового key row заменяет
 journal identity в следующем snapshot без дублирования account и меняет manifest/content digest.
 Он не возвращает key secret, ciphertext, view token, live balance или персональные данные продавца.
-Consumer обязан исчерпать cursor, требовать один digest на всех страницах и повторить полный scan;
+`packages/db` Stage 5 v2 consumer обязан исчерпать cursor, требовать один digest на всех страницах
+и повторить полный scan;
 изменение inventory между страницами делает результат stale. Endpoint ничего не materialize'ит,
-не меняет OpenKeys/engine rows и не активирует pricing. В producer checkpoint runtime-consumer ещё
-не подключён; его можно добавлять только после GREEN exact producer SHA.
+не меняет OpenKeys/engine rows и не активирует pricing. Consumer подключён отдельным checkpoint
+только после GREEN exact producer SHA и также не меняет OpenKeys rows.
 
 ## Административные интерфейсы
 

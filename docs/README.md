@@ -28,7 +28,7 @@ context'ов. Правила размещения и обновления — в
 - [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — аутентификация и авторизация.
 - [PRICING.md](commerce/PRICING.md) — B2C 50%/overrides, B2B, OpenKeys, service, bonus и referral.
 - [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — итоговый контракт скидок и zero-downtime full-inventory cutover.
-- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5: multi-discount backfill.
+- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5 v2: authoritative inventory и dormant target/recovery materialization.
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation.
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover.
 - [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — Stage 9: zero-downtime atomic full-inventory cutover.
