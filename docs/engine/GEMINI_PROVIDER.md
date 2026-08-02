@@ -748,7 +748,11 @@ to the OpenAI `reasoning_content` extension instead of leaking into content: non
 concatenated into `message.reasoning_content` (present only when non-empty), in the SSE stream
 each thought part becomes a `{"delta": {"reasoning_content": ...}}` chunk ahead of content
 deltas in upstream order. `thoughtSignature` is always dropped — universal lanes never expose
-signatures (decision 4).
+signatures (decision 4). On a later Chat request, non-empty `reasoning_content` is therefore
+display-only and is never promoted into an unsigned native thought part. If it is the assistant
+turn's only payload, that turn is omitted and adjacent user contents are merged; a genuinely empty
+assistant without reasoning remains a `400`. This keeps the adapter's own thought-only response
+replayable by `@ai-sdk/openai-compatible` without forging provider signatures.
 
 ## Operations
 

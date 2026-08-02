@@ -495,7 +495,9 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), 
             }
             "assistant" => {
                 let blocks = assistant_blocks(object)?;
-                merge_or_push(&mut conversation, "assistant", blocks);
+                if !blocks.is_empty() {
+                    merge_or_push(&mut conversation, "assistant", blocks);
+                }
             }
             "tool" => {
                 let block = tool_result_block(object)?;
@@ -543,6 +545,9 @@ pub(crate) fn merge_or_push(conversation: &mut Vec<Value>, role: &str, blocks: V
 /// Assistant-сообщение → Messages-блоки: text + tool_use (chat `tool_calls[]`
 /// и legacy `function_call`). Пустой text-блок не создаётся: Messages
 /// отклоняет пустой text, а chat допускает `content: null` при tool calls.
+/// Непустой `reasoning_content` без видимого text/tool call — валидный replay
+/// ответа этого же адаптера, но без provider signature его нельзя превращать
+/// обратно в thinking-блок; такой display-only assistant turn опускается.
 fn assistant_blocks(object: &Map<String, Value>) -> Result<Vec<Value>, Response> {
     let mut blocks = Vec::new();
     let text = message_text(object.get("content"))?;
@@ -582,6 +587,13 @@ fn assistant_blocks(object: &Map<String, Value>) -> Result<Vec<Value>, Response>
         }));
     }
     if blocks.is_empty() {
+        if object
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|reasoning| !reasoning.is_empty())
+        {
+            return Ok(blocks);
+        }
         return Err(invalid_request(
             "Assistant message must have content or tool calls.",
             Some("messages"),
@@ -1800,6 +1812,30 @@ mod tests {
     }
 
     #[test]
+    fn omits_reasoning_only_assistant_replay_without_leaking_thinking() {
+        // Universal Chat не выставляет Anthropic signature. AI SDK штатно
+        // реплеит полученный reasoning как content:"" + reasoning_content;
+        // такой turn валиден, но не должен становиться unsigned thinking или
+        // видимым text-блоком в Messages history.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "", "reasoning_content": "private thought"},
+                {"role": "user", "content": "continue"}
+            ]
+        }));
+        assert_eq!(
+            translated.body["messages"],
+            serde_json::json!([{"role": "user", "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "continue"}
+            ]}])
+        );
+        assert!(!translated.body.to_string().contains("private thought"));
+    }
+
+    #[test]
     fn stop_temperature_top_p_and_user_are_honored() {
         let translated = ok_translated(serde_json::json!({
             "model": "claude-opus-4-8",
@@ -2145,6 +2181,17 @@ mod tests {
             "messages": [
                 {"role": "user", "content": "hi"},
                 {"role": "assistant", "content": null}
+            ]
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Пустое reasoning_content не легализует действительно пустой turn.
+        let (status, _) = expect_err(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "reasoning_content": ""}
             ]
         }))
         .await;

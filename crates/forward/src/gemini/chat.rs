@@ -454,7 +454,9 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Option<Value>, Vec<Value>
             }
             "assistant" => {
                 let parts = assistant_parts(object, &mut call_names)?;
-                merge_or_push(&mut contents, "model", parts);
+                if !parts.is_empty() {
+                    merge_or_push(&mut contents, "model", parts);
+                }
             }
             "tool" => {
                 let part = function_response_part(object, &call_names)?;
@@ -682,6 +684,9 @@ pub(crate) fn translate_reasoning_effort(
 
 /// Assistant-сообщение → parts: text + functionCall (chat `tool_calls[]` и
 /// legacy `function_call`). Попутно регистрирует id→name для tool-ответов.
+/// Непустой `reasoning_content` без видимого text/tool call — валидный replay
+/// ответа этого же адаптера, но без provider signature его нельзя превращать
+/// обратно в thought-парт; такой display-only model turn опускается.
 fn assistant_parts(
     object: &Map<String, Value>,
     call_names: &mut HashMap<String, String>,
@@ -743,6 +748,13 @@ fn assistant_parts(
         parts.push(replayed_function_call_part(name, args));
     }
     if parts.is_empty() {
+        if object
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|reasoning| !reasoning.is_empty())
+        {
+            return Ok(parts);
+        }
         return Err(invalid_request(
             "Assistant message must have content or tool calls.",
             Some("messages"),
@@ -1845,6 +1857,30 @@ mod tests {
     }
 
     #[test]
+    fn omits_reasoning_only_assistant_replay_without_leaking_thoughts() {
+        // Universal Chat не выставляет Gemini thoughtSignature. AI SDK штатно
+        // реплеит полученный reasoning как content:"" + reasoning_content;
+        // такой turn валиден, но не должен становиться unsigned thought или
+        // видимым text-партом в generateContent history.
+        let translated = ok_translated(json!({
+            "model": "gemini-3.6-flash",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "", "reasoning_content": "private thought"},
+                {"role": "user", "content": "continue"}
+            ]
+        }));
+        assert_eq!(
+            translated.body["contents"],
+            json!([{"role": "user", "parts": [
+                {"text": "first"},
+                {"text": "continue"}
+            ]}])
+        );
+        assert!(!translated.body.to_string().contains("private thought"));
+    }
+
+    #[test]
     fn honors_generation_config_parameters() {
         let translated = ok_translated(json!({
             "model": "gemini-2.5-flash",
@@ -2232,6 +2268,7 @@ mod tests {
             json!({"model": "m", "messages": [{"role": "user"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": ""}]}),
             json!({"model": "m", "messages": [{"role": "assistant", "content": null}]}),
+            json!({"model": "m", "messages": [{"role": "assistant", "content": "", "reasoning_content": ""}]}),
             json!({"model": "m", "messages": [{"role": "narrator", "content": "hi"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": "hi", "name": "bob"}]}),
             json!({"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x"}}]}]}),

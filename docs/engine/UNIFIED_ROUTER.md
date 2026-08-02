@@ -467,6 +467,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    reasoning отдаётся дельтами в задокументированном расширении `reasoning_content`
    (конвенция DeepSeek/OpenRouter). Подписи/encrypted reasoning в universal lanes **не
    выставляются** — задокументированное ограничение: harness-клиенты используют native lanes.
+   Поэтому входной `reasoning_content` является display-only: его нельзя повышать до unsigned
+   native thinking. Если это единственная нагрузка assistant-turn, адаптер опускает такой turn и
+   склеивает соседние одинаковые роли; действительно пустой assistant без reasoning остаётся 400.
 5. **Stored responses (этап 4) — только для `openai/*`.** `store:true` и
    `GET/DELETE /v1/responses/{id}` работают только для OpenAI-моделей; для остальных →
    `400 documented_limitation`. Кросс-провайдерное хранилище ответов не строится.
@@ -673,7 +676,11 @@ request получает `400 invalid_request`, неизвестный/неак�
    стрима → чанки `{"delta":{"reasoning_content": ...}}` в естественном
    порядке апстрима (reasoning перед content, role-чанк первый). Подписи не
    выставляются (решение 4): signature_delta/thoughtSignature выбрасываются,
-   redacted_thinking игнорируется. Правило `reasoning_effort` удалено из
+   redacted_thinking игнорируется. При следующем Chat-запросе непустой
+   `reasoning_content` принимается как display-only; reasoning-only assistant-turn опускается,
+   а обычный content/tool history переводится без изменений. Это делает ответ обеих плоскостей
+   replay-safe для `@ai-sdk/openai-compatible`, не подделывая provider signatures. Правило
+   `reasoning_effort` удалено из
    capability matrix обеих плоскостей (Anthropic 17→16, Gemini 19→18).
 4. **Universal Responses для Codex-parity (2–4 недели).** `POST /v1/responses` для всех
    моделей каталога: text, images, tools, reasoning, usage, streaming. Реализуется по решениям

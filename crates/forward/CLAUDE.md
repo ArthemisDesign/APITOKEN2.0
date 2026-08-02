@@ -236,7 +236,10 @@ default без них; явный legacy `thinking` сохраняется. Effo
 modifier: thinking уже входит в общий Anthropic `output_tokens`, а reserve ограничивает весь
 выход через `max_tokens`.
 Thinking-блоки/thinking_delta ответа → `message.reasoning_content`/reasoning_content-дельты
-(signature/redacted_thinking не выставляются).
+(signature/redacted_thinking не выставляются). На replay это поле display-only: адаптер не
+превращает его в unsigned native thinking; assistant-turn только с непустым `reasoning_content`
+опускается, чтобы штатный AI SDK round-trip не отравлял следующую отправку, а действительно пустой
+assistant по-прежнему получает 400.
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
 `TerminalErrorReason`, как у `local_err`) и тоже без внутренностей пула.
 `anthropic_responses.rs` — universal Responses→Messages адаптер (этапы 4.1–4.2
@@ -344,7 +347,10 @@ Reasoning (3.4b): `reasoning_effort` → `generationConfig.thinkingConfig`
 (`thinkingLevel` проксируется как есть — маппинг уровня в wire model id выполняет
 плоскость; `includeThoughts: true`; невалидное значение → `400 invalid_request`),
 thought-парты ответа → `message.reasoning_content`/reasoning_content-дельты
-(`thoughtSignature` не выставляется).
+(`thoughtSignature` не выставляется). На replay это поле display-only: без opaque signature оно не
+становится native thought; model-turn только с непустым `reasoning_content` опускается, чтобы
+OpenAI-compatible AI SDK мог продолжить историю после thought-only ответа, а действительно пустой
+assistant по-прежнему получает 400.
 Replay tool-истории работает stateless: каждый восстановленный functionCall-парт получает
 подтверждённый Code Assist marker
 `thoughtSignature:"context_engineering_is_the_way_to_go"`. Реальные opaque signatures ответа
