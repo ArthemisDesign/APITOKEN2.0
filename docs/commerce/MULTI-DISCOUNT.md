@@ -209,6 +209,11 @@ Engine хранит prepared releases и один active release head. Подг�
 - commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
   inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
   receipt authority;
+- commerce migrations `0027_funding_normalization_blockers.sql` и
+  `0028_pricing_stage5_evidence.sql` добавляют честные nullable blocker plans и immutable Stage 5
+  inventory/prepare evidence; `0029_pricing_release_two_phase_finalize.sql` разрывает цикл между
+  live funding state и release identity: source/policy/assignment plan создаётся первым, funding и
+  engine release identities финализируются позже под DB guards;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
@@ -272,6 +277,14 @@ funding snapshot одновременно.
 
 Backfill идёт аккаунт за аккаунтом короткими транзакциями. Он берёт только account-local lock.
 Запрос этого аккаунта может кратко ждать его транзакцию; остальные аккаунты продолжают работать.
+
+Stage 5 не предвычисляет funding manifest из движущихся `balance/reserved/spent/lots`. Он сохраняет
+immutable target/recovery generations и full assignment skeleton с nullable balance funding.
+Stage 6 после exact full-inventory normalization одной `SERIALIZABLE` confirmation transaction
+фиксирует каждый assignment только `NULL → positive` и canonical funding manifest. Затем engine
+prepare/readback создаёт final target/recovery digests; только это состояние может стать
+`prepared`. Замена finalized identities и mutation assignments после `prepared` запрещены в
+commerce PostgreSQL, а release head всё это время остаётся прежним.
 
 Новые writers используют тот же lock и повторно читают funding generation после ожидания. Поэтому
 они либо полностью проходят по legacy+dual-write пути до backfill, либо полностью по новому пути

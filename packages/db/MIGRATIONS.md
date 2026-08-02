@@ -58,3 +58,14 @@ ACKs. Database checks require the two scans of each external inventory to match 
 durable ACK readback digest to equal its expected digest. The migration cannot create a pricing
 release, control job or active head, and the Stage 5 consumer is delivered only after this schema
 SHA has green `deploy/migration` and `deploy/watchdog`.
+
+Migration `0029_pricing_release_two_phase_finalize.sql` removes an impossible ordering dependency
+without weakening activation safety. Stage 5 may now reserve target/recovery generations and store
+immutable ownership/policy assignments while balance `funding_generation`, the final funding
+manifest and the engine release digest are still unknown. Stage 6 may only finalize an assignment
+from `NULL` to one positive funding generation; replacement and identity mutation are rejected.
+Before a plan can become `prepared`, database guards require nonempty assignments, exact one-to-one
+coverage by ready funding-normalization rows for every balance assignment, no extra funding rows,
+and both final funding/engine identities. Prepared assignments and finalized Stage 5 release
+digests are frozen. The migration performs no backfill, creates no job or release head and does not
+stop money writers; the two-phase consumer follows only after this schema SHA is green.

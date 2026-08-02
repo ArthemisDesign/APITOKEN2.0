@@ -86,13 +86,23 @@ OpenKeys scans; checks reject unequal scan digests and mismatched ACK readbacks.
 run nor enqueues or activates any release, and its consumer follows only after the migration SHA is
 green in production.
 
-The Stage 6 worker consumer claims only explicitly staged `normalize_funding` target-release jobs.
+Migration `packages/db/migrations/0029_pricing_release_two_phase_finalize.sql` removes the cyclic
+requirement to know a live-money funding manifest before Stage 6 computes it. Stage 5 can persist an
+immutable full-inventory plan with nullable balance funding and release identities. Guard triggers
+allow only one-way funding finalization, reject source/policy or finalized-digest replacement and
+require exact ready queue coverage before `prepared`. It performs no data backfill, starts no job,
+does not move the release head and does not pause production writers. The dependent Stage 5/6
+consumers are delivered only after this migration SHA is green.
+
+The target Stage 6 worker consumer claims only explicitly staged `normalize_funding` target-plan jobs.
 It performs two stable full cursor scans, excludes exact `meter_only` service inventory, then plans
 and applies a bounded number of balance accounts per slice with durable leases and account-local
 retries. Every POST is preceded by a fresh GET and uses only that response's source/target digests.
-Parent confirmation requires a final repeat scan, exact queue coverage and the immutable target
-funding manifest; this lane never moves the release head. Operational details and bounded env
-defaults are in `docs/commerce/MULTI_DISCOUNT_STAGE6.md`.
+Parent confirmation requires a final repeat scan and exact queue coverage, then atomically freezes
+assignment funding generations and the newly computed canonical funding manifest. Engine
+target/recovery prepare+readback finalizes release digests afterward; this lane never moves the
+release head. The pre-0029 orchestration remains dormant until replaced by that consumer.
+Operational details and bounded env defaults are in `docs/commerce/MULTI_DISCOUNT_STAGE6.md`.
 
 This application checkpoint does not seed production policies or enable the engine's strict runtime.
 A legacy scalar job is drained only after its account has a non-null desired full-policy version and

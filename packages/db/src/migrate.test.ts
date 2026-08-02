@@ -547,4 +547,53 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_stage5_prepare_acks_v2"]!.foreignKeys)
       .toHaveProperty("pricing_stage5_prepare_acks_v2_run_fk");
   });
+
+  it("expands pricing release storage for guarded two-phase funding finalization", () => {
+    const migrationName = "0029_pricing_release_two_phase_finalize.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 28);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 29);
+
+    expect(currentEntry).toMatchObject({
+      idx: 29,
+      version: "7",
+      tag: "0029_pricing_release_two_phase_finalize",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:INSERT|UPDATE|DELETE|TRUNCATE|DROP TABLE)\b/im);
+    expect(migrationSql).toContain('ALTER COLUMN "funding_manifest_digest" DROP NOT NULL');
+    expect(migrationSql).toContain('ALTER COLUMN "engine_release_digest" DROP NOT NULL');
+    expect(migrationSql).toContain('ALTER COLUMN "target_digest" DROP NOT NULL');
+    expect(migrationSql).toContain('ALTER COLUMN "recovery_digest" DROP NOT NULL');
+    expect(migrationSql).toContain('CREATE FUNCTION "guard_pricing_release_assignment_v2"()');
+    expect(migrationSql).toContain('CREATE FUNCTION "guard_pricing_release_plan_v2"()');
+    expect(migrationSql).toContain('CREATE FUNCTION "guard_pricing_stage5_run_v2"()');
+    expect(migrationSql).toContain("OLD.\"funding_generation\" IS NULL");
+    expect(migrationSql).toContain("normalization.\"status\" <> 'ready'");
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0029_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, { notNull: boolean; type: string }>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0028_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.pricing_release_plans_v2"]!.columns.funding_manifest_digest)
+      .toMatchObject({ notNull: false, type: "text" });
+    expect(snapshot.tables["public.pricing_release_plans_v2"]!.columns.engine_release_digest)
+      .toMatchObject({ notNull: false, type: "text" });
+    expect(snapshot.tables["public.pricing_stage5_runs_v2"]!.columns.target_digest)
+      .toMatchObject({ notNull: false, type: "text" });
+    expect(snapshot.tables["public.pricing_stage5_runs_v2"]!.columns.recovery_digest)
+      .toMatchObject({ notNull: false, type: "text" });
+  });
 });

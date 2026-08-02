@@ -1,11 +1,12 @@
 # Stage 5 — materialization целевого pricing release
 
-Статус: целевой контракт; OpenKeys authoritative cursor producer и admin-managed service inventory
-producer реализованы отдельными producer-first checkpoint. Compile-fixed runtime manifest также
-публикует dormant capability generation 3: exact Anthropic/OpenAI/Gemini model identity разрешена
-для последующей подготовки, но ни один catalog/switch/release head этим не активируется. Stage 5
-materializer consumer ещё должен быть приведён к этому контракту до production apply. Stage 5
-готовит immutable pricing authority, но не меняет live traffic.
+Статус: целевой двухфазный контракт; OpenKeys authoritative cursor producer и admin-managed service
+inventory producer реализованы отдельными producer-first checkpoint. Compile-fixed runtime manifest
+также публикует dormant capability generation 3: exact Anthropic/OpenAI/Gemini model identity
+разрешена для последующей подготовки, но ни один catalog/switch/release head этим не активируется.
+Migration `0029_pricing_release_two_phase_finalize.sql` должна быть GREEN до нового materializer
+consumer. Stage 5 готовит immutable source/ownership/policy authority, но не угадывает меняющиеся
+funding identities и не меняет live traffic.
 
 ## Входные inventories
 
@@ -46,9 +47,12 @@ owner или отсутствующий engine account — typed blocker. Акк
 набор: Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет
 1:1. Capability publication не является таким enablement.
 
-Planner создаёт target release manifest и заранее подготовленный recovery release следующей
-monotonic generation. Оба связывают capability, main/OpenKeys catalogs, switches, policies,
-assignments, funding generation и minimum runtime capability одним canonical SHA-256 digest.
+Planner резервирует target generation и recovery generation следующего monotonic номера и строит
+immutable source/policy/assignment plan для обеих. На этой фазе balance assignments намеренно имеют
+`funding_generation=NULL`, а `funding_manifest_digest`, `engine_release_digest` и итоговые
+target/recovery release digests отсутствуют. Их нельзя честно вычислить заранее: account-local
+normalization включает live `balance_nano`, `reserved_nano`, `spent_nano` и lots, пока money writers
+продолжают работать. Финальные release manifests строятся только из Stage 6 readback evidence.
 
 ## Dry run
 
@@ -57,7 +61,7 @@ Dry run работает в read-only repeatable snapshot и выводит:
 - source/inventory digests;
 - полное покрытие account classes;
 - immutable policy identities;
-- target/recovery release digests;
+- зарезервированные target/recovery generations и отсутствие преждевременных release digests;
 - typed blockers и exact writes plan.
 
 Dry run ничего не пишет и не требует reviewer field. Любое изменение inventory делает результат
@@ -66,8 +70,11 @@ stale; JSON нельзя редактировать вручную или при
 ## Materialize
 
 Apply работает в `SERIALIZABLE` transaction, повторно строит тот же план и принимает exact expected
-source/plan digest. Он materialize'ит immutable capability/catalog/switch/policy/release rows и
-durable delivery jobs, но не двигает active pricing release head.
+source/plan digest. Он materialize'ит immutable capability/catalog/switch/policy rows, Stage 5 run,
+release-plan skeletons и полные assignments. У balance assignments funding identity остаётся
+nullable; engine release и Stage 6 parent job в этом independently delivered checkpoint не
+создаются. Только после GREEN Stage 5 source/policy materialization отдельный consumer может
+запустить Stage 6 по exact plan digest. Active pricing release head не двигается.
 
 Same-version/same-digest replay возвращает `unchanged`. Same-version/different-digest, неполное
 покрытие inventory, stale source, policy collision или unsupported runtime capability отклоняются
@@ -79,7 +86,7 @@ Same-version/same-digest replay возвращает `unchanged`. Same-version/d
 
 - exact inventories;
 - dry-run report и plan digest;
-- target/recovery release manifests;
+- target/recovery plan skeletons, а после Stage 6 — финализированные release manifests;
 - durable ACK всех prepared identities.
 
 Migration `packages/db/migrations/0028_pricing_stage5_evidence.sql` заранее создаёт пустое
@@ -88,6 +95,14 @@ Migration `packages/db/migrations/0028_pricing_stage5_evidence.sql` заране
 `pricing_stage5_prepare_acks_v2` — только успешные prepare+readback identities. DB constraint не
 даёт принять нестабильные engine/OpenKeys scans или ACK с отличающимся readback digest. Наличие
 таблиц не запускает planner, не создаёт release/control job и не двигает head.
+
+Migration `packages/db/migrations/0029_pricing_release_two_phase_finalize.sql` разрешает честное
+двухфазное состояние: Stage 5 run и release plans могут хранить nullable final identities, а
+balance assignment — nullable funding generation. Guard triggers сохраняют source/policy plan
+immutable, разрешают только переход funding generation `NULL → positive`, запрещают замену уже
+установленной identity и не дают перевести release в `prepared`, пока assignment graph не полный и
+не совпадает один-к-одному с ready Stage 6 rows. После engine prepare/readback обе release identity
+и assignments замораживаются. Миграция ничего не запускает и не касается live money rows.
 
 Stage 5 не меняет цены, балансы, ключи и доступ. Live behavior меняется только single-head CAS на
 Stage 9 по `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

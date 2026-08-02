@@ -1883,9 +1883,11 @@ export const accountPolicyReconciliations = pgTable("account_policy_reconciliati
   `),
 ]);
 
-// Schema-v2 authority for the one-head zero-downtime pricing/funding release. These declarations
-// intentionally have no runtime consumer in the migration checkpoint; the PostgreSQL expansion
-// must be green in production before the producer-first application release uses them.
+// Schema-v2 authority for the one-head zero-downtime pricing/funding release. Stage 5 persists the
+// immutable source/policy/assignment plan first; balance funding identities and the engine release
+// digest are finalized later from Stage 6 account-local evidence. These declarations intentionally
+// have no new runtime consumer in the migration checkpoint; the PostgreSQL expansion must be green
+// in production before the producer-first application release uses the two-phase shape.
 export const pricingPolicyDocumentsV2 = pgTable("pricing_policy_documents_v2", {
   policyId: text("policy_id").notNull(),
   policyVersion: bigint("policy_version", { mode: "bigint" }).notNull(),
@@ -2051,8 +2053,10 @@ export const serviceAccountInventoryV2 = pgTable("service_account_inventory_v2",
 /**
  * Immutable Stage 5 source/plan evidence. The JSON artifacts contain the exact
  * validated inventories and plan; searchable blockers and prepare/read ACKs
- * live in child tables below. Updating status never permits source identity to
- * be replaced because the consumer uses the plan digest as its exact CAS.
+ * live in child tables below. Target/recovery generations are reserved in
+ * Stage 5, while their release digests remain null until Stage 6 funding and
+ * engine prepare/readback finish. Updating status never permits source identity
+ * to be replaced because the consumer uses the plan digest as its exact CAS.
  */
 export const pricingStage5RunsV2 = pgTable("pricing_stage5_runs_v2", {
   runId: uuid("run_id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2066,9 +2070,9 @@ export const pricingStage5RunsV2 = pgTable("pricing_stage5_runs_v2", {
   serviceInventoryDigest: text("service_inventory_digest").notNull(),
   fundingPlanDigest: text("funding_plan_digest").notNull(),
   targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
-  targetDigest: text("target_digest").notNull(),
+  targetDigest: text("target_digest"),
   recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
-  recoveryDigest: text("recovery_digest").notNull(),
+  recoveryDigest: text("recovery_digest"),
   inventoryArtifact: jsonb("inventory_artifact").$type<Record<string, unknown>>().notNull(),
   planArtifact: jsonb("plan_artifact").$type<Record<string, unknown>>().notNull(),
   blockerCount: bigint("blocker_count", { mode: "bigint" }).notNull(),
@@ -2091,9 +2095,10 @@ export const pricingStage5RunsV2 = pgTable("pricing_stage5_runs_v2", {
     AND ${table.serviceInventoryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
     AND ${table.fundingPlanDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
     AND ${table.targetGeneration} > 0
-    AND ${table.targetDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
     AND ${table.recoveryGeneration} > ${table.targetGeneration}
-    AND ${table.recoveryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND (${table.targetDigest} IS NULL OR ${table.targetDigest} ~ '^sha256:v2:[0-9a-f]{64}$')
+    AND (${table.recoveryDigest} IS NULL OR ${table.recoveryDigest} ~ '^sha256:v2:[0-9a-f]{64}$')
+    AND ((${table.targetDigest} IS NULL) = (${table.recoveryDigest} IS NULL))
     AND jsonb_typeof(${table.inventoryArtifact}) = 'object'
     AND jsonb_typeof(${table.planArtifact}) = 'object'
     AND ${table.blockerCount} >= 0
@@ -2101,6 +2106,10 @@ export const pricingStage5RunsV2 = pgTable("pricing_stage5_runs_v2", {
     AND (
       (${table.status} = 'blocked' AND ${table.blockerCount} > 0)
       OR (${table.status} <> 'blocked' AND ${table.blockerCount} = 0)
+    )
+    AND (
+      ${table.status} <> 'prepared'
+      OR (${table.targetDigest} IS NOT NULL AND ${table.recoveryDigest} IS NOT NULL)
     )
   `),
 ]);
@@ -2178,8 +2187,8 @@ export const pricingReleasePlansV2 = pgTable("pricing_release_plans_v2", {
   serviceInventoryDigest: text("service_inventory_digest").notNull(),
   policyManifestDigest: text("policy_manifest_digest").notNull(),
   assignmentManifestDigest: text("assignment_manifest_digest").notNull(),
-  fundingManifestDigest: text("funding_manifest_digest").notNull(),
-  engineReleaseDigest: text("engine_release_digest").notNull(),
+  fundingManifestDigest: text("funding_manifest_digest"),
+  engineReleaseDigest: text("engine_release_digest"),
   contentDigest: text("content_digest").notNull(),
   status: text("status").notNull().default("planned"),
   createdAt,
@@ -2196,10 +2205,14 @@ export const pricingReleasePlansV2 = pgTable("pricing_release_plans_v2", {
     AND ${table.serviceInventoryDigest} <> ''
     AND ${table.policyManifestDigest} <> ''
     AND ${table.assignmentManifestDigest} <> ''
-    AND ${table.fundingManifestDigest} <> ''
-    AND ${table.engineReleaseDigest} <> ''
+    AND (${table.fundingManifestDigest} IS NULL OR ${table.fundingManifestDigest} <> '')
+    AND (${table.engineReleaseDigest} IS NULL OR ${table.engineReleaseDigest} <> '')
     AND ${table.contentDigest} <> ''
     AND ${table.status} IN ('planned', 'materializing', 'prepared', 'active', 'superseded', 'failed')
+    AND (
+      ${table.status} NOT IN ('prepared', 'active', 'superseded')
+      OR (${table.fundingManifestDigest} IS NOT NULL AND ${table.engineReleaseDigest} IS NOT NULL)
+    )
   `),
 ]);
 
@@ -2260,7 +2273,7 @@ export const pricingReleaseAssignmentsV2 = pgTable("pricing_release_assignments_
         ${table.accountClass} = 'openkeys'
         AND ${table.ownerContext} = 'openkeys'
         AND ${table.billingMode} = 'balance'
-        AND ${table.fundingGeneration} > 0
+        AND (${table.fundingGeneration} IS NULL OR ${table.fundingGeneration} > 0)
         AND ${table.purpose} IS NULL
         AND ${table.responsible} IS NULL
       )
@@ -2268,7 +2281,7 @@ export const pricingReleaseAssignmentsV2 = pgTable("pricing_release_assignments_
         ${table.accountClass} IN ('b2c', 'b2b')
         AND ${table.ownerContext} = 'commerce'
         AND ${table.billingMode} = 'balance'
-        AND ${table.fundingGeneration} > 0
+        AND (${table.fundingGeneration} IS NULL OR ${table.fundingGeneration} > 0)
         AND ${table.purpose} IS NULL
         AND ${table.responsible} IS NULL
       )

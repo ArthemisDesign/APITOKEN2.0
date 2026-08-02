@@ -1,9 +1,11 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer, strict TypeScript transport consumer и bounded commerce orchestration
-реализованы. Worker lane остаётся dormant, пока Stage 5 materializer явно не создаст exact
-`normalize_funding` parent job для target release. Stage 6 не требует maintenance window, остановки
-money writers, нуля всех reservations или ручной проверки аккаунтов и ничего не активирует.
+Статус: engine producer и strict TypeScript transport consumer реализованы. Существующая bounded
+commerce orchestration была построена вокруг заранее известного funding manifest; после выявления
+циклической зависимости она остаётся dormant и должна быть переведена на двухфазную финализацию
+только после GREEN migration `0029_pricing_release_two_phase_finalize.sql`. Stage 6 не требует
+maintenance window, остановки money writers, нуля всех reservations или ручной проверки аккаунтов
+и ничего не активирует.
 
 ## Source policy
 
@@ -126,11 +128,12 @@ backfill, потому что active release остаётся legacy; Stage 9 т
 
 ## Bounded orchestration
 
-`stageFundingNormalizationJobV2` принимает только exact generation/content digest существующего
-target release и идемпотентно создаёт один `pricing_release_control_jobs_v2` с
-`job_kind=normalize_funding`. Payload identity связывает engine/service inventory и ожидаемый
-funding manifest. Worker не ищет release для автоматического запуска: отсутствие явно staged job
-означает отсутствие любых normalization POST.
+Двухфазный `stageFundingNormalizationJobV2` принимает только exact generation/content digest
+существующего target plan с nullable final identities и идемпотентно создаёт один
+`pricing_release_control_jobs_v2` с `job_kind=normalize_funding`. Payload identity связывает
+immutable Stage 5 plan, engine/service inventory и funding-plan digest, но не содержит ещё не
+существующий final funding manifest. Worker не ищет release для автоматического запуска: отсутствие
+явно staged job означает отсутствие любых normalization POST.
 
 На каждом resumable slice worker:
 
@@ -156,11 +159,19 @@ Parent становится `confirmed` только при одновремен
 - queue содержит ровно все balance accounts и ни одного service/missing/extra account;
 - каждая строка `ready`, имеет positive funding generation и
   `applied_funding_digest=target_funding_digest` без blockers;
-- canonical funding manifest ровно совпадает с `funding_manifest_digest` target release.
+- canonical funding manifest вычислен из exact ready queue и ещё не конфликтует с уже
+  финализированной identity.
 
 Новый account после этого evidence инвалидирует следующий Stage 8 inventory digest; Stage 9 ещё
 раз проверяет полное покрытие под global release lock непосредственно перед single-head CAS.
-Runner не обновляет `pricing_release_assignments_v2`, release head, balances или pricing policy.
+В той же `SERIALIZABLE` confirmation transaction runner заполняет каждую balance assignment только
+переходом `funding_generation: NULL → positive`, сохраняет canonical `funding_manifest_digest` и
+создаёт эквивалентное funding evidence для заранее подготовленного recovery plan. Любая replacement,
+missing/extra assignment или несовпадение ready queue откатывает всю финализацию. Затем Stage 5
+consumer строит exact target/recovery engine releases, выполняет prepare+readback и только после
+этого сохраняет `engine_release_digest`, target/recovery digests и статус `prepared`. DB guards
+запрещают более ранний `prepared` и замораживают assignments после него. Runner не двигает release
+head и не меняет balances или pricing policy.
 
 Bounded параметры worker имеют безопасные defaults и жёсткие пределы:
 
@@ -201,7 +212,8 @@ Durable queue хранит точные `source_state_digest`, `source`, `blocke
 ## Completion evidence
 
 Stage 6 завершён, когда confirmed parent доказывает exact full-inventory funding manifest, каждый
-balance account target release имеет exact funding generation, все новые writers dual-compatible,
-legacy-format inflight count равен нулю и full replay возвращает только `unchanged`. Evidence digest
-входит в Stage 8 и target release. Наличие runner-кода без staged/confirmed production job
+balance account target и recovery plan имеет exact immutable funding generation, final manifest
+атомарно сохранён, все новые writers dual-compatible, legacy-format inflight count равен нулю и
+full replay возвращает только `unchanged`. После engine prepare/readback evidence входит в Stage 8 и
+обе финальные release identities. Наличие runner-кода без staged/confirmed production job
 завершением не считается.

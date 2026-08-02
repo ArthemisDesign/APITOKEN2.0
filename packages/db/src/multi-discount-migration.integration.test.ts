@@ -799,12 +799,12 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(29);
+        expect(await migrationCount(client)).toBe(30);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(29);
+        expect(await migrationCount(client)).toBe(30);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
@@ -839,7 +839,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(29);
+        expect(await migrationCount(client)).toBe(30);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status
@@ -1261,6 +1261,181 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
           (SELECT count(*)::int FROM pricing_stage5_prepare_acks_v2) AS acks
       `);
       expect(stored.rows).toEqual([{ runs: 1, acks: 1 }]);
+    });
+  }, TEST_TIMEOUT_MS);
+
+  it("guards two-phase release finalization without freezing live money writers", async () => {
+    await withTemporaryDatabase("two-phase-release", async (client) => {
+      await applyMigrations(client, MIGRATIONS_FOLDER);
+      const digest = (value: string) =>
+        `sha256:v2:${Buffer.from(value).toString("hex").padEnd(64, "0").slice(0, 64)}`;
+      const generation = 41;
+
+      await client.query(`
+        INSERT INTO pricing_policy_documents_v2 (
+          policy_id, policy_version, owner_type, owner_id, account_class,
+          product_id, billing_mode, schema_version,
+          capability_generation, capability_digest,
+          catalog_generation, catalog_digest, switch_generation, switch_digest,
+          content_digest
+        ) VALUES (
+          'policy:two-phase', 1, 'global_b2c', 'global', 'b2c',
+          'main', 'balance', 2,
+          3, $1, 3, $2, 3, $3, $4
+        )
+      `, [digest("capability"), digest("catalog"), digest("switch"), digest("policy")]);
+      await client.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation, release_kind, schema_version,
+          commerce_inventory_digest, engine_inventory_digest,
+          openkeys_inventory_digest, service_inventory_digest,
+          policy_manifest_digest, assignment_manifest_digest,
+          funding_manifest_digest, engine_release_digest, content_digest, status
+        ) VALUES (
+          $1, 'target', 2, $2, $3, $4, $5, $6, $7,
+          NULL, NULL, $8, 'materializing'
+        )
+      `, [
+        generation,
+        digest("commerce"),
+        digest("engine"),
+        digest("openkeys"),
+        digest("service"),
+        digest("policies"),
+        digest("assignments"),
+        digest("release-plan"),
+      ]);
+      await client.query(`
+        INSERT INTO pricing_release_assignments_v2 (
+          release_generation, engine_account_id, account_class, owner_context,
+          owner_id, policy_id, policy_version, policy_digest, billing_mode,
+          funding_generation, purpose, responsible, assignment_digest
+        ) VALUES (
+          $1, 'acct_two_phase', 'b2c', 'commerce', 'user:two-phase',
+          'policy:two-phase', 1, $2, 'balance', NULL, NULL, NULL, $3
+        )
+      `, [generation, digest("policy"), digest("assignment")]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_plans_v2 SET status = 'prepared' WHERE generation = $1
+        `, [generation]);
+      }, { code: "23514", constraint: "pricing_release_plans_v2_finalize_guard" });
+
+      await client.query(`
+        INSERT INTO pricing_funding_normalizations_v2 (
+          release_generation, engine_account_id, funding_generation,
+          expected_source_digest, target_funding_digest, applied_funding_digest,
+          normalization_source, blockers, status
+        ) VALUES (
+          $1, 'acct_two_phase', 7, $2, $3, $3, 'ledger_replay', NULL, 'ready'
+        )
+      `, [generation, digest("source"), digest("funding-account")]);
+      await client.query(`
+        UPDATE pricing_release_plans_v2
+           SET funding_manifest_digest = $2, updated_at = now()
+         WHERE generation = $1
+      `, [generation, digest("funding-manifest")]);
+      await client.query(`
+        UPDATE pricing_release_plans_v2
+           SET engine_release_digest = $2, updated_at = now()
+         WHERE generation = $1
+      `, [generation, digest("engine-release")]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_plans_v2 SET status = 'prepared' WHERE generation = $1
+        `, [generation]);
+      }, { code: "23514", constraint: "pricing_release_plans_v2_finalize_guard" });
+
+      await client.query(`
+        UPDATE pricing_release_assignments_v2
+           SET funding_generation = 7
+         WHERE release_generation = $1 AND engine_account_id = 'acct_two_phase'
+      `, [generation]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_assignments_v2
+             SET funding_generation = 8
+           WHERE release_generation = $1 AND engine_account_id = 'acct_two_phase'
+        `, [generation]);
+      }, { code: "23514", constraint: "pricing_release_assignments_v2_immutable_guard" });
+      await client.query(`
+        UPDATE pricing_release_plans_v2
+           SET status = 'prepared', updated_at = now()
+         WHERE generation = $1
+      `, [generation]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_assignments_v2
+             SET funding_generation = 7
+           WHERE release_generation = $1 AND engine_account_id = 'acct_two_phase'
+        `, [generation]);
+      }, { code: "23514", constraint: "pricing_release_assignments_v2_immutable_guard" });
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_plans_v2 SET status = 'materializing' WHERE generation = $1
+        `, [generation]);
+      }, { code: "23514", constraint: "pricing_release_plans_v2_finalize_guard" });
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_release_plans_v2
+             SET funding_manifest_digest = $2
+           WHERE generation = $1
+        `, [generation, digest("replacement")]);
+      }, { code: "23514", constraint: "pricing_release_plans_v2_finalize_guard" });
+
+      const runId = randomUUID();
+      await client.query(`
+        INSERT INTO pricing_stage5_runs_v2 (
+          run_id, schema_version, plan_digest, commerce_inventory_digest,
+          engine_scan_first_digest, engine_scan_second_digest,
+          openkeys_scan_first_digest, openkeys_scan_second_digest,
+          service_inventory_digest, funding_plan_digest,
+          target_generation, target_digest, recovery_generation, recovery_digest,
+          inventory_artifact, plan_artifact, blocker_count, status
+        ) VALUES (
+          $1, 2, $2, $3, $4, $4, $5, $5, $6, $7,
+          41, NULL, 42, NULL, '{}'::jsonb, '{}'::jsonb, 0, 'materializing'
+        )
+      `, [
+        runId,
+        digest("stage5-plan"),
+        digest("stage5-commerce"),
+        digest("stage5-engine"),
+        digest("stage5-openkeys"),
+        digest("stage5-service"),
+        digest("stage5-funding"),
+      ]);
+      await client.query(`
+        UPDATE pricing_stage5_runs_v2
+           SET target_digest = $2, recovery_digest = $3,
+               status = 'prepared', updated_at = now()
+         WHERE run_id = $1
+      `, [runId, digest("target-release"), digest("recovery-release")]);
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_stage5_runs_v2 SET target_digest = $2 WHERE run_id = $1
+        `, [runId, digest("different-target")]);
+      }, { code: "23514", constraint: "pricing_stage5_runs_v2_finalize_guard" });
+
+      const finalized = await client.query(`
+        SELECT plan.status, assignment.funding_generation::text,
+               run.status AS run_status, run.target_digest IS NOT NULL AS target_finalized
+          FROM pricing_release_plans_v2 plan
+          JOIN pricing_release_assignments_v2 assignment
+            ON assignment.release_generation = plan.generation
+          JOIN pricing_stage5_runs_v2 run ON run.target_generation = plan.generation
+         WHERE plan.generation = $1
+      `, [generation]);
+      expect(finalized.rows).toEqual([{
+        status: "prepared",
+        funding_generation: "7",
+        run_status: "prepared",
+        target_finalized: true,
+      }]);
     });
   }, TEST_TIMEOUT_MS);
 
