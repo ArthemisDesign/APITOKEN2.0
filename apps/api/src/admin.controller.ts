@@ -10,6 +10,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from "@nestjs/common";
@@ -17,6 +18,8 @@ import {
   createBusinessInviteSchema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
+  serviceAccountInventoryMutationV2Schema,
+  serviceAccountInventoryServiceIdV2Schema,
   setBusinessPricingSchema,
 } from "@claude-api/contracts";
 import {
@@ -24,10 +27,15 @@ import {
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
   PricingPolicyWriteError,
+  ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { z } from "zod";
 import { AdminGuard } from "./admin.guard.js";
-import { AdminCreditError, AdminService } from "./admin.service.js";
+import {
+  AdminCreditError,
+  AdminService,
+  AdminServiceAccountInventoryError,
+} from "./admin.service.js";
 
 const uuidSchema = z.string().uuid();
 const creditSchema = z.object({ amount_usd: z.string() });
@@ -205,6 +213,41 @@ export class AdminController {
       return await this.admin.listManagedServicePricingPolicies();
     } catch (error) {
       throwPricingPolicyHttpError(error);
+      throw error;
+    }
+  }
+
+  @Get("service-account-inventory")
+  @Header("Cache-Control", "no-store")
+  getServiceAccountInventoryV2(): Promise<unknown> {
+    return this.admin.getServiceAccountInventoryV2();
+  }
+
+  @Put("service-account-inventory/:id")
+  @Header("Cache-Control", "no-store")
+  async upsertServiceAccountInventoryV2(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const serviceId = serviceAccountInventoryServiceIdV2Schema.safeParse(id);
+    const mutation = serviceAccountInventoryMutationV2Schema.safeParse(body);
+    if (!serviceId.success) throw new BadRequestException("service account ID is invalid");
+    if (!mutation.success) throw new BadRequestException(mutation.error.flatten());
+    try {
+      return await this.admin.upsertServiceAccountInventoryV2(
+        serviceId.data,
+        mutation.data,
+        adminActor(actorHeader),
+      );
+    } catch (error) {
+      if (error instanceof AdminServiceAccountInventoryError) {
+        if (error.code === "engine_account_missing") throw new NotFoundException(error.message);
+        throw new HttpException(error.message, 409);
+      }
+      if (error instanceof ServiceAccountInventoryV2Error) {
+        throw new HttpException(error.message, 409);
+      }
       throw error;
     }
   }

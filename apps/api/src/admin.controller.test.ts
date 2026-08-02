@@ -1,8 +1,8 @@
 import { BadRequestException, HttpException, NotFoundException } from "@nestjs/common";
-import { PricingPolicyWriteError } from "@claude-api/db";
+import { PricingPolicyWriteError, ServiceAccountInventoryV2Error } from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
 import { AdminController } from "./admin.controller.js";
-import type { AdminService } from "./admin.service.js";
+import { AdminServiceAccountInventoryError, type AdminService } from "./admin.service.js";
 
 describe("admin user list HTTP contract", () => {
   it("passes bounded pagination and filters to the service", async () => {
@@ -173,6 +173,64 @@ describe("managed pricing HTTP contract", () => {
 
     await expect(controller.listServicePricingPolicies()).resolves.toEqual({ policies: [{ ownerId: "crm" }] });
     expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
+  });
+
+  it("writes service inventory only through strict CAS metadata and a verified actor", async () => {
+    const upsertServiceAccountInventoryV2 = vi.fn().mockResolvedValue({
+      status: "stored",
+      account: { service_id: "crm-parsing", source_version: 1 },
+    });
+    const controller = new AdminController({ upsertServiceAccountInventoryV2 } as unknown as AdminService);
+    const body = {
+      expected_source_version: null,
+      expected_content_digest: null,
+      engine_account_id: "acct_service_crm",
+      purpose: "CRM ingestion and parsing",
+      responsible: "platform",
+      reason: "register the existing engine-native service account",
+    };
+
+    await expect(controller.upsertServiceAccountInventoryV2("crm-parsing", body, "owner@example.test"))
+      .resolves.toMatchObject({ status: "stored" });
+    expect(upsertServiceAccountInventoryV2).toHaveBeenCalledWith(
+      "crm-parsing",
+      body,
+      "owner@example.test",
+    );
+
+    await expect(controller.upsertServiceAccountInventoryV2("", body))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.upsertServiceAccountInventoryV2("crm-parsing", {
+      ...body,
+      expected_content_digest: `sha256:v2:${"a".repeat(64)}`,
+    })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("maps missing engine accounts to 404 and all ownership/CAS races to 409", async () => {
+    const missing = new AdminController({
+      upsertServiceAccountInventoryV2: vi.fn().mockRejectedValue(
+        new AdminServiceAccountInventoryError("engine_account_missing", "missing"),
+      ),
+    } as unknown as AdminService);
+    const conflict = new AdminController({
+      upsertServiceAccountInventoryV2: vi.fn().mockRejectedValue(
+        new ServiceAccountInventoryV2Error("version_conflict", "stale"),
+      ),
+    } as unknown as AdminService);
+    const body = {
+      expected_source_version: null,
+      expected_content_digest: null,
+      engine_account_id: "acct_service_crm",
+      purpose: "CRM ingestion and parsing",
+      responsible: "platform",
+      reason: "register the existing engine-native service account",
+    };
+
+    await expect(missing.upsertServiceAccountInventoryV2("crm-parsing", body))
+      .rejects.toBeInstanceOf(NotFoundException);
+    const rejected = conflict.upsertServiceAccountInventoryV2("crm-parsing", body);
+    await expect(rejected).rejects.toBeInstanceOf(HttpException);
+    await expect(rejected).rejects.toMatchObject({ status: 409 });
   });
 
   it("maps catalog/rule errors to 400, missing policies to 404, and CAS conflicts to 409", async () => {

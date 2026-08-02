@@ -1,9 +1,9 @@
 # Stage 5 — materialization целевого pricing release
 
-Статус: целевой контракт; OpenKeys authoritative cursor producer реализован отдельным
-producer-first checkpoint, а Stage 5 materializer consumer ещё должен быть приведён к этому
-контракту до production apply. Stage 5 готовит immutable pricing authority, но не меняет live
-traffic.
+Статус: целевой контракт; OpenKeys authoritative cursor producer и admin-managed service inventory
+producer реализованы отдельными producer-first checkpoint. Stage 5 materializer consumer ещё
+должен быть приведён к этому контракту до production apply. Stage 5 готовит immutable pricing
+authority, но не меняет live traffic.
 
 ## Входные inventories
 
@@ -15,6 +15,13 @@ Planner получает свежие authoritative inventories всех bounded
   removed и ранее считавшиеся legacy; все страницы обязаны иметь один full-manifest digest;
 - каждый service account с purpose/responsible metadata;
 - полный engine inventory для проверки покрытия.
+
+Service authority заполняется только через `PUT /admin/service-account-inventory/{service_id}`.
+Mutation делает два совпадающих полных engine scans, берёт status из engine, отклоняет commerce и
+OpenKeys ownership и пишет monotonic per-service version/content digest по exact CAS. Простое
+отсутствие account в commerce/OpenKeys не превращает его в service автоматически: metadata должны
+быть явно зарегистрированы, а Stage 5 проверяет весь complement. GET этого admin endpoint возвращает
+canonical aggregate inventory digest; mutation не создаёт policy/release и не меняет live traffic.
 
 Ручная assignment matrix больше не является authority. Все владельцы должны следовать из
 authoritative inventory. Один account в двух inventories, неизвестный account, active account без

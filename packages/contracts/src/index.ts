@@ -722,6 +722,47 @@ export type PricingReleaseInventoryPageV2 = z.infer<typeof pricingReleaseInvento
 
 export const canonicalSha256V2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
 
+/**
+ * Admin-managed authority for engine-native service accounts. The status is
+ * supplied by the engine inventory producer, never by the operator mutation.
+ */
+export const serviceAccountInventoryServiceIdV2Schema = z.string().trim()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
+export const serviceAccountInventoryEntryV2Schema = z.object({
+  service_id: serviceAccountInventoryServiceIdV2Schema,
+  engine_account_id: z.string().startsWith("acct_").max(200),
+  purpose: z.string().trim().min(3).max(500),
+  responsible: z.string().trim().min(1).max(200),
+  status: z.enum(["active", "disabled"]),
+  source_version: pricingVersionSchema,
+  content_digest: canonicalSha256V2Schema,
+}).strict();
+export type ServiceAccountInventoryEntryV2 = z.infer<typeof serviceAccountInventoryEntryV2Schema>;
+
+export const serviceAccountInventoryV2Schema = z.object({
+  schema_version: z.literal(PRICING_RELEASE_SCHEMA_VERSION_V2),
+  inventory_digest: canonicalSha256V2Schema,
+  accounts: z.array(serviceAccountInventoryEntryV2Schema),
+}).strict();
+export type ServiceAccountInventoryV2 = z.infer<typeof serviceAccountInventoryV2Schema>;
+
+export const serviceAccountInventoryMutationV2Schema = z.object({
+  expected_source_version: pricingVersionSchema.nullable(),
+  expected_content_digest: canonicalSha256V2Schema.nullable(),
+  engine_account_id: z.string().startsWith("acct_").max(200),
+  purpose: z.string().trim().min(3).max(500),
+  responsible: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(3).max(2_000),
+}).strict().superRefine((value, context) => {
+  if ((value.expected_source_version === null) !== (value.expected_content_digest === null)) {
+    context.addIssue({
+      code: "custom",
+      message: "expected_source_version and expected_content_digest must both be null or both be set",
+    });
+  }
+});
+export type ServiceAccountInventoryMutationV2 = z.infer<typeof serviceAccountInventoryMutationV2Schema>;
+
 export const openKeysPricingInventoryAccountV2Schema = z.object({
   account_id: z.string().startsWith("acct_").max(200),
   source_id: z.string().uuid(),

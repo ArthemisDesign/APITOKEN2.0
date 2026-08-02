@@ -90,8 +90,11 @@ OAuth, Google project или proxy. Защита относится ко все�
   rules при выключении не удаляются;
 - provider rule не включает будущие модели автоматически. Редактор предлагает только модели из
   активного product catalog; Gemini не появляется без явной catalog entry;
-- service inventory показывает `purpose`, `responsible`, all-runtime-model access и
-  `billing_mode=meter_only`. Service не редактирует product discounts и не зависит от balance;
+- backend admin API публикует canonical service inventory и exact-CAS mutation под
+  `/admin/service-account-inventory`; он показывает `purpose`, `responsible`, last verified engine
+  status, all-runtime-model access и `billing_mode=meter_only`. Текущий UI не классифицирует неизвестные
+  accounts автоматически: до отдельной формы оператор использует тот же защищённый admin-контракт.
+  Service не редактирует product discounts и не зависит от balance;
 - каждое сохранение показывает новую source version и не объявляется применённым, пока targets не
   имеют совпадающие desired/applied versions и exact ACK. В UI видны job state, последняя ошибка,
   actor, reason и время версии.

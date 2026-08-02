@@ -1,10 +1,13 @@
+import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
+  type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
+  type ServiceAccountInventoryMutationV2,
 } from "@claude-api/contracts";
 import {
   BusinessCustomerNotFoundError,
@@ -18,15 +21,18 @@ import {
   getManagedPricingPolicy,
   getManagedPricingCatalog,
   listManagedServicePricingPolicies,
+  engineAccountIdentityInventoryDigestV2,
   getBusinessInviteToken,
   getEngineAccountMapping,
   listAdminUserOverview,
   recordAdminCredit,
+  readServiceAccountInventoryV2,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
+  upsertServiceAccountInventoryV2,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
@@ -34,6 +40,19 @@ import {
 import { EngineClient } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
+
+export class AdminServiceAccountInventoryError extends Error {
+  constructor(
+    public readonly code:
+      | "engine_account_missing"
+      | "engine_inventory_unstable"
+      | "account_owned_by_openkeys",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AdminServiceAccountInventoryError";
+  }
+}
 
 @Injectable()
 export class AdminService {
@@ -177,11 +196,125 @@ export class AdminService {
     return { policies: await listManagedServicePricingPolicies(this.database) };
   }
 
+  async getServiceAccountInventoryV2(): Promise<unknown> {
+    return readServiceAccountInventoryV2(this.database);
+  }
+
+  async upsertServiceAccountInventoryV2(
+    serviceId: string,
+    input: ServiceAccountInventoryMutationV2,
+    actorId: string,
+  ): Promise<unknown> {
+    const engineInventory = await this.stableEngineAccountIdentityInventoryV2();
+    const engineAccount = engineInventory.accounts.find(
+      (account) => account.account_id === input.engine_account_id,
+    );
+    if (!engineAccount) {
+      throw new AdminServiceAccountInventoryError(
+        "engine_account_missing",
+        `engine account ${input.engine_account_id} does not exist`,
+      );
+    }
+
+    const accountDetails = await this.engine.getAccounts([input.engine_account_id]);
+    const details = accountDetails.find((account) => account.account === input.engine_account_id);
+    if (!details) {
+      throw new AdminServiceAccountInventoryError(
+        "engine_account_missing",
+        `engine account ${input.engine_account_id} disappeared during validation`,
+      );
+    }
+    if (details.status !== engineAccount.status) {
+      throw new AdminServiceAccountInventoryError(
+        "engine_inventory_unstable",
+        `engine account ${input.engine_account_id} status changed during validation`,
+      );
+    }
+    if (/^openkeys-/i.test(details.handle ?? "")) {
+      throw new AdminServiceAccountInventoryError(
+        "account_owned_by_openkeys",
+        `engine account ${input.engine_account_id} belongs to OpenKeys`,
+      );
+    }
+
+    return upsertServiceAccountInventoryV2(this.database, {
+      serviceId,
+      expectedSourceVersion: input.expected_source_version,
+      expectedContentDigest: input.expected_content_digest,
+      engineAccountId: input.engine_account_id,
+      purpose: input.purpose,
+      responsible: input.responsible,
+      status: engineAccount.status,
+      engineInventoryDigest: engineInventory.digest,
+      actorId,
+      reason: input.reason,
+    });
+  }
+
   async updateManagedProviderSwitches(
     input: ProviderSwitchEditorMutation,
     actorId: string,
   ): Promise<unknown> {
     return updateManagedProviderSwitches(this.database, { ...input, actorId });
+  }
+
+  private async stableEngineAccountIdentityInventoryV2(): Promise<{
+    accounts: PricingReleaseInventoryAccountV2[];
+    digest: string;
+  }> {
+    const scan = async (): Promise<{
+      accounts: PricingReleaseInventoryAccountV2[];
+      digest: string;
+    }> => {
+      const accounts: PricingReleaseInventoryAccountV2[] = [];
+      const seen = new Set<string>();
+      let afterAccountId: string | undefined;
+      let previousAccountId: string | null = null;
+      for (;;) {
+        const page = await this.engine.getPricingReleaseInventoryV2({
+          ...(afterAccountId === undefined ? {} : { afterAccountId }),
+          limit: 500,
+        });
+        for (const account of page.accounts) {
+          if (
+            seen.has(account.account_id)
+            || (previousAccountId !== null
+              && Buffer.compare(Buffer.from(account.account_id, "utf8"), Buffer.from(previousAccountId, "utf8")) <= 0)
+          ) {
+            throw new AdminServiceAccountInventoryError(
+              "engine_inventory_unstable",
+              "engine pricing inventory returned a duplicate or regressing account cursor",
+            );
+          }
+          seen.add(account.account_id);
+          previousAccountId = account.account_id;
+          accounts.push(account);
+        }
+        if (page.next_after_account_id === null) break;
+        if (
+          page.accounts.length === 0
+          || page.next_after_account_id === afterAccountId
+          || page.next_after_account_id !== page.accounts.at(-1)?.account_id
+        ) {
+          throw new AdminServiceAccountInventoryError(
+            "engine_inventory_unstable",
+            "engine pricing inventory returned an invalid continuation cursor",
+          );
+        }
+        afterAccountId = page.next_after_account_id;
+      }
+      return { accounts, digest: engineAccountIdentityInventoryDigestV2(accounts) };
+    };
+
+    const first = await scan();
+    const second = await scan();
+    if (first.digest !== second.digest) {
+      throw new AdminServiceAccountInventoryError(
+        "engine_inventory_unstable",
+        "engine account identity inventory changed during service-account validation",
+      );
+    }
+    return second;
   }
 
   async updateManagedPricingPolicy(

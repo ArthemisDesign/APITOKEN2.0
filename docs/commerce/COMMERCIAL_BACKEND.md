@@ -113,13 +113,43 @@ PATCH     /admin/business-users/{id}/pricing
 GET/PATCH /admin/business-invites/{id}/pricing-policy
 GET       /admin/service-policies
 GET/PATCH /admin/service-policies/{id}?product_id=...
+GET       /admin/service-account-inventory
+PUT       /admin/service-account-inventory/{service_id}
 ```
 
 Policy writes are full CAS replacements over provider/model rules. Their responses include source
 actor/reason/version, desired/applied target versions, durable delivery state and the latest error.
-Service inventory spans all runtime-capable models, carries authoritative purpose/responsible
-evidence and materializes `billing_mode=meter_only`; it is not restricted by product pricing rules
-and never depends on account balance.
+Service inventory is a separate admin-managed authority over
+`service_account_inventory_v2`. A PUT is an exact per-service CAS: create requires null expected
+version/digest, update requires the current pair, and an exact replay returns `unchanged`. The
+operator supplies only stable service identity plus `purpose`/`responsible`; the API performs two
+matching exhaustive engine pricing-inventory scans and copies the current engine status. It rejects
+missing accounts, commerce mappings, OpenKeys handles, duplicate engine ownership and stale CAS,
+then writes the row and audit evidence in one `SERIALIZABLE` commerce transaction. The mutation does
+not create an engine account, policy, release or activation. Stage 5 still proves that the aggregate
+commerce/OpenKeys/service inventories cover engine inventory exactly once, so an unregistered or
+misclassified account remains a typed blocker rather than being inferred from its name.
+
+Strict mutation body (unknown fields are rejected):
+
+```json
+{
+  "expected_source_version": null,
+  "expected_content_digest": null,
+  "engine_account_id": "acct_...",
+  "purpose": "internal workload description",
+  "responsible": "platform owner",
+  "reason": "operator audit reason"
+}
+```
+
+GET and successful PUT return schema-v2 rows sorted by `service_id`, each with monotonic
+`source_version` and canonical `content_digest`, plus one canonical `inventory_digest`. PUT also
+returns `stored|unchanged` and the exact stable engine identity-inventory digest used for validation.
+
+The resulting service inventory spans all runtime-capable models, carries authoritative
+purpose/responsible evidence and materializes `billing_mode=meter_only`; it is not restricted by
+product pricing rules and never depends on account balance.
 An invitation may use either a complete policy or the legacy scalar compatibility input, never both;
 policy-based invitations persist a neutral `10000` placeholder. Edit, resend and redemption preserve
 independent exact snapshots, and redemption copies the selected invitation version into the new B2B
