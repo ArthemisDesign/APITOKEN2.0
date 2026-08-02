@@ -220,11 +220,13 @@ contract-тестами в модуле. Мультимодальность и s
 image_url-части user-сообщений → Messages image-блоки (data: → base64 source,
 http(s) → url source, `detail` != auto → 400), `response_format` json_schema →
 GA `output_config.format` (только схема; json_object отклонён matrix).
-Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high → GA `output_config.effort`
-(minimal клампится в low, невалидное значение → `400 invalid_request`; `effort`
-соседствует с `format` в одном `output_config`) + инжект `thinking: {type:"adaptive",
-display:"summarized"}` — без него на 4.6+ adaptive выключен, а дефолтный display=omitted
-присылает пустые thinking-блоки; явный `thinking` клиента не переопределяется.
+Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high на Claude 4.6+ → GA
+`output_config.effort` (minimal клампится в low, невалидное значение →
+`400 invalid_request`; `effort` соседствует с `format` в одном `output_config`) + инжект
+`thinking: {type:"adaptive", display:"summarized"}` — без него adaptive выключен, а дефолтный
+display=omitted присылает пустые thinking-блоки; явный `thinking` клиента не переопределяется.
+На моделях до 4.6 upstream отвергает оба поля, поэтому валидный effort деградирует к model
+default без них; явный legacy `thinking` сохраняется.
 Thinking-блоки/thinking_delta ответа → `message.reasoning_content`/reasoning_content-дельты
 (signature/redacted_thinking не выставляются).
 Синтетические OpenAI-ошибки адаптера рождаются ТОЛЬКО через его `chat_error` (с
@@ -242,7 +244,8 @@ text-партов через \n, нетекстовые части → 400), pai
 валидируется — как chat-адаптер 3.2, `tools` → `input_schema` (не-function tool → 400),
 `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
 `max_tokens` дефолт 4096, `reasoning.effort` → `output_config.effort` + инжект
-`thinking: {type:"adaptive", display:"summarized"}` как 3.4c, `text.format` json_schema
+`thinking: {type:"adaptive", display:"summarized"}` на Claude 4.6+ как 3.4c (на прежних
+моделях hint деградирует к model default), `text.format` json_schema
 → `output_config.format`, capability matrix из 9 правил + open list) и вызывает общий
 `forward()` без изменений; ответ переводится СНАРУЖИ — Messages SSE → Responses SSE
 словаря 4.1 + reasoning 4.2 (`response.created`/`in_progress` → per-block

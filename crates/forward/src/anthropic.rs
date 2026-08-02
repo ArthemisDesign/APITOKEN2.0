@@ -14,12 +14,14 @@
 //! user-сообщений → Messages image-блоки (data: URL → base64 source,
 //! http(s) → url source; `detail` != auto отклоняется), `response_format`
 //! json_schema → GA `output_config.format` (json_object у Messages нет).
-//! Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high → GA
-//! `output_config.effort` (minimal клампится в low; невалидное значение →
-//! 400 invalid_request) + инжект `thinking: {type:"adaptive", display:
-//! "summarized"}` (без него на 4.6+ adaptive выключен, а дефолтный
-//! display=omitted присылает пустые thinking-блоки — живые пробы native lane;
-//! явный `thinking` клиента не переопределяется); thinking-блоки ответа
+//! Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high на
+//! Claude 4.6+ → GA `output_config.effort` (minimal клампится в low;
+//! невалидное значение → 400 invalid_request) + инжект `thinking:
+//! {type:"adaptive", display:"summarized"}` (без него adaptive выключен, а
+//! дефолтный display=omitted присылает пустые thinking-блоки — живые пробы
+//! native lane; явный `thinking` клиента не переопределяется). Модели до 4.6
+//! не принимают ни effort, ни adaptive, поэтому валидный compatibility hint
+//! на них деградирует к model default без обоих полей. Thinking-блоки ответа
 //! склеиваются в OpenAI-расширение `reasoning_content`
 //! (signature/redacted_thinking не выставляются — решение 4).
 //!
@@ -68,6 +70,44 @@ pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// Дефолт `max_tokens`, когда chat-запрос его не задал: системная конвенция
 /// reserve-пути (proxy.rs трактует отсутствующий `max_tokens` как 4096).
 pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
+
+/// Поддерживает ли нативная модель Anthropic GA `output_config.effort` вместе
+/// с adaptive thinking. Живые пробы фиксируют границу Claude 4.6: 4.5 и
+/// прежние поколения отклоняют оба поля. Неизвестный/неразбираемый id
+/// трактуется консервативно — OpenAI-compatible effort остаётся hint'ом и
+/// деградирует к model default, а не превращает совместимый запрос в 400.
+pub(crate) fn supports_adaptive_effort(model: &str) -> bool {
+    let model = model.strip_prefix("anthropic/").unwrap_or(model);
+    let version = [
+        "claude-opus-",
+        "claude-sonnet-",
+        "claude-haiku-",
+        "claude-fable-",
+    ]
+    .into_iter()
+    .find_map(|prefix| model.strip_prefix(prefix));
+    let Some(version) = version else {
+        return false;
+    };
+    let mut parts = version.split('-');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
+        return false;
+    };
+    if major > 4 {
+        return true;
+    }
+    if major < 4 {
+        return false;
+    }
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    // `claude-opus-4-20250514` — legacy Claude 4 date id, не версия 4.20M.
+    if minor.len() > 2 {
+        return false;
+    }
+    minor.parse::<u16>().is_ok_and(|minor| minor >= 6)
+}
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Anthropic`).
@@ -288,7 +328,7 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
         output_config.insert("format".to_string(), format);
     }
     let effort = translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")?;
-    if let Some(effort) = effort {
+    if let Some(effort) = effort.filter(|_| supports_adaptive_effort(&model)) {
         output_config.insert("effort".to_string(), Value::String(effort));
         // reasoning_effort без явного thinking включает adaptive thinking с
         // видимой summary: на 4.6+ моделях adaptive выключен по умолчанию
@@ -296,6 +336,8 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
         // display=omitted присылает thinking-блоки с пустым текстом — оба
         // факта подтверждены живыми пробами native lane (3.4c). Явный
         // thinking клиента не переопределяем: open list ниже его проксирует.
+        // На старых моделях выше снят и effort: они отвергают оба поля, а
+        // OpenAI-compatible hint должен деградировать к model default.
         if object.get("thinking").filter(|v| !v.is_null()).is_none() {
             body.insert(
                 "thinking".to_string(),
@@ -2265,6 +2307,29 @@ mod tests {
     // ---------- reasoning (этапы 3.4b/3.4c) ----------
 
     #[test]
+    fn adaptive_effort_capability_starts_at_claude_4_6() {
+        for model in [
+            "claude-sonnet-4-6",
+            "anthropic/claude-opus-4-7-20260601",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-fable-5",
+        ] {
+            assert!(supports_adaptive_effort(model), "{model}");
+        }
+        for model in [
+            "claude-haiku-4-5-20251001",
+            "anthropic/claude-sonnet-4-5-20250929",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-3-7-sonnet-20250219",
+            "unknown-model",
+        ] {
+            assert!(!supports_adaptive_effort(model), "{model}");
+        }
+    }
+
+    #[test]
     fn translates_reasoning_effort_to_output_config_effort() {
         // minimal у Messages нет — клампится в low; остальные проксируются.
         for (effort, expected) in [
@@ -2305,12 +2370,62 @@ mod tests {
     fn reasoning_effort_preserves_client_thinking() {
         // Явный thinking клиента (open list) не переопределяется инжектом 3.4c.
         let translated = ok_translated(serde_json::json!({
-            "model": "claude-opus-4-5-20251101",
+            "model": "claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "reasoning_effort": "medium",
             "thinking": {"type": "enabled", "budget_tokens": 2048},
         }));
         assert_eq!(translated.body["output_config"]["effort"], "medium");
+        assert_eq!(
+            translated.body["thinking"],
+            serde_json::json!({"type": "enabled", "budget_tokens": 2048})
+        );
+    }
+
+    #[test]
+    fn pre_4_6_reasoning_effort_degrades_to_model_default() {
+        for model in [
+            "claude-haiku-4-5-20251001",
+            "anthropic/claude-sonnet-4-5-20250929",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+        ] {
+            let translated = ok_translated(serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "title this"}],
+                "reasoning_effort": "low",
+            }));
+            assert!(translated.body.get("output_config").is_none(), "{model}");
+            assert!(translated.body.get("thinking").is_none(), "{model}");
+        }
+
+        // Совместимый structured output остаётся: снимается только effort,
+        // а не весь output_config.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [{"role": "user", "content": "title this"}],
+            "reasoning_effort": "low",
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "title", "strict": true,
+                "schema": {"type": "object", "properties": {"title": {"type": "string"}}}
+            }}
+        }));
+        assert!(translated.body["output_config"].get("effort").is_none());
+        assert_eq!(
+            translated.body["output_config"]["format"]["type"],
+            "json_schema"
+        );
+        assert!(translated.body.get("thinking").is_none());
+
+        // Явный legacy thinking остаётся клиентским контрактом, но
+        // несовместимый GA effort всё равно не уходит upstream.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [{"role": "user", "content": "think"}],
+            "reasoning_effort": "medium",
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+        }));
+        assert!(translated.body.get("output_config").is_none());
         assert_eq!(
             translated.body["thinking"],
             serde_json::json!({"type": "enabled", "budget_tokens": 2048})

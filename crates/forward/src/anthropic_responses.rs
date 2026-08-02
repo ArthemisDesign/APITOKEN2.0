@@ -32,10 +32,12 @@
 //! `disable_parallel_tool_use:true`; `max_output_tokens` → `max_tokens`
 //! (дефолт 4096 — системная конвенция reserve-пути); `reasoning.effort` →
 //! `output_config.effort` (minimal клампится в low) + инжект
-//! `thinking: {"type":"adaptive","display":"summarized"}` — как 3.4c
-//! chat-адаптера: без thinking на 4.6+ рассуждения нет вовсе, а дефолтный
+//! `thinking: {"type":"adaptive","display":"summarized"}` на Claude 4.6+
+//! — как 3.4c chat-адаптера: без thinking рассуждения нет вовсе, а дефолтный
 //! display=omitted присылает пустые блоки; явный `thinking` клиента не
-//! переопределяется (open list его проксирует, инжект не делается);
+//! переопределяется (open list его проксирует, инжект не делается). На
+//! моделях до 4.6 валидный effort деградирует к model default без обоих
+//! несовместимых полей;
 //! `text.format` json_schema → `output_config.format` (обёртка
 //! name/strict/description снимается, json_object у Messages нет → 400).
 //!
@@ -121,8 +123,8 @@ use serde_json::{json, Map, Value};
 
 use crate::anthropic::{
     chat_error, convert_error_response, image_block, invalid_request, merge_or_push,
-    translate_reasoning_effort, translate_tool_function, unsupported_parameter,
-    CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
+    supports_adaptive_effort, translate_reasoning_effort, translate_tool_function,
+    unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
 };
 use crate::codex::new_id;
 use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
@@ -345,14 +347,15 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
         output_config.insert("format".to_string(), format);
     }
     let effort = translate_reasoning(object.get("reasoning"))?;
-    if let Some(effort) = effort {
+    if let Some(effort) = effort.filter(|_| supports_adaptive_effort(&model)) {
         output_config.insert("effort".to_string(), Value::String(effort));
         // thinking-инжект (как 3.4c chat-адаптера): effort без явного thinking
         // включает adaptive thinking с видимой summary — на 4.6+ моделях
         // adaptive выключен по умолчанию (effort без thinking не даёт
         // рассуждения вовсе), а дефолтный display=omitted присылает
         // thinking-блоки с пустым текстом. Явный thinking клиента не
-        // переопределяем: open list ниже его проксирует.
+        // переопределяем: open list ниже его проксирует. На старых моделях
+        // effort тоже снят: оба поля там отвергаются upstream.
         if object.get("thinking").filter(|v| !v.is_null()).is_none() {
             body.insert(
                 "thinking".to_string(),
@@ -2059,6 +2062,38 @@ mod tests {
             translated.body["thinking"],
             serde_json::json!({"type": "enabled", "budget_tokens": 2048})
         );
+    }
+
+    #[test]
+    fn pre_4_6_reasoning_effort_degrades_to_model_default() {
+        for model in [
+            "claude-haiku-4-5-20251001",
+            "anthropic/claude-sonnet-4-5-20250929",
+            "claude-opus-4-20250514",
+        ] {
+            let translated = ok_translated(serde_json::json!({
+                "model": model,
+                "input": "title this",
+                "reasoning": {"effort": "low"},
+            }));
+            assert!(translated.body.get("output_config").is_none(), "{model}");
+            assert!(translated.body.get("thinking").is_none(), "{model}");
+        }
+
+        // text.format остаётся в output_config, даже когда effort снят.
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-haiku-4-5-20251001",
+            "input": "title this",
+            "reasoning": {"effort": "low"},
+            "text": {"format": {"type": "json_schema", "name": "title", "strict": true,
+                "schema": {"type": "object", "properties": {"title": {"type": "string"}}}}},
+        }));
+        assert!(translated.body["output_config"].get("effort").is_none());
+        assert_eq!(
+            translated.body["output_config"]["format"]["type"],
+            "json_schema"
+        );
+        assert!(translated.body.get("thinking").is_none());
     }
 
     #[tokio::test]

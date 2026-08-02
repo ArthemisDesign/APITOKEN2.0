@@ -178,11 +178,15 @@ credential/general-header values, prompt, tool arguments и generated content в
 Gemini CLI — native `streamGenerateContent`. Отдельный `opencode-gemini-tools` запускает OpenCode
 без пользовательских plugins/sanitizer, требует реальный bash-вызов и второй Chat turn, а bounded
 evidence подтверждает сырой AI SDK `$schema`/exclusive bounds, tool-call ответа и replay tool history.
+`opencode-claude-native` тем же чистым provider-конфигом без plugins запускает основной Claude 4.6
+и штатный title-agent на Claude 4.5; evidence требует оба HTTP 200 и подтверждает, что сырой
+`reasoning_effort: low` title-запрос дошёл до router без клиентского rewrite.
 
 Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
 Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
-0.86.2: 18 executable кейсов, включая настоящий многоходовый OpenCode→Gemini bash tool cycle
-(Gemini CLI — Standard native; остальные обычные harness — оба tier).
+0.86.2: 19 executable кейсов, включая настоящий многоходовый OpenCode→Gemini bash tool cycle и
+чистый OpenCode Claude main/title cycle без request rewrite (Gemini CLI — Standard native;
+остальные обычные harness — оба tier).
 Roo Code 3.54.0 установлен и имеет совместимые OpenAI base URL/model/service-tier settings, но у
 расширения нет официального headless CLI, поэтому оно честно отмечено `SKIP`, а не имитируется
 через другой клиент.
@@ -531,8 +535,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
    (решение 4) — **РЕАЛИЗОВАН** (обе плоскости): вход `reasoning_effort`
    minimal|low|medium|high (null/отсутствие — выкл; любое другое не-null
-   значение → `400 invalid_request` с `param: reasoning_effort`) мапится на
-   Anthropic GA `output_config.effort` (minimal клампится в low,
+   значение → `400 invalid_request` с `param: reasoning_effort`) на Claude
+   4.6+ мапится на Anthropic GA `output_config.effort` (minimal клампится в low,
    beta-заголовок не нужен; `effort` соседствует с `format` из 3.4a в одном
    `output_config`, не затирая его) и на Gemini
    `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
@@ -542,8 +546,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    дефолтный `display: "omitted"` присылает thinking-блоки с пустым текстом,
    поэтому при не-null `reasoning_effort` адаптер дополнительно инжектит
    `thinking: {"type": "adaptive", "display": "summarized"}` (явный
-   `thinking` клиента не переопределяется — open list; на моделях ≤4.5
-   adaptive не поддержан — upstream честно отвечает 400).
+   `thinking` клиента не переопределяется — open list). На моделях до 4.6
+   upstream не принимает ни `output_config.effort`, ни adaptive thinking;
+   валидный OpenAI-compatible effort там является hint и деградирует к model
+   default без обоих полей. Явный legacy `thinking` клиента сохраняется.
    Ответ — конвенция `reasoning_content`: Anthropic thinking-блоки и Gemini
    thought-парты склеиваются в `message.reasoning_content` (non-stream, поле
    присутствует только при непустом reasoning), thinking_delta/thought-парты
@@ -578,8 +584,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `strict` снимается; не-function tool → `400 unsupported_parameter`),
    `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
    `max_tokens` (дефолт 4096), `reasoning.effort` → `output_config.effort` (minimal
-   клампится в low) + инжект `thinking: {type:"adaptive", display:"summarized"}` (как 3.4c;
-   явный `thinking` клиента не переопределяется), `text.format` json_schema →
+   клампится в low) + инжект `thinking: {type:"adaptive", display:"summarized"}` на Claude
+   4.6+ (как 3.4c; на прежних моделях hint деградирует к model default; явный `thinking`
+   клиента не переопределяется), `text.format` json_schema →
    `output_config.format` (обёртка снимается; json_object → 400), capability matrix
    (`background`, `service_tier`, `truncation`, `include`, `prompt_cache_key`,
    `safety_identifier`, `user`, `metadata`, `max_tool_calls`, не-дефолтная `text.verbosity`)

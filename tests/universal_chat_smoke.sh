@@ -273,8 +273,15 @@ check_code "$C" 400 "responses bad arguments" && {
   check_body '"param":"input"' "bad arguments param"
 }
 
-echo "[22] engine: reasoning non-stream → reasoning item + message item + reasoning_tokens"
+echo "[22] engine: Claude 4.5 reasoning hint деградирует к model default без upstream 400"
 C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"hi","reasoning":{"effort":"low"}}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses legacy reasoning hint" && {
+  check_body '"object":"response"' "legacy reasoning response"
+  grep -qF '"type":"reasoning"' "$RESP" && { say "✗ legacy hint неожиданно включил reasoning"; FAIL=1; }
+}
+
+echo "[23] engine: reasoning non-stream → reasoning item + message item + reasoning_tokens"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-opus-4-8","input":"hi","reasoning":{"effort":"low"}}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "responses reasoning" && {
   check_body '"type":"reasoning"' "reasoning item type"
   check_body '"id":"rs_' "reasoning item id"
@@ -285,8 +292,8 @@ check_code "$C" 200 "responses reasoning" && {
   grep -qF "sig_mock" "$RESP" && { say "✗ signature утекла в non-stream ответ"; FAIL=1; }
 }
 
-echo "[23] engine: reasoning stream → reasoning_summary события + output_index reasoning=0/message=1"
-C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","stream":true,"input":"hi","reasoning":{"effort":"low"}}' -N -H "x-api-key: $ADMIN_KEY")
+echo "[24] engine: reasoning stream → reasoning_summary события + output_index reasoning=0/message=1"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-opus-4-8","stream":true,"input":"hi","reasoning":{"effort":"low"}}' -N -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "responses reasoning stream" && {
   check_body 'event: response.reasoning_summary_part.added' "reasoning part added"
   check_body 'event: response.reasoning_summary_text.delta' "reasoning text delta"
