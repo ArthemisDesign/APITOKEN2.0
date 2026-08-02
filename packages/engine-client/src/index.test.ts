@@ -683,6 +683,32 @@ describe("EngineClient", () => {
       recovery_digest: "recovery-release-v2",
       link_digest: "target-recovery-link-v2",
     };
+    const sourceStateDigest = `sha256:v2:${"a".repeat(64)}`;
+    const normalizationDigest = `sha256:v2:${"b".repeat(64)}`;
+    const normalizationPlan = {
+      account_id: "acct_test",
+      account_status: "active" as const,
+      status: "ready" as const,
+      source: "ledger_replay" as const,
+      source_state_digest: sourceStateDigest,
+      normalization_digest: normalizationDigest,
+      funding_generation: 1,
+      funding_head_version: 1,
+      balance_nano: "9007199254740993123",
+      reserved_nano: "7",
+      spent_nano: "11",
+      lots: [{
+        lot_id: "fundv2_paid",
+        source_type: "paid" as const,
+        source_ref: "stage6:paid-residual:v2",
+        balance_nano: "9007199254740993123",
+        reserved_nano: "7",
+        spent_nano: "11",
+        version: 1,
+        status: "active" as const,
+      }],
+      blockers: [],
+    };
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     const client = new EngineClient({
       baseUrl: "http://engine.test",
@@ -739,6 +765,21 @@ describe("EngineClient", () => {
             '"spent_nano":11,"funding_generation":3,"funding_head_version":4}],' +
             '"next_after_account_id":null}}');
         }
+        if (url.endsWith("/pricing/v2/funding/acct_test/normalization")) {
+          if (init?.method === "POST") {
+            return Response.json({
+              result: {
+                status: "stored",
+                normalization: {
+                  ...normalizationPlan,
+                  status: "normalized",
+                  source: "stored_generation",
+                },
+              },
+            });
+          }
+          return Response.json({ normalization: normalizationPlan });
+        }
         throw new Error(`unexpected request ${url}`);
       },
     });
@@ -762,10 +803,25 @@ describe("EngineClient", () => {
       }],
       next_after_account_id: null,
     });
+    await expect(client.getFundingNormalizationPlanV2("acct_test")).resolves.toEqual(normalizationPlan);
+    await expect(client.applyFundingNormalizationV2("acct_test", {
+      expected_source_state_digest: sourceStateDigest,
+      expected_normalization_digest: normalizationDigest,
+    })).resolves.toMatchObject({
+      status: "stored",
+      normalization: { status: "normalized", source: "stored_generation" },
+    });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/policy/prepare")))
       .toMatchObject({ method: "POST", body: policy });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/release/prepare")))
       .toMatchObject({ method: "POST", body: release });
+    expect(requests.find((request) => request.url.endsWith("/pricing/v2/funding/acct_test/normalization")
+      && request.method === "POST")).toMatchObject({
+      body: {
+        expected_source_state_digest: sourceStateDigest,
+        expected_normalization_digest: normalizationDigest,
+      },
+    });
     expect(requests.some((request) => request.url.includes("activate"))).toBe(false);
 
     const forgedReadClient = new EngineClient({
@@ -819,6 +875,11 @@ describe("EngineClient", () => {
     await expect(client.getPricingReleaseInventoryV2({ limit: 501 })).rejects.toThrow();
     await expect(client.getPricingReleaseInventoryV2({ afterAccountId: "not-an-account" })).rejects.toThrow();
     await expect(client.getPricingReleaseRecoveryLinkV2(10, 10)).rejects.toThrow("newer");
+    await expect(client.getFundingNormalizationPlanV2("not-an-account")).rejects.toThrow();
+    await expect(client.applyFundingNormalizationV2("acct_test", {
+      expected_source_state_digest: "sha256:v2:not-canonical",
+      expected_normalization_digest: `sha256:v2:${"b".repeat(64)}`,
+    })).rejects.toThrow();
     expect(calls).toBe(0);
   });
 

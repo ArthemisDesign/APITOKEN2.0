@@ -8,6 +8,9 @@ import {
   engineCreditResultSchema,
   engineLedgerSchema,
   engineUsageSchema,
+  fundingNormalizationApplyRequestV2Schema,
+  fundingNormalizationApplyResultV2Schema,
+  fundingNormalizationPlanV2Schema,
   issuedEngineApiKeySchema,
   policyActiveExpectationSchema,
   pricingActiveExpectationSchema,
@@ -28,6 +31,9 @@ import {
   type EngineCreditResult,
   type EngineLedgerEntry,
   type EngineUsage,
+  type FundingNormalizationApplyRequestV2,
+  type FundingNormalizationApplyResultV2,
+  type FundingNormalizationPlanV2,
   type IssuedEngineApiKey,
   type PolicyActiveExpectation,
   type PricingActiveExpectation,
@@ -135,6 +141,7 @@ const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2S
   link_digest: true,
 });
 const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
+const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
 
 export class EngineClient {
   private readonly baseUrl: string;
@@ -734,6 +741,52 @@ export class EngineClient {
       payload,
       response,
     ).inventory;
+  }
+
+  async getFundingNormalizationPlanV2(
+    accountId: string,
+  ): Promise<FundingNormalizationPlanV2 | null> {
+    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/funding/${encodeURIComponent(targetAccountId)}/normalization`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const normalization = this.parsePricingResponse(
+      z.object({ normalization: fundingNormalizationPlanV2Schema }).strict(),
+      payload,
+      response,
+    ).normalization;
+    this.assertAccount(normalization.account_id, targetAccountId, response);
+    return normalization;
+  }
+
+  async applyFundingNormalizationV2(
+    accountId: string,
+    input: FundingNormalizationApplyRequestV2,
+  ): Promise<FundingNormalizationApplyResultV2 | null> {
+    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
+    const request = fundingNormalizationApplyRequestV2Schema.parse(input);
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/funding/${encodeURIComponent(targetAccountId)}/normalization`,
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+        acceptedStatuses: [404, 409],
+      },
+    );
+    if (response.status === 404) return null;
+    const result = this.parsePricingResponse(
+      z.object({ result: fundingNormalizationApplyResultV2Schema }).strict(),
+      payload,
+      response,
+    ).result;
+    this.assertAccount(result.normalization.account_id, targetAccountId, response);
+    const success = result.status === "stored" || result.status === "unchanged";
+    if (success !== response.ok) {
+      throw new EngineClientError("engine returned an inconsistent funding normalization status", response.status, false);
+    }
+    return result;
   }
 
   async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {

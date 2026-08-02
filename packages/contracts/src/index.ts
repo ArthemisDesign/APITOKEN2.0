@@ -720,6 +720,93 @@ export const pricingReleaseInventoryPageV2Schema = z.object({
 }).strict();
 export type PricingReleaseInventoryPageV2 = z.infer<typeof pricingReleaseInventoryPageV2Schema>;
 
+export const fundingNormalizationDigestV2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
+export const fundingNormalizationSourceV2Schema = z.enum([
+  "aggregate_paid_only",
+  "ledger_replay",
+  "legacy_buckets",
+  "stored_generation",
+]);
+export const fundingNormalizationBlockerCodeV2Schema = z.enum([
+  "account_deleted",
+  "active_legacy_reservation",
+  "aggregate_reservation_mismatch",
+  "orphaned_funding_v2_state",
+  "legacy_bucket_mismatch",
+  "invalid_ledger_evidence",
+  "arithmetic_overflow",
+]);
+
+export const fundingNormalizationLotV2Schema = z.object({
+  lot_id: z.string().startsWith("fundv2_").max(200),
+  source_type: z.enum(["paid", "welcome_bonus"]),
+  source_ref: z.string().min(1).max(500),
+  balance_nano: decimalIntegerSchema,
+  reserved_nano: nonNegativeIntegerSchema,
+  spent_nano: nonNegativeIntegerSchema,
+  version: pricingVersionSchema,
+  status: z.enum(["active", "exhausted"]),
+}).strict();
+export type FundingNormalizationLotV2 = z.infer<typeof fundingNormalizationLotV2Schema>;
+
+export const fundingNormalizationBlockerV2Schema = z.object({
+  code: fundingNormalizationBlockerCodeV2Schema,
+  detail: z.string().min(1).max(2_000),
+}).strict();
+export type FundingNormalizationBlockerV2 = z.infer<typeof fundingNormalizationBlockerV2Schema>;
+
+export const fundingNormalizationPlanV2Schema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  account_status: z.enum(["active", "disabled", "deleted"]),
+  status: z.enum(["ready", "blocked", "normalized"]),
+  source: fundingNormalizationSourceV2Schema,
+  source_state_digest: fundingNormalizationDigestV2Schema,
+  normalization_digest: fundingNormalizationDigestV2Schema.nullable(),
+  funding_generation: pricingVersionSchema.nullable(),
+  funding_head_version: pricingVersionSchema.nullable(),
+  balance_nano: decimalIntegerSchema,
+  reserved_nano: nonNegativeIntegerSchema,
+  spent_nano: nonNegativeIntegerSchema,
+  lots: z.array(fundingNormalizationLotV2Schema),
+  blockers: z.array(fundingNormalizationBlockerV2Schema),
+}).strict().superRefine((plan, context) => {
+  const materialized = plan.normalization_digest !== null
+    && plan.funding_generation !== null
+    && plan.funding_head_version !== null;
+  if (plan.status === "blocked") {
+    if (materialized || plan.normalization_digest !== null
+        || plan.funding_generation !== null || plan.funding_head_version !== null) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "blocked normalization cannot carry target identity" });
+    }
+    if (plan.blockers.length === 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "blocked normalization requires a blocker" });
+    }
+  } else {
+    if (!materialized) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "ready normalization requires complete target identity" });
+    }
+    if (plan.blockers.length !== 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "ready normalization cannot carry blockers" });
+    }
+  }
+  if ((plan.status === "normalized") !== (plan.source === "stored_generation")) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "stored generation source must be normalized" });
+  }
+});
+export type FundingNormalizationPlanV2 = z.infer<typeof fundingNormalizationPlanV2Schema>;
+
+export const fundingNormalizationApplyRequestV2Schema = z.object({
+  expected_source_state_digest: fundingNormalizationDigestV2Schema,
+  expected_normalization_digest: fundingNormalizationDigestV2Schema,
+}).strict();
+export type FundingNormalizationApplyRequestV2 = z.infer<typeof fundingNormalizationApplyRequestV2Schema>;
+
+export const fundingNormalizationApplyResultV2Schema = z.object({
+  status: z.enum(["stored", "unchanged", "stale", "blocked", "conflict"]),
+  normalization: fundingNormalizationPlanV2Schema,
+}).strict();
+export type FundingNormalizationApplyResultV2 = z.infer<typeof fundingNormalizationApplyResultV2Schema>;
+
 export const enqueueCreditSchema = z.object({
   paymentId: z.string().uuid(),
   engineAccountId: z.string().startsWith("acct_"),

@@ -520,10 +520,11 @@ lots и initial head. Legacy in-flight блокирует только свой 
 Поздние checkpoints подключают typed TS consumer, runtime release snapshots, Stage 8 evidence и
 наконец один activation CAS. Account creation/activation и тот future CAS share the same
 control-plane lock; data-plane reserve/settlement never takes it.
-After the producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
-strict v2 wire schemas and `packages/engine-client` gained typed prepare/read methods. The client
-surface still has no activation method. Funding-normalization wire schemas/client calls and the
-bounded application job are intentionally a separate consumer SHA after this producer is green.
+After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
+strict release and funding-normalization wire schemas and `packages/engine-client` gained typed
+prepare/read plus account-local normalization plan/apply methods. The client surface still has no
+activation method. The bounded full-inventory application job is intentionally a separate consumer
+checkpoint; merely having a typed client does not materialize any account.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

@@ -1,7 +1,7 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer реализован; orchestration consumer подключается отдельным producer-first
-checkpoint после зелёного `deploy/watchdog`. Stage 6 не требует maintenance window, остановки money
+Статус: engine producer и strict TypeScript transport consumer реализованы; bounded orchestration
+job подключается отдельным checkpoint. Stage 6 не требует maintenance window, остановки money
 writers, нуля всех reservations или ручной проверки аккаунтов.
 
 ## Source policy
@@ -96,6 +96,8 @@ POST /admin/pricing/v2/funding/{account_id}/normalization
 `SERIALIZABLE`, сначала берёт тот же funding-account advisory lock, затем полностью перестраивает
 plan. Ответ `stored|unchanged|stale|blocked|conflict` не допускает применения отредактированного или
 устаревшего JSON. SQLite отвечает fail closed: live authority этого перехода только PostgreSQL.
+`packages/contracts` валидирует полный strict wire shape и canonical digests, а единственные typed
+вызовы находятся в `packages/engine-client`; transport consumer сам по себе не запускает backfill.
 
 При наличии согласованных legacy `funding_buckets` exact historical `welcome_track_bonus`
 переносится в provider-independent `welcome_bonus`, а все остальные buckets схлопываются в `paid`.

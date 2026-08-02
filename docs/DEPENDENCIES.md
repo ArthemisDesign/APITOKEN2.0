@@ -29,9 +29,9 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usag
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head и account-local funding normalization plan/apply; activation mutation намеренно пока
 отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
-exact producer SHA `packages/contracts` валидирует новый strict wire shape, а
-`packages/engine-client` становится единственным typed consumer; bounded application job
-подключается отдельным consumer checkpoint.
+exact producer SHA `packages/contracts` валидирует strict release/funding wire shape, а
+`packages/engine-client` является единственным typed plan/apply consumer; bounded application job
+подключается отдельным consumer checkpoint и не заменяется наличием transport-методов.
 
 ### Sales feed (коммерция ↔ партнёрка)
 
