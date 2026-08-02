@@ -5125,6 +5125,26 @@ mod tests {
             values[0]["quota_model_ids"],
             json!(["gemini-3.1-pro-low", "gemini-pro-agent"])
         );
+
+        let preview = metering::gemini_catalog_at(1_785_369_601)
+            .into_iter()
+            .find(|model| model.id == "gemini-3-flash-preview")
+            .unwrap();
+        let preview = forward::GeminiModel {
+            id: preview.id.into(),
+            display_name: preview.display_name.into(),
+            input_token_limit: preview.input_token_limit,
+            output_token_limit: preview.output_token_limit,
+            prices: preview.prices,
+        };
+        let values = gemini_conversion_models(&[preview], 1_785_369_601);
+        assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "500");
+        assert_eq!(values[0]["rates"]["audio_input_nanousd_per_token"], "1000");
+        assert_eq!(values[0]["rates"]["output_nanousd_per_token"], "3000");
+        assert_eq!(
+            values[0]["quota_model_ids"],
+            json!(["gemini-3-flash", "gemini-3-flash-agent"])
+        );
     }
 
     #[test]

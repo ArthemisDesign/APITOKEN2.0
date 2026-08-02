@@ -2,11 +2,12 @@
 
 Статус: целевой двухфазный контракт; OpenKeys authoritative cursor producer и admin-managed service
 inventory producer реализованы отдельными producer-first checkpoint. Compile-fixed runtime manifest
-также публикует dormant capability generation 3: exact Anthropic/OpenAI/Gemini model identity
-разрешена для последующей подготовки, но ни один catalog/switch/release head этим не активируется.
-Migration `0029_pricing_release_two_phase_finalize.sql` должна быть GREEN до нового materializer
-consumer. Stage 5 готовит immutable source/ownership/policy authority, но не угадывает меняющиеся
-funding identities и не меняет live traffic.
+сохраняет dormant capability generation 3 и публикует additive generation 4 с
+`gemini-3-flash-preview`: exact Anthropic/OpenAI/Gemini model identity разрешена
+для последующей подготовки, но ни один catalog/switch/release head этим не активируется. Migration
+`0029_pricing_release_two_phase_finalize.sql` должна быть GREEN до нового materializer consumer.
+Stage 5 готовит immutable source/ownership/policy authority, но не угадывает меняющиеся funding
+identities и не меняет live traffic.
 
 ## Входные inventories
 
@@ -42,10 +43,11 @@ owner или отсутствующий engine account — typed blocker. Акк
   Старые scalar discounts не переносятся в target release.
 - Service: все runtime-capable модели и `billing_mode=meter_only`; balance не участвует в admission.
 
-Внутренний engine provider ID Gemini — `google`. Main catalog generation 3 явно включает все
-тарифно закреплённые Gemini-модели. OpenKeys generation 3 намеренно сохраняет Anthropic/OpenAI
-набор: Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет
-1:1. Capability publication не является таким enablement.
+Внутренний engine provider ID Gemini — `google`. Frozen capability generation 3 сохраняет исходные
+восемь тарифно закреплённых Gemini-моделей; target generation 4 добавляет
+`gemini-3-flash-preview`. OpenKeys target по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
+Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет 1:1.
+Capability publication не является таким enablement.
 
 Planner резервирует target generation и recovery generation следующего monotonic номера и строит
 immutable source/policy/assignment plan для обеих. На этой фазе balance assignments намеренно имеют

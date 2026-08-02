@@ -44,6 +44,7 @@ const gptModelRows = [
 const geminiModelRows = [
   ["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50","m_gem36flash"],
   ["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00","m_gem35flash"],
+  ["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00","m_gem3flashpreview"],
   ["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*","m_gem31pro"],
   ["Gemini 3.1 Flash-Lite","gemini-3.1-flash-lite","1M","$0.25","$1.50","m_gem31lite"],
   ["Gemini 2.5 Flash","gemini-2.5-flash","1M","$0.30","$2.50","m_gem25flash"],

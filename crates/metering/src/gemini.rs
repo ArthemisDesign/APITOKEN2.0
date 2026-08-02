@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// Reviewed identity of the effective-dated Developer API replacement-cost catalogue below.
 /// Change this identity whenever any epoch/rate semantics change.
-pub const TARIFF_SCHEDULE_ID: &str = "google/gemini-developer-api/2026-07-31";
+pub const TARIFF_SCHEDULE_ID: &str = "google/gemini-developer-api/2026-08-02";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeminiSearchBilling {
@@ -126,6 +126,12 @@ const fn flat_prices(
     }
 }
 
+// Official standard paid-tier rates, rechecked 2026-08-02:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3-flash-preview
+const GEMINI_3_FLASH_PREVIEW: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
+    effective_from: 0,
+    prices: flat_prices(500, 1_000, 50, 100, 3_000, SEARCH_GEMINI_3),
+}];
 // Official standard paid-tier rates, rechecked 2026-07-31:
 // https://ai.google.dev/gemini-api/docs/pricing#gemini-3.6-flash
 const GEMINI_36_FLASH: &[GeminiPriceEpoch] = &[GeminiPriceEpoch {
@@ -231,6 +237,13 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
         schedule: GEMINI_35_FLASH,
+    },
+    CatalogEntry {
+        id: "gemini-3-flash-preview",
+        display_name: "Gemini 3 Flash Preview",
+        input_token_limit: 1_048_576,
+        output_token_limit: 65_536,
+        schedule: GEMINI_3_FLASH_PREVIEW,
     },
     CatalogEntry {
         id: "gemini-3.1-flash-lite",
@@ -555,6 +568,24 @@ mod tests {
                 },
             ),
             (
+                "gemini-3-flash-preview",
+                GeminiPrices {
+                    input: 500,
+                    audio_input: 1_000,
+                    cached_input: 50,
+                    cached_audio_input: 100,
+                    output: 3_000,
+                    image_output: 0,
+                    long_context_threshold: u64::MAX,
+                    long_input: 500,
+                    long_audio_input: 1_000,
+                    long_cached_input: 50,
+                    long_cached_audio_input: 100,
+                    long_output: 3_000,
+                    search: GeminiSearchBilling::PerQuery { nano: 14_000_000 },
+                },
+            ),
+            (
                 "gemini-3.1-flash-lite",
                 GeminiPrices {
                     input: 250,
@@ -799,6 +830,12 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
         assert_eq!(
             cost_nanodollars(&usage, &flash),
             200_001 * 1_500 + 10 * 7_500 + 9 * 14_000_000
+        );
+
+        let flash_preview = gemini_prices_at("gemini-3-flash-preview", 0).unwrap();
+        assert_eq!(
+            cost_nanodollars(&usage, &flash_preview),
+            200_001 * 500 + 10 * 3_000 + 9 * 14_000_000
         );
 
         let preview = gemini_prices_at("gemini-3.1-pro-preview", 0).unwrap();

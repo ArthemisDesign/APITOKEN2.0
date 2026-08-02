@@ -690,8 +690,11 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.
    Публичный model ceiling 65,536 сохраняется, но Antigravity wire `maxOutputTokens` ограничен 65,535.
-   Canonical Gemini 3 model id отдельно от private effort/quota id: 3.6 Flash выбирает
-   `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview — `gemini-3.1-pro-low`/`gemini-pro-agent`.
+   Canonical Gemini 3 model id отдельно от private effort/quota id: 3 Flash Preview отправляет
+   публичный `gemini-3-flash-preview` без wire-подмены, но Antigravity `requestType=agent`
+   проверяет по quota row `gemini-3-flash-agent` (legacy Gemini CLI сохраняет публичный quota id);
+   3.6 Flash выбирает `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
+   `gemini-3.1-pro-low`/`gemini-pro-agent`.
    Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,
    billing и клиентский каталог — canonical public id. Response/SSE переписывает private
    `modelVersion` обратно в public id и отдаёт только `.response` (+ responseId), никогда

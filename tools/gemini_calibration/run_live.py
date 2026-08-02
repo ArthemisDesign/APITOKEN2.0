@@ -542,7 +542,7 @@ class Leg:
 
 
 def thinking_levels(model: str) -> tuple[str | None, ...]:
-    if model in {"gemini-3.6-flash", "gemini-3.5-flash"}:
+    if model in {"gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash"}:
         return ("minimal", "low", "medium", "high")
     if model == "gemini-3.1-pro-preview":
         return ("low", "medium", "high")

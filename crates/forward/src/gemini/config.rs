@@ -62,6 +62,21 @@ impl GeminiModel {
             .filter(|level| !level.is_empty())
             .unwrap_or("thinking_level_unspecified");
         match self.id.as_str() {
+            "gemini-3-flash-preview" => {
+                if level.eq_ignore_ascii_case("minimal")
+                    || level.eq_ignore_ascii_case("low")
+                    || level.eq_ignore_ascii_case("medium")
+                    || level.eq_ignore_ascii_case("high")
+                    || level.eq_ignore_ascii_case("thinking_level_unspecified")
+                {
+                    // Both the official Gemini CLI and Antigravity 2.4.3 send the public preview
+                    // id unchanged. Antigravity accounts it against a separate agent quota row;
+                    // that accounting identity is resolved below and never leaks into the wire.
+                    Ok("gemini-3-flash-preview")
+                } else {
+                    Err("Gemini 3 Flash Preview supports minimal, low, medium, or high thinking levels.")
+                }
+            }
             "gemini-3.6-flash" => {
                 if level.eq_ignore_ascii_case("minimal") || level.eq_ignore_ascii_case("low") {
                     Ok("gemini-3.6-flash-low")
@@ -121,6 +136,9 @@ impl GeminiModel {
     /// mapping so the admin UI can join official quota rows without guessing private aliases.
     pub fn quota_model_ids(&self) -> Vec<&str> {
         match self.id.as_str() {
+            "gemini-3-flash-preview" => {
+                vec!["gemini-3-flash", "gemini-3-flash-agent"]
+            }
             "gemini-3.6-flash" => vec![
                 "gemini-3.6-flash-low",
                 "gemini-3.6-flash-medium",
@@ -139,10 +157,11 @@ impl GeminiModel {
 /// are the only models whose Antigravity wire identity and modality contract have a reviewed
 /// mapping; live generation remains an additional deployment gate before a model enters systemd's
 /// public allowlist.
-const SUBSCRIPTION_MODELS: [&str; 7] = [
+const SUBSCRIPTION_MODELS: [&str; 8] = [
     "gemini-3.1-flash-image",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3-flash-preview",
     "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
@@ -188,6 +207,24 @@ pub struct GeminiConfig {
 impl GeminiConfig {
     pub fn model(&self, id: &str) -> Option<&GeminiModel> {
         self.models.iter().find(|model| model.id == id)
+    }
+
+    /// Resolve the provider quota row used for admission separately from the generation wire id.
+    /// Antigravity's official client sends the public Gemini 3 Flash Preview id with
+    /// `requestType=agent`, while `fetchAvailableModels` reports that capacity under the private
+    /// `gemini-3-flash-agent` row. Legacy Gemini CLI quota uses the public id directly.
+    pub fn quota_model_id_for_wire<'a>(
+        &self,
+        oauth_kind: gemini_credential::OAuthKind,
+        wire_model_id: &'a str,
+    ) -> &'a str {
+        if oauth_kind == gemini_credential::OAuthKind::Antigravity
+            && wire_model_id == "gemini-3-flash-preview"
+        {
+            "gemini-3-flash-agent"
+        } else {
+            wire_model_id
+        }
     }
 
     pub fn upstream_for(&self, oauth_kind: gemini_credential::OAuthKind) -> &str {
@@ -270,6 +307,7 @@ mod tests {
                 "gemini-3.1-flash-image",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
+                "gemini-3-flash-preview",
                 "gemini-3.1-pro-preview",
                 "gemini-3.1-flash-lite",
                 "gemini-2.5-flash",
@@ -291,6 +329,8 @@ mod tests {
             "gemini-3.6-flash-high",
             "gemini-3.5-flash-extra-low",
             "gemini-3.5-flash-low",
+            "gemini-3-flash",
+            "gemini-3-flash-agent",
             "gemini-3.1-pro-low",
             "gemini-pro-agent",
             // Non-text and foreign-provider rows may appear in upstream catalogues.

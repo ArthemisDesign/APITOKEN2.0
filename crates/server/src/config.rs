@@ -369,7 +369,7 @@ fn gemini_config() -> Option<GeminiConfig> {
         // supported thinking level of the current subscription profile. In particular, 2.5 Pro
         // advertises quota but generation returns persistent UNAVAILABLE; quota evidence alone
         // never enables a model.
-        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)
@@ -1049,8 +1049,8 @@ mod tests {
     #[test]
     fn pricing_shadow_manifest_is_fixed_registry_canonical_evidence() {
         let manifest = pricing_shadow_runtime_manifest();
-        assert_eq!(manifest.manifest_generation(), 3);
-        assert_eq!(manifest.capabilities().len(), 3);
+        assert_eq!(manifest.manifest_generation(), 4);
+        assert_eq!(manifest.capabilities().len(), 4);
         for (index, generation, digest) in [
             (
                 0,
@@ -1066,6 +1066,11 @@ mod tests {
                 2,
                 3,
                 "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83",
+            ),
+            (
+                3,
+                4,
+                "sha256:v1:10802bdb863c116518820df4f662b74d9a48d59db51dd1d2da2a1e8ff08dfab2",
             ),
         ] {
             assert_eq!(

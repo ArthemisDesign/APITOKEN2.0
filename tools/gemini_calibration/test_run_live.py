@@ -141,6 +141,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
 
     def test_matrix_covers_models_levels_stream_cache_audio_tool_search_long_and_image_sizes(self):
         models = [
+            "gemini-3-flash-preview",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
             "gemini-3.1-pro-preview",
@@ -173,6 +174,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         )
         names = {leg.name for leg in legs}
         for level in ("minimal", "low", "medium", "high"):
+            self.assertIn(f"thinking:gemini-3-flash-preview:{level}", names)
             self.assertIn(f"thinking:gemini-3.6-flash:{level}", names)
         self.assertTrue(any(leg.stream for leg in legs if leg.model == "gemini-2.5-flash"))
         self.assertTrue(any(leg.kind == "cache" and leg.cache_phase == "write" for leg in legs))

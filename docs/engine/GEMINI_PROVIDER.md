@@ -27,8 +27,9 @@ policy, OpenKeys only through an explicit 1:1 catalog entry, and service account
 runtime-capable Gemini model under `meter_only`. Activation is the global zero-downtime release in
 `docs/commerce/MULTI-DISCOUNT.md`, not an independent Gemini client canary.
 
-The immutable pricing authority uses internal provider id `google`. Dormant capability generation
-3 pins all eight tariff-backed models from `crates/metering/src/gemini.rs`; publishing that
+The immutable pricing authority uses internal provider id `google`. Frozen dormant capability
+generation 3 pins the original eight tariff-backed models from `crates/metering/src/gemini.rs`;
+dormant generation 4 adds `gemini-3-flash-preview` without mutating generation 3. Publishing either
 compile-fixed identity does not activate Gemini for any customer. The Stage 5 main catalog must opt
 in explicitly, while the contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI
 until a separate reviewed 1:1 OpenKeys generation enables Gemini.
@@ -298,7 +299,7 @@ Gemini runtime (`config.env` or `server.env`):
 ```text
 CLAUDE_API_GEMINI_PROFILES_FILE=/srv/claude-api/data/gemini/profiles.json
 CLAUDE_API_GEMINI_CREDENTIAL_KEYS=current:<64-hex>[,old:<64-hex>]
-CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
+CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite
 CLAUDE_API_GEMINI_QUOTA_RESERVE=0.05
 CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 ```
@@ -461,10 +462,11 @@ move the realized blend, and Google can change quota policy; immutable observati
 upgrades replay the same facts. The controlled procedure is
 `docs/ops/GEMINI_CALIBRATION.md`. Official source: <https://antigravity.google/docs/plans>.
 
-The model allowlist is local and price-catalog pinned. The default list contains six text models
-whose non-stream, native stream and token-count paths were reconfirmed against the production
-Google AI Pro profile on 2026-07-31, plus the separately routed Nano Banana 2 image model:
-`gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`,
+The model allowlist is local and price-catalog pinned. The default list contains seven text models
+plus the separately routed Nano Banana 2 image model. Six text routes were reconfirmed against the
+production Google AI Pro profile on 2026-07-31; Gemini 3 Flash Preview has a separately recorded
+2026-08-02 transport contract and post-deploy live gate below:
+`gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3-flash-preview`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
 `gemini-2.5-flash-lite`. `gemini-2.5-pro` is deliberately not published: it is absent from the
 official Antigravity reasoning-model table, and its residual quota bucket does not produce a
@@ -474,7 +476,7 @@ A Developer API price entry proves only that the gateway can meter a model; it d
 an Antigravity subscription can serve it. Publication additionally requires an official
 Antigravity model contract, an exact canonical-to-private route and live generation evidence.
 A configured id still needs a live smoke test against every tier because Google can change private
-model availability independently. The production systemd argv pins this calibrated seven-model
+model availability independently. The production systemd argv pins this reviewed eight-model
 set after shared env files, so a stale
 `config.env` cannot silently re-enable Developer-API-only models on the subscription runtime.
 
@@ -555,6 +557,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
+| `gemini-3-flash-preview` | wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash` | official Gemini CLI commit `f47d6c6` and signed local Antigravity 2.4.3 both send the public id unchanged; owned quota discovery on 2026-08-02 confirms both bounded quota rows; generation/SSE/countTokens remain the post-deploy publication gate | candidate until the controlled live row below records 2xx + usage |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -588,6 +591,9 @@ by that profile's own live calibration rather than inferred from the Developer A
 Official evidence reviewed on 2026-07-31:
 
 - model catalogue and lifecycle: <https://ai.google.dev/gemini-api/docs/models>;
+- Gemini 3 Flash Preview shape (1,048,576 input / 65,536 output, text output) and paid rates:
+  <https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview> and
+  <https://ai.google.dev/gemini-api/docs/pricing#gemini-3-flash-preview> (reviewed 2026-08-02);
 - Antigravity model availability by plan: <https://antigravity.google/docs/models>;
 - Antigravity plan and quota differences: <https://antigravity.google/docs/plans>;
 - Gemini 3.6 Flash shape (1,048,576 input / 65,536 output, text output):
@@ -603,6 +609,22 @@ Official evidence reviewed on 2026-07-31:
 - thinking-level defaults and supported values: <https://ai.google.dev/gemini-api/docs/thinking#thinking-levels>;
 - REST schema/discovery revision `20260729`:
   <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta>.
+
+Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02:
+
+- Google's Apache-2.0 Gemini CLI at commit
+  [`f47d6c6f7a1308d81f9f57acf7d279f0928c5249`](https://github.com/google-gemini/gemini-cli/commit/f47d6c6f7a1308d81f9f57acf7d279f0928c5249)
+  defines `PREVIEW_GEMINI_FLASH_MODEL = "gemini-3-flash-preview"` and sends that ID unchanged;
+- the locally installed, signed Antigravity 2.4.3 language server contains the same public model ID
+  and no `gemini-3-flash-agent` generation ID. Combined with its already pinned
+  `requestType=agent` wrapper and owned `fetchAvailableModels` rows, this separates the public wire
+  ID from private quota accounting instead of guessing a public-to-private model alias;
+- quota presence does not prove generation. The controlled production smoke must target the owned
+  opaque profile, cover non-stream, incremental SSE and countTokens, require non-zero authoritative
+  usage, and then replace the candidate verdict in this matrix with dated live evidence.
+
+The reproducible source/plan/rate/wire dossier is
+[`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md).
 
 ## Failure and stream safety
 

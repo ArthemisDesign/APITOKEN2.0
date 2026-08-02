@@ -157,8 +157,9 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 `docs/CHANGE_CHECKLISTS.md`):
 
 - `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, catalog generations и pricing release
-  schemas. Dormant target capability generation 3 содержит точный main Anthropic/OpenAI/Gemini
-  set (`google` — internal engine provider id), а OpenKeys target set остаётся явным
+  schemas. Frozen dormant capability generation 3 сохраняет исходный main
+  Anthropic/OpenAI/Gemini set, additive target generation 4 добавляет
+  `gemini-3-flash-preview` (`google` — internal engine provider id), а OpenKeys target set остаётся явным
   Anthropic/OpenAI subset. `B2C_PRICING_TIERS` — cleanup target, не authority нового pricing.
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.

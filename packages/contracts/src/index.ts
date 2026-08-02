@@ -399,6 +399,7 @@ export const CURRENT_GEMINI_CANONICAL_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
+  "gemini-3-flash-preview",
   "gemini-3.1-flash-image",
   "gemini-3.1-flash-lite",
   "gemini-3.1-pro-preview",
@@ -407,19 +408,47 @@ export const CURRENT_GEMINI_CANONICAL_MODELS = [
 ] as const;
 
 /**
- * Dormant target capability for the global pricing-release rollout. It
- * extends generation 2 with every reviewed Gemini model while preserving the
- * exact Anthropic/OpenAI prefix. Merely publishing this identity does not
- * advance a catalog, provider switch, account policy, or release head.
+ * Frozen Gemini identity set of capability generation 3. A newer catalogue must never mutate
+ * this list because prepared policies and runtime manifests may still pin its digest.
+ */
+export const MULTI_DISCOUNT_GEN3_GEMINI_CANONICAL_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+  "gemini-3.1-flash-image",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+] as const;
+
+export const MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION = 3;
+export const MULTI_DISCOUNT_GEN3_CAPABILITY_DIGEST =
+  "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83";
+
+export const MULTI_DISCOUNT_GEN3_MAIN_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
+  ...MULTI_DISCOUNT_GEN3_GEMINI_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "google" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+]);
+
+/**
+ * Dormant target capability for the global pricing-release rollout. Generation 4 extends the
+ * frozen generation 3 identity with Gemini 3 Flash Preview while preserving the exact preceding
+ * entries. Merely publishing this identity does not advance a catalog, provider switch, account
+ * policy, or release head.
  *
  * The digest is reproducible with the Stage 5 capability builder over
- * `{generation: 3, schema_version: 1, entries, aliases}`. Each entry carries
+ * `{generation: 4, schema_version: 1, entries, aliases}`. Each entry carries
  * the usual `pricing_supported: true` capability data; the only alias remains
  * `gpt-5.6 -> gpt-5.6-sol`.
  */
-export const MULTI_DISCOUNT_TARGET_CAPABILITY_GENERATION = 3;
+export const MULTI_DISCOUNT_TARGET_CAPABILITY_GENERATION = 4;
 export const MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST =
-  "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83";
+  "sha256:v1:10802bdb863c116518820df4f662b74d9a48d59db51dd1d2da2a1e8ff08dfab2";
 
 export const MULTI_DISCOUNT_TARGET_MAIN_CATALOG_ENTRIES = Object.freeze([
   ...MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
@@ -430,7 +459,7 @@ export const MULTI_DISCOUNT_TARGET_MAIN_CATALOG_ENTRIES = Object.freeze([
   })),
 ]);
 
-/** OpenKeys remains explicit: generation 3 does not silently grant Gemini. */
+/** OpenKeys remains explicit: target generation 4 does not silently grant Gemini. */
 export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
 

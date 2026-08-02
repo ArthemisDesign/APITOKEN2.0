@@ -218,7 +218,8 @@ Engine хранит prepared releases и один active release head. Подг�
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
 Compile-fixed pricing runtime manifest заранее, отдельным producer-first checkpoint, принимает
-capability generation 3 с точным Anthropic/OpenAI/Gemini model set. Это только разрешает
+frozen capability generation 3 и additive generation 4, которая добавляет
+`gemini-3-flash-preview` к точному Anthropic/OpenAI/Gemini model set. Это только разрешает
 подготовить pinned catalog/release identities: публикация capability не двигает catalog,
 switches, account policies или release head и потому не меняет live traffic. Внутренний provider
 ID Gemini в pricing authority — `google`; продуктовые документы продолжают называть провайдера

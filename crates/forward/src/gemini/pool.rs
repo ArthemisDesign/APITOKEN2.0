@@ -535,6 +535,7 @@ impl GeminiProfile {
         global.max(model).max(
             self.quota_blocked_until(
                 model_id,
+                cfg,
                 now,
                 cfg.health_probe_interval_secs
                     .saturating_mul(2)
@@ -546,7 +547,13 @@ impl GeminiProfile {
     /// Return `(snapshot_stale, remaining_fraction)` for soft steering. Never-arrived evidence is
     /// neutral rather than stale; a genuinely stale snapshot stays fail-open but loses a tie to a
     /// fresh profile so an old optimistic fraction cannot absorb the fleet.
-    fn quota_steering(&self, model_id: &str, now: i64, stale_secs: i64) -> (bool, Option<f64>) {
+    fn quota_steering(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        stale_secs: i64,
+    ) -> (bool, Option<f64>) {
         let quota = self
             .quota
             .read()
@@ -557,12 +564,13 @@ impl GeminiProfile {
         if quota.updated_at.saturating_add(stale_secs) <= now {
             return (true, None);
         }
+        let quota_model_id = cfg.quota_model_id_for_wire(self.oauth_kind, model_id);
         (
             false,
             quota
                 .buckets
                 .iter()
-                .filter(|bucket| bucket.model_id == model_id)
+                .filter(|bucket| bucket.model_id == quota_model_id)
                 .filter_map(|bucket| bucket.remaining_fraction)
                 .min_by(f64::total_cmp),
         )
@@ -589,7 +597,13 @@ impl GeminiProfile {
             .unwrap_or_default()
     }
 
-    fn quota_blocked_until(&self, model_id: &str, now: i64, stale_secs: i64) -> i64 {
+    fn quota_blocked_until(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        stale_secs: i64,
+    ) -> i64 {
         let quota = self
             .quota
             .read()
@@ -598,10 +612,11 @@ impl GeminiProfile {
             return 0;
         }
         let stale_at = quota.updated_at.saturating_add(stale_secs);
+        let quota_model_id = cfg.quota_model_id_for_wire(self.oauth_kind, model_id);
         let matching = quota
             .buckets
             .iter()
-            .filter(|bucket| bucket.model_id == model_id)
+            .filter(|bucket| bucket.model_id == quota_model_id)
             .collect::<Vec<_>>();
         if matching.is_empty() {
             // A fresh official quota catalogue is also a per-profile availability catalogue. Once
@@ -1722,7 +1737,7 @@ impl GeminiGateway {
             })
             .map(|(index, profile)| {
                 let (snapshot_stale, remaining) = if generation {
-                    profile.quota_steering(model_id, now, quota_stale_secs)
+                    profile.quota_steering(model_id, &self.cfg, now, quota_stale_secs)
                 } else {
                     (false, None)
                 };
@@ -2211,6 +2226,25 @@ mod tests {
         write_credential_with_proxy(dir, ring, id, subject, "")
     }
 
+    fn write_antigravity_credential(
+        dir: &Path,
+        ring: &CredentialKeyring,
+        id: &str,
+        subject: &str,
+    ) -> PathBuf {
+        let credential_dir = dir.join("credentials");
+        fs::create_dir_all(&credential_dir).unwrap();
+        fs::set_permissions(&credential_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = credential_dir.join(format!("{id}.json"));
+        let mut credential = credential(subject, "");
+        credential.oauth_client_id = gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_ID.into();
+        credential.oauth_client_secret = gemini_credential::ANTIGRAVITY_OAUTH_CLIENT_SECRET.into();
+        let envelope = ring.seal("current", id, &credential).unwrap();
+        fs::write(&path, encode_envelope(&envelope).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+
     fn write_credential_with_proxy(
         dir: &Path,
         ring: &CredentialKeyring,
@@ -2574,9 +2608,54 @@ mod tests {
             .select("gemini-test", &HashSet::new(), None, true)
             .is_none());
         assert_eq!(
-            profile.quota_blocked_until("gemini-test", pool::now(), 600),
+            profile.quota_blocked_until("gemini-test", gateway.config(), pool::now(), 600),
             parse_rfc3339_seconds("2099-01-01T00:00:00Z").unwrap(),
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preview_generation_uses_the_antigravity_agent_quota_row() {
+        let (dir, ring) = fixture();
+        let first = write_antigravity_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let mut cfg = config(&roster, ring);
+        cfg.models[0].id = "gemini-3-flash-preview".to_string();
+        let gateway = GeminiGateway::new(cfg).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        *profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = GeminiQuotaSnapshot {
+            updated_at: pool::now(),
+            buckets: vec![GeminiQuotaBucketStatus {
+                model_id: "gemini-3-flash-agent".to_string(),
+                remaining_amount: Some(1),
+                remaining_fraction: Some(0.5),
+                reset_time: None,
+                token_type: Some("REQUESTS".to_string()),
+            }],
+        };
+        assert!(gateway
+            .select("gemini-3-flash-preview", &HashSet::new(), None, true,)
+            .is_some());
+
+        profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .buckets[0]
+            .remaining_amount = Some(0);
+        profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .buckets[0]
+            .remaining_fraction = Some(0.0);
+        assert!(gateway
+            .select("gemini-3-flash-preview", &HashSet::new(), None, true,)
+            .is_none());
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -3319,6 +3319,25 @@ mod tests {
 
     #[test]
     fn public_thinking_levels_select_reviewed_private_wire_buckets() {
+        let flash_preview = catalog_model("gemini-3-flash-preview");
+        for level in [
+            None,
+            Some("minimal"),
+            Some("low"),
+            Some("medium"),
+            Some("high"),
+        ] {
+            assert_eq!(
+                flash_preview.wire_model_id(level),
+                Ok("gemini-3-flash-preview")
+            );
+        }
+        assert!(flash_preview.wire_model_id(Some("future")).is_err());
+        assert_eq!(
+            flash_preview.quota_model_ids(),
+            vec!["gemini-3-flash", "gemini-3-flash-agent"]
+        );
+
         let flash = catalog_model("gemini-3.6-flash");
         for (level, expected) in [
             (None, "gemini-3.6-flash-medium"),
