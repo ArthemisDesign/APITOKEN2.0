@@ -153,7 +153,7 @@ const stage8EngineEvidenceV2Schema = z.object({
   if (legacyCount !== report.legacy_inflight_count) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "legacy inflight count mismatch" });
   }
-  if (report.passed !== (report.blockers.length === 0 && report.legacy_inflight_count === 0n)) {
+  if (report.passed !== (report.blockers.length === 0)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "passed/blocker state mismatch" });
   }
 });
@@ -550,7 +550,7 @@ export async function collectStage8CombinedEvidenceV2(
 
     blockers.sort((left, right) =>
       compareUtf8(left.source, right.source) || compareUtf8(left.code, right.code));
-    const passed = engine.passed && engine.legacy_inflight_count === 0n && blockers.length === 0;
+    const passed = engine.passed && blockers.length === 0;
     const targetCommerceDigest = requireReleaseDigest(target?.content_digest ?? null, "target commerce digest");
     const recoveryCommerceDigest = requireReleaseDigest(recovery?.content_digest ?? null, "recovery commerce digest");
     const identity = {

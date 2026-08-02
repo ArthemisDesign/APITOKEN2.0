@@ -311,6 +311,9 @@ neither command prints a database DSN.
 The combined schema-v2 report is valid for 300 seconds. When both local release plans exist, the
 consumer stores its identity immutably in `pricing_stage8_evidence_v2`, including blocked reports
 with `passed=false`; if either local release is absent it returns `write_result=not_persisted`.
+`legacy_inflight_reservations` and `legacy_inflight_outbox_rows` remain exact audit evidence and
+contribute to `legacy_inflight_count`, but a nonzero count is not a blocker: do not pause traffic,
+drain writers or wait for zero before collecting Stage 8.
 Blockers produce JSON and exit code 2, while malformed/tampered engine evidence fails before a row
 is written. The command never changes a release head, account, balance, policy, traffic or money
 writer. Store the engine input and combined output together in the protected release evidence

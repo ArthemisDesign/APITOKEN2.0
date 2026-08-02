@@ -98,4 +98,16 @@ describe("Stage 8 engine evidence v2 consumer", () => {
       code: "engine_evidence_digest_mismatch",
     }));
   });
+
+  it("keeps legacy inflight as audit evidence without turning a blocker-free report red", () => {
+    const report = fixture();
+    report.counts.legacy_inflight_reservations = 3n;
+    report.counts.legacy_inflight_outbox_rows = 2n;
+    report.legacy_inflight_count = 5n;
+    report.evidence_digest = stage8EngineEvidenceDigestV2(report);
+
+    const parsed = parseStage8EngineEvidenceV2(JSONbig.stringify(report));
+    expect(parsed.passed).toBe(true);
+    expect(parsed.legacy_inflight_count).toBe(5n);
+  });
 });

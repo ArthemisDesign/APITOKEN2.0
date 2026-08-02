@@ -35,9 +35,13 @@ function engineEvidence(input: {
   targetEngineDigest: string;
   recoveryEngineDigest: string;
   passed?: boolean;
+  legacyInflightReservations?: bigint;
+  legacyInflightOutboxRows?: bigint;
 }): Stage8EngineEvidenceV2 {
   const captured = BigInt(Math.floor(Date.now() / 1_000));
   const passed = input.passed ?? true;
+  const legacyInflightReservations = input.legacyInflightReservations ?? 0n;
+  const legacyInflightOutboxRows = input.legacyInflightOutboxRows ?? 0n;
   const report: Stage8EngineEvidenceV2 = {
     schema_version: 2n,
     captured_ts: captured,
@@ -109,15 +113,15 @@ function engineEvidence(input: {
       gemini_outbox_rows: 1n,
       live_runtime_instances: 2n,
       release_capable_runtime_instances: 2n,
-      legacy_inflight_reservations: 0n,
-      legacy_inflight_outbox_rows: 0n,
+      legacy_inflight_reservations: legacyInflightReservations,
+      legacy_inflight_outbox_rows: legacyInflightOutboxRows,
     },
     financial_samples: [],
     engine_inventory_digest: input.engineInventoryDigest,
     funding_digest: input.fundingDigest,
     shadow_digest: digest("shadow"),
     runtime_floor_digest: digest("runtime-floor"),
-    legacy_inflight_count: 0n,
+    legacy_inflight_count: legacyInflightReservations + legacyInflightOutboxRows,
     blockers: passed ? [] : [{
       code: "live_runtime_below_release_v2_floor",
       count: 1n,
@@ -333,6 +337,43 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       expect(stored.rows).toEqual([{
         evidence_digest: report.evidence_digest,
         passed: true,
+        blocker_count: "0",
+      }]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("stores passed evidence while preserving nonzero legacy inflight audit counts", async () => {
+    const seeded = await seedPreparedPair();
+    seeded.report = engineEvidence({
+      engineInventoryDigest: seeded.report.engine_inventory_digest,
+      fundingDigest: seeded.report.funding_digest,
+      targetEngineDigest: seeded.report.release.target_digest!,
+      recoveryEngineDigest: seeded.report.release.recovery_digest!,
+      legacyInflightReservations: 3n,
+      legacyInflightOutboxRows: 2n,
+    });
+    const database = createDatabase(databaseUrl, "stage8-combined-zero-drain");
+    try {
+      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, seeded.report);
+      expect(report).toMatchObject({
+        passed: true,
+        write_result: "stored",
+        blocker_count: "0",
+        legacy_inflight_count: "5",
+      });
+      const stored = await seed.query<{
+        passed: boolean;
+        legacy_inflight_count: string;
+        blocker_count: string;
+      }>(`
+        SELECT passed, legacy_inflight_count::text, blocker_count::text
+        FROM pricing_stage8_evidence_v2
+      `);
+      expect(stored.rows).toEqual([{
+        passed: true,
+        legacy_inflight_count: "5",
         blocker_count: "0",
       }]);
     } finally {
