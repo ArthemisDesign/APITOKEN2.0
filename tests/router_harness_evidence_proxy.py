@@ -236,12 +236,36 @@ def main() -> None:
                 }
             ) if request_json is not None else []
             request_tool_types = []
+            request_control_fields = []
+            request_cache_control_types = []
+            request_output_config_fields = []
+            request_has_structured_output_tool = False
             if isinstance(request_json, dict) and isinstance(request_json.get("tools"), list):
                 request_tool_types = [
                     tool.get("type")
                     for tool in request_json["tools"]
                     if isinstance(tool, dict) and isinstance(tool.get("type"), str)
                 ][:32]
+                request_has_structured_output_tool = any(
+                    isinstance(tool, dict) and tool.get("name") == "StructuredOutput"
+                    for tool in request_json["tools"]
+                )
+            if isinstance(request_json, dict):
+                request_control_fields = [
+                    field
+                    for field in ("context_management", "output_config")
+                    if field in request_json
+                ]
+                request_cache_control_types = sorted(
+                    {
+                        value["type"]
+                        for value in nested_values(request_json, "cache_control")
+                        if isinstance(value, dict) and isinstance(value.get("type"), str)
+                    }
+                )
+                output_config = request_json.get("output_config")
+                if isinstance(output_config, dict):
+                    request_output_config_fields = sorted(output_config)[:32]
             recorder.append(
                 {
                     "method": self.command,
@@ -251,6 +275,10 @@ def main() -> None:
                     "status": status,
                     "request_tiers": request_tiers,
                     "request_tool_types": request_tool_types,
+                    "request_control_fields": request_control_fields,
+                    "request_cache_control_types": request_cache_control_types,
+                    "request_output_config_fields": request_output_config_fields,
+                    "request_has_structured_output_tool": request_has_structured_output_tool,
                     "request_fast_header": self.headers.get("x-apitoken-service-tier"),
                     "response_service_tiers": service_tiers,
                     "response_event_types": event_types[:32],

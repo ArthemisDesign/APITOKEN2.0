@@ -157,6 +157,33 @@ account-policy preflight; `models` и `provider` никогда не доход�
 | Aider, Continue, Roo/Kilo, большинство IDE agents | OpenAI Chat Completions | universal lane |
 | Native SDKs | Messages / Responses / Gemini Developer API | соответствующий native lane |
 
+Контролируемая production-матрица реальных harness-клиентов запускается только вручную
+(каждая успешная генерация платная):
+
+```bash
+APITOKEN_API_KEY=... bash tests/router_harness_live_matrix.sh
+```
+
+Скрипт поднимает loopback evidence-proxy для каждого кейса: реальный ключ получает только proxy
+через env и сразу удаляет его из своего environment; Cline, Continue, OpenCode, Kilo, Codex,
+Claude Code, Gemini CLI, Hermes и Aider видят только placeholder. Evidence-файлы содержат только
+mode-0600 metadata: endpoint, protocol, model, status, request/response tier и SSE/control types;
+credential/general-header values, prompt, tool arguments и generated content в evidence не пишутся.
+Временное состояние каждого клиента изолировано в одноразовом temp-root и удаляется trap'ом. Для
+точечного перезапуска можно передать список меток через
+`APITOKEN_HARNESS_CASES=cline-fast,codex-fast`. Ретраи самого harness разрешены, но каждая принятая
+исполнимая попытка обязана дать HTTP 200 с ожидаемым tier; для Fast нужен авторитетный response
+`service_tier=priority`. Claude Code дополнительно доказывает полный Messages SSE lifecycle и
+текущие structured-output/context/cache controls; Codex — Responses lifecycle и текущие tool forms;
+Gemini CLI — native `streamGenerateContent`.
+
+Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
+Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
+0.86.2: 17 executable Standard/Fast кейсов (Gemini — Standard native; остальные — оба tier).
+Roo Code 3.54.0 установлен и имеет совместимые OpenAI base URL/model/service-tier settings, но у
+расширения нет официального headless CLI, поэтому оно честно отмечено `SKIP`, а не имитируется
+через другой клиент.
+
 Критические требования Claude Code (контракт native Anthropic lane):
 
 - не буферизовать SSE — буферизация полного ответа останавливает клиент;
