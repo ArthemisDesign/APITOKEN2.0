@@ -118,16 +118,13 @@ GPT-блок `/subscriptions` — компактная операторская 
   и максимальный тарифный API-equivalent; оба сценария подписаны моделью/tier/context/token kind.
   Если хотя бы одна cohort ещё не измерена, общий номинал остаётся неизвестным, а не превращается
   в заниженную частичную сумму;
-- таблица token capacity отвечает, сколько fresh, cache-read, cache-write либо output/reasoning
-  токенов можно обслужить текущим остатком всего пула для каждой модели и Standard/Fast. Cache write
-  расходует native fresh-input credits; reasoning уже входит в output;
-- profitability matrix выбирает самый выгодный short/long-контекст для каждой пары модель ×
-  Standard/Fast, показывает exact `$ API-equivalent / native credit` по четырём token kinds и
-  сортирует строки по лучшему значению убыванию. Все деньги и credits считаются только BigInt;
 - home-таблица показывает только bounded masked email, runtime/integrity state, quota с progress-bar
   и reset, shared-cohort remaining credits и обычный/максимальный API-equivalent. Для разных paid
   plans каждая почта получает pooled capacity только своей cohort. Opaque UUID, raw immutable ledger,
   schedules и индивидуальная noisy capacity в основной UI не выводятся;
+- `conversion_models` используется локально только для двух API-equivalent значений в strip и
+  home-таблице. Token-capacity и profitability-матрицы в основной UI не разворачиваются; backend
+  продолжает публиковать тарифный каталог как расчётный/audit-контракт;
 - provider placeholder с неположительным окном игнорируется. До появления положительного движения
   quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.
 
@@ -137,7 +134,8 @@ Claude-блок `/subscriptions` намеренно оставляет толь�
 email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
 Workload evidence, token-only capacity, model profitability и локальный summary strip в Claude-блоке
 не выводятся: главные fleet totals уже находятся в едином control-room выше, а оператору внутри
-Claude нужны только окна конкретных подписок. Gemini сохраняет собственные quota/token детали.
+Claude нужны только окна конкретных подписок. Gemini также оставляет только собственный компактный
+summary strip и таблицу окон по профилям; отдельные model-quota и profitability таблицы удалены.
 Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
 не выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
 символа local-part без домена.
@@ -145,7 +143,7 @@ Claude нужны только окна конкретных подписок. G
 Над деталями расположен единый control-room из трёх карточек Claude/GPT/Gemini. В каждой только
 два одинаково читаемых rail: `5ч` и `7д`, current remaining / full-window API-$, использованная доля,
 число routable identities и coverage. Это главный экран сравнения продаваемой ёмкости; подробности
-cache/model/token идут ниже. Claude-карточка вместо ложных денег немедленно показывает
+по аккаунтам идут ниже без дополнительных cache/model/token-матриц. Claude-карточка вместо ложных денег немедленно показывает
 `N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`.
 
 Claude строится из `/capacity`:
@@ -170,10 +168,9 @@ Gemini строится из `/gemini-subs` и сохраняет provider-speci
   compatibility. В strip 5ч workload-$ стоит первым, а per-profile таблица показывает отдельные
   5ч и 7д workload-dollar remaining и полную ёмкость (`из $…`) рядом с соответствующими
   quota/reset;
-- `conversion_models` публикует paid-tier ставки для uncached/audio/cached input,
-  output+thinking, image output, long context и Search. Profitability сортируется по токеновому
-  тарифу; Search показывается отдельно, потому что его единица — query или grounded prompt;
-- official quota join использует backend-публикуемый список private quota bucket ids каждой
-  canonical модели. Если Google прислал `remaining_amount`, UI суммирует только эти целые значения.
-  Если опубликована лишь fraction, token amount остаётся `—`: workload-$ никогда не делится на
-  цену токена для выдумывания Gemini capacity.
+- таблица профилей показывает bounded email, auth state, quota/reset для 5ч и 7д, доступные/полные
+  workload-$ и число доступных моделей. Private quota bucket ids, `remaining_amount`, токеновые
+  ставки, Search и profitability в основной UI не выводятся;
+- `conversion_models`, official quotas и их integer amounts продолжают приходить с backend как
+  audit/calculation contract. UI не делит workload-$ на цену токена и не выдумывает Gemini token
+  capacity из одной только fraction.

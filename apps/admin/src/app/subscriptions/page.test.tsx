@@ -211,7 +211,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).toContain("official-price");
   });
 
-  it("CodexCapacityBoard: компактно показывает токены, выгодность и shared home capacity", () => {
+  it("CodexCapacityBoard: оставляет основную ёмкость и shared home capacity", () => {
     const html = renderToString(
       <CodexCapacityBoard
         nowMs={1_800_000_000_000}
@@ -336,20 +336,17 @@ describe("таблицы флотов (smoke render с данными)", () => {
         }}
       />,
     );
-    expect(html).toContain("Сколько токенов доступно");
-    expect(html).toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Сколько токенов доступно");
+    expect(html).not.toContain("Выгодность по убыванию");
     expect(html).toContain("Доступная ёмкость по home");
     expect(html).toContain("owne…");
     expect(html).not.toContain("home-1");
     expect(html).not.toContain("owner@example.com");
-    expect(plain(html)).toContain("96M");
-    expect(plain(html)).toContain("$0.100");
     expect(plain(html)).toContain("$48.00");
     expect(plain(html)).toContain("$120.00");
     expect(plain(html)).toContain("gpt-5.6-sol · short");
     expect(plain(html)).toContain("gpt-5.6-sol · standard/long/write");
-    const ranking = plain(html).slice(plain(html).indexOf("Выгодность по убыванию"));
-    expect(ranking.indexOf("gpt-5.6-sol")).toBeLessThan(ranking.indexOf("gpt-5.4"));
+    expect(plain(html)).not.toContain("gpt-5.4");
     expect(html).toContain("codex-quota-meter");
     expect(plain(html)).toContain("сброс 10м");
     expect(html).not.toContain("Immutable evidence ledger");
@@ -364,7 +361,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
       />,
     );
     expect(html).toContain("ждём Δquota");
-    expect(html).toContain("Тарифный каталог недоступен");
+    expect(html).not.toContain("Тарифный каталог недоступен");
     expect(html).toContain("owne…");
     expect(html).not.toContain("Первый точный расход появится здесь сразу");
   });
@@ -624,7 +621,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(text).not.toContain("99%");
   });
 
-  it("GeminiCapacityBoard: не выдумывает amount, выводит exact quota, тариф и masked email", () => {
+  it("GeminiCapacityBoard: оставляет основные окна, модели и masked email", () => {
     const nowMs = 1_800_000_000_000;
     const html = renderToString(
       <GeminiCapacityBoard
@@ -734,18 +731,15 @@ describe("таблицы флотов (smoke render с данными)", () => {
         }}
       />,
     );
-    expect(html).toContain("Доступная квота по моделям");
-    expect(html).toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Доступная квота по моделям");
+    expect(html).not.toContain("Выгодность по убыванию");
     expect(html).toContain("gemi…");
     expect(html).not.toContain("opaque-profile-id");
-    expect(plain(html)).toContain("1.3M");
-    expect(html).toContain("Google даёт только %");
-    expect(plain(html)).toContain("$60.00");
+    expect(html).not.toContain("Google даёт только %");
+    expect(html).not.toContain("Тарифный каталог Gemini недоступен");
     expect(html).toContain("Доступно $ · 5ч");
     expect(html).toContain('provider-usd-ink provider-five-hour-money"><b>$30.00</b><small>из $50.00</small>');
     expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));
-    const ranking = plain(html).slice(plain(html).indexOf("Выгодность по убыванию"));
-    expect(ranking.indexOf("gemini-3.1-flash-image")).toBeLessThan(ranking.indexOf("gemini-3.6-flash"));
     expect(plain(html)).toContain("25%");
     expect(html).toContain("provider-quota-meter");
   });

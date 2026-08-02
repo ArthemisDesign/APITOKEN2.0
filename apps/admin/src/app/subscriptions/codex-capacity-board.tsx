@@ -7,10 +7,7 @@ import {
   CODEX_TOKEN_KINDS,
   codexApiValueForCredits,
   codexTokenEconomics,
-  codexTokensForCapacity,
   compareCodexEfficiency,
-  formatCodexTokenCount,
-  formatCodexUsdPerCredit,
   type CodexContextTier,
   type CodexServiceTier,
   type CodexTokenEconomics,
@@ -26,12 +23,6 @@ import type {
 } from "./types";
 
 const FRACTION_SCALE = 100_000_000n;
-const TOKEN_LABELS: Record<CodexTokenKind, string> = {
-  fresh: "Fresh input",
-  cached: "Cache read",
-  write: "Cache write",
-  output: "Output / reasoning",
-};
 
 interface CapacityWindow {
   plan: string;
@@ -43,13 +34,12 @@ interface CapacityWindow {
   fleetRemaining: string | null;
 }
 
-interface ProfitabilityRow {
+interface BestCodexEconomics {
   model: CodexConversionModel;
   tier: CodexServiceTier;
   context: CodexContextTier;
-  rates: Record<CodexTokenKind, CodexTokenEconomics | null>;
-  bestKind: CodexTokenKind;
-  best: CodexTokenEconomics;
+  kind: CodexTokenKind;
+  economics: CodexTokenEconomics;
 }
 
 const asBigInt = (value: string | number | bigint | null | undefined): bigint | null => {
@@ -60,23 +50,6 @@ const asBigInt = (value: string | number | bigint | null | undefined): bigint | 
     return null;
   }
 };
-
-function compactInteger(value: bigint | null): string {
-  if (value == null) return "—";
-  const units: Array<[bigint, string]> = [
-    [1_000_000_000_000n, "T"],
-    [1_000_000_000n, "B"],
-    [1_000_000n, "M"],
-    [1_000n, "K"],
-  ];
-  const unit = units.find(([size]) => value >= size);
-  if (!unit) return value.toString();
-  const [size, suffix] = unit;
-  const tenths = (value * 10n + size / 2n) / size;
-  const whole = tenths / 10n;
-  const fraction = tenths % 10n;
-  return `${whole}${fraction ? `.${fraction}` : ""}${suffix}`;
-}
 
 function compactCredits(value: string | bigint | null | undefined): string {
   const nano = asBigInt(value);
@@ -190,34 +163,28 @@ function aggregateCapacityWindows(windows: CapacityWindow[]): CapacityWindow | u
   };
 }
 
-function profitabilityRows(models: CodexConversionModel[]): ProfitabilityRow[] {
-  const rows: ProfitabilityRow[] = [];
+function bestCodexEconomics(models: CodexConversionModel[]): BestCodexEconomics | null {
+  const candidates: BestCodexEconomics[] = [];
   for (const model of models) {
     for (const tier of ["standard", "fast"] as const) {
-      const candidates: ProfitabilityRow[] = [];
       for (const context of ["long", "short"] as const) {
-        const rates = Object.fromEntries(
-          CODEX_TOKEN_KINDS.map((kind) => [kind, codexTokenEconomics(model, tier, context, kind)]),
-        ) as Record<CodexTokenKind, CodexTokenEconomics | null>;
-        const available = CODEX_TOKEN_KINDS.filter((kind) => rates[kind] != null);
-        if (!available.length) continue;
-        const bestKind = available.reduce((best, kind) =>
-          compareCodexEfficiency(rates[kind]!, rates[best]!) > 0 ? kind : best,
-        );
-        candidates.push({ model, tier, context, rates, bestKind, best: rates[bestKind]! });
+        for (const kind of CODEX_TOKEN_KINDS) {
+          const economics = codexTokenEconomics(model, tier, context, kind);
+          if (economics) candidates.push({ model, tier, context, kind, economics });
+        }
       }
-      const best = candidates.sort((a, b) => compareCodexEfficiency(b.best, a.best))[0];
-      if (best) rows.push(best);
     }
   }
-  return rows.sort((a, b) => {
-    const efficiency = compareCodexEfficiency(b.best, a.best);
+  candidates.sort((a, b) => {
+    const efficiency = compareCodexEfficiency(b.economics, a.economics);
     if (efficiency) return efficiency;
     const model = a.model.id.localeCompare(b.model.id);
     if (model) return model;
     if (a.tier !== b.tier) return a.tier === "standard" ? -1 : 1;
-    return a.context === "long" ? -1 : 1;
+    if (a.context !== b.context) return a.context === "long" ? -1 : 1;
+    return CODEX_TOKEN_KINDS.indexOf(a.kind) - CODEX_TOKEN_KINDS.indexOf(b.kind);
   });
+  return candidates[0] ?? null;
 }
 
 function calibrationHealth(home: CodexHome, nowSec: number): { label: string; kind: "ok" | "warn" | "bad" } {
@@ -270,106 +237,6 @@ function CapacityStrip({
         <strong className="usd-ink">{maxValue == null ? "—" : nanoMoney(maxValue)}</strong>
         <small>{maxScenario}</small>
       </div>
-    </section>
-  );
-}
-
-function TokenCapacityTable({
-  models,
-  remaining,
-}: {
-  models: CodexConversionModel[];
-  remaining: string | null | undefined;
-}): ReactElement {
-  return (
-    <section className="codex-compact-section">
-      <header>
-        <div>
-          <span className="codex-overline">Текущий остаток · весь пул</span>
-          <h3>Сколько токенов доступно</h3>
-        </div>
-        <b className="credit-ink">если тратить только один вид</b>
-      </header>
-      <TableCard>
-        <table className="codex-token-capacity-table">
-          <thead>
-            <tr>
-              <th className="left">Модель</th>
-              <th className="left">Режим</th>
-              {CODEX_TOKEN_KINDS.map((kind) => <th key={kind}>{TOKEN_LABELS[kind]}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {models.flatMap((model) =>
-              (["standard", "fast"] as const).map((tier) => (
-                <tr key={`${model.id}-${tier}`}>
-                  <td className="left"><b>{model.id}</b></td>
-                  <td className="left"><Pill kind={tier === "fast" ? "info" : "ok"}>{tier}</Pill></td>
-                  {CODEX_TOKEN_KINDS.map((kind) => {
-                    const tokens = codexTokensForCapacity(remaining, model, tier, kind);
-                    return (
-                      <td className={kind === "cached" ? "cache-cell" : ""} key={kind} title={formatCodexTokenCount(tokens)}>
-                        <b>{compactInteger(tokens)}</b>
-                      </td>
-                    );
-                  })}
-                </tr>
-              )),
-            )}
-          </tbody>
-        </table>
-      </TableCard>
-    </section>
-  );
-}
-
-function ProfitabilityTable({ rows, remaining }: { rows: ProfitabilityRow[]; remaining: string | null | undefined }): ReactElement {
-  const globalBest = rows[0]?.best ?? null;
-  return (
-    <section className="codex-compact-section">
-      <header>
-        <div>
-          <span className="codex-overline">Продажная эффективность</span>
-          <h3>Выгодность по убыванию</h3>
-        </div>
-        <b className="usd-ink">$ API-equivalent / native credit ↓</b>
-      </header>
-      <TableCard>
-        <table className="codex-profit-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th className="left">Модель</th>
-              <th className="left">Режим / контекст</th>
-              <th className="left">Лучший токен</th>
-              <th>$/credit</th>
-              <th>$ остатка</th>
-              {CODEX_TOKEN_KINDS.map((kind) => <th key={kind}>{kind === "write" ? "write" : kind}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => {
-              const isGlobalBest = globalBest != null && compareCodexEfficiency(row.best, globalBest) === 0;
-              const windowValue = codexApiValueForCredits(remaining, row.best);
-              return (
-                <tr className={isGlobalBest ? "top-efficiency" : ""} key={`${row.model.id}-${row.tier}-${row.context}`}>
-                  <td className="rank-cell">{index + 1}</td>
-                  <td className="left"><b>{row.model.id}</b></td>
-                  <td className="left"><span>{row.tier}</span><small>{row.context === "long" ? "long" : "short"}</small></td>
-                  <td className="left"><b>{TOKEN_LABELS[row.bestKind]}</b></td>
-                  <td className="usd-ink"><b>{formatCodexUsdPerCredit(row.best)}</b></td>
-                  <td className="usd-ink"><b>{windowValue == null ? "—" : nanoMoney(windowValue)}</b></td>
-                  {CODEX_TOKEN_KINDS.map((kind) => (
-                    <td className={kind === row.bestKind ? "best-rate" : ""} key={kind}>
-                      {formatCodexUsdPerCredit(row.rates[kind])}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </TableCard>
     </section>
   );
 }
@@ -456,16 +323,15 @@ export function CodexCapacityBoard({
     : windows[0]?.windowMinutes;
   const cohortWindows = windows.filter((item) => item.windowMinutes === targetWindowMinutes);
   const weekly = aggregateCapacityWindows(cohortWindows);
-  const profitRows = profitabilityRows(models);
   const standardModel = models.find((model) => model.id === "gpt-5.6-sol") ?? models[0];
   const standard = standardModel ? codexTokenEconomics(standardModel, "standard", "short", "fresh") : null;
-  const maximumRow = profitRows[0];
-  const maximum = maximumRow?.best ?? null;
+  const maximumResult = bestCodexEconomics(models);
+  const maximum = maximumResult?.economics ?? null;
   const standardValue = codexApiValueForCredits(weekly?.fleetRemaining, standard);
   const maxValue = codexApiValueForCredits(weekly?.fleetRemaining, maximum);
   const standardScenario = standardModel ? `${standardModel.id} · short` : "нет тарифа";
-  const maxScenario = maximumRow
-    ? `${maximumRow.model.id} · ${maximumRow.tier}/${maximumRow.context}/${maximumRow.bestKind}`
+  const maxScenario = maximumResult
+    ? `${maximumResult.model.id} · ${maximumResult.tier}/${maximumResult.context}/${maximumResult.kind}`
     : "нет тарифа";
 
   return (
@@ -487,14 +353,6 @@ export function CodexCapacityBoard({
         standard={standard}
         maximum={maximum}
       />
-      {models.length ? (
-        <>
-          <TokenCapacityTable models={models} remaining={weekly?.fleetRemaining} />
-          <ProfitabilityTable rows={profitRows} remaining={weekly?.fleetRemaining} />
-        </>
-      ) : (
-        <div className="codex-no-catalog">Тарифный каталог недоступен.</div>
-      )}
     </div>
   );
 }
