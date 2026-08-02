@@ -1,10 +1,11 @@
 # ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
 
-Статус: фазы 6.1–6.3 реализованы; serial fallback остаётся выключенным по умолчанию до
-policy/presets/GA-пакета 6.4. Реализация следует этому документу; отклонение требует его
-пересмотра.
+Статус: фазы 6.1–6.3 реализованы; контракт фазы 6.4 зафиксирован 2026-08-02, реализация
+идёт producer-first пакетами 6.4a–6.4c. Serial fallback остаётся выключенным по умолчанию
+до завершения policy/presets/telemetry canary. Реализация следует этому документу;
+отклонение требует его пересмотра.
 
-Дата фактбазы: 2026-08-01 (аудит кода на master после этапа 4.3; этап 5.1 в конвейере).
+Дата фактбазы: 2026-08-02 (повторный аудит production после фаз 6.1–6.3).
 Ссылки вида `proxy.rs:1880` — `crates/forward/src/proxy.rs`, если не указано иное.
 
 ## 1. Scope этапа 6
@@ -188,6 +189,97 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   switches, account policy) будет фильтровать fallback-цепочку ДО первой попытки в фазе
   6.4; фаза 6.2 policy не читает.
 
+### 5.1. Policy preflight (контракт 6.4a)
+
+Policy остаётся собственностью engine и не переносится в stateless router. Каждая fixed
+provider-плоскость добавляет одинаковый внутренний `POST /internal/router/policy/preflight`:
+
+```json
+{
+  "schema_version": 1,
+  "candidates": [
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "provider_id": "anthropic",
+      "canonical_model_id": "claude-sonnet-5"
+    }
+  ]
+}
+```
+
+Ответ содержит только версию, режим `unrestricted|strict` и ordered subset входных `id` в
+поле `allowed`; account ID, policy/rule/digest, цены и причины запрета наружу не выходят.
+Список ограничен 32 уникальными кандидатами, идентификаторы — 256 байтами, неизвестные поля
+и неизвестные provider ID отклоняются. Credential передаётся теми же auth-заголовками, что и
+исполняемый запрос. Env-admin получает `unrestricted`; невалидный credential — `401`, ошибка
+authority — `503`.
+
+Для активного strict binding handler читает `KeyAuth` и один когерентный
+`PricingReadBundle`, строит runtime manifest только через
+`RuntimePricingManifest::from_evidence` и вызывает существующий `resolve_pricing` для каждого
+кандидата. `Resolved` допускается, любой typed rejection запрещает модель. Google-кандидаты
+для strict account запрещены, пока Gemini plane сама fail-closed отклоняет strict admission;
+preflight не имеет права обещать исполнимость, которой нет на денежном пути. Unbound,
+legacy-scalar и shadow bindings остаются `unrestricted`: их live admission не меняется.
+
+Router делает ровно один preflight на логическую цепочку после catalog/preset/preferences
+валидации, но до attempt 1. Он пробует stable origins последовательно без привязки authority к
+одному провайдеру; `404/405`, transport/`5xx` и malformed response позволяют попробовать
+следующую плоскость, но отсутствие хотя бы одного валидного ответа заканчивается lane-shaped
+`503` без исполнения. `401` терминален. Решения не кэшируются и не индексируются по ключу:
+policy mutable, а credential не должен попадать в память дольше запроса. Ответ обязан быть
+точным subset исходного списка без дубликатов; иное — producer-contract failure и `503`.
+Пустой strict subset → lane-shaped `403 policy_restricted` до первой попытки.
+
+Producer endpoint выкатывается и проходит `deploy/watchdog` раньше consumer router. Такой
+порядок делает expand-only rollout безопасным; consumer всё равно понимает mixed-version
+окно и fail-closed перебирает плоскости вместо зависимости от Anthropic origin.
+
+### 5.2. Provider preferences и presets (контракт 6.4b)
+
+Universal body принимает optional OpenRouter-shaped объект `provider` только с полями:
+
+- `order`, `only`, `ignore`: массивы уникальных namespace `anthropic|openai|google`;
+- `allow_fallbacks`: boolean; `false` сохраняет только первый разрешённый кандидат после
+  фильтров/сортировки;
+- `sort`: `price|latency`; deterministic rank берётся из version-controlled router routing
+  manifest, а не из непроверенного client input или плавающей telemetry.
+
+Неизвестное поле/значение, дубликат, пересечение `only` и `ignore`, отсутствующий rank для
+`sort` или пустая цепочка после фильтра → lane-shaped `400`. Порядок преобразований строгий:
+expand preset → один aggregate catalog snapshot → canonical dedup → `only`/`ignore` →
+explicit `order` (неперечисленные namespaces сохраняют относительный порядок следом) →
+`sort` как primary rank с request order как stable tie-break → `allow_fallbacks` → policy
+preflight. Поле `provider`, как и `models`, удаляется перед отправкой в плоскость.
+
+Reserved catalog IDs `preset/auto`, `preset/quality`, `preset/fast`, `preset/hermes` описаны
+reviewed manifest'ом рядом с `crates/router`; manifest содержит ordered model IDs и integer
+price/latency ranks. Preset разворачивается до policy preflight и никогда не доезжает до
+плоскости. Недоступный member пропускается; preset публикуется в `/v1/models` только если
+aggregate snapshot содержит хотя бы один его member, а пустое раскрытие → `503
+catalog_unavailable`. `preset/hermes` содержит только явно проверенные модели с контекстом не
+меньше 64K. Изменение модели/rank — обычное reviewed изменение manifest + документации и
+пересборка router, поэтому устаревшая модель не зашивается в недоступный host config.
+
+Любое присутствие `models`, `provider` или `preset/*` подчиняется одному rollout-флагу. Пока
+`CLAUDE_ROUTER_FALLBACK_ENABLED=false`, запрос отклоняется до catalog/policy/network work;
+single-model запросы без этих полей сохраняют byte-identical поведение фаз 1–5.
+
+### 5.3. GA rollout (контракт 6.4c)
+
+Router экспортирует `/metrics` без авторизации на loopback. Fallback continuation увеличивает
+`claude_router_fallback_total{from_namespace,to_namespace,reason}` ровно один раз перед
+следующим attempt; множества labels compile-fixed (3×3 namespaces, два reason). Плоскость
+увеличивает `claude_api_execution_not_started_total{plane}` ровно для фактически возвращённого
+наружу exact `not_started` на non-2xx. Credential/model/group IDs в metrics запрещены.
+
+Порядок включения: producer 6.4a → consumer 6.4b при default-off → telemetry/Prometheus 6.4c
+при default-off → mock-load и live canary отдельным router-процессом → unit-флаг в production.
+Canary обязан доказать policy filtering до attempt 1, serial continuation, отсутствие retry на
+ambiguous outcome, нулевой рост double-winner и balance divergence, приемлемый settlement
+backlog. Production-флаг включается только последним reviewed коммитом; rollback — возврат
+флага в false новым коммитом, без удаления expand-only contract.
+
 ## 6. Телеметрия и верификация
 
 - Фаза 6.2 пишет bounded attempt-log: surface, порядковый номер/размер цепочки, публичный
@@ -228,8 +320,10 @@ MVP-контракт §3 закрывает гонку «вторая попыт
 3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
    insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
-4. **6.4 — policies/presets + telemetry GA:** фильтрация цепочек policy, presets в каталоге,
-   включение флага по расписанию, нагрузочный прогон, финализация документации.
+4. **6.4 — policies/presets + telemetry GA — КОНТРАКТ ЗАФИКСИРОВАН 2026-08-02:**
+   producer-first policy preflight (6.4a), provider preferences/presets (6.4b), metrics,
+   Prometheus, canary/load и отдельное включение production-флага (6.4c). До завершения всех
+   пакетов fallback остаётся default-off.
 
 ## 8. Отвергнутые варианты
 

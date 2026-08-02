@@ -1,12 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5 и фазы 6.1–6.3 реализованы; fallback 6.2 выкатывается
-выключенным по умолчанию.**
+Статус: **этапы 1–5 и фазы 6.1–6.3 реализованы; контракт 6.4 зафиксирован,
+producer-first реализация 6.4a–6.4c идёт при выключенном fallback.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаётся фаза 6.4. Документ фиксирует целевую
+До полного OpenRouter-grade routing остаётся реализация и canary фазы 6.4. Документ фиксирует целевую
 картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
 обновляет этот документ и смежные инструкции в том же коммите.
 
@@ -25,7 +25,7 @@ dispatch на три плоскости. `/v1/messages/count_tokens` испол�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 готовы default-off; preferences — фаза 6.4 |
+| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 готовы default-off; контракт preferences/presets/policy 6.4 зафиксирован |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -760,7 +760,12 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    никогда не виден клиенту. Фаза 6.3 реализована (2026-08-02): trusted group/attempt identity
    проходит router→plane→reservation, а SQLite/PostgreSQL settle выбирает ровно одного
    billable winner и полностью возвращает loser hold; `ExecutionGroupDoubleWinner` гейтит любой
-   такой инцидент. Фаза 6.4 добавит policy/presets и GA telemetry. Отдельно —
+   такой инцидент. Контракт фазы 6.4 зафиксирован 2026-08-02: одинаковый authenticated
+   policy-preflight на плоскостях выкатывается producer-first; затем router добавляет strict
+   `provider` preferences, version-controlled presets/ranks; последним пакетом идут router/plane
+   metrics, Prometheus, load/live canary и отдельное включение production-флага. Полная схема,
+   fail-closed mixed-version semantics и rollout-порядок — `docs/engine/ROUTING_FENCING.md`
+   §5.1–5.3. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).
