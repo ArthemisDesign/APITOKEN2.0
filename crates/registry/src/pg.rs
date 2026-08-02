@@ -7,8 +7,9 @@ use crate::{
     mask_proxy, AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow,
     AnthropicWindowObservation, BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend,
     CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
-    LedgerAttribution, LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
+    GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
+    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerAttribution,
+    LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
     SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
@@ -83,6 +84,35 @@ fn pg_anthropic_calibration_row(row: &Row) -> AnthropicCalibrationRow {
     }
 }
 
+fn pg_gemini_exact_calibration_row(row: &Row) -> GeminiExactCalibrationRow {
+    GeminiExactCalibrationRow {
+        profile_id: row.get(0),
+        plan: row.get(1),
+        bucket_id: row.get(2),
+        window_kind: row.get(3),
+        window_duration_mins: row.get(4),
+        resets_at: row.get(5),
+        anchor_used_fraction_units: row.get(6),
+        anchor_resolution_fraction_units: row.get(7),
+        anchor_spend_nano: row.get(8),
+        used_fraction_units: row.get(9),
+        measurement_resolution_fraction_units: row.get(10),
+        observed_at: row.get(11),
+        observed_fraction_units: row.get(12),
+        observed_spend_nano: row.get(13),
+        samples: row.get(14),
+        unattributed_fraction_units: row.get(15),
+        current_capacity_nano: row.get(16),
+        current_low_nano: row.get(17),
+        current_high_nano: row.get(18),
+        current_confidence_bp: row.get(19),
+        last_measured_at: row.get(20),
+        estimator_version: row.get(21),
+        version: row.get(22),
+        updated_ts: row.get(23),
+    }
+}
+
 // Keep the initial version placeholder explicitly typed. PostgreSQL otherwise resolves `$22 + 1`
 // through the untyped integer literal as int4 before assignment to the bigint column, and the
 // postgres crate correctly refuses to serialize the Rust i64 version into that inferred parameter.
@@ -96,6 +126,18 @@ const ANTHROPIC_CALIBRATION_INSERT_SQL: &str = "INSERT INTO anthropic_window_cal
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
             $18,$19,$20,$21,($22::bigint)+1,$23) \
      ON CONFLICT(subject_id,plan,window_kind) DO NOTHING";
+
+// As above, type the version placeholder explicitly so postgres accepts the Rust i64 parameter.
+const GEMINI_EXACT_CALIBRATION_INSERT_SQL: &str = "INSERT INTO gemini_exact_window_calibrations(\
+       profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,\
+       anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
+       used_fraction_units,measurement_resolution_fraction_units,observed_at,\
+       observed_fraction_units,observed_spend_nano,samples,unattributed_fraction_units,\
+       current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+       last_measured_at,estimator_version,version,updated_ts) \
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,\
+            $20,$21,$22,($23::bigint)+1,$24) \
+     ON CONFLICT(profile_id,plan,bucket_id) DO NOTHING";
 
 const MIGRATION_0001: &str = include_str!("../migrations_pg/0001_engine_authority.sql");
 const MIGRATION_0002: &str = include_str!("../migrations_pg/0002_api_key_policies.sql");
@@ -4313,6 +4355,162 @@ impl PgStore {
             &[
                 &observation.subject_id,
                 &observation.plan,
+                &observation.window_kind,
+                &observation.window_duration_mins,
+                &observation.resets_at,
+                &observation.observed_at,
+                &observation.used_fraction_units,
+                &observation.measurement_resolution_fraction_units,
+                &observation.gateway_spend_nano,
+                &observation.observation_source,
+                &observation.source_request_id,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(state.version.saturating_add(1)))
+    }
+
+    pub fn load_gemini_exact_calibration(
+        &mut self,
+        profile_id: &str,
+        plan: &str,
+        bucket_id: &str,
+    ) -> Result<Option<GeminiExactCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM gemini_exact_window_calibrations \
+                 WHERE profile_id=$1 AND plan=$2 AND bucket_id=$3",
+                crate::GEMINI_EXACT_CALIBRATION_COLUMNS
+            ),
+            &[&profile_id, &plan, &bucket_id],
+        )?;
+        let row = row.as_ref().map(pg_gemini_exact_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_gemini_exact_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_gemini_exact_calibrations(&mut self) -> Result<Vec<GeminiExactCalibrationRow>> {
+        let rows = self
+            .client
+            .query(
+                &format!(
+                    "SELECT {} FROM gemini_exact_window_calibrations \
+                     ORDER BY profile_id,plan,bucket_id",
+                    crate::GEMINI_EXACT_CALIBRATION_COLUMNS
+                ),
+                &[],
+            )?
+            .iter()
+            .map(pg_gemini_exact_calibration_row)
+            .collect::<Vec<_>>();
+        for row in &rows {
+            crate::validate_gemini_exact_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    pub fn load_gemini_exact_window_observations(
+        &mut self,
+        profile_id: &str,
+        plan: &str,
+        bucket_id: &str,
+    ) -> Result<Vec<GeminiExactWindowObservation>> {
+        let rows = self.client.query(
+            "SELECT profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,\
+               observed_at,used_fraction_units,measurement_resolution_fraction_units,\
+               gateway_spend_nano,observation_source,source_request_id \
+             FROM gemini_exact_window_observations \
+             WHERE profile_id=$1 AND plan=$2 AND bucket_id=$3 ORDER BY observed_at,id",
+            &[&profile_id, &plan, &bucket_id],
+        )?;
+        let rows = rows
+            .into_iter()
+            .map(|row| GeminiExactWindowObservation {
+                profile_id: row.get(0),
+                plan: row.get(1),
+                bucket_id: row.get(2),
+                window_kind: row.get(3),
+                window_duration_mins: row.get(4),
+                resets_at: row.get(5),
+                observed_at: row.get(6),
+                used_fraction_units: row.get(7),
+                measurement_resolution_fraction_units: row.get(8),
+                gateway_spend_nano: row.get(9),
+                observation_source: row.get(10),
+                source_request_id: row.get(11),
+            })
+            .collect::<Vec<_>>();
+        for row in &rows {
+            crate::validate_gemini_exact_window_observation(row)?;
+        }
+        Ok(rows)
+    }
+
+    pub fn save_gemini_exact_calibration(
+        &mut self,
+        state: &GeminiExactCalibrationRow,
+        observation: &GeminiExactWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_gemini_exact_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        let values: &[&(dyn postgres::types::ToSql + Sync)] = &[
+            &state.profile_id,
+            &state.plan,
+            &state.bucket_id,
+            &state.window_kind,
+            &state.window_duration_mins,
+            &state.resets_at,
+            &state.anchor_used_fraction_units,
+            &state.anchor_resolution_fraction_units,
+            &state.anchor_spend_nano,
+            &state.used_fraction_units,
+            &state.measurement_resolution_fraction_units,
+            &state.observed_at,
+            &state.observed_fraction_units,
+            &state.observed_spend_nano,
+            &state.samples,
+            &state.unattributed_fraction_units,
+            &state.current_capacity_nano,
+            &state.current_low_nano,
+            &state.current_high_nano,
+            &state.current_confidence_bp,
+            &state.last_measured_at,
+            &state.estimator_version,
+            &state.version,
+            &state.updated_ts,
+        ];
+        let changed = if state.version == 0 {
+            tx.execute(GEMINI_EXACT_CALIBRATION_INSERT_SQL, values)?
+        } else {
+            tx.execute(
+                "UPDATE gemini_exact_window_calibrations SET \
+                   window_kind=$4,window_duration_mins=$5,resets_at=$6,\
+                   anchor_used_fraction_units=$7,anchor_resolution_fraction_units=$8,\
+                   anchor_spend_nano=$9,used_fraction_units=$10,\
+                   measurement_resolution_fraction_units=$11,observed_at=$12,\
+                   observed_fraction_units=$13,observed_spend_nano=$14,samples=$15,\
+                   unattributed_fraction_units=$16,current_capacity_nano=$17,\
+                   current_low_nano=$18,current_high_nano=$19,current_confidence_bp=$20,\
+                   last_measured_at=$21,estimator_version=$22,version=version+1,updated_ts=$24 \
+                 WHERE profile_id=$1 AND plan=$2 AND bucket_id=$3 AND version=$23",
+                values,
+            )?
+        };
+        if changed == 0 {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO gemini_exact_window_observations(\
+               profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,observed_at,\
+               used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano,\
+               observation_source,source_request_id) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING",
+            &[
+                &observation.profile_id,
+                &observation.plan,
+                &observation.bucket_id,
                 &observation.window_kind,
                 &observation.window_duration_mins,
                 &observation.resets_at,

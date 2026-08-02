@@ -100,15 +100,35 @@ function geminiCard(response: GeminiSubsResponse | null): FleetCardValue {
   const five = exactWindow<GeminiWindowTotal>(response.window_totals, 300);
   const weekly = exactWindow<GeminiWindowTotal>(response.window_totals, 10_080);
   const ready = Number(response.available ?? 0);
+  const pending = Number(response.calibration_delivery?.pending_events ?? 0);
+  const dropped = Number(response.calibration_delivery?.dropped_events ?? 0);
+  const profilePersistenceOk = profiles
+    .every((profile) => profile.calibration_persistence_ok !== false);
+  const persistenceOk = response.calibration_authority_available === true
+    && response.calibration_delivery?.persistence_ok === true
+    && profilePersistenceOk;
+  const covered = Number(five?.measured_profiles ?? 0);
+  const observed = Number(five?.observed_profiles ?? profiles.length);
+  const coverage = dropped > 0
+    ? `${dropped} потеряно`
+    : pending > 0
+      ? `${pending} сохраняется`
+      : persistenceOk
+        ? `${covered}/${observed} измерено`
+        : "ошибка authority";
   return {
     id: "gemini",
     label: "Gemini",
-    status: ready > 0 && five?.remaining_nano != null && weekly?.remaining_nano != null ? "ok" : "warn",
+    status: dropped > 0 || !persistenceOk
+      ? "bad"
+      : ready > 0 && pending === 0 && five?.remaining_nano != null && weekly?.remaining_nano != null
+        ? "ok"
+        : "warn",
     ready,
     total: profiles.length,
-    coverage: `${Number(five?.measured_profiles ?? 0)}/${Number(five?.observed_profiles ?? profiles.length)} измерено`,
-    five,
-    weekly,
+    coverage,
+    five: persistenceOk && pending === 0 ? five : undefined,
+    weekly: persistenceOk && pending === 0 ? weekly : undefined,
   };
 }
 

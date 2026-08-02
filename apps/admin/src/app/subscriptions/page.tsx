@@ -75,12 +75,17 @@ export default function SubsPage() {
       !geminiDown && !geminiOff && geminiProfiles.length > 0 && Number(gemini?.available || 0) === 0;
     const geminiAuthBad = geminiProfiles.filter((profile) => !profile.authenticated).length;
     const geminiMissing = Number(gemini?.usage_metadata_missing || 0);
+    const geminiCalibrationPending = Number(gemini?.calibration_delivery?.pending_events ?? 0);
+    const geminiCalibrationDropped = Number(gemini?.calibration_delivery?.dropped_events ?? 0);
+    const geminiCalibrationStorageBad = gemini?.calibration_authority_available === false
+      || gemini?.calibration_delivery?.persistence_ok === false;
 
     const fleetTotal = list.length + (gptOff ? 0 : homes.length) + (geminiOff ? 0 : geminiProfiles.length);
     const fleetWarn = Boolean(
       dead || claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
         || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
-        || geminiUnavailable || geminiAuthBad || geminiMissing,
+        || geminiUnavailable || geminiAuthBad || geminiMissing || geminiCalibrationPending
+        || geminiCalibrationDropped || geminiCalibrationStorageBad,
     );
 
     return {
@@ -108,6 +113,9 @@ export default function SubsPage() {
       geminiUnavailable,
       geminiAuthBad,
       geminiMissing,
+      geminiCalibrationPending,
+      geminiCalibrationDropped,
+      geminiCalibrationStorageBad,
       fleetTotal,
       fleetWarn,
     };

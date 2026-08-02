@@ -150,6 +150,58 @@ pub struct AnthropicWindowObservation {
     pub source_request_id: Option<String>,
 }
 
+/// Exact plan-scoped state for one explicit Gemini subscription quota bucket.
+///
+/// The identity deliberately includes the paid plan. Gemini capacity evidence from profiles with
+/// different commercial entitlements must never be pooled merely because Google returned the same
+/// opaque profile id or bucket label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiExactCalibrationRow {
+    pub profile_id: String,
+    pub plan: String,
+    pub bucket_id: String,
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub anchor_used_fraction_units: i64,
+    pub anchor_resolution_fraction_units: i64,
+    pub anchor_spend_nano: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub observed_at: i64,
+    pub observed_fraction_units: i64,
+    pub observed_spend_nano: i64,
+    pub samples: i64,
+    pub unattributed_fraction_units: i64,
+    pub current_capacity_nano: Option<i64>,
+    pub current_low_nano: Option<i64>,
+    pub current_high_nano: Option<i64>,
+    pub current_confidence_bp: i64,
+    pub last_measured_at: Option<i64>,
+    pub estimator_version: i64,
+    pub version: i64,
+    pub updated_ts: i64,
+}
+
+/// One immutable Gemini quota snapshot paired with the cumulative exact API-equivalent spend for
+/// the same opaque profile. Decimal resolution and request attribution are evidence, not metadata:
+/// both are required to derive honest interval bounds and rebuild an estimator after upgrades.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiExactWindowObservation {
+    pub profile_id: String,
+    pub plan: String,
+    pub bucket_id: String,
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub gateway_spend_nano: i64,
+    pub observation_source: String,
+    pub source_request_id: Option<String>,
+}
+
 pub(crate) fn validate_provider_turn_calibration_event(
     event: &ProviderTurnCalibrationEvent,
 ) -> Result<()> {
@@ -211,6 +263,123 @@ pub(crate) fn validate_provider_turn_calibration_event(
 
 fn valid_anthropic_window(kind: &str, duration_mins: i64) -> bool {
     matches!((kind, duration_mins), ("5h", 300) | ("7d", 10_080))
+}
+
+fn valid_gemini_exact_window(bucket_id: &str, kind: &str, duration_mins: i64) -> bool {
+    matches!(
+        (bucket_id, kind, duration_mins),
+        ("gemini-5h", "5h", 300) | ("gemini-weekly", "weekly", 10_080)
+    )
+}
+
+pub fn validate_gemini_exact_calibration_row(row: &GeminiExactCalibrationRow) -> Result<()> {
+    let empty_evidence = row.samples == 0
+        && row.observed_fraction_units == 0
+        && row.observed_spend_nano == 0
+        && row.current_capacity_nano.is_none()
+        && row.current_low_nano.is_none()
+        && row.current_high_nano.is_none()
+        && row.current_confidence_bp == 0
+        && row.last_measured_at.is_none();
+    let measured_evidence = row.samples > 0
+        && row.observed_fraction_units > 0
+        && row.observed_spend_nano > 0
+        && row.current_capacity_nano.is_some()
+        && row.current_low_nano.is_some()
+        && row.last_measured_at.is_some();
+    if row.profile_id.is_empty()
+        || row.plan.is_empty()
+        || !valid_gemini_exact_window(&row.bucket_id, &row.window_kind, row.window_duration_mins)
+        || row.resets_at <= 0
+        || !(0..=100_000_000).contains(&row.anchor_used_fraction_units)
+        || !(1..=100_000_000).contains(&row.anchor_resolution_fraction_units)
+        || row.anchor_spend_nano < 0
+        || !(0..=100_000_000).contains(&row.used_fraction_units)
+        || !(1..=100_000_000).contains(&row.measurement_resolution_fraction_units)
+        || row.observed_at <= 0
+        || row.observed_fraction_units < 0
+        || row.observed_spend_nano < 0
+        || row.samples < 0
+        || row.unattributed_fraction_units < 0
+        || row.current_capacity_nano.is_some_and(|value| value < 0)
+        || row.current_low_nano.is_some_and(|value| value < 0)
+        || row.current_high_nano.is_some_and(|value| value < 0)
+        || row
+            .current_low_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(low, capacity)| low > capacity)
+        || row
+            .current_high_nano
+            .zip(row.current_capacity_nano)
+            .is_some_and(|(high, capacity)| high < capacity)
+        || row
+            .current_low_nano
+            .zip(row.current_high_nano)
+            .is_some_and(|(low, high)| low > high)
+        || !(0..=10_000).contains(&row.current_confidence_bp)
+        || row.last_measured_at.is_some_and(|value| value <= 0)
+        || row.estimator_version <= 0
+        || row.version < 0
+        || row.updated_ts <= 0
+        || !(empty_evidence || measured_evidence)
+        || row.current_high_nano.is_none() && row.current_confidence_bp != 0
+    {
+        bail!("invalid exact Gemini calibration row");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_gemini_exact_window_observation(
+    observation: &GeminiExactWindowObservation,
+) -> Result<()> {
+    let valid_source = match observation.observation_source.as_str() {
+        "response" => observation
+            .source_request_id
+            .as_ref()
+            .is_some_and(|request_id| !request_id.is_empty()),
+        "poll" => observation.source_request_id.is_none(),
+        _ => false,
+    };
+    if observation.profile_id.is_empty()
+        || observation.plan.is_empty()
+        || !valid_gemini_exact_window(
+            &observation.bucket_id,
+            &observation.window_kind,
+            observation.window_duration_mins,
+        )
+        || observation.resets_at <= 0
+        || observation.observed_at <= 0
+        || !(0..=100_000_000).contains(&observation.used_fraction_units)
+        || !(1..=100_000_000).contains(&observation.measurement_resolution_fraction_units)
+        || observation.gateway_spend_nano < 0
+        || !valid_source
+    {
+        bail!("invalid exact Gemini calibration observation");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_gemini_exact_calibration_pair(
+    state: &GeminiExactCalibrationRow,
+    observation: &GeminiExactWindowObservation,
+) -> Result<()> {
+    validate_gemini_exact_calibration_row(state)?;
+    validate_gemini_exact_window_observation(observation)?;
+    if state.profile_id != observation.profile_id
+        || state.plan != observation.plan
+        || state.bucket_id != observation.bucket_id
+        || state.window_kind != observation.window_kind
+        || state.window_duration_mins != observation.window_duration_mins
+        || state.resets_at != observation.resets_at
+        || state.used_fraction_units != observation.used_fraction_units
+        || state.measurement_resolution_fraction_units
+            != observation.measurement_resolution_fraction_units
+        || state.observed_at != observation.observed_at
+        || state.updated_ts != observation.observed_at
+    {
+        bail!("exact Gemini calibration state/observation mismatch");
+    }
+    Ok(())
 }
 
 pub fn validate_anthropic_calibration_row(row: &AnthropicCalibrationRow) -> Result<()> {
@@ -777,6 +946,213 @@ pub fn save_anthropic_calibration(
     Ok(Some(state.version.saturating_add(1)))
 }
 
+pub(crate) const GEMINI_EXACT_CALIBRATION_COLUMNS: &str = "profile_id,plan,bucket_id,\
+    window_kind,window_duration_mins,resets_at,anchor_used_fraction_units,\
+    anchor_resolution_fraction_units,anchor_spend_nano,used_fraction_units,\
+    measurement_resolution_fraction_units,observed_at,observed_fraction_units,\
+    observed_spend_nano,samples,unattributed_fraction_units,current_capacity_nano,\
+    current_low_nano,current_high_nano,current_confidence_bp,last_measured_at,\
+    estimator_version,version,updated_ts";
+
+fn sqlite_gemini_exact_calibration_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<GeminiExactCalibrationRow> {
+    Ok(GeminiExactCalibrationRow {
+        profile_id: row.get(0)?,
+        plan: row.get(1)?,
+        bucket_id: row.get(2)?,
+        window_kind: row.get(3)?,
+        window_duration_mins: row.get(4)?,
+        resets_at: row.get(5)?,
+        anchor_used_fraction_units: row.get(6)?,
+        anchor_resolution_fraction_units: row.get(7)?,
+        anchor_spend_nano: row.get(8)?,
+        used_fraction_units: row.get(9)?,
+        measurement_resolution_fraction_units: row.get(10)?,
+        observed_at: row.get(11)?,
+        observed_fraction_units: row.get(12)?,
+        observed_spend_nano: row.get(13)?,
+        samples: row.get(14)?,
+        unattributed_fraction_units: row.get(15)?,
+        current_capacity_nano: row.get(16)?,
+        current_low_nano: row.get(17)?,
+        current_high_nano: row.get(18)?,
+        current_confidence_bp: row.get(19)?,
+        last_measured_at: row.get(20)?,
+        estimator_version: row.get(21)?,
+        version: row.get(22)?,
+        updated_ts: row.get(23)?,
+    })
+}
+
+pub fn load_gemini_exact_calibration(
+    conn: &Connection,
+    profile_id: &str,
+    plan: &str,
+    bucket_id: &str,
+) -> Result<Option<GeminiExactCalibrationRow>> {
+    let row = conn
+        .query_row(
+            &format!(
+                "SELECT {GEMINI_EXACT_CALIBRATION_COLUMNS} \
+                 FROM gemini_exact_window_calibrations \
+                 WHERE profile_id=?1 AND plan=?2 AND bucket_id=?3"
+            ),
+            rusqlite::params![profile_id, plan, bucket_id],
+            sqlite_gemini_exact_calibration_row,
+        )
+        .optional()
+        .context("load SQLite exact Gemini calibration")?;
+    if let Some(row) = &row {
+        validate_gemini_exact_calibration_row(row)?;
+    }
+    Ok(row)
+}
+
+pub fn list_gemini_exact_calibrations(conn: &Connection) -> Result<Vec<GeminiExactCalibrationRow>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {GEMINI_EXACT_CALIBRATION_COLUMNS} \
+         FROM gemini_exact_window_calibrations ORDER BY profile_id,plan,bucket_id"
+    ))?;
+    let rows = statement
+        .query_map([], sqlite_gemini_exact_calibration_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for row in &rows {
+        validate_gemini_exact_calibration_row(row)?;
+    }
+    Ok(rows)
+}
+
+pub fn load_gemini_exact_window_observations(
+    conn: &Connection,
+    profile_id: &str,
+    plan: &str,
+    bucket_id: &str,
+) -> Result<Vec<GeminiExactWindowObservation>> {
+    let mut statement = conn.prepare(
+        "SELECT profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,\
+           observed_at,used_fraction_units,measurement_resolution_fraction_units,\
+           gateway_spend_nano,observation_source,source_request_id \
+         FROM gemini_exact_window_observations \
+         WHERE profile_id=?1 AND plan=?2 AND bucket_id=?3 ORDER BY observed_at,id",
+    )?;
+    let rows = statement
+        .query_map(rusqlite::params![profile_id, plan, bucket_id], |row| {
+            Ok(GeminiExactWindowObservation {
+                profile_id: row.get(0)?,
+                plan: row.get(1)?,
+                bucket_id: row.get(2)?,
+                window_kind: row.get(3)?,
+                window_duration_mins: row.get(4)?,
+                resets_at: row.get(5)?,
+                observed_at: row.get(6)?,
+                used_fraction_units: row.get(7)?,
+                measurement_resolution_fraction_units: row.get(8)?,
+                gateway_spend_nano: row.get(9)?,
+                observation_source: row.get(10)?,
+                source_request_id: row.get(11)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for row in &rows {
+        validate_gemini_exact_window_observation(row)?;
+    }
+    Ok(rows)
+}
+
+/// Persist one exact Gemini estimator state and its immutable source snapshot atomically under
+/// optimistic CAS. A losing writer stores neither state nor evidence and must rebuild/retry.
+pub fn save_gemini_exact_calibration(
+    conn: &Connection,
+    state: &GeminiExactCalibrationRow,
+    observation: &GeminiExactWindowObservation,
+) -> Result<Option<i64>> {
+    validate_gemini_exact_calibration_pair(state, observation)?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .context("begin SQLite exact Gemini calibration CAS")?;
+    let values = rusqlite::params![
+        state.profile_id,
+        state.plan,
+        state.bucket_id,
+        state.window_kind,
+        state.window_duration_mins,
+        state.resets_at,
+        state.anchor_used_fraction_units,
+        state.anchor_resolution_fraction_units,
+        state.anchor_spend_nano,
+        state.used_fraction_units,
+        state.measurement_resolution_fraction_units,
+        state.observed_at,
+        state.observed_fraction_units,
+        state.observed_spend_nano,
+        state.samples,
+        state.unattributed_fraction_units,
+        state.current_capacity_nano,
+        state.current_low_nano,
+        state.current_high_nano,
+        state.current_confidence_bp,
+        state.last_measured_at,
+        state.estimator_version,
+        state.version,
+        state.updated_ts,
+    ];
+    let changed = if state.version == 0 {
+        tx.execute(
+            "INSERT INTO gemini_exact_window_calibrations(\
+               profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,\
+               anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
+               used_fraction_units,measurement_resolution_fraction_units,observed_at,\
+               observed_fraction_units,observed_spend_nano,samples,unattributed_fraction_units,\
+               current_capacity_nano,current_low_nano,current_high_nano,current_confidence_bp,\
+               last_measured_at,estimator_version,version,updated_ts) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,\
+                    ?17,?18,?19,?20,?21,?22,?23+1,?24) \
+             ON CONFLICT(profile_id,plan,bucket_id) DO NOTHING",
+            values,
+        )?
+    } else {
+        tx.execute(
+            "UPDATE gemini_exact_window_calibrations SET \
+               window_kind=?4,window_duration_mins=?5,resets_at=?6,\
+               anchor_used_fraction_units=?7,anchor_resolution_fraction_units=?8,\
+               anchor_spend_nano=?9,used_fraction_units=?10,\
+               measurement_resolution_fraction_units=?11,observed_at=?12,\
+               observed_fraction_units=?13,observed_spend_nano=?14,samples=?15,\
+               unattributed_fraction_units=?16,current_capacity_nano=?17,current_low_nano=?18,\
+               current_high_nano=?19,current_confidence_bp=?20,last_measured_at=?21,\
+               estimator_version=?22,version=version+1,updated_ts=?24 \
+             WHERE profile_id=?1 AND plan=?2 AND bucket_id=?3 AND version=?23",
+            values,
+        )?
+    };
+    if changed == 0 {
+        return Ok(None);
+    }
+    tx.execute(
+        "INSERT INTO gemini_exact_window_observations(\
+           profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,observed_at,\
+           used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano,\
+           observation_source,source_request_id) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT DO NOTHING",
+        rusqlite::params![
+            observation.profile_id,
+            observation.plan,
+            observation.bucket_id,
+            observation.window_kind,
+            observation.window_duration_mins,
+            observation.resets_at,
+            observation.observed_at,
+            observation.used_fraction_units,
+            observation.measurement_resolution_fraction_units,
+            observation.gateway_spend_nano,
+            observation.observation_source,
+            observation.source_request_id,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(Some(state.version.saturating_add(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +1234,60 @@ mod tests {
             current_confidence_bp: 0,
             last_measured_at: None,
             estimator_version: 1,
+            version: 0,
+            updated_ts: observed_at,
+        };
+        (state, observation)
+    }
+
+    fn gemini_anchor(
+        plan: &str,
+        bucket_id: &str,
+        observed_at: i64,
+    ) -> (GeminiExactCalibrationRow, GeminiExactWindowObservation) {
+        let (window_kind, duration) = if bucket_id == "gemini-5h" {
+            ("5h", 300)
+        } else {
+            ("weekly", 10_080)
+        };
+        let observation = GeminiExactWindowObservation {
+            profile_id: "profile-a".to_owned(),
+            plan: plan.to_owned(),
+            bucket_id: bucket_id.to_owned(),
+            window_kind: window_kind.to_owned(),
+            window_duration_mins: duration,
+            resets_at: 2_000_000_000 + duration * 60,
+            observed_at,
+            used_fraction_units: 12_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            gateway_spend_nano: 0,
+            observation_source: "poll".to_owned(),
+            source_request_id: None,
+        };
+        let state = GeminiExactCalibrationRow {
+            profile_id: observation.profile_id.clone(),
+            plan: observation.plan.clone(),
+            bucket_id: observation.bucket_id.clone(),
+            window_kind: observation.window_kind.clone(),
+            window_duration_mins: observation.window_duration_mins,
+            resets_at: observation.resets_at,
+            anchor_used_fraction_units: observation.used_fraction_units,
+            anchor_resolution_fraction_units: observation.measurement_resolution_fraction_units,
+            anchor_spend_nano: 0,
+            used_fraction_units: observation.used_fraction_units,
+            measurement_resolution_fraction_units: observation
+                .measurement_resolution_fraction_units,
+            observed_at,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 3,
             version: 0,
             updated_ts: observed_at,
         };
@@ -965,6 +1395,68 @@ mod tests {
                 "operator@example.test",
                 "max20",
                 "5h",
+            )
+            .unwrap()
+            .len(),
+            1,
+        );
+    }
+
+    #[test]
+    fn exact_gemini_authority_keeps_plan_and_bucket_identity_and_immutable_history() {
+        let connection = crate::open(":memory:").unwrap();
+        let (pro_five, pro_five_observation) = gemini_anchor("google_ai_pro", "gemini-5h", 100);
+        let (ultra_five, ultra_five_observation) =
+            gemini_anchor("google_ai_ultra", "gemini-5h", 101);
+        let (pro_weekly, pro_weekly_observation) =
+            gemini_anchor("google_ai_pro", "gemini-weekly", 102);
+
+        assert_eq!(
+            save_gemini_exact_calibration(&connection, &pro_five, &pro_five_observation).unwrap(),
+            Some(1),
+        );
+        assert_eq!(
+            save_gemini_exact_calibration(&connection, &ultra_five, &ultra_five_observation)
+                .unwrap(),
+            Some(1),
+        );
+        assert_eq!(
+            save_gemini_exact_calibration(&connection, &pro_weekly, &pro_weekly_observation)
+                .unwrap(),
+            Some(1),
+        );
+        assert_eq!(
+            list_gemini_exact_calibrations(&connection).unwrap().len(),
+            3
+        );
+        assert_eq!(
+            load_gemini_exact_calibration(&connection, "profile-a", "google_ai_pro", "gemini-5h",)
+                .unwrap(),
+            Some(GeminiExactCalibrationRow {
+                version: 1,
+                ..pro_five.clone()
+            }),
+        );
+        assert_eq!(
+            load_gemini_exact_window_observations(
+                &connection,
+                "profile-a",
+                "google_ai_pro",
+                "gemini-5h",
+            )
+            .unwrap(),
+            vec![pro_five_observation.clone()],
+        );
+        assert_eq!(
+            save_gemini_exact_calibration(&connection, &pro_five, &pro_five_observation).unwrap(),
+            None,
+        );
+        assert_eq!(
+            load_gemini_exact_window_observations(
+                &connection,
+                "profile-a",
+                "google_ai_pro",
+                "gemini-5h",
             )
             .unwrap()
             .len(),

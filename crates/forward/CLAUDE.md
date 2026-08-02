@@ -709,18 +709,22 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    event. Public synthetic errors только native Google-shaped и без profile/project/key/upstream.
 7. Gemini capacity не выводится из цены подписки или дневного request-count. Antigravity
    `retrieveUserQuotaSummary` принимается только для exact `gemini-5h`/`gemini-weekly`; `3p-*`
-   исключены. Каждый успешный generation (billed или admin) durable-кредитует обслуживший opaque
-   profile exact official-price nanoUSD из `metering::gemini`. Окна независимы и используют
-   fixed-point fraction `10^-8`. Так как Google документирует workload-dependent quota consumption,
-   point estimate — realized blend `SCALE*ΣΔspend/ΣΔused`, а НЕ фиксированный номинал подписки.
-   Low/high — накопленный per-interval workload envelope с консервативной поправкой ±1 fraction
-   unit; confidence перемножает sample maturity, `low/high` stability и fraction resolution.
-   Prior/EMA/float money нет. Cold snapshot и первое движение после cold/reset ставят безопасный
-   anchor. Cold capacity/remaining остаются `null` и dollar Prometheus series не публикуются до
-   следующего complete positive-spend interval; reset сохраняет уже измеренные blend/envelope и
-   заново вооружает censor. Raw observations, exact cumulative spend, CAS state и profile spend
-   живут в engine authority для replay после estimator upgrade; persistence failure не
-   останавливает serving, но явно виден в status.
+   исключены. Каждый successful generation с terminal usage (billed или admin) строит immutable
+   provider event: internal request id, opaque profile, exact paid plan/model/tariff, все token/tool/
+   search facts и disjoint official API nanoUSD legs. Событие и cumulative subject spend пишутся
+   атомарно; missing usage не создаёт evidence. Доставка — отдельный bounded FIFO 4096 с retained
+   transient head, immutable replay, one-row conflict quarantine, poll-before-observation flush,
+   pending/drop/persistence diagnostics и shutdown drain.
+   Exact window authority ключуется `profile + plan + bucket + duration`; legacy rows без plan не
+   мигрируются. Окна независимы, provider fraction хранится fixed-point `10^-8` вместе с реальным
+   lexical decimal resolution. Cold snapshot — anchor, а первый complete positive-spend interval
+   сразу публикует realized blend `SCALE*ΣΔspend/ΣΔused`. Low/high учитывают resolution обоих
+   endpoints; high остаётся `null`, если движение не превосходит uncertainty. Quota может ждать один
+   snapshot settlement lag, повторное quota-only движение становится unattributed. Reset/rolling
+   rollover/jitter, overflow и estimator rebuild из immutable history fail closed. Prior/EMA/WLS/
+   nominal/float money нет. Admin-only exact targeting принимает полный opaque profile id и
+   optional canonical `x-apitoken-calibration-request-id`; metered traffic не может задать ни
+   профиль, ни immutable-event identity, а target никогда не spill/rebind-ится.
 8. Полный контракт/provisioning/runbook — `docs/engine/GEMINI_PROVIDER.md`. Проверка включает mock upstream:
    rotation fault matrix, credential stripping, RetryInfo, chunk-split SSE, no post-byte retry,
    disconnect drain+settlement и shutdown deadline barrier.

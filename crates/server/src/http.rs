@@ -14,12 +14,11 @@ use axum::routing::{get, post};
 use axum::Router;
 use forward::{
     anthropic_chat_completions, anthropic_responses, authed, client_keys,
-    codex_messages_count_tokens, codex_messages_skin, control_authed, forward,
-    gemini_api, gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin,
-    gemini_responses, openai_chat_completions,
-    openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
-    openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
-    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
+    codex_messages_count_tokens, codex_messages_skin, control_authed, forward, gemini_api,
+    gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin, gemini_responses,
+    openai_chat_completions, openai_delete_response, openai_get_response, openai_input_tokens,
+    openai_model, openai_models, openai_response_input_items, openai_responses, readonly_authed,
+    resolve_client_key, resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
     PricingShadowEnqueueResult, PricingShadowProcessingResult, StrictPricingProvider,
     StrictPricingRejectionReason, TerminalErrorReason, PRICING_BRIDGE_LATENCY_BUCKETS_MS,
     PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
@@ -1434,6 +1433,11 @@ async fn metrics(
     );
     if let Some(gemini) = &app.gemini {
         let status = gemini.operational_status().await;
+        let delivery = app
+            .billing
+            .as_ref()
+            .map(|billing| billing.gemini_calibration_delivery_status());
+        let calibration_persistence_ok = gemini_calibration_persistence_ok(&status, delivery);
         let _ = writeln!(
             body,
             "# TYPE claude_api_gemini_profiles gauge\nclaude_api_gemini_profiles {}\n\
@@ -1471,6 +1475,18 @@ async fn metrics(
             status.available,
             status.authenticated,
         );
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_gemini_calibration_pending_events gauge\n\
+             claude_api_gemini_calibration_pending_events {}\n\
+             # TYPE claude_api_gemini_calibration_dropped_events_total counter\n\
+             claude_api_gemini_calibration_dropped_events_total {}\n\
+             # TYPE claude_api_gemini_calibration_persistence_ok gauge\n\
+             claude_api_gemini_calibration_persistence_ok {}",
+            delivery.map_or(0, |status| status.pending_events),
+            delivery.map_or(0, |status| status.dropped_events),
+            u8::from(calibration_persistence_ok),
+        );
         if let Some(ready_at) = status.soonest_ready {
             let _ = writeln!(
                 body,
@@ -1506,7 +1522,7 @@ async fn metrics(
                 profile.spend_usd_total,
                 u8::from(profile.calibration_persistence_ok),
             );
-            write_gemini_profile_capacity_metrics(&mut body, profile);
+            write_gemini_profile_capacity_metrics(&mut body, profile, calibration_persistence_ok);
             for cooling in &profile.model_cooling {
                 let _ = writeln!(
                     body,
@@ -1536,14 +1552,19 @@ async fn metrics(
              # TYPE claude_api_gemini_window_measured_profiles gauge\n\
              # TYPE claude_api_gemini_window_observed_profiles gauge"
         );
-        for (duration, total) in gemini_window_totals(&status) {
+        for (duration, total) in gemini_window_totals(&status, pool::now()) {
             let _ = writeln!(
                 body,
                 "claude_api_gemini_window_measured_profiles{{window_minutes=\"{duration}\"}} {}\n\
                  claude_api_gemini_window_observed_profiles{{window_minutes=\"{duration}\"}} {}",
-                total.measured_profiles, total.observed_profiles,
+                if calibration_persistence_ok {
+                    total.measured_profiles
+                } else {
+                    0
+                },
+                total.observed_profiles,
             );
-            if total.measured_profiles > 0 {
+            if calibration_persistence_ok && total.measured_profiles > 0 {
                 let _ = writeln!(
                     body,
                     "claude_api_gemini_window_capacity_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
@@ -1552,7 +1573,10 @@ async fn metrics(
                     total.remaining_nano as f64 / 1e9,
                 );
             }
-            if total.low_profiles == total.measured_profiles && total.measured_profiles > 0 {
+            if calibration_persistence_ok
+                && total.low_profiles == total.measured_profiles
+                && total.measured_profiles > 0
+            {
                 let _ = writeln!(
                     body,
                     "claude_api_gemini_window_capacity_low_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
@@ -1561,7 +1585,10 @@ async fn metrics(
                     total.remaining_low_nano as f64 / 1e9,
                 );
             }
-            if total.high_profiles == total.measured_profiles && total.measured_profiles > 0 {
+            if calibration_persistence_ok
+                && total.high_profiles == total.measured_profiles
+                && total.measured_profiles > 0
+            {
                 let _ = writeln!(
                     body,
                     "claude_api_gemini_window_capacity_high_usd{{window_minutes=\"{duration}\"}} {:.6}\n\
@@ -1669,6 +1696,7 @@ fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::C
 fn write_gemini_profile_capacity_metrics(
     body: &mut String,
     profile: &forward::GeminiProfileStatus,
+    capacity_available: bool,
 ) {
     use std::fmt::Write as _;
 
@@ -1689,8 +1717,12 @@ fn write_gemini_profile_capacity_metrics(
              claude_api_gemini_profile_window_observed_fraction_units{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {}",
             capacity.resets_at,
             capacity.data_age_seconds,
-            capacity.source,
-            u8::from(capacity.cap_usd.is_some()),
+            if capacity_available {
+                capacity.source
+            } else {
+                "unknown"
+            },
+            u8::from(capacity_available && capacity.cap_usd.is_some()),
             capacity.confidence,
             capacity.samples,
             capacity.observed_spend_nano as f64 / 1e9,
@@ -1698,38 +1730,42 @@ fn write_gemini_profile_capacity_metrics(
         );
         // Unknown capacity has no dollar time series. Publishing a numeric zero before the first
         // complete interval would be indistinguishable from a genuinely measured zero-dollar cap.
-        if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
-            let _ = writeln!(
-                body,
-                "claude_api_gemini_profile_window_capacity_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {cap:.6}\n\
-                 claude_api_gemini_profile_window_remaining_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {remaining:.6}",
-                capacity.source,
-                capacity.source,
-            );
+        if capacity_available {
+            if let (Some(cap), Some(remaining)) = (capacity.cap_usd, capacity.remaining_usd) {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_window_capacity_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {cap:.6}\n\
+                     claude_api_gemini_profile_window_remaining_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\",source=\"{}\"}} {remaining:.6}",
+                    capacity.source,
+                    capacity.source,
+                );
+            }
         }
-        if let Some(low) = capacity.low_usd {
-            let _ = writeln!(
-                body,
-                "claude_api_gemini_profile_window_capacity_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
-            );
-        }
-        if let Some(high) = capacity.high_usd {
-            let _ = writeln!(
-                body,
-                "claude_api_gemini_profile_window_capacity_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
-            );
-        }
-        if let Some(low) = capacity.remaining_low_usd {
-            let _ = writeln!(
-                body,
-                "claude_api_gemini_profile_window_remaining_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
-            );
-        }
-        if let Some(high) = capacity.remaining_high_usd {
-            let _ = writeln!(
-                body,
-                "claude_api_gemini_profile_window_remaining_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
-            );
+        if capacity_available {
+            if let Some(low) = capacity.low_usd {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_window_capacity_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
+                );
+            }
+            if let Some(high) = capacity.high_usd {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_window_capacity_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
+                );
+            }
+            if let Some(low) = capacity.remaining_low_usd {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_window_remaining_low_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {low:.6}"
+                );
+            }
+            if let Some(high) = capacity.remaining_high_usd {
+                let _ = writeln!(
+                    body,
+                    "claude_api_gemini_profile_window_remaining_high_usd{{profile=\"{id}\",window=\"{window}\",window_minutes=\"{duration}\"}} {high:.6}"
+                );
+            }
         }
     }
 }
@@ -1992,11 +2028,26 @@ struct GeminiWindowTotal {
     high_profiles: usize,
 }
 
+fn gemini_profile_routable(profile: &forward::GeminiProfileStatus, now: i64) -> bool {
+    profile.authenticated
+        && profile.cooling_until <= now
+        && (profile.model_cooling.is_empty()
+            || profile
+                .model_cooling
+                .iter()
+                .any(|model| model.cooling_until <= now))
+}
+
 fn gemini_window_totals(
     status: &forward::GeminiOperationalStatus,
+    now: i64,
 ) -> BTreeMap<i64, GeminiWindowTotal> {
     let mut totals: BTreeMap<i64, GeminiWindowTotal> = BTreeMap::new();
-    for profile in &status.profiles {
+    for profile in status
+        .profiles
+        .iter()
+        .filter(|profile| gemini_profile_routable(profile, now))
+    {
         for capacity in &profile.capacities {
             let total = totals.entry(capacity.window_minutes).or_default();
             total.observed_profiles += 1;
@@ -3855,6 +3906,7 @@ fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Va
             Some(json!({
                 "id": model.id,
                 "display_name": model.display_name,
+                "tariff_schedule_id": metering::gemini::TARIFF_SCHEDULE_ID,
                 "input_token_limit": model.input_token_limit.to_string(),
                 "output_token_limit": model.output_token_limit.to_string(),
                 "quota_model_ids": model.quota_model_ids(),
@@ -3881,6 +3933,114 @@ fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Va
         .collect()
 }
 
+fn gemini_exact_calibration_value(row: &registry::GeminiExactCalibrationRow) -> Value {
+    json!({
+        "profile_id": row.profile_id,
+        "plan": row.plan,
+        "bucket_id": row.bucket_id,
+        "window_kind": row.window_kind,
+        "window_minutes": row.window_duration_mins,
+        "resets_at": row.resets_at,
+        "used_fraction_units": row.used_fraction_units,
+        "measurement_resolution_fraction_units": row.measurement_resolution_fraction_units,
+        "observed_at": row.observed_at,
+        "observed_fraction_units": row.observed_fraction_units.to_string(),
+        "observed_spend_nanousd": row.observed_spend_nano.to_string(),
+        "samples": row.samples,
+        "unattributed_fraction_units": row.unattributed_fraction_units.to_string(),
+        "capacity_nanousd": row.current_capacity_nano.map(|value| value.to_string()),
+        "low_nanousd": row.current_low_nano.map(|value| value.to_string()),
+        "high_nanousd": row.current_high_nano.map(|value| value.to_string()),
+        "confidence_bp": row.current_confidence_bp,
+        "last_measured_at": row.last_measured_at,
+        "estimator_version": row.estimator_version,
+        "version": row.version,
+        "updated_ts": row.updated_ts,
+    })
+}
+
+fn gemini_calibration_aggregate_value(row: &registry::ProviderTurnCalibrationAggregate) -> Value {
+    json!({
+        "profile_id": row.subject_id,
+        "model": row.model_id,
+        "service_tier": row.service_tier,
+        "inference_geo": row.inference_geo,
+        "tariff_schedule_id": row.tariff_schedule_id,
+        "turns": row.turns,
+        "first_completed_at": row.first_completed_at,
+        "last_completed_at": row.last_completed_at,
+        "input_tokens": row.input_tokens.to_string(),
+        "audio_input_tokens": row.audio_input_tokens.to_string(),
+        "cache_read_tokens": row.cache_read_tokens.to_string(),
+        "cached_audio_input_tokens": row.cached_audio_input_tokens.to_string(),
+        "cache_write_5m_tokens": row.cache_write_5m_tokens.to_string(),
+        "cache_write_1h_tokens": row.cache_write_1h_tokens.to_string(),
+        "output_tokens": row.output_tokens.to_string(),
+        "thinking_output_tokens": row.thinking_output_tokens.to_string(),
+        "image_output_tokens": row.image_output_tokens.to_string(),
+        "tool_prompt_tokens": row.tool_prompt_tokens.to_string(),
+        "search_queries": row.search_queries.to_string(),
+        "grounded_search_prompts": row.grounded_search_prompts.to_string(),
+        "api_input_nanousd": row.api_input_nanousd.to_string(),
+        "api_audio_input_nanousd": row.api_audio_input_nanousd.to_string(),
+        "api_cache_read_nanousd": row.api_cache_read_nanousd.to_string(),
+        "api_cached_audio_input_nanousd": row.api_cached_audio_input_nanousd.to_string(),
+        "api_cache_write_5m_nanousd": row.api_cache_write_5m_nanousd.to_string(),
+        "api_cache_write_1h_nanousd": row.api_cache_write_1h_nanousd.to_string(),
+        "api_output_nanousd": row.api_output_nanousd.to_string(),
+        "api_image_output_nanousd": row.api_image_output_nanousd.to_string(),
+        "api_search_nanousd": row.api_search_nanousd.to_string(),
+        "api_total_nanousd": row.api_total_nanousd.to_string(),
+    })
+}
+
+fn gemini_calibration_event_value(row: &registry::ProviderTurnCalibrationEvent) -> Value {
+    let mut value =
+        gemini_calibration_aggregate_value(&registry::ProviderTurnCalibrationAggregate {
+            provider: row.provider.clone(),
+            subject_id: row.subject_id.clone(),
+            model_id: row.model_id.clone(),
+            service_tier: row.service_tier.clone(),
+            inference_geo: row.inference_geo.clone(),
+            tariff_schedule_id: row.tariff_schedule_id.clone(),
+            turns: 1,
+            first_completed_at: row.completed_at,
+            last_completed_at: row.completed_at,
+            input_tokens: row.input_tokens,
+            audio_input_tokens: row.audio_input_tokens,
+            cache_read_tokens: row.cache_read_tokens,
+            cached_audio_input_tokens: row.cached_audio_input_tokens,
+            cache_write_5m_tokens: row.cache_write_5m_tokens,
+            cache_write_1h_tokens: row.cache_write_1h_tokens,
+            output_tokens: row.output_tokens,
+            thinking_output_tokens: row.thinking_output_tokens,
+            image_output_tokens: row.image_output_tokens,
+            tool_prompt_tokens: row.tool_prompt_tokens,
+            search_queries: row.search_queries,
+            grounded_search_prompts: row.grounded_search_prompts,
+            api_input_nanousd: row.api_input_nanousd,
+            api_audio_input_nanousd: row.api_audio_input_nanousd,
+            api_cache_read_nanousd: row.api_cache_read_nanousd,
+            api_cached_audio_input_nanousd: row.api_cached_audio_input_nanousd,
+            api_cache_write_5m_nanousd: row.api_cache_write_5m_nanousd,
+            api_cache_write_1h_nanousd: row.api_cache_write_1h_nanousd,
+            api_output_nanousd: row.api_output_nanousd,
+            api_image_output_nanousd: row.api_image_output_nanousd,
+            api_search_nanousd: row.api_search_nanousd,
+            api_total_nanousd: row.api_total_nanousd,
+        });
+    let object = value
+        .as_object_mut()
+        .expect("Gemini calibration aggregate serializer returns object");
+    object.insert("request_id".to_owned(), json!(row.request_id));
+    object.insert("priced_ts".to_owned(), json!(row.priced_ts));
+    object.insert("completed_at".to_owned(), json!(row.completed_at));
+    object.remove("turns");
+    object.remove("first_completed_at");
+    object.remove("last_completed_at");
+    value
+}
+
 /// Gemini paid-subscription fleet status for the unified panel. This route exists only on the
 /// fixed Gemini runtime and contains opaque profile ids plus sanitized quota/transport metadata;
 /// Google subject, full email, project, OAuth and proxy values never enter the response. A bounded
@@ -3902,9 +4062,26 @@ async fn gemini_subs(
         return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
     };
     let now = pool::now();
+    let calibration_report = match &app.billing {
+        Some(billing) => match billing.gemini_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("Gemini calibration report unavailable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    let calibration_delivery = app
+        .billing
+        .as_ref()
+        .map(|billing| billing.gemini_calibration_delivery_status());
     let status = gemini.operational_status().await;
+    let calibration_persistence_ok =
+        gemini_calibration_persistence_ok(&status, calibration_delivery);
+    let capacity_available = calibration_report.is_some() && calibration_persistence_ok;
     let affinity = app.affinity.stats();
-    let profiles = gemini_profile_values(&status);
+    let profiles = gemini_profile_values(&status, capacity_available, now);
     let models = status
         .models
         .iter()
@@ -3927,7 +4104,7 @@ async fn gemini_subs(
             })
         })
         .collect::<Vec<_>>();
-    let window_totals = gemini_window_total_values(&status);
+    let window_totals = gemini_window_total_values(&status, capacity_available, now);
     Json(json!({
         "now": now,
         "enabled": true,
@@ -3941,6 +4118,23 @@ async fn gemini_subs(
             "fixed_subscription_nominal": false,
             "source": "workload_blend",
         },
+        "calibration_authority_available": calibration_report.is_some(),
+        "calibration_delivery": calibration_delivery.map(|status| json!({
+            "pending_events": status.pending_events,
+            "dropped_events": status.dropped_events,
+            "persistence_ok": calibration_persistence_ok,
+            "queue_limit": status.queue_limit,
+        })),
+        "calibration_windows": calibration_report.as_ref().map_or_else(Vec::new, |(rows, _, _)| {
+            rows.iter().map(gemini_exact_calibration_value).collect::<Vec<_>>()
+        }),
+        "calibration_evidence": calibration_report.as_ref().map_or_else(Vec::new, |(_, rows, _)| {
+            rows.iter().map(gemini_calibration_aggregate_value).collect::<Vec<_>>()
+        }),
+        "calibration_recent_turn_limit": registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+        "calibration_recent_turns": calibration_report.as_ref().map_or_else(Vec::new, |(_, _, rows)| {
+            rows.iter().map(gemini_calibration_event_value).collect::<Vec<_>>()
+        }),
         "window_totals": window_totals,
         "conversion_models": gemini_conversion_models(&gemini.config().models, now),
         "models": models,
@@ -3983,13 +4177,31 @@ async fn gemini_subs(
     .into_response()
 }
 
-fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value> {
+fn gemini_calibration_persistence_ok(
+    status: &forward::GeminiOperationalStatus,
+    delivery: Option<forward::GeminiCalibrationDeliveryStatus>,
+) -> bool {
+    delivery.is_some_and(|delivery| {
+        delivery.persistence_ok && delivery.pending_events == 0 && delivery.dropped_events == 0
+    }) && status
+        .profiles
+        .iter()
+        .all(|profile| profile.calibration_persistence_ok)
+}
+
+fn gemini_profile_values(
+    status: &forward::GeminiOperationalStatus,
+    capacity_available: bool,
+    now: i64,
+) -> Vec<Value> {
     let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
     let round_opt = |x: Option<f64>| x.map(round);
     status
         .profiles
         .iter()
         .map(|profile| {
+            let profile_capacity_available =
+                capacity_available && gemini_profile_routable(profile, now);
             json!({
                 "id": profile.id,
                 "email": profile.masked_email,
@@ -4012,23 +4224,23 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
                     "used_fraction_units": window.used_fraction_units,
                     "remaining_fraction": window.remaining_fraction_units as f64 / 100_000_000.0,
                     "used_fraction": window.used_fraction_units as f64 / 100_000_000.0,
-                    "capacity_nano": window.capacity_nano.map(|value| value.to_string()),
-                    "remaining_nano": window.remaining_nano.map(|value| value.to_string()),
-                    "low_nano": window.low_nano.map(|value| value.to_string()),
-                    "high_nano": window.high_nano.map(|value| value.to_string()),
-                    "remaining_low_nano": window.remaining_low_nano.map(|value| value.to_string()),
-                    "remaining_high_nano": window.remaining_high_nano.map(|value| value.to_string()),
-                    "cap_usd": round_opt(window.cap_usd),
-                    "remaining_usd": round_opt(window.remaining_usd),
-                    "low_usd": round_opt(window.low_usd),
-                    "high_usd": round_opt(window.high_usd),
-                    "remaining_low_usd": round_opt(window.remaining_low_usd),
-                    "remaining_high_usd": round_opt(window.remaining_high_usd),
+                    "capacity_nano": window.capacity_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "remaining_nano": window.remaining_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "low_nano": window.low_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "high_nano": window.high_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "remaining_low_nano": window.remaining_low_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "remaining_high_nano": window.remaining_high_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
+                    "cap_usd": round_opt(window.cap_usd.filter(|_| profile_capacity_available)),
+                    "remaining_usd": round_opt(window.remaining_usd.filter(|_| profile_capacity_available)),
+                    "low_usd": round_opt(window.low_usd.filter(|_| profile_capacity_available)),
+                    "high_usd": round_opt(window.high_usd.filter(|_| profile_capacity_available)),
+                    "remaining_low_usd": round_opt(window.remaining_low_usd.filter(|_| profile_capacity_available)),
+                    "remaining_high_usd": round_opt(window.remaining_high_usd.filter(|_| profile_capacity_available)),
                     "observed_spend_nano": window.observed_spend_nano.to_string(),
                     "observed_spend_usd": round(window.observed_spend_nano as f64 / 1e9),
                     "observed_fraction_units": window.observed_fraction_units,
                     "workload_dependent": true,
-                    "source": window.source,
+                    "source": if profile_capacity_available { window.source } else { "unknown" },
                     "confidence": window.confidence,
                     "samples": window.samples,
                 })).collect::<Vec<_>>(),
@@ -4052,13 +4264,21 @@ fn gemini_profile_values(status: &forward::GeminiOperationalStatus) -> Vec<Value
         .collect()
 }
 
-fn gemini_window_total_values(status: &forward::GeminiOperationalStatus) -> Vec<Value> {
+fn gemini_window_total_values(
+    status: &forward::GeminiOperationalStatus,
+    capacity_available: bool,
+    now: i64,
+) -> Vec<Value> {
     let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
     let usd = |nano: i128| round(nano as f64 / 1e9);
-    gemini_window_totals(status)
+    gemini_window_totals(status, now)
         .into_iter()
         .map(|(duration, total)| {
-            let measured = total.measured_profiles;
+            let measured = if capacity_available {
+                total.measured_profiles
+            } else {
+                0
+            };
             let low_complete = measured > 0 && total.low_profiles == measured;
             let high_complete = measured > 0 && total.high_profiles == measured;
             json!({
@@ -4824,6 +5044,10 @@ mod tests {
         };
         let values = gemini_conversion_models(&[model], 1_785_369_601);
         assert_eq!(values.len(), 1);
+        assert_eq!(
+            values[0]["tariff_schedule_id"],
+            metering::gemini::TARIFF_SCHEDULE_ID
+        );
         assert_eq!(values[0]["rates"]["input_nanousd_per_token"], "2000");
         assert_eq!(values[0]["rates"]["long_output_nanousd_per_token"], "18000");
         assert_eq!(values[0]["search"]["billing_unit"], "query");
@@ -4851,7 +5075,7 @@ mod tests {
     #[test]
     fn gemini_subscription_contract_keeps_five_hour_and_weekly_unknown_independently() {
         let mut status = unknown_gemini_status();
-        let profiles = gemini_profile_values(&status);
+        let profiles = gemini_profile_values(&status, true, 105);
         assert_eq!(profiles[0]["email"], "owne…");
         assert_eq!(profiles[0]["plan"], "google_ai_pro");
         assert_eq!(profiles[0]["windows"][0]["bucket_id"], "gemini-5h");
@@ -4859,7 +5083,7 @@ mod tests {
         assert!(profiles[0]["windows"][0]["cap_usd"].is_null());
         assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
 
-        let totals = gemini_window_total_values(&status);
+        let totals = gemini_window_total_values(&status, true, 105);
         assert_eq!(totals[0]["window_minutes"], 300);
         assert_eq!(totals[0]["observed_profiles"], 1);
         assert_eq!(totals[0]["measured_profiles"], 0);
@@ -4885,7 +5109,7 @@ mod tests {
         five_hour.source = "workload_blend";
         five_hour.confidence = 0.123;
         five_hour.samples = 2;
-        let profiles = gemini_profile_values(&status);
+        let profiles = gemini_profile_values(&status, true, 105);
         assert_eq!(profiles[0]["windows"][0]["cap_usd"], 36.515629);
         assert_eq!(profiles[0]["windows"][0]["capacity_nano"], "36515628714");
         assert_eq!(profiles[0]["windows"][0]["remaining_usd"], 27.386722);
@@ -4895,7 +5119,7 @@ mod tests {
         assert_eq!(profiles[0]["windows"][0]["source"], "workload_blend");
         assert_eq!(profiles[0]["windows"][0]["workload_dependent"], true);
         assert!(profiles[0]["windows"][1]["cap_usd"].is_null());
-        let totals = gemini_window_total_values(&status);
+        let totals = gemini_window_total_values(&status, true, 105);
         assert_eq!(totals[0]["measured_profiles"], 1);
         assert_eq!(totals[0]["capacity_nano"], "36515628714");
         assert_eq!(totals[0]["remaining_nano"], "27386721535");
@@ -4906,10 +5130,79 @@ mod tests {
     }
 
     #[test]
+    fn gemini_profile_persistence_failure_hides_stale_dollar_capacity_everywhere() {
+        let mut status = unknown_gemini_status();
+        let five_hour = &mut status.profiles[0].capacities[0];
+        five_hour.capacity_nano = Some(50_000_000_000);
+        five_hour.remaining_nano = Some(30_000_000_000);
+        five_hour.low_nano = Some(40_000_000_000);
+        five_hour.high_nano = Some(60_000_000_000);
+        five_hour.remaining_low_nano = Some(24_000_000_000);
+        five_hour.remaining_high_nano = Some(36_000_000_000);
+        five_hour.cap_usd = Some(50.0);
+        five_hour.remaining_usd = Some(30.0);
+        five_hour.low_usd = Some(40.0);
+        five_hour.high_usd = Some(60.0);
+        five_hour.remaining_low_usd = Some(24.0);
+        five_hour.remaining_high_usd = Some(36.0);
+        five_hour.source = "workload_blend";
+        status.profiles[0].calibration_persistence_ok = false;
+        let delivery = forward::GeminiCalibrationDeliveryStatus {
+            pending_events: 0,
+            dropped_events: 0,
+            persistence_ok: true,
+            queue_limit: 4_096,
+        };
+
+        assert!(!gemini_calibration_persistence_ok(&status, Some(delivery)));
+
+        let profiles = gemini_profile_values(&status, false, 105);
+        assert!(profiles[0]["windows"][0]["capacity_nano"].is_null());
+        assert!(profiles[0]["windows"][0]["remaining_nano"].is_null());
+        assert!(profiles[0]["windows"][0]["cap_usd"].is_null());
+        assert_eq!(profiles[0]["windows"][0]["source"], "unknown");
+        assert_eq!(profiles[0]["windows"][0]["used_fraction_units"], 25_000_000);
+
+        let totals = gemini_window_total_values(&status, false, 105);
+        assert_eq!(totals[0]["observed_profiles"], 1);
+        assert_eq!(totals[0]["measured_profiles"], 0);
+        assert!(totals[0]["capacity_nano"].is_null());
+        assert!(totals[0]["remaining_nano"].is_null());
+
+        let mut body = String::new();
+        write_gemini_profile_capacity_metrics(&mut body, &status.profiles[0], false);
+        assert!(body.contains("source=\"unknown\"} 0"));
+        assert!(!body.contains("claude_api_gemini_profile_window_capacity_usd{"));
+        assert!(!body.contains("claude_api_gemini_profile_window_remaining_usd{"));
+    }
+
+    #[test]
+    fn gemini_non_routable_profile_keeps_quota_but_is_excluded_from_saleable_capacity() {
+        let mut status = unknown_gemini_status();
+        let five_hour = &mut status.profiles[0].capacities[0];
+        five_hour.capacity_nano = Some(50_000_000_000);
+        five_hour.remaining_nano = Some(30_000_000_000);
+        five_hour.cap_usd = Some(50.0);
+        five_hour.remaining_usd = Some(30.0);
+        five_hour.source = "workload_blend";
+        status.profiles[0].authenticated = false;
+        status.available = 0;
+
+        let profiles = gemini_profile_values(&status, true, 105);
+        assert_eq!(profiles[0]["windows"][0]["used_fraction_units"], 25_000_000);
+        assert!(profiles[0]["windows"][0]["capacity_nano"].is_null());
+        assert!(profiles[0]["windows"][0]["remaining_nano"].is_null());
+        assert_eq!(profiles[0]["windows"][0]["source"], "unknown");
+
+        let totals = gemini_window_total_values(&status, true, 105);
+        assert!(totals.is_empty());
+    }
+
+    #[test]
     fn prometheus_omits_unmeasured_gemini_dollar_series() {
         let profile = &unknown_gemini_status().profiles[0];
         let mut body = String::new();
-        write_gemini_profile_capacity_metrics(&mut body, profile);
+        write_gemini_profile_capacity_metrics(&mut body, profile, true);
         assert!(body.contains(
             "claude_api_gemini_profile_window_estimate_available{profile=\"profile-opaque\",window=\"5h\",window_minutes=\"300\",source=\"unknown\"} 0"
         ));
@@ -5568,6 +5861,55 @@ mod tests {
         assert!(value.get("subject_id").is_none());
         assert_eq!(value["cache_write_1h_tokens"], "14");
         assert_eq!(value["api_total_nanousd"], "10001282");
+    }
+
+    #[test]
+    fn gemini_recent_turn_contract_preserves_every_runner_vector_field() {
+        let event = registry::ProviderTurnCalibrationEvent {
+            provider: registry::PROVIDER_GOOGLE.to_owned(),
+            request_id: "00000000-0000-4000-8000-000000000001".to_owned(),
+            subject_id: "profile-opaque".to_owned(),
+            model_id: "gemini-3.6-flash".to_owned(),
+            service_tier: "standard".to_owned(),
+            inference_geo: "global".to_owned(),
+            tariff_schedule_id: "google/test/v1".to_owned(),
+            priced_ts: 99,
+            completed_at: 100,
+            input_tokens: 11,
+            audio_input_tokens: 12,
+            cache_read_tokens: 13,
+            cached_audio_input_tokens: 3,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            output_tokens: 15,
+            thinking_output_tokens: 5,
+            image_output_tokens: 16,
+            tool_prompt_tokens: 4,
+            search_queries: 2,
+            grounded_search_prompts: 1,
+            api_input_nanousd: 110,
+            api_audio_input_nanousd: 120,
+            api_cache_read_nanousd: 13,
+            api_cached_audio_input_nanousd: 3,
+            api_cache_write_5m_nanousd: 0,
+            api_cache_write_1h_nanousd: 0,
+            api_output_nanousd: 750,
+            api_image_output_nanousd: 960,
+            api_search_nanousd: 28_000_000,
+            api_total_nanousd: 28_001_956,
+        };
+
+        let value = gemini_calibration_event_value(&event);
+        assert_eq!(value["request_id"], event.request_id);
+        assert_eq!(value["profile_id"], "profile-opaque");
+        assert!(value.get("subject_id").is_none());
+        assert_eq!(value["cache_write_5m_tokens"], "0");
+        assert_eq!(value["cache_write_1h_tokens"], "0");
+        assert_eq!(value["api_cache_write_5m_nanousd"], "0");
+        assert_eq!(value["api_cache_write_1h_nanousd"], "0");
+        assert_eq!(value["thinking_output_tokens"], "5");
+        assert_eq!(value["tool_prompt_tokens"], "4");
+        assert_eq!(value["api_total_nanousd"], "28001956");
     }
 
     #[test]
@@ -6537,10 +6879,9 @@ mod tests {
                 .headers_mut()
                 .insert("x-api-key", credential.parse().unwrap());
         }
-        request.extensions_mut().insert(ConnectInfo(SocketAddr::from((
-            [203, 0, 113, 10],
-            42_424,
-        ))));
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424))));
         let response = service.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
@@ -6604,8 +6945,7 @@ mod tests {
 
         let mut malformed = policy_candidates();
         malformed["authority_override"] = json!(true);
-        let (status, body) =
-            router_policy_request(&service, Some("admin-key"), malformed).await;
+        let (status, body) = router_policy_request(&service, Some("admin-key"), malformed).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"], "invalid_request");
     }
@@ -6797,20 +7137,13 @@ mod tests {
 
         app.pricing_manifest = Arc::new(runtime);
         let service = router(app, Arc::new(AtomicBool::new(true)));
-        let (status, body) = router_policy_request(
-            &service,
-            Some("strict-router-key"),
-            policy_candidates(),
-        )
-        .await;
+        let (status, body) =
+            router_policy_request(&service, Some("strict-router-key"), policy_candidates()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["mode"], "strict");
         assert_eq!(
             body["allowed"],
-            json!([
-                "anthropic/claude-sonnet-5",
-                "openai/gpt-5.6-sol"
-            ])
+            json!(["anthropic/claude-sonnet-5", "openai/gpt-5.6-sol"])
         );
         assert!(
             !body.to_string().contains("strict-router-account")

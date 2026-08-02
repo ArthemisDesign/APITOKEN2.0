@@ -56,6 +56,7 @@ context'ов. Правила размещения и обновления — в
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production-инфраструктура и хосты.
 - [MONITORING.md](ops/MONITORING.md) — мониторинг и runbook-анкоры алертов (`docs/ops/MONITORING.md#<alert>`).
 - [CLAUDE_CALIBRATION.md](ops/CLAUDE_CALIBRATION.md) — bounded live-прогон Claude: модели, token classes, sticky-подписки и жёсткий nanoUSD-бюджет.
+- [GEMINI_CALIBRATION.md](ops/GEMINI_CALIBRATION.md) — exact-profile live-прогон Gemini: immutable backend evidence, capability matrix и общий лимит $40.
 - [DEVBOT.md](ops/DEVBOT.md) — дизайн dev-бота Telegram (`apps/devbot`): топики, уведомления, источники событий (этапы 1–3 реализованы; этап 4 — бизнес-события — впереди).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — визуальный QA фронтенда.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — продуктовая аналитика Vercel.

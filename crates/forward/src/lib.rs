@@ -31,7 +31,9 @@ pub use affinity::{
 };
 pub use anthropic::anthropic_chat_completions;
 pub use anthropic_responses::anthropic_responses;
-pub use billing::{AnthropicCalibrationDeliveryStatus, AsyncBilling};
+pub use billing::{
+    AnthropicCalibrationDeliveryStatus, AsyncBilling, GeminiCalibrationDeliveryStatus,
+};
 pub use breaker::Breaker;
 pub use codex::{
     codex_messages_count_tokens, codex_messages_skin, openai_chat_completions,

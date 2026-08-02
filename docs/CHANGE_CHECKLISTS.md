@@ -82,9 +82,10 @@ live GA: `docs/engine/PROVIDER_ONBOARDING.md`. Чеклист ниже — ин�
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` — каталоги, рубильник провайдера (§8), политики.
 - [ ] `packages/contracts` — canonical models, продуктовые каталоги.
 - [ ] `apps/web` (витрина), `apps/openkeys`, `apps/admin` — отображение и продажа.
-- [ ] `apps/admin` повторяет актуальную семантику GPT capacity board (credits/capacity/used,
-      token-capacity, два API-$ сценария, profitability, consumed-quota bar, masked identity),
-      адаптируя units/tiers/windows провайдера.
+- [ ] `apps/admin` добавляет провайдера в единый компактный fleet control-room и одну account-table:
+      реальные provider windows, exact remaining/full API-$, used rail, readiness/coverage и masked
+      identity. Raw token/profitability/cache/quota-bucket matrices остаются backend/report evidence,
+      а pending/degraded authority скрывает saleable money вместо показа stale `$`.
 - [ ] Controlled live matrix каждого опубликованного plan/model/tier + public post-deploy smoke;
       exact landed SHA имеет `deploy/watchdog` GREEN.
 - [ ] Строка в `docs/DEPENDENCIES.md`.

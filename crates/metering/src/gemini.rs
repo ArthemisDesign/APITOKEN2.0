@@ -8,6 +8,10 @@
 
 use serde_json::Value;
 
+/// Reviewed identity of the effective-dated Developer API replacement-cost catalogue below.
+/// Change this identity whenever any epoch/rate semantics change.
+pub const TARIFF_SCHEDULE_ID: &str = "google/gemini-developer-api/2026-07-31";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeminiSearchBilling {
     /// Gemini 3 bills each query emitted by Google Search grounding.
@@ -55,11 +59,15 @@ pub struct GeminiModelSpec {
 pub struct GeminiUsage {
     /// Uncached, non-audio input. `toolUsePromptTokenCount` is included here.
     pub input_tokens: u64,
+    /// Subset of `input_tokens` contributed by tool declarations/use prompts.
+    pub tool_prompt_tokens: u64,
     pub audio_input_tokens: u64,
     pub cached_input_tokens: u64,
     pub cached_audio_input_tokens: u64,
     /// Text candidate + thinking tokens. Image candidate tokens are split out below.
     pub output_tokens: u64,
+    /// Subset of `output_tokens` reported as internal thinking/reasoning tokens.
+    pub thinking_output_tokens: u64,
     pub image_output_tokens: u64,
     /// Both raw facts are retained because Gemini 3 and 2.5 bill Search differently.
     pub search_queries: u64,
@@ -355,12 +363,14 @@ fn usage_from_metadata(metadata: &Value) -> GeminiUsage {
 
     GeminiUsage {
         input_tokens: input,
+        tool_prompt_tokens: tool_prompt.min(input),
         audio_input_tokens: audio_input,
         cached_input_tokens: cached_input,
         cached_audio_input_tokens: cached_audio,
         output_tokens: candidates
             .saturating_sub(image_candidates)
             .saturating_add(thoughts),
+        thinking_output_tokens: thoughts,
         image_output_tokens: image_candidates,
         ..GeminiUsage::default()
     }
@@ -712,10 +722,12 @@ mod tests {
             usage_from_response_value(&response),
             Some(GeminiUsage {
                 input_tokens: 460,
+                tool_prompt_tokens: 10,
                 audio_input_tokens: 150,
                 cached_input_tokens: 250,
                 cached_audio_input_tokens: 150,
                 output_tokens: 50,
+                thinking_output_tokens: 20,
                 image_output_tokens: 0,
                 search_queries: 2,
                 grounded_search_prompts: 1,
@@ -760,6 +772,7 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
             GeminiUsage {
                 input_tokens: 20,
                 output_tokens: 10,
+                thinking_output_tokens: 3,
                 search_queries: 2,
                 grounded_search_prompts: 1,
                 ..GeminiUsage::default()
@@ -802,10 +815,12 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
         let prices = gemini_prices_at("gemini-3.6-flash", 0).unwrap();
         let usage = GeminiUsage {
             input_tokens: u64::MAX,
+            tool_prompt_tokens: u64::MAX,
             audio_input_tokens: u64::MAX,
             cached_input_tokens: u64::MAX,
             cached_audio_input_tokens: u64::MAX,
             output_tokens: u64::MAX,
+            thinking_output_tokens: u64::MAX,
             image_output_tokens: u64::MAX,
             search_queries: u64::MAX,
             grounded_search_prompts: u64::MAX,

@@ -166,7 +166,6 @@ pub(crate) struct GeminiProfile {
     quota_summary: RwLock<GeminiQuotaSummarySnapshot>,
     model_health: Mutex<HashMap<String, GeminiModelHealthState>>,
     spend_nano_total: AtomicI64,
-    pending_spend_nano: AtomicI64,
     calibration_persistence_ok: AtomicBool,
     billing: Option<Arc<AsyncBilling>>,
     calibrations: Mutex<BTreeMap<String, WindowCalibration>>,
@@ -191,6 +190,7 @@ struct GeminiQuotaSnapshot {
 struct GeminiSummaryBucket {
     contract: calibration::BucketContract,
     remaining_fraction_units: i64,
+    measurement_resolution_fraction_units: i64,
     resets_at: i64,
 }
 
@@ -237,7 +237,6 @@ impl GeminiProfile {
             quota_summary: RwLock::new(GeminiQuotaSummarySnapshot::default()),
             model_health: Mutex::new(HashMap::new()),
             spend_nano_total: AtomicI64::new(0),
-            pending_spend_nano: AtomicI64::new(0),
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
             billing,
             calibrations: Mutex::new(BTreeMap::new()),
@@ -607,54 +606,17 @@ impl GeminiProfile {
         self.cool_until(until);
     }
 
-    /// Credit exact official-price spend for every successfully served generation. Customer
-    /// billing is irrelevant here: an admin request consumes the same subscription windows.
-    pub(crate) async fn record_spend(&self, real_nano: i128) {
-        if real_nano == 0 {
-            return;
-        }
-        let Ok(nano) = i64::try_from(real_nano) else {
-            // A truncated or saturated value would permanently poison every later capacity
-            // estimate. Preserve the previous evidence and surface the persistence-health fault.
-            self.calibration_persistence_ok
-                .store(false, Ordering::Relaxed);
-            eprintln!("Gemini calibration spend rejected [out_of_range]");
-            return;
-        };
-        if nano < 0 {
-            self.calibration_persistence_ok
-                .store(false, Ordering::Relaxed);
-            eprintln!("Gemini calibration spend rejected [negative]");
-            return;
-        }
+    /// Queue one exact successful-turn event. Spend and the immutable token vector advance in one
+    /// authority transaction; a later quota poll flushes this FIFO before reading cumulative spend.
+    pub(crate) fn record_turn(&self, event: registry::ProviderTurnCalibrationEvent) {
         let Some(billing) = &self.billing else {
-            self.spend_nano_total.fetch_add(nano, Ordering::Relaxed);
             self.calibration_persistence_ok
                 .store(false, Ordering::Relaxed);
             return;
         };
-        self.pending_spend_nano.fetch_add(nano, Ordering::AcqRel);
-        let pending = self.pending_spend_nano.swap(0, Ordering::AcqRel);
-        match billing
-            .credit_gemini_spend(self.id(), pending, pool::now())
-            .await
-        {
-            Ok(total) => {
-                self.spend_nano_total.fetch_max(total, Ordering::Relaxed);
-                self.calibration_persistence_ok.store(
-                    self.pending_spend_nano.load(Ordering::Acquire) == 0,
-                    Ordering::Relaxed,
-                );
-            }
-            Err(error) => {
-                self.pending_spend_nano.fetch_add(pending, Ordering::AcqRel);
-                self.calibration_persistence_ok
-                    .store(false, Ordering::Relaxed);
-                eprintln!(
-                    "Gemini calibration spend persistence failed [{}]",
-                    error.root_cause()
-                );
-            }
+        if !billing.record_gemini_turn_detached(event, &self.plan, Vec::new()) {
+            self.calibration_persistence_ok
+                .store(false, Ordering::Relaxed);
         }
     }
 
@@ -668,11 +630,13 @@ impl GeminiProfile {
                     billing
                         .observe_gemini_window(
                             self.id(),
+                            &self.plan,
                             bucket.contract.id,
                             bucket.contract.kind,
                             bucket.contract.duration_mins,
                             bucket.resets_at,
                             used_fraction_units,
+                            bucket.measurement_resolution_fraction_units,
                             observed_at,
                         )
                         .await
@@ -702,15 +666,20 @@ impl GeminiProfile {
                 Err(error) => {
                     all_persisted = false;
                     let spend_nano = self.spend_nano_total.load(Ordering::Relaxed);
-                    let observation = registry::GeminiWindowObservation {
+                    let observation = registry::GeminiExactWindowObservation {
                         profile_id: self.id().to_string(),
+                        plan: self.plan.clone(),
                         bucket_id: bucket.contract.id.to_string(),
                         window_kind: bucket.contract.kind.to_string(),
                         window_duration_mins: bucket.contract.duration_mins,
                         resets_at: bucket.resets_at,
                         observed_at,
                         used_fraction_units,
+                        measurement_resolution_fraction_units: bucket
+                            .measurement_resolution_fraction_units,
                         gateway_spend_nano: spend_nano,
+                        observation_source: "poll".to_owned(),
+                        source_request_id: None,
                     };
                     let mut calibrations = self
                         .calibrations
@@ -742,7 +711,13 @@ impl GeminiProfile {
             }
         }
         self.calibration_persistence_ok.store(
-            all_persisted && self.pending_spend_nano.load(Ordering::Acquire) == 0,
+            all_persisted
+                && self.billing.as_ref().is_some_and(|billing| {
+                    let status = billing.gemini_calibration_delivery_status();
+                    status.pending_events == 0
+                        && status.dropped_events == 0
+                        && status.persistence_ok
+                }),
             Ordering::Relaxed,
         );
     }
@@ -1044,10 +1019,10 @@ impl GeminiProfile {
                     .retain(|existing: &GeminiSummaryBucket| existing.contract.id != contract.id);
                 continue;
             }
-            let Some(remaining_fraction_units) = bucket
+            let Some(fraction) = bucket
                 .remaining_fraction
                 .as_ref()
-                .and_then(ExactFraction::units)
+                .and_then(ExactFraction::value)
             else {
                 continue;
             };
@@ -1061,7 +1036,8 @@ impl GeminiProfile {
             };
             buckets.push(GeminiSummaryBucket {
                 contract,
-                remaining_fraction_units,
+                remaining_fraction_units: fraction.units,
+                measurement_resolution_fraction_units: fraction.resolution_units,
                 resets_at,
             });
         }
@@ -1165,17 +1141,33 @@ enum ExactFraction {
 }
 
 impl ExactFraction {
-    fn units(&self) -> Option<i64> {
+    fn value(&self) -> Option<ExactFractionValue> {
         let value = match self {
             Self::Number(value) => value.to_string(),
             Self::String(value) => value.trim().to_string(),
         };
-        parse_fraction_units(&value)
+        parse_fraction(&value)
+    }
+
+    #[cfg(test)]
+    fn units(&self) -> Option<i64> {
+        self.value().map(|value| value.units)
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExactFractionValue {
+    units: i64,
+    resolution_units: i64,
+}
+
 /// Parse a JSON decimal into 10^-8 units without passing through binary floating point.
+#[cfg(test)]
 fn parse_fraction_units(value: &str) -> Option<i64> {
+    parse_fraction(value).map(|value| value.units)
+}
+
+fn parse_fraction(value: &str) -> Option<ExactFractionValue> {
     let value = value.trim();
     if value.is_empty() || value.starts_with('-') {
         return None;
@@ -1211,9 +1203,19 @@ fn parse_fraction_units(value: &str) -> Option<i64> {
         }
         coefficient / divisor
     };
-    i64::try_from(scaled)
+    let units = i64::try_from(scaled)
         .ok()
-        .filter(|units| (0..=FRACTION_SCALE).contains(units))
+        .filter(|units| (0..=FRACTION_SCALE).contains(units))?;
+    let resolution = if power >= 0 {
+        10i128.checked_pow(power as u32)?
+    } else {
+        1
+    };
+    let resolution_units = i64::try_from(resolution).ok()?.clamp(1, FRACTION_SCALE);
+    Some(ExactFractionValue {
+        units,
+        resolution_units,
+    })
 }
 
 impl AvailableModel {
@@ -1762,6 +1764,35 @@ impl GeminiGateway {
             }
         }
         let profile = ordered.into_iter().next()?;
+        profile.inflight.fetch_add(1, Ordering::AcqRel);
+        Some(GeminiLease { profile })
+    }
+
+    /// Route one forwarding-admin calibration request to exactly one opaque Gemini profile id.
+    /// Soft reserve and normal load balancing are bypassed, but auth death, model cooling, explicit
+    /// provider zero and shutdown remain hard gates. A failed target never spills to another id.
+    pub(crate) fn select_operator_target(
+        &self,
+        model_id: &str,
+        target_profile_id: &str,
+        excluded: &HashSet<String>,
+        generation: bool,
+    ) -> Option<GeminiLease> {
+        if self.shutting_down.load(Ordering::Acquire) || excluded.contains(target_profile_id) {
+            return None;
+        }
+        let now = pool::now();
+        let profiles = self.profiles_snapshot();
+        let mut matches = profiles
+            .into_iter()
+            .filter(|profile| profile.id() == target_profile_id);
+        let profile = matches.next()?;
+        if matches.next().is_some()
+            || !profile.authenticated.load(Ordering::Acquire)
+            || profile.cooling_until_for(model_id, &self.cfg, now, generation) > now
+        {
+            return None;
+        }
         profile.inflight.fetch_add(1, Ordering::AcqRel);
         Some(GeminiLease { profile })
     }
@@ -2741,6 +2772,31 @@ mod tests {
     }
 
     #[test]
+    fn operator_target_uses_exact_opaque_id_and_never_spills() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+
+        let lease = gateway
+            .select_operator_target("gemini-test", "profile_b", &HashSet::new(), true)
+            .unwrap();
+        assert_eq!(lease.profile().id(), "profile_b");
+        drop(lease);
+
+        let excluded = HashSet::from(["profile_b".to_owned()]);
+        assert!(gateway
+            .select_operator_target("gemini-test", "profile_b", &excluded, true)
+            .is_none());
+        assert!(gateway
+            .select_operator_target("gemini-test", "missing", &HashSet::new(), true)
+            .is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn verified_success_clears_global_quarantine_but_not_model_cooling() {
         let (dir, ring) = fixture();
         let first = write_credential(&dir, &ring, "profile_a", "subject-a");
@@ -2842,6 +2898,20 @@ mod tests {
         assert_eq!(parse_fraction_units("0.000000001"), None);
         assert_eq!(parse_fraction_units("1.00000001"), None);
         assert_eq!(parse_fraction_units("-0.1"), None);
+        assert_eq!(
+            parse_fraction("0.4"),
+            Some(ExactFractionValue {
+                units: 40_000_000,
+                resolution_units: 10_000_000,
+            })
+        );
+        assert_eq!(
+            parse_fraction("0.40000000"),
+            Some(ExactFractionValue {
+                units: 40_000_000,
+                resolution_units: 1,
+            })
+        );
     }
 
     #[test]
@@ -2884,6 +2954,21 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn quota_summary_preserves_numeric_wire_decimal_resolution() {
+        let parsed: QuotaSummaryEnvelope = serde_json::from_str(
+            r#"{"groups":[{"buckets":[{"bucketId":"gemini-5h","remainingFraction":0.40000000,"resetTime":"2099-01-01T00:00:00Z"}]}]}"#,
+        )
+        .unwrap();
+        let value = parsed.groups[0].buckets[0]
+            .remaining_fraction
+            .as_ref()
+            .and_then(ExactFraction::value)
+            .unwrap();
+        assert_eq!(value.units, 40_000_000);
+        assert_eq!(value.resolution_units, 1);
     }
 
     #[tokio::test]

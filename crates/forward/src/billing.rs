@@ -26,8 +26,8 @@ use registry::pricing::{
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
     BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
-    CodexTurnCalibrationEvent, CodexWindowObservation, GeminiCalibrationRow,
-    GeminiWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    CodexTurnCalibrationEvent, CodexWindowObservation, GeminiExactCalibrationRow,
+    GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent,
 };
@@ -44,6 +44,7 @@ const READ_QUEUE_CAPACITY: usize = 1_024;
 const PRICING_SHADOW_READ_QUEUE_CAPACITY: usize = 256;
 const PG_OPERATION_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS: usize = 4_096;
+const MAX_PENDING_GEMINI_CALIBRATION_EVENTS: usize = 4_096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AnthropicQuotaSnapshot {
@@ -96,6 +97,171 @@ pub struct AnthropicCalibrationDeliveryStatus {
     pub dropped_events: u64,
     pub persistence_ok: bool,
     pub queue_limit: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GeminiQuotaSnapshot {
+    pub bucket_id: String,
+    pub window_kind: String,
+    pub window_duration_mins: i64,
+    pub resets_at: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub observed_at: i64,
+}
+
+type GeminiTurnPersistenceResult = (
+    ProviderCalibrationSubjectSpend,
+    Vec<GeminiExactCalibrationRow>,
+);
+
+#[derive(Clone)]
+struct PendingGeminiCalibrationTurn {
+    delivery_id: u64,
+    event: ProviderTurnCalibrationEvent,
+    plan: String,
+    snapshots: Vec<GeminiQuotaSnapshot>,
+}
+
+#[derive(Default)]
+struct GeminiCalibrationDeliveryQueue {
+    pending: VecDeque<PendingGeminiCalibrationTurn>,
+    next_delivery_id: u64,
+}
+
+struct GeminiCalibrationDeliveryState {
+    queue: std::sync::Mutex<GeminiCalibrationDeliveryQueue>,
+    dropped_events: std::sync::atomic::AtomicU64,
+    persistence_ok: AtomicBool,
+}
+
+impl Default for GeminiCalibrationDeliveryState {
+    fn default() -> Self {
+        Self {
+            queue: std::sync::Mutex::new(GeminiCalibrationDeliveryQueue::default()),
+            dropped_events: std::sync::atomic::AtomicU64::new(0),
+            persistence_ok: AtomicBool::new(true),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeminiCalibrationDeliveryStatus {
+    pub pending_events: usize,
+    pub dropped_events: u64,
+    pub persistence_ok: bool,
+    pub queue_limit: usize,
+}
+
+fn enqueue_gemini_calibration_turn(
+    state: &GeminiCalibrationDeliveryState,
+    event: ProviderTurnCalibrationEvent,
+    plan: String,
+    snapshots: Vec<GeminiQuotaSnapshot>,
+) -> anyhow::Result<u64> {
+    let mut queue = state
+        .queue
+        .lock()
+        .expect("Gemini calibration delivery queue lock");
+    if queue.pending.len() >= MAX_PENDING_GEMINI_CALIBRATION_EVENTS {
+        state.dropped_events.fetch_add(1, Ordering::Relaxed);
+        state.persistence_ok.store(false, Ordering::Relaxed);
+        anyhow::bail!(
+            "Gemini calibration event queue is full (limit {})",
+            MAX_PENDING_GEMINI_CALIBRATION_EVENTS
+        );
+    }
+    queue.next_delivery_id = queue.next_delivery_id.wrapping_add(1).max(1);
+    let delivery_id = queue.next_delivery_id;
+    queue.pending.push_back(PendingGeminiCalibrationTurn {
+        delivery_id,
+        event,
+        plan,
+        snapshots,
+    });
+    Ok(delivery_id)
+}
+
+/// Persist Gemini evidence in strict FIFO order. Ambiguous replies are safe because request ids are
+/// immutable idempotency keys; semantic replay conflicts quarantine exactly one corrupt event.
+fn flush_pending_gemini_calibration_turns(
+    state: &GeminiCalibrationDeliveryState,
+    target_delivery_id: Option<u64>,
+    mut persist: impl FnMut(
+        &PendingGeminiCalibrationTurn,
+    ) -> anyhow::Result<GeminiTurnPersistenceResult>,
+) -> anyhow::Result<Option<GeminiTurnPersistenceResult>> {
+    let mut target_result = None;
+    let mut target_conflict = None;
+    loop {
+        let front = state
+            .queue
+            .lock()
+            .expect("Gemini calibration delivery queue lock")
+            .pending
+            .front()
+            .cloned();
+        let Some(front) = front else {
+            break;
+        };
+        let delivery_id = front.delivery_id;
+        match persist(&front) {
+            Ok(value) => {
+                let mut queue = state
+                    .queue
+                    .lock()
+                    .expect("Gemini calibration delivery queue lock");
+                if queue
+                    .pending
+                    .front()
+                    .is_some_and(|pending| pending.delivery_id == delivery_id)
+                {
+                    queue.pending.pop_front();
+                }
+                if target_delivery_id == Some(delivery_id) {
+                    target_result = Some(value);
+                }
+            }
+            Err(error) if registry::is_provider_turn_calibration_replay_conflict(&error) => {
+                let mut queue = state
+                    .queue
+                    .lock()
+                    .expect("Gemini calibration delivery queue lock");
+                if queue
+                    .pending
+                    .front()
+                    .is_some_and(|pending| pending.delivery_id == delivery_id)
+                {
+                    queue.pending.pop_front();
+                }
+                state.dropped_events.fetch_add(1, Ordering::Relaxed);
+                state.persistence_ok.store(false, Ordering::Relaxed);
+                eprintln!("Gemini calibration event quarantined after immutable replay conflict");
+                if target_delivery_id == Some(delivery_id) {
+                    target_conflict = Some(error);
+                }
+            }
+            Err(error) => {
+                state.persistence_ok.store(false, Ordering::Relaxed);
+                return Err(
+                    if target_delivery_id.is_some_and(|target| target != delivery_id) {
+                        error.context(
+                            "Gemini calibration predecessor remains pending; later evidence held",
+                        )
+                    } else {
+                        error
+                    },
+                );
+            }
+        }
+    }
+    if state.dropped_events.load(Ordering::Relaxed) == 0 {
+        state.persistence_ok.store(true, Ordering::Relaxed);
+    }
+    if let Some(error) = target_conflict {
+        return Err(error);
+    }
+    Ok(target_result)
 }
 
 fn enqueue_anthropic_calibration_turn(
@@ -825,6 +991,111 @@ fn anthropic_observation(
     }
 }
 
+fn gemini_observation_is_stale_or_duplicate(
+    row: &GeminiExactCalibrationRow,
+    observation: &GeminiExactWindowObservation,
+) -> bool {
+    observation.observed_at < row.observed_at
+        || (observation.observed_at == row.observed_at
+            && observation.resets_at == row.resets_at
+            && observation.used_fraction_units == row.used_fraction_units
+            && observation.measurement_resolution_fraction_units
+                == row.measurement_resolution_fraction_units
+            // A response quota point can be persisted before its turn spend is visible. If that
+            // point is still above the retained anchor, an equal-second poll with a higher durable
+            // cumulative spend is settlement catch-up, not a duplicate.
+            && !(row.used_fraction_units > row.anchor_used_fraction_units
+                && observation.gateway_spend_nano > row.anchor_spend_nano))
+}
+
+fn gemini_observation(
+    profile_id: &str,
+    plan: &str,
+    snapshot: &GeminiQuotaSnapshot,
+    gateway_spend_nano: i64,
+    source: &str,
+    source_request_id: Option<&str>,
+) -> GeminiExactWindowObservation {
+    GeminiExactWindowObservation {
+        profile_id: profile_id.to_owned(),
+        plan: plan.to_owned(),
+        bucket_id: snapshot.bucket_id.clone(),
+        window_kind: snapshot.window_kind.clone(),
+        window_duration_mins: snapshot.window_duration_mins,
+        resets_at: snapshot.resets_at,
+        observed_at: snapshot.observed_at,
+        used_fraction_units: snapshot.used_fraction_units,
+        measurement_resolution_fraction_units: snapshot.measurement_resolution_fraction_units,
+        gateway_spend_nano,
+        observation_source: source.to_owned(),
+        source_request_id: source_request_id.map(str::to_owned),
+    }
+}
+
+fn observe_gemini_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &GeminiExactWindowObservation,
+) -> anyhow::Result<GeminiExactCalibrationRow> {
+    loop {
+        let existing = pg.load_gemini_exact_calibration(
+            &observation.profile_id,
+            &observation.plan,
+            &observation.bucket_id,
+        )?;
+        if let Some(existing) = existing.as_ref().filter(|row| {
+            row.estimator_version == crate::gemini::ESTIMATOR_VERSION
+                && gemini_observation_is_stale_or_duplicate(row, observation)
+        }) {
+            return Ok(existing.clone());
+        }
+        let history = if existing
+            .as_ref()
+            .is_some_and(|row| row.estimator_version != crate::gemini::ESTIMATOR_VERSION)
+        {
+            pg.load_gemini_exact_window_observations(
+                &observation.profile_id,
+                &observation.plan,
+                &observation.bucket_id,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state =
+            crate::gemini::apply_observation_with_history(existing, &history, observation)?;
+        if let Some(version) = pg.save_gemini_exact_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
+}
+
+fn persist_gemini_turn_postgres(
+    pg: &mut registry::pg::PgStore,
+    url: &str,
+    owner: &registry::pg::Owner,
+    turn: &PendingGeminiCalibrationTurn,
+) -> anyhow::Result<GeminiTurnPersistenceResult> {
+    run_pg_with_retry(pg, url, owner, "Gemini turn calibration event", |pg| {
+        if turn.event.provider != registry::PROVIDER_GOOGLE || turn.plan.is_empty() {
+            anyhow::bail!("invalid Gemini turn calibration command");
+        }
+        let spend = pg.record_provider_turn_calibration_event(&turn.event)?;
+        let mut states = Vec::with_capacity(turn.snapshots.len());
+        for snapshot in &turn.snapshots {
+            let observation = gemini_observation(
+                &turn.event.subject_id,
+                &turn.plan,
+                snapshot,
+                spend.spent_nano,
+                "response",
+                Some(&turn.event.request_id),
+            );
+            states.push(observe_gemini_postgres(pg, &observation)?);
+        }
+        Ok((spend, states))
+    })
+}
+
 enum WriteCmd {
     AnthropicRecordTurn {
         delivery_id: u64,
@@ -836,21 +1107,15 @@ enum WriteCmd {
         snapshot: AnthropicQuotaSnapshot,
         reply: oneshot::Sender<anyhow::Result<(i64, AnthropicCalibrationRow)>>,
     },
-    GeminiCreditSpend {
-        profile_id: String,
-        delta_nano: i64,
-        updated_ts: i64,
-        reply: oneshot::Sender<anyhow::Result<i64>>,
+    GeminiRecordTurn {
+        delivery_id: u64,
+        reply: Option<oneshot::Sender<anyhow::Result<GeminiTurnPersistenceResult>>>,
     },
     GeminiObserveWindow {
         profile_id: String,
-        bucket_id: String,
-        window_kind: String,
-        window_duration_mins: i64,
-        resets_at: i64,
-        used_fraction_units: i64,
-        observed_at: i64,
-        reply: oneshot::Sender<anyhow::Result<(i64, GeminiCalibrationRow)>>,
+        plan: String,
+        snapshot: GeminiQuotaSnapshot,
+        reply: oneshot::Sender<anyhow::Result<(i64, GeminiExactCalibrationRow)>>,
     },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
@@ -1048,6 +1313,15 @@ enum ReadCmd {
             )>,
         >,
     ),
+    GeminiCalibrationReport(
+        oneshot::Sender<
+            anyhow::Result<(
+                Vec<GeminiExactCalibrationRow>,
+                Vec<ProviderTurnCalibrationAggregate>,
+                Vec<ProviderTurnCalibrationEvent>,
+            )>,
+        >,
+    ),
     CodexCalibrationReport(oneshot::Sender<anyhow::Result<Vec<CodexTurnCalibrationAggregate>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
@@ -1148,6 +1422,7 @@ pub struct AsyncBilling {
     writer: mpsc::Sender<WriteCmd>,
     detached: Arc<DetachedDispatchTracker>,
     anthropic_calibration_delivery: Arc<AnthropicCalibrationDeliveryState>,
+    gemini_calibration_delivery: Arc<GeminiCalibrationDeliveryState>,
     readers: Vec<mpsc::Sender<ReadCmd>>,
     rr: AtomicUsize, // round-robin по читателям
     /// PostgreSQL-only connections reserved for evaluation-time shadow reads. They never share
@@ -1179,6 +1454,27 @@ impl AsyncBilling {
                 .persistence_ok
                 .load(Ordering::Relaxed),
             queue_limit: MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS,
+        }
+    }
+
+    pub fn gemini_calibration_delivery_status(&self) -> GeminiCalibrationDeliveryStatus {
+        GeminiCalibrationDeliveryStatus {
+            pending_events: self
+                .gemini_calibration_delivery
+                .queue
+                .lock()
+                .expect("Gemini calibration delivery queue lock")
+                .pending
+                .len(),
+            dropped_events: self
+                .gemini_calibration_delivery
+                .dropped_events
+                .load(Ordering::Relaxed),
+            persistence_ok: self
+                .gemini_calibration_delivery
+                .persistence_ok
+                .load(Ordering::Relaxed),
+            queue_limit: MAX_PENDING_GEMINI_CALIBRATION_EVENTS,
         }
     }
 
@@ -1302,24 +1598,62 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
-    /// Persist exact official-price spend for every successful Gemini generation, including
-    /// unmetered admin traffic, and return the durable cumulative total for the serving profile.
-    pub async fn credit_gemini_spend(
+    /// Enqueue one immutable successful Gemini turn. Finalization can run from a stream drop, so
+    /// delivery is detached while the bounded FIFO and shutdown barrier retain ordering.
+    pub(crate) fn record_gemini_turn_detached(
         &self,
-        profile_id: &str,
-        delta_nano: i64,
-        updated_ts: i64,
-    ) -> anyhow::Result<i64> {
+        event: ProviderTurnCalibrationEvent,
+        plan: &str,
+        snapshots: Vec<GeminiQuotaSnapshot>,
+    ) -> bool {
+        let delivery_id = match enqueue_gemini_calibration_turn(
+            &self.gemini_calibration_delivery,
+            event,
+            plan.to_owned(),
+            snapshots,
+        ) {
+            Ok(delivery_id) => delivery_id,
+            Err(error) => {
+                eprintln!("Gemini calibration evidence dropped: {error:#}");
+                return false;
+            }
+        };
+        dispatch_detached(
+            &self.writer,
+            &self.detached,
+            WriteCmd::GeminiRecordTurn {
+                delivery_id,
+                reply: None,
+            },
+        );
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn record_gemini_turn(
+        &self,
+        event: ProviderTurnCalibrationEvent,
+        plan: &str,
+        snapshots: Vec<GeminiQuotaSnapshot>,
+    ) -> anyhow::Result<GeminiTurnPersistenceResult> {
+        let delivery_id = enqueue_gemini_calibration_turn(
+            &self.gemini_calibration_delivery,
+            event,
+            plan.to_owned(),
+            snapshots,
+        )?;
         let (reply, result) = oneshot::channel();
-        self.writer
-            .send(WriteCmd::GeminiCreditSpend {
-                profile_id: profile_id.into(),
-                delta_nano,
-                updated_ts,
-                reply,
+        if self
+            .writer
+            .send(WriteCmd::GeminiRecordTurn {
+                delivery_id,
+                reply: Some(reply),
             })
             .await
-            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+            .is_err()
+        {
+            anyhow::bail!("billing writer unavailable; Gemini evidence remains pending");
+        }
         result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
@@ -1330,23 +1664,29 @@ impl AsyncBilling {
     pub async fn observe_gemini_window(
         &self,
         profile_id: &str,
+        plan: &str,
         bucket_id: &str,
         window_kind: &str,
         window_duration_mins: i64,
         resets_at: i64,
         used_fraction_units: i64,
+        measurement_resolution_fraction_units: i64,
         observed_at: i64,
-    ) -> anyhow::Result<(i64, GeminiCalibrationRow)> {
+    ) -> anyhow::Result<(i64, GeminiExactCalibrationRow)> {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::GeminiObserveWindow {
                 profile_id: profile_id.into(),
-                bucket_id: bucket_id.into(),
-                window_kind: window_kind.into(),
-                window_duration_mins,
-                resets_at,
-                used_fraction_units,
-                observed_at,
+                plan: plan.into(),
+                snapshot: GeminiQuotaSnapshot {
+                    bucket_id: bucket_id.into(),
+                    window_kind: window_kind.into(),
+                    window_duration_mins,
+                    resets_at,
+                    used_fraction_units,
+                    measurement_resolution_fraction_units,
+                    observed_at,
+                },
                 reply,
             })
             .await
@@ -1354,6 +1694,24 @@ impl AsyncBilling {
         result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn gemini_calibration_report(
+        &self,
+    ) -> anyhow::Result<(
+        Vec<GeminiExactCalibrationRow>,
+        Vec<ProviderTurnCalibrationAggregate>,
+        Vec<ProviderTurnCalibrationEvent>,
+    )> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::GeminiCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
@@ -1506,9 +1864,11 @@ impl AsyncBilling {
         // writer
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
         let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
+        let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
         {
             let conn = registry::open(&db_path)?;
             let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
+            let writer_gemini_delivery = Arc::clone(&gemini_calibration_delivery);
             std::thread::Builder::new().name("billing-writer".into()).spawn(move || {
                 const RESERVATION_LEASE_SECS: i64 = 3600;
                 let refund_canceled_reserve = |request_id: &str, account_id: &str, key: &str,
@@ -1646,6 +2006,69 @@ impl AsyncBilling {
                         }
                         Ok((spend, states))
                     };
+                let observe_gemini = |observation: &GeminiExactWindowObservation| {
+                    loop {
+                        let existing = registry::load_gemini_exact_calibration(
+                            &conn,
+                            &observation.profile_id,
+                            &observation.plan,
+                            &observation.bucket_id,
+                        )?;
+                        if let Some(existing) = existing.as_ref().filter(|row| {
+                            row.estimator_version == crate::gemini::ESTIMATOR_VERSION
+                                && gemini_observation_is_stale_or_duplicate(row, observation)
+                        }) {
+                            return Ok::<_, anyhow::Error>(existing.clone());
+                        }
+                        let history = if existing.as_ref().is_some_and(|row| {
+                            row.estimator_version != crate::gemini::ESTIMATOR_VERSION
+                        }) {
+                            registry::load_gemini_exact_window_observations(
+                                &conn,
+                                &observation.profile_id,
+                                &observation.plan,
+                                &observation.bucket_id,
+                            )?
+                        } else {
+                            Vec::new()
+                        };
+                        let mut state = crate::gemini::apply_observation_with_history(
+                            existing,
+                            &history,
+                            observation,
+                        )?;
+                        if let Some(version) = registry::save_gemini_exact_calibration(
+                            &conn,
+                            &state,
+                            observation,
+                        )? {
+                            state.version = version;
+                            return Ok(state);
+                        }
+                    }
+                };
+                let persist_gemini_turn = |turn: &PendingGeminiCalibrationTurn| {
+                    if turn.event.provider != registry::PROVIDER_GOOGLE || turn.plan.is_empty() {
+                        anyhow::bail!("invalid Gemini turn calibration command");
+                    }
+                    let spend = registry::record_provider_turn_calibration_event(
+                        &conn,
+                        &turn.event,
+                    )?;
+                    let mut states = Vec::with_capacity(turn.snapshots.len());
+                    for snapshot in &turn.snapshots {
+                        let observation = gemini_observation(
+                            &turn.event.subject_id,
+                            &turn.plan,
+                            snapshot,
+                            spend.spent_nano,
+                            "response",
+                            Some(&turn.event.request_id),
+                        );
+                        states.push(observe_gemini(&observation)?);
+                    }
+                    Ok((spend, states))
+                };
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
                     WriteCmd::AnthropicRecordTurn { delivery_id, reply } => {
@@ -1703,56 +2126,53 @@ impl AsyncBilling {
                         })();
                         let _ = reply.send(result);
                     }
-                    WriteCmd::GeminiCreditSpend { profile_id, delta_nano, updated_ts, reply } => {
-                        let _ = reply.send(registry::credit_gemini_profile_spend(
-                            &conn, &profile_id, delta_nano, updated_ts,
-                        ));
+                    WriteCmd::GeminiRecordTurn { delivery_id, reply } => {
+                        if let Some(reply) = reply {
+                            let result = flush_pending_gemini_calibration_turns(
+                                &writer_gemini_delivery,
+                                Some(delivery_id),
+                                &persist_gemini_turn,
+                            )
+                            .and_then(|result| {
+                                result.ok_or_else(|| {
+                                    anyhow::anyhow!("Gemini calibration target was not replayed")
+                                })
+                            });
+                            let _ = reply.send(result);
+                        } else if let Err(error) = flush_pending_gemini_calibration_turns(
+                            &writer_gemini_delivery,
+                            None,
+                            &persist_gemini_turn,
+                        ) {
+                            eprintln!(
+                                "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                            );
+                        }
                     }
                     WriteCmd::GeminiObserveWindow {
-                        profile_id, bucket_id, window_kind, window_duration_mins, resets_at,
-                        used_fraction_units, observed_at, reply,
+                        profile_id, plan, snapshot, reply,
                     } => {
                         let result = (|| {
-                            let spend_nano = registry::gemini_profile_spend(&conn, &profile_id)?;
-                            let observation = GeminiWindowObservation {
-                                profile_id: profile_id.clone(),
-                                bucket_id: bucket_id.clone(),
-                                window_kind: window_kind.clone(),
-                                window_duration_mins,
-                                resets_at,
-                                observed_at,
-                                used_fraction_units,
-                                gateway_spend_nano: spend_nano,
-                            };
-                            loop {
-                                let existing = registry::load_gemini_calibration(
-                                    &conn, &profile_id, &bucket_id,
-                                )?;
-                                if let Some(existing) = existing.as_ref().filter(|row| {
-                                    row.estimator_version == crate::gemini::ESTIMATOR_VERSION
-                                        && observed_at <= row.observed_at
-                                }) {
-                                    return Ok((spend_nano, existing.clone()));
-                                }
-                                let history = if existing.as_ref().is_some_and(|row| {
-                                    row.estimator_version != crate::gemini::ESTIMATOR_VERSION
-                                }) {
-                                    registry::load_gemini_window_observations(
-                                        &conn, &profile_id, &bucket_id,
-                                    )?
-                                } else {
-                                    Vec::new()
-                                };
-                                let mut state = crate::gemini::apply_observation_with_history(
-                                    existing, &history, &observation,
-                                )?;
-                                if let Some(version) = registry::save_gemini_calibration(
-                                    &conn, &state, &observation,
-                                )? {
-                                    state.version = version;
-                                    return Ok((spend_nano, state));
-                                }
-                            }
+                            flush_pending_gemini_calibration_turns(
+                                &writer_gemini_delivery,
+                                None,
+                                &persist_gemini_turn,
+                            )?;
+                            let spend = registry::provider_calibration_subject_spend(
+                                &conn,
+                                registry::PROVIDER_GOOGLE,
+                                &profile_id,
+                            )?;
+                            let observation = gemini_observation(
+                                &profile_id,
+                                &plan,
+                                &snapshot,
+                                spend.spent_nano,
+                                "poll",
+                                None,
+                            );
+                            let state = observe_gemini(&observation)?;
+                            Ok((spend.spent_nano, state))
                         })();
                         let _ = reply.send(result);
                     }
@@ -1991,6 +2411,13 @@ impl AsyncBilling {
                             &persist_anthropic_turn,
                         )
                         .and_then(|_| {
+                            flush_pending_gemini_calibration_turns(
+                                &writer_gemini_delivery,
+                                None,
+                                &persist_gemini_turn,
+                            )
+                        })
+                        .and_then(|_| {
                             registry::sqlite_reconcile_expired(&conn, 10_000).map(|_| ())
                         });
                         let _ = reply.send(result);
@@ -2021,6 +2448,23 @@ impl AsyncBilling {
                                         registry::recent_provider_turn_calibration_events(
                                             &conn,
                                             registry::PROVIDER_ANTHROPIC,
+                                            registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+                                        )?,
+                                    ))
+                                })();
+                                let _ = reply.send(result);
+                            }
+                            ReadCmd::GeminiCalibrationReport(reply) => {
+                                let result = (|| {
+                                    Ok((
+                                        registry::list_gemini_exact_calibrations(&conn)?,
+                                        registry::provider_turn_calibration_report(
+                                            &conn,
+                                            registry::PROVIDER_GOOGLE,
+                                        )?,
+                                        registry::recent_provider_turn_calibration_events(
+                                            &conn,
+                                            registry::PROVIDER_GOOGLE,
                                             registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
                                         )?,
                                     ))
@@ -2167,6 +2611,7 @@ impl AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
             anthropic_calibration_delivery,
+            gemini_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: Vec::new(),
@@ -2185,11 +2630,13 @@ impl AsyncBilling {
         let readers = readers.max(1);
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
         let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
+        let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
         {
             let mut pg = registry::pg::PgStore::connect(&url)?;
             let writer_url = url.clone();
             let writer_owner = owner.clone();
             let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
+            let writer_gemini_delivery = Arc::clone(&gemini_calibration_delivery);
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
@@ -2283,75 +2730,87 @@ impl AsyncBilling {
                             });
                             let _ = reply.send(result);
                         }
-                        WriteCmd::GeminiCreditSpend {
-                            profile_id, delta_nano, updated_ts, reply,
-                        } => {
-                            let result = run_pg_with_retry(
-                                &mut pg,
-                                &writer_url,
-                                &writer_owner,
-                                "Gemini spend credit",
-                                |pg| pg.credit_gemini_profile_spend(
-                                    &profile_id, delta_nano, updated_ts,
-                                ),
-                            );
-                            let _ = reply.send(result);
+                        WriteCmd::GeminiRecordTurn { delivery_id, reply } => {
+                            if let Some(reply) = reply {
+                                let result = flush_pending_gemini_calibration_turns(
+                                    &writer_gemini_delivery,
+                                    Some(delivery_id),
+                                    |turn| {
+                                        persist_gemini_turn_postgres(
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            turn,
+                                        )
+                                    },
+                                )
+                                .and_then(|result| {
+                                    result.ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Gemini calibration target was not replayed"
+                                        )
+                                    })
+                                });
+                                let _ = reply.send(result);
+                            } else {
+                                let result = flush_pending_gemini_calibration_turns(
+                                    &writer_gemini_delivery,
+                                    None,
+                                    |turn| {
+                                        persist_gemini_turn_postgres(
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            turn,
+                                        )
+                                    },
+                                );
+                                if let Err(error) = result {
+                                    eprintln!(
+                                        "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                                    );
+                                }
+                            }
                         }
                         WriteCmd::GeminiObserveWindow {
-                            profile_id, bucket_id, window_kind, window_duration_mins, resets_at,
-                            used_fraction_units, observed_at, reply,
+                            profile_id, plan, snapshot, reply,
                         } => {
-                            let result = run_pg_with_retry(
-                                &mut pg,
-                                &writer_url,
-                                &writer_owner,
-                                "Gemini window observation",
-                                |pg| {
-                                    let spend_nano = pg.gemini_profile_spend(&profile_id)?;
-                                    let observation = GeminiWindowObservation {
-                                        profile_id: profile_id.clone(),
-                                        bucket_id: bucket_id.clone(),
-                                        window_kind: window_kind.clone(),
-                                        window_duration_mins,
-                                        resets_at,
-                                        observed_at,
-                                        used_fraction_units,
-                                        gateway_spend_nano: spend_nano,
-                                    };
-                                    loop {
-                                        let existing = pg.load_gemini_calibration(
-                                            &profile_id, &bucket_id,
-                                        )?;
-                                        if let Some(existing) = existing.as_ref().filter(|row| {
-                                            row.estimator_version
-                                                == crate::gemini::ESTIMATOR_VERSION
-                                                && observed_at <= row.observed_at
-                                        }) {
-                                            return Ok((spend_nano, existing.clone()));
-                                        }
-                                        let history = if existing.as_ref().is_some_and(|row| {
-                                            row.estimator_version
-                                                != crate::gemini::ESTIMATOR_VERSION
-                                        }) {
-                                            pg.load_gemini_window_observations(
-                                                &profile_id, &bucket_id,
-                                            )?
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        let mut state =
-                                            crate::gemini::apply_observation_with_history(
-                                                existing, &history, &observation,
-                                            )?;
-                                        if let Some(version) =
-                                            pg.save_gemini_calibration(&state, &observation)?
-                                        {
-                                            state.version = version;
-                                            return Ok((spend_nano, state));
-                                        }
-                                    }
+                            let result = flush_pending_gemini_calibration_turns(
+                                &writer_gemini_delivery,
+                                None,
+                                |turn| {
+                                    persist_gemini_turn_postgres(
+                                        &mut pg,
+                                        &writer_url,
+                                        &writer_owner,
+                                        turn,
+                                    )
                                 },
-                            );
+                            )
+                            .and_then(|_| {
+                                run_pg_with_retry(
+                                    &mut pg,
+                                    &writer_url,
+                                    &writer_owner,
+                                    "Gemini window observation",
+                                    |pg| {
+                                        let spend = pg.provider_calibration_subject_spend(
+                                            registry::PROVIDER_GOOGLE,
+                                            &profile_id,
+                                        )?;
+                                        let observation = gemini_observation(
+                                            &profile_id,
+                                            &plan,
+                                            &snapshot,
+                                            spend.spent_nano,
+                                            "poll",
+                                            None,
+                                        );
+                                        let state = observe_gemini_postgres(pg, &observation)?;
+                                        Ok((spend.spent_nano, state))
+                                    },
+                                )
+                            });
                             let _ = reply.send(result);
                         }
                         WriteCmd::CodexRecordTurn { event, reply } => {
@@ -2804,6 +3263,20 @@ impl AsyncBilling {
                                 },
                             )
                             .and_then(|_| {
+                                flush_pending_gemini_calibration_turns(
+                                    &writer_gemini_delivery,
+                                    None,
+                                    |turn| {
+                                        persist_gemini_turn_postgres(
+                                            &mut pg,
+                                            &writer_url,
+                                            &writer_owner,
+                                            turn,
+                                        )
+                                    },
+                                )
+                            })
+                            .and_then(|_| {
                                 loop {
                                     match run_pg_with_retry(
                                         &mut pg, &writer_url, &writer_owner, "outbox drain",
@@ -2863,6 +3336,21 @@ impl AsyncBilling {
                                         )?,
                                         pg.recent_provider_turn_calibration_events(
                                             registry::PROVIDER_ANTHROPIC,
+                                            registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+                                        )?,
+                                    ))
+                                })();
+                                answer!(reply, result)
+                            }
+                            ReadCmd::GeminiCalibrationReport(reply) => {
+                                let result = (|| {
+                                    Ok((
+                                        pg.list_gemini_exact_calibrations()?,
+                                        pg.provider_turn_calibration_report(
+                                            registry::PROVIDER_GOOGLE,
+                                        )?,
+                                        pg.recent_provider_turn_calibration_events(
+                                            registry::PROVIDER_GOOGLE,
                                             registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
                                         )?,
                                     ))
@@ -2993,6 +3481,7 @@ impl AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
             anthropic_calibration_delivery,
+            gemini_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: pricing_shadow_rtxs,
@@ -4002,9 +4491,12 @@ impl AsyncBilling {
         loop {
             match self.flush_writer_once().await {
                 Ok(()) => return Ok(()),
-                Err(error) if self.anthropic_calibration_delivery_status().pending_events > 0 => {
+                Err(error)
+                    if self.anthropic_calibration_delivery_status().pending_events > 0
+                        || self.gemini_calibration_delivery_status().pending_events > 0 =>
+                {
                     eprintln!(
-                        "Anthropic calibration shutdown drain waiting for authority recovery: {error:#}"
+                        "Provider calibration shutdown drain waiting for authority recovery: {error:#}"
                     );
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
@@ -4065,12 +4557,73 @@ mod tests {
         }
     }
 
+    fn gemini_event(
+        request_id: &str,
+        api_total_nanousd: i64,
+        completed_at: i64,
+    ) -> ProviderTurnCalibrationEvent {
+        ProviderTurnCalibrationEvent {
+            provider: registry::PROVIDER_GOOGLE.to_owned(),
+            request_id: request_id.to_owned(),
+            subject_id: "profile-a".to_owned(),
+            model_id: "gemini-2.5-flash".to_owned(),
+            service_tier: "standard".to_owned(),
+            inference_geo: "global".to_owned(),
+            tariff_schedule_id: "google/test/v1".to_owned(),
+            priced_ts: completed_at,
+            completed_at,
+            input_tokens: 1,
+            audio_input_tokens: 0,
+            cache_read_tokens: 0,
+            cached_audio_input_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            output_tokens: 0,
+            thinking_output_tokens: 0,
+            image_output_tokens: 0,
+            tool_prompt_tokens: 0,
+            search_queries: 0,
+            grounded_search_prompts: 0,
+            api_input_nanousd: api_total_nanousd,
+            api_audio_input_nanousd: 0,
+            api_cache_read_nanousd: 0,
+            api_cached_audio_input_nanousd: 0,
+            api_cache_write_5m_nanousd: 0,
+            api_cache_write_1h_nanousd: 0,
+            api_output_nanousd: 0,
+            api_image_output_nanousd: 0,
+            api_search_nanousd: 0,
+            api_total_nanousd,
+        }
+    }
+
     fn anthropic_snapshot(
         window_kind: &str,
         used_fraction_units: i64,
         observed_at: i64,
     ) -> AnthropicQuotaSnapshot {
         AnthropicQuotaSnapshot {
+            window_kind: window_kind.to_owned(),
+            window_duration_mins: if window_kind == "5h" { 300 } else { 10_080 },
+            resets_at: if window_kind == "5h" {
+                2_000_000_000
+            } else {
+                2_000_500_000
+            },
+            used_fraction_units,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at,
+        }
+    }
+
+    fn gemini_snapshot(
+        bucket_id: &str,
+        window_kind: &str,
+        used_fraction_units: i64,
+        observed_at: i64,
+    ) -> GeminiQuotaSnapshot {
+        GeminiQuotaSnapshot {
+            bucket_id: bucket_id.to_owned(),
             window_kind: window_kind.to_owned(),
             window_duration_mins: if window_kind == "5h" { 300 } else { 10_080 },
             resets_at: if window_kind == "5h" {
@@ -4955,7 +5508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_calibration_credits_admin_spend_and_keeps_windows_independent() {
+    async fn gemini_exact_turns_calibrate_first_interval_and_keep_windows_independent() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4967,20 +5520,24 @@ mod tests {
         let path_string = path.to_string_lossy().into_owned();
         let first = AsyncBilling::start(path_string.clone(), 1).unwrap();
 
-        // Spend credit is independent from a customer reservation/usage_event and therefore also
-        // covers successful admin traffic.
         first
-            .credit_gemini_spend("profile-a", 10_000, 100)
+            .record_gemini_turn(
+                gemini_event("gemini-1", 10_000, 100),
+                "google_ai_pro",
+                vec![],
+            )
             .await
             .unwrap();
         let (_, anchor) = first
             .observe_gemini_window(
                 "profile-a",
+                "google_ai_pro",
                 "gemini-5h",
                 "5h",
                 300,
                 2_000_000_000,
                 1_000,
+                1,
                 100,
             )
             .await
@@ -4988,37 +5545,24 @@ mod tests {
         assert!(anchor.current_capacity_nano.is_none());
 
         first
-            .credit_gemini_spend("profile-a", 20_000, 101)
-            .await
-            .unwrap();
-        let (_, censored) = first
-            .observe_gemini_window(
-                "profile-a",
-                "gemini-5h",
-                "5h",
-                300,
-                2_000_000_000,
-                2_000,
-                101,
+            .record_gemini_turn(
+                gemini_event("gemini-2", 20_000, 101),
+                "google_ai_pro",
+                vec![],
             )
-            .await
-            .unwrap();
-        assert!(censored.anchor_ready);
-        assert!(censored.current_capacity_nano.is_none());
-
-        first
-            .credit_gemini_spend("profile-a", 20_000, 102)
             .await
             .unwrap();
         let (_, measured) = first
             .observe_gemini_window(
                 "profile-a",
+                "google_ai_pro",
                 "gemini-5h",
                 "5h",
                 300,
                 2_000_000_000,
-                3_000,
-                102,
+                2_000,
+                1,
+                101,
             )
             .await
             .unwrap();
@@ -5028,11 +5572,13 @@ mod tests {
         let (_, weekly) = first
             .observe_gemini_window(
                 "profile-a",
+                "google_ai_pro",
                 "gemini-weekly",
                 "weekly",
                 10_080,
                 2_000_500_000,
                 500,
+                1,
                 102,
             )
             .await
@@ -5044,11 +5590,13 @@ mod tests {
         let (_, restored) = second
             .observe_gemini_window(
                 "profile-a",
+                "google_ai_pro",
                 "gemini-5h",
                 "5h",
                 300,
                 2_000_000_000,
-                3_000,
+                2_000,
+                1,
                 103,
             )
             .await
@@ -5057,6 +5605,316 @@ mod tests {
         assert_eq!(restored.observed_spend_nano, 20_000);
         assert_eq!(restored.samples, 1);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn gemini_equal_second_settlement_catch_up_is_not_filtered_as_a_duplicate() {
+        let anchor = gemini_observation(
+            "profile-a",
+            "google_ai_pro",
+            &gemini_snapshot("gemini-5h", "5h", 10_000_000, 100),
+            1_000,
+            "response",
+            Some("gemini-anchor"),
+        );
+        let pending = gemini_observation(
+            "profile-a",
+            "google_ai_pro",
+            &gemini_snapshot("gemini-5h", "5h", 20_000_000, 101),
+            1_000,
+            "response",
+            Some("gemini-pending"),
+        );
+        let anchor_row = crate::gemini::apply_observation_with_history(None, &[], &anchor).unwrap();
+        let pending_row =
+            crate::gemini::apply_observation_with_history(Some(anchor_row), &[], &pending).unwrap();
+        assert!(gemini_observation_is_stale_or_duplicate(
+            &pending_row,
+            &pending
+        ));
+
+        let catch_up = GeminiExactWindowObservation {
+            gateway_spend_nano: 2_001_000,
+            observation_source: "poll".to_owned(),
+            source_request_id: None,
+            ..pending
+        };
+        assert!(!gemini_observation_is_stale_or_duplicate(
+            &pending_row,
+            &catch_up
+        ));
+        let settled =
+            crate::gemini::apply_observation_with_history(Some(pending_row), &[], &catch_up)
+                .unwrap();
+        assert_eq!(settled.samples, 1);
+        assert_eq!(settled.current_capacity_nano, Some(20_000_000));
+    }
+
+    #[tokio::test]
+    async fn gemini_outage_recovery_replays_fifo_before_poll_snapshot() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-fifo-recovery-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        let control = registry::open(&path_string).unwrap();
+        control
+            .execute_batch(
+                "CREATE TRIGGER reject_gemini_calibration_turn \
+                 BEFORE INSERT ON provider_turn_calibration_events \
+                 WHEN NEW.provider='google' \
+                 BEGIN SELECT RAISE(FAIL, 'simulated authority outage'); END;",
+            )
+            .unwrap();
+
+        let first = billing
+            .record_gemini_turn(
+                gemini_event("gemini-fifo-first", 1_000_000_000, 100),
+                "google_ai_pro",
+                vec![gemini_snapshot("gemini-5h", "5h", 10_000_000, 100)],
+            )
+            .await;
+        assert!(first.is_err());
+        let second = billing
+            .record_gemini_turn(
+                gemini_event("gemini-fifo-second", 2_000_000_000, 101),
+                "google_ai_pro",
+                vec![gemini_snapshot("gemini-5h", "5h", 14_000_000, 101)],
+            )
+            .await;
+        assert!(second.is_err());
+        assert_eq!(
+            billing.gemini_calibration_delivery_status(),
+            GeminiCalibrationDeliveryStatus {
+                pending_events: 2,
+                dropped_events: 0,
+                persistence_ok: false,
+                queue_limit: MAX_PENDING_GEMINI_CALIBRATION_EVENTS,
+            }
+        );
+
+        let blocked_poll = billing
+            .observe_gemini_window(
+                "profile-a",
+                "google_ai_pro",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                14_000_000,
+                100_000,
+                102,
+            )
+            .await;
+        assert!(blocked_poll.is_err());
+        assert_eq!(
+            control
+                .query_row(
+                    "SELECT COUNT(*) FROM gemini_exact_window_observations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "a free quota poll must not overtake pending paid-turn evidence"
+        );
+
+        control
+            .execute_batch("DROP TRIGGER reject_gemini_calibration_turn;")
+            .unwrap();
+        let (spend, row) = billing
+            .observe_gemini_window(
+                "profile-a",
+                "google_ai_pro",
+                "gemini-5h",
+                "5h",
+                300,
+                2_000_000_000,
+                14_000_000,
+                100_000,
+                103,
+            )
+            .await
+            .unwrap();
+        assert_eq!(spend, 3_000_000_000);
+        assert_eq!(row.current_capacity_nano, Some(50_000_000_000));
+        assert_eq!(
+            billing.gemini_calibration_delivery_status(),
+            GeminiCalibrationDeliveryStatus {
+                pending_events: 0,
+                dropped_events: 0,
+                persistence_ok: true,
+                queue_limit: MAX_PENDING_GEMINI_CALIBRATION_EVENTS,
+            }
+        );
+        let ids = {
+            let mut statement = control
+                .prepare(
+                    "SELECT request_id FROM provider_turn_calibration_events \
+                     WHERE provider='google' ORDER BY rowid",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(ids, ["gemini-fifo-first", "gemini-fifo-second"]);
+
+        billing.flush().await.unwrap();
+        drop(billing);
+        drop(control);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn gemini_replay_conflict_quarantines_only_the_corrupt_event() {
+        let connection = registry::open(":memory:").unwrap();
+        registry::record_provider_turn_calibration_event(
+            &connection,
+            &gemini_event("gemini-conflict", 1_000, 100),
+        )
+        .unwrap();
+        let state = GeminiCalibrationDeliveryState::default();
+        enqueue_gemini_calibration_turn(
+            &state,
+            gemini_event("gemini-conflict", 2_000, 100),
+            "google_ai_pro".to_owned(),
+            Vec::new(),
+        )
+        .unwrap();
+        enqueue_gemini_calibration_turn(
+            &state,
+            gemini_event("gemini-after-conflict", 3_000, 101),
+            "google_ai_pro".to_owned(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        flush_pending_gemini_calibration_turns(&state, None, |turn| {
+            let spend = registry::record_provider_turn_calibration_event(&connection, &turn.event)?;
+            Ok((spend, Vec::new()))
+        })
+        .unwrap();
+
+        assert_eq!(
+            state
+                .queue
+                .lock()
+                .expect("Gemini calibration delivery queue lock")
+                .pending
+                .len(),
+            0
+        );
+        assert_eq!(state.dropped_events.load(Ordering::Relaxed), 1);
+        assert!(!state.persistence_ok.load(Ordering::Relaxed));
+        assert_eq!(
+            registry::provider_calibration_subject_spend(
+                &connection,
+                registry::PROVIDER_GOOGLE,
+                "profile-a",
+            )
+            .unwrap()
+            .spent_nano,
+            4_000
+        );
+        let report =
+            registry::provider_turn_calibration_report(&connection, registry::PROVIDER_GOOGLE)
+                .unwrap();
+        assert_eq!(report.iter().map(|row| row.turns).sum::<i64>(), 2);
+    }
+
+    #[tokio::test]
+    async fn gemini_flush_retries_detached_pending_turn_before_shutdown() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-shutdown-drain-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing = AsyncBilling::start(path_string.clone(), 1).unwrap();
+        let control = registry::open(&path_string).unwrap();
+        control
+            .execute_batch(
+                "CREATE TRIGGER reject_gemini_calibration_turn \
+                 BEFORE INSERT ON provider_turn_calibration_events \
+                 WHEN NEW.provider='google' \
+                 BEGIN SELECT RAISE(FAIL, 'simulated authority outage'); END;",
+            )
+            .unwrap();
+
+        billing.record_gemini_turn_detached(
+            gemini_event("gemini-shutdown-pending", 1_000_000_000, 100),
+            "google_ai_pro",
+            vec![gemini_snapshot("gemini-5h", "5h", 10_000_000, 100)],
+        );
+        assert!(billing.flush_once().await.is_err());
+        assert_eq!(
+            billing.gemini_calibration_delivery_status().pending_events,
+            1
+        );
+
+        control
+            .execute_batch("DROP TRIGGER reject_gemini_calibration_turn;")
+            .unwrap();
+        billing.flush().await.unwrap();
+        assert_eq!(
+            billing.gemini_calibration_delivery_status(),
+            GeminiCalibrationDeliveryStatus {
+                pending_events: 0,
+                dropped_events: 0,
+                persistence_ok: true,
+                queue_limit: MAX_PENDING_GEMINI_CALIBRATION_EVENTS,
+            }
+        );
+        let (_, evidence, recent_turns) = billing.gemini_calibration_report().await.unwrap();
+        assert_eq!(evidence.iter().map(|row| row.turns).sum::<i64>(), 1);
+        assert_eq!(recent_turns.len(), 1);
+
+        drop(billing);
+        drop(control);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn gemini_pending_queue_is_bounded_and_counts_dropped_evidence() {
+        let state = GeminiCalibrationDeliveryState::default();
+        for index in 0..MAX_PENDING_GEMINI_CALIBRATION_EVENTS {
+            enqueue_gemini_calibration_turn(
+                &state,
+                gemini_event(&format!("gemini-bounded-{index}"), 1, 100),
+                "google_ai_pro".to_owned(),
+                Vec::new(),
+            )
+            .unwrap();
+        }
+        assert!(enqueue_gemini_calibration_turn(
+            &state,
+            gemini_event("gemini-bounded-overflow", 1, 100),
+            "google_ai_pro".to_owned(),
+            Vec::new(),
+        )
+        .is_err());
+        assert_eq!(
+            state
+                .queue
+                .lock()
+                .expect("Gemini calibration delivery queue lock")
+                .pending
+                .len(),
+            MAX_PENDING_GEMINI_CALIBRATION_EVENTS
+        );
+        assert_eq!(state.dropped_events.load(Ordering::Relaxed), 1);
+        assert!(!state.persistence_ok.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

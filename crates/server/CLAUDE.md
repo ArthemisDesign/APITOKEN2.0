@@ -127,6 +127,11 @@
   `/capacity` также отдаёт newest-first `calibration_recent_turns` максимум из 512 immutable
   Anthropic events: opaque request ID, masked email и полный token/cost vector без prompt/credential.
   Это backend evidence операторского runner; aggregate `calibration_evidence` остаётся статистикой.
+  `/gemini-subs` симметрично публикует только новую plan-scoped exact authority: independent 5h/
+  weekly rows and fleet totals, `calibration_authority_available`, bounded Gemini FIFO health,
+  exact model/token/API-cost aggregates и newest-first максимум 512 immutable Google turn events.
+  Pending/dropped/degraded delivery делает Gemini fleet remaining unavailable, а не saleable stale
+  числом; legacy pre-plan Gemini calibration не смешивается с этой authority.
   `/overview` и новые metrics.db snapshots берут capacity-facing поля из того же exact report;
   `pool::Cap` prior/EMA остаётся routing-only. Overview добавляет canonical decimal `*_nano`, а его
   старые float USD поля остаются только display compatibility.

@@ -134,8 +134,8 @@ Claude-блок `/subscriptions` намеренно оставляет толь�
 email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
 Workload evidence, token-only capacity, model profitability и локальный summary strip в Claude-блоке
 не выводятся: главные fleet totals уже находятся в едином control-room выше, а оператору внутри
-Claude нужны только окна конкретных подписок. Gemini также оставляет только собственный компактный
-summary strip и таблицу окон по профилям; отдельные model-quota и profitability таблицы удалены.
+Claude нужны только окна конкретных подписок. Gemini также оставляет только таблицу окон по
+профилям; отдельный локальный summary strip, model-quota и profitability таблицы удалены.
 Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
 не выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
 символа local-part без домена.
@@ -144,7 +144,10 @@ summary strip и таблицу окон по профилям; отдельны
 два одинаково читаемых rail: `5ч` и `7д`, current remaining / full-window API-$, использованная доля,
 число routable identities и coverage. Это главный экран сравнения продаваемой ёмкости; подробности
 по аккаунтам идут ниже без дополнительных cache/model/token-матриц. Claude-карточка вместо ложных денег немедленно показывает
-`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`.
+`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`. Gemini применяет тот
+же fail-closed контракт и не показывает stale API-$ при pending/degraded exact authority. Его
+свежие provider quota/reset при этом остаются видны, а денежная ячейка компактно говорит
+`обновляем`: сбой dollar-evidence не должен ослеплять оператора по реальному quota wall.
 
 Claude строится из `/capacity`:
 
@@ -170,7 +173,9 @@ Gemini строится из `/gemini-subs` и сохраняет provider-speci
   quota/reset;
 - таблица профилей показывает bounded email, auth state, quota/reset для 5ч и 7д, доступные/полные
   workload-$ и число доступных моделей. Private quota bucket ids, `remaining_amount`, токеновые
-  ставки, Search и profitability в основной UI не выводятся;
+  ставки, Search и profitability в основной UI не выводятся. Неавторизованный, account-cooling
+  или полностью model-cooling профиль сохраняет quota для диагностики, но показывает
+  `вне ротации` вместо денег и не входит во fleet API-$;
 - `conversion_models`, official quotas и их integer amounts продолжают приходить с backend как
   audit/calculation contract. UI не делит workload-$ на цену токена и не выдумывает Gemini token
   capacity из одной только fraction.

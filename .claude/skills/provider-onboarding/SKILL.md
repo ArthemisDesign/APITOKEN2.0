@@ -37,6 +37,15 @@ matrix, and production verification. Mark unknown plan/model/tier capabilities f
 Deliver cross-context contracts producer-first. Deliver every additive database migration in its
 own first commit and wait for `deploy/migration` plus `deploy/watchdog` GREEN before dependent code.
 
+Before extending an existing calibration table, audit its complete durable identity. If its primary
+key omits a newly proven dimension such as paid plan, provider bucket, duration, service tier, or
+tariff schedule, create a new additive authority beside it. Do not mutate the old primary key in
+place and do not copy legacy estimates/observations whose missing identity, resolution, source, or
+request attribution cannot be proved. Keep the serving legacy writer intact for migration-first
+rollout, land the new schema, wait for production migration GREEN, then switch runtime readers and
+writers in the dependent change. Delete the legacy runtime path only in a separately verified
+cleanup once no deployed SHA needs it.
+
 ## Build calibration as an evidence system
 
 Select the estimator shape from provider facts:
@@ -90,7 +99,9 @@ Require all of these safeguards:
 
 - dry-run by default and explicit `--execute` for paid traffic;
 - exact integer nanoUSD budget, a hard CLI maximum no greater than the user's authorized limit,
-  per-profile budget guards, and worst-case preflight before every paid request;
+  and worst-case preflight before every paid request. Encode the authorized scope literally: use
+  both per-profile and aggregate guards when the limit is per subscription, or one aggregate guard
+  when the user authorized one total run budget; never silently multiply a total limit by fleet size;
 - an exact target profile/session that cannot spill or rebind to a neighbour; preserve real hard
   quota walls, cooling, dead auth, and provider denial;
 - baseline delivery health (`pending=0`, `dropped=0`, persistence/authority healthy) and authoritative
@@ -102,15 +113,30 @@ Require all of these safeguards:
   failure;
 - enough delay/polling for provider quota resolution and backend debounce without treating a missing
   delta as zero;
+- dispatch a paid tool/search capability only when official or provider-enforced facts prove a
+  finite per-request unit ceiling. A conservative fanout guess is not a hard budget guard: record
+  the capability as unavailable and spend nothing until the ceiling is proved;
 - a full matrix of every supported model, tier, context mode, token class, cache TTL, reasoning/media,
   and billed tool/search unit; record tested unavailability instead of silently skipping it;
 - a machine-readable report containing exact spend, before/after fractions, bounds, coverage,
-  unavailable capabilities, profile stops, and profitability only for positive observed deltas.
+  unavailable capabilities, profile stops, and profitability only for positive observed deltas
+  whose profile interval contains no other immutable turn. Exact request attribution alone does
+  not make a shared quota delta model-specific under concurrent traffic.
 
 Unit-test the runner's budget/rebind guard, exact attribution amid concurrent traffic, ambiguity,
 usage-leg preservation, catalogue/alias ceilings, capability coverage, cache isolation, safe retry
 policy, secret containment, incomplete-report behavior, and profitability ordering. Mock tests prove
 guards; only owned live subscriptions prove the provider contract.
+
+When applying this workflow to a provider whose quota endpoint is separate from generation (as in
+Gemini), settle the terminal usage event first and make the next quota poll flush the turn FIFO
+before reading cumulative spend. Preserve the quota decimal's lexical resolution (`0.4` is less
+precise than `0.40000000`), record poll observations without inventing a request id, and use a full
+opaque admin-only profile id when a short email hint is not collision-proof. If ordinary concurrent
+traffic can hit the same profile/model, add a separate canonical admin-only calibration request-id
+override and have the runner preselect that immutable id; diffing aggregates or guessing among new
+events is not exact attribution. A successful response without terminal usage may retain the bounded
+customer hold, but it must not create a synthetic calibration vector.
 
 ## Reuse the compact admin capacity design
 

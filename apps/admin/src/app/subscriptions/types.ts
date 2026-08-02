@@ -537,12 +537,21 @@ export interface GeminiFailures {
   stream_start?: number;
 }
 
+export interface GeminiCalibrationDelivery {
+  pending_events?: number;
+  dropped_events?: number;
+  persistence_ok?: boolean;
+  queue_limit?: number;
+}
+
 export interface GeminiSubsResponse {
   enabled?: boolean;
   available?: number;
   authenticated?: number;
   inflight?: number;
   usage_metadata_missing?: number;
+  calibration_authority_available?: boolean;
+  calibration_delivery?: GeminiCalibrationDelivery | null;
   /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
   now?: number;
   models?: GeminiModel[];

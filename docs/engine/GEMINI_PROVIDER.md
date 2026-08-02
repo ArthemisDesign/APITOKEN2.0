@@ -310,22 +310,24 @@ For every request the runtime:
   `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
   Google's reset time;
 - independently calls `v1internal:retrieveUserQuotaSummary` and accepts only the exact
-  `gemini-5h` and `gemini-weekly` buckets. Every successful generation, including admin traffic,
-  credits the serving opaque profile with its exact audited Developer API price in integer
-  nanoUSD. Each bucket is calibrated independently from real positive fraction movement as the
-  cumulative realized workload blend
-  `capacity = 100000000 * ΣΔspend / ΣΔused`. This is not a subscription nominal: Google documents
-  that rate-limit consumption is correlated with the amount of work performed and can differ from
-  prompt to prompt. Low/high preserve the observed per-interval workload envelope with a
-  conservative ±1 fraction unit around each observed movement. Confidence is the product of sample
-  maturity, observed workload stability and fraction resolution; it cannot become near-100% merely
-  because a fraction delta has many decimal places. There is no subscription-price prior, EMA,
-  float money arithmetic
-  or use of the foreign-provider `3p-*` buckets. The first snapshot is an anchor and the first
-  movement after cold start/reset is censored. A cold profile stays `null` with no dollar Prometheus
-  sample until the next complete interval; a later reset preserves the already measured blend and
-  envelope while rearming the safe anchor. Cumulative spend, CAS state and raw replay evidence live
-  in the engine authority and survive blue-green deploys and estimator rebuilds;
+  `gemini-5h` and `gemini-weekly` buckets. Every successful generation with terminal usage,
+  including admin traffic, creates one immutable event with the internal request id, opaque
+  profile, paid plan, public model, tariff schedule, all input/audio/cache/output/thinking/image/
+  tool/search facts and every official API-cost leg in integer nanoUSD. The same authority
+  transaction advances cumulative profile spend; missing terminal usage never fabricates an
+  event. A bounded FIFO retains transient failures, prevents a quota poll from overtaking paid
+  evidence, quarantines only semantic replay conflicts and is drained on shutdown;
+- stores quota observations and estimator state in the plan-scoped exact authority keyed by
+  `profile + paid plan + bucket + duration`. Provider decimals are fixed-point `10^-8`, while the
+  actual lexical endpoint resolution is stored separately. The first snapshot is an anchor; the
+  first later interval with positive fraction movement and positive settled spend immediately
+  publishes `capacity = 100000000 * ΣΔspend / ΣΔused`. Low/high use the combined resolution of both
+  interval endpoints; high is `null` when true movement cannot be bounded above. Quota movement may
+  wait one snapshot for settlement, but repeated quota-only movement becomes unattributed and is
+  excluded. Reset/rolling rollover, jitter, stale points, checked overflow and estimator-version
+  replay are explicit. There is no subscription nominal, prior, EMA, WLS, float money arithmetic
+  or use of foreign-provider `3p-*` buckets. The 5h and weekly histories remain independent and
+  only like-for-like paid plans may be pooled;
 - immediately dispatches every paid-profile request with no local concurrency ceiling. For unbound
   work, fresh
   quota evidence wins over stale evidence, then current in-flight load spreads the burst, and only
@@ -351,24 +353,18 @@ conversion can label Google AI Pro or Ultra as a fixed number of Developer API d
 reports three different quantities instead:
 
 - `cap_usd`: the cumulative official-API-dollar equivalent of the workload mix actually observed;
-- `low_usd` / `high_usd`: the smallest and largest per-interval workload equivalents observed so
-  far, expanded conservatively for the `10^-8` fraction quantisation;
-- `confidence`: `n/(n+2) × low/high × used/(used+2n)`, so more samples help, workload disagreement
-  hurts, and precise fraction movement cannot hide an unstable workload mix.
+- `low_usd` / `high_usd`: the accumulated per-interval workload envelope expanded by the actual
+  decimal resolution of both endpoint snapshots; `high_usd=null` means the observation is too
+  coarse for a finite upper bound;
+- `confidence`: sample maturity × workload-envelope stability × fraction-resolution quality.
 
-The controlled Google AI Pro calibration on 2026-07-31 deliberately mixed one
-`gemini-3.5-flash` interval (`$0.0245745` official spend) with one
-`gemini-3.1-pro-preview` low-thinking interval (`$0.036874`):
-
-| Window | Realized blend | Observed workload envelope | Confidence |
-|---|---:|---:|---:|
-| 5h | `$36.515628714` | `$20.000244158 … $81.204166575` | `12.30%` |
-| 7d | `$219.177129405` | `$120.010255408 … $487.815848658` | `12.29%` |
-
-Those figures are evidence that workload matters, not subscription promises. A future traffic mix
-will move the blend, new workload regimes can widen the envelope, and Google can change quota
-policy. Raw observations are retained so estimator upgrades replay the same evidence rather than
-starting over. Official source: <https://antigravity.google/docs/plans>.
+The old pre-plan Gemini estimator and its 2026-07-31 observations are deliberately not copied into
+this authority: their durable identity did not prove paid plan, lexical resolution or immutable
+request attribution. The exact authority therefore starts from new live evidence instead of
+laundering a plausible historical number into a trusted capacity. A future traffic mix can still
+move the realized blend, and Google can change quota policy; immutable observations let estimator
+upgrades replay the same facts. The controlled procedure is
+`docs/ops/GEMINI_CALIBRATION.md`. Official source: <https://antigravity.google/docs/plans>.
 
 The model allowlist is local and price-catalog pinned. The default list contains six text models
 whose non-stream, native stream and token-count paths were reconfirmed against the production
@@ -617,11 +613,14 @@ accepting new requests; its established SSE requests may finish during bounded a
 email hint (at most four local-part characters, never the domain), model availability,
 sanitized quota/cooling timestamps, independent 5h/weekly fractions and workload-dependent
 official-API-dollar blend/remaining/envelope/confidence plus the exact spend/fraction evidence,
-calibration persistence health, generation failure
+exact-authority availability, bounded FIFO pending/dropped/persistence diagnostics and the newest
+512 immutable turn vectors for controlled attribution, generation failure
 streak/timestamps/classes, low-cardinality transport/backend/malformed/stream-start counters,
 affinity counters, missing-usage count and pinned HTTPS/Undici transport versions/hashes. Unknown
-capacity stays JSON `null`; measured fleet totals include only profiles with evidence and publish
-canonical decimal `*_nano` strings beside display-only USD compatibility fields. The response
+capacity stays JSON `null`; measured fleet totals include only currently routable profiles with
+evidence and publish canonical decimal `*_nano` strings beside display-only USD compatibility
+fields. Non-authenticated/account-cooling/all-model-cooling profiles retain quota/reset evidence
+for diagnosis but their per-profile and fleet saleable API-dollar fields stay `null`. The response
 marks this explicitly as `realized_workload_api_equivalent` with
 `fixed_subscription_nominal=false`. It also carries the reviewed non-secret paid-plan identity
 (`google_ai_pro|google_ai_ultra|code_assist_standard|code_assist_enterprise|workspace_ai_ultra`)

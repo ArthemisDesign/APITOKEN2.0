@@ -74,6 +74,8 @@ describe("таблицы флотов (smoke render с данными)", () => {
         gemini={{
           enabled: true,
           available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
           profiles: [{ authenticated: true }],
           window_totals: [
             { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
@@ -124,6 +126,31 @@ describe("таблицы флотов (smoke render с данными)", () => {
     );
     expect(plain(dropped)).toContain("1 потеряно");
     expect(dropped).toContain("fleet-state bad");
+  });
+
+  it("FleetCapacityOverview: ошибка persistence одного Gemini-профиля скрывает fleet API-$", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={{
+          enabled: true,
+          available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{ authenticated: true, calibration_persistence_ok: false }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
+            { window_minutes: 10_080, capacity_nano: "200000000000", remaining_nano: "150000000000", measured_profiles: 1, observed_profiles: 1 },
+          ],
+        }}
+      />,
+    );
+    expect(plain(html)).toContain("ошибка authority");
+    expect(plain(html)).not.toContain("$30.00");
+    expect(plain(html)).not.toContain("$150.00");
+    expect(html).toContain("fleet-gemini");
+    expect(html).toContain("fleet-state bad");
   });
 
   it("ClaudeTable: dead-подписка с пилюлей и live-окнами, пустой список → empty-row", () => {
@@ -629,6 +656,8 @@ describe("таблицы флотов (smoke render с данными)", () => {
         response={{
           now: nowMs / 1000,
           available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
           window_totals: [
             {
               window_minutes: 300,
@@ -742,6 +771,86 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html).indexOf("5ч · доступно")).toBeLessThan(plain(html).indexOf("7д · доступно"));
     expect(plain(html)).toContain("25%");
     expect(html).toContain("provider-quota-meter");
+  });
+
+  it("GeminiCapacityBoard: pending authority скрывает stale API-$, а не показывает их как доступные", () => {
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 1, dropped_events: 0, persistence_ok: false },
+          window_totals: [{ window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000" }],
+          profiles: [{
+            email: "gemi…",
+            authenticated: true,
+            windows: [{
+              window_kind: "5h",
+              used_fraction_units: 40_000_000,
+              resets_at: 1_800_000_600,
+              capacity_nano: "50000000000",
+              remaining_nano: "30000000000",
+            }],
+          }],
+        }}
+      />,
+    );
+    expect(plain(html)).not.toContain("$30.00");
+    expect(plain(html)).not.toContain("$50.00");
+    expect(plain(html)).toContain("40%");
+    expect(plain(html)).toContain("обновляем");
+    expect(plain(html)).toContain("quota уже доступна");
+    expect(html).toContain("gemi…");
+  });
+
+  it("GeminiCapacityBoard: локальная ошибка persistence скрывает stale API-$ при здоровой FIFO", () => {
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          window_totals: [{ window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000" }],
+          profiles: [{
+            email: "gemi…",
+            authenticated: true,
+            calibration_persistence_ok: false,
+            windows: [{ window_kind: "5h", capacity_nano: "50000000000", remaining_nano: "30000000000" }],
+          }],
+        }}
+      />,
+    );
+    expect(plain(html)).not.toContain("$30.00");
+    expect(plain(html)).not.toContain("$50.00");
+    expect(plain(html)).toContain("calibration storage");
+    expect(html).toContain("gemi…");
+  });
+
+  it("GeminiCapacityBoard: профиль вне ротации не показывает saleable API-$", () => {
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{
+            email: "dead…",
+            authenticated: false,
+            windows: [{
+              window_kind: "5h",
+              used_fraction_units: 70_000_000,
+              capacity_nano: "50000000000",
+              remaining_nano: "15000000000",
+            }],
+          }],
+        }}
+      />,
+    );
+    expect(plain(html)).toContain("70%");
+    expect(plain(html)).toContain("вне ротации");
+    expect(plain(html)).toContain("не входит в ёмкость");
+    expect(plain(html)).not.toContain("$15.00");
+    expect(plain(html)).not.toContain("$50.00");
   });
 
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {

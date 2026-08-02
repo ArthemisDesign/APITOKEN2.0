@@ -1889,8 +1889,9 @@ async fn stream_response(
                 profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
             }
         }
-        let real_nano = admission.settle(&model, usage);
-        profile.record_spend(real_nano).await;
+        if let Some(event) = admission.settle(&model, usage, profile.id()) {
+            profile.record_turn(event);
+        }
     });
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
@@ -2034,6 +2035,7 @@ async fn api_inner(
     };
     let route = parse_route(request.method(), request.uri().path())?;
     let pending = begin_admission(&app, request.headers(), &peer).await?;
+    let calibration_target = pending.calibration_target().map(str::to_owned);
 
     if route.operation == Operation::Models {
         let page = parse_list_models_query(request.uri().query())?;
@@ -2160,15 +2162,26 @@ async fn api_inner(
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
-        let Some(lease) = gateway.select_routed(
-            &wire_model_id,
-            &excluded,
-            preferred_id.as_deref(),
-            &warm_profile_ids,
-            place_cache_root,
-            generation,
-        ) else {
+        let lease = match calibration_target.as_deref() {
+            Some(target) => {
+                gateway.select_operator_target(&wire_model_id, target, &excluded, generation)
+            }
+            None => gateway.select_routed(
+                &wire_model_id,
+                &excluded,
+                preferred_id.as_deref(),
+                &warm_profile_ids,
+                place_cache_root,
+                generation,
+            ),
+        };
+        let Some(lease) = lease else {
             Metrics::inc(&app.metrics.exhausted);
+            if calibration_target.is_some() {
+                return Err(ApiError::unavailable(
+                    "gemini_calibration_profile_unavailable",
+                ));
+            }
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
@@ -2580,8 +2593,9 @@ async fn api_inner(
                     .take()
                     .expect("Gemini admission exists after upstream selection");
                 admission.mark_delivering().await?;
-                let real_nano = admission.settle(&model, usage.as_ref());
-                profile.record_spend(real_nano).await;
+                if let Some(event) = admission.settle(&model, usage.as_ref(), profile.id()) {
+                    profile.record_turn(event);
+                }
                 return Ok(translated_response(status, &response_headers, native_body));
             }
             _ if status.is_client_error() => {
@@ -3185,6 +3199,27 @@ mod tests {
             builder = builder.header("x-session-id", session_id);
         }
         let request = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        }
+    }
+
+    async fn invoke_exact_calibration(
+        app: AppState,
+        body: Value,
+        profile_id: &str,
+        request_id: &str,
+    ) -> Response {
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1beta/models/gemini-integration-model:generateContent")
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", CUSTOMER_KEY)
+            .header("x-apitoken-calibration-profile", profile_id)
+            .header("x-apitoken-calibration-request-id", request_id)
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         match api_inner(app, "198.51.100.10:12345".parse().unwrap(), request).await {
@@ -4060,7 +4095,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_generation_credits_profile_spend_without_customer_usage_event() {
+    async fn admin_generation_persists_exact_provider_spend_without_customer_usage_event() {
+        const CALIBRATION_REQUEST_ID: &str = "123e4567-e89b-42d3-a456-426614174000";
         let server = start_mock(MockState::with_replies([(
             PROFILE_A_KEY,
             vec![MockReply::json(
@@ -4099,10 +4135,11 @@ mod tests {
             Some(billing.clone()),
         );
 
-        let response = invoke(
+        let response = invoke_exact_calibration(
             app_state(fixture.gateway.clone(), None),
             json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}),
-            false,
+            "profile_a",
+            CALIBRATION_REQUEST_ID,
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -4110,8 +4147,25 @@ mod tests {
 
         let connection = registry::open(&path_string).unwrap();
         assert_eq!(
-            registry::gemini_profile_spend(&connection, "profile_a").unwrap(),
+            registry::provider_calibration_subject_spend(
+                &connection,
+                registry::PROVIDER_GOOGLE,
+                "profile_a",
+            )
+            .unwrap()
+            .spent_nano,
             4
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM provider_turn_calibration_events \
+                     WHERE provider='google' AND subject_id='profile_a' AND request_id=?1",
+                    [CALIBRATION_REQUEST_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
         );
         assert_eq!(
             connection

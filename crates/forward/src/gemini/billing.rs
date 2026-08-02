@@ -2,11 +2,15 @@
 
 use super::config::GeminiModel;
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
+use crate::pricing::EnginePricingRequestId;
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
+
+const CALIBRATION_PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
+const CALIBRATION_REQUEST_ID_HEADER: &str = "x-apitoken-calibration-request-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionError {
@@ -27,11 +31,14 @@ struct Reservation {
 
 pub(crate) struct GeminiAdmission {
     reservation: Option<Reservation>,
+    calibration_request_id: String,
 }
 
 pub(crate) struct PendingGeminiAdmission {
     authz: Authz,
     execution: registry::ExecutionAttempt,
+    calibration_request_id: String,
+    calibration_target: Option<String>,
 }
 
 impl PendingGeminiAdmission {
@@ -39,8 +46,15 @@ impl PendingGeminiAdmission {
         self.authz.affinity_scope()
     }
 
+    pub(crate) fn calibration_target(&self) -> Option<&str> {
+        self.calibration_target.as_deref()
+    }
+
     pub(crate) fn without_reserve(self) -> GeminiAdmission {
-        GeminiAdmission { reservation: None }
+        GeminiAdmission {
+            reservation: None,
+            calibration_request_id: self.calibration_request_id,
+        }
     }
 
     pub(crate) async fn reserve(
@@ -78,7 +92,7 @@ impl PendingGeminiAdmission {
                     return Err(AdmissionError::LowBalance);
                 };
                 effective_output_tokens = affordable_output_tokens;
-                let request_id = crate::upstream::fresh_request_id();
+                let request_id = self.calibration_request_id.clone();
                 match billing
                     .reserve_request_for_execution(
                         &request_id,
@@ -113,7 +127,13 @@ impl PendingGeminiAdmission {
             }
             _ => None,
         };
-        Ok((GeminiAdmission { reservation }, effective_output_tokens))
+        Ok((
+            GeminiAdmission {
+                reservation,
+                calibration_request_id: self.calibration_request_id,
+            },
+            effective_output_tokens,
+        ))
     }
 }
 
@@ -136,46 +156,144 @@ impl GeminiAdmission {
         }
     }
 
-    /// Settle customer money when present and always return the exact official-price provider cost
-    /// for subscription-capacity calibration. Admin admissions have no reservation but still
-    /// produce the same provider spend.
+    /// Settle customer money when present and return one exact immutable provider event. Admin
+    /// admissions have no reservation but keep the same request identity and calibration vector.
     pub(crate) fn settle(
         mut self,
         model: &GeminiModel,
         usage: Option<&metering::GeminiUsage>,
-    ) -> i128 {
+        profile_id: &str,
+    ) -> Option<registry::ProviderTurnCalibrationEvent> {
         let now = pool::now();
-        let real_nano = usage
-            .filter(|usage| !usage.is_zero())
-            .map(|usage| {
-                let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
-                metering::gemini::cost_nanodollars(usage, &prices)
-            })
-            .unwrap_or(0);
-        let Some(mut reservation) = self.reservation.take() else {
-            return real_nano;
-        };
-        let (charge, event) =
-            settled_charge_or_hold(model, usage, reservation.hold, reservation.mult_bp, now);
-        reservation.billing.settle_detached(
-            &reservation.request_id,
-            &reservation.account_id,
-            &reservation.key,
-            reservation.hold,
-            charge,
-            None,
-            event,
-        );
-        reservation.guard.disarm();
-        if charge > 0 {
-            eprintln!(
-                "💵 Gemini request: −{} [{}]",
-                metering::nano_to_usd_string(charge as i128),
-                model.id
+        if let Some(mut reservation) = self.reservation.take() {
+            let (charge, event) =
+                settled_charge_or_hold(model, usage, reservation.hold, reservation.mult_bp, now);
+            reservation.billing.settle_detached(
+                &reservation.request_id,
+                &reservation.account_id,
+                &reservation.key,
+                reservation.hold,
+                charge,
+                None,
+                event,
             );
+            reservation.guard.disarm();
+            if charge > 0 {
+                eprintln!(
+                    "💵 Gemini request: −{} [{}]",
+                    metering::nano_to_usd_string(charge as i128),
+                    model.id
+                );
+            }
         }
-        real_nano
+        usage.filter(|usage| !usage.is_zero()).and_then(|usage| {
+            gemini_calibration_event(&self.calibration_request_id, profile_id, model, usage, now)
+        })
     }
+}
+
+fn gemini_calibration_event(
+    request_id: &str,
+    profile_id: &str,
+    model: &GeminiModel,
+    usage: &metering::GeminiUsage,
+    now: i64,
+) -> Option<registry::ProviderTurnCalibrationEvent> {
+    if request_id.is_empty() || profile_id.is_empty() || usage.is_zero() {
+        return None;
+    }
+    let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
+    let prompt_tokens = usage
+        .input_tokens
+        .saturating_add(usage.audio_input_tokens)
+        .saturating_add(usage.cached_input_tokens)
+        .saturating_add(usage.cached_audio_input_tokens);
+    let long = prompt_tokens > prices.long_context_threshold;
+    let (input_rate, audio_rate, cache_rate, cached_audio_rate, output_rate) = if long {
+        (
+            prices.long_input,
+            prices.long_audio_input,
+            prices.long_cached_input,
+            prices.long_cached_audio_input,
+            prices.long_output,
+        )
+    } else {
+        (
+            prices.input,
+            prices.audio_input,
+            prices.cached_input,
+            prices.cached_audio_input,
+            prices.output,
+        )
+    };
+    let cost = |tokens: u64, rate: i128| i64::try_from(i128::from(tokens).checked_mul(rate)?).ok();
+    let api_input_nanousd = cost(usage.input_tokens, input_rate)?;
+    let api_audio_input_nanousd = cost(usage.audio_input_tokens, audio_rate)?;
+    let api_cache_read_nanousd = cost(usage.cached_input_tokens, cache_rate)?;
+    let api_cached_audio_input_nanousd = cost(usage.cached_audio_input_tokens, cached_audio_rate)?;
+    let api_output_nanousd = cost(usage.output_tokens, output_rate)?;
+    let api_image_output_nanousd = cost(usage.image_output_tokens, prices.image_output)?;
+    let api_search_nanousd = i64::try_from(match prices.search {
+        metering::GeminiSearchBilling::PerQuery { nano } => {
+            i128::from(usage.search_queries).checked_mul(nano)?
+        }
+        metering::GeminiSearchBilling::PerGroundedPrompt { nano } => {
+            i128::from(usage.grounded_search_prompts).checked_mul(nano)?
+        }
+    })
+    .ok()?;
+    let api_total_nanousd = [
+        api_input_nanousd,
+        api_audio_input_nanousd,
+        api_cache_read_nanousd,
+        api_cached_audio_input_nanousd,
+        api_output_nanousd,
+        api_image_output_nanousd,
+        api_search_nanousd,
+    ]
+    .into_iter()
+    .try_fold(0i64, i64::checked_add)?;
+    if api_total_nanousd <= 0 {
+        return None;
+    }
+    Some(registry::ProviderTurnCalibrationEvent {
+        provider: registry::PROVIDER_GOOGLE.to_owned(),
+        request_id: request_id.to_owned(),
+        subject_id: profile_id.to_owned(),
+        model_id: model.id.clone(),
+        service_tier: "standard".to_owned(),
+        inference_geo: "global".to_owned(),
+        tariff_schedule_id: metering::gemini::TARIFF_SCHEDULE_ID.to_owned(),
+        priced_ts: now,
+        completed_at: now,
+        input_tokens: i64::try_from(usage.input_tokens).ok()?,
+        audio_input_tokens: i64::try_from(usage.audio_input_tokens).ok()?,
+        cache_read_tokens: i64::try_from(
+            usage
+                .cached_input_tokens
+                .checked_add(usage.cached_audio_input_tokens)?,
+        )
+        .ok()?,
+        cached_audio_input_tokens: i64::try_from(usage.cached_audio_input_tokens).ok()?,
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: 0,
+        output_tokens: i64::try_from(usage.output_tokens).ok()?,
+        thinking_output_tokens: i64::try_from(usage.thinking_output_tokens).ok()?,
+        image_output_tokens: i64::try_from(usage.image_output_tokens).ok()?,
+        tool_prompt_tokens: i64::try_from(usage.tool_prompt_tokens).ok()?,
+        search_queries: i64::try_from(usage.search_queries).ok()?,
+        grounded_search_prompts: i64::try_from(usage.grounded_search_prompts).ok()?,
+        api_input_nanousd,
+        api_audio_input_nanousd,
+        api_cache_read_nanousd,
+        api_cached_audio_input_nanousd,
+        api_cache_write_5m_nanousd: 0,
+        api_cache_write_1h_nanousd: 0,
+        api_output_nanousd,
+        api_image_output_nanousd,
+        api_search_nanousd,
+        api_total_nanousd,
+    })
 }
 
 fn settled_charge_or_hold(
@@ -232,7 +350,44 @@ pub(crate) async fn begin_admission(
     }
     Metrics::inc(&app.metrics.requests);
 
-    Ok(PendingGeminiAdmission { authz, execution })
+    let calibration_target = if matches!(authz, Authz::Admin { .. }) {
+        match headers.get(CALIBRATION_PROFILE_HEADER) {
+            Some(value) => {
+                let value = value
+                    .to_str()
+                    .map_err(|_| AdmissionError::Unavailable)?
+                    .trim();
+                gemini_credential::validate_profile_id(value)
+                    .map_err(|_| AdmissionError::Unavailable)?;
+                Some(value.to_owned())
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let calibration_request_id = match (
+        calibration_target.as_ref(),
+        headers.get(CALIBRATION_REQUEST_ID_HEADER),
+    ) {
+        (Some(_), Some(value)) => {
+            let value = value.to_str().map_err(|_| AdmissionError::Unavailable)?;
+            EnginePricingRequestId::from_engine_uuid_v4(value)
+                .map(|value| value.as_str().to_owned())
+                .ok_or(AdmissionError::Unavailable)?
+        }
+        (None, Some(_)) if matches!(authz, Authz::Admin { .. }) => {
+            return Err(AdmissionError::Unavailable);
+        }
+        _ => crate::upstream::fresh_request_id(),
+    };
+
+    Ok(PendingGeminiAdmission {
+        authz,
+        execution,
+        calibration_request_id,
+        calibration_target,
+    })
 }
 
 fn reserve_cost(
@@ -529,6 +684,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_exact_target_accepts_only_a_canonical_calibration_request_id() {
+        const ADMIN_KEY: &str = "gemini-calibration-admin";
+        const REQUEST_ID: &str = "123e4567-e89b-42d3-a456-426614174000";
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-calibration-request-id-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing =
+            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
+        let mut app = app_state(Arc::clone(&billing), &path_string);
+        Arc::make_mut(&mut app.cfg).api_keys = vec![ADMIN_KEY.to_owned()];
+        let peer = "198.51.100.10:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-goog-api-key", ADMIN_KEY.parse().unwrap());
+        headers.insert(CALIBRATION_PROFILE_HEADER, "profile_a".parse().unwrap());
+        headers.insert(CALIBRATION_REQUEST_ID_HEADER, REQUEST_ID.parse().unwrap());
+
+        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
+        assert_eq!(pending.calibration_target(), Some("profile_a"));
+        assert_eq!(pending.calibration_request_id, REQUEST_ID);
+
+        headers.insert(
+            CALIBRATION_REQUEST_ID_HEADER,
+            "123e4567-e89b-12d3-a456-426614174000".parse().unwrap(),
+        );
+        assert!(matches!(
+            begin_admission(&app, &headers, &peer).await,
+            Err(AdmissionError::Unavailable)
+        ));
+
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn strict_metered_gemini_fails_before_admission_or_reservation() {
         const ACCOUNT: &str = "strict-gemini-account";
         const KEY: &str = "strict-gemini-key";
@@ -693,10 +889,12 @@ mod tests {
     fn settlement_maps_google_usage_without_losing_audio_cache_thought_or_search() {
         let usage = metering::GeminiUsage {
             input_tokens: 100,
+            tool_prompt_tokens: 5,
             audio_input_tokens: 20,
             cached_input_tokens: 50,
             cached_audio_input_tokens: 10,
             output_tokens: 30,
+            thinking_output_tokens: 10,
             image_output_tokens: 0,
             search_queries: 7,
             grounded_search_prompts: 1,
@@ -714,6 +912,51 @@ mod tests {
         assert_eq!(event.web_search_nano, 35_000_000);
         assert_eq!(event.real_nano, charge);
         assert_eq!(event.priced_ts, 123);
+    }
+
+    #[test]
+    fn calibration_event_preserves_every_gemini_token_and_cost_leg() {
+        let usage = metering::GeminiUsage {
+            input_tokens: 100,
+            tool_prompt_tokens: 5,
+            audio_input_tokens: 20,
+            cached_input_tokens: 50,
+            cached_audio_input_tokens: 10,
+            output_tokens: 30,
+            thinking_output_tokens: 10,
+            image_output_tokens: 0,
+            search_queries: 7,
+            grounded_search_prompts: 1,
+        };
+        let event =
+            gemini_calibration_event("request-1", "opaque-profile", &model(), &usage, 123).unwrap();
+
+        assert_eq!(event.provider, registry::PROVIDER_GOOGLE);
+        assert_eq!(event.subject_id, "opaque-profile");
+        assert_eq!(event.input_tokens, 100);
+        assert_eq!(event.audio_input_tokens, 20);
+        assert_eq!(event.cache_read_tokens, 60);
+        assert_eq!(event.cached_audio_input_tokens, 10);
+        assert_eq!(event.output_tokens, 30);
+        assert_eq!(event.thinking_output_tokens, 10);
+        assert_eq!(event.tool_prompt_tokens, 5);
+        assert_eq!(event.search_queries, 7);
+        assert_eq!(event.grounded_search_prompts, 1);
+        assert_eq!(event.api_input_nanousd, 100 * 300);
+        assert_eq!(event.api_audio_input_nanousd, 20 * 1_000);
+        assert_eq!(event.api_cache_read_nanousd, 50 * 30);
+        assert_eq!(event.api_cached_audio_input_nanousd, 10 * 100);
+        assert_eq!(event.api_output_nanousd, 30 * 2_500);
+        assert_eq!(event.api_search_nanousd, 35_000_000);
+        assert_eq!(
+            event.api_total_nanousd,
+            event.api_input_nanousd
+                + event.api_audio_input_nanousd
+                + event.api_cache_read_nanousd
+                + event.api_cached_audio_input_nanousd
+                + event.api_output_nanousd
+                + event.api_search_nanousd
+        );
     }
 
     #[test]

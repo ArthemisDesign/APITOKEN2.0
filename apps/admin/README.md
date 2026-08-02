@@ -52,10 +52,13 @@ Next.js 16 / React 19 (App Router), порт 3700. Замена однофайл
   и хелпер `isOpenkeys` экспортированы.
 - `src/app/page.tsx` — Сводка (эталонная страница; портируйте остальные по ней).
 - `src/app/subscriptions/codex-capacity-board.tsx` — компактная GPT-сводка shared-plan capacity,
-  token-only вместимости, убывающей `$ / native credit` матрицы и masked-email homes. Raw calibration
-  ledger и ручной workload builder намеренно не выводятся в операторский UI.
+  native-credit/API-$ окон и masked-email homes. Raw calibration, token-capacity и profitability
+  matrices намеренно не выводятся в операторский UI.
 - `src/app/subscriptions/claude-capacity-board.tsx` — только masked-email окна подписок: состояние,
   quota/reset и exact API-$ для 5ч/7д. Backend evidence и тарифный каталог не дублируются в таблицах.
+- `src/app/subscriptions/gemini-capacity-board.tsx` — masked-email профили с provider quota/reset и
+  exact workload API-$ для 5ч/7д. При degraded authority quota остаётся видна, saleable money
+  показывает `обновляем`; профили вне ротации не входят в fleet total.
 - `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` для watchdog.
 
 ## Конвенции страниц

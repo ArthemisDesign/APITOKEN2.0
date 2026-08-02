@@ -33,7 +33,36 @@ function windowQuota(window: GeminiProfileWindow | undefined): { value: number |
   return { value: rounded, label: `${rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%` };
 }
 
-function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: GeminiProfile[]; modelCount: number; nowSec: number }) {
+function GeminiMoney({
+  window,
+  authorityReady,
+  inactive,
+  fiveHour = false,
+}: {
+  window: GeminiProfileWindow | undefined;
+  authorityReady: boolean;
+  inactive: boolean;
+  fiveHour?: boolean;
+}): ReactElement {
+  const cellClass = [
+    authorityReady && !inactive ? "provider-usd-ink" : "provider-capacity-state",
+    fiveHour ? "provider-five-hour-money" : "",
+  ].filter(Boolean).join(" ");
+  if (inactive) {
+    return <td className={cellClass}><b>вне ротации</b><small>не входит в ёмкость</small></td>;
+  }
+  if (!authorityReady) {
+    return <td className={cellClass}><b>обновляем</b><small>quota уже доступна</small></td>;
+  }
+  return (
+    <td className={cellClass}>
+      <b>{moneyOrDash(window?.remaining_nano)}</b>
+      <small>{`из ${moneyOrDash(window?.capacity_nano)}`}</small>
+    </td>
+  );
+}
+
+function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: { profiles: GeminiProfile[]; modelCount: number; nowSec: number; authorityReady: boolean }) {
   return (
     <ProviderSection overline="Подписки" title="Окна по аккаунтам" meta={`${profiles.filter((profile) => profile.authenticated).length}/${profiles.length} auth`}>
       <TableCard>
@@ -51,11 +80,14 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: Gemin
           </thead>
           <tbody>
             {profiles.map((profile, index) => {
+              // Quota/reset are live provider facts and remain useful while the API-$ evidence
+              // FIFO is recovering. Only the saleable money projection is hidden fail closed.
               const fiveWindow = windowFor(profile, "5h");
               const weeklyWindow = windowFor(profile, "weekly");
               const five = windowQuota(fiveWindow);
               const weekly = windowQuota(weeklyWindow);
               const health = geminiProfileStatus(profile, nowSec);
+              const inactive = profile.authenticated !== true || Number(profile.cooling_until ?? 0) > nowSec;
               const availableModels = profile.authenticated
                 ? (profile.model_cooling ?? []).filter((model) => Number(model.cooling_until || 0) <= nowSec).length
                 : 0;
@@ -64,15 +96,9 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec }: { profiles: Gemin
                   <td className="left"><b>{profile.email?.trim() || "—"}</b><small>{profile.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
                   <td><ProviderQuotaMeter usedPercent={five.value} label={five.label} reset={fiveWindow?.resets_at ? duration(Math.max(0, fiveWindow.resets_at - nowSec)) : "—"} /></td>
-                  <td className="provider-usd-ink provider-five-hour-money">
-                    <b>{moneyOrDash(fiveWindow?.remaining_nano)}</b>
-                    <small>{`из ${moneyOrDash(fiveWindow?.capacity_nano)}`}</small>
-                  </td>
+                  <GeminiMoney window={fiveWindow} authorityReady={authorityReady} inactive={inactive} fiveHour />
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={weeklyWindow?.resets_at ? duration(Math.max(0, weeklyWindow.resets_at - nowSec)) : "—"} /></td>
-                  <td className="provider-usd-ink">
-                    <b>{moneyOrDash(weeklyWindow?.remaining_nano)}</b>
-                    <small>{`из ${moneyOrDash(weeklyWindow?.capacity_nano)}`}</small>
-                  </td>
+                  <GeminiMoney window={weeklyWindow} authorityReady={authorityReady} inactive={inactive} />
                   <td><b>{availableModels}/{modelCount}</b></td>
                 </tr>
               );
@@ -93,7 +119,14 @@ export function GeminiCapacityBoard({
   nowMs: number;
   showSummary?: boolean;
 }): ReactElement {
-  const windows = response.window_totals ?? [];
+  const profilePersistenceOk = (response.profiles ?? [])
+    .every((profile) => profile.calibration_persistence_ok !== false);
+  const authorityReady = response.calibration_authority_available === true
+    && response.calibration_delivery?.persistence_ok === true
+    && Number(response.calibration_delivery?.pending_events ?? 0) === 0
+    && Number(response.calibration_delivery?.dropped_events ?? 0) === 0
+    && profilePersistenceOk;
+  const windows = authorityReady ? response.window_totals ?? [] : [];
   const weekly = windows.find((item) => Number(item.window_minutes) === 10_080) ?? windows.at(-1);
   const five = windows.find((item) => Number(item.window_minutes) === 300);
   const usedFive = usedPercentFromNano(five?.capacity_nano, five?.remaining_nano);
@@ -140,6 +173,7 @@ export function GeminiCapacityBoard({
         profiles={response.profiles ?? []}
         modelCount={response.models?.length ?? response.conversion_models?.length ?? 0}
         nowSec={nowSec}
+        authorityReady={authorityReady}
       />
     </div>
   );
