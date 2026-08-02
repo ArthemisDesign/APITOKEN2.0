@@ -1,13 +1,16 @@
+import dataclasses
 import json
 import unittest
 from unittest.mock import patch
 
 from tools.claude_calibration.run_live import (
     CalibrationError,
+    Leg,
     ProfileBudget,
     ProductionSshJsonHttpClient,
     TokenRates,
     attribute_exact_turn,
+    body_for_leg,
     build_coverage_legs,
     canonical_rate_id,
     count_body,
@@ -353,6 +356,25 @@ class CatalogueAndPlanTests(unittest.TestCase):
                 {("5m", "write"), ("5m", "read"), ("1h", "write"), ("1h", "read")},
             )
             self.assertEqual(sum(leg.kind == "web" for leg in pair), 1)
+
+    def test_cache_payload_is_shared_within_a_run_and_unique_between_runs(self):
+        write = Leg(
+            name="cache-write",
+            model="claude-fable-5",
+            tier="standard",
+            kind="cache",
+            cache_ttl="1h",
+            cache_id="coverage-fable-1h",
+            cache_phase="write",
+        )
+        read = dataclasses.replace(write, name="cache-read", cache_phase="read")
+
+        write_body = body_for_leg(write, "run-a")
+        read_body = body_for_leg(read, "run-a")
+        next_run_body = body_for_leg(write, "run-b")
+
+        self.assertEqual(write_body["system"], read_body["system"])
+        self.assertNotEqual(write_body["system"], next_run_body["system"])
 
     def test_profitability_is_sorted_by_observed_api_dollars_per_quota(self):
         rows = model_profitability(

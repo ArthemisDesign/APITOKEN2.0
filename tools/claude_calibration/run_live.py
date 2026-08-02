@@ -417,7 +417,9 @@ def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
     if leg.kind == "cache":
         if leg.cache_ttl not in {"5m", "1h"} or not leg.cache_id:
             raise CalibrationError(f"invalid cache leg: {leg}")
-        cached = filler(max(leg.prompt_words, MIN_CACHE_WORDS), leg.cache_id)
+        cached = filler(
+            max(leg.prompt_words, MIN_CACHE_WORDS), f"{run_id}:{leg.cache_id}"
+        )
         body["system"] = [
             {
                 "type": "text",

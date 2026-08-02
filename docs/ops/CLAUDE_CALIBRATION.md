@@ -34,6 +34,8 @@ immutable `calibration_evidence` и provider quota snapshots.
   не прерывает оставшуюся матрицу, но помечает leg как `coverage_ok=false`, а весь отчёт как incomplete.
 - Между turn одной подписки выдерживается 16 секунд — больше 15-секундного backend probe debounce.
   Это даёт post-turn poll шанс связать exact spend с новой quota fraction.
+- Cache payload включает уникальный `run_id`: write/read одной пары делят один ключ, но новый
+  запуск не может принять ещё живой 5m/1h cache предыдущего прогона за собственный cache write.
 - API key и panel/control key читаются только из env/remote shell и в отчёт не попадают. Email уже
   приходит из `/capacity` в bounded mask без домена.
 - Production-режим отправляет generation через SSH прямо в стабильный loopback router с
