@@ -84,6 +84,12 @@ Code Assist OAuth subscriptions — AEAD-конвертами в атомарн�
 `registry←…←server` и не импортирует `pool`/`forward`/`server`. Владелец-ветка `comp/authbot`,
 локальные правила — `crates/authbot/CLAUDE.md`.
 
+**Новый subscription-провайдер или полная переделка provider calibration** начинается с repo-skill
+`.claude/skills/provider-onboarding/SKILL.md` и канонического
+`docs/engine/PROVIDER_ONBOARDING.md`. Они задают terminal GA gate, Claude/GPT-grade immutable
+calibration, безопасный live-runner и компактный admin control-room; один успешный запрос или
+правдоподобное число в UI этим gate не заменяются.
+
 **Инварианты (проверяй перед коммитом):**
 1. **Прозрачность.** Для клиента протокол = чистый Anthropic API (тело/ответ/стрим/ошибки).
    Единственное, что делаем под капотом — инжект Claude Code identity + oauth-заголовки

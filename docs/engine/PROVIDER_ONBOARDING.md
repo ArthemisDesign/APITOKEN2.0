@@ -345,95 +345,237 @@ policy и operational counter. RAII и restart не оставляют день�
 Upstream/client request ids — audit metadata, а не money identity. Exact replay одного semantic
 event idempotent; другой payload под тем же внутренним id — typed conflict.
 
-## 10. Калибровка — ровно Codex/GPT-уровень
+## 10. Калибровка — Claude/GPT-уровень
 
-API replacement cost и native subscription consumption — два независимых ledger. Нельзя выводить
-credits из API USD или объявлять подписку фиксированным количеством долларов.
+Калибровка — backend evidence system, а не frontend-формула и не разовый benchmark. Её задача —
+ответить, сколько official API replacement cost реально помещается в provider window для
+наблюдённой нагрузки, а при наличии native consumption ещё и сколько native units составляет окно.
+Покупная цена подписки на этот расчёт не влияет.
 
-Каждый billable turn сохраняет immutable event: opaque home, internal request id, canonical model,
-effective tier, provider-reported tier отдельно, schedule epoch, disjoint usage, exact API nanoUSD
-legs и exact native credit legs (если provider их публикует). Insert event и продвижение обоих
-cumulative ledgers — одна transaction. Raw rows никогда не переписываются estimator upgrade.
+Перед реализацией прочитать актуальные:
 
-Provider utilization парсится decimal fixed-point, не float:
+- `crates/forward/src/anthropic_calibration.rs` — Claude estimator без выдуманных native credits;
+- `crates/forward/src/codex/calibration.rs` — GPT dual-ledger estimator и quantisation envelope;
+- `crates/registry/src/provider_calibration.rs` и PostgreSQL parity — immutable turn ledger,
+  cumulative subject spend, observations и CAS;
+- `tools/claude_calibration/{run_live.py,test_run_live.py}` и
+  `docs/ops/CLAUDE_CALIBRATION.md` — безопасный live calibration runner;
+- `docs/engine/CODEX_PROVIDER.md` — native-credit cohorts и разделение API/native economics.
+
+### 10.1 Выбор ledger-модели
+
+Official API replacement cost и native subscription consumption — разные величины:
+
+- **Claude-подобный provider** публикует quota fraction, но не native списание. Хранится exact API
+  nanoUSD ledger, и estimator публикует только realized workload blend. Native credits отсутствуют,
+  а не вычисляются из долларов.
+- **GPT-подобный provider** публикует и fraction, и authoritative native consumption. API nanoUSD и
+  native units идут двумя независимыми cumulative ledgers; один никогда не восстанавливается из
+  другого.
+- **Неизвестная provider unit** сохраняется как отдельное raw evidence до live-доказательства её
+  семантики. `remaining_amount`, provider credits и API tokens нельзя считать взаимозаменяемыми.
+
+API-dollar capacity не равна цене подписки и не обязана совпадать у одинаковых plans, если у них
+разная model/token/tool mix. Сравнивать одинаковые подписки надо по native capacity, если provider
+действительно публикует native consumption; иначе сравнивается только like-for-like observed
+workload с честно указанным blend.
+
+### 10.2 Exact turn evidence и durability
+
+Каждый successful billable turn с authoritative terminal usage создаёт один immutable event:
+
+- provider и opaque subject/profile;
+- внутренний CSPRNG request id, неизменный через все pre-byte retries;
+- canonical requested/served model, accepted effective tier и provider-reported tier отдельно;
+- inference geography/capability modifiers;
+- effective-dated tariff schedule id и priced/completed timestamps;
+- все непересекающиеся usage legs: fresh/audio/cache read/cache write TTL/output/image/search/tool;
+- subset counters (reasoning/thinking/tool prompt) с explicit invariants;
+- exact official API nanoUSD legs и total; authoritative native legs, если они существуют.
+
+Сначала metering проверяет overlap и integer bounds. Затем одна authority transaction вставляет
+event и продвигает cumulative subject ledgers. Exact replay того же payload идемпотентен; другой
+payload под тем же request id — typed conflict. Aggregate/report строится из immutable rows, но
+никогда не заменяет их. Customer discount/multiplier в calibration event не входит.
+
+Между stream finalizer и authority обязателен bounded FIFO:
+
+1. event ставится в очередь до запуска post-turn quota probe;
+2. transient writer failure оставляет head pending, поэтому более поздний turn или free poll не
+   увидит quota относительно устаревшего cumulative spend;
+3. exact ambiguous database reply безопасно переигрывается через immutable idempotency;
+4. semantic replay conflict карантинится, увеличивает dropped и не блокирует весь хвост;
+5. health sweep повторяет flush даже без нового customer traffic; retire и graceful shutdown делают
+   финальный flush;
+6. projection/metrics публикуют `pending_events`, `dropped_events`, `persistence_ok`, authority
+   availability и queue limit. Пока delivery degraded, продаваемая capacity не считается свежей.
+
+### 10.3 Exact quota observations
+
+Provider utilization парсится из decimal string/header в fixed point, не через binary float:
 
 ```text
-SCALE = 100_000_000
-0% = 0
+FRACTION_SCALE = 100_000_000
+0%   = 0
 100% = 100_000_000
 ```
 
-Хранятся immutable observation: exact provider subject/bucket/duration, used fraction, реальная
-measurement resolution, reset evidence, cumulative API spend/native credits, timestamps и version.
-Storage precision не равна provider resolution: целый процент остаётся грубым измерением.
+Вместе со значением хранится реальная resolution endpoint. Например, `40%` имеет resolution
+`1_000_000` fraction units, `12.5%` — `100_000`, `12.125%` — `1_000`. Точность PostgreSQL bigint
+не делает грубый whole-percent snapshot точным.
 
-Для каждого duration/bucket независимо:
+Каждая immutable observation содержит exact subject, authoritative paid plan, provider bucket,
+window kind/duration, reset evidence, used fraction, measurement resolution, observed timestamp,
+cumulative API/native ledgers, source (`response` или free `poll`), source request id и estimator
+version. 5ч, 7д и любые provider-native durations живут независимо. Reads никогда не создают
+observations.
+
+### 10.4 Interval state machine
+
+- Первый snapshot — anchor, не sample.
+- Первый последующий positive fraction movement с positive settled delta уже публикует estimate;
+  не надо ждать произвольное число samples.
+- Response quota, пришедшая раньше settlement, удерживает anchor до ledger catch-up.
+- Повторённое quota-only movement становится `unattributed_fraction_units` и не приписывается
+  gateway расходу.
+- Rollback с настоящим reset начинает новый interval, но не стирает complete history. Rolling reset
+  определяется совместным utilisation rollback и material reset advance; bounded timestamp jitter
+  сам по себе окно не форкает.
+- Возврат к старому high-water после rollback не является новым расходом.
+- Cutover нового native ledger ставит общий новый anchor обоим текущим estimators. Старый API
+  evidence остаётся историей и не трактуется как zero-native spend.
+- Stale/duplicate observations не меняют state. Invalid regression/identity/duration/resolution,
+  negative delta и integer overflow fail closed.
+- При смене estimator version state детерминированно rebuild-ится из immutable observation history;
+  сохранённое старое derived значение не считается authority.
+
+### 10.5 Capacity, uncertainty и maturity
+
+Для каждого subject + plan + bucket + duration отдельно:
 
 ```text
-capacity_nanoUSD = SCALE * Σ(delta_api_spend_nanoUSD) / Σ(delta_used_fraction)
-native_capacity = SCALE * Σ(delta_native_credits) / Σ(delta_used_fraction)
+capacity_nanoUSD = round_half_up(
+  FRACTION_SCALE * Σ(delta_api_spend_nanoUSD) / Σ(delta_used_fraction_units)
+)
+
+native_capacity = round_half_up(
+  FRACTION_SCALE * Σ(delta_native_consumption) / Σ(delta_used_fraction_units)
+)
 ```
 
-Только checked integer/rational math. Запрещены subscription price prior, nominal plan capacity,
-EMA/WLS, float money и скрытый fallback.
+Native формула существует только при authoritative native ledger. Все операции — checked
+integer/i128/rational math. Запрещены subscription-price prior, plan nominal, EMA/WLS, float money и
+скрытый fallback.
 
-Interval rules:
+На каждом interval denominator расширяется на половину resolution обоих endpoints. Low использует
+`delta + uncertainty`, high — `delta - uncertainty`. Если movement не превосходит uncertainty,
+finite high математически не доказан и публикуется `null`, не guessed ceiling. Общий estimate
+использует все complete intervals; envelope консервативно покрывает contributing samples.
+`confidence` — deterministic maturity × envelope stability × quantisation quality, не вероятность.
 
-- первый snapshot — anchor, не sample;
-- учитывается только positive quota movement с settled positive spend/credits;
-- quota, опередившая settlement, ждёт ledger catch-up;
-- reset/rollback ставит новый anchor, но не стирает complete history;
-- rolling reset требует совместного rollback + materially moved reset evidence; timestamp jitter не
-  форкает окно;
-- credit cutover создаёт общий новый anchor; старый API evidence не становится zero-credit;
-- unattributed provider movement публикуется отдельно и не насильно приписывается gateway;
-- estimator version rebuild-ится из raw evidence и сравнивается детерминированно.
+Projection обязана публиковать decimal integer strings: current capacity/remaining, low/high,
+samples, observed fraction/spend/native consumption, resolution, confidence/maturity, last measured,
+reset, source/version, unattributed и persistence state. Cold/unknown — `null`, не `$0`.
+Fresh exact fraction без reset может обновить **current remaining**, но не доказывает следующий
+horizon/reset; stale fraction не должна выглядеть продаваемой.
 
-Публикуются blend/capacity, conservative low/high с quantisation uncertainty, samples, observed
-fraction, confidence/maturity, reset, persistence pending/dropped/conflict/unattributed. Если upper
-bound математически неограничен, он `null`. Cold/unknown — `null`, не ноль.
+### 10.6 Cohorts и одинаковые подписки
 
-### Cohorts
-
-Like-for-like aggregate только exact paid plan + exact native duration/schedule:
+Like-for-like aggregate допустим только для exact paid plan + native bucket/duration/schedule:
 
 ```text
-pooled_native_capacity = SCALE * Σ(native_spend) / Σ(used_fraction)
+pooled_native_capacity = FRACTION_SCALE
+  * Σ(native_consumption)
+  / Σ(used_fraction_units)
 ```
 
-Равные plans получают общую cohort capacity, разные — никогда. Per-home raw evidence сохраняется.
-API-dollar capacity остаётся workload-dependent и не pooled как обещанный номинал подписки.
+Равные plans получают одну shared cohort capacity, применённую к их current unused fraction. Это
+убирает ложный разброс из-за whole-percent rounding и разного числа samples. Разные plans никогда не
+смешиваются; missing plan блокирует cohort aggregation. Per-home raw evidence и bounds сохраняются.
+Workload-dependent API-dollar capacity не превращается в обещанный plan nominal.
 
-## 11. Актуальный GPT capacity board — UI-эталон
+### 10.7 Deterministic test gate
 
-Production commit `ae054c4` заменил старую GPT calibration laboratory компактной операторской
-панелью. Перед новой реализацией обязательно перечитать текущий `origin/master`:
+Estimator/authority tests обязаны покрывать:
 
-- `apps/admin/src/app/subscriptions/codex-capacity-board.tsx`;
-- `apps/admin/src/app/subscriptions/codex-calibration.ts` и tests;
+- cold anchor и первый complete interval;
+- exact fractional evidence и whole-percent unbounded high;
+- каждый допустимый истинный boundary внутри quantisation envelope;
+- mixed model/tier/token/tool workload и disjoint leg totals;
+- quota-before-settlement и repeated unattributed movement;
+- reset, rolling rollover, reset jitter, rollback/high-water и independent durations;
+- native-ledger cutover и legacy incomplete-history rebuild;
+- estimator-version replay from immutable history;
+- exact event replay, changed-payload conflict, CAS/idempotency и SQLite/PostgreSQL parity;
+- transient FIFO failure/recovery, conflict quarantine, overflow/drop health и shutdown flush;
+- remaining/bounds от exact current fraction;
+- invalid identity/window/resolution, negative/regressing cumulative values и overflow fail closed.
+
+### 10.8 Safe live calibration runner
+
+Для нового provider создаётся `tools/<provider>_calibration/run_live.py`, offline tests и ops runbook
+по образцу `tools/claude_calibration`. Runner — часть calibration acceptance, не одноразовый script:
+
+- default dry-run; платный трафик только с `--execute`;
+- integer `--budget-usd`, hard maximum не выше явно разрешённого пользователем, worst-case bound и
+  budget guard для каждого возможного serving profile;
+- exact admin-only target/session без spill/rebind; hard provider wall/cooling/dead остаются
+  непреодолимыми;
+- baseline `pending=0`, `dropped=0`, persistence/authority healthy и authoritative plan;
+- free count/preflight, если provider его имеет; bound включает полный cache miss, max output,
+  server-side tool/search payload и все per-call units;
+- полный model × supported tier × context × token/cache/media/tool matrix; проверенная недоступность
+  записывается, а не скрывается;
+- unique run id и cache salt; только ожидаемые write/read делят cache key;
+- после платного ответа attribution ждёт ровно один новый immutable event с exact request id,
+  profile/model/tier и полным usage/cost vector. Concurrent traffic игнорируется по id, а
+  неоднозначность fail closed;
+- retry только read-only discovery/count/capacity. Платный request после transport ambiguity не
+  повторяется автоматически;
+- report содержит exact spend per profile, before/after fraction по каждому window, records,
+  coverage, unavailable capabilities, profile stops, final capacity и profitability только для
+  positive observed delta.
+
+Runner tests покрывают budget/rebind, exact attribution на фоне чужого traffic, ambiguity,
+cost-vector integrity, capability coverage, alias/global ceiling, cache isolation, safe retry,
+secret containment, incomplete report и profitability ordering. Mock tests доказывают guards;
+реальный provider contract доказывается только controlled run на owned subscriptions.
+
+## 11. Текущий subscriptions control-room — UI-эталон
+
+Основная админка после `ea5a07a` намеренно не является calibration laboratory. Перед добавлением
+провайдера перечитать текущий `origin/master`:
+
+- `apps/admin/src/app/subscriptions/fleet-capacity-overview.tsx`;
+- `apps/admin/src/app/subscriptions/provider-board-ui.tsx`;
+- `apps/admin/src/app/subscriptions/{claude,codex,gemini}-capacity-board.tsx`;
+- `apps/admin/src/app/subscriptions/{provider,codex}-calibration.ts` и tests;
 - `apps/admin/src/app/subscriptions/types.ts`, `page.tsx`, `page.test.tsx`;
-- `docs/product/ADMIN_PANEL.md`.
+- `apps/admin/src/app/globals.css` и `docs/product/ADMIN_PANEL.md`.
 
-Эталонная семантика:
+Эталонная information hierarchy:
 
-1. Верхний strip берёт самое длинное положительное native window и суммирует exact plan cohorts.
-   Если хотя бы одна нужная cohort ещё unknown, общий fleet nominal остаётся unknown, а не
-   заниженной частичной суммой.
-2. Показываются remaining native credits, full fleet capacity, used share и два API-$ сценария:
-   representative Standard и максимально выгодный; оба подписаны model/tier/context/token kind.
-3. Token-capacity table показывает для каждой модели и Standard/Fast, сколько current remaining
-   credits дают fresh, cache read, cache write и output/reasoning tokens.
-4. Profitability сравнивает exact `$ official API-equivalent / native credit` по short/long и всем
-   token kinds, сортирует убыванием через integer cross multiplication.
-5. Home table показывает bounded masked email, plan/runtime state, quota, plan-cohort remaining
-   credits и два API-$ сценария.
-6. Заполнение quota progress bar означает **уже потраченный quota**; рядом exact percent, ниже reset.
-7. UUID, raw ledger, schedules и noisy individual capacity не выводятся в primary UI. Они остаются
-   backend audit/replay evidence.
-8. Placeholder/non-positive windows игнорируются. Cold state говорит `ждём Δquota`/unknown, не
-   подставляет zero/prior.
+1. Сверху единый control-room из provider cards. В каждой только два реально сопоставимых rail
+   (сейчас 5ч/7д): current API-$ remaining / full calibrated window, used share, ready/total
+   identities и measured coverage. У provider с другими durations показываются его настоящие окна,
+   а не искусственные 5ч/7д.
+2. Ниже у каждого provider одна компактная account/profile table. Слева sticky bounded email hint и
+   plan/state; дальше quota/reset и exact remaining/full API-$ по реальным окнам. GPT дополнительно
+   может показывать remaining native credits и два кратких API-$ сценария, рассчитанных через
+   authoritative native/API rate cards.
+3. Filled quota bar означает **уже использованную** долю. Рядом exact display percent, ниже reset.
+4. Dead/non-routable строка говорит `вне ротации` и не входит в capacity. Pending/stale evidence
+   говорит `сохраняется`, `обновляем` или `ждём данные`; `null` не превращается в zero/prior.
+5. UUID, full email, raw ledgers, schedules, transport/proxy, private quota buckets, token-capacity и
+   profitability matrices не выводятся в primary UI. Backend сохраняет их для audit/replay.
+6. Одна identity даёт одну строку независимо от количества models/windows. Money приходит decimal
+   strings и обрабатывается BigInt; model availability остаётся компактным count, если нужна
+   оператору.
+7. Визуальный язык переиспользует `FleetCapacityOverview`, `ProviderSection`,
+   `ProviderQuotaMeter`, `TableCard`, существующие colors/spacing/sticky column и responsive
+   horizontal overflow. Новый provider не создаёт отдельную design system.
 
-Точные конверсии:
+Для GPT остаются точные конверсии, когда они нужны краткому summary/home:
 
 ```text
 token_capacity = remaining_native_nanocredits / native_nanocredits_per_token
@@ -445,11 +587,12 @@ api_value_nanoUSD = round_half_up(
 
 Context/speed multipliers применяются на тех же integer half-up boundaries, что server metering.
 Cache write может использовать native fresh-input credits при отдельной API cache-write цене;
-reasoning может быть subset output. Front обязан зеркалить exact overlap rules.
+reasoning может быть subset output. Front не изобретает rates и зеркалит exact overlap rules только
+для компактных денежных значений, а не разворачивает аналитические matrices.
 
-Для нового провайдера сохраняется этот information hierarchy и визуальный язык, но Standard/Fast,
-token classes, окно и сценарии заменяются реальными provider-native понятиями. Нельзя натянуть
-5h/7d или credits на провайдера, у которого другие units/durations.
+Обязательны SSR/component tests для exact значений, privacy mask, null/stale/dead/pending, coverage,
+ordering, duplicate prevention и explicit absence удалённых analytics. После build выполняется
+visual review desktop/mobile; длинные таблицы не должны ломать page width или терять левую identity.
 
 ## 12. Admin, catalogue и продуктовые поверхности
 
