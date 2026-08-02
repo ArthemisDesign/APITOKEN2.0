@@ -24,6 +24,26 @@ test("accepts authenticated Brevo STARTTLS configuration in production", () => {
 
   assert.equal(environment.SMTP_PORT, 587);
   assert.equal(environment.SMTP_SECURE, false);
+  assert.equal(environment.FUNDING_NORMALIZATION_BATCH_SIZE, 25);
+  assert.equal(environment.FUNDING_NORMALIZATION_INVENTORY_PAGE_SIZE, 500);
+  assert.equal(environment.FUNDING_NORMALIZATION_LEASE_MS, 300_000);
+});
+
+test("bounds funding normalization work and leases", () => {
+  assert.throws(
+    () => validateEnvironment({
+      ...productionEnvironment,
+      FUNDING_NORMALIZATION_BATCH_SIZE: "501",
+    }),
+    /less than or equal to 500/,
+  );
+  assert.throws(
+    () => validateEnvironment({
+      ...productionEnvironment,
+      FUNDING_NORMALIZATION_LEASE_MS: "29999",
+    }),
+    /greater than or equal to 30000/,
+  );
 });
 
 test("requires STARTTLS for explicit-TLS SMTP in production", () => {

@@ -79,6 +79,14 @@ runtime-capability-gated and `meter_only`. The migration does not seed a policy,
 activate a release; dependent readers and writers are delivered only after this schema SHA has
 green `deploy/migration` and `deploy/watchdog` in production.
 
+The Stage 6 worker consumer claims only explicitly staged `normalize_funding` target-release jobs.
+It performs two stable full cursor scans, excludes exact `meter_only` service inventory, then plans
+and applies a bounded number of balance accounts per slice with durable leases and account-local
+retries. Every POST is preceded by a fresh GET and uses only that response's source/target digests.
+Parent confirmation requires a final repeat scan, exact queue coverage and the immutable target
+funding manifest; this lane never moves the release head. Operational details and bounded env
+defaults are in `docs/commerce/MULTI_DISCOUNT_STAGE6.md`.
+
 This application checkpoint does not seed production policies or enable the engine's strict runtime.
 A legacy scalar job is drained only after its account has a non-null desired full-policy version and
 digest, so empty version streams cannot alter current users. Application provisioning is now

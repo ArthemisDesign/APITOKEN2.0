@@ -30,8 +30,11 @@ Release-v2 producer публикует immutable policy/release/recovery prepare
 nullable head и account-local funding normalization plan/apply; activation mutation намеренно пока
 отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
 exact producer SHA `packages/contracts` валидирует strict release/funding wire shape, а
-`packages/engine-client` является единственным typed plan/apply consumer; bounded application job
-подключается отдельным consumer checkpoint и не заменяется наличием transport-методов.
+`packages/engine-client` является единственным typed transport consumer. `apps/worker` через
+`packages/db/src/funding-normalization-jobs.ts` реализует отдельный bounded/resumable Stage 6
+application consumer: exhaustive cursor scans, exact service exclusion, fresh GET перед каждым
+account-local POST и full-coverage parent confirmation. Наличие transport-методов или runner без
+явно staged target job не запускает backfill и не активирует release.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

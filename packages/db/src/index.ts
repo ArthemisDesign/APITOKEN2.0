@@ -16,6 +16,7 @@ export * from "./payments.js";
 export * from "./pricing.js";
 export * from "./pricing-policy-write.js";
 export * from "./pricing-control-jobs.js";
+export * from "./funding-normalization-jobs.js";
 export * from "./multi-discount-backfill.js";
 export * from "./multi-discount-catalog-gen2.js";
 export * from "./multi-discount-stage8-evidence.js";

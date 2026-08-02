@@ -523,8 +523,10 @@ control-plane lock; data-plane reserve/settlement never takes it.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release and funding-normalization wire schemas and `packages/engine-client` gained typed
 prepare/read plus account-local normalization plan/apply methods. The client surface still has no
-activation method. The bounded full-inventory application job is intentionally a separate consumer
-checkpoint; merely having a typed client does not materialize any account.
+activation method. The bounded full-inventory application job is a separate `apps/worker` consumer:
+it runs only for an explicitly staged target-release job, re-GETs exact plan digests before every
+POST, excludes service `meter_only` accounts and confirms only complete funding-manifest coverage.
+Merely having a typed client or a deployed worker does not materialize any account.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

@@ -1,9 +1,9 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer и strict TypeScript transport consumer реализованы. Commerce expand-схема
-для durable blocked/retry evidence подготовлена migration-first; bounded orchestration job
-подключается только после зелёного migration SHA. Stage 6 не требует maintenance window, остановки
-money writers, нуля всех reservations или ручной проверки аккаунтов.
+Статус: engine producer, strict TypeScript transport consumer и bounded commerce orchestration
+реализованы. Worker lane остаётся dormant, пока Stage 5 materializer явно не создаст exact
+`normalize_funding` parent job для target release. Stage 6 не требует maintenance window, остановки
+money writers, нуля всех reservations или ручной проверки аккаунтов и ничего не активирует.
 
 ## Source policy
 
@@ -124,6 +124,54 @@ Apply resumable и idempotent: exact account replay не создаёт дубл
 перепланируется без отката уже завершённых аккаунтов. Глобальный partial-result допустим во время
 backfill, потому что active release остаётся legacy; Stage 9 требует 100% readiness.
 
+## Bounded orchestration
+
+`stageFundingNormalizationJobV2` принимает только exact generation/content digest существующего
+target release и идемпотентно создаёт один `pricing_release_control_jobs_v2` с
+`job_kind=normalize_funding`. Payload identity связывает engine/service inventory и ожидаемый
+funding manifest. Worker не ищет release для автоматического запуска: отсутствие явно staged job
+означает отсутствие любых normalization POST.
+
+На каждом resumable slice worker:
+
+1. восстанавливает только истёкшие parent/account leases;
+2. дважды исчерпывает engine cursor с bounded page size и отклоняет duplicate/regressing cursor;
+3. сравнивает stable identity `(account_id,status,multiplier_bp)`. Live
+   `balance/reserved/spent` и funding head намеренно не входят в coverage digest: money writers
+   продолжают работать и сериализуются с apply account-local lock'ом;
+4. отдельно сверяет canonical service inventory. Все service accounts исключаются из funding
+   queue, потому что их release assignment — `meter_only` без funding generation;
+5. получает и применяет не больше configured account batch. Перед каждым POST выполняется новый
+   GET, и POST получает только exact digests из этого ответа;
+6. делает финальный полный inventory scan и повторную coverage-проверку перед confirmation.
+
+`active_legacy_reservation` возвращает только свой account в `retry`. Остальные typed blockers
+сохраняются как `blocker` с exact `source`, `source_state_digest` и `blockers[]`; `conflict` также
+остаётся fail closed. `stale` перепланируется. `normalized`, `stored` и `unchanged` фиксируются как
+`ready`. Expired leases не теряют plan identity, а bounded retry не откатывает уже ready accounts.
+
+Parent становится `confirmed` только при одновременном выполнении всех условий:
+
+- final engine identity digest и service inventory digest совпадают с immutable target plan;
+- queue содержит ровно все balance accounts и ни одного service/missing/extra account;
+- каждая строка `ready`, имеет positive funding generation и
+  `applied_funding_digest=target_funding_digest` без blockers;
+- canonical funding manifest ровно совпадает с `funding_manifest_digest` target release.
+
+Новый account после этого evidence инвалидирует следующий Stage 8 inventory digest; Stage 9 ещё
+раз проверяет полное покрытие под global release lock непосредственно перед single-head CAS.
+Runner не обновляет `pricing_release_assignments_v2`, release head, balances или pricing policy.
+
+Bounded параметры worker имеют безопасные defaults и жёсткие пределы:
+
+```text
+FUNDING_NORMALIZATION_POLL_MS=5000
+FUNDING_NORMALIZATION_BATCH_SIZE=25              # 1..500 account operations per slice
+FUNDING_NORMALIZATION_INVENTORY_PAGE_SIZE=500    # 1..500 rows per cursor page
+FUNDING_NORMALIZATION_LEASE_MS=300000             # 30s..1h, heartbeat на cursor pages
+FUNDING_NORMALIZATION_RETRY_MS=15000              # 1s..1h
+```
+
 ## In-flight contract
 
 Ноль всех reservations не требуется. До Stage 8 должны естественно завершиться только
@@ -152,6 +200,8 @@ Durable queue хранит точные `source_state_digest`, `source`, `blocke
 
 ## Completion evidence
 
-Stage 6 завершён, когда каждый account target release имеет exact funding generation, все новые
-writers dual-compatible, legacy-format inflight count равен нулю и full replay возвращает только
-`unchanged`. Evidence digest входит в Stage 8 и target release.
+Stage 6 завершён, когда confirmed parent доказывает exact full-inventory funding manifest, каждый
+balance account target release имеет exact funding generation, все новые writers dual-compatible,
+legacy-format inflight count равен нулю и full replay возвращает только `unchanged`. Evidence digest
+входит в Stage 8 и target release. Наличие runner-кода без staged/confirmed production job
+завершением не считается.
