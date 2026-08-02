@@ -488,6 +488,129 @@ impl Store {
         Ok(bound_job)
     }
 
+    /// Atomically replace a claimed Gemini OAuth phase with the next one while rotating the exact
+    /// seller-job generation. The legacy bootstrap callback cannot create an Antigravity consent
+    /// for a job that was paused, cancelled or replaced while Google was processing the first code.
+    pub fn advance_gemini_oauth(
+        &self,
+        previous: &GeminiOAuthSession,
+        state: &str,
+        sealed_payload: &str,
+        expires_ts: i64,
+        proxy_order_id: i64,
+    ) -> Result<Option<SellerJobRef>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        let persisted = tx
+            .query_row(
+                "SELECT chat_id,job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_oauth_sessions
+                 WHERE state=?1 AND status='processing' AND expires_ts>=?2",
+                rusqlite::params![previous.state, now()],
+                |row| {
+                    let kind: String = row.get(1)?;
+                    let offer_id: i64 = row.get(2)?;
+                    let batch_id: i64 = row.get(3)?;
+                    let item_no: i64 = row.get(4)?;
+                    let token: String = row.get(5)?;
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        (!kind.is_empty()).then(|| SellerJobRef {
+                            kind,
+                            offer_id,
+                            batch_id,
+                            item_no,
+                            token,
+                        }),
+                    ))
+                },
+            )
+            .optional()?;
+        if persisted.as_ref() != Some(&(previous.chat_id, previous.job.clone())) {
+            tx.rollback()?;
+            bail!("claimed Gemini OAuth phase changed before transition");
+        }
+
+        let mut next_job = previous.job.clone();
+        if let Some(current) = next_job.as_mut() {
+            let changed = tx.execute(
+                "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?7
+                 WHERE seller_chat=?1 AND kind=?2 AND offer_id=?3 AND batch_id=?4
+                   AND item_no=?5 AND job_token=?6 AND phase='processing'",
+                rusqlite::params![
+                    previous.chat_id,
+                    current.kind,
+                    current.offer_id,
+                    current.batch_id,
+                    current.item_no,
+                    current.token,
+                    now()
+                ],
+            )?;
+            if changed != 1 {
+                tx.rollback()?;
+                bail!("seller job changed before Gemini OAuth phase transition");
+            }
+            current.token = tx.query_row(
+                "SELECT job_token FROM seller_jobs WHERE seller_chat=?1",
+                rusqlite::params![previous.chat_id],
+                |row| row.get(0),
+            )?;
+            let changed = tx.execute(
+                "UPDATE users SET want='gm_wait',hproxy='',hproxy_order=?1 WHERE chat_id=?2
+                   AND EXISTS (
+                       SELECT 1 FROM seller_jobs
+                       WHERE seller_chat=?2 AND kind=?3 AND offer_id=?4 AND batch_id=?5
+                         AND item_no=?6 AND job_token=?7 AND phase='processing')",
+                rusqlite::params![
+                    proxy_order_id,
+                    previous.chat_id,
+                    current.kind,
+                    current.offer_id,
+                    current.batch_id,
+                    current.item_no,
+                    current.token
+                ],
+            )?;
+            if changed != 1 {
+                tx.rollback()?;
+                bail!("seller state changed before Gemini OAuth phase transition");
+            }
+        }
+
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![previous.chat_id],
+        )?;
+        let stored_job = next_job.clone().unwrap_or(SellerJobRef {
+            kind: String::new(),
+            offer_id: 0,
+            batch_id: 0,
+            item_no: 0,
+            token: String::new(),
+        });
+        tx.execute(
+            "INSERT INTO gemini_oauth_sessions(
+                state,chat_id,sealed_payload,expires_ts,status,ts,
+                job_kind,job_offer_id,job_batch_id,job_item_no,job_token)
+             VALUES(?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![
+                state,
+                previous.chat_id,
+                sealed_payload,
+                expires_ts,
+                now(),
+                stored_job.kind,
+                stored_job.offer_id,
+                stored_job.batch_id,
+                stored_job.item_no,
+                stored_job.token
+            ],
+        )?;
+        tx.commit()?;
+        Ok(next_job)
+    }
+
     /// Claim an OAuth callback exactly once. A repeated callback cannot exchange the same code or
     /// race a second credential publication.
     pub fn claim_gemini_oauth(&self, state: &str) -> Result<Option<GeminiOAuthSession>> {
@@ -549,6 +672,46 @@ impl Store {
                  FROM gemini_oauth_sessions
                  WHERE chat_id=?1 AND status='pending' AND expires_ts>=?2",
                 rusqlite::params![chat_id, now()],
+                |row| {
+                    let kind: String = row.get(4)?;
+                    let offer_id: i64 = row.get(5)?;
+                    let batch_id: i64 = row.get(6)?;
+                    let item_no: i64 = row.get(7)?;
+                    let token: String = row.get(8)?;
+                    Ok(GeminiOAuthSession {
+                        state: row.get(0)?,
+                        chat_id: row.get(1)?,
+                        sealed_payload: row.get(2)?,
+                        expires_ts: row.get(3)?,
+                        job: (!kind.is_empty()).then(|| SellerJobRef {
+                            kind,
+                            offer_id,
+                            batch_id,
+                            item_no,
+                            token,
+                        }),
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Read one still-pending phase for form rendering without claiming its one-use capability.
+    /// The caller receives only the sealed payload and opens it inside `gemini_oauth`.
+    pub fn pending_gemini_session_by_state(
+        &self,
+        state: &str,
+    ) -> Result<Option<GeminiOAuthSession>> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state,chat_id,sealed_payload,expires_ts,
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_oauth_sessions
+                 WHERE state=?1 AND status='pending' AND expires_ts>=?2",
+                rusqlite::params![state, now()],
                 |row| {
                     let kind: String = row.get(4)?;
                     let offer_id: i64 = row.get(5)?;
@@ -3512,16 +3675,31 @@ mod tests {
         let expected_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
         let session = s.claim_gemini_oauth("bound-state").unwrap().unwrap();
         assert_eq!(session.job, Some(expected_job.clone()));
+        let final_job = s
+            .advance_gemini_oauth(&session, "final-state", "final-sealed", now() + 60, 77)
+            .unwrap()
+            .unwrap();
+        assert_ne!(final_job.token, expected_job.token);
+        assert!(s.claim_gemini_oauth("bound-state").unwrap().is_none());
+        let final_session = s
+            .pending_gemini_session_by_state("final-state")
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_session.job, Some(final_job.clone()));
+        assert_eq!(s.get_user(111).unwrap().unwrap().hproxy_order, 77);
+        assert!(s
+            .advance_gemini_oauth(&session, "stale-final-state", "stale-sealed", now() + 60, 0,)
+            .is_err());
         // Шаг назад — единственный механизм возврата: он же ротирует поколение, после чего
         // повтор с тем же поколением и завершение работы по нему обязаны провалиться.
         assert!(s
-            .rewind_handoff_step(111, &expected_job, "gm_wait", "gm_gproxy", Some(("", 0)))
+            .rewind_handoff_step(111, &final_job, "gm_wait", "gm_gproxy", Some(("", 77)))
             .unwrap()
             .is_some());
         let retry_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
-        assert_ne!(retry_job.token, expected_job.token);
+        assert_ne!(retry_job.token, final_job.token);
         assert!(s
-            .rewind_handoff_step(111, &expected_job, "gm_wait", "gm_gproxy", Some(("", 0)))
+            .rewind_handoff_step(111, &final_job, "gm_wait", "gm_gproxy", Some(("", 77)))
             .unwrap()
             .is_none());
         assert!(!s.finish_offer_job(111, offer, &expected_job.token).unwrap());

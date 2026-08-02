@@ -22,7 +22,7 @@
 | Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
 | Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
 | Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Шаги продавца | прокси → email → `code#state` | прокси → email → одноразовый код | прокси → Antigravity OAuth → полный localhost callback URL в HTTPS-форму |
+| Шаги продавца | прокси → email → `code#state` | прокси → email → одноразовый код | прокси → Gemini CLI OAuth/code → Antigravity OAuth/localhost URL |
 | Шаг назад | `ho_code→ho_email→ho_proxy` | `cx_wait→cx_email→cx_proxy` | `gm_wait→gm_ready→gm_gproxy` |
 | Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
 
@@ -95,37 +95,52 @@ seller lock освобождается, response становится `cancelled
    + keyring — вся его часть контракта.
 
 **Инварианты Gemini-ветки (критично):**
-1. OAuth использует публичный installed-application client id/secret Antigravity и фиксированный
-   redirect `http://localhost:51121/oauth-callback`. Продавец не создаёт Cloud
-   OAuth-клиент и не включает private API в своём проекте. Всегда `state` + PKCE S256; а
-   client id/secret и redirect, использованные при старте, seal-ятся
-   вместе с транзакцией, чтобы token exchange не мог сменить identity.
-2. Token exchange, userinfo, `loadCodeAssist` и повторяемый до `done` onboarding идут через тот же source
+1. Новый handoff — две отдельные client-bound OAuth-транзакции, а не конвертация токена. Сначала
+   публичный installed-app client официального Gemini CLI с redirect
+   `https://codeassist.google.com/authcode` выполняет `FULL_ELIGIBILITY_CHECK` и при необходимости
+   `onboardUser`; его токены никогда не публикуются. Затем новый `state` + PKCE S256 использует
+   публичный Antigravity client и фиксированный redirect
+   `http://localhost:51121/oauth-callback`. Google subject, canonical proxy и seller-job generation
+   обязаны совпасть; legacy proof переносится только внутри state-bound AEAD второй фазы. Продавец
+   не создаёт OAuth client и не включает private API в своём проекте.
+2. Token exchange, userinfo, оба варианта `loadCodeAssist` и onboarding идут через тот же source
    `node_transport.cjs`, что runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64, per-account
-   authenticated CONNECT и `env_clear`. HTTP identity pinned к Antigravity 2.2.1: control plane
+   authenticated CONNECT и `env_clear`. Legacy-фаза сохраняет `IDE_UNSPECIFIED`/`GEMINI` metadata
+   и `FULL_ELIGIBILITY_CHECK`, form-order `google-auth-library` 10.9.0 и пятизаголовочный gaxios
+   wire (`accept`, authorization, content-type даже на operation GET, Gemini CLI user-agent,
+   `x-goog-api-client`); финальная identity pinned к Antigravity 2.2.1: control plane
    использует `antigravity/hub/2.2.1 darwin/arm64`, onboarding добавляет
    `google-api-nodejs-client/10.3.0`, token exchange — `Go-http-client/2.0`; userinfo идёт через
    attested Node-internal Undici
    dispatcher (его headers, pooling и ClientHello нельзя подменять gaxios-профилем). Proxy/bearer/form
    существуют в zeroizing IPC buffers; Rust TLS и ambient proxy не участвуют. `loadCodeAssist`
    передаёт `ideType=ANTIGRAVITY`, а onboarding — Antigravity ide name/version metadata.
-3. OAuth code/tokens никогда не идут через Telegram. После Google redirect страница localhost может
-   не открыться; продавец копирует полный URL из адресной строки и POST-ит его через no-store
-   HTTPS-форму Auth Bot. Parser проверяет exact HTTP localhost:51121 path, callback state и
-   отсутствие credentials/fragment/OAuth error. Короткоживущий
+3. OAuth codes/tokens никогда не идут через Telegram. На legacy-фазе продавец копирует показанный
+   Google одноразовый Gemini CLI code в no-store HTTPS-форму. На Antigravity-фазе localhost может
+   не открыться; продавец копирует полный URL из адресной строки в отдельную форму. Parser проверяет
+   exact HTTP localhost:51121 path, callback state и отсутствие credentials/fragment/OAuth error.
+   Короткоживущий
    proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
    form/callback claim одноразовый.
-4. До публикации проверяются verified userinfo и `loadCodeAssist`; принимаются только известные
+4. До публикации обе фазы проверяют verified userinfo и фактический Code Assist tier/project;
+   принимаются только известные
    Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
    старых callback и фактической проверки плана после OAuth.
+   После финального tier check выполняется ровно один non-streaming
+   `gemini-2.5-flash-lite:generateContent` через production-pinned sandbox host и runtime headers;
+   нужны 2xx, wrapped candidate и ненулевая authoritative `usageMetadata`. 503, malformed response,
+   missing usage или ambiguous transport не публикуют credential и не завершают выплату; paid
+   generation автоматически не повторяется. `countTokens`, quota и `loadCodeAssist` не являются
+   acceptance.
 5. Google subject — quota identity: два РАЗНЫХ subject не могут делить профиль, а один subject
-   всегда занимает ровно один профиль. Поэтому повторная авторизация того же subject — не дубликат,
-   а **переавторизация**: конверт заменяется на месте, id профиля и roster не меняются. Отказ здесь
-   был бы разрушительным — Google аннулирует прежний refresh-token уже на экране согласия, то есть
-   ДО нашей проверки, и отвергнутая публикация оставляла бы в roster заведомо мёртвый credential.
-   Смена proxy и обратный переход на legacy-клиент по-прежнему fail-closed. Ссылка авторизации
+   всегда занимает ровно один профиль. Legacy preflight распознаёт уже опубликованный Antigravity
+   subject ДО второго consent и отклоняет дубликат, не аннулируя живой refresh-token. Существующий
+   legacy-профиль может мигрировать в Antigravity только с тем же subject/proxy; id профиля, roster и
+   IPRoyal lifecycle сохраняются. In-flight Antigravity callback старой версии остаётся совместимым
+   и при exact same subject/proxy может атомарно заменить материал на месте, потому что его consent
+   уже мог аннулировать старый token. Смена proxy и обратный переход на legacy fail-closed. Ссылка авторизации
    всегда несёт `prompt=select_account consent`: одного `consent` мало — он подтверждает уже
    залогиненный аккаунт без экрана выбора, и продавец, делающий позиции batch подряд в одном
    профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
@@ -133,13 +148,20 @@ seller lock освобождается, response становится `cancelled
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
-   envelope. Startup rewrap переводит старые envelopes на active kid, сохраняя online key rotation.
+   envelope. После generation acceptance и ожидания publication-lock exact seller-job generation
+   проверяется повторно непосредственно перед записью; SQLite и roster не образуют общей транзакции,
+   поэтому это минимизирует неизбежное cross-store окно. Startup rewrap переводит старые envelopes
+   на active kid, сохраняя online key rotation.
    Ручная смена egress выполняется только локальными operator-командами `gemini-proxy-stage`,
    `gemini-proxy-commit` и `gemini-proxy-rollback` при остановленном Auth Bot: proxy читается из
    stdin, старый envelope остаётся зашифрованным rollback, а runtime подхватывает atomic replace без
    рестарта. Telegram, argv и вывод команды proxy не содержат. Stage не принимает proxy другого
    профиля и сбрасывает IPRoyal order в `0`, потому что внешний proxy бот продлевать не может.
-7. После неуспешного OAuth retry сохраняет exact egress для buyer/IPRoyal и seller-proxy. В
+7. После неуспешного OAuth retry сохраняет exact egress для buyer/IPRoyal и seller-proxy. Любая
+   ошибка второй фазы начинает новую двухфазную generation; legacy token/project нигде не остаются.
+   `transport_unavailable`, control-plane `temporary_upstream` и final
+   `generation_unavailable` — разные outcomes, поэтому исправный proxy больше не обвиняется
+   сообщением за Google HTTP/malformed response или generation 503. В
    seller-proxy работе команда `повторить` создаёт новую PKCE generation с сохранённым proxy, а новое
    proxy-сообщение явно заменяет его. До инструкции по созданию аккаунта выполняется только локальная
    канонизация URL: speculative CONNECT запрещён, потому что residential gateway может ответить

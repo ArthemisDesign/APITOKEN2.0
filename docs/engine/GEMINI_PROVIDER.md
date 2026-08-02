@@ -50,55 +50,89 @@ limits and available models can change and are not contractual capacity for this
 
 ## OAuth and publication flow
 
-Auth Bot mirrors Antigravity's installed-application OAuth flow with PKCE. It uses Antigravity's
-public OAuth client identity and fixed loopback redirect; it does not derive a Gemini Developer API
-key from the subscription. Sellers do not create OAuth clients or operator Cloud projects. The
-result is an OAuth credential for the internal Cloud Code/Antigravity gateway.
+Auth Bot uses two separate installed-application OAuth transactions with PKCE. OAuth codes and
+refresh tokens are client-bound, so this is deliberately not described or implemented as token
+conversion: the official Gemini CLI client initializes Code Assist first, then the Antigravity
+client receives its own consent for the same Google subject. No Gemini Developer API key is derived
+from the subscription, and sellers do not create OAuth clients or operator Cloud projects.
+
+Regression baseline (sanitized production audit, 2026-08-02): the first working subscription was
+initialized by the Gemini CLI flow introduced in `c805f6f` and wire-calibrated in `b385278`, then
+migrated to Antigravity by `241fce3`/`9a475f0`; the resulting profile has 93 completed runtime turns.
+The second profile used direct Antigravity onboarding, passed OAuth/quota discovery, but its first
+real generation stopped before execution with HTTP 503 and zero completed turns. Therefore the
+automated flow preserves the calibrated Gemini CLI form order, headers, metadata,
+`FULL_ELIGIBILITY_CHECK` and operation polling as a regression-tested bootstrap, while the final
+Antigravity transaction remains a fresh client-bound consent rather than token conversion.
 
 1. The seller submits only the account's dedicated proxy. When Auth Bot issues the proxy, OAuth
    starts immediately after issuance.
-2. Auth Bot creates 256-bit `state`, a PKCE S256 verifier/challenge and a twenty-minute SQLite
-   session.
-3. The PKCE verifier, proxy, Antigravity installed-app client material and fixed exchange redirect are
-   immediately moved into one XChaCha20-Poly1305 envelope bound to `state`; no plaintext value is
-   retained in the Gemini OAuth row or SQLite WAL.
-4. Telegram receives two non-secret links: Google's authorization URL and the Auth Bot completion
-   form. The seller opens Google in the account's browser profile through the same dedicated proxy;
-   the server cannot enforce the browser's egress.
-5. Google redirects the browser to `http://localhost:51121/oauth-callback`. No local listener is
-   required: a browser connection error is expected. The seller copies the complete callback URL
-   from the address bar and pastes it into the no-store form at
-   `https://gemini.api.apitoken.sale/oauth/callback?state=…`. The parser accepts only the exact HTTP
-   localhost host, port and path, rejects credentials/fragments/OAuth errors and requires callback
-   `state` to match the hidden form state. The form POST keeps the code out of Telegram and access
-   log query strings. A raw authorization code remains accepted only for in-flight compatibility.
-6. Auth Bot claims `state` exactly once and exchanges the code server-to-server through the account
-   proxy with the same PKCE verifier, official client identity and Google redirect used at start.
-7. Auth Bot validates verified Google userinfo, calls Antigravity `loadCodeAssist`, completes
-   `onboardUser` when required, and re-loads the actual tier/project. Control-plane calls fall back
-   only among the three reviewed Cloud Code hosts.
-8. Unknown/free Google subjects and reused proxy URLs fail closed. Re-authorizing the same
-   Antigravity subject through the same canonical proxy atomically replaces its sealed OAuth
-   material in place: Google may invalidate the previous refresh token before Auth Bot can detect
-   that the subject already exists, so rejecting the fresh token would destroy the live profile.
-   A legacy Gemini CLI credential may likewise migrate one-way to Antigravity for the exact same
-   subject and proxy. Both paths preserve the opaque profile id and roster bytes; reverse migration
-   and an OAuth-time proxy mismatch remain errors. Proxy URLs are canonicalized before comparison,
-   so spelling differences such as an explicit default port or equivalent percent-encoded
-   credentials cannot place one egress identity into rotation twice. Paid-plan admission matches
-   reviewed tier labels exactly rather than accepting a future tier merely because its name contains
-   `pro` or `ultra`. A valid paid profile is sealed and published atomically; the runtime discovers
-   it on the health loop without restart and refreshes tokens with the official per-profile OAuth
-   material.
+2. Auth Bot creates a 256-bit `state`, PKCE S256 verifier/challenge and twenty-minute legacy phase.
+   The verifier, canonical proxy, Gemini CLI public client material and fixed
+   `https://codeassist.google.com/authcode` redirect are sealed immediately in an
+   XChaCha20-Poly1305 envelope bound to `state`; SQLite and its WAL retain no plaintext secret.
+3. The seller opens the Google link in the prepared browser profile, then copies the one-use Gemini
+   CLI code from Google's page into the no-store Auth Bot HTTPS form. Telegram receives only the
+   two non-secret links. The server forces every server-side request through the dedicated proxy;
+   browser egress remains a seller-enforced invariant.
+4. Auth Bot claims the legacy `state` once, exchanges the code with the same client/redirect and
+   performs verified userinfo, legacy `loadCodeAssist` with `FULL_ELIGIBILITY_CHECK`, and official
+   `onboardUser` operation polling when needed. The resulting legacy tokens never enter a roster.
+5. Paid-plan admission uses the actual tier/project and exact reviewed labels. Before issuing the
+   Antigravity consent, Auth Bot scans the encrypted roster: an existing Antigravity subject is
+   rejected while its live refresh token is still safe; a legacy profile may continue only through
+   its exact subject, canonical proxy and IPRoyal identity. Unknown/free tiers and reused egress fail
+   closed.
+6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
+   phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
+   are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement
+   cannot move an old callback into the new phase.
+7. The seller completes Antigravity consent in the same Google account/browser/proxy. Google
+   redirects to `http://localhost:51121/oauth-callback`; no local listener is required. The seller
+   pastes the complete callback URL into the second HTTPS form. Its parser accepts only the exact
+   HTTP localhost host, port and path, rejects credentials/fragments/OAuth errors and requires the
+   callback `state` to match the hidden form state.
+8. Auth Bot exchanges the final code through the same proxy, verifies that Google subject exactly
+   matches the legacy proof, and resolves the Antigravity tier/project. Control-plane calls fall
+   back only among the three reviewed Cloud Code hosts.
+9. Admission sends exactly one tiny non-streaming `gemini-2.5-flash-lite` generation to the
+   production-pinned sandbox endpoint using the runtime Antigravity wrapper and headers. It requires
+   HTTP 2xx, a wrapped candidate and non-zero authoritative `usageMetadata`. `503`, malformed JSON,
+   missing usage and ambiguous transport return `generation_unavailable`; the paid request is never
+   replayed automatically, no credential is published and seller payout does not complete.
+10. Only after generation acceptance is the final Antigravity credential sealed and published
+   atomically. After waiting for the publication lock, Auth Bot re-checks the exact seller-job
+   generation immediately before the roster write; a cancelled, rewound or replaced job fails
+   closed. A legacy roster profile migrates one-way in place, preserving opaque id, roster bytes and
+   IPRoyal lifecycle; reverse migration or proxy mismatch fails. The runtime discovers the profile
+   on its health loop without restart. A direct Antigravity callback created before this rollout
+   remains decodable for deployment compatibility and retains the former in-place reauthorization
+   rule because its already-issued consent may have invalidated the old token.
 
-Auth Bot's token exchange, userinfo, `loadCodeAssist` and onboarding use the same bounded Node helper
-source as the runtime through the seller's dedicated authenticated proxy. The wire identity is
-pinned to reviewed Antigravity 2.2.1: runtime/control calls use
+Auth Bot's two token exchanges, userinfo, both `loadCodeAssist` variants, onboarding and generation
+acceptance use the same bounded Node helper source as the runtime through the seller's dedicated
+authenticated proxy. Legacy calls retain the reviewed Gemini CLI metadata; the final wire identity
+is pinned to Antigravity 2.2.1: runtime/control calls use
 `antigravity/hub/2.2.1 darwin/arm64`, onboarding appends
 `google-api-nodejs-client/10.3.0`, and token exchange uses `Go-http-client/2.0`. There is no ambient
 proxy path or arbitrary OAuth client.
 
-Required OAuth scopes:
+Failure attribution is three-way and secret-free: exhausted CONNECT/TLS recovery is
+`transport_unavailable`; an established transport followed by temporary HTTP or malformed Google
+control-plane data is `temporary_upstream`; a final generation 503, malformed/missing usage response
+or ambiguous one-shot generation transport is `generation_unavailable`. Only the first class is
+evidence about the transport path, and even it does not by itself prove that the proxy allocation is
+dead. Telegram never asks the seller to replace a proxy for the latter two classes.
+
+Legacy bootstrap scopes:
+
+```text
+https://www.googleapis.com/auth/cloud-platform
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+```
+
+Final Antigravity scopes:
 
 ```text
 https://www.googleapis.com/auth/cloud-platform
@@ -108,8 +142,8 @@ https://www.googleapis.com/auth/cclog
 https://www.googleapis.com/auth/experimentsandconfigs
 ```
 
-The installed-app client id/secret is public upstream Antigravity application metadata, not an
-operator secret. Account access tokens, refresh tokens, PKCE verifiers, identity, proxy credentials
+Both installed-app client id/secret pairs are public upstream Google application metadata, not
+operator secrets. Account access tokens, refresh tokens, PKCE verifiers, identity, proxy credentials
 and encrypted-roster keys remain secret and must never enter the repository, command line, systemd
 unit, Telegram or logs.
 
