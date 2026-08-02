@@ -67,6 +67,7 @@ context'ов. Правила размещения и обновления — в
 - [FULL_AUDIT_M.md](audits/FULL_AUDIT_M.md) — полный аудит: движок, бэкенд, фронтенд, связи.
 - [TESTS_AUDIT.md](audits/TESTS_AUDIT.md) — аудит полноты и достаточности тестов.
 - [2026-08-01-AGENT_DOCS_AUDIT.md](audits/2026-08-01-AGENT_DOCS_AUDIT.md) — аудит системы координации агентов (AGENTS.md, DEPENDENCIES.md, чеклисты, docs-gate).
+- [2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md](audits/2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md) — production-readiness аудит unified router: resource/auth, protocol parity, catalog, OpenCode и zero-downtime delivery.
 
 ## Рядом с кодом (не переносить сюда)
 
