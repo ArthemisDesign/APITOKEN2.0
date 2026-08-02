@@ -580,6 +580,7 @@ mod tests {
     use futures_util::StreamExt;
     use pool::Reserve;
     use registry::Sub;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const ACCOUNT_ID: &str = "acct";
@@ -587,6 +588,7 @@ mod tests {
     const EMAIL: &str = "subscription@example.test";
     const TOPUP_NANO: i64 = 1_000_000_000;
     const HOLD_NANO: i64 = 500_000_000;
+    static BILL_DB_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     struct BilledSse {
         delivered: Vec<u8>,
@@ -596,12 +598,13 @@ mod tests {
     }
 
     async fn bill_sse(sse: &[u8], drop_after_first_chunk: bool) -> BilledSse {
-        let unique = SystemTime::now()
+        let unique_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let unique_sequence = BILL_DB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "claude-api-tee-meter-{}-{unique}.sqlite",
+            "claude-api-tee-meter-{}-{unique_time}-{unique_sequence}.sqlite",
             std::process::id(),
         ));
         let billing = Arc::new(
