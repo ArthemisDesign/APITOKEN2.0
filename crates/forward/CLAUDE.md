@@ -88,7 +88,11 @@ full-hold, дропнутый TeeMeter на 2xx-пути, fallback-сборки 
 сигнал на локальных pre-request отказах, сохраняют только точный авторитетный сигнал при
 пересборке не-2xx плоскости и явно снимают его с ошибок разбора/сборки уже после 2xx, когда
 charge возможен. Gemini Messages skin следует тому же правилу для своей поверхности. Router
-обязан снимать заголовок с транзитных ответов (см. crates/router/CLAUDE.md).
+обязан снимать заголовок с транзитных ответов (см. crates/router/CLAUDE.md). Публичный
+`is_exact_not_started_response` — единый predicate для router-proof и server telemetry: только
+non-2xx с ровно одним exact lowercase значением. `crates/server` увеличивает bounded per-plane
+counter только для ответа, который fixed plane действительно вернула наружу; malformed duplicate
+header и 2xx не считаются.
 
 **Execution-group capability (этап 6.3):** `x-apitoken-execution-group` и
 `x-apitoken-attempt` — только router→plane. Caddy удаляет клиентские значения на каждом публичном

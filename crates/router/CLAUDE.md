@@ -81,6 +81,9 @@
 - `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
   ranks и проверенный context window. Manifest валидируется при старте; отсутствующие live
   members пропускаются, полностью пустой preset не исполняется.
+- `metrics.rs` — compile-bounded `claude_router_fallback_total`: ровно 18 series для трёх
+  namespace и двух доказательств continuation. Инкремент происходит один раз непосредственно
+  перед следующей попыткой; model/credential/group/request identity в labels запрещены.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.
 - `messages.rs` — тонкий Anthropic-shaped entrypoint для `POST /v1/messages` и
   `POST /v1/messages/count_tokens`: namespaced `openai/*` уходит на Codex plane
@@ -104,12 +107,15 @@
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.
+  Loopback-only `GET /metrics` не требует отдельного секрета; Caddy не включает его в публичный
+  allowlist, а Prometheus скрейпит `127.0.0.1:8798` напрямую.
 
 ## Проверка
 
 ```bash
 cargo test -p claude-router   # unit + интеграционные (mock-плоскости на TCP)
 cargo build                   # весь workspace зелёный до коммита
+cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load + metric deltas
 ```
 
 Интеграционные тесты поднимают mock-плоскости на реальных loopback-сокетах и
@@ -123,7 +129,18 @@ retry matrix (`not_started`, 429, 4xx/5xx, ConnectionRefused/timeout), rewrite
 per-attempt body, provider preferences, preset publication/expansion, mixed-version policy
 failover, terminal `401`, strict subset/empty `403`, Fast после policy filtering и обязательное
 снятие внутреннего заголовка. Живой PostgreSQL и подписки не нужны.
-Полная цепочка router→engine→mock upstream — `tests/universal_chat_smoke.sh`.
+Полная цепочка router→engine→mock upstream — `tests/universal_chat_smoke.sh`. Отдельный
+`tests/router_fallback_smoke.sh` поднимает три deterministic TCP-плоскости и доказывает
+parallel `not_started → success`, provider+strict-policy fencing до attempt 1, terminal unsigned
+503, last-good catalog + killed origin → `ConnectionRefused` и точные дельты 18-series метрики.
+
+После выката telemetry-пакета на точный GREEN SHA live canary запускается
+`tests/router_fallback_live_canary.sh` с уже существующим `APITOKEN_API_KEY` и явным
+`APITOKEN_CANARY_EXPECTED_SHA`. Wrapper исполняет отдельный router-процесс из реально запущенного
+immutable production release, передаёт ключ только по SSH/curl stdin и всегда удаляет временные
+shim/response-файлы. Он fail closed требует strict subset и две разрешённые provider-плоскости,
+проверяет signed/unsigned/ConnectionRefused matrix и отсутствие роста double-winner, balance
+divergence и settlement backlog. До зелёного результата unit-флаг не меняется.
 
 ## Эксплуатация
 

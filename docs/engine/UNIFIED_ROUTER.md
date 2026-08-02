@@ -1,12 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5, фазы 6.1–6.3 и policy/presets 6.4a–6.4b реализованы;
-telemetry/GA пакет 6.4c идёт при выключенном fallback.**
+Статус: **этапы 1–5, фазы 6.1–6.3, policy/presets 6.4a–6.4b и telemetry/mock-load
+часть 6.4c реализованы при выключенном fallback.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаются telemetry и canary/GA фазы 6.4c. Документ фиксирует целевую
+До полного OpenRouter-grade routing остаются post-deploy live canary и отдельный GA-флаг 6.4c. Документ фиксирует целевую
 картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
 обновляет этот документ и смежные инструкции в том же коммите.
 
@@ -25,7 +25,7 @@ dispatch на три плоскости. `/v1/messages/count_tokens` испол�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b готовы default-off; telemetry/canary 6.4c остаются |
+| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b + telemetry/mock-load 6.4c готовы default-off; live canary и unit-флаг остаются |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -287,6 +287,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
   Caddy снимает клиентские capability headers, router инжектирует одну CSPRNG UUIDv4 на explicit
   fallback chain, плоскости валидируют и durable сохраняют пару, registry loser-settlement
   принудительно делает zero-charge/full refund. Любой loser увеличивает always-zero incident metric.
+- **Фаза 6.4:** provider preferences/presets и engine-owned strict policy фильтруют цепочку до
+  attempt 1. Router и fixed planes экспортируют bounded fallback/not-started counters; Prometheus
+  скрейпит их отдельно и связывает с double-winner, balance divergence и settlement detectors.
+  Mock-load зелёный, но production unit остаётся default-off до live canary точного deployed SHA.
 - **Ambiguous disconnect → никакого автоматического повтора на другой модели.** Клиент
   получает честную ошибку и решает сам; молчаливый retry на timeout — путь к двойному
   списанию.
@@ -330,7 +334,7 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `crates/registry/src/pricing.rs` (versioned catalog, provider switches, account policy).
    Фазы 6.1–6.3 реализовали внутренний `not_started`, default-off serial fallback по
    `models` и durable execution group/единственный billable winner;
-   policy/presets/GA telemetry остаются фазой 6.4. Детальный контракт —
+   policy/presets и telemetry/mock-load реализованы в фазе 6.4; live canary и unit-флаг остаются. Детальный контракт —
    `docs/engine/ROUTING_FENCING.md`.
 
 ## Существующая база (что переиспользуем)
@@ -767,8 +771,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    такой инцидент. Контракт фазы 6.4 зафиксирован 2026-08-02: одинаковый authenticated
    policy-preflight на плоскостях реализован producer-first, а router consumer 6.4b добавил strict
    `provider` preferences, version-controlled presets/ranks и fail-closed policy filtering до
-   attempt 1; последним пакетом идут router/plane
-   metrics, Prometheus, load/live canary и отдельное включение production-флага. Полная схема,
+   attempt 1. Router/plane metrics, Prometheus rules/runbooks, exact-delta mock-load и
+   credential-safe live runner реализованы default-off; после их выката идут live canary exact
+   deployed binary и отдельное включение production-флага. Полная схема,
    fail-closed mixed-version semantics и rollout-порядок — `docs/engine/ROUTING_FENCING.md`
    §5.1–5.3. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в

@@ -1,9 +1,9 @@
 # ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
 
-Статус: фазы 6.1–6.3 и policy/presets consumer 6.4b реализованы; контракт фазы 6.4
-зафиксирован 2026-08-02, telemetry/GA пакет 6.4c ещё не выполнен. Serial fallback остаётся
-выключенным по умолчанию до завершения telemetry canary. Реализация следует этому документу;
-отклонение требует его пересмотра.
+Статус: фазы 6.1–6.3, policy/presets consumer 6.4b и telemetry/mock-load часть 6.4c
+реализованы; контракт фазы 6.4 зафиксирован 2026-08-02. Serial fallback остаётся выключенным по
+умолчанию: впереди post-deploy live canary на точном GREEN SHA и отдельный production unit-флаг.
+Реализация следует этому документу; отклонение требует его пересмотра.
 
 Дата фактбазы: 2026-08-02 (повторный аудит production после фаз 6.1–6.3).
 Ссылки вида `proxy.rs:1880` — `crates/forward/src/proxy.rs`, если не указано иное.
@@ -298,6 +298,11 @@ single-model запросы без этих полей сохраняют byte-i
 
 ### 5.3. GA rollout (контракт 6.4c)
 
+Telemetry и reproducible harness реализованы default-off: router/plane counters, loopback scrape,
+recording/alert rules с runbooks, concurrent mock-load и stdin-only live-canary runner. Сам live
+canary выполняется только после выката этого пакета; его результат и production flag не
+предвосхищаются документацией.
+
 Router экспортирует `/metrics` без авторизации на loopback. Fallback continuation увеличивает
 `claude_router_fallback_total{from_namespace,to_namespace,reason}` ровно один раз перед
 следующим attempt; множества labels compile-fixed (3×3 namespaces, два reason). Плоскость
@@ -320,7 +325,11 @@ backlog. Production-флаг включается только последни�
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
   а фаза 6.3 уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
   `ExecutionGroupDoubleWinner` срабатывает на любом росте за 5 минут; runbook —
-  `docs/ops/MONITORING.md#execution-group-double-winner`.
+  `docs/ops/MONITORING.md#executiongroupdoublewinner`. `RouterMetricsDown` закрывает потерю
+  отдельного scrape, `RouterFallbackRateHigh` — устойчивую скорость >1 continuation/s, а
+  `RouterConnectionRefusedFallback` — любой transport-proof за 5 минут. Recording rules
+  `claude_router:fallback_rate5m` и `claude_api:execution_not_started_rate5m` оставляют только
+  bounded namespace/plane dimensions.
 - Групповые лейблы на существующих денежных рядах НЕ добавляются (кардинальность); после
   фазы 6.3 group_id допустим только в structured-логах попыток, не в metric labels.
 - Детекторы регрессий: `apitoken_balance_divergence_nano` (существующий),
@@ -334,6 +343,12 @@ backlog. Production-флаг включается только последни�
   доказывают refund сигнальной попытки. Фаза 6.3 покрыта SQLite и real-PostgreSQL matrix:
   reverse settlement order, zero-settlement, exact loser replay, strict funding refund и ровно
   один charge на group; forward-тесты отдельно проверяют durable group/attempt для всех плоскостей.
+- Верификация 6.4c: `tests/router_fallback_smoke.sh` даёт concurrent exact-signal load, strict и
+  provider filtering до execution, unsigned-terminal и cached-catalog ConnectionRefused cases с
+  точными counter deltas. `tests/router_fallback_live_canary.sh` запускает ровно deployed router
+  binary отдельным процессом, использует только существующий stdin-delivered key и повторяет matrix
+  на реальных secondary attempts; GA-флаг запрещён до чистых double-winner/divergence/backlog
+  доказательств.
 
 ## 7. Фазировка (каждая фаза — отдельный пакет через merge-конвейер)
 
@@ -351,12 +366,13 @@ backlog. Production-флаг включается только последни�
 3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
    insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
-4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b РЕАЛИЗОВАНЫ 2026-08-02:**
+4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b И TELEMETRY/MOCK-LOAD 6.4c
+   РЕАЛИЗОВАНЫ 2026-08-02:**
    producer-first policy preflight одинаково доступен на всех fixed planes и покрыт bounded
    validation, auth-lattice и real-SQLite strict-policy тестами; router consumer применяет
-   preferences/presets и точный policy subset до attempt 1. Остаются metrics, Prometheus,
-   canary/load и отдельное включение production-флага (6.4c). До завершения всех
-   пакетов fallback остаётся default-off.
+   preferences/presets и точный policy subset до attempt 1. Counters, Prometheus alerts/runbooks,
+   mock-load и credential-safe live runner готовы. Остаются post-deploy live canary и отдельное
+   включение production-флага; до них fallback остаётся default-off.
 
 ## 8. Отвергнутые варианты
 

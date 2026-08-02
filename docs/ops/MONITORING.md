@@ -13,9 +13,9 @@ database state only. Grafana users are auto-provisioned as viewers.
 
 - Host: CPU, memory, disk, inodes, clock, processes, systemd units, timers, and restart loops.
 - Ingress: Caddy per-host request metrics plus TLS and HTTP synthetic probes.
-- Engine: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work,
-  Claude/Codex/Gemini pool health, settlement
-  backlog, and expired leases.
+- Engine and router: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work,
+  Claude/Codex/Gemini pool health, serial fallback continuations and their bounded reasons,
+  exact per-plane `not_started` proofs, settlement backlog, and expired leases.
 - Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state.
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.
@@ -245,6 +245,40 @@ then inspect why the router received `not_started` or `ConnectionRefused` for th
 despite a later nonzero settlement. Confirm all four public vhosts still strip
 `x-apitoken-execution-group` and `x-apitoken-attempt`. Do not clear the winner row, replay money,
 or enable a broader fallback canary until the execution-state boundary is fixed and verified.
+
+## RouterMetricsDown
+
+Keep fallback disabled while telemetry is unavailable. Check `claude-router.service`, confirm
+`127.0.0.1:8798` is listening, and run `curl --fail http://127.0.0.1:8798/metrics` on the production
+host. The endpoint is intentionally unauthenticated because both the process and Prometheus are
+loopback-only; do not expose `/metrics` through Caddy or add a credential to request labels.
+
+If the endpoint works, inspect the `claude-router` target in Prometheus and reload the provisioned
+configuration through the normal watchdog path. The generic `MonitoringTargetDown` rule excludes
+this one job to avoid duplicate pages; this alert is its complete scrape-health coverage.
+
+## RouterFallbackRateHigh
+
+Compare `claude_router:fallback_rate5m` with
+`claude_api:execution_not_started_rate5m` by plane and the bounded router attempt logs for the same
+window. A high rate can be legitimate during a provider capacity event, but it can also show a bad
+preset, stale catalog entry, or a plane returning `not_started` too broadly. Preserve labels only at
+namespace/plane granularity; never copy credentials, model IDs, request IDs, or execution groups into
+Prometheus.
+
+Before increasing canary traffic, confirm `ExecutionGroupDoubleWinner` stayed zero,
+`apitoken_balance_divergence_nano` is zero, and settlement/lease alerts are clear. If the rate is
+unexpected after GA, roll back `CLAUDE_ROUTER_FALLBACK_ENABLED` through a reviewed unit commit; do
+not weaken the retry proof or remove the expand-only contract.
+
+## RouterConnectionRefusedFallback
+
+Use the `from_namespace` and `to_namespace` labels to identify the failed stable origin and the lane
+that accepted the continuation. Check the corresponding loopback listener (`8790`, `8792`, or
+`8794`), provider systemd slots, and the latest watchdog deployment before restarting anything.
+`ConnectionRefused` is the only transport error that proves the request was not accepted; timeouts,
+resets, DNS errors, and unsigned 5xx must remain terminal and must never be added to this alert as
+safe fallback reasons.
 
 ## AnthropicCalibrationPersistenceFailed
 

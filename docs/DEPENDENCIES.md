@@ -120,6 +120,17 @@ Control API движка использует только на чтение. С
   credential/policy и без импорта `forward`/`registry`. Публичные provider Caddy-vhost'ы не включают
   `/internal/*` в allowlist; stable origins 8790/8792/8794 доступны router'у по loopback. Контракт и
   mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
+- **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
+  производит unauthenticated loopback `/metrics` на 8798 с ровно 18
+  `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy
+  allowlist этот путь не пропускает. Каждая fixed `crates/server` plane через существующий
+  authenticated `/metrics` производит три bounded
+  `claude_api_execution_not_started_total{plane}` series, считая только exact response реально
+  возвращённой plane. Потребитель — `observability/prometheus/prometheus.yml` и recording/alert
+  rules; Alertmanager/operator используют runbooks `RouterMetricsDown`, `RouterFallbackRateHigh`,
+  `RouterConnectionRefusedFallback`, а money-regression detectors остаются отдельными. Model,
+  credential, account, group и request identity через эту связь не проходят. Контракт —
+  `docs/engine/ROUTING_FENCING.md` §§5.3–6 и `docs/ops/MONITORING.md`.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
 
 ## 3. Модели и цены — где ещё зеркалятся
@@ -186,7 +197,7 @@ monitoring-collector, candidate-validator, backup, fingerprint · host-bootstrap
 
 ### Мониторинг — петля «метрика → алерт → runbook»
 
-`observability/prometheus/rules/{application,operations}.yml` (~59 алертов) — у каждого
+`observability/prometheus/rules/{application,operations}.yml` (~64 алерта) — у каждого
 аннотация `runbook: 'docs/ops/MONITORING.md#<alert>'`, и секция `## <Alert>` обязана
 существовать в `docs/ops/MONITORING.md`. Согласованность механически проверяет
 `deploy/monitoring-config.test.sh`, который host прогоняет при валидации каждого

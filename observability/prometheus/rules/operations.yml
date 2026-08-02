@@ -2,7 +2,7 @@ groups:
   - name: monitoring-self-health
     rules:
       - alert: MonitoringTargetDown
-        expr: up == 0
+        expr: up{job!="claude-router"} == 0
         for: 2m
         labels:
           severity: critical

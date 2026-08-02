@@ -391,6 +391,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     object.remove("provider");
     let surface_label = surface.label(parts.uri.path());
     let attempt_count = attempts.len();
+    let attempt_lanes: Vec<_> = attempts.iter().map(|attempt| attempt.lane).collect();
     let group_id = if attempt_count > 1 {
         match fresh_execution_group_id() {
             Ok(group_id) => Some(group_id),
@@ -440,7 +441,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             status.as_u16(),
             retry.map_or("none", proxy::RetryReason::as_str),
         );
-        if retry.is_some() {
+        if let Some(reason) = retry {
+            state
+                .metrics
+                .fallback(attempt.lane, attempt_lanes[index + 1], reason);
             continue;
         }
         return result.response;

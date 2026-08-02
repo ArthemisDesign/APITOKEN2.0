@@ -291,6 +291,9 @@ pub struct Metrics {
     pub gemini_backend_failures: AtomicU64,
     pub gemini_malformed_responses: AtomicU64,
     pub gemini_stream_start_failures: AtomicU64,
+    /// Exact `not_started` proofs actually returned by each fixed provider plane. The array is
+    /// compile-bounded to Anthropic/OpenAI/Gemini and never carries request or credential labels.
+    execution_not_started: [AtomicU64; 3],
     pricing_bridge: PricingBridgeMetrics,
     pricing_shadow: PricingShadowMetrics,
     strict_pricing: StrictPricingMetrics,
@@ -320,6 +323,18 @@ impl Metrics {
     #[inline]
     pub fn get(c: &AtomicU64) -> u64 {
         c.load(Ordering::Relaxed)
+    }
+
+    pub fn execution_not_started(&self, plane: crate::ProviderMode) {
+        if let Some(index) = execution_plane_index(plane) {
+            Self::inc(&self.execution_not_started[index]);
+        }
+    }
+
+    pub fn execution_not_started_count(&self, plane: crate::ProviderMode) -> u64 {
+        execution_plane_index(plane)
+            .map(|index| Self::get(&self.execution_not_started[index]))
+            .unwrap_or(0)
     }
 
     pub fn pricing_bridge_selected(&self, provider: SnapshotProvider) {
@@ -668,6 +683,15 @@ impl Metrics {
     }
 }
 
+fn execution_plane_index(plane: crate::ProviderMode) -> Option<usize> {
+    match plane {
+        crate::ProviderMode::Anthropic => Some(0),
+        crate::ProviderMode::OpenAi => Some(1),
+        crate::ProviderMode::Gemini => Some(2),
+        crate::ProviderMode::Combined => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,6 +765,33 @@ mod tests {
                 SnapshotProvider::OpenAi,
                 PricingBridgeFallbackReason::NotSampled,
             ),
+            0
+        );
+    }
+
+    #[test]
+    fn execution_not_started_counters_are_fixed_to_provider_planes() {
+        let metrics = Metrics::new();
+        metrics.execution_not_started(crate::ProviderMode::Anthropic);
+        metrics.execution_not_started(crate::ProviderMode::OpenAi);
+        metrics.execution_not_started(crate::ProviderMode::OpenAi);
+        metrics.execution_not_started(crate::ProviderMode::Gemini);
+        metrics.execution_not_started(crate::ProviderMode::Combined);
+
+        assert_eq!(
+            metrics.execution_not_started_count(crate::ProviderMode::Anthropic),
+            1
+        );
+        assert_eq!(
+            metrics.execution_not_started_count(crate::ProviderMode::OpenAi),
+            2
+        );
+        assert_eq!(
+            metrics.execution_not_started_count(crate::ProviderMode::Gemini),
+            1
+        );
+        assert_eq!(
+            metrics.execution_not_started_count(crate::ProviderMode::Combined),
             0
         );
     }

@@ -24,7 +24,10 @@
   а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.
   `/metrics` экспортирует registry incident-tripwire
   `claude_api_execution_group_double_winner_total`; метрика должна оставаться нулевой, а
-  transactional winner correctness не зависит от процесса или Prometheus.
+  transactional winner correctness не зависит от процесса или Prometheus. Там же fixed-cardinality
+  `claude_api_execution_not_started_total{plane}` считает только exact single `not_started` на
+  non-2xx ответе, фактически возвращённом конкретной Anthropic/OpenAI/Gemini plane; Combined bridge
+  атрибутирует старый Caddy OpenAI marker, иначе Anthropic.
   Одинаковый на всех fixed planes `POST /internal/router/policy/preflight` — loopback-only
   producer-контракт фазы router 6.4a: принимает до 32 catalog-кандидатов, авторизует customer/admin
   credential и возвращает только ordered allow-list без account/policy/pricing identity.
@@ -155,8 +158,9 @@
   authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
 - `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes,
   fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini и fleet-only
-  Anthropic exact-capacity/coverage/delivery gauges. Raw client IDs, prompt content, account IDs,
-  model IDs и subscription IDs в Redis/метрики не попадают.
+  Anthropic exact-capacity/coverage/delivery gauges, а также три execution-not-started series.
+  Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity и
+  subscription IDs в Redis/метрики не попадают.
 - Stage 9 runtime delivery не активирует production bindings и не применяет account assignments.
   Production Stage 5/6 data application, Stage 8 evidence и strict activation остаются
   заблокированы до reviewed B2B/service/OpenKeys assignment matrix.

@@ -65,8 +65,8 @@ pub use pricing::{
     ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{
-    authed, client_keys, control_authed, forward, readonly_authed, resolve_client_key,
-    resolve_client_keys, TerminalErrorReason,
+    authed, client_keys, control_authed, forward, is_exact_not_started_response,
+    readonly_authed, resolve_client_key, resolve_client_keys, TerminalErrorReason,
 };
 pub use state::{AppState, ProviderMode};
 pub use upstream::{

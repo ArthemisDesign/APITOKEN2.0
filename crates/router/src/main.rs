@@ -15,6 +15,7 @@ mod chat;
 mod config;
 mod error;
 mod messages;
+mod metrics;
 mod policy;
 mod presets;
 mod proxy;
@@ -26,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Request, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -35,6 +36,7 @@ use reqwest::Client;
 use catalog::{Catalog, PlaneOrigins};
 use config::Config;
 use error::Lane;
+use metrics::RouterMetrics;
 
 /// Состояние процесса: HTTP-клиент и кэш каталога. Денег, ключей, очередей и
 // лимитов здесь нет — всё это остаётся в плоскостях.
@@ -42,6 +44,7 @@ pub struct AppState {
     cfg: Config,
     client: Client,
     catalog: Catalog,
+    metrics: RouterMetrics,
 }
 
 /// HTTP-клиент плоскостей. Только loopback HTTP: TLS не нужен. Redirect не
@@ -69,6 +72,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/health", get(proxy::health))
         .route("/live", get(proxy::health))
         .route("/ready", get(proxy::ready))
+        .route("/metrics", get(router_metrics))
         .route("/balance", get(proxy_anthropic))
         .route("/v1/messages", post(messages::proxy_messages))
         .route(
@@ -86,6 +90,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         .fallback(error_fallback)
         .method_not_allowed_fallback(method_not_allowed_fallback)
         .with_state(state)
+}
+
+/// Loopback-only Prometheus endpoint. The router has no metrics credential because the listener is
+/// already constrained to loopback and Prometheus scrapes it directly on the host.
+async fn router_metrics(State(state): State<Arc<AppState>>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.render(),
+    )
+        .into_response()
 }
 
 async fn proxy_anthropic(State(state): State<Arc<AppState>>, req: Request) -> Response {
@@ -223,7 +237,12 @@ async fn shutdown_signal() {
 async fn main() -> anyhow::Result<()> {
     presets::validate_at_startup()?;
     let cfg = Config::from_env()?;
-    let state = Arc::new(AppState { client: build_client()?, catalog: Catalog::new(), cfg });
+    let state = Arc::new(AppState {
+        client: build_client()?,
+        catalog: Catalog::new(),
+        metrics: RouterMetrics::new(),
+        cfg,
+    });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!(
@@ -355,6 +374,7 @@ mod tests {
             },
             client,
             catalog: Catalog::with_ttl(ttl),
+            metrics: RouterMetrics::new(),
         }))
     }
 
@@ -1026,6 +1046,23 @@ mod tests {
         assert!(first.get("models").is_none());
         assert!(second.get("models").is_none());
         assert!(bodies_g.lock().unwrap().is_empty());
+
+        let metrics = reqwest::get(format!("{router}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(metrics.contains(
+            "claude_router_fallback_total{from_namespace=\"anthropic\",to_namespace=\"openai\",reason=\"not_started\"} 1"
+        ));
+        assert_eq!(
+            metrics
+                .lines()
+                .filter(|line| line.starts_with("claude_router_fallback_total{"))
+                .count(),
+            18
+        );
     }
 
     #[tokio::test]
@@ -1118,6 +1155,15 @@ mod tests {
             assert!(response.headers().get("x-apitoken-execution-state").is_none());
             assert_eq!(bodies_a.lock().unwrap().len(), 1);
             assert!(bodies_o.lock().unwrap().is_empty());
+            let metrics = reqwest::get(format!("{router}/metrics"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(metrics.contains(
+                "claude_router_fallback_total{from_namespace=\"anthropic\",to_namespace=\"openai\",reason=\"not_started\"} 0"
+            ));
         }
     }
 
@@ -1180,6 +1226,15 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(bodies_o.lock().unwrap().len(), 1);
+        let metrics = reqwest::get(format!("{router}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(metrics.contains(
+            "claude_router_fallback_total{from_namespace=\"anthropic\",to_namespace=\"openai\",reason=\"connect_refused\"} 1"
+        ));
 
         // A deterministic timeout after TCP connect but before response headers
         // is ambiguous: the plane has received the body, so no second attempt.

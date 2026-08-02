@@ -118,6 +118,48 @@ groups:
           description: 'The durable winner fence refunded a later provider execution. Investigate the started/not-started boundary before enabling more fallback traffic.'
           runbook: 'docs/ops/MONITORING.md#executiongroupdoublewinner'
 
+  # Serial continuation is off by default. These rules make the canary and eventual GA observable
+  # without adding request, model, credential or execution-group identities to Prometheus labels.
+  - name: router-fallback
+    rules:
+      - record: claude_router:fallback_rate5m
+        expr: sum(rate(claude_router_fallback_total[5m]))
+
+      - record: claude_api:execution_not_started_rate5m
+        expr: sum by (plane) (rate(claude_api_execution_not_started_total[5m]))
+
+      - alert: RouterMetricsDown
+        expr: up{job="claude-router"} == 0 or absent(up{job="claude-router"})
+        for: 2m
+        labels:
+          severity: critical
+          component: claude-router
+        annotations:
+          summary: 'Prometheus cannot scrape the unified router'
+          description: 'The loopback claude-router metrics target is down or missing, so fallback canary evidence is unavailable.'
+          runbook: 'docs/ops/MONITORING.md#routermetricsdown'
+
+      - alert: RouterFallbackRateHigh
+        expr: claude_router:fallback_rate5m > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'The unified router is starting more than one fallback per second'
+          description: 'Serial continuation has remained above one new fallback attempt per second for ten minutes.'
+          runbook: 'docs/ops/MONITORING.md#routerfallbackratehigh'
+
+      - alert: RouterConnectionRefusedFallback
+        expr: increase(claude_router_fallback_total{reason="connect_refused"}[5m]) > 0
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'A provider origin refused a router connection'
+          description: 'At least one serial continuation was started after a stable provider origin returned TCP ConnectionRefused.'
+          runbook: 'docs/ops/MONITORING.md#routerconnectionrefusedfallback'
+
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
   # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
   - name: codex-provider

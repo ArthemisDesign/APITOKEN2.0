@@ -79,6 +79,32 @@ for provider_target in \
   grep -F "$target" -A 1 "$ROOT/observability/prometheus/prometheus.yml" \
     | grep -Fq "$label" || { printf 'engine scrape %s lacks %s\n' "$target" "$label" >&2; exit 1; }
 done
+# The stateless router owns a separate unauthenticated loopback endpoint. Its counter label matrix is
+# compile-bounded, and the engine proof counter is consumed only after aggregation by fixed plane.
+grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheus.yml" \
+  | grep -Fq 'targets: ["127.0.0.1:8798"]' \
+  || { printf 'router metrics scrape is missing from loopback 8798\n' >&2; exit 1; }
+! grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheus.yml" \
+  | grep -Fq 'authorization:' \
+  || { printf 'router loopback metrics unexpectedly require a credential\n' >&2; exit 1; }
+grep -Fq 'claude_router_fallback_total' "$ROOT/crates/router/src/metrics.rs" \
+  || { printf 'router does not export fallback continuations\n' >&2; exit 1; }
+grep -Fq 'claude_api_execution_not_started_total' "$ROOT/crates/server/src/http.rs" \
+  || { printf 'engine does not export exact not_started proofs\n' >&2; exit 1; }
+grep -Fq 'sum by (plane) (rate(claude_api_execution_not_started_total[5m]))' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'no recording rule consumes exact not_started proofs by fixed plane\n' >&2; exit 1; }
+for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRefusedFallback; do
+  grep -Fq "alert: $router_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing router fallback alert %s\n' "$router_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$router_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'router alert %s has no runbook anchor\n' "$router_alert" >&2; exit 1; }
+  grep -Fqi "## $router_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$router_alert" >&2; exit 1; }
+done
+grep -Fq 'up{job!="claude-router"} == 0' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'generic scrape alert would duplicate RouterMetricsDown\n' >&2; exit 1; }
 grep -Fq 'targets: ["https://openai.api.apitoken.sale/v1/responses"]' \
   "$ROOT/observability/prometheus/prometheus.yml" \
   || { printf 'OpenAI public synthetic is missing\n' >&2; exit 1; }

@@ -162,6 +162,20 @@ pub(crate) fn without_not_started(mut response: Response) -> Response {
     response
 }
 
+/// True only for the exact public proof consumed by the router: one `not_started` value on a
+/// non-success response. Server composition uses the same predicate for its exported counter, so
+/// malformed or duplicated headers can never inflate telemetry for a proof the router rejects.
+pub fn is_exact_not_started_response(response: &Response) -> bool {
+    if response.status().is_success() {
+        return false;
+    }
+    let mut values = response.headers().get_all(EXECUTION_STATE_HEADER).iter();
+    matches!(
+        (values.next(), values.next()),
+        (Some(value), None) if value.as_bytes() == EXECUTION_STATE_NOT_STARTED.as_bytes()
+    )
+}
+
 // Anthropic Messages принимает тела до 32 МиБ. Держим тот же публичный предел; точное различение
 // overflow/read-error ниже сохраняет нативный 413-контракт вместо ложного generic 400.
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
@@ -3356,6 +3370,33 @@ mod tests {
         // Страховка для веток после границы доставки: заголовок снимается.
         let response = without_not_started(local_err(LocalErr::Internal, None));
         assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
+    }
+
+    #[test]
+    fn exact_not_started_metric_predicate_matches_the_router_proof() {
+        let response = with_not_started(local_err(LocalErr::Internal, None));
+        assert!(is_exact_not_started_response(&response));
+
+        let mut duplicate = with_not_started(local_err(LocalErr::Internal, None));
+        duplicate.headers_mut().append(
+            EXECUTION_STATE_HEADER,
+            HeaderValue::from_static(EXECUTION_STATE_NOT_STARTED),
+        );
+        assert!(!is_exact_not_started_response(&duplicate));
+
+        let mut wrong = local_err(LocalErr::Internal, None);
+        wrong.headers_mut().insert(
+            EXECUTION_STATE_HEADER,
+            HeaderValue::from_static("NOT_STARTED"),
+        );
+        assert!(!is_exact_not_started_response(&wrong));
+
+        let success = Response::builder()
+            .status(StatusCode::OK)
+            .header(EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED)
+            .body(Body::empty())
+            .unwrap();
+        assert!(!is_exact_not_started_response(&success));
     }
 
     #[tokio::test]

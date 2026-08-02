@@ -437,9 +437,19 @@ async fn audit_customer_error(
     next: Next,
 ) -> Response {
     let keys = client_keys(request.headers());
+    let execution_plane = match state.app.provider {
+        forward::ProviderMode::Combined if is_openai_plane(request.headers()) => {
+            forward::ProviderMode::OpenAi
+        }
+        forward::ProviderMode::Combined => forward::ProviderMode::Anthropic,
+        fixed => fixed,
+    };
     let method = request.method().clone();
     let uri = request.uri().clone();
     let response = next.run(request).await;
+    if forward::is_exact_not_started_response(&response) {
+        state.app.metrics.execution_not_started(execution_plane);
+    }
     if response.status().is_success() || !uri.path().starts_with("/v1/") {
         return response;
     }
@@ -843,6 +853,23 @@ async fn metrics(
          claude_api_execution_group_double_winner_total {}",
         registry::execution_group_double_winner_total()
     );
+    let _ = writeln!(
+        body,
+        "# HELP claude_api_execution_not_started_total Exact non-2xx not_started proofs returned by provider planes.\n\
+         # TYPE claude_api_execution_not_started_total counter"
+    );
+    for plane in [
+        forward::ProviderMode::Anthropic,
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Gemini,
+    ] {
+        let _ = writeln!(
+            body,
+            "claude_api_execution_not_started_total{{plane=\"{}\"}} {}",
+            plane.as_str(),
+            m.execution_not_started_count(plane),
+        );
+    }
     let _ = writeln!(
         body,
         "# TYPE claude_api_gemini_usage_metadata_missing_total counter\n\
@@ -5715,6 +5742,57 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], 404);
         assert_eq!(body["error"]["status"], "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn exact_not_started_responses_increment_only_the_serving_plane_counter() {
+        let app = provider_test_app(forward::ProviderMode::Anthropic);
+        let metrics = Arc::clone(&app.metrics);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header("x-api-key", "admin-key")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(forward::is_exact_not_started_response(&response));
+        assert_eq!(
+            metrics.execution_not_started_count(forward::ProviderMode::Anthropic),
+            1
+        );
+        assert_eq!(
+            metrics.execution_not_started_count(forward::ProviderMode::OpenAi),
+            0
+        );
+        assert_eq!(
+            metrics.execution_not_started_count(forward::ProviderMode::Gemini),
+            0
+        );
+
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("claude_api_execution_not_started_total{plane=\"anthropic\"} 1"));
+        assert!(body.contains("claude_api_execution_not_started_total{plane=\"openai\"} 0"));
+        assert!(body.contains("claude_api_execution_not_started_total{plane=\"gemini\"} 0"));
     }
 
     #[tokio::test]
