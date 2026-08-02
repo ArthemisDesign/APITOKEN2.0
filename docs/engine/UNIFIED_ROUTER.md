@@ -1,12 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5, фазы 6.1–6.3 и producer 6.4a реализованы; consumer/GA
-пакеты 6.4b–6.4c идут при выключенном fallback.**
+Статус: **этапы 1–5, фазы 6.1–6.3 и policy/presets 6.4a–6.4b реализованы;
+telemetry/GA пакет 6.4c идёт при выключенном fallback.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаётся реализация и canary фазы 6.4. Документ фиксирует целевую
+До полного OpenRouter-grade routing остаются telemetry и canary/GA фазы 6.4c. Документ фиксирует целевую
 картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
 обновляет этот документ и смежные инструкции в том же коммите.
 
@@ -25,7 +25,7 @@ dispatch на три плоскости. `/v1/messages/count_tokens` испол�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 готовы default-off; контракт preferences/presets/policy 6.4 зафиксирован |
+| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b готовы default-off; telemetry/canary 6.4c остаются |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -132,9 +132,13 @@ POST /v1beta/models/{id}:countTokens
 
 Четыре universal POST-пути (`chat/completions`, `responses`, `messages` и
 `messages/count_tokens`) принимают необязательное `models: [<id>, …]` как продолжение
-цепочки после обязательного `model`. Поле активно только при
+цепочки после обязательного `model`, strict OpenRouter-shaped `provider` preferences и
+reserved primary IDs `preset/auto|quality|fast|hermes`. Эти возможности активны только при
 `CLAUDE_ROUTER_FALLBACK_ENABLED=1`; default-off router возвращает lane-shaped `400` до
-обращения к каталогу/плоскости. Подробный preflight и retry matrix —
+обращения к catalog/policy/plane. Router раскрывает preset, делает один aggregate snapshot,
+canonical dedup, provider filters/order/reviewed sort, `allow_fallbacks`, затем engine-owned
+account-policy preflight; `models` и `provider` никогда не доходят до плоскости. Подробный
+контракт и retry matrix —
 `docs/engine/ROUTING_FENCING.md` §§3.3, 5.
 
 Префикс `/api/v1` (OpenRouter-совместимые пути) в MVP **не** добавляется: Cline, Codex и
@@ -761,8 +765,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    проходит router→plane→reservation, а SQLite/PostgreSQL settle выбирает ровно одного
    billable winner и полностью возвращает loser hold; `ExecutionGroupDoubleWinner` гейтит любой
    такой инцидент. Контракт фазы 6.4 зафиксирован 2026-08-02: одинаковый authenticated
-   policy-preflight на плоскостях реализован producer-first; затем router добавляет strict
-   `provider` preferences, version-controlled presets/ranks; последним пакетом идут router/plane
+   policy-preflight на плоскостях реализован producer-first, а router consumer 6.4b добавил strict
+   `provider` preferences, version-controlled presets/ranks и fail-closed policy filtering до
+   attempt 1; последним пакетом идут router/plane
    metrics, Prometheus, load/live canary и отдельное включение production-флага. Полная схема,
    fail-closed mixed-version semantics и rollout-порядок — `docs/engine/ROUTING_FENCING.md`
    §5.1–5.3. Отдельно —

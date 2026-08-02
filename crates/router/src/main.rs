@@ -15,6 +15,8 @@ mod chat;
 mod config;
 mod error;
 mod messages;
+mod policy;
+mod presets;
 mod proxy;
 mod responses;
 mod routing;
@@ -137,8 +139,8 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     if codex_envelope {
         return axum::Json(serde_json::json!({"models": []})).into_response();
     }
-    let data: Vec<_> =
-        entries.iter().map(|(ns, e)| e.to_json(ns)).collect();
+    let mut data: Vec<_> = entries.iter().map(|(ns, e)| e.to_json(ns)).collect();
+    data.extend(presets::active_catalog_entries(&entries));
     let mut response = axum::Json(serde_json::json!({"object": "list", "data": data})).into_response();
     if !aggregate.degraded.is_empty() {
         response.headers_mut().insert(
@@ -171,9 +173,12 @@ async fn get_model(
         return auth_rejected_response();
     }
     let entries = catalog::dedup(aggregate.entries);
-    match catalog::find(&entries, &id) {
-        Some((ns, entry)) => {
-            let mut response = axum::Json(entry.to_json(ns)).into_response();
+    let model = presets::active_catalog_entry(&id, &entries).or_else(|| {
+        catalog::find(&entries, &id).map(|(namespace, entry)| entry.to_json(namespace))
+    });
+    match model {
+        Some(model) => {
+            let mut response = axum::Json(model).into_response();
             if !aggregate.degraded.is_empty() {
                 response.headers_mut().insert(
                     axum::http::HeaderName::from_static(catalog::DEGRADED_HEADER),
@@ -216,6 +221,7 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    presets::validate_at_startup()?;
     let cfg = Config::from_env()?;
     let state = Arc::new(AppState { client: build_client()?, catalog: Catalog::new(), cfg });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
@@ -388,6 +394,24 @@ mod tests {
         {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash"}
     ]}"#;
 
+    const ANTHROPIC_ROUTING_MODELS: &str = r#"{"data":[
+        {"type":"model","id":"claude-sonnet-5","display_name":"Claude Sonnet 5"},
+        {"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5"},
+        {"type":"model","id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5"}
+    ]}"#;
+
+    const OPENAI_ROUTING_MODELS: &str = r#"{"object":"list","data":[
+        {"id":"gpt-5.6-terra","object":"model","created":0,"owned_by":"apitoken"},
+        {"id":"gpt-5.6-sol","object":"model","created":0,"owned_by":"apitoken"},
+        {"id":"gpt-5.6-luna","object":"model","created":0,"owned_by":"apitoken"}
+    ]}"#;
+
+    const GEMINI_ROUTING_MODELS: &str = r#"{"models":[
+        {"name":"models/gemini-3.6-flash","displayName":"Gemini 3.6 Flash"},
+        {"name":"models/gemini-3.1-pro-preview","displayName":"Gemini 3.1 Pro Preview"},
+        {"name":"models/gemini-3.1-flash-lite","displayName":"Gemini 3.1 Flash-Lite"}
+    ]}"#;
+
     /// Каталог-плоскость: отдаёт fixture на свой catalog path, логирует запрос.
     /// `mode`: "ok" — fixture, "fail" — всегда 500, "auth" — всегда 401.
     async fn catalog_plane(body: &'static str, path: &'static str, mode: &'static str) -> (String, SharedLog) {
@@ -422,6 +446,85 @@ mod tests {
 
     type SharedBodies = Arc<StdMutex<Vec<Vec<u8>>>>;
 
+    async fn unrestricted_policy_response(req: AxumRequest<Body>) -> AxumResponse<Body> {
+        let body = to_bytes(req.into_body(), 64 * 1024).await.unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let allowed: Vec<_> = request["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate["id"].as_str().unwrap())
+            .collect();
+        AxumResponse::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "mode": "unrestricted",
+                    "allowed": allowed,
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    enum PolicyReply {
+        Unrestricted,
+        Fixed(StatusCode, &'static str),
+    }
+
+    async fn policy_attempt_plane(
+        catalog_body: &'static str,
+        catalog_path: &'static str,
+        policy_reply: PolicyReply,
+        attempt_status: StatusCode,
+        execution_state: Option<&'static str>,
+    ) -> (String, SharedBodies, SharedLog) {
+        let bodies: SharedBodies = Arc::new(StdMutex::new(Vec::new()));
+        let log: SharedLog = Arc::new(StdMutex::new(Vec::new()));
+        let body_state = bodies.clone();
+        let log_state = log.clone();
+        let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let bodies = body_state.clone();
+            let log = log_state.clone();
+            async move {
+                log.lock().unwrap().push(record_of(&req));
+                if req.uri().path() == catalog_path {
+                    return AxumResponse::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(catalog_body))
+                        .unwrap();
+                }
+                if req.uri().path() == "/internal/router/policy/preflight" {
+                    return match policy_reply {
+                        PolicyReply::Unrestricted => unrestricted_policy_response(req).await,
+                        PolicyReply::Fixed(status, body) => {
+                            let _ = to_bytes(req.into_body(), 64 * 1024).await;
+                            AxumResponse::builder()
+                                .status(status)
+                                .header("content-type", "application/json")
+                                .body(Body::from(body))
+                                .unwrap()
+                        }
+                    };
+                }
+                let body = to_bytes(req.into_body(), 64 * 1024 * 1024).await.unwrap();
+                bodies.lock().unwrap().push(body.to_vec());
+                let mut builder = AxumResponse::builder()
+                    .status(attempt_status)
+                    .header("content-type", "application/json");
+                if let Some(value) = execution_state {
+                    builder = builder.header("x-apitoken-execution-state", value);
+                }
+                builder.body(Body::from(body)).unwrap()
+            }
+        }));
+        (spawn(router).await, bodies, log)
+    }
+
     /// Plane с живым каталогом и программируемым ответом universal attempt.
     /// В body-log попадают только billable POST attempts; catalog/служебные GET туда не пишутся.
     async fn attempt_plane(
@@ -442,6 +545,9 @@ mod tests {
                         .header("content-type", "application/json")
                         .body(Body::from(catalog_body))
                         .unwrap();
+                }
+                if req.uri().path() == "/internal/router/policy/preflight" {
+                    return unrestricted_policy_response(req).await;
                 }
                 let is_billable_attempt = req.method() == axum::http::Method::POST;
                 let body = to_bytes(req.into_body(), 64 * 1024 * 1024).await.unwrap();
@@ -481,6 +587,9 @@ mod tests {
                         .header("content-type", "application/json")
                         .body(Body::from(catalog_body))
                         .unwrap();
+                }
+                if req.uri().path() == "/internal/router/policy/preflight" {
+                    return unrestricted_policy_response(req).await;
                 }
                 log.lock().unwrap().push(record_of(&req));
                 let mut builder = AxumResponse::builder()
@@ -832,23 +941,34 @@ mod tests {
     // ---------- universal serial fallback (routing phase 6.2) ----------
 
     #[tokio::test]
-    async fn fallback_flag_off_rejects_models_before_contacting_any_plane() {
+    async fn fallback_flag_off_rejects_models_provider_and_presets_before_any_plane() {
         let (a, log_a) = echo_plane().await;
         let (o, log_o) = echo_plane().await;
         let (g, log_g) = echo_plane().await;
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
 
-        let response = reqwest::Client::new()
-            .post(format!("{router}/v1/responses"))
-            .body(
+        let client = reqwest::Client::new();
+        for (body, param) in [
+            (
                 r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#,
-            )
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let json: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(json["error"]["param"], "models");
+                "models",
+            ),
+            (
+                r#"{"model":"anthropic/claude-opus-4-8","provider":{"only":["anthropic"]},"input":"hi"}"#,
+                "provider",
+            ),
+            (r#"{"model":"preset/auto","input":"hi"}"#, "model"),
+        ] {
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            let json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(json["error"]["param"], param, "{body}");
+        }
         assert!(log_a.lock().unwrap().is_empty());
         assert!(log_o.lock().unwrap().is_empty());
         assert!(log_g.lock().unwrap().is_empty());
@@ -1169,6 +1289,598 @@ mod tests {
         assert!(bodies_a.lock().unwrap().is_empty());
         assert!(bodies_o.lock().unwrap().is_empty());
         assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_preflight_fails_over_mixed_versions_but_never_executes_without_a_valid_reply() {
+        for first_reply in [
+            PolicyReply::Fixed(StatusCode::NOT_FOUND, "{}"),
+            PolicyReply::Fixed(StatusCode::INTERNAL_SERVER_ERROR, "{}"),
+            PolicyReply::Fixed(StatusCode::OK, r#"{"schema_version":1,"mode":"strict"}"#),
+        ] {
+            let (a, bodies_a, _) = policy_attempt_plane(
+                ANTHROPIC_MODELS,
+                "/v1/models",
+                first_reply,
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let (o, bodies_o, log_o) = policy_attempt_plane(
+                OPENAI_MODELS,
+                "/v1/models",
+                PolicyReply::Unrestricted,
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let (g, bodies_g, _) = policy_attempt_plane(
+                GEMINI_MODELS,
+                "/v1beta/models",
+                PolicyReply::Fixed(StatusCode::NOT_FOUND, "{}"),
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+            let response = reqwest::Client::new()
+                .post(format!("{router}/v1/responses"))
+                .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(bodies_a.lock().unwrap().len(), 1);
+            assert!(bodies_o.lock().unwrap().is_empty());
+            assert!(bodies_g.lock().unwrap().is_empty());
+            assert!(log_o.lock().unwrap().iter().any(|request| {
+                request.path == "/internal/router/policy/preflight"
+            }));
+        }
+
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            PolicyReply::Fixed(StatusCode::NOT_FOUND, "{}"),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            PolicyReply::Fixed(StatusCode::INTERNAL_SERVER_ERROR, "{}"),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Fixed(StatusCode::OK, "not-json"),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/messages"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"max_tokens":16,"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["type"], "api_error");
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_401_is_terminal_and_invalid_ordered_subsets_fail_closed() {
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            PolicyReply::Fixed(StatusCode::UNAUTHORIZED, "{}"),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, log_o) = policy_attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(!log_o.lock().unwrap().iter().any(|request| {
+            request.path == "/internal/router/policy/preflight"
+        }));
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
+
+        for invalid in [
+            r#"{"schema_version":1,"mode":"strict","allowed":["unknown/model"]}"#,
+            r#"{"schema_version":1,"mode":"strict","allowed":["anthropic/claude-opus-4-8","anthropic/claude-opus-4-8"]}"#,
+            r#"{"schema_version":1,"mode":"strict","allowed":["openai/gpt-5.6","anthropic/claude-opus-4-8"]}"#,
+        ] {
+            let (a, bodies_a, _) = policy_attempt_plane(
+                ANTHROPIC_MODELS,
+                "/v1/models",
+                PolicyReply::Fixed(StatusCode::OK, invalid),
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let (o, bodies_o, _) = policy_attempt_plane(
+                OPENAI_MODELS,
+                "/v1/models",
+                PolicyReply::Fixed(StatusCode::NOT_FOUND, "{}"),
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let (g, bodies_g, _) = policy_attempt_plane(
+                GEMINI_MODELS,
+                "/v1beta/models",
+                PolicyReply::Fixed(StatusCode::NOT_FOUND, "{}"),
+                StatusCode::OK,
+                None,
+            )
+            .await;
+            let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+            let response = reqwest::Client::new()
+                .post(format!("{router}/v1/responses"))
+                .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{invalid}");
+            assert!(bodies_a.lock().unwrap().is_empty());
+            assert!(bodies_o.lock().unwrap().is_empty());
+            assert!(bodies_g.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_policy_filters_before_fast_validation_and_empty_policy_is_403() {
+        let strict_openai = r#"{"schema_version":1,"mode":"strict","allowed":["openai/gpt-5.6"]}"#;
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            PolicyReply::Fixed(StatusCode::OK, strict_openai),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, log_o) = policy_attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, _, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/responses"))
+            .header("x-apitoken-service-tier", "fast")
+            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(bodies_a.lock().unwrap().is_empty());
+        let body: serde_json::Value =
+            serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "openai/gpt-5.6");
+        assert_eq!(body["service_tier"], "priority");
+        let execution = log_o
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.path == "/v1/responses")
+            .cloned()
+            .unwrap();
+        assert!(execution.execution_group.is_none());
+        assert!(execution.execution_attempt.is_none());
+
+        let strict_empty = r#"{"schema_version":1,"mode":"strict","allowed":[]}"#;
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            PolicyReply::Fixed(StatusCode::OK, strict_empty),
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/messages"))
+            .body(r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"max_tokens":16,"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["error"]["type"], "permission_error");
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_filters_order_sort_and_allow_fallbacks_are_deterministic() {
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_ROUTING_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"anthropic/claude-sonnet-5","models":["openai/gpt-5.6-terra","google/gemini-3.6-flash"],"provider":{"ignore":["anthropic"],"order":["google","openai"]},"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(bodies_a.lock().unwrap().is_empty());
+        let google: serde_json::Value =
+            serde_json::from_slice(&bodies_g.lock().unwrap()[0]).unwrap();
+        let openai: serde_json::Value =
+            serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+        assert_eq!(google["model"], "google/gemini-3.6-flash");
+        assert_eq!(openai["model"], "openai/gpt-5.6-terra");
+        assert!(google.get("provider").is_none());
+        assert!(google.get("models").is_none());
+
+        let (a, _, _) = policy_attempt_plane(
+            ANTHROPIC_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, log_g) = policy_attempt_plane(
+            GEMINI_ROUTING_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/responses"))
+            .body(r#"{"model":"openai/gpt-5.6-sol","models":["openai/gpt-5.6-luna","google/gemini-3.1-flash-lite"],"provider":{"sort":"latency","allow_fallbacks":false},"input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(bodies_o.lock().unwrap().is_empty());
+        let body: serde_json::Value =
+            serde_json::from_slice(&bodies_g.lock().unwrap()[0]).unwrap();
+        assert_eq!(body["model"], "google/gemini-3.1-flash-lite");
+        let execution = log_g
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.path == "/v1/responses")
+            .cloned()
+            .unwrap();
+        assert!(execution.execution_group.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_validation_and_expanded_chain_bounds_fail_before_execution() {
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, bodies_g) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::from_secs(60))).await;
+        let client = reqwest::Client::new();
+
+        for body in [
+            r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"provider":{"sort":"price"},"input":"hi"}"#.to_string(),
+            r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"provider":{"only":[]},"input":"hi"}"#.to_string(),
+            r#"{"model":"anthropic/claude-opus-4-8","provider":{"only":["openai"],"ignore":["openai"]},"input":"hi"}"#.to_string(),
+        ] {
+            let response = client
+                .post(format!("{router}/v1/responses"))
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        let overflow: Vec<_> = (0..30).map(|index| format!("unknown/model-{index}")).collect();
+        let response = client
+            .post(format!("{router}/v1/responses"))
+            .json(&serde_json::json!({
+                "model": "preset/auto",
+                "models": overflow,
+                "input": "hi"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn presets_publish_expand_skip_missing_members_and_reject_overlap() {
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_ROUTING_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        let json: serde_json::Value = response.json().await.unwrap();
+        let ids: Vec<_> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+        for preset in [
+            "preset/auto",
+            "preset/quality",
+            "preset/fast",
+            "preset/hermes",
+        ] {
+            assert!(ids.contains(&preset), "{ids:?}");
+        }
+        let preset: serde_json::Value = client
+            .get(format!("{router}/v1/models/preset/auto"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(preset["owned_by"], "router");
+
+        let response = client
+            .post(format!("{router}/v1/responses"))
+            .body(r#"{"model":"preset/auto","input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let first: serde_json::Value =
+            serde_json::from_slice(&bodies_a.lock().unwrap()[0]).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+        assert_eq!(first["model"], "anthropic/claude-sonnet-5");
+        assert_eq!(second["model"], "openai/gpt-5.6-terra");
+        assert!(bodies_g.lock().unwrap().is_empty());
+        assert_ne!(second["model"], "preset/auto");
+
+        let before_a = bodies_a.lock().unwrap().len();
+        let before_o = bodies_o.lock().unwrap().len();
+        let response = client
+            .post(format!("{router}/v1/responses"))
+            .body(r#"{"model":"preset/auto","models":["openai/gpt-5.6-terra"],"input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(bodies_a.lock().unwrap().len(), before_a);
+        assert_eq!(bodies_o.lock().unwrap().len(), before_o);
+
+        let (a, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+        )
+        .await;
+        let (o, bodies_o, _) = policy_attempt_plane(
+            OPENAI_ROUTING_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+        )
+        .await;
+        let (g, bodies_g, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let partial_router =
+            spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = client
+            .post(format!("{partial_router}/v1/responses"))
+            .body(r#"{"model":"preset/auto","input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(bodies_a.lock().unwrap().len(), 1);
+        assert_eq!(bodies_o.lock().unwrap().len(), 1);
+        assert!(bodies_g.lock().unwrap().is_empty());
+
+        let (a, bodies_a) = attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, bodies_g) = attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+            false,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = client
+            .post(format!("{router}/v1/responses"))
+            .body(r#"{"model":"preset/auto","input":"hi"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(bodies_a.lock().unwrap().is_empty());
+        assert!(bodies_o.lock().unwrap().is_empty());
+        assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_transport_failure_uses_another_authority_origin_then_fenced_fallback() {
+        let openai = one_shot_catalog_origin(OPENAI_MODELS).await;
+        let (anthropic, bodies_a, _) = policy_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (gemini, _, _) = policy_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            PolicyReply::Unrestricted,
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(
+            &anthropic,
+            &openai,
+            &gemini,
+            Duration::ZERO,
+        ))
+        .await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .body(r#"{"model":"openai/gpt-5.6","models":["anthropic/claude-opus-4-8"],"messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(bodies_a.lock().unwrap().len(), 1);
     }
 
     // ---------- universal chat dispatch (model-based routing, этап 3.1) ----------

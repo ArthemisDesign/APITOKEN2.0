@@ -1,12 +1,12 @@
 //! Shared model routing and serial fallback for universal Chat, Responses and
 //! Messages surfaces (docs/engine/ROUTING_FENCING.md phase 6.2).
 //!
-//! Requests without `models` or the router-owned Fast header preserve the historical behavior and
-//! exact body bytes. The Fast header is the only single-attempt body rewrite. Explicit fallback
-//! chains are validated against one aggregate catalog
-//! snapshot before the first attempt, then `models` is removed and `model` is
-//! replaced for each serial attempt. A next attempt is allowed only by
-//! `proxy::RetryReason`'s fail-closed transport/execution proof.
+//! Requests without `models`, `provider`, `preset/*` or the router-owned Fast header preserve the
+//! historical behavior and exact body bytes. Advanced plans expand reviewed presets, resolve one
+//! aggregate catalog snapshot, apply deterministic provider preferences and call the engine-owned
+//! account-policy preflight before attempt 1. Router-only fields are then removed and `model` is
+//! replaced for each serial attempt. A next attempt is allowed only by `proxy::RetryReason`'s
+//! fail-closed transport/execution proof.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -18,7 +18,10 @@ use axum::response::Response;
 
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_OPENAI};
 use crate::error::{self, Lane};
-use crate::{proxy, AppState};
+use crate::policy::{
+    self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences, SortMode,
+};
+use crate::{presets, proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
 
@@ -73,15 +76,38 @@ impl Surface {
             Self::Messages => error::messages_auth_rejected(),
         }
     }
+
+    fn policy_unavailable(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::policy_unavailable(),
+            Self::Messages => error::messages_policy_unavailable(),
+        }
+    }
+
+    fn policy_restricted(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::policy_restricted(),
+            Self::Messages => error::messages_policy_restricted(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct ResolvedAttempt {
     /// Value inserted into the per-attempt request body.
-    requested_model: String,
+    body_model_value: String,
     /// Public catalog identity used in bounded logs and duplicate detection.
     catalog_id: String,
+    /// Provider namespace and canonical native ID sent to engine policy authority.
+    provider: ProviderNamespace,
+    canonical_model_id: String,
     lane: Lane,
+}
+
+#[derive(Clone, Debug)]
+struct ExpandedCandidate {
+    body_model_value: String,
+    preset_id: Option<&'static str>,
 }
 
 /// Shared universal handler. The response body is never buffered; only the
@@ -107,48 +133,79 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             );
         }
     };
-    let fast_header = match take_fast_service_tier_header(
-        &mut parts.headers,
-        surface,
-        parts.uri.path(),
-    ) {
-        Ok(present) => present,
-        Err(response) => return response,
-    };
+    let fast_header =
+        match take_fast_service_tier_header(&mut parts.headers, surface, parts.uri.path()) {
+            Ok(present) => present,
+            Err(response) => return response,
+        };
 
-    if value.get("models").is_none() {
-        return proxy_single(&state, parts, bytes, &mut value, &model, surface, fast_header).await;
+    let has_models = value.get("models").is_some();
+    let has_provider = value.get("provider").is_some();
+    let has_preset = presets::is_preset_syntax(&model);
+    if !has_models && !has_provider && !has_preset {
+        return proxy_single(
+            &state,
+            parts,
+            bytes,
+            &mut value,
+            &model,
+            surface,
+            fast_header,
+        )
+        .await;
     }
 
     // Fail before catalog/auth/network work when rollout is disabled.
     if !state.cfg.fallback_enabled {
-        return surface.invalid(
-            "Parameter `models` is disabled on this router.",
-            Some("models"),
-        );
+        let (message, param) = if has_models {
+            ("Parameter `models` is disabled on this router.", "models")
+        } else if has_provider {
+            (
+                "Parameter `provider` is disabled on this router.",
+                "provider",
+            )
+        } else {
+            ("Routing presets are disabled on this router.", "model")
+        };
+        return surface.invalid(message, Some(param));
     }
 
-    let fallback_models = match value.get("models").and_then(|models| models.as_array()) {
-        Some(models) if !models.is_empty() => models,
-        _ => {
-            return surface.invalid(
-                "Parameter `models` must be a non-empty array of model IDs.",
-                Some("models"),
-            );
-        }
-    };
-    let mut requested = Vec::with_capacity(fallback_models.len() + 1);
-    requested.push(model);
-    for candidate in fallback_models {
-        match candidate.as_str() {
-            Some(candidate) if !candidate.trim().is_empty() => {
-                requested.push(candidate.to_string());
+    let preferences = match value.get("provider") {
+        Some(provider) => match ProviderPreferences::parse(provider) {
+            Ok(preferences) => preferences,
+            Err(()) => {
+                return surface.invalid(
+                    "Parameter `provider` contains invalid routing preferences.",
+                    Some("provider"),
+                )
             }
+        },
+        None => ProviderPreferences::default(),
+    };
+
+    let mut requested = vec![model];
+    if let Some(models_value) = value.get("models") {
+        let fallback_models = match models_value.as_array() {
+            Some(models) if !models.is_empty() => models,
             _ => {
                 return surface.invalid(
-                    "Every entry in `models` must be a non-empty string.",
+                    "Parameter `models` must be a non-empty array of model IDs.",
                     Some("models"),
                 );
+            }
+        };
+        requested.reserve(fallback_models.len());
+        for candidate in fallback_models {
+            match candidate.as_str() {
+                Some(candidate) if !candidate.trim().is_empty() => {
+                    requested.push(candidate.to_string());
+                }
+                _ => {
+                    return surface.invalid(
+                        "Every entry in `models` must be a non-empty string.",
+                        Some("models"),
+                    );
+                }
             }
         }
     }
@@ -159,6 +216,37 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     {
         return surface.invalid(
             "The fallback chain must not contain duplicate models.",
+            Some("models"),
+        );
+    }
+
+    let mut expanded = Vec::new();
+    let mut referenced_presets = Vec::new();
+    for requested_model in requested {
+        if presets::is_preset_syntax(&requested_model) {
+            let Some(preset) = presets::find(&requested_model) else {
+                return surface.invalid(
+                    &format!("Unknown routing preset: `{requested_model}`."),
+                    Some("model"),
+                );
+            };
+            referenced_presets.push(preset.id());
+            expanded.extend(preset.models().iter().cloned().map(|body_model_value| {
+                ExpandedCandidate {
+                    body_model_value,
+                    preset_id: Some(preset.id()),
+                }
+            }));
+        } else {
+            expanded.push(ExpandedCandidate {
+                body_model_value: requested_model,
+                preset_id: None,
+            });
+        }
+    }
+    if expanded.len() > policy::MAX_CANDIDATES {
+        return surface.invalid(
+            "The expanded routing chain must contain at most 32 models.",
             Some("models"),
         );
     }
@@ -176,33 +264,111 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         return surface.catalog_unavailable();
     }
 
-    let mut canonical_seen = HashSet::with_capacity(requested.len());
-    let mut attempts = Vec::with_capacity(requested.len());
-    for requested_model in requested {
-        let Some((namespace, entry)) = catalog::find(&entries, &requested_model) else {
+    let mut canonical_seen = HashSet::with_capacity(expanded.len());
+    let mut preset_live = vec![false; referenced_presets.len()];
+    let mut attempts = Vec::with_capacity(expanded.len());
+    for candidate in expanded {
+        let Some((namespace, entry)) = catalog::find(&entries, &candidate.body_model_value) else {
+            if candidate.preset_id.is_some() {
+                continue;
+            }
             return surface.invalid(
-                &format!("Unknown model in fallback chain: `{requested_model}`."),
+                &format!(
+                    "Unknown model in routing chain: `{}`.",
+                    candidate.body_model_value
+                ),
                 Some("models"),
             );
         };
+        if let Some(preset_id) = candidate.preset_id {
+            if let Some(index) = referenced_presets
+                .iter()
+                .position(|referenced| *referenced == preset_id)
+            {
+                preset_live[index] = true;
+            }
+        }
         if !canonical_seen.insert(entry.id.clone()) {
             return surface.invalid(
-                "The fallback chain must not contain duplicate models.",
+                "The routing chain must not contain duplicate models.",
                 Some("models"),
             );
         }
-        let Some(lane) = lane_for_namespace(namespace) else {
+        let Some(provider) = provider_for_namespace(namespace) else {
             return surface.invalid(
-                &format!("Unknown model in fallback chain: `{requested_model}`."),
+                &format!(
+                    "Unknown model in routing chain: `{}`.",
+                    candidate.body_model_value
+                ),
                 Some("models"),
             );
         };
         attempts.push(ResolvedAttempt {
-            requested_model,
+            body_model_value: candidate.body_model_value,
             catalog_id: entry.id.clone(),
-            lane,
+            provider,
+            canonical_model_id: entry.alias.clone(),
+            lane: provider.lane(),
         });
     }
+    if preset_live.iter().any(|live| !live) {
+        return surface.catalog_unavailable();
+    }
+
+    attempts.retain(|attempt| preferences.allows(attempt.provider));
+    if attempts.is_empty() {
+        return surface.invalid(
+            "Provider preferences removed every model from the routing chain.",
+            Some("provider"),
+        );
+    }
+    attempts.sort_by_key(|attempt| preferences.order_rank(attempt.provider));
+    if let Some(sort) = preferences.sort() {
+        if attempts
+            .iter()
+            .any(|attempt| presets::ranks(&attempt.catalog_id).is_none())
+        {
+            return surface.invalid(
+                "A model in the routing chain has no reviewed rank for the requested sort.",
+                Some("provider"),
+            );
+        }
+        attempts.sort_by_key(|attempt| {
+            let (price, latency) =
+                presets::ranks(&attempt.catalog_id).expect("ranks validated above");
+            match sort {
+                SortMode::Price => price,
+                SortMode::Latency => latency,
+            }
+        });
+    }
+    if !preferences.allow_fallbacks() {
+        attempts.truncate(1);
+    }
+
+    let policy_candidates: Vec<_> = attempts
+        .iter()
+        .map(|attempt| PolicyCandidate {
+            id: &attempt.catalog_id,
+            provider: attempt.provider,
+            canonical_model_id: &attempt.canonical_model_id,
+        })
+        .collect();
+    let allowed = match policy::preflight(
+        &state.client,
+        &crate::origins(&state),
+        &auth,
+        &policy_candidates,
+    )
+    .await
+    {
+        Ok(allowed) => allowed,
+        Err(PreflightError::Unauthorized) => return surface.auth_rejected(),
+        Err(PreflightError::Unavailable) => return surface.policy_unavailable(),
+        Err(PreflightError::Restricted) => return surface.policy_restricted(),
+    };
+    let allowed: HashSet<_> = allowed.iter().map(String::as_str).collect();
+    attempts.retain(|attempt| allowed.contains(attempt.catalog_id.as_str()));
 
     if fast_header {
         if attempts.iter().any(|attempt| attempt.lane != Lane::OpenAi) {
@@ -222,11 +388,16 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         return surface.invalid("Invalid JSON object in request body.", None);
     };
     object.remove("models");
+    object.remove("provider");
     let surface_label = surface.label(parts.uri.path());
     let attempt_count = attempts.len();
-    let group_id = match fresh_execution_group_id() {
-        Ok(group_id) => group_id,
-        Err(()) => return surface.catalog_unavailable(),
+    let group_id = if attempt_count > 1 {
+        match fresh_execution_group_id() {
+            Ok(group_id) => Some(group_id),
+            Err(()) => return surface.catalog_unavailable(),
+        }
+    } else {
+        None
     };
     for (index, attempt) in attempts.into_iter().enumerate() {
         value
@@ -234,7 +405,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             .expect("validated request object")
             .insert(
                 "model".to_string(),
-                serde_json::Value::String(attempt.requested_model),
+                serde_json::Value::String(attempt.body_model_value),
             );
         let attempt_bytes = match serde_json::to_vec(&value) {
             Ok(bytes) => Bytes::from(bytes),
@@ -242,17 +413,19 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         };
         let origin = origin_for_lane(&state, attempt.lane);
         let request = request_from_parts(&parts, attempt_bytes);
-        let execution = proxy::ExecutionAttemptHeaders {
-            group_id: group_id.clone(),
-            attempt: index + 1,
-        };
+        let execution = group_id
+            .as_ref()
+            .map(|group_id| proxy::ExecutionAttemptHeaders {
+                group_id: group_id.clone(),
+                attempt: index + 1,
+            });
         let result = proxy::proxy_attempt(
             &state.client,
             origin,
             attempt.lane,
             surface.error_lane(),
             request,
-            Some(&execution),
+            execution.as_ref(),
         )
         .await;
         let status = result.response.status();
@@ -454,10 +627,14 @@ fn request_from_parts(parts: &Parts, body: Bytes) -> Request {
 }
 
 fn lane_for_namespace(namespace: &str) -> Option<Lane> {
+    provider_for_namespace(namespace).map(ProviderNamespace::lane)
+}
+
+fn provider_for_namespace(namespace: &str) -> Option<ProviderNamespace> {
     match namespace {
-        NS_ANTHROPIC => Some(Lane::Anthropic),
-        NS_OPENAI => Some(Lane::OpenAi),
-        NS_GOOGLE => Some(Lane::Gemini),
+        NS_ANTHROPIC => Some(ProviderNamespace::Anthropic),
+        NS_OPENAI => Some(ProviderNamespace::OpenAi),
+        NS_GOOGLE => Some(ProviderNamespace::Google),
         _ => None,
     }
 }
@@ -501,7 +678,10 @@ mod tests {
     fn fast_header_accepts_exact_aliases_and_is_consumed() {
         for tier in ["fast", "priority"] {
             let mut headers = HeaderMap::new();
-            headers.insert(proxy::SERVICE_TIER_HEADER, HeaderValue::from_str(tier).unwrap());
+            headers.insert(
+                proxy::SERVICE_TIER_HEADER,
+                HeaderValue::from_str(tier).unwrap(),
+            );
             assert!(take_fast_service_tier_header(
                 &mut headers,
                 Surface::Chat,
@@ -515,18 +695,21 @@ mod tests {
     #[test]
     fn fast_header_rejects_invalid_duplicate_and_counting_uses() {
         let mut invalid = HeaderMap::new();
-        invalid.insert(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("economy"));
-        let response = take_fast_service_tier_header(
-            &mut invalid,
-            Surface::Responses,
-            "/v1/responses",
-        )
-        .unwrap_err();
+        invalid.insert(
+            proxy::SERVICE_TIER_HEADER,
+            HeaderValue::from_static("economy"),
+        );
+        let response =
+            take_fast_service_tier_header(&mut invalid, Surface::Responses, "/v1/responses")
+                .unwrap_err();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let mut duplicate = HeaderMap::new();
         duplicate.append(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("fast"));
-        duplicate.append(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("priority"));
+        duplicate.append(
+            proxy::SERVICE_TIER_HEADER,
+            HeaderValue::from_static("priority"),
+        );
         assert!(take_fast_service_tier_header(
             &mut duplicate,
             Surface::Chat,

@@ -257,10 +257,10 @@ fn error_chain_has_connection_refused(error: &(dyn StdError + 'static)) -> bool 
 /// Выбор заголовков авторизации из входящего запроса для фонового запроса
 /// каталога. Передаются verbatim, без добавления и удаления.
 pub fn auth_passthrough(headers: &HeaderMap) -> HeaderMap {
-    let mut out = HeaderMap::with_capacity(AUTH_HEADERS.len());
+    let mut out = HeaderMap::with_capacity(headers.len().min(AUTH_HEADERS.len() * 2));
     for name in AUTH_HEADERS {
-        if let Some(value) = headers.get(&name) {
-            out.append(name, value.clone());
+        for value in headers.get_all(&name) {
+            out.append(&name, value.clone());
         }
     }
     out
@@ -311,15 +311,21 @@ mod tests {
     #[test]
     fn auth_passthrough_keeps_only_credential_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", HeaderValue::from_static("sk-pool-a"));
+        headers.append("x-api-key", HeaderValue::from_static("sk-pool-a"));
+        headers.append("x-api-key", HeaderValue::from_static("sk-pool-a-rotating"));
         headers.insert("x-goog-api-key", HeaderValue::from_static("sk-pool-b"));
         headers.insert("authorization", HeaderValue::from_static("Bearer sk-pool-c"));
         headers.insert("user-agent", HeaderValue::from_static("test"));
         headers.insert("anthropic-beta", HeaderValue::from_static("b"));
 
         let auth = auth_passthrough(&headers);
-        assert_eq!(auth.len(), 3);
-        assert_eq!(auth.get("x-api-key").unwrap(), "sk-pool-a");
+        assert_eq!(auth.len(), 4);
+        let x_api_keys: Vec<_> = auth
+            .get_all("x-api-key")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert_eq!(x_api_keys, ["sk-pool-a", "sk-pool-a-rotating"]);
         assert_eq!(auth.get("x-goog-api-key").unwrap(), "sk-pool-b");
         assert_eq!(auth.get("authorization").unwrap(), "Bearer sk-pool-c");
         assert!(auth.get("user-agent").is_none());

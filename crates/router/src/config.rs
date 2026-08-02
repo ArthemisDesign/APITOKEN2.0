@@ -14,8 +14,8 @@ pub struct Config {
     pub openai_origin: String,
     /// Stable origin Gemini-плоскости.
     pub gemini_origin: String,
-    /// Явный rollout-флаг model fallback. По умолчанию выключен: поле
-    /// `models` отклоняется до любого обращения к плоскости.
+    /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models`,
+    /// `provider` и `preset/*` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
 }
 

@@ -13,14 +13,15 @@
 - **Биллинг только в плоскости.** Router не резервирует, не списывает, не
   знает `request_id`. Ключ клиента передаётся в плоскость verbatim
   (`proxy::AUTH_HEADERS`); env-секретов у router'а нет.
-- **Fail-closed retry.** Native lanes и universal-запросы без явного `models`
+- **Fail-closed retry.** Native lanes и обычные single-model universal-запросы
   выполняют ровно одну попытку. При включённом `CLAUDE_ROUTER_FALLBACK_ENABLED`
-  следующая модель из явной цепочки разрешена только после точного не-2xx
+  следующая модель из эффективной цепочки разрешена только после точного не-2xx
   `x-apitoken-execution-state: not_started` (кроме 401/402/прочих клиентских
   4xx; signed 429 — capacity-отказ) либо доказанного TCP `ConnectionRefused`.
   Timeout, DNS/generic connect error, unsigned 5xx, reset/обрыв и ответ после
   заголовков никогда не ретраятся (`docs/engine/ROUTING_FENCING.md` §3.3).
-- **Execution identity — capability, не клиентский input.** Для каждой явной fallback-цепочки
+- **Execution identity — capability, не клиентский input.** Для каждой эффективной цепочки
+  длиннее одной модели
   router один раз генерирует CSPRNG UUIDv4 и инжектирует
   `x-apitoken-execution-group` + positive attempt `1..N`. Перед инжектом клиентские копии всегда
   удаляются; native и universal single-attempt paths оба заголовка не отправляют. Caddy независимо
@@ -60,15 +61,26 @@
   любой плоскостью также снимается публичный router capability-header
   `x-apitoken-service-tier`.
 - `routing.rs` — общий model dispatch и serial fallback для всех universal
-  поверхностей. Без `models` сохраняет исходные байты и прямой namespaced
-  dispatch; с `models` до первой попытки валидирует всю цепочку одним aggregate
-  catalog snapshot, отбрасывает дубликаты alias/namespaced одной модели,
-  удаляет `models`, подставляет выбранный `model` и исполняет retry matrix.
-  Явная цепочка также владеет одной CSPRNG execution-group UUIDv4 и монотонным attempt per model.
+  поверхностей. Обычный запрос без `models`, `provider` и `preset/*` сохраняет
+  исходные байты и прямой namespaced dispatch. Расширенный planner раскрывает preset,
+  получает один aggregate catalog snapshot, canonical-дедуплицирует цепочку, применяет
+  provider filters/order/reviewed sort и `allow_fallbacks`, затем account-policy preflight.
+  Только после этого он удаляет `models`/`provider`, подставляет выбранный `model` и
+  исполняет retry matrix. Эффективная цепочка длиннее одного элемента владеет одной
+  CSPRNG execution-group UUIDv4 и монотонным attempt per model; после фильтрации до одной
+  модели capability headers не инжектируются.
   Логи attempts содержат только surface/index, публичный catalog ID, lane,
   status и bounded retry reason — без URL, headers, credentials и тел запросов.
   Здесь же валидируется совместимый Fast-header: только GPT, не token counting,
-  конфликтующие `service_tier`/Messages `speed` отклоняются до вызова плоскости.
+  конфликтующие `service_tier`/Messages `speed` отклоняются до вызова плоскости; GPT-only
+  проверка идёт после preferences/policy, то есть оценивает только исполняемые attempts.
+- `policy.rs` — закрытая схема OpenRouter-shaped `provider` preferences и bounded
+  клиент engine-owned `/internal/router/policy/preflight`: все значения auth-заголовков
+  передаются verbatim, fixed origins перебираются последовательно, `401` терминален,
+  malformed/mixed-version ответы fail closed. Credential и policy response не кэшируются.
+- `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
+  ranks и проверенный context window. Manifest валидируется при старте; отсутствующие live
+  members пропускаются, полностью пустой preset не исполняется.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.
 - `messages.rs` — тонкий Anthropic-shaped entrypoint для `POST /v1/messages` и
   `POST /v1/messages/count_tokens`: namespaced `openai/*` уходит на Codex plane
@@ -87,7 +99,8 @@
   Codex `originator`/User-Agent backend-native overlay `{models:[]}` (CLI объединяет его со
   встроенными metadata), не меняя OpenAI-list для остальных клиентов. Здесь же — общий для
   universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch
-  для запросов без fallback).
+  для запросов без fallback). `main.rs` добавляет только активные `preset/*` записи — если
+  aggregate snapshot содержит хотя бы один member соответствующего preset.
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.
@@ -107,8 +120,9 @@ messages- и messages/count_tokens-запросов (namespaced без catalog f
 alias через каталог, 400 невалидного/слишком большого тела, небуферизованный
 chat SSE), а также off-by-default fallback, preflight всей цепочки, точный
 retry matrix (`not_started`, 429, 4xx/5xx, ConnectionRefused/timeout), rewrite
-per-attempt body и обязательное снятие внутреннего заголовка. Живой PostgreSQL
-и подписки не нужны.
+per-attempt body, provider preferences, preset publication/expansion, mixed-version policy
+failover, terminal `401`, strict subset/empty `403`, Fast после policy filtering и обязательное
+снятие внутреннего заголовка. Живой PostgreSQL и подписки не нужны.
 Полная цепочка router→engine→mock upstream — `tests/universal_chat_smoke.sh`.
 
 ## Эксплуатация
@@ -121,5 +135,5 @@ per-attempt body и обязательное снятие внутреннего
 
 Fallback после выката остаётся выключен: отсутствие env-флага — контрактный
 default. Canary включает его только явным
-`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; поле `models` при выключенном флаге получает
-lane-shaped `400` до catalog fetch или обращения к плоскости.
+`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; любое присутствие `models`, `provider` или
+`preset/*` при выключенном флаге получает lane-shaped `400` до catalog/policy/network work.

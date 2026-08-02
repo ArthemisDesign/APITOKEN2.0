@@ -118,6 +118,24 @@ pub fn catalog_unavailable() -> Response {
     )
 }
 
+/// 503 account-policy authority unavailable before execution.
+pub fn policy_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "Account routing policy is temporarily unavailable.",
+            "type": "server_error", "code": "policy_unavailable"}}),
+    )
+}
+
+/// 403 no candidate in the logical chain is admitted by the account policy.
+pub fn policy_restricted() -> Response {
+    json_response(
+        StatusCode::FORBIDDEN,
+        json!({"error": {"message": "No requested model is allowed by the account routing policy.",
+            "type": "permission_error", "code": "policy_restricted"}}),
+    )
+}
+
 // ---------- Anthropic-конверт: universal messages dispatch (этап 5.1) ----------
 //
 // Путь `/v1/messages` говорит на Messages, поэтому синтетические ошибки его
@@ -151,6 +169,24 @@ pub fn messages_catalog_unavailable() -> Response {
         StatusCode::SERVICE_UNAVAILABLE,
         json!({"type": "error", "error": {"type": "api_error",
             "message": "The model catalog is temporarily unavailable."}}),
+    )
+}
+
+/// 503 policy preflight failure in the Anthropic Messages envelope.
+pub fn messages_policy_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"type": "error", "error": {"type": "api_error",
+            "message": "Account routing policy is temporarily unavailable."}}),
+    )
+}
+
+/// 403 strict policy removed every candidate, before any provider attempt.
+pub fn messages_policy_restricted() -> Response {
+    json_response(
+        StatusCode::FORBIDDEN,
+        json!({"type": "error", "error": {"type": "permission_error",
+            "message": "No requested model is allowed by the account routing policy."}}),
     )
 }
 

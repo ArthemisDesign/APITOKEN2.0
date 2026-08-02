@@ -1,8 +1,8 @@
 # ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
 
-Статус: фазы 6.1–6.3 и producer 6.4a реализованы; контракт фазы 6.4 зафиксирован
-2026-08-02, реализация идёт пакетами 6.4b–6.4c. Serial fallback остаётся выключенным по умолчанию
-до завершения policy/presets/telemetry canary. Реализация следует этому документу;
+Статус: фазы 6.1–6.3 и policy/presets consumer 6.4b реализованы; контракт фазы 6.4
+зафиксирован 2026-08-02, telemetry/GA пакет 6.4c ещё не выполнен. Serial fallback остаётся
+выключенным по умолчанию до завершения telemetry canary. Реализация следует этому документу;
 отклонение требует его пересмотра.
 
 Дата фактбазы: 2026-08-02 (повторный аудит production после фаз 6.1–6.3).
@@ -238,7 +238,19 @@ Producer endpoint реализован 2026-08-02 в `crates/server/src/router_p
 rollout безопасным; consumer всё равно понимает mixed-version окно и fail-closed перебирает
 плоскости вместо зависимости от Anthropic origin.
 
+Consumer реализован в `crates/router/src/policy.rs`: после построения эффективной цепочки router
+сначала пробует origin первой candidate lane, затем остальные candidate/fixed origins без
+повторов; запрос и ответ ограничены 64 KiB. Все значения `x-api-key`, `x-goog-api-key` и
+`authorization` сохраняются (OR-семантика engine auth), но прочие headers не копируются. Для
+`unrestricted` принимается только полный исходный список, для `strict` — точный ordered subset;
+unknown/duplicate/out-of-order ID, неизвестное поле/режим/версия или oversized body считаются
+producer-contract failure. Интеграционная TCP-матрица покрывает `404`, `5xx`, malformed и
+transport failover, terminal `401`, strict filter до attempt 1 и пустой `403` без исполнения.
+
 ### 5.2. Provider preferences и presets (контракт 6.4b)
+
+Реализовано 2026-08-02 в `crates/router/src/routing.rs`, `policy.rs`, `presets.rs` и compiled
+`crates/router/routing-presets.json`; rollout остаётся default-off до 6.4c.
 
 Universal body принимает optional OpenRouter-shaped объект `provider` только с полями:
 
@@ -263,6 +275,22 @@ aggregate snapshot содержит хотя бы один его member, а п�
 catalog_unavailable`. `preset/hermes` содержит только явно проверенные модели с контекстом не
 меньше 64K. Изменение модели/rank — обычное reviewed изменение manifest + документации и
 пересборка router, поэтому устаревшая модель не зашивается в недоступный host config.
+
+Текущие reviewed цепочки (первый live member — primary):
+
+| Preset | Ordered members |
+|---|---|
+| `preset/auto` | `anthropic/claude-sonnet-5` → `openai/gpt-5.6-terra` → `google/gemini-3.6-flash` |
+| `preset/quality` | `anthropic/claude-opus-5` → `openai/gpt-5.6-sol` → `google/gemini-3.1-pro-preview` |
+| `preset/fast` | `openai/gpt-5.6-luna` → `google/gemini-3.1-flash-lite` → `anthropic/claude-haiku-4-5-20251001` |
+| `preset/hermes` | `anthropic/claude-sonnet-5` → `openai/gpt-5.6-terra` → `google/gemini-3.6-flash` |
+
+Manifest содержит positive integer `price_rank`/`latency_rank` и проверенный
+`context_tokens` для всех 22 опубликованных на дату реализации catalog ID. Меньший rank
+предпочтительнее; это reviewed ordinal, а не вычисление цены конкретного запроса и не live
+telemetry. Поэтому новая catalog model без явного rank продолжает работать в обычном порядке,
+но `provider.sort` с ней fail closed получает `400` до policy/attempt. Startup-валидация требует
+ровно четыре reserved preset, уникальные ranked members и context ≥64K у каждого Hermes member.
 
 Любое присутствие `models`, `provider` или `preset/*` подчиняется одному rollout-флагу. Пока
 `CLAUDE_ROUTER_FALLBACK_ENABLED=false`, запрос отклоняется до catalog/policy/network work;
@@ -323,11 +351,11 @@ backlog. Production-флаг включается только последни�
 3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
    insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
-4. **6.4 — policies/presets + telemetry GA — 6.4a РЕАЛИЗОВАН 2026-08-02:**
+4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b РЕАЛИЗОВАНЫ 2026-08-02:**
    producer-first policy preflight одинаково доступен на всех fixed planes и покрыт bounded
-   validation, auth-lattice и real-SQLite strict-policy тестами. Остаются provider
-   preferences/presets (6.4b), metrics,
-   Prometheus, canary/load и отдельное включение production-флага (6.4c). До завершения всех
+   validation, auth-lattice и real-SQLite strict-policy тестами; router consumer применяет
+   preferences/presets и точный policy subset до attempt 1. Остаются metrics, Prometheus,
+   canary/load и отдельное включение production-флага (6.4c). До завершения всех
    пакетов fallback остаётся default-off.
 
 ## 8. Отвергнутые варианты

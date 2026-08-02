@@ -115,7 +115,8 @@ Control API движка использует только на чтение. С
   `crates/server::router_policy` на каждом fixed runtime: authenticated loopback-only
   `POST /internal/router/policy/preflight` читает customer key и один coherent pricing bundle через
   `AsyncBilling`, применяет engine-owned resolver и возвращает только bounded ordered allow-list.
-  Потребитель — `crates/router` (пакет 6.4b): после catalog/preferences, до attempt 1, без кэша
+  Потребитель — `crates/router` (6.4b реализован): после preset/catalog/preferences, до attempt 1,
+  с exact ordered-subset validation, sequential mixed-version origin failover и без кэша
   credential/policy и без импорта `forward`/`registry`. Публичные provider Caddy-vhost'ы не включают
   `/internal/*` в allowlist; stable origins 8790/8792/8794 доступны router'у по loopback. Контракт и
   mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
