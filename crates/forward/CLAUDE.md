@@ -256,6 +256,8 @@ Responses/Chat adapters, tenant-bound history, Codex admission/settlement и rec
 events; `codex/skin.rs` — Anthropic Skin (этап 5.1 docs/engine/UNIFIED_ROUTER.md, роуты
 `POST /v1/messages` и `/v1/messages/count_tokens` в `ProviderMode::OpenAi`, dispatch по
 модели — в router): Messages-запрос переводится в Responses JSON (strip `openai/`-префикса,
+`speed:"fast"` и совместимые `service_tier:"fast"|"priority"` нормализуются в canonical
+Responses `priority` до admission; effective tier возвращается в `usage.service_tier`,
 top-level `system` → `instructions` со склейкой text-блоков через \n\n, user text/image →
 `input_text`/`input_image` общим `canonical_image_part`, replay tool-истории — зеркало 4.2:
 `tool_use` → `function_call`, `tool_result` → `function_call_output`, входные

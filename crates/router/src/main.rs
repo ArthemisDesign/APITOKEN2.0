@@ -121,6 +121,7 @@ pub(crate) fn origins(state: &AppState) -> PlaneOrigins<'_> {
 /// ID namespaced; `anthropic/claude-*` принимается discovery Claude Code
 /// (он игнорирует ID вне префиксов claude/anthropic — см. документ).
 async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let codex_envelope = requests_codex_models_envelope(&headers);
     let auth = proxy::auth_passthrough(&headers);
     let aggregate = state.catalog.aggregate(&state.client, &origins(&state), &auth).await;
     if aggregate.auth_rejected {
@@ -129,6 +130,12 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     let entries = catalog::dedup(aggregate.entries);
     if entries.is_empty() {
         return error::catalog_unavailable();
+    }
+    // Codex 0.146 refreshes the provider URL using its backend-native `ModelsResponse` schema.
+    // Keep the authenticated aggregate fetch above as the router's auth boundary, then return the
+    // same empty native overlay as the OpenAI plane; Codex merges it with its bundled metadata.
+    if codex_envelope {
+        return axum::Json(serde_json::json!({"models": []})).into_response();
     }
     let data: Vec<_> =
         entries.iter().map(|(ns, e)| e.to_json(ns)).collect();
@@ -141,6 +148,15 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         );
     }
     response
+}
+
+fn requests_codex_models_envelope(headers: &HeaderMap) -> bool {
+    ["originator", "user-agent"].iter().any(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("codex"))
+    })
 }
 
 /// `GET /v1/models/{id}` — namespaced ID или нативный alias.
@@ -1773,6 +1789,32 @@ mod tests {
         // Auth passthrough: ключ клиента дошёл до плоскости каталога verbatim.
         let catalog_request = log_a.lock().unwrap().pop().expect("catalog fetch hit the plane");
         assert_eq!(catalog_request.path, "/v1/models?limit=1000");
+        assert_eq!(catalog_request.x_api_key.as_deref(), Some("sk-pool-secret"));
+    }
+
+    #[tokio::test]
+    async fn catalog_returns_codex_native_overlay_after_plane_auth() {
+        let (a, o, g, log_a, _, _) = three_catalog_planes().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .header("x-api-key", "sk-pool-secret")
+            .header("user-agent", "codex_cli_rs/0.146.0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap(),
+            serde_json::json!({"models": []})
+        );
+
+        let catalog_request = log_a
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("Codex discovery must still authenticate through a provider plane");
         assert_eq!(catalog_request.x_api_key.as_deref(), Some("sk-pool-secret"));
     }
 

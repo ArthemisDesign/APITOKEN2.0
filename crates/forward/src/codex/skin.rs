@@ -244,6 +244,24 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
     let mut responses = Map::new();
     responses.insert("model".to_string(), Value::String(model));
     responses.insert("input".to_string(), Value::Array(input));
+    // Anthropic-native harnesses opt into Fast with `speed: "fast"`; OpenAI-compatible
+    // harnesses commonly preserve `service_tier` even when they use a Messages wire. Accept both
+    // public spellings and hand the canonical request value to the shared Responses admission so
+    // reserve, settlement and public usage evidence all use the effective Fast tier.
+    let requested_fast = object
+        .get("speed")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("fast"))
+        || object
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                value.eq_ignore_ascii_case("fast")
+                    || value.eq_ignore_ascii_case("priority")
+            });
+    if requested_fast {
+        responses.insert("service_tier".to_string(), json!("priority"));
+    }
     if let Some(instructions) = instructions {
         responses.insert("instructions".to_string(), Value::String(instructions));
     }
@@ -795,10 +813,15 @@ fn parse_stop_sequences(value: Option<&Value>) -> Result<Vec<String>, Response> 
 /// Messages usage from the authoritative turn usage (mirror of `map_responses_usage` in
 /// `anthropic_responses.rs`): cache write/read surface only when non-zero, reasoning tokens
 /// land in `output_tokens_details.thinking_tokens`.
-fn messages_usage(usage: &CodexUsage) -> Value {
+fn messages_usage(usage: &CodexUsage, effective_service_tier: Option<&str>) -> Value {
     let mut mapped = json!({
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
+        "service_tier": if effective_service_tier == Some("priority") {
+            "priority"
+        } else {
+            "standard"
+        },
     });
     if usage.cache_write_input_tokens > 0 {
         mapped["cache_creation_input_tokens"] = Value::from(usage.cache_write_input_tokens);
@@ -937,7 +960,7 @@ fn completed_message(
         "content": blocks,
         "stop_reason": stop_reason,
         "stop_sequence": matched_stop.map(Value::String).unwrap_or(Value::Null),
-        "usage": messages_usage(&result.usage),
+        "usage": messages_usage(&result.usage, result.effective_service_tier.as_deref()),
     })
 }
 
@@ -1084,7 +1107,15 @@ async fn stream_messages(
                     "content": [],
                     "stop_reason": Value::Null,
                     "stop_sequence": Value::Null,
-                    "usage": {"input_tokens": 0, "output_tokens": 0}
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "service_tier": prepared
+                            .request
+                            .service_tier
+                            .as_deref()
+                            .unwrap_or("standard")
+                    }
                 }
             }),
         )
@@ -1310,7 +1341,10 @@ async fn stream_messages(
             json!({
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": Value::Null},
-                "usage": messages_usage(&result.usage)
+                "usage": messages_usage(
+                    &result.usage,
+                    result.effective_service_tier.as_deref()
+                )
             }),
         )
         .await
@@ -1593,6 +1627,37 @@ mod tests {
             body["input"],
             json!([{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]}])
         );
+    }
+
+    #[test]
+    fn messages_fast_aliases_translate_to_priority_service_tier() {
+        for (field, value) in [
+            ("speed", "fast"),
+            ("service_tier", "fast"),
+            ("service_tier", "priority"),
+        ] {
+            let mut body = json!({
+                "model": "openai/gpt-5.6",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            body[field] = json!(value);
+            let translated = ok_translated(body);
+            assert_eq!(
+                translated.responses["service_tier"],
+                "priority",
+                "{field}={value}"
+            );
+        }
+
+        let standard = ok_translated(json!({
+            "model": "openai/gpt-5.6",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "speed": "standard",
+            "service_tier": "default"
+        }));
+        assert!(standard.responses.get("service_tier").is_none());
     }
 
     #[test]
@@ -2014,12 +2079,13 @@ mod tests {
         // thinking-блок без signature (решение 6).
         assert!(blocks[0].get("signature").is_none());
 
-        let usage = messages_usage(&result.usage);
+        let usage = messages_usage(&result.usage, Some("priority"));
         assert_eq!(usage["input_tokens"], 100);
         assert_eq!(usage["output_tokens"], 20);
         assert_eq!(usage["cache_creation_input_tokens"], 10);
         assert_eq!(usage["cache_read_input_tokens"], 40);
         assert_eq!(usage["output_tokens_details"]["thinking_tokens"], 5);
+        assert_eq!(usage["service_tier"], "priority");
     }
 
     #[test]
@@ -2035,13 +2101,19 @@ mod tests {
 
     #[test]
     fn messages_usage_omits_zero_cache_and_reasoning() {
-        let usage = messages_usage(&CodexUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            ..CodexUsage::default()
-        });
-        assert_eq!(usage, json!({"input_tokens": 10, "output_tokens": 5}));
+        let usage = messages_usage(
+            &CodexUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                ..CodexUsage::default()
+            },
+            None,
+        );
+        assert_eq!(
+            usage,
+            json!({"input_tokens": 10, "output_tokens": 5, "service_tier": "standard"})
+        );
     }
 
     // ---------- SSE block emitter ----------

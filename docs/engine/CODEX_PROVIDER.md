@@ -227,6 +227,10 @@ token on every refresh with strict family reuse detection. The pool therefore:
   Pro profiles successfully served priority turns. Model discovery retains `service_tiers` and
   legacy `additional_speed_tiers` per profile, and Fast routing prefers catalogue-supported homes
   without allowing the non-authoritative completed field to break affinity or demote a profile.
+  This normalization applies to every GPT execution surface: native/universal Responses and Chat
+  accept `service_tier: "fast"|"priority"`; the Anthropic Messages skin additionally maps native
+  `speed: "fast"` (and the same `service_tier` aliases) to `priority`, including
+  `usage.service_tier` in its Anthropic-shaped response.
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.

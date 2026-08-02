@@ -1561,6 +1561,22 @@ mod tests {
     }
 
     #[test]
+    fn chat_accepts_namespaced_openai_catalog_ids() {
+        let parsed = parse_chat_request(
+            &gateway(),
+            json!({
+                "model":"openai/gpt-5.6",
+                "messages":[{"role":"user","content":"hello"}],
+                "service_tier":"fast"
+            }),
+        )
+        .expect("Chat must share Responses namespace resolution");
+
+        assert_eq!(parsed.responses.public_model.id, "gpt-5.6");
+        assert_eq!(parsed.responses.service_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
     fn chat_user_image_parts_translate_to_canonical_input_image() {
         let parsed = parse_chat_request(
             &gateway(),

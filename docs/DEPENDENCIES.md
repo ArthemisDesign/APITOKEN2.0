@@ -83,7 +83,10 @@ Control API движка использует только на чтение. С
   native и universal HTTP-поверхности, router потребляет их только через stable loopback
   origins. В частности, `/v1/messages/count_tokens` доступен на всех трёх плоскостях и
   выбирается по `model`: Anthropic native, локальный reserve-grade подсчёт Codex или
-  quota-free Gemini `:countTokens`. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
+  quota-free Gemini `:countTokens`. Router сохраняет universal body, поэтому плоскость снимает
+  собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane.
+  Агрегированный каталог остаётся OpenAI-shaped, кроме аутентифицированного Codex-native
+  `{models:[]}` overlay по harness identity. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
 - **Контракт `x-apitoken-execution-state` (плоскости → router, этап 6.1).** Производители —
   `crates/forward` (`proxy.rs`, `anthropic.rs`, `anthropic_responses.rs`, `codex/api.rs`,
   `codex/skin.rs`, `gemini/api.rs`, `gemini/chat.rs`, `gemini/responses.rs`,

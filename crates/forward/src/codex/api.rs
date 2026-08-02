@@ -846,10 +846,18 @@ pub(super) fn parse_responses_request(
     // SDK compatibility: parameters the transport cannot honor (sampling controls, token caps,
     // truncation, background mode, future fields, …) are accepted and ignored rather than
     // rejected, so stock SDKs and agent terminals never fail on parameters they send by default.
-    let model_id = required_string(object, "model")?;
+    let requested_model_id = required_string(object, "model")?;
+    // Universal router dispatch deliberately preserves the request body byte-for-byte. Each
+    // provider plane therefore owns resolution of its public namespace before admission; this is
+    // the OpenAI mirror of the Anthropic/Gemini adapters' prefix stripping.
+    let model_id = requested_model_id
+        .strip_prefix("openai/")
+        .unwrap_or(requested_model_id);
     let public_model = gateway.config().model(model_id).cloned().ok_or_else(|| {
         ApiError::not_found(
-            format!("The model '{model_id}' does not exist or you do not have access to it."),
+            format!(
+                "The model '{requested_model_id}' does not exist or you do not have access to it."
+            ),
             Some("model".to_string()),
         )
     })?;
@@ -3701,6 +3709,22 @@ mod tests {
             .unwrap();
             assert_eq!(parsed.service_tier, None, "{requested}");
         }
+    }
+
+    #[test]
+    fn responses_accept_namespaced_openai_catalog_ids() {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "openai/gpt-5.6",
+                "input": "hi",
+                "service_tier": "priority"
+            }),
+        )
+        .expect("the OpenAI plane must resolve the namespace published by the router catalog");
+
+        assert_eq!(parsed.public_model.id, "gpt-5.6");
+        assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
     }
 
     #[test]

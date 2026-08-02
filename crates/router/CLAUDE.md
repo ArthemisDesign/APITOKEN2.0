@@ -77,9 +77,11 @@
   (stored responses только `openai/*`, решение 5).
 - `catalog.rs` — единый `/v1/models`: агрегация трёх плоскостей, namespaced ID
   + aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
-  `x-apitoken-catalog-degraded`. Здесь же — общий для universal dispatch'ей
-  `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch для
-  запросов без fallback).
+  `x-apitoken-catalog-degraded`. `main.rs` после той же aggregate-auth проверки отвечает
+  Codex `originator`/User-Agent backend-native overlay `{models:[]}` (CLI объединяет его со
+  встроенными metadata), не меняя OpenAI-list для остальных клиентов. Здесь же — общий для
+  universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch
+  для запросов без fallback).
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.

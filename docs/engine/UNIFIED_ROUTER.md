@@ -171,6 +171,16 @@ POST /v1beta/models/{id}:countTokens
 Codex: требуется полноценный Responses API, а не адаптация Chat Completions — custom
 provider поддерживает только `wire_api="responses"` (это дефолт при omitted).
 
+Namespaced ID из агрегированного каталога — исполнимый контракт, а не только discovery metadata:
+router сохраняет universal request body, поэтому каждая плоскость снимает свой префикс до
+admission (`anthropic/`, `openai/`, `google/`). Для GPT Fast на Responses и Chat используются
+`service_tier: "fast"|"priority"`; Anthropic Messages harness может отправить нативный
+`speed: "fast"`, а `service_tier: "fast"|"priority"` принимается как совместимый alias. Все
+варианты нормализуются в effective `priority`, который определяет reserve, settlement и публичный
+`usage.service_tier`. `GET /v1/models` по Codex `originator`/User-Agent после обычной проверки ключа
+возвращает backend-native overlay `{models: []}`: Codex объединяет его со встроенным каталогом;
+обычные OpenAI/OpenRouter SDK по-прежнему получают агрегированный `{object:"list",data:[…]}`.
+
 ## Инварианты
 
 1. **Биллинг только в provider-плоскости.** Router не резервирует и не списывает деньги.
@@ -647,6 +657,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
    Responses JSON и идёт через тот же turn pipeline, что chat-адаптер (admission,
    affinity, reserve, run, settle по authoritative usage): strip `openai/`-префикса,
+   `speed:"fast"` и совместимые `service_tier:"fast"|"priority"` → canonical
+   Responses `service_tier:"priority"` (остальные/отсутствующие значения → Standard),
    top-level `system` (строка или text-блоки, склейка \n\n) → `instructions`, user
    text/image-блоки → `input_text`/`input_image` (общий `canonical_image_part`),
    assistant text → `output_text`, replay tool-истории — зеркало 4.2 (`tool_use` →
@@ -669,7 +681,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `input`, невалидный JSON → `{}`), `reasoning` → thinking-блоки БЕЗ signature
    (summary-парты склеиваются \n\n), usage → Messages usage (cache write/read →
    `cache_creation_input_tokens`/`cache_read_input_tokens` при >0, reasoning →
-   `output_tokens_details.thinking_tokens`), stop_reason: function_call в output →
+   `output_tokens_details.thinking_tokens`, effective tier → `service_tier`), stop_reason:
+   function_call в output →
    `tool_use`, срез output-бюджета → `max_tokens`, совпавшая stop_sequence →
    `stop_sequence`, иначе `end_turn`. SSE: `message_start` с нулевым usage
    (authoritative usage существует только в конце turn — задокументированное
