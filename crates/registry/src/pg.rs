@@ -8447,9 +8447,13 @@ mod tests {
         let mut pg = PgStore::connect(&url).unwrap();
         pg.migrate().unwrap();
         pg.client.batch_execute("BEGIN").unwrap();
+        // Other destructive matrices may leave a strict binding committed. Remove the
+        // account-owned policy graph inside this rollback-only fixture before inserting a
+        // legacy runtime row, so the advisory lock also provides order-independent isolation.
         pg.client
             .batch_execute(
-                "TRUNCATE engine_instances RESTART IDENTITY CASCADE;
+                "TRUNCATE accounts RESTART IDENTITY CASCADE;
+                 TRUNCATE engine_instances RESTART IDENTITY CASCADE;
 
                  INSERT INTO accounts(
                      id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created
@@ -12115,14 +12119,17 @@ mod tests {
             .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
             .unwrap();
         pg.migrate().unwrap();
+        // A previously committed strict binding rejects a policy-incapable runtime before this
+        // matrix can exercise the transition itself. Clear the account graph first so execution
+        // order across serialized destructive tests cannot change the fixture's starting state.
         pg.client
             .batch_execute(
-                "TRUNCATE engine_instances RESTART IDENTITY CASCADE;
+                "TRUNCATE accounts RESTART IDENTITY CASCADE;
+                 TRUNCATE engine_instances RESTART IDENTITY CASCADE;
                  ALTER SEQUENCE engine_owner_epoch_seq RESTART WITH 2;
                  INSERT INTO engine_instances(
                      instance_id,owner_epoch,lease_until,started_ts,updated_ts
                  ) VALUES('stage9-guard-engine',1,9999999999,1,1);
-                 TRUNCATE accounts RESTART IDENTITY CASCADE;
                  TRUNCATE pricing_catalog_versions,provider_switch_versions
                  RESTART IDENTITY CASCADE;
                  INSERT INTO accounts(
