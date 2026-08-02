@@ -222,15 +222,15 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         with self.assertRaises(run_live.UnboundedCostError):
             rates.upper_bound(101, 5, "search")
         grounded = dataclasses.replace(rates, search_unit="grounded_prompt")
-        self.assertEqual(grounded.upper_bound(101, 5, "search"), 101 * 20 + 5 * 30 + 100)
+        self.assertEqual(grounded.upper_bound(101, 5, "search"), 1_000 * 20 + 5 * 30 + 100)
         self.assertEqual(
             rates.upper_bound(10, 5, "image", "4K"),
-            10 * 2 + 5 * 3 + 2_520 * 4,
+            1_000 * 20 + 5 * 30 + 2_520 * 4,
         )
         with self.assertRaises(run_live.UnboundedCostError):
             rates.upper_bound(10, 5, "image", "8K")
 
-    def test_tool_upper_bound_covers_provider_injected_prompt_at_full_context_limit(self):
+    def test_every_generation_upper_bound_covers_hidden_provider_prompt_at_full_context_limit(self):
         rates = run_live.ModelRates(
             tariff_schedule_id="google/test/v1",
             input_token_limit=1_000,
@@ -250,7 +250,9 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             search=100,
             max_output_tokens=1_000,
         )
-        self.assertEqual(rates.upper_bound(10, 5, "tool"), 1_000 * 20 + 5 * 30)
+        for kind in ("fresh", "thinking", "cache", "audio", "tool", "long"):
+            with self.subTest(kind=kind):
+                self.assertEqual(rates.upper_bound(10, 5, kind), 1_000 * 20 + 5 * 30)
         with self.assertRaises(run_live.UnboundedCostError):
             rates.upper_bound(1_001, 5, "fresh")
 

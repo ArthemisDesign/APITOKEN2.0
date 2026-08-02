@@ -30,9 +30,11 @@ Backend estimator остаётся workload-dependent: он оценивает A
   выбирает ровно его, не spill/rebind-ится и не обходит auth death, cooling или provider zero.
   Заголовок никогда не передаётся Google.
 - Перед dispatch `countTokens` и официальный effective-dated rate card строят worst-case bound.
-  Поскольку `countTokens` не возвращает отдельный `toolUsePromptTokenCount`, function-tool leg
-  резервирует полный официальный input-context limit модели: это hard ceiling и для скрытого
-  provider-injected tool prompt, а не предположение о размере JSON declaration.
+  Code Assist добавляет provider-owned instructions, которых нет в результате `countTokens`; live
+  cache-leg уже доказал такой hidden input. Поэтому каждый generation leg резервирует полный
+  официальный input-context limit модели. Это единственный hard ceiling и для обычного скрытого
+  prompt, и для отсутствующего в `countTokens` отдельного `toolUsePromptTokenCount`, а не
+  предположение о размере клиентского payload или JSON declaration.
   Search, тарифицируемый один раз за grounded prompt, резервирует один официальный SKU. Для Gemini 3
   Google тарифицирует каждую внутреннюю query, но не публикует hard fanout ceiling: такой Search
   runner записывает как unavailable и не отправляет платный запрос. Image использует принудительно

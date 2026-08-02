@@ -263,10 +263,11 @@ class ModelRates:
                 f"countTokens returned {input_tokens}, above model input limit "
                 f"{self.input_token_limit}"
             )
-        # Google does not expose toolUsePromptTokenCount from countTokens. A tool request therefore
-        # reserves the model's complete accepted input context, which is the only hard provider
-        # ceiling that also covers any provider-injected function-use prompt.
-        bounded_input_tokens = self.input_token_limit if kind == "tool" else input_tokens
+        # Code Assist may prepend provider-owned instructions that countTokens does not report.
+        # Live evidence has shown this even on ordinary cache legs, not only in
+        # toolUsePromptTokenCount. The model's complete accepted input context is therefore the
+        # only proved pre-dispatch ceiling for every paid generation request.
+        bounded_input_tokens = self.input_token_limit
         long = bounded_input_tokens > self.long_threshold
         input_rates = (
             (self.long_input, self.long_audio_input, self.long_cached_input, self.long_cached_audio_input)
@@ -832,7 +833,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "uuidv4-request-attribution",
             "healthy-authority-and-empty-fifo",
             "countTokens-plus-official-rate-card",
-            "full-input-context-ceiling-for-tool-prompts",
+            "full-input-context-ceiling-for-hidden-provider-prompts",
             "single-aggregate-budget",
             "no-paid-request-retry",
         ],

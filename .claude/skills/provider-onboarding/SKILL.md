@@ -113,6 +113,9 @@ Require all of these safeguards:
   failure;
 - enough delay/polling for provider quota resolution and backend debounce without treating a missing
   delta as zero;
+- include provider-owned hidden/system/tool prompt input in the pre-dispatch bound. If the free token
+  counter omits any such leg and no smaller provider-enforced ceiling is proved, reserve the model's
+  complete accepted input-context limit for every affected generation request;
 - dispatch a paid tool/search capability only when official or provider-enforced facts prove a
   finite per-request unit ceiling. A conservative fanout guess is not a hard budget guard: record
   the capability as unavailable and spend nothing until the ceiling is proved;
