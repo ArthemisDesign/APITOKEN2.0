@@ -274,10 +274,14 @@ top-level `system` → `instructions` со склейкой text-блоков ч
 thinking/redacted_thinking дропаются — решение 6; `tools[]` → function tools, `tool_choice`
 → default/required/none/named + `parallel_tool_calls`, `thinking` → `reasoning.effort`
 lossy по порогам <4096 → low / <16384 → medium / иначе high, <1024 → 400; capability
-matrix: не-дефолтный `cache_control` где угодно, `context_management`, `mcp_servers`,
-`container`, `output_config` → `400 invalid_request_error`, а `metadata` (включая
-`user_id`), sampling controls и неизвестные поля принимаются и игнорируются — та же
-leniency, что у chat.rs, иначе сломался бы Claude Code с его `metadata.user_id`) и идёт
+matrix: не-дефолтный `cache_control` где угодно, stateful/неизвестный `context_management`,
+`mcp_servers`, `container`, `output_config` → `400 invalid_request_error`. Текущий bounded
+no-op Claude Code `context_management` (`edits:[]` либо ровно
+`clear_thinking_20251015` + `keep:"all"`) принимается и игнорируется: входные thinking-блоки
+этот stateless adapter и так дропает, а любое расширение формы остаётся fail-closed.
+`metadata` (включая `user_id`), sampling controls и неизвестные поля принимаются и
+игнорируются — та же leniency, что у chat.rs, иначе сломался бы Claude Code с его
+`metadata.user_id`) и идёт
 через ТОТ ЖЕ turn pipeline, что chat.rs (admission, affinity, reserve, run, settle);
 ответ переводится СНАРУЖИ — output items → Messages content blocks (message → text-блок
 на позиции первого message item, function_call → tool_use, reasoning → thinking БЕЗ

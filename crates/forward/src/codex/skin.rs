@@ -29,11 +29,14 @@
 //! Responses parser).
 //!
 //! Capability matrix (decision 3, fail-closed modulo defaults): non-default `cache_control`
-//! anywhere (system, content blocks, tools — Codex prompt caching is automatic),
-//! `context_management`, `mcp_servers`, `container`, `output_config` →
-//! `400 invalid_request_error` naming the parameter in the message. `metadata` (including
-//! `user_id`), `temperature`/`top_p`/`top_k` and unknown fields are accepted and ignored,
-//! matching the Chat adapter's leniency for controls the transport cannot honor. Every error
+//! anywhere (system, content blocks, tools — Codex prompt caching is automatic), stateful or
+//! unknown `context_management`, `mcp_servers`, `container`, `output_config` →
+//! `400 invalid_request_error` naming the parameter in the message. Claude Code's bounded
+//! no-op context form (`clear_thinking_20251015` with `keep:"all"`) and an empty edits list are
+//! accepted and ignored; the adapter already drops replayed thinking and never claims server-side
+//! context mutation. `metadata` (including `user_id`), `temperature`/`top_p`/`top_k` and unknown
+//! fields are accepted and ignored, matching the Chat adapter's leniency for controls the
+//! transport cannot honor. Every error
 //! of this endpoint — adapter validation, shared parser, admission, billing — is rebuilt in
 //! the Anthropic envelope (`{"type":"error","error":{"type":...,"message":...}}`) with status
 //! and `Retry-After` preserved, because the endpoint speaks Messages (Claude Code recovers
@@ -307,7 +310,7 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
 /// the lenient open list below (accepted and ignored, like `chat.rs`).
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
     let rules: [(&str, fn(&Value) -> bool); 4] = [
-        ("context_management", |value| value.is_null()),
+        ("context_management", is_ignorable_context_management),
         ("mcp_servers", |value| {
             value.is_null() || value.as_array().is_some_and(Vec::is_empty)
         }),
@@ -324,6 +327,36 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
         }
     }
     Ok(())
+}
+
+/// The stateless Responses transport cannot apply Anthropic context edits. Claude Code 2.1.220
+/// nevertheless sends this exact no-op form on every generation request. Accept only an empty
+/// edit list or the observed `clear_thinking` + `keep:"all"` form; every stateful, extended or
+/// future shape stays fail-closed until it has authoritative semantics. Replayed thinking blocks
+/// are already dropped by this adapter, so ignoring the accepted form does not create hidden
+/// server-side conversation state.
+fn is_ignorable_context_management(value: &Value) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() != 1 {
+        return false;
+    }
+    let Some(edits) = object.get("edits").and_then(Value::as_array) else {
+        return false;
+    };
+    match edits.as_slice() {
+        [] => true,
+        [edit] => edit.as_object().is_some_and(|edit| {
+            edit.len() == 2
+                && edit.get("type").and_then(Value::as_str) == Some("clear_thinking_20251015")
+                && edit.get("keep").and_then(Value::as_str) == Some("all")
+        }),
+        _ => false,
+    }
 }
 
 /// Non-default `cache_control` is rejected everywhere (system, content blocks, tools):
@@ -1964,9 +1997,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capability_matrix_rejects_non_default_values() {
+    async fn capability_matrix_rejects_unsupported_values() {
         for (param, value) in [
-            ("context_management", json!({"edits": []})),
+            ("context_management", json!({"edits": [{"type": "clear_thinking_20251015", "keep": "none"}]})),
             ("mcp_servers", json!([{"name": "srv"}])),
             ("container", json!({"id": "c"})),
             ("output_config", json!({"effort": "high"})),
@@ -1980,11 +2013,49 @@ mod tests {
             assert_eq!(json["error"]["type"], "invalid_request_error", "{param}");
             assert!(json["error"]["message"].as_str().unwrap().contains(param), "{json}");
         }
-        // Дефолтные значения (пустой mcp_servers) принимаются.
-        ok_translated(json!({
-            "model": "m", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
-            "mcp_servers": []
-        }));
+        for context_management in [
+            json!(null),
+            json!({"edits": []}),
+            json!({"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]}),
+        ] {
+            let parsed = ok_translated(json!({
+                "model": "m", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+                "context_management": context_management,
+                "mcp_servers": []
+            }));
+            assert!(parsed.responses.get("context_management").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn context_management_near_misses_stay_fail_closed() {
+        for value in [
+            json!({"edits": [{"type": "clear_thinking_20251015", "keep": "all", "future": true}]}),
+            json!({"edits": [{"type": "clear_tool_uses_20250919", "keep": "all"}]}),
+            json!({"edits": [
+                {"type": "clear_thinking_20251015", "keep": "all"},
+                {"type": "clear_thinking_20251015", "keep": "all"}
+            ]}),
+            json!({"edits": [], "future": true}),
+            json!([]),
+        ] {
+            let (status, json) = expect_err(json!({
+                "model": "m", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+                "context_management": value
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{json}");
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("context_management"),
+                "{json}"
+            );
+        }
     }
 
     #[test]

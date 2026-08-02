@@ -84,7 +84,10 @@ Control API движка использует только на чтение. С
   origins. В частности, `/v1/messages/count_tokens` доступен на всех трёх плоскостях и
   выбирается по `model`: Anthropic native, локальный reserve-grade подсчёт Codex или
   quota-free Gemini `:countTokens`. Router сохраняет universal body, поэтому плоскость снимает
-  собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane. Для
+  собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane.
+  Codex Messages skin также принимает и снимает только bounded no-op `context_management`
+  текущего Claude Code (`edits:[]` или exact `clear_thinking_20251015` + `keep:"all"`), а
+  stateful/неизвестные формы оставляет fail-closed. Для
   harness без arbitrary body fields router принимает `x-apitoken-service-tier: fast|priority`
   только на исполняемой GPT-цепочке, превращает его в body `service_tier:"priority"` и снимает
   сам заголовок до вызова плоскости; Codex plane остаётся authority reserve/settlement/effective tier.
