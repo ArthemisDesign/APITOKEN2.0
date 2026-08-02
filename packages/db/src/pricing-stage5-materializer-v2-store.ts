@@ -100,7 +100,7 @@ function planArtifact(plan: Stage5V2Plan): Record<string, unknown> {
   return artifact;
 }
 
-async function readCommerceAndServiceSnapshot(
+export async function readStage5V2CommerceAndServiceSnapshot(
   client: PoolClient,
 ): Promise<{
   commerce: Stage5V2CommerceSnapshot;
@@ -219,11 +219,11 @@ export async function collectStage5V2Plan(
     engine.getPricingReleaseHeadV2(),
   ]);
   const client = await database.pool.connect();
-  let snapshot: Awaited<ReturnType<typeof readCommerceAndServiceSnapshot>>;
+  let snapshot: Awaited<ReturnType<typeof readStage5V2CommerceAndServiceSnapshot>>;
   let reservation: { target: number; recovery: number };
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    snapshot = await readCommerceAndServiceSnapshot(client);
+    snapshot = await readStage5V2CommerceAndServiceSnapshot(client);
     reservation = await generationReservation(
       client,
       headFirst?.active_generation ?? 0,
@@ -965,7 +965,7 @@ async function persistBlockedPlan(database: Database, plan: Stage5V2Plan): Promi
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('pricing-stage5-v2:materialize', 0))");
-    const current = await readCommerceAndServiceSnapshot(client);
+    const current = await readStage5V2CommerceAndServiceSnapshot(client);
     if (stage5V2CommerceInventoryDigest(current.commerce) !== plan.commerce_inventory_digest
         || current.service.inventory_digest !== plan.service_inventory_digest) {
       throw new Stage5MaterializerV2Error(
@@ -990,7 +990,7 @@ async function persistLocalPlan(database: Database, plan: Stage5V2Plan): Promise
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('pricing-stage5-v2:materialize', 0))");
-    const current = await readCommerceAndServiceSnapshot(client);
+    const current = await readStage5V2CommerceAndServiceSnapshot(client);
     if (stage5V2CommerceInventoryDigest(current.commerce) !== plan.commerce_inventory_digest
         || current.service.inventory_digest !== plan.service_inventory_digest) {
       throw new Stage5MaterializerV2Error(

@@ -1,451 +1,673 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import {
-  MAIN_PRICING_PRODUCT_ID,
-  OPENKEYS_PRICING_PRODUCT_ID,
-} from "@claude-api/contracts";
+import JSONbigFactory from "json-bigint";
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import type { Database } from "./client.js";
+import {
+  scanStage5OpenKeysInventoryV2,
+  stage5V2CommerceInventoryDigest,
+  stage5V2Digest,
+  type Stage5V2OpenKeysReader,
+} from "./pricing-stage5-materializer-v2.js";
+import { readStage5V2CommerceAndServiceSnapshot } from "./pricing-stage5-materializer-v2-store.js";
 
-const STAGE8_EVIDENCE_SCHEMA_VERSION = 1;
-const REQUIRED_PRODUCTS = [MAIN_PRICING_PRODUCT_ID, OPENKEYS_PRICING_PRODUCT_ID] as const;
-const BLOCKER_SAMPLE_LIMIT = 20;
+const JSONbig = JSONbigFactory({ alwaysParseAsBig: true, useNativeBigInt: true });
+const ENGINE_EVIDENCE_DOMAIN = Buffer.from(
+  "claude-api/multi-discount-stage8/engine-evidence/v2\0",
+  "utf8",
+);
+const STAGE8_COMBINED_SCHEMA_VERSION = 2;
+const STAGE8_ENGINE_SCHEMA_VERSION = 2n;
+const STAGE8_ENGINE_MAX_AGE_SECONDS = 120n;
+const STAGE8_CLOCK_SKEW_SECONDS = 5n;
+const STAGE8_EVIDENCE_TTL_SECONDS = 300;
+const SHA256_V2_PATTERN = /^sha256:v2:[0-9a-f]{64}$/;
 
-interface IdentityRow {
-  subject: string;
-}
+const sha256V1Schema = z.string().regex(/^sha256:v1:[0-9a-f]{64}$/);
+const sha256V2Schema = z.string().regex(SHA256_V2_PATTERN);
+const nonEmptyStringSchema = z.string().min(1);
+const nonNegativeI64Schema = z.bigint().min(0n).max(9_223_372_036_854_775_807n);
+const positiveI64Schema = nonNegativeI64Schema.refine((value) => value > 0n);
+const basisPointsSchema = nonNegativeI64Schema.refine((value) => value <= 10_000n);
 
-export interface Stage8CommerceBlocker {
+const engineBlockerSchema = z.object({
+  code: nonEmptyStringSchema,
+  count: positiveI64Schema,
+  subject_digests: z.array(sha256V1Schema).max(20),
+}).strict();
+
+const engineCatalogSchema = z.object({
+  product_id: nonEmptyStringSchema,
+  generation: positiveI64Schema,
+  schema_version: positiveI64Schema,
+  capability_generation: positiveI64Schema,
+  capability_digest: nonEmptyStringSchema,
+  content_digest: nonEmptyStringSchema,
+  enabled_entries: nonNegativeI64Schema,
+}).strict();
+
+const engineSwitchSchema = z.object({
+  generation: positiveI64Schema,
+  schema_version: positiveI64Schema,
+  capability_generation: positiveI64Schema,
+  capability_digest: nonEmptyStringSchema,
+  content_digest: nonEmptyStringSchema,
+  entries: nonNegativeI64Schema,
+}).strict();
+
+const engineRuntimeCapabilitySchema = z.object({
+  schema_version: positiveI64Schema,
+  generation: positiveI64Schema,
+  digest: nonEmptyStringSchema,
+}).strict();
+
+const engineRuntimeManifestSchema = z.object({
+  generation: positiveI64Schema,
+  digest: nonEmptyStringSchema,
+  capabilities: z.array(engineRuntimeCapabilitySchema).min(1),
+}).strict();
+
+const engineReleaseHeadSchema = z.object({
+  active_generation: positiveI64Schema,
+  active_digest: nonEmptyStringSchema,
+  head_version: positiveI64Schema,
+  updated_ts: positiveI64Schema,
+}).strict();
+
+const engineReleasePairSchema = z.object({
+  target_generation: positiveI64Schema,
+  target_digest: sha256V2Schema.nullable(),
+  recovery_generation: positiveI64Schema,
+  recovery_digest: sha256V2Schema.nullable(),
+  recovery_link_digest: sha256V2Schema.nullable(),
+  inventory_digest: sha256V2Schema.nullable(),
+  funding_digest: sha256V2Schema.nullable(),
+  target_assignment_count: nonNegativeI64Schema,
+  recovery_assignment_count: nonNegativeI64Schema,
+  active_head: engineReleaseHeadSchema.nullable(),
+}).strict();
+
+const engineFinancialSampleSchema = z.object({
+  subject_digest: sha256V1Schema,
+  evaluation_digest: nonEmptyStringSchema,
+  provider_id: z.enum(["anthropic", "openai", "google"]),
+  account_class: z.enum(["b2c", "b2b", "openkeys", "service"]),
+  authorized_multiplier_bp: basisPointsSchema,
+  payable_multiplier_bp: basisPointsSchema,
+  official_hold_nano: nonNegativeI64Schema,
+  legacy_hold_nano: nonNegativeI64Schema,
+  policy_hold_nano: nonNegativeI64Schema,
+  comparison_result: z.enum(["equal", "different"]),
+}).strict();
+
+const countRecordSchema = z.record(z.string().min(1), nonNegativeI64Schema);
+const engineCountsSchema = z.object({
+  total_accounts: nonNegativeI64Schema,
+  active_accounts: nonNegativeI64Schema,
+  account_classes: countRecordSchema,
+  reconciled_accounts: nonNegativeI64Schema,
+  snapshots_by_provider: countRecordSchema,
+  evaluations_by_outcome: countRecordSchema,
+  comparisons: countRecordSchema,
+  scalar_parity_rows: nonNegativeI64Schema,
+  policy_divergence_rows: nonNegativeI64Schema,
+  gemini_usage_rows: nonNegativeI64Schema,
+  gemini_outbox_rows: nonNegativeI64Schema,
+  live_runtime_instances: nonNegativeI64Schema,
+  release_capable_runtime_instances: nonNegativeI64Schema,
+  legacy_inflight_reservations: nonNegativeI64Schema,
+  legacy_inflight_outbox_rows: nonNegativeI64Schema,
+}).strict();
+
+const stage8EngineEvidenceV2Schema = z.object({
+  schema_version: z.literal(STAGE8_ENGINE_SCHEMA_VERSION),
+  captured_ts: positiveI64Schema,
+  window_start_ts: positiveI64Schema,
+  window_end_ts: positiveI64Schema,
+  min_samples_per_provider: positiveI64Schema,
+  gemini_client_admissions: nonNegativeI64Schema,
+  passed: z.boolean(),
+  release: engineReleasePairSchema,
+  runtime_manifest: engineRuntimeManifestSchema,
+  catalogs: z.array(engineCatalogSchema),
+  switches: engineSwitchSchema.nullable(),
+  counts: engineCountsSchema,
+  financial_samples: z.array(engineFinancialSampleSchema).max(1_000),
+  engine_inventory_digest: sha256V2Schema,
+  funding_digest: sha256V2Schema,
+  shadow_digest: sha256V2Schema,
+  runtime_floor_digest: sha256V2Schema,
+  legacy_inflight_count: nonNegativeI64Schema,
+  blockers: z.array(engineBlockerSchema),
+  evidence_digest: sha256V2Schema,
+}).strict().superRefine((report, context) => {
+  if (report.window_end_ts <= report.window_start_ts || report.window_end_ts > report.captured_ts) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "invalid Stage 8 evidence window" });
+  }
+  if (report.release.recovery_generation <= report.release.target_generation) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "invalid target/recovery order" });
+  }
+  const legacyCount = report.counts.legacy_inflight_reservations
+    + report.counts.legacy_inflight_outbox_rows;
+  if (legacyCount !== report.legacy_inflight_count) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "legacy inflight count mismatch" });
+  }
+  if (report.passed !== (report.blockers.length === 0 && report.legacy_inflight_count === 0n)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "passed/blocker state mismatch" });
+  }
+});
+
+export type Stage8EngineEvidenceV2 = z.infer<typeof stage8EngineEvidenceV2Schema>;
+
+export interface Stage8CombinedBlocker {
+  source: "commerce" | "engine";
   code: string;
-  count: number;
+  count: string;
   subject_digests: string[];
 }
 
-export interface Stage8CommerceEvidence {
-  schema_version: 1;
-  captured_at: string;
+export interface Stage8CombinedEvidenceV2 {
+  schema_version: 2;
+  observed_at: string;
+  valid_until: string;
   passed: boolean;
-  heads: {
-    capability: { generation: string; content_digest: string } | null;
-    catalogs: Array<{
-      product_id: string;
-      generation: string;
-      schema_version: string;
-      capability_generation: string;
-      capability_digest: string;
-      content_digest: string;
-    }>;
-    switches: {
-      generation: string;
-      schema_version: string;
-      capability_generation: string;
-      capability_digest: string;
-      content_digest: string;
-    } | null;
+  write_result: "stored" | "unchanged" | "not_persisted";
+  source: {
+    engine_evidence_digest: string;
+    engine_captured_ts: string;
+    engine_window_start_ts: string;
+    engine_window_end_ts: string;
   };
-  counts: {
-    active_commerce_accounts: number;
-    account_classes: Record<string, number>;
-    active_service_bindings: number;
-    active_invitations: number;
-    catalog_jobs: Record<string, number>;
-    switch_jobs: Record<string, number>;
-    policy_jobs: Record<string, number>;
+  releases: {
+    target: { generation: string; commerce_digest: string | null; engine_digest: string | null };
+    recovery: { generation: string; commerce_digest: string | null; engine_digest: string | null };
   };
-  blockers: Stage8CommerceBlocker[];
+  inventories: {
+    commerce_digest: string;
+    engine_digest: string;
+    openkeys_digest: string;
+    service_digest: string;
+  };
+  sales_contract_digest: string;
+  funding_digest: string;
+  shadow_digest: string;
+  runtime_floor_digest: string;
+  legacy_inflight_count: string;
+  blocker_count: string;
+  blockers: Stage8CombinedBlocker[];
   evidence_digest: string;
+}
+
+interface ReleaseRow {
+  generation: string;
+  release_kind: "target" | "recovery";
+  status: string;
+  schema_version: string;
+  commerce_inventory_digest: string;
+  engine_inventory_digest: string;
+  openkeys_inventory_digest: string;
+  service_inventory_digest: string;
+  policy_manifest_digest: string;
+  assignment_manifest_digest: string;
+  funding_manifest_digest: string | null;
+  engine_release_digest: string | null;
+  content_digest: string;
+  assignment_count: string;
+}
+
+interface ReleaseAssignmentLineageRow {
+  release_generation: string;
+  engine_account_id: string;
+  account_class: string;
+  owner_context: string;
+  owner_id: string;
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+  billing_mode: string;
+  funding_generation: string | null;
+  purpose: string | null;
+  responsible: string | null;
+}
+
+interface StoredEvidenceRow {
+  evidence_digest: string;
+  target_generation: string;
+  target_digest: string;
+  recovery_generation: string;
+  recovery_digest: string;
+  commerce_inventory_digest: string;
+  engine_inventory_digest: string;
+  openkeys_inventory_digest: string;
+  sales_contract_digest: string;
+  funding_digest: string;
+  shadow_digest: string;
+  runtime_floor_digest: string;
+  legacy_inflight_count: string;
+  blocker_count: string;
+  passed: boolean;
+  observed_at: Date;
+  valid_until: Date;
+}
+
+const SALES_CONTRACT_IDENTITY = {
+  schema_version: 2,
+  eligible_account_class: "b2c",
+  commission_basis: "paid_funded_nano",
+  pricing_mode_affects_eligibility: false,
+  welcome_bonus_eligible: false,
+} as const;
+
+export const STAGE8_SALES_CONTRACT_DIGEST = stage5V2Digest(
+  "stage8-sales-contract",
+  SALES_CONTRACT_IDENTITY,
+);
+
+export class Stage8EvidenceV2Error extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "Stage8EvidenceV2Error";
+  }
 }
 
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-function canonicalValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => compareUtf8(left, right))
-        .map(([key, nested]) => [key, canonicalValue(nested)]),
+function orderedCountRecord(record: Record<string, bigint>): Record<string, bigint> {
+  return Object.fromEntries(
+    Object.entries(record).sort(([left], [right]) => compareUtf8(left, right)),
+  );
+}
+
+function orderedEngineDigestValue(report: Stage8EngineEvidenceV2): Stage8EngineEvidenceV2 {
+  return {
+    ...report,
+    counts: {
+      ...report.counts,
+      account_classes: orderedCountRecord(report.counts.account_classes),
+      snapshots_by_provider: orderedCountRecord(report.counts.snapshots_by_provider),
+      evaluations_by_outcome: orderedCountRecord(report.counts.evaluations_by_outcome),
+      comparisons: orderedCountRecord(report.counts.comparisons),
+    },
+    evidence_digest: "",
+  };
+}
+
+export function stage8EngineEvidenceDigestV2(report: Stage8EngineEvidenceV2): string {
+  const encoded = Buffer.from(JSONbig.stringify(orderedEngineDigestValue(report)), "utf8");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(encoded.length));
+  const hex = createHash("sha256")
+    .update(ENGINE_EVIDENCE_DOMAIN)
+    .update(length)
+    .update(encoded)
+    .digest("hex");
+  return `sha256:v2:${hex}`;
+}
+
+function validateEngineEvidence(value: unknown): Stage8EngineEvidenceV2 {
+  const report = stage8EngineEvidenceV2Schema.parse(value);
+  if (stage8EngineEvidenceDigestV2(report) !== report.evidence_digest) {
+    throw new Stage8EvidenceV2Error(
+      "engine_evidence_digest_mismatch",
+      "Stage 8 engine evidence does not match its canonical v2 digest",
     );
+  }
+  return report;
+}
+
+export function parseStage8EngineEvidenceV2(raw: string): Stage8EngineEvidenceV2 {
+  let value: unknown;
+  try {
+    value = JSONbig.parse(raw);
+  } catch (error) {
+    throw new Stage8EvidenceV2Error(
+      "engine_evidence_json_invalid",
+      `Stage 8 engine evidence is not valid integer-preserving JSON: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+  try {
+    return validateEngineEvidence(value);
+  } catch (error) {
+    if (error instanceof Stage8EvidenceV2Error) throw error;
+    throw new Stage8EvidenceV2Error(
+      "engine_evidence_shape_invalid",
+      `Stage 8 engine evidence has an invalid schema-v2 shape: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+}
+
+function localBlocker(code: string, subjects: readonly string[]): Stage8CombinedBlocker | null {
+  const unique = [...new Set(subjects)].sort(compareUtf8);
+  if (unique.length === 0) return null;
+  return {
+    source: "commerce",
+    code,
+    count: String(unique.length),
+    subject_digests: unique.slice(0, 20).map((subject) =>
+      stage5V2Digest("stage8-commerce-subject", subject)),
+  };
+}
+
+function pushLocalBlocker(
+  blockers: Stage8CombinedBlocker[],
+  code: string,
+  subjects: readonly string[],
+): void {
+  const candidate = localBlocker(code, subjects);
+  if (candidate) blockers.push(candidate);
+}
+
+function requireReleaseDigest(value: string | null, label: string): string | null {
+  if (value === null) return null;
+  if (!SHA256_V2_PATTERN.test(value)) {
+    throw new Stage8EvidenceV2Error("release_digest_invalid", `${label} is not a canonical sha256:v2 digest`);
   }
   return value;
 }
 
-function evidenceDigest(value: unknown): string {
-  const canonical = JSON.stringify(canonicalValue(value));
-  return `sha256:v1:${createHash("sha256")
-    .update("multi-discount-stage8:commerce-evidence\n", "utf8")
-    .update(canonical, "utf8")
-    .digest("hex")}`;
+function sameReleaseLineage(left: ReleaseRow, right: ReleaseRow): boolean {
+  return left.schema_version === right.schema_version
+    && left.commerce_inventory_digest === right.commerce_inventory_digest
+    && left.engine_inventory_digest === right.engine_inventory_digest
+    && left.openkeys_inventory_digest === right.openkeys_inventory_digest
+    && left.service_inventory_digest === right.service_inventory_digest
+    && left.policy_manifest_digest === right.policy_manifest_digest
+    && left.funding_manifest_digest === right.funding_manifest_digest
+    && left.assignment_count === right.assignment_count;
 }
 
-function subjectDigest(subject: string): string {
-  return `sha256:v1:${createHash("sha256")
-    .update("multi-discount-stage8:commerce-subject\n", "utf8")
-    .update(subject, "utf8")
-    .digest("hex")}`;
-}
-
-function sortedRecord(rows: Array<{ status: string; count: string }>): Record<string, number> {
-  return Object.fromEntries(
+function sameAssignmentLineage(
+  rows: readonly ReleaseAssignmentLineageRow[],
+  targetGeneration: bigint,
+  recoveryGeneration: bigint,
+): boolean {
+  const target = targetGeneration.toString();
+  const recovery = recoveryGeneration.toString();
+  const normalized = (generation: string): Array<Omit<ReleaseAssignmentLineageRow, "release_generation">> =>
     rows
-      .sort((left, right) => compareUtf8(left.status, right.status))
-      .map((row) => [row.status, Number(row.count)]),
-  );
+      .filter((row) => row.release_generation === generation)
+      .map(({ release_generation: _generation, ...row }) => row);
+  return JSON.stringify(normalized(target)) === JSON.stringify(normalized(recovery));
 }
 
-async function blocker(
-  client: PoolClient,
-  code: string,
-  query: string,
-  parameters: readonly unknown[] = [],
-): Promise<Stage8CommerceBlocker | null> {
-  const result = await client.query<IdentityRow>(query, [...parameters]);
-  if (result.rowCount === 0) return null;
-  const subjects = [...new Set(result.rows.map((row) => row.subject))].sort(compareUtf8);
+async function pendingPricingJobs(client: PoolClient): Promise<string[]> {
+  const rows = await client.query<{ subject: string }>(`
+    SELECT concat(kind, ':', id::text) AS subject
+    FROM (
+      SELECT 'catalog' AS kind, id, status FROM engine_catalog_jobs
+      UNION ALL SELECT 'switch', id, status FROM engine_switch_jobs
+      UNION ALL SELECT 'policy', id, status FROM engine_policy_jobs
+      UNION ALL SELECT 'release', id, status FROM pricing_release_control_jobs_v2
+    ) job
+    WHERE status IN ('pending', 'processing', 'retry', 'dead')
+    ORDER BY concat(kind, ':', id::text) COLLATE "C"
+  `);
+  return rows.rows.map((row) => row.subject);
+}
+
+function storedIdentity(row: StoredEvidenceRow): Record<string, unknown> {
   return {
-    code,
-    count: subjects.length,
-    subject_digests: subjects.slice(0, BLOCKER_SAMPLE_LIMIT).map(subjectDigest),
+    evidence_digest: row.evidence_digest,
+    target_generation: row.target_generation,
+    target_digest: row.target_digest,
+    recovery_generation: row.recovery_generation,
+    recovery_digest: row.recovery_digest,
+    commerce_inventory_digest: row.commerce_inventory_digest,
+    engine_inventory_digest: row.engine_inventory_digest,
+    openkeys_inventory_digest: row.openkeys_inventory_digest,
+    sales_contract_digest: row.sales_contract_digest,
+    funding_digest: row.funding_digest,
+    shadow_digest: row.shadow_digest,
+    runtime_floor_digest: row.runtime_floor_digest,
+    legacy_inflight_count: row.legacy_inflight_count,
+    blocker_count: row.blocker_count,
+    passed: row.passed,
+    observed_at: row.observed_at.toISOString(),
+    valid_until: row.valid_until.toISOString(),
   };
 }
 
-async function collectBlockers(client: PoolClient): Promise<Stage8CommerceBlocker[]> {
-  const checks = [
-    await blocker(client, "capability_head_missing_or_stale", `
-      SELECT 'capability-head' AS subject
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM provider_capability_head head
-        WHERE head.singleton = 1
-          AND head.active_generation = (SELECT max(generation) FROM provider_capability_versions)
-      )
-    `),
-    await blocker(client, "catalog_head_missing_or_stale", `
-      WITH required(product_id) AS (VALUES ($1::text), ($2::text)),
-      latest AS (
-        SELECT product_id, max(generation) AS generation
-        FROM product_catalog_versions GROUP BY product_id
-      )
-      SELECT required.product_id AS subject
-      FROM required
-      LEFT JOIN latest USING (product_id)
-      LEFT JOIN product_catalog_heads head
-        ON head.product_id = required.product_id
-       AND head.active_generation = latest.generation
-      WHERE head.product_id IS NULL
-      UNION ALL
-      SELECT head.product_id AS subject
-      FROM product_catalog_heads head
-      WHERE head.product_id NOT IN ($1, $2)
-    `, REQUIRED_PRODUCTS),
-    await blocker(client, "switch_head_missing_or_stale", `
-      SELECT 'switch-head' AS subject
-      WHERE NOT EXISTS (
-        SELECT 1 FROM provider_switch_head head
-        WHERE head.singleton = 1
-          AND head.active_generation = (SELECT max(generation) FROM provider_switch_versions)
-      )
-    `),
-    await blocker(client, "active_product_graph_contains_gemini", `
-      SELECT subject FROM (
-        SELECT concat('catalog:', entry.product_id, ':', entry.canonical_model_id) AS subject
-        FROM product_catalog_heads head
-        JOIN product_catalog_entries entry
-          ON entry.product_id = head.product_id AND entry.generation = head.active_generation
-        WHERE entry.provider_id = 'gemini'
-        UNION ALL
-        SELECT concat('switch:', entry.scope_type, ':', entry.product_id, ':', entry.segment) AS subject
-        FROM provider_switch_head head
-        JOIN provider_switch_entries entry ON entry.generation = head.active_generation
-        WHERE entry.provider_id = 'gemini'
-        UNION ALL
-        SELECT concat('policy:', rule.binding_id::text, ':', rule.rule_id) AS subject
-        FROM account_policy_bindings binding
-        JOIN account_policy_rules rule
-          ON rule.binding_id = binding.id
-         AND rule.effective_version = binding.desired_effective_version
-        WHERE rule.provider_id = 'gemini'
-      ) candidates
-    `),
-    await blocker(client, "active_product_graph_incomplete", `
-      WITH required_catalog(product_id, provider_id) AS (
-        VALUES
-          ($1::text, 'anthropic'::text), ($1::text, 'openai'::text),
-          ($2::text, 'anthropic'::text), ($2::text, 'openai'::text)
-      ), missing_catalog AS (
-        SELECT concat(product_id, ':', provider_id) AS subject
-        FROM required_catalog required
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM product_catalog_heads head
-          JOIN product_catalog_entries entry
-            ON entry.product_id = head.product_id
-           AND entry.generation = head.active_generation
-          WHERE entry.product_id = required.product_id
-            AND entry.provider_id = required.provider_id
-            AND entry.enabled
-        )
-      ), unexpected_catalog AS (
-        SELECT concat(entry.product_id, ':', entry.provider_id) AS subject
-        FROM product_catalog_heads head
-        JOIN product_catalog_entries entry
-          ON entry.product_id = head.product_id AND entry.generation = head.active_generation
-        WHERE entry.provider_id NOT IN ('anthropic', 'openai')
-      ), required_switch(provider_id, scope_type, product_id, segment) AS (
-        VALUES
-          ('anthropic'::text, 'master'::text, ''::text, ''::text),
-          ('openai', 'master', '', ''),
-          ('anthropic', 'product', $1, ''),
-          ('openai', 'product', $1, ''),
-          ('anthropic', 'product', $2, ''),
-          ('openai', 'product', $2, ''),
-          ('anthropic', 'segment', $1, 'b2c'),
-          ('openai', 'segment', $1, 'b2c'),
-          ('anthropic', 'segment', $1, 'b2b'),
-          ('openai', 'segment', $1, 'b2b')
-      ), missing_switch AS (
-        SELECT concat(provider_id, ':', scope_type, ':', product_id, ':', segment) AS subject
-        FROM required_switch required
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM provider_switch_head head
-          JOIN provider_switch_entries entry ON entry.generation = head.active_generation
-          WHERE entry.provider_id = required.provider_id
-            AND entry.scope_type = required.scope_type
-            AND entry.product_id = required.product_id
-            AND entry.segment = required.segment
-            AND entry.enabled
-        )
-      )
-      SELECT subject FROM missing_catalog
-      UNION ALL SELECT subject FROM unexpected_catalog
-      UNION ALL SELECT subject FROM missing_switch
-    `, REQUIRED_PRODUCTS),
-    await blocker(client, "active_commerce_account_unclassified", `
-      SELECT account.id::text AS subject
-      FROM engine_accounts account
-      LEFT JOIN customer_profiles profile ON profile.user_id = account.user_id
-      LEFT JOIN account_policy_bindings binding
-        ON binding.engine_account_record_id = account.id
-      WHERE account.status = 'active'
-        AND (
-          account.engine_account_id IS NULL
-          OR profile.user_id IS NULL
-          OR binding.id IS NULL
-          OR binding.engine_account_id IS DISTINCT FROM account.engine_account_id
-          OR binding.user_id IS DISTINCT FROM account.user_id
-          OR binding.account_class IS DISTINCT FROM profile.customer_type::text
-        )
-    `),
-    await blocker(client, "binding_not_fully_applied", `
-      SELECT binding.id::text AS subject
-      FROM account_policy_bindings binding
-      WHERE binding.engine_account_id IS NOT NULL
-        AND (
-          binding.desired_effective_version IS NULL
-          OR binding.desired_digest IS NULL
-          OR binding.applied_effective_version IS DISTINCT FROM binding.desired_effective_version
-          OR binding.applied_digest IS DISTINCT FROM binding.desired_digest
-          OR binding.sync_state <> 'confirmed'
-          OR binding.last_ack_at IS NULL
-        )
-    `),
-    await blocker(client, "binding_targets_stale_policy_generation", `
-      SELECT binding.id::text AS subject
-      FROM account_policy_bindings binding
-      LEFT JOIN LATERAL (
-        SELECT max(candidate.effective_version) AS latest_version
-        FROM account_policy_versions candidate
-        WHERE candidate.binding_id = binding.id
-      ) latest ON true
-      WHERE binding.engine_account_id IS NOT NULL
-        AND binding.desired_effective_version IS DISTINCT FROM latest.latest_version
-    `),
-    await blocker(client, "source_policy_head_stale", `
-      SELECT policy.id AS subject
-      FROM pricing_policies policy
-      LEFT JOIN pricing_policy_heads head ON head.policy_id = policy.id
-      LEFT JOIN LATERAL (
-        SELECT max(candidate.version) AS latest_version
-        FROM pricing_policy_versions candidate
-        WHERE candidate.policy_id = policy.id
-      ) latest ON true
-      WHERE policy.status = 'active'
-        AND (
-          latest.latest_version IS NULL
-          OR head.current_version IS DISTINCT FROM latest.latest_version
-        )
-    `),
-    await blocker(client, "active_invitation_missing_policy", `
-      SELECT invitation.id::text AS subject
-      FROM business_invites invitation
-      LEFT JOIN business_invite_policy_bindings binding ON binding.invite_id = invitation.id
-      LEFT JOIN pricing_policy_heads head ON head.policy_id = binding.invitation_policy_id
-      WHERE invitation.consumed_at IS NULL
-        AND invitation.revoked_at IS NULL
-        AND invitation.superseded_by_invite_id IS NULL
-        AND invitation.expires_at > transaction_timestamp()
-        AND (
-          binding.invite_id IS NULL
-          OR head.current_version IS DISTINCT FROM binding.current_policy_version
-          OR head.current_digest IS DISTINCT FROM binding.current_policy_digest
-        )
-    `),
-    await blocker(client, "pricing_control_job_backlog_or_failure", `
-      SELECT concat(kind, ':', id::text) AS subject
-      FROM (
-        SELECT 'catalog' AS kind, id, status FROM engine_catalog_jobs
-        UNION ALL SELECT 'switch', id, status FROM engine_switch_jobs
-        UNION ALL SELECT 'policy', id, status FROM engine_policy_jobs
-      ) job
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
-    `),
-    await blocker(client, "active_catalog_ack_missing", `
-      SELECT head.product_id AS subject
-      FROM product_catalog_heads head
-      JOIN product_catalog_versions version
-        ON version.product_id = head.product_id AND version.generation = head.active_generation
-      LEFT JOIN engine_catalog_jobs job
-        ON job.product_id = version.product_id
-       AND job.generation = version.generation
-       AND job.schema_version = version.schema_version
-       AND job.content_digest = version.content_digest
-       AND job.status = 'confirmed'
-       AND job.ack_generation = version.generation
-       AND job.ack_schema_version = version.schema_version
-       AND job.ack_content_digest = version.content_digest
-      WHERE job.id IS NULL
-    `),
-    await blocker(client, "active_switch_ack_missing", `
-      SELECT 'switch-head' AS subject
-      FROM provider_switch_head head
-      JOIN provider_switch_versions version ON version.generation = head.active_generation
-      LEFT JOIN engine_switch_jobs job
-        ON job.generation = version.generation
-       AND job.schema_version = version.schema_version
-       AND job.content_digest = version.content_digest
-       AND job.status = 'confirmed'
-       AND job.ack_generation = version.generation
-       AND job.ack_schema_version = version.schema_version
-       AND job.ack_content_digest = version.content_digest
-      WHERE job.id IS NULL
-    `),
-    await blocker(client, "active_policy_ack_missing", `
-      SELECT binding.id::text AS subject
-      FROM account_policy_bindings binding
-      LEFT JOIN engine_policy_jobs job
-        ON job.binding_id = binding.id
-       AND job.effective_version = binding.desired_effective_version
-       AND job.content_digest = binding.desired_digest
-       AND job.status = 'confirmed'
-       AND job.ack_effective_version = binding.desired_effective_version
-       AND job.ack_content_digest = binding.desired_digest
-      WHERE binding.engine_account_id IS NOT NULL AND job.id IS NULL
-    `),
-  ];
-  return checks
-    .filter((candidate): candidate is Stage8CommerceBlocker => candidate !== null)
-    .sort((left, right) => compareUtf8(left.code, right.code));
-}
-
-export async function collectStage8CommerceEvidence(
+export async function collectStage8CombinedEvidenceV2(
   database: Database,
-): Promise<Stage8CommerceEvidence> {
+  openkeys: Stage5V2OpenKeysReader,
+  untrustedEngineEvidence: Stage8EngineEvidenceV2,
+): Promise<Stage8CombinedEvidenceV2> {
+  const engine = validateEngineEvidence(untrustedEngineEvidence);
+  const openkeysFirst = await scanStage5OpenKeysInventoryV2(openkeys);
+  const openkeysSecond = await scanStage5OpenKeysInventoryV2(openkeys);
   const client = await database.pool.connect();
   try {
-    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     await client.query("SET LOCAL statement_timeout = '30s'");
     await client.query("SET LOCAL lock_timeout = '5s'");
-
-    const captured = await client.query<{ captured_at: string }>(
-      "SELECT transaction_timestamp()::text AS captured_at",
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('pricing-release-v2:control-plane', 0))",
     );
-    const capability = await client.query<{ generation: string; content_digest: string }>(`
-      SELECT version.generation::text, version.content_digest
-      FROM provider_capability_head head
-      JOIN provider_capability_versions version ON version.generation = head.active_generation
-      WHERE head.singleton = 1
-    `);
-    const catalogs = await client.query<Stage8CommerceEvidence["heads"]["catalogs"][number]>(`
-      SELECT version.product_id, version.generation::text, version.schema_version::text,
-             version.capability_generation::text, version.capability_digest, version.content_digest
-      FROM product_catalog_heads head
-      JOIN product_catalog_versions version
-        ON version.product_id = head.product_id AND version.generation = head.active_generation
-      ORDER BY version.product_id COLLATE "C"
-    `);
-    const switches = await client.query<NonNullable<Stage8CommerceEvidence["heads"]["switches"]>>(`
-      SELECT version.generation::text, version.schema_version::text,
-             version.capability_generation::text, version.capability_digest, version.content_digest
-      FROM provider_switch_head head
-      JOIN provider_switch_versions version ON version.generation = head.active_generation
-      WHERE head.singleton = 1
-    `);
-    const accountCounts = await client.query<{ account_class: string; count: string }>(`
-      SELECT coalesce(profile.customer_type::text, 'unclassified') AS account_class, count(*)::text
-      FROM engine_accounts account
-      LEFT JOIN customer_profiles profile ON profile.user_id = account.user_id
-      WHERE account.status = 'active'
-      GROUP BY profile.customer_type::text
-      ORDER BY profile.customer_type::text COLLATE "C"
-    `);
-    const scalarCounts = await client.query<{
-      active_commerce_accounts: string;
-      active_service_bindings: string;
-      active_invitations: string;
-    }>(`
-      SELECT
-        (SELECT count(*)::text FROM engine_accounts WHERE status = 'active') AS active_commerce_accounts,
-        (SELECT count(*)::text FROM account_policy_bindings
-          WHERE account_class = 'service' AND engine_account_id IS NOT NULL) AS active_service_bindings,
-        (SELECT count(*)::text FROM business_invites
-          WHERE consumed_at IS NULL AND revoked_at IS NULL
-            AND superseded_by_invite_id IS NULL
-            AND expires_at > transaction_timestamp()) AS active_invitations
-    `);
-    const jobCounts = async (table: string): Promise<Record<string, number>> => {
-      if (!/^engine_(catalog|switch|policy)_jobs$/.test(table)) throw new Error("unsafe job table");
-      const rows = await client.query<{ status: string; count: string }>(
-        `SELECT status, count(*)::text FROM ${table} GROUP BY status`,
-      );
-      return sortedRecord(rows.rows);
-    };
-    const catalogJobs = await jobCounts("engine_catalog_jobs");
-    const switchJobs = await jobCounts("engine_switch_jobs");
-    const policyJobs = await jobCounts("engine_policy_jobs");
-    const blockers = await collectBlockers(client);
+    const observed = await client.query<{ observed_at: Date }>(
+      "SELECT transaction_timestamp() AS observed_at",
+    );
+    const observedAt = observed.rows[0]!.observed_at;
+    const validUntil = new Date(observedAt.getTime() + STAGE8_EVIDENCE_TTL_SECONDS * 1_000);
+    const current = await readStage5V2CommerceAndServiceSnapshot(client);
+    const commerceDigest = stage5V2CommerceInventoryDigest(current.commerce);
+    const serviceDigest = current.service.inventory_digest;
+    const releases = await client.query<ReleaseRow>(`
+      SELECT plan.generation::text, plan.release_kind, plan.status, plan.schema_version::text,
+             plan.commerce_inventory_digest, plan.engine_inventory_digest,
+             plan.openkeys_inventory_digest, plan.service_inventory_digest,
+             plan.policy_manifest_digest, plan.assignment_manifest_digest,
+             plan.funding_manifest_digest, plan.engine_release_digest, plan.content_digest,
+             (SELECT count(*)::text FROM pricing_release_assignments_v2 assignment
+               WHERE assignment.release_generation = plan.generation) AS assignment_count
+      FROM pricing_release_plans_v2 plan
+      WHERE plan.generation IN ($1, $2)
+      ORDER BY plan.generation
+    `, [engine.release.target_generation, engine.release.recovery_generation]);
+    const assignmentLineage = await client.query<ReleaseAssignmentLineageRow>(`
+      SELECT release_generation::text, engine_account_id, account_class, owner_context,
+             owner_id, policy_id, policy_version::text, policy_digest, billing_mode,
+             funding_generation::text, purpose, responsible
+      FROM pricing_release_assignments_v2
+      WHERE release_generation IN ($1, $2)
+      ORDER BY release_generation, engine_account_id COLLATE "C"
+    `, [engine.release.target_generation, engine.release.recovery_generation]);
+    const target = releases.rows.find((row) => row.generation === engine.release.target_generation.toString()) ?? null;
+    const recovery = releases.rows.find((row) => row.generation === engine.release.recovery_generation.toString()) ?? null;
+    const blockers: Stage8CombinedBlocker[] = engine.blockers.map((item) => ({
+      source: "engine",
+      code: item.code,
+      count: item.count.toString(),
+      subject_digests: item.subject_digests,
+    }));
 
-    const scalar = scalarCounts.rows[0]!;
-    const base = {
-      schema_version: STAGE8_EVIDENCE_SCHEMA_VERSION as 1,
-      captured_at: captured.rows[0]!.captured_at,
-      passed: blockers.length === 0,
-      heads: {
-        capability: capability.rows[0] ?? null,
-        catalogs: catalogs.rows,
-        switches: switches.rows[0] ?? null,
+    const observedTs = BigInt(Math.floor(observedAt.getTime() / 1_000));
+    if (engine.captured_ts > observedTs + STAGE8_CLOCK_SKEW_SECONDS) {
+      pushLocalBlocker(blockers, "engine_evidence_captured_in_future", [engine.evidence_digest]);
+    } else if (observedTs - engine.captured_ts > STAGE8_ENGINE_MAX_AGE_SECONDS) {
+      pushLocalBlocker(blockers, "engine_evidence_stale", [engine.evidence_digest]);
+    }
+    if (openkeysFirst.inventory_digest !== openkeysSecond.inventory_digest) {
+      pushLocalBlocker(blockers, "openkeys_inventory_changed_between_scans", [
+        openkeysFirst.inventory_digest,
+        openkeysSecond.inventory_digest,
+      ]);
+    }
+    pushLocalBlocker(blockers, "target_release_missing", target ? [] : [engine.release.target_generation.toString()]);
+    pushLocalBlocker(blockers, "recovery_release_missing", recovery ? [] : [engine.release.recovery_generation.toString()]);
+
+    if (target) {
+      const drift: string[] = [];
+      if (target.release_kind !== "target") drift.push("kind");
+      if (target.status !== "prepared") drift.push(`status:${target.status}`);
+      if (target.schema_version !== "2") drift.push("schema");
+      if (target.commerce_inventory_digest !== commerceDigest) drift.push("commerce-inventory");
+      if (target.engine_inventory_digest !== engine.engine_inventory_digest) drift.push("engine-inventory");
+      if (target.openkeys_inventory_digest !== openkeysSecond.inventory_digest) drift.push("openkeys-inventory");
+      if (target.service_inventory_digest !== serviceDigest) drift.push("service-inventory");
+      if (target.funding_manifest_digest !== engine.funding_digest) drift.push("funding");
+      if (target.engine_release_digest !== engine.release.target_digest) drift.push("engine-release");
+      if (target.assignment_count !== engine.release.target_assignment_count.toString()) drift.push("assignments");
+      pushLocalBlocker(blockers, "target_release_identity_drift", drift);
+    }
+    if (recovery) {
+      const drift: string[] = [];
+      if (recovery.release_kind !== "recovery") drift.push("kind");
+      if (recovery.status !== "prepared") drift.push(`status:${recovery.status}`);
+      if (recovery.schema_version !== "2") drift.push("schema");
+      if (recovery.commerce_inventory_digest !== commerceDigest) drift.push("commerce-inventory");
+      if (recovery.engine_inventory_digest !== engine.engine_inventory_digest) drift.push("engine-inventory");
+      if (recovery.openkeys_inventory_digest !== openkeysSecond.inventory_digest) drift.push("openkeys-inventory");
+      if (recovery.service_inventory_digest !== serviceDigest) drift.push("service-inventory");
+      if (recovery.funding_manifest_digest !== engine.funding_digest) drift.push("funding");
+      if (recovery.engine_release_digest !== engine.release.recovery_digest) drift.push("engine-release");
+      if (recovery.assignment_count !== engine.release.recovery_assignment_count.toString()) drift.push("assignments");
+      pushLocalBlocker(blockers, "recovery_release_identity_drift", drift);
+    }
+    if (target && recovery
+        && (!sameReleaseLineage(target, recovery)
+          || !sameAssignmentLineage(
+            assignmentLineage.rows,
+            engine.release.target_generation,
+            engine.release.recovery_generation,
+          ))) {
+      pushLocalBlocker(blockers, "target_recovery_commerce_lineage_mismatch", [
+        `${target.generation}:${recovery.generation}`,
+      ]);
+    }
+    if (engine.release.inventory_digest !== engine.engine_inventory_digest) {
+      pushLocalBlocker(blockers, "engine_release_inventory_digest_mismatch", [engine.evidence_digest]);
+    }
+    if (engine.release.funding_digest !== engine.funding_digest) {
+      pushLocalBlocker(blockers, "engine_release_funding_digest_mismatch", [engine.evidence_digest]);
+    }
+    pushLocalBlocker(blockers, "pricing_control_job_backlog_or_failure", await pendingPricingJobs(client));
+
+    blockers.sort((left, right) =>
+      compareUtf8(left.source, right.source) || compareUtf8(left.code, right.code));
+    const passed = engine.passed && engine.legacy_inflight_count === 0n && blockers.length === 0;
+    const targetCommerceDigest = requireReleaseDigest(target?.content_digest ?? null, "target commerce digest");
+    const recoveryCommerceDigest = requireReleaseDigest(recovery?.content_digest ?? null, "recovery commerce digest");
+    const identity = {
+      schema_version: STAGE8_COMBINED_SCHEMA_VERSION,
+      observed_at: observedAt.toISOString(),
+      valid_until: validUntil.toISOString(),
+      passed,
+      source: {
+        engine_evidence_digest: engine.evidence_digest,
+        engine_captured_ts: engine.captured_ts.toString(),
+        engine_window_start_ts: engine.window_start_ts.toString(),
+        engine_window_end_ts: engine.window_end_ts.toString(),
       },
-      counts: {
-        active_commerce_accounts: Number(scalar.active_commerce_accounts),
-        account_classes: Object.fromEntries(
-          accountCounts.rows.map((row) => [row.account_class, Number(row.count)]),
-        ),
-        active_service_bindings: Number(scalar.active_service_bindings),
-        active_invitations: Number(scalar.active_invitations),
-        catalog_jobs: catalogJobs,
-        switch_jobs: switchJobs,
-        policy_jobs: policyJobs,
+      releases: {
+        target: {
+          generation: engine.release.target_generation.toString(),
+          commerce_digest: targetCommerceDigest,
+          engine_digest: engine.release.target_digest,
+        },
+        recovery: {
+          generation: engine.release.recovery_generation.toString(),
+          commerce_digest: recoveryCommerceDigest,
+          engine_digest: engine.release.recovery_digest,
+        },
       },
+      inventories: {
+        commerce_digest: commerceDigest,
+        engine_digest: engine.engine_inventory_digest,
+        openkeys_digest: openkeysSecond.inventory_digest,
+        service_digest: serviceDigest,
+      },
+      sales_contract_digest: STAGE8_SALES_CONTRACT_DIGEST,
+      funding_digest: engine.funding_digest,
+      shadow_digest: engine.shadow_digest,
+      runtime_floor_digest: engine.runtime_floor_digest,
+      legacy_inflight_count: engine.legacy_inflight_count.toString(),
+      blocker_count: String(blockers.length),
       blockers,
     };
-    const report: Stage8CommerceEvidence = {
-      ...base,
-      evidence_digest: evidenceDigest(base),
-    };
+    const evidenceDigest = stage5V2Digest("stage8-combined-evidence", identity);
+    let writeResult: Stage8CombinedEvidenceV2["write_result"] = "not_persisted";
+    if (targetCommerceDigest !== null && recoveryCommerceDigest !== null) {
+      const inserted = await client.query<{ evidence_digest: string }>(`
+        INSERT INTO pricing_stage8_evidence_v2 (
+          evidence_digest, target_generation, target_digest,
+          recovery_generation, recovery_digest,
+          commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+          sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
+          legacy_inflight_count, blocker_count, passed, observed_at, valid_until
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+          $13, $14, $15, $16, $17
+        )
+        ON CONFLICT (evidence_digest) DO NOTHING
+        RETURNING evidence_digest
+      `, [
+        evidenceDigest,
+        engine.release.target_generation,
+        targetCommerceDigest,
+        engine.release.recovery_generation,
+        recoveryCommerceDigest,
+        commerceDigest,
+        engine.engine_inventory_digest,
+        openkeysSecond.inventory_digest,
+        STAGE8_SALES_CONTRACT_DIGEST,
+        engine.funding_digest,
+        engine.shadow_digest,
+        engine.runtime_floor_digest,
+        engine.legacy_inflight_count,
+        blockers.length,
+        passed,
+        observedAt,
+        validUntil,
+      ]);
+      const stored = await client.query<StoredEvidenceRow>(`
+        SELECT evidence_digest, target_generation::text, target_digest,
+               recovery_generation::text, recovery_digest,
+               commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+               sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
+               legacy_inflight_count::text, blocker_count::text, passed, observed_at, valid_until
+        FROM pricing_stage8_evidence_v2 WHERE evidence_digest = $1
+      `, [evidenceDigest]);
+      const expectedStored = {
+        evidence_digest: evidenceDigest,
+        target_generation: engine.release.target_generation.toString(),
+        target_digest: targetCommerceDigest,
+        recovery_generation: engine.release.recovery_generation.toString(),
+        recovery_digest: recoveryCommerceDigest,
+        commerce_inventory_digest: commerceDigest,
+        engine_inventory_digest: engine.engine_inventory_digest,
+        openkeys_inventory_digest: openkeysSecond.inventory_digest,
+        sales_contract_digest: STAGE8_SALES_CONTRACT_DIGEST,
+        funding_digest: engine.funding_digest,
+        shadow_digest: engine.shadow_digest,
+        runtime_floor_digest: engine.runtime_floor_digest,
+        legacy_inflight_count: engine.legacy_inflight_count.toString(),
+        blocker_count: String(blockers.length),
+        passed,
+        observed_at: observedAt.toISOString(),
+        valid_until: validUntil.toISOString(),
+      };
+      if (!stored.rows[0]
+          || JSON.stringify(storedIdentity(stored.rows[0])) !== JSON.stringify(expectedStored)) {
+        throw new Stage8EvidenceV2Error(
+          "combined_evidence_digest_collision",
+          "stored Stage 8 evidence differs for the same combined digest",
+        );
+      }
+      writeResult = inserted.rows.length === 1 ? "stored" : "unchanged";
+    }
     await client.query("COMMIT");
-    return report;
+    return {
+      ...identity,
+      schema_version: STAGE8_COMBINED_SCHEMA_VERSION as 2,
+      write_result: writeResult,
+      evidence_digest: evidenceDigest,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

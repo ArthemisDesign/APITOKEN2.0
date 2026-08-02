@@ -69,3 +69,12 @@ coverage by ready funding-normalization rows for every balance assignment, no ex
 and both final funding/engine identities. Prepared assignments and finalized Stage 5 release
 digests are frozen. The migration performs no backfill, creates no job or release head and does not
 stop money writers; the two-phase consumer follows only after this schema SHA is green.
+
+After the engine schema-v2 Stage 8 producer checkpoint is green, the deployed commerce consumer
+uses the existing `pricing_stage8_evidence_v2` table from migration 0026 without another schema
+change. It validates the canonical integer-preserving engine JSON, double-scans OpenKeys and binds
+current commerce/service authority to exact prepared target/recovery releases in one
+`SERIALIZABLE` transaction. Existing releases permit immutable `passed=true` or `passed=false`
+rows; a missing release pair is reported as `not_persisted`. The row has a five-minute TTL and does
+not mutate a release head, balance, policy or account. Its sales-contract digest is an identity,
+not proof of a deployed sales consumer.

@@ -10,7 +10,11 @@ live mutation — compare-and-set одного global active pricing release hea
 - Stage 5 target/recovery manifests materialized и имеют exact ACK;
 - Stage 6 завершён для 100% inventory;
 - Stage 7 подтверждает canonical OpenKeys 1:1;
-- Stage 8 full-inventory evidence fresh и `passed=true`;
+- Stage 8 combined schema-v2 evidence persisted, unexpired и `passed=true`; его source engine
+  evidence прошло canonical digest и 120-second age checks, а OpenKeys был исчерпывающе просканирован
+  дважды;
+- sales v2 runtime/consumer отдельно подтверждает commission только с `paid_funded_nano` и
+  исключение welcome bonus; `sales_contract_digest` в Stage 8 сам по себе это не доказывает;
 - shadow evaluation покрывает 100% поддержанных запросов;
 - нет legacy-format reservations/outbox rows;
 - нет pending/processing/retry/dead pricing control jobs;
@@ -22,9 +26,11 @@ cutover. Ноль всех reservations не является precondition.
 
 ## Apply
 
-Operator передаёт exact target release digest, Stage 8 evidence digest и reason. Engine открывает
-короткую `SERIALIZABLE` transaction под release advisory lock, повторяет все freshness/coverage
-checks и CAS-продвигает одну head row на target generation.
+Protected control-plane передаёт exact target release digest, combined Stage 8 evidence digest и
+reason. До вызова engine CAS он требует exact immutable commerce row с `passed=true`, проверяет
+`valid_until` и заново сверяет commerce/service/OpenKeys authority с target/recovery. Engine
+открывает короткую `SERIALIZABLE` transaction под release advisory lock, повторяет engine-side
+freshness/coverage checks и CAS-продвигает одну head row на target generation.
 
 Apply не обновляет account bindings, balances, reservations или ledger rows по одному. После
 commit новый reserve любого аккаунта читает target release. Reservation, созданная до commit,

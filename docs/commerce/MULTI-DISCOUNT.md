@@ -366,14 +366,21 @@ OpenKeys issuance заранее переходит на canonical 1:1 policy. E
 
 ### Stage 8 — full-inventory evidence
 
-Read-only evidence связывает exact commerce/engine/OpenKeys inventories, все policy ACK, funding
-generation, 100% shadow, runtime capability и prepared/recovery release digests. Engine report v2
+Read-only engine evidence и immutable combined commerce evidence связывают exact
+commerce/engine/OpenKeys/service inventories, все policy ACK, funding generation, 100% shadow,
+runtime capability и prepared/recovery release digests. Engine report v2
 принимает exact target/recovery generations и в одном snapshot хеширует текущий engine inventory,
 target funding manifest, shadow evaluation set и live runtime floor. Он требует одинаковую
 funding/runtime lineage у target/recovery, полное assignment-покрытие active и disabled accounts,
 паритет funding heads/lots с aggregate, соответствие каждого shadow result exact target rule и
-ноль незавершённого legacy-format inflight. Evidence имеет TTL и становится stale при любом
-control-plane изменении. Producer намеренно остаётся blocked, пока все live engine instances не
+ноль незавершённого legacy-format inflight. Commerce consumer проверяет canonical Rust digest без
+потери i64, дважды сканирует OpenKeys, перечитывает текущие commerce/service identities и
+semantic target/recovery assignments, после чего сохраняет schema-v2 identity на 300 секунд.
+Blocked evidence сохраняется с `passed=false`, а отсутствие local release pair не создаёт строку.
+Stage 9 принимает только fresh persisted `passed=true` identity и повторно проверяет authority.
+`sales_contract_digest` фиксирует ожидаемый `paid_funded_nano` contract, но deployed sales runtime
+доказывается отдельным checkpoint. Producer намеренно остаётся blocked, пока все live engine
+instances не
 публикуют release/funding schema v2 claims; этот claim writer доставляется Stage 9 runtime
 checkpoint, а не обходится ослаблением Stage 8.
 

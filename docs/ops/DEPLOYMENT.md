@@ -274,13 +274,7 @@ require a traffic freeze, but any update changes the source generation and makes
 stale. Keep bridge and target shadow at 100% coverage, observe at least one complete peak interval,
 and choose its exclusive `window_end_ts`. Traffic, top-ups and v2 reservations continue normally.
 
-Run the commerce report with the normal protected commerce database environment:
-
-```bash
-pnpm --filter @claude-api/db pricing:stage8-evidence > stage8-commerce-evidence.json
-```
-
-Run the engine report from the exact deployed application with the normal protected engine
+Run the engine report first, from the exact deployed application with the normal protected engine
 environment. Every argument is explicit; `gemini-client-admissions` is a bounded independently
 aggregated client-edge audit count for the same half-open window and must never contain identities.
 It is recorded in the report but does not satisfy Google provider coverage:
@@ -297,11 +291,34 @@ claude-api db stage8-evidence \
   > stage8-engine-evidence.json
 ```
 
-Both commands use one `REPEATABLE READ READ ONLY` snapshot, print JSON before returning a non-zero
-exit on blockers, hash account/request/binding subjects, and never print a database DSN. Store both
-reports in the protected release evidence location. The commerce report currently has
-`schema_version=1`/`sha256:v1`; the engine report has `schema_version=2` and a canonical
-`sha256:v2` `evidence_digest`. Never compare or combine them as if they used one digest domain.
+Immediately consume that exact JSON with the deployed commerce checkpoint. Inject
+`DATABASE_URL` and `OPENKEYS_CONTROL_KEY` through the normal protected environment. A shared
+deployment may fall back to `ENGINE_CONTROL_KEY`; do not put credentials in arguments:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json \
+  > stage8-combined-evidence.json
+```
+
+The consumer parses nanoUSD as signed-i64-preserving integers, verifies the canonical Rust
+`sha256:v2` length-prefixed engine digest, rejects an engine source older than 120 seconds and
+exhausts the OpenKeys cursor twice. It then takes one commerce `SERIALIZABLE` snapshot under the
+release control-plane advisory lock, recomputes commerce/service identities and verifies the exact
+prepared target/recovery generations, semantic assignment lineage, engine release/funding
+identities and control-job backlog. Account/request/binding subjects are emitted only as digests;
+neither command prints a database DSN.
+
+The combined schema-v2 report is valid for 300 seconds. When both local release plans exist, the
+consumer stores its identity immutably in `pricing_stage8_evidence_v2`, including blocked reports
+with `passed=false`; if either local release is absent it returns `write_result=not_persisted`.
+Blockers produce JSON and exit code 2, while malformed/tampered engine evidence fails before a row
+is written. The command never changes a release head, account, balance, policy, traffic or money
+writer. Store the engine input and combined output together in the protected release evidence
+location; Stage 9 accepts only the exact, unexpired combined row with `passed=true`.
+
+`sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
+contract. It is a contract identity, not proof that the sales runtime consumer is deployed; exact
+sales v2 runtime evidence remains a separate pre-cutover requirement.
 
 Required target evidence includes:
 
@@ -331,7 +348,8 @@ the current runtime claim writer does not yet populate the release-v2/funding-v2
 `live_runtime_below_release_v2_floor` is expected until that compatible runtime is deployed on all
 live slots. Do not weaken this blocker and do not treat a producer-only report as completed Stage 8.
 
-Immediately before Stage 9, rerun both reports and require fresh `passed=true` results. Stage 9
+Immediately before Stage 9, regenerate the engine input and combined report and require a fresh,
+persisted `passed=true` combined identity. Stage 9
 changes one global active release head; it does not select a canary list and does not require a
 maintenance window or zero active v2 reservations. The complete apply/recovery procedure is
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

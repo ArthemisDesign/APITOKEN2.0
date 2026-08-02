@@ -199,20 +199,28 @@ normalization and target/recovery prepare. It never creates an activation job or
 The entrypoint must be invoked by the protected production control-plane, not through ad-hoc SSH;
 until that operation records a confirmed production job, Stage 6 is not complete.
 
-Stage 8 adds a read-only synchronization report for the commerce side:
+Stage 8 consumes the canonical schema-v2 engine report and emits one combined synchronization
+identity. Generate `stage8-engine-evidence.json` first with the exact deployed `claude-api` binary
+as described in `docs/ops/DEPLOYMENT.md`, then run:
 
 ```bash
-DATABASE_URL=postgresql://... pnpm --filter @claude-api/db pricing:stage8-evidence
+pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json
 ```
 
-The command observes one `REPEATABLE READ READ ONLY` snapshot and prints a canonical JSON report.
-The target report verifies Anthropic/OpenAI/Gemini capability and catalogs, complete authoritative
-classification, B2C/B2B/OpenKeys/service target policies, funding generation, desired/applied ACKs,
-prepared target/recovery releases, stale generations and the absence of pending control jobs.
-Account and binding subjects are emitted only as SHA-256 digests. A report with blockers is still
-printed and exits non-zero. It never seeds policies, advances a head or retries a job. The old
-reviewed Stage 5 assignment matrix is replaced by exact authoritative inventory coverage; inject
-the DSN through protected environment rather than placing production credentials in shell history.
+The consumer preserves signed-i64 JSON money, independently recomputes the Rust evidence digest,
+requires an engine source no older than 120 seconds, exhausts OpenKeys twice and observes commerce
+and service authority in one `SERIALIZABLE` snapshot. It binds exact prepared target/recovery
+generations, semantic assignments, funding/release lineage, current inventories, runtime/shadow
+evidence and the absence of pending or failed control jobs. A combined identity expires after 300
+seconds. Existing target/recovery plans allow both passed and blocked reports to be persisted
+immutably in `pricing_stage8_evidence_v2`; missing plans return `not_persisted`. Account and binding
+subjects are emitted only as SHA-256 digests, blockers exit non-zero, and the command never seeds a
+policy, retries a job or advances a head. Runtime credentials come only from `DATABASE_URL`,
+optional `OPENKEYS_INTERNAL_BASE_URL`, and `OPENKEYS_CONTROL_KEY` (or the shared
+`ENGINE_CONTROL_KEY` fallback).
+
+The combined `sales_contract_digest` identifies the intended paid-funded commission schema but is
+not deployed-sales-runtime evidence. Stage 9 separately requires the sales v2 consumer checkpoint.
 
 ## Authenticated client API
 

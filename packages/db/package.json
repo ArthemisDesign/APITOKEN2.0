@@ -28,10 +28,12 @@
     "@claude-api/contracts": "workspace:*",
     "@claude-api/engine-client": "workspace:*",
     "drizzle-orm": "^0.45.2",
+    "json-bigint": "^1.0.0",
     "pg": "^8.16.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/json-bigint": "^1.0.4",
     "@types/pg": "^8.15.0",
     "drizzle-kit": "^0.31.10",
     "vitest": "^3.2.0"
