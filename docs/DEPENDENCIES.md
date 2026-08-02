@@ -84,7 +84,10 @@ Control API движка использует только на чтение. С
   origins. В частности, `/v1/messages/count_tokens` доступен на всех трёх плоскостях и
   выбирается по `model`: Anthropic native, локальный reserve-grade подсчёт Codex или
   quota-free Gemini `:countTokens`. Router сохраняет universal body, поэтому плоскость снимает
-  собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane.
+  собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane. Для
+  harness без arbitrary body fields router принимает `x-apitoken-service-tier: fast|priority`
+  только на исполняемой GPT-цепочке, превращает его в body `service_tier:"priority"` и снимает
+  сам заголовок до вызова плоскости; Codex plane остаётся authority reserve/settlement/effective tier.
   Агрегированный каталог остаётся OpenAI-shaped, кроме аутентифицированного Codex-native
   `{models:[]}` overlay по harness identity. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
 - **Контракт `x-apitoken-execution-state` (плоскости → router, этап 6.1).** Производители —

@@ -230,7 +230,10 @@ token on every refresh with strict family reuse detection. The pool therefore:
   This normalization applies to every GPT execution surface: native/universal Responses and Chat
   accept `service_tier: "fast"|"priority"`; the Anthropic Messages skin additionally maps native
   `speed: "fast"` (and the same `service_tier` aliases) to `priority`, including
-  `usage.service_tier` in its Anthropic-shaped response.
+  `usage.service_tier` in its Anthropic-shaped response. On `router.apitoken.sale`, harnesses that
+  cannot add body fields may instead send `x-apitoken-service-tier: fast|priority`; the router
+  converts it to canonical body `priority` and strips the header, so this same admission,
+  reservation, settlement and effective-tier path remains authoritative.
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.

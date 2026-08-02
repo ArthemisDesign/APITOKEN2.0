@@ -1,8 +1,9 @@
 //! Shared model routing and serial fallback for universal Chat, Responses and
 //! Messages surfaces (docs/engine/ROUTING_FENCING.md phase 6.2).
 //!
-//! Requests without `models` preserve the historical behavior and exact body
-//! bytes. Explicit fallback chains are validated against one aggregate catalog
+//! Requests without `models` or the router-owned Fast header preserve the historical behavior and
+//! exact body bytes. The Fast header is the only single-attempt body rewrite. Explicit fallback
+//! chains are validated against one aggregate catalog
 //! snapshot before the first attempt, then `models` is removed and `model` is
 //! replaced for each serial attempt. A next attempt is allowed only by
 //! `proxy::RetryReason`'s fail-closed transport/execution proof.
@@ -12,7 +13,7 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::Request;
-use axum::http::request::Parts;
+use axum::http::{request::Parts, HeaderMap};
 use axum::response::Response;
 
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_OPENAI};
@@ -21,7 +22,7 @@ use crate::{proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
     Chat,
     Responses,
@@ -86,7 +87,7 @@ struct ResolvedAttempt {
 /// Shared universal handler. The response body is never buffered; only the
 /// already-required 32 MiB request body is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let bytes = match to_bytes(body, BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -106,9 +107,17 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             );
         }
     };
+    let fast_header = match take_fast_service_tier_header(
+        &mut parts.headers,
+        surface,
+        parts.uri.path(),
+    ) {
+        Ok(present) => present,
+        Err(response) => return response,
+    };
 
     if value.get("models").is_none() {
-        return proxy_single(&state, parts, bytes, &model, surface).await;
+        return proxy_single(&state, parts, bytes, &mut value, &model, surface, fast_header).await;
     }
 
     // Fail before catalog/auth/network work when rollout is disabled.
@@ -195,6 +204,18 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         });
     }
 
+    if fast_header {
+        if attempts.iter().any(|attempt| attempt.lane != Lane::OpenAi) {
+            return surface.invalid(
+                "Header `x-apitoken-service-tier` is supported only for GPT models.",
+                Some(proxy::SERVICE_TIER_HEADER.as_str()),
+            );
+        }
+        if let Err(response) = apply_fast_service_tier(&mut value, surface) {
+            return response;
+        }
+    }
+
     let Some(object) = value.as_object_mut() else {
         // A valid top-level `model` can only exist on an object; kept as a
         // fail-closed guard if serde_json behavior changes.
@@ -261,8 +282,10 @@ async fn proxy_single(
     state: &AppState,
     parts: Parts,
     bytes: Bytes,
+    value: &mut serde_json::Value,
     model: &str,
     surface: Surface,
+    fast_header: bool,
 ) -> Response {
     let lane = match catalog::namespace_lane(model) {
         Some(lane) => lane,
@@ -288,8 +311,29 @@ async fn proxy_single(
             }
         }
     };
+    let bytes = if fast_header {
+        if lane != Lane::OpenAi {
+            return surface.invalid(
+                "Header `x-apitoken-service-tier` is supported only for GPT models.",
+                Some(proxy::SERVICE_TIER_HEADER.as_str()),
+            );
+        }
+        if let Err(response) = apply_fast_service_tier(value, surface) {
+            return response;
+        }
+        match serde_json::to_vec(value) {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(_) => return surface.invalid("Invalid JSON in request body.", None),
+        }
+    } else {
+        bytes
+    };
     let origin = origin_for_lane(state, lane);
-    let request = Request::from_parts(parts, Body::from(bytes));
+    let request = if fast_header {
+        request_from_parts(&parts, bytes)
+    } else {
+        Request::from_parts(parts, Body::from(bytes))
+    };
     proxy::proxy_attempt(
         &state.client,
         origin,
@@ -300,6 +344,70 @@ async fn proxy_single(
     )
     .await
     .response
+}
+
+fn take_fast_service_tier_header(
+    headers: &mut HeaderMap,
+    surface: Surface,
+    path: &str,
+) -> Result<bool, Response> {
+    let (present, valid) = {
+        let mut values = headers.get_all(&proxy::SERVICE_TIER_HEADER).iter();
+        match (values.next(), values.next()) {
+            (None, _) => (false, false),
+            (Some(value), None) => (true, matches!(value.as_bytes(), b"fast" | b"priority")),
+            (Some(_), Some(_)) => (true, false),
+        }
+    };
+    if !present {
+        return Ok(false);
+    }
+    headers.remove(&proxy::SERVICE_TIER_HEADER);
+    if !valid {
+        return Err(surface.invalid(
+            "Header `x-apitoken-service-tier` must occur once with value `fast` or `priority`.",
+            Some(proxy::SERVICE_TIER_HEADER.as_str()),
+        ));
+    }
+    if path == "/v1/messages/count_tokens" {
+        return Err(surface.invalid(
+            "Header `x-apitoken-service-tier` is not supported for token counting.",
+            Some(proxy::SERVICE_TIER_HEADER.as_str()),
+        ));
+    }
+    Ok(true)
+}
+
+fn apply_fast_service_tier(
+    value: &mut serde_json::Value,
+    surface: Surface,
+) -> Result<(), Response> {
+    let Some(object) = value.as_object_mut() else {
+        return Err(surface.invalid("Invalid JSON object in request body.", None));
+    };
+    if let Some(service_tier) = object.get("service_tier") {
+        if !matches!(service_tier.as_str(), Some("fast" | "priority")) {
+            return Err(surface.invalid(
+                "Header `x-apitoken-service-tier` conflicts with body parameter `service_tier`.",
+                Some("service_tier"),
+            ));
+        }
+    }
+    if surface == Surface::Messages {
+        if let Some(speed) = object.get("speed") {
+            if speed.as_str() != Some("fast") {
+                return Err(surface.invalid(
+                    "Header `x-apitoken-service-tier` conflicts with body parameter `speed`.",
+                    None,
+                ));
+            }
+        }
+    }
+    object.insert(
+        "service_tier".to_string(),
+        serde_json::Value::String("priority".to_string()),
+    );
+    Ok(())
 }
 
 fn fresh_execution_group_id() -> Result<String, ()> {
@@ -377,7 +485,8 @@ fn bounded_log_id(id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::bounded_log_id;
+    use super::*;
+    use axum::http::{HeaderValue, StatusCode};
 
     #[test]
     fn attempt_log_model_is_single_line_and_bounded() {
@@ -386,5 +495,82 @@ mod tests {
         assert!(!logged.contains('\n'));
         assert!(logged.len() <= 128);
         assert!(logged.starts_with("openai/gpt-5.6?secret?"));
+    }
+
+    #[test]
+    fn fast_header_accepts_exact_aliases_and_is_consumed() {
+        for tier in ["fast", "priority"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(proxy::SERVICE_TIER_HEADER, HeaderValue::from_str(tier).unwrap());
+            assert!(take_fast_service_tier_header(
+                &mut headers,
+                Surface::Chat,
+                "/v1/chat/completions"
+            )
+            .unwrap());
+            assert!(headers.get(&proxy::SERVICE_TIER_HEADER).is_none());
+        }
+    }
+
+    #[test]
+    fn fast_header_rejects_invalid_duplicate_and_counting_uses() {
+        let mut invalid = HeaderMap::new();
+        invalid.insert(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("economy"));
+        let response = take_fast_service_tier_header(
+            &mut invalid,
+            Surface::Responses,
+            "/v1/responses",
+        )
+        .unwrap_err();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let mut duplicate = HeaderMap::new();
+        duplicate.append(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("fast"));
+        duplicate.append(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("priority"));
+        assert!(take_fast_service_tier_header(
+            &mut duplicate,
+            Surface::Chat,
+            "/v1/chat/completions"
+        )
+        .is_err());
+
+        let mut counting = HeaderMap::new();
+        counting.insert(proxy::SERVICE_TIER_HEADER, HeaderValue::from_static("fast"));
+        assert!(take_fast_service_tier_header(
+            &mut counting,
+            Surface::Messages,
+            "/v1/messages/count_tokens"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fast_header_normalizes_equivalent_body_values_and_rejects_conflicts() {
+        for mut value in [
+            serde_json::json!({"model": "openai/gpt-5.6"}),
+            serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "fast"}),
+            serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "priority"}),
+        ] {
+            apply_fast_service_tier(&mut value, Surface::Responses).unwrap();
+            assert_eq!(value["service_tier"], "priority");
+        }
+
+        for mut value in [
+            serde_json::json!({"model": "openai/gpt-5.6", "service_tier": "default"}),
+            serde_json::json!({"model": "openai/gpt-5.6", "service_tier": null}),
+        ] {
+            let response = apply_fast_service_tier(&mut value, Surface::Chat).unwrap_err();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        let mut messages = serde_json::json!({
+            "model": "openai/gpt-5.6",
+            "speed": "fast"
+        });
+        apply_fast_service_tier(&mut messages, Surface::Messages).unwrap();
+        assert_eq!(messages["service_tier"], "priority");
+
+        messages["speed"] = serde_json::Value::String("standard".to_string());
+        assert!(apply_fast_service_tier(&mut messages, Surface::Messages).is_err());
     }
 }

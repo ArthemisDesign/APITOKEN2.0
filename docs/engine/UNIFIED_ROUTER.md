@@ -148,7 +148,7 @@ POST /v1beta/models/{id}:countTokens
 | Claude Code | Anthropic Messages, SSE, открытые beta/header/body lists | native Anthropic lane; Anthropic Skin (этап 5) для non-Claude моделей |
 | Codex | Responses API; custom provider поддерживает только `wire_api="responses"` | native OpenAI lane; chat-only прокси недостаточен |
 | OpenCode | OpenRouter preset либо custom AI SDK / OpenAI-compatible provider | universal lane, namespaced model IDs |
-| Cline | OpenRouter с custom Base URL, OpenAI Compatible или Anthropic с custom Base URL | universal lane либо native Messages для Claude |
+| Cline | OpenRouter с custom Base URL, OpenAI Compatible или Anthropic с custom Base URL; custom headers для GPT Fast | universal lane либо native Messages для Claude |
 | Hermes | OpenRouter / custom providers; routing, fallback, auxiliary models; контекст ≥ 64K (меньшие окна отклоняются на старте) | universal lane; preset на router, каталог для preset — только модели ≥ 64K |
 | Aider, Continue, Roo/Kilo, большинство IDE agents | OpenAI Chat Completions | universal lane |
 | Native SDKs | Messages / Responses / Gemini Developer API | соответствующий native lane |
@@ -180,6 +180,17 @@ admission (`anthropic/`, `openai/`, `google/`). Для GPT Fast на Responses �
 `usage.service_tier`. `GET /v1/models` по Codex `originator`/User-Agent после обычной проверки ключа
 возвращает backend-native overlay `{models: []}`: Codex объединяет его со встроенным каталогом;
 обычные OpenAI/OpenRouter SDK по-прежнему получают агрегированный `{object:"list",data:[…]}`.
+
+Harness, который умеет задавать custom headers, но не произвольные body fields (в частности,
+Cline), выбирает GPT Fast заголовком `x-apitoken-service-tier: fast` (alias `priority` также
+принимается). Router разрешает его на исполняемых GPT-запросах Chat, Responses и Messages,
+нормализует в body `service_tier:"priority"` до admission и всегда снимает сам заголовок перед
+плоскостью. Для alias модель сначала разрешается каталогом; явная fallback-цепочка с этим
+заголовком обязана целиком состоять из `openai/*` моделей. `messages/count_tokens`, non-GPT модель,
+повторный/невалидный заголовок и противоречащие body `service_tier` либо Messages `speed` получают
+lane-shaped `400` до billable-вызова. Отсутствующее body-поле и эквивалентные `fast`/`priority`
+совместимы; canonical body всегда содержит `priority`. Reserve, settlement и effective-tier
+evidence по-прежнему принадлежат Codex plane — router только адаптирует клиентский ввод.
 
 ## Инварианты
 

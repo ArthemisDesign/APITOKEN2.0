@@ -35,7 +35,9 @@
   Единственное исключение — shared `routing.rs`: тело ЗАПРОСА
   `/v1/chat/completions`, `/v1/responses` и
   `/v1/messages{,/count_tokens}` читается целиком (лимит 32 MiB) ради поля
-  `model`; тело ответа остаётся потоком.
+  `model`; тело ответа остаётся потоком. Дополнительное исключение — router-owned
+  `x-apitoken-service-tier: fast|priority`: на исполняемых GPT-запросах router
+  нормализует его в body `service_tier:"priority"`, а сам заголовок всегда снимает.
   Disconnect клиента обязан транзитивно рвать соединение к плоскости
   (TeeMeter drain): поэтому вокруг тела ответа нет detached-тасков.
 - **Внутренняя семантика исполнения не транслируется клиенту.** Заголовок
@@ -54,7 +56,9 @@
   строгий off-by-default флаг `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`).
 - `proxy.rs` — байт-в-байт proxy native lanes, auth passthrough и классификация
   одной попытки до публичных headers: exact `not_started` / source-chain
-  `ConnectionRefused`; внутренний заголовок снимается до сборки ответа.
+  `ConnectionRefused`; внутренний заголовок снимается до сборки ответа. Перед
+  любой плоскостью также снимается публичный router capability-header
+  `x-apitoken-service-tier`.
 - `routing.rs` — общий model dispatch и serial fallback для всех universal
   поверхностей. Без `models` сохраняет исходные байты и прямой namespaced
   dispatch; с `models` до первой попытки валидирует всю цепочку одним aggregate
@@ -63,6 +67,8 @@
   Явная цепочка также владеет одной CSPRNG execution-group UUIDv4 и монотонным attempt per model.
   Логи attempts содержат только surface/index, публичный catalog ID, lane,
   status и bounded retry reason — без URL, headers, credentials и тел запросов.
+  Здесь же валидируется совместимый Fast-header: только GPT, не token counting,
+  конфликтующие `service_tier`/Messages `speed` отклоняются до вызова плоскости.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.
 - `messages.rs` — тонкий Anthropic-shaped entrypoint для `POST /v1/messages` и
   `POST /v1/messages/count_tokens`: namespaced `openai/*` уходит на Codex plane

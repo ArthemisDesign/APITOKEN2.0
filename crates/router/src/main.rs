@@ -258,6 +258,7 @@ mod tests {
         anthropic_version: Option<String>,
         execution_group: Option<String>,
         execution_attempt: Option<String>,
+        service_tier_header: Option<String>,
         host: Option<String>,
     }
 
@@ -279,6 +280,7 @@ mod tests {
             anthropic_version: header("anthropic-version"),
             execution_group: header("x-apitoken-execution-group"),
             execution_attempt: header("x-apitoken-attempt"),
+            service_tier_header: header("x-apitoken-service-tier"),
             host: header("host"),
         }
     }
@@ -560,6 +562,73 @@ mod tests {
         assert!(recorded.execution_attempt.is_none());
         // Host переписывается на адрес плоскости, а не прокидывается клиентский.
         assert!(recorded.host.as_deref().unwrap().starts_with("127.0.0.1:"));
+    }
+
+    #[tokio::test]
+    async fn fast_header_normalizes_all_gpt_surfaces_and_is_stripped() {
+        let (openai, log) = echo_plane().await;
+        let router = spawn(make_router(
+            "http://127.0.0.1:1", &openai, "http://127.0.0.1:2", Duration::ZERO,
+        )).await;
+        let client = reqwest::Client::new();
+
+        for (path, body) in [
+            ("/v1/chat/completions", serde_json::json!({
+                "model": "openai/gpt-5.6",
+                "messages": [{"role": "user", "content": "hi"}]
+            })),
+            ("/v1/responses", serde_json::json!({
+                "model": "openai/gpt-5.6", "input": "hi", "service_tier": "fast"
+            })),
+            ("/v1/messages", serde_json::json!({
+                "model": "openai/gpt-5.6", "max_tokens": 32,
+                "messages": [{"role": "user", "content": "hi"}], "speed": "fast"
+            })),
+        ] {
+            let response = client.post(format!("{router}{path}"))
+                .header("x-apitoken-service-tier", "fast")
+                .json(&body).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let forwarded: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(forwarded["service_tier"], "priority", "{path}");
+        }
+
+        let recorded = log.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded.iter().all(|request| request.service_tier_header.is_none()));
+    }
+
+    #[tokio::test]
+    async fn fast_header_rejects_conflicts_non_gpt_and_token_count_before_plane_call() {
+        let (anthropic, log_a) = echo_plane().await;
+        let (openai, log_o) = echo_plane().await;
+        let (gemini, log_g) = echo_plane().await;
+        let router = spawn(make_router(&anthropic, &openai, &gemini, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        for (path, tier, body) in [
+            ("/v1/chat/completions", "economy", serde_json::json!({
+                "model": "openai/gpt-5.6", "messages": []
+            })),
+            ("/v1/responses", "fast", serde_json::json!({
+                "model": "openai/gpt-5.6", "input": "hi", "service_tier": "default"
+            })),
+            ("/v1/messages", "fast", serde_json::json!({
+                "model": "anthropic/claude-opus-4-8", "max_tokens": 32, "messages": []
+            })),
+            ("/v1/messages/count_tokens", "fast", serde_json::json!({
+                "model": "openai/gpt-5.6", "messages": []
+            })),
+        ] {
+            let response = client.post(format!("{router}{path}"))
+                .header("x-apitoken-service-tier", tier)
+                .json(&body).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+
+        assert!(log_a.lock().unwrap().is_empty());
+        assert!(log_o.lock().unwrap().is_empty());
+        assert!(log_g.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

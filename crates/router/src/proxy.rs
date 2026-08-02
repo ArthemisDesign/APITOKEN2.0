@@ -1,7 +1,7 @@
 //! Байт-в-байт прокси native lanes в stable origins плоскостей.
 //!
 //! Инварианты (docs/engine/UNIFIED_ROUTER.md):
-//! - никакой трансляции: метод, путь+query, заголовки (кроме hop-by-hop) и тело
+//! - никакой трансляции: метод, путь+query, заголовки (кроме hop-by-hop и router-owned capabilities) и тело
 //!   идут в плоскость без изменений; ответ (включая SSE и native errors)
 //!   возвращается без буферизации;
 //! - native lanes не ретраятся; universal fallback может повторить запрос
@@ -45,6 +45,12 @@ pub const AUTH_HEADERS: [HeaderName; 3] = [
     HeaderName::from_static("x-goog-api-key"),
     HeaderName::from_static("authorization"),
 ];
+
+/// Public compatibility escape hatch for harnesses that can add headers but cannot add arbitrary
+/// JSON body properties. `routing.rs` consumes it on executable GPT universal requests; every
+/// proxy path removes it before contacting a provider plane.
+pub const SERVICE_TIER_HEADER: HeaderName =
+    HeaderName::from_static("x-apitoken-service-tier");
 
 /// Авторитетная семантика исполнения (docs/engine/ROUTING_FENCING.md §3): выставляется
 /// движком только на отказах без исполнения (`not_started`). С транзитных ответов router
@@ -127,6 +133,7 @@ pub async fn proxy_attempt(
     // native and universal single-attempt lanes; only the explicit fallback engine can add them.
     headers.remove(&EXECUTION_GROUP_HEADER);
     headers.remove(&EXECUTION_ATTEMPT_HEADER);
+    headers.remove(&SERVICE_TIER_HEADER);
     if let Some(execution) = execution {
         headers.insert(
             EXECUTION_GROUP_HEADER,
