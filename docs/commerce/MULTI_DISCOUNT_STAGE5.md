@@ -1,7 +1,9 @@
 # Stage 5 — materialization целевого pricing release
 
-Статус: целевой контракт, реализация должна быть приведена к нему до следующего production apply.
-Stage 5 готовит immutable pricing authority, но не меняет live traffic.
+Статус: целевой контракт; OpenKeys authoritative cursor producer реализован отдельным
+producer-first checkpoint, а Stage 5 materializer consumer ещё должен быть приведён к этому
+контракту до production apply. Stage 5 готовит immutable pricing authority, но не меняет live
+traffic.
 
 ## Входные inventories
 
@@ -9,7 +11,8 @@ Planner получает свежие authoritative inventories всех bounded
 
 - commerce B2C и B2B с полными engine account IDs;
 - B2B current scalar discount и active invitation snapshots;
-- каждый OpenKeys account, включая disabled и ранее считавшиеся legacy;
+- каждый OpenKeys account из exact `/api/internal/pricing/v2/inventory`, включая disabled,
+  removed и ранее считавшиеся legacy; все страницы обязаны иметь один full-manifest digest;
 - каждый service account с purpose/responsible metadata;
 - полный engine inventory для проверки покрытия.
 

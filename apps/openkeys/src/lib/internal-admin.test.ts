@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { internalAdminActor } from "./internal-admin";
+import { internalAdminActor, internalControlCredential } from "./internal-admin";
 
 function request(headers: Record<string, string>): Request {
   const normalized = new Map(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
@@ -27,5 +27,14 @@ describe("internal OpenKeys admin authentication", () => {
       "x-openkeys-control-key": "control-secret",
       "x-admin-actor": "operator\nspoof",
     }), "control-secret")).toBeNull();
+  });
+
+  it("accepts the exact machine credential without browser actor identity", () => {
+    expect(internalControlCredential(request({
+      "x-openkeys-control-key": "control-secret",
+    }), "control-secret")).toBe(true);
+    expect(internalControlCredential(request({
+      "x-openkeys-control-key": "wrong-secret",
+    }), "control-secret")).toBe(false);
   });
 });

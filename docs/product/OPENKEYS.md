@@ -74,6 +74,33 @@ digest. Сначала обязателен `dry_run`, затем idempotent `ap
 активирует live цену: всё inventory переключается одним Stage 9 release-head CAS. Полный протокол —
 `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
+### Authoritative pricing inventory v2
+
+OpenKeys публикует additive read-only producer для будущего Stage 5 materializer только на
+loopback/internal поверхности:
+
+```text
+GET /api/internal/pricing/v2/inventory?after_account_id=<id>&limit=500
+x-openkeys-control-key: <ENGINE_CONTROL_KEY>
+```
+
+Ответ `{inventory:{inventory_digest,accounts[],next_after_account_id}}` strict-валидируется
+`packages/contracts`. Cursor идёт по `account_id` в byte order, page size ограничен `1..500`, а
+`inventory_digest=sha256:v2` описывает полный manifest, не одну страницу. Каждая account identity
+содержит только `account_id`, durable source-row `source_id`, lifecycle
+`active|disabled|removed`, source `pricing_contract`, historical `source_multiplier_bp` и
+собственный content digest.
+
+Producer включает все durable `openkeys_keys`, в том числе disabled, removed и legacy, а также
+созданные engine accounts из issuance journal, которые ещё не представлены key row. Незавершённый
+journal account считается active, compensated — disabled; появление итогового key row заменяет
+journal identity в следующем snapshot без дублирования account и меняет manifest/content digest.
+Он не возвращает key secret, ciphertext, view token, live balance или персональные данные продавца.
+Consumer обязан исчерпать cursor, требовать один digest на всех страницах и повторить полный scan;
+изменение inventory между страницами делает результат stale. Endpoint ничего не materialize'ит,
+не меняет OpenKeys/engine rows и не активирует pricing. В producer checkpoint runtime-consumer ещё
+не подключён; его можно добавлять только после GREEN exact producer SHA.
+
 ## Административные интерфейсы
 
 Собственная `/admin` построена вокруг партий, а не номиналов. Список партий имеет серверный поиск

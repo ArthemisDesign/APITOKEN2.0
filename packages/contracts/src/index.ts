@@ -720,7 +720,26 @@ export const pricingReleaseInventoryPageV2Schema = z.object({
 }).strict();
 export type PricingReleaseInventoryPageV2 = z.infer<typeof pricingReleaseInventoryPageV2Schema>;
 
-export const fundingNormalizationDigestV2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
+export const canonicalSha256V2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
+
+export const openKeysPricingInventoryAccountV2Schema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  source_id: z.string().uuid(),
+  lifecycle: z.enum(["active", "disabled", "removed"]),
+  pricing_contract: z.enum(["legacy", "official_1_to_1"]),
+  source_multiplier_bp: z.number().int().min(1).max(10_000),
+  content_digest: canonicalSha256V2Schema,
+}).strict();
+export type OpenKeysPricingInventoryAccountV2 = z.infer<typeof openKeysPricingInventoryAccountV2Schema>;
+
+export const openKeysPricingInventoryPageV2Schema = z.object({
+  inventory_digest: canonicalSha256V2Schema,
+  accounts: z.array(openKeysPricingInventoryAccountV2Schema).max(500),
+  next_after_account_id: z.string().startsWith("acct_").max(200).nullable(),
+}).strict();
+export type OpenKeysPricingInventoryPageV2 = z.infer<typeof openKeysPricingInventoryPageV2Schema>;
+
+export const fundingNormalizationDigestV2Schema = canonicalSha256V2Schema;
 export const fundingNormalizationSourceV2Schema = z.enum([
   "aggregate_paid_only",
   "ledger_replay",
