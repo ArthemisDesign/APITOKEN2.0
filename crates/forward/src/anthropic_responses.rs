@@ -31,7 +31,8 @@
 //! Messages `tool_choice`, `parallel_tool_calls:false` →
 //! `disable_parallel_tool_use:true`; `max_output_tokens` → `max_tokens`
 //! (дефолт 4096 — системная конвенция reserve-пути); `reasoning.effort` →
-//! `output_config.effort` (minimal клампится в low) + инжект
+//! model-specific `output_config.effort` (minimal клампится в low; Claude 4.6
+//! принимает `max`, Claude 4.7+/5 также `xhigh`) + инжект
 //! `thinking: {"type":"adaptive","display":"summarized"}` на Claude 4.6+
 //! — как 3.4c chat-адаптера: без thinking рассуждения нет вовсе, а дефолтный
 //! display=omitted присылает пустые блоки; явный `thinking` клиента не
@@ -123,7 +124,7 @@ use serde_json::{json, Map, Value};
 
 use crate::anthropic::{
     chat_error, convert_error_response, image_block, invalid_request, merge_or_push,
-    supports_adaptive_effort, translate_reasoning_effort, translate_tool_function,
+    translate_reasoning_effort_for_model, translate_tool_function,
     unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
 };
 use crate::codex::new_id;
@@ -346,8 +347,8 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
     if let Some(format) = translate_text_format(object.get("text"))? {
         output_config.insert("format".to_string(), format);
     }
-    let effort = translate_reasoning(object.get("reasoning"))?;
-    if let Some(effort) = effort.filter(|_| supports_adaptive_effort(&model)) {
+    let effort = translate_reasoning(object.get("reasoning"), &model)?;
+    if let Some(effort) = effort {
         output_config.insert("effort".to_string(), Value::String(effort));
         // thinking-инжект (как 3.4c chat-адаптера): effort без явного thinking
         // включает adaptive thinking с видимой summary — на 4.6+ моделях
@@ -837,7 +838,7 @@ fn translate_responses_tool_choice(object: &Map<String, Value>) -> Result<Option
 /// `reasoning: {effort}` → `output_config.effort` (общий с chat-адаптером
 /// перевод, этап 3.4b): null/отсутствие — выкл, minimal клампится в low,
 /// любое другое не-null значение effort → 400 invalid_request.
-fn translate_reasoning(value: Option<&Value>) -> Result<Option<String>, Response> {
+fn translate_reasoning(value: Option<&Value>, model: &str) -> Result<Option<String>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
@@ -847,7 +848,7 @@ fn translate_reasoning(value: Option<&Value>) -> Result<Option<String>, Response
             Some("reasoning"),
         ));
     };
-    translate_reasoning_effort(Some(effort), "reasoning")
+    translate_reasoning_effort_for_model(Some(effort), "reasoning", model)
 }
 
 /// `text` → `output_config.format` (GA structured outputs, как
@@ -2018,6 +2019,8 @@ mod tests {
             ("low", "low"),
             ("medium", "medium"),
             ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
         ] {
             let translated = ok_translated(serde_json::json!({
                 "model": "claude-opus-4-8",
@@ -2048,6 +2051,32 @@ mod tests {
         assert!(translated.body.get("thinking").is_none());
     }
 
+    #[tokio::test]
+    async fn claude_4_6_reasoning_accepts_max_but_rejects_xhigh() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-opus-4-6",
+            "input": "hi",
+            "reasoning": {"effort": "max"},
+        }));
+        assert_eq!(translated.body["output_config"]["effort"], "max");
+        assert_eq!(
+            translated.body["thinking"],
+            serde_json::json!({"type": "adaptive", "display": "summarized"})
+        );
+
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "claude-opus-4-6",
+            "input": "hi",
+            "reasoning": {"effort": "xhigh"},
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "reasoning");
+        assert!(json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("low, medium, high, max")));
+    }
+
     #[test]
     fn reasoning_preserves_client_thinking() {
         // Явный thinking клиента (open list) не переопределяется инжектом.
@@ -2074,7 +2103,7 @@ mod tests {
             let translated = ok_translated(serde_json::json!({
                 "model": model,
                 "input": "title this",
-                "reasoning": {"effort": "low"},
+                "reasoning": {"effort": "max"},
             }));
             assert!(translated.body.get("output_config").is_none(), "{model}");
             assert!(translated.body.get("thinking").is_none(), "{model}");
@@ -2098,7 +2127,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_invalid_reasoning() {
-        // Любое не-null значение effort вне minimal|low|medium|high → 400
+        // Любое не-null значение effort вне minimal|low|medium|high|xhigh|max → 400
         // invalid_request (не unsupported_parameter — параметр поддержан).
         let (status, json) = expect_err(serde_json::json!({
             "model": "claude-opus-4-8", "input": "hi",

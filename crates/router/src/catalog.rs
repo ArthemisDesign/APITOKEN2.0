@@ -42,6 +42,49 @@ pub const NS_ANTHROPIC: &str = "anthropic";
 pub const NS_OPENAI: &str = "openai";
 pub const NS_GOOGLE: &str = "google";
 
+const ANTHROPIC_EFFORTS_4_6: &[&str] = &["low", "medium", "high", "max"];
+const ANTHROPIC_EFFORTS_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// Router-owned discovery metadata for the OpenAI-compatible surface. The
+/// native Anthropic model list has no effort capability field, so the unified
+/// catalog publishes the live-verified model boundary explicitly: 4.6 has
+/// `max` but no `xhigh`, while 4.7+ and 5 have both. Older/unknown ids publish
+/// an authoritative empty list rather than inviting clients to guess.
+fn anthropic_reasoning_efforts(model: &str) -> &'static [&'static str] {
+    let version = [
+        "claude-opus-",
+        "claude-sonnet-",
+        "claude-haiku-",
+        "claude-fable-",
+    ]
+    .into_iter()
+    .find_map(|prefix| model.strip_prefix(prefix));
+    let Some(version) = version else {
+        return &[];
+    };
+    let mut parts = version.split('-');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
+        return &[];
+    };
+    if major > 4 {
+        return ANTHROPIC_EFFORTS_FULL;
+    }
+    if major < 4 {
+        return &[];
+    }
+    let Some(minor) = parts.next() else {
+        return &[];
+    };
+    if minor.len() > 2 {
+        return &[];
+    }
+    match minor.parse::<u16>() {
+        Ok(6) => ANTHROPIC_EFFORTS_4_6,
+        Ok(7..) => ANTHROPIC_EFFORTS_FULL,
+        _ => &[],
+    }
+}
+
 /// Плоскость по явному namespace-префиксу модели — общая для обоих universal
 /// dispatch'ей (`chat.rs`, `responses.rs`; их dispatch-правила обязаны
 /// совпадать). Каталог не опрашивается: admission плоскости сам резолвит
@@ -68,6 +111,10 @@ pub struct CatalogEntry {
     /// Нативный ID плоскости (`claude-opus-4-8`) — однозначный alias.
     pub alias: String,
     pub display_name: Option<String>,
+    /// Ordered OpenAI-compatible reasoning variants. `Some([])` is an
+    /// authoritative statement that this Anthropic model has no GA adaptive
+    /// effort; `None` means this catalog parser does not own such metadata.
+    pub reasoning_efforts: Option<Vec<String>>,
 }
 
 impl CatalogEntry {
@@ -83,6 +130,9 @@ impl CatalogEntry {
         });
         if let Some(name) = &self.display_name {
             obj["name"] = Value::String(name.clone());
+        }
+        if let Some(efforts) = &self.reasoning_efforts {
+            obj["reasoning_efforts"] = serde_json::json!(efforts);
         }
         obj
     }
@@ -300,6 +350,12 @@ fn parse_anthropic(body: &Value) -> Vec<CatalogEntry> {
                     }
                     Some(CatalogEntry {
                         id: format!("{NS_ANTHROPIC}/{id}"),
+                        reasoning_efforts: Some(
+                            anthropic_reasoning_efforts(&id)
+                                .iter()
+                                .map(|effort| (*effort).to_string())
+                                .collect(),
+                        ),
                         alias: id,
                         display_name: m["display_name"].as_str().map(str::to_string),
                     })
@@ -324,6 +380,7 @@ fn parse_openai(body: &Value) -> Vec<CatalogEntry> {
                         id: format!("{NS_OPENAI}/{id}"),
                         alias: id,
                         display_name: None,
+                        reasoning_efforts: None,
                     })
                 })
                 .collect()
@@ -347,6 +404,7 @@ fn parse_gemini(body: &Value) -> Vec<CatalogEntry> {
                         id: format!("{NS_GOOGLE}/{id}"),
                         alias: id,
                         display_name: m["displayName"].as_str().map(str::to_string),
+                        reasoning_efforts: None,
                     })
                 })
                 .collect()
@@ -416,7 +474,34 @@ mod tests {
         assert_eq!(entries[0].id, "anthropic/claude-opus-4-8");
         assert_eq!(entries[0].alias, "claude-opus-4-8");
         assert_eq!(entries[0].display_name.as_deref(), Some("Claude Opus 4.8"));
+        assert_eq!(
+            entries[0].reasoning_efforts.as_deref(),
+            Some(
+                ["low", "medium", "high", "xhigh", "max"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
         assert_eq!(entries[1].id, "anthropic/claude-sonnet-5");
+    }
+
+    #[test]
+    fn anthropic_reasoning_efforts_preserve_the_4_6_boundary() {
+        assert_eq!(
+            anthropic_reasoning_efforts("claude-opus-5"),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(
+            anthropic_reasoning_efforts("claude-sonnet-4-6"),
+            ["low", "medium", "high", "max"]
+        );
+        for model in [
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-20250514",
+            "unknown-model",
+        ] {
+            assert!(anthropic_reasoning_efforts(model).is_empty(), "{model}");
+        }
     }
 
     #[test]
@@ -462,7 +547,8 @@ mod tests {
     #[test]
     fn dedup_keeps_first_occurrence_order() {
         let e = |id: &str| ("anthropic".to_string(), CatalogEntry {
-            id: id.into(), alias: "a".into(), display_name: None });
+            id: id.into(), alias: "a".into(), display_name: None,
+            reasoning_efforts: None });
         let deduped = dedup(vec![e("x/1"), e("x/2"), e("x/1"), e("x/3")]);
         let ids: Vec<_> = deduped.iter().map(|(_, e)| e.id.as_str()).collect();
         assert_eq!(ids, ["x/1", "x/2", "x/3"]);
@@ -473,9 +559,11 @@ mod tests {
         let entries = vec![
             ("anthropic".to_string(), CatalogEntry {
                 id: "anthropic/claude-opus-4-8".into(),
-                alias: "claude-opus-4-8".into(), display_name: None }),
+                alias: "claude-opus-4-8".into(), display_name: None,
+                reasoning_efforts: None }),
             ("openai".to_string(), CatalogEntry {
-                id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None }),
+                id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None,
+                reasoning_efforts: None }),
         ];
         assert!(find(&entries, "anthropic/claude-opus-4-8").is_some());
         assert!(find(&entries, "claude-opus-4-8").is_some());
@@ -490,6 +578,12 @@ mod tests {
             id: "anthropic/claude-opus-4-8".into(),
             alias: "claude-opus-4-8".into(),
             display_name: Some("Claude Opus 4.8".into()),
+            reasoning_efforts: Some(
+                ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
         };
         let json = entry.to_json("anthropic");
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
@@ -498,7 +592,11 @@ mod tests {
         assert_eq!(json["owned_by"], "anthropic");
         assert_eq!(json["aliases"][0], "claude-opus-4-8");
         assert_eq!(json["name"], "Claude Opus 4.8");
-        let bare = CatalogEntry { id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None };
+        assert_eq!(
+            json["reasoning_efforts"],
+            serde_json::json!(["low", "medium", "high", "xhigh", "max"])
+        );
+        let bare = CatalogEntry { id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None, reasoning_efforts: None };
         assert!(bare.to_json("openai").get("name").is_none());
     }
 }

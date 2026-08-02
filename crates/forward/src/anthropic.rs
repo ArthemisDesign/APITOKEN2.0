@@ -14,8 +14,8 @@
 //! user-сообщений → Messages image-блоки (data: URL → base64 source,
 //! http(s) → url source; `detail` != auto отклоняется), `response_format`
 //! json_schema → GA `output_config.format` (json_object у Messages нет).
-//! Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high на
-//! Claude 4.6+ → GA `output_config.effort` (minimal клампится в low;
+//! Reasoning (3.4b/3.4c): `reasoning_effort` minimal|low|medium|high|xhigh|max на
+//! совместимой Claude-модели → GA `output_config.effort` (minimal клампится в low;
 //! невалидное значение → 400 invalid_request) + инжект `thinking:
 //! {type:"adaptive", display:"summarized"}` (без него adaptive выключен, а
 //! дефолтный display=omitted присылает пустые thinking-блоки — живые пробы
@@ -71,12 +71,16 @@ pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// reserve-пути (proxy.rs трактует отсутствующий `max_tokens` как 4096).
 pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
 
-/// Поддерживает ли нативная модель Anthropic GA `output_config.effort` вместе
-/// с adaptive thinking. Живые пробы фиксируют границу Claude 4.6: 4.5 и
-/// прежние поколения отклоняют оба поля. Неизвестный/неразбираемый id
-/// трактуется консервативно — OpenAI-compatible effort остаётся hint'ом и
-/// деградирует к model default, а не превращает совместимый запрос в 400.
-pub(crate) fn supports_adaptive_effort(model: &str) -> bool {
+const ADAPTIVE_EFFORTS_4_6: &[&str] = &["low", "medium", "high", "max"];
+const ADAPTIVE_EFFORTS_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// Поддерживаемые нативной Anthropic-моделью уровни GA `output_config.effort`
+/// вместе с adaptive thinking. Живые пробы фиксируют не только нижнюю границу
+/// Claude 4.6, но и model-specific верхнюю: 4.6 принимает `max`, но не `xhigh`;
+/// 4.7+ и 5 принимают оба. 4.5 и прежние поколения отклоняют сам GA-контракт.
+/// Неизвестный/неразбираемый id трактуется консервативно — OpenAI-compatible
+/// effort остаётся hint'ом и деградирует к model default.
+pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str] {
     let model = model.strip_prefix("anthropic/").unwrap_or(model);
     let version = [
         "claude-opus-",
@@ -87,26 +91,30 @@ pub(crate) fn supports_adaptive_effort(model: &str) -> bool {
     .into_iter()
     .find_map(|prefix| model.strip_prefix(prefix));
     let Some(version) = version else {
-        return false;
+        return &[];
     };
     let mut parts = version.split('-');
     let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
-        return false;
+        return &[];
     };
     if major > 4 {
-        return true;
+        return ADAPTIVE_EFFORTS_FULL;
     }
     if major < 4 {
-        return false;
+        return &[];
     }
     let Some(minor) = parts.next() else {
-        return false;
+        return &[];
     };
     // `claude-opus-4-20250514` — legacy Claude 4 date id, не версия 4.20M.
     if minor.len() > 2 {
-        return false;
+        return &[];
     }
-    minor.parse::<u16>().is_ok_and(|minor| minor >= 6)
+    match minor.parse::<u16>() {
+        Ok(6) => ADAPTIVE_EFFORTS_4_6,
+        Ok(7..) => ADAPTIVE_EFFORTS_FULL,
+        _ => &[],
+    }
 }
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
@@ -327,8 +335,12 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(format) = translate_response_format(object.get("response_format"))? {
         output_config.insert("format".to_string(), format);
     }
-    let effort = translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")?;
-    if let Some(effort) = effort.filter(|_| supports_adaptive_effort(&model)) {
+    let effort = translate_reasoning_effort_for_model(
+        object.get("reasoning_effort"),
+        "reasoning_effort",
+        &model,
+    )?;
+    if let Some(effort) = effort {
         output_config.insert("effort".to_string(), Value::String(effort));
         // reasoning_effort без явного thinking включает adaptive thinking с
         // видимой summary: на 4.6+ моделях adaptive выключен по умолчанию
@@ -856,8 +868,10 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<Value>, Res
 
 /// `reasoning_effort` → `output_config.effort` (GA-поле Messages, этап 3.4b;
 /// beta-заголовок не нужен). Отсутствие/null — выкл (поле не вставляется);
-/// minimal у Messages нет — клампится в low. Любое другое не-null значение →
-/// 400 invalid_request. Общая с Responses-адаптером этапа 4.1; `param` — имя
+/// minimal у Messages нет — клампится в low. Верхние нативные уровни `xhigh`
+/// и `max` принимаются здесь, а model-specific матрица применяется отдельным
+/// helper ниже. Любое другое не-null значение → 400 invalid_request. Общая с
+/// Responses-адаптером этапа 4.1; `param` — имя
 /// параметра в ошибке (`reasoning_effort` у chat, `reasoning` у Responses).
 pub(crate) fn translate_reasoning_effort(
     value: Option<&Value>,
@@ -868,14 +882,44 @@ pub(crate) fn translate_reasoning_effort(
     };
     match value.as_str() {
         Some("minimal") | Some("low") => Ok(Some("low".to_string())),
-        Some(effort @ ("medium" | "high")) => Ok(Some(effort.to_string())),
+        Some(effort @ ("medium" | "high" | "xhigh" | "max")) => {
+            Ok(Some(effort.to_string()))
+        }
         _ => Err(invalid_request(
             &format!(
-                "Invalid value for parameter: {param} (expected minimal, low, medium or high)."
+                "Invalid value for parameter: {param} (expected minimal, low, medium, high, xhigh or max)."
             ),
             Some(param),
         )),
     }
+}
+
+/// Нормализует OpenAI-compatible hint и применяет точную матрицу выбранной
+/// Claude-модели. Для pre-4.6/unknown валидный hint по контракту совместимости
+/// деградирует к model default. Для модели с GA effort неподдерживаемый уровень
+/// отклоняется локально до reserve/upstream, а не обещается как исполнимый.
+pub(crate) fn translate_reasoning_effort_for_model(
+    value: Option<&Value>,
+    param: &str,
+    model: &str,
+) -> Result<Option<String>, Response> {
+    let Some(effort) = translate_reasoning_effort(value, param)? else {
+        return Ok(None);
+    };
+    let supported = supported_adaptive_efforts(model);
+    if supported.is_empty() {
+        return Ok(None);
+    }
+    if supported.contains(&effort.as_str()) {
+        return Ok(Some(effort));
+    }
+    Err(invalid_request(
+        &format!(
+            "Invalid value for parameter: {param}; the selected model supports {}.",
+            supported.join(", ")
+        ),
+        Some(param),
+    ))
 }
 
 /// Chat `tools[]` / legacy `functions[]` → Messages `tools[]`. Legacy
@@ -2307,15 +2351,25 @@ mod tests {
     // ---------- reasoning (этапы 3.4b/3.4c) ----------
 
     #[test]
-    fn adaptive_effort_capability_starts_at_claude_4_6() {
+    fn adaptive_effort_capability_is_model_specific() {
         for model in [
-            "claude-sonnet-4-6",
             "anthropic/claude-opus-4-7-20260601",
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-fable-5",
         ] {
-            assert!(supports_adaptive_effort(model), "{model}");
+            assert_eq!(
+                supported_adaptive_efforts(model),
+                ["low", "medium", "high", "xhigh", "max"],
+                "{model}"
+            );
+        }
+        for model in ["claude-sonnet-4-6", "anthropic/claude-opus-4-6"] {
+            assert_eq!(
+                supported_adaptive_efforts(model),
+                ["low", "medium", "high", "max"],
+                "{model}"
+            );
         }
         for model in [
             "claude-haiku-4-5-20251001",
@@ -2325,7 +2379,7 @@ mod tests {
             "claude-3-7-sonnet-20250219",
             "unknown-model",
         ] {
-            assert!(!supports_adaptive_effort(model), "{model}");
+            assert!(supported_adaptive_efforts(model).is_empty(), "{model}");
         }
     }
 
@@ -2337,6 +2391,8 @@ mod tests {
             ("low", "low"),
             ("medium", "medium"),
             ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
         ] {
             let translated = ok_translated(serde_json::json!({
                 "model": "claude-opus-4-8",
@@ -2366,6 +2422,32 @@ mod tests {
         assert!(translated.body.get("thinking").is_none());
     }
 
+    #[tokio::test]
+    async fn claude_4_6_accepts_max_but_rejects_xhigh() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "max",
+        }));
+        assert_eq!(translated.body["output_config"]["effort"], "max");
+        assert_eq!(
+            translated.body["thinking"],
+            serde_json::json!({"type": "adaptive", "display": "summarized"})
+        );
+
+        let (status, json) = expect_err(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "xhigh",
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["param"], "reasoning_effort");
+        assert!(json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("low, medium, high, max")));
+    }
+
     #[test]
     fn reasoning_effort_preserves_client_thinking() {
         // Явный thinking клиента (open list) не переопределяется инжектом 3.4c.
@@ -2393,7 +2475,7 @@ mod tests {
             let translated = ok_translated(serde_json::json!({
                 "model": model,
                 "messages": [{"role": "user", "content": "title this"}],
-                "reasoning_effort": "low",
+                "reasoning_effort": "max",
             }));
             assert!(translated.body.get("output_config").is_none(), "{model}");
             assert!(translated.body.get("thinking").is_none(), "{model}");
@@ -2455,7 +2537,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_invalid_reasoning_effort() {
-        // Любое не-null значение вне minimal|low|medium|high → 400
+        // Любое не-null значение вне minimal|low|medium|high|xhigh|max → 400
         // invalid_request (не unsupported_parameter — параметр поддержан).
         for value in [serde_json::json!("extreme"), serde_json::json!(2)] {
             let (status, json) = expect_err(serde_json::json!({

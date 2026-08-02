@@ -242,6 +242,7 @@ mod tests {
                 id: "openai/gpt-5.6-terra".to_string(),
                 alias: "gpt-5.6-terra".to_string(),
                 display_name: None,
+                reasoning_efforts: None,
             },
         )];
         let ids: Vec<_> = active_catalog_entries(&entries)

@@ -2622,6 +2622,12 @@ mod tests {
         assert_eq!(json["data"][0]["aliases"][0], "claude-opus-4-8");
         assert_eq!(json["data"][0]["name"], "Claude Opus 4.8");
         assert_eq!(json["data"][0]["owned_by"], "anthropic");
+        assert_eq!(
+            json["data"][0]["reasoning_efforts"],
+            serde_json::json!(["low", "medium", "high", "xhigh", "max"])
+        );
+        assert_eq!(json["data"][1]["reasoning_efforts"], serde_json::json!([]));
+        assert!(json["data"][2].get("reasoning_efforts").is_none());
 
         // Auth passthrough: ключ клиента дошёл до плоскости каталога verbatim.
         let catalog_request = log_a.lock().unwrap().pop().expect("catalog fetch hit the plane");
@@ -2753,6 +2759,10 @@ mod tests {
             .get(format!("{router}/v1/models/anthropic/claude-opus-4-8"))
             .send().await.unwrap().json().await.unwrap();
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
+        assert_eq!(
+            json["reasoning_efforts"],
+            serde_json::json!(["low", "medium", "high", "xhigh", "max"])
+        );
 
         let json: serde_json::Value = client
             .get(format!("{router}/v1/models/claude-opus-4-8"))

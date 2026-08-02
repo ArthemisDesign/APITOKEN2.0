@@ -274,7 +274,7 @@ check_code "$C" 400 "responses bad arguments" && {
 }
 
 echo "[22] engine: Claude 4.5 reasoning hint деградирует к model default без upstream 400"
-C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"hi","reasoning":{"effort":"low"}}' -H "x-api-key: $ADMIN_KEY")
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-haiku-4-5","input":"hi","reasoning":{"effort":"max"}}' -H "x-api-key: $ADMIN_KEY")
 check_code "$C" 200 "responses legacy reasoning hint" && {
   check_body '"object":"response"' "legacy reasoning response"
   grep -qF '"type":"reasoning"' "$RESP" && { say "✗ legacy hint неожиданно включил reasoning"; FAIL=1; }
@@ -321,6 +321,37 @@ assert [a["output_index"] for a in added] == [0, 1], added
 assert added[0]["item"]["type"] == "reasoning", added
 assert added[1]["item"]["type"] == "message", added
 PY
+}
+
+echo "[25] router: каталог публикует точную model-specific effort matrix"
+C=$(curl -sS -m10 -o "$RESP" -w '%{http_code}' "$ROUTER/v1/models" -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "reasoning effort catalog" && {
+  python3 - "$RESP" <<'PY' || { say "✗ reasoning effort catalog matrix"; FAIL=1; }
+import json, sys
+models = {item["id"]: item for item in json.load(open(sys.argv[1]))["data"]}
+assert models["anthropic/claude-opus-5"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+assert models["anthropic/claude-sonnet-4-6"]["reasoning_efforts"] == ["low", "medium", "high", "max"]
+assert models["anthropic/claude-haiku-4-5"]["reasoning_efforts"] == []
+PY
+}
+
+echo "[26] engine: Chat Opus 5 принимает max и возвращает reasoning"
+C=$(req "$ENGINE" '{"model":"anthropic/claude-opus-5","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "chat max effort" && check_body '"reasoning_content":"mock think full"' "chat max reasoning"
+
+echo "[27] engine: Responses Opus 5 принимает xhigh и возвращает reasoning"
+C=$(reqr "$ENGINE" '{"model":"anthropic/claude-opus-5","input":"hi","reasoning":{"effort":"xhigh"}}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "responses xhigh effort" && check_body '"type":"reasoning"' "responses xhigh reasoning"
+
+echo "[28] engine: Claude 4.6 принимает max"
+C=$(req "$ENGINE" '{"model":"anthropic/claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 200 "Claude 4.6 max" && check_body '"reasoning_content":"mock think full"' "Claude 4.6 max reasoning"
+
+echo "[29] engine: Claude 4.6 отклоняет неподдерживаемый xhigh до upstream"
+C=$(req "$ENGINE" '{"model":"anthropic/claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}' -H "x-api-key: $ADMIN_KEY")
+check_code "$C" 400 "Claude 4.6 xhigh" && {
+  check_body '"param":"reasoning_effort"' "Claude 4.6 xhigh param"
+  check_body 'low, medium, high, max' "Claude 4.6 supported efforts"
 }
 
 if [ "$FAIL" = 0 ]; then

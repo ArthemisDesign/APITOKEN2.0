@@ -199,7 +199,11 @@ class H(BaseHTTPRequestHandler):
                  "created_at": "2026-01-02T00:00:00Z"},
                 {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
                  "created_at": "2026-01-01T00:00:00Z"},
-            ], "has_more": False, "first_id": "claude-haiku-4-5", "last_id": "claude-opus-4-8"}).encode()
+                {"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
+                 "created_at": "2026-01-03T00:00:00Z"},
+                {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5",
+                 "created_at": "2026-01-04T00:00:00Z"},
+            ], "has_more": False, "first_id": "claude-haiku-4-5", "last_id": "claude-opus-5"}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))

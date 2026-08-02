@@ -15,6 +15,7 @@ GEMINI_MODEL=${APITOKEN_HARNESS_GEMINI_MODEL:-gemini-2.5-flash-lite}
 OPENCODE_GEMINI_MODEL=${APITOKEN_HARNESS_OPENCODE_GEMINI_MODEL:-google/gemini-3.1-flash-lite}
 OPENCODE_CLAUDE_MODEL=${APITOKEN_HARNESS_OPENCODE_CLAUDE_MODEL:-anthropic/claude-sonnet-4-6}
 OPENCODE_CLAUDE_SMALL_MODEL=${APITOKEN_HARNESS_OPENCODE_CLAUDE_SMALL_MODEL:-anthropic/claude-haiku-4-5-20251001}
+OPENCODE_CLAUDE_EFFORT_MODEL=${APITOKEN_HARNESS_OPENCODE_CLAUDE_EFFORT_MODEL:-anthropic/claude-opus-5}
 PLACEHOLDER_API_KEY=router-harness-placeholder-key
 PROMPT='Reply exactly OK. Do not call tools, inspect files, or change anything.'
 GEMINI_TOOL_PROMPT="Use the bash tool to run exactly: printf 'OPENCODE_GEMINI_TOOL_OK\\n' > opencode-gemini-tool-proof.txt. Do not use another tool. After the tool succeeds, reply exactly OPENCODE_GEMINI_TOOL_OK."
@@ -181,7 +182,7 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Standard attempt {sequence} sent a Fast body tier")
         if "priority" in response_tiers:
             raise SystemExit(f"{label}: Standard attempt {sequence} executed as priority")
-        if protocol != "gemini_native" and label not in {"opencode-gemini-tools", "opencode-claude-native"} and not response_tiers.intersection({"standard", "default"}):
+        if protocol != "gemini_native" and label not in {"opencode-gemini-tools", "opencode-claude-native"} and not label.startswith("opencode-claude-effort-") and not response_tiers.intersection({"standard", "default"}):
             raise SystemExit(f"{label}: Standard attempt {sequence} lacks authoritative tier evidence")
     else:
         if selector == "header" and request_header != "fast":
@@ -244,6 +245,11 @@ if label == "opencode-claude-native":
         raise SystemExit(f"{label}: OpenCode title-agent request was not observed")
     if not any(attempt.get("request_reasoning_effort") == "low" for attempt in title_attempts):
         raise SystemExit(f"{label}: raw title-agent reasoning_effort=low was not observed")
+
+if label.startswith("opencode-claude-effort-"):
+    expected_effort = label.removeprefix("opencode-claude-effort-")
+    if not any(attempt.get("request_reasoning_effort") == expected_effort for attempt in attempts):
+        raise SystemExit(f"{label}: raw reasoning_effort={expected_effort} was not observed")
 
 print(len(attempts))
 PY
@@ -422,6 +428,41 @@ run_opencode_claude_native() {
       --agent plan \
       --dir "$CASE_DIR/work" \
       "$PROMPT"
+}
+
+run_opencode_claude_effort() {
+  local _tier=$1
+  local effort=$2
+  local config_content
+  config_content=$(printf '{"permission":"allow","provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s"},"models":{"%s":{"name":"Router Claude Opus 5","reasoning":true,"interleaved":{"field":"reasoning_content"},"variants":{"xhigh":{"reasoningEffort":"xhigh"},"max":{"reasoningEffort":"max"}}}}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
+    "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$OPENCODE_CLAUDE_EFFORT_MODEL" \
+    "$OPENCODE_CLAUDE_EFFORT_MODEL" "$OPENCODE_CLAUDE_EFFORT_MODEL")
+  run_quiet env \
+    OPENCODE_CONFIG_CONTENT="$config_content" \
+    OPENCODE_CONFIG_DIR="$CASE_DIR/config" \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    XDG_CACHE_HOME="$TEMP_ROOT/opencode-claude-effort-cache" \
+    XDG_CONFIG_HOME="$CASE_DIR/xdg-config" \
+    XDG_DATA_HOME="$CASE_DIR/xdg-data" \
+    XDG_STATE_HOME="$CASE_DIR/xdg-state" \
+    opencode run --pure --format json \
+      --model "apitoken/$OPENCODE_CLAUDE_EFFORT_MODEL" \
+      --variant "$effort" \
+      --agent plan \
+      --title router-harness \
+      --dir "$CASE_DIR/work" \
+      "$PROMPT"
+}
+
+run_opencode_claude_xhigh() {
+  run_opencode_claude_effort "$1" xhigh
+}
+
+run_opencode_claude_max() {
+  run_opencode_claude_effort "$1" max
 }
 
 run_kilo() {
@@ -603,6 +644,8 @@ run_matrix_case continue-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" f
 run_matrix_case opencode-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_opencode
 run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_opencode
 run_matrix_case opencode-claude-native openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_MODEL" standard none run_opencode_claude_native
+run_matrix_case opencode-claude-effort-xhigh openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_xhigh
+run_matrix_case opencode-claude-effort-max openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_max
 run_matrix_case opencode-gemini-tools openai_chat /v1/chat/completions "$OPENCODE_GEMINI_MODEL" standard none run_opencode_gemini_tools
 run_matrix_case kilo-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_kilo
 run_matrix_case kilo-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_kilo
