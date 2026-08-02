@@ -107,6 +107,10 @@ Require all of these safeguards:
 - baseline delivery health (`pending=0`, `dropped=0`, persistence/authority healthy) and authoritative
   paid-plan identity before traffic;
 - a unique run id and isolated cache keys; share only the intended write/read cache pair;
+- persist an incomplete machine-readable checkpoint and resume the same run id, aggregate budget,
+  completed outcome set, and cache lineage after an explicit provider quota/unavailable stop. Never
+  repeat completed legs, silently add a new profile/model, or resume a paid request whose outcome is
+  transport-ambiguous;
 - immutable-event attribution by the exact new request id plus profile/model/tier/full usage vector;
   concurrent unrelated traffic must not affect the record; ambiguity stops fail closed;
 - read-only retries only. Never automatically repeat a paid request after an ambiguous transport

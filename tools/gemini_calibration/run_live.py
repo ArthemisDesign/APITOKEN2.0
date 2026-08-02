@@ -78,6 +78,17 @@ class UnboundedCostError(CalibrationError):
     """A provider capability has no proved per-request money ceiling."""
 
 
+@dataclasses.dataclass(frozen=True)
+class ResumeState:
+    run_id: str
+    profiles: list[str]
+    models: list[str]
+    records: list[dict[str, Any]]
+    unavailable: list[dict[str, Any]]
+    spent_nano: int
+    spent_by_profile: dict[str, int]
+
+
 def as_int(value: Any, field: str) -> int:
     if isinstance(value, bool):
         raise CalibrationError(f"{field} is boolean, expected integer")
@@ -99,6 +110,166 @@ def usd_to_nano(value: str) -> int:
     if not whole.isdigit() or (dot and not fractional.isdigit()) or len(fractional) > 9:
         raise CalibrationError(f"invalid exact USD amount: {value!r}")
     return int(whole) * NANO_PER_USD + int((fractional + "000000000")[:9])
+
+
+def is_explicit_transient_stop(error: HttpCalibrationError) -> bool:
+    if error.status == 429:
+        return True
+    return (
+        error.status == 503
+        and "type.googleapis.com/google.rpc.RetryInfo" in error.detail
+        and '"status":"UNAVAILABLE"' in error.detail.replace(" ", "")
+    )
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise CalibrationError(f"resume report {field} must be a non-empty list")
+    parsed = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise CalibrationError(f"resume report {field} contains an invalid value")
+        parsed.append(item)
+    if len(set(parsed)) != len(parsed):
+        raise CalibrationError(f"resume report {field} contains duplicates")
+    return parsed
+
+
+def load_resume_report(path: str, budget_nano: int, requested_models: list[str] | None) -> ResumeState:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CalibrationError(f"cannot read Gemini resume report: {path}") from error
+    if not isinstance(payload, dict) or payload.get("schema") != "gemini-live-calibration/v1":
+        raise CalibrationError("resume report has an unsupported schema")
+    if payload.get("complete") is True:
+        raise CalibrationError("refusing to resume an already complete Gemini report")
+    failure = payload.get("failure")
+    legacy_explicit_stop = (
+        isinstance(failure, str)
+        and "returned HTTP 503:" in failure
+        and "type.googleapis.com/google.rpc.RetryInfo" in failure
+        and '"status":"UNAVAILABLE"' in failure.replace(" ", "")
+    )
+    if payload.get("resume_safe") is not True and not legacy_explicit_stop:
+        raise CalibrationError(
+            "resume report is not proven safe; an ambiguous paid request must never be repeated"
+        )
+    if as_int(payload.get("budget_nanousd_total"), "resume budget") != budget_nano:
+        raise CalibrationError("--budget-usd must exactly match the resumed aggregate budget")
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id.startswith("gemini-cal-") or len(run_id) > 96:
+        raise CalibrationError("resume report has an invalid run id")
+    profiles = _string_list(payload.get("profiles"), "profiles")
+    models = _string_list(payload.get("models"), "models")
+    if requested_models is not None and requested_models != models:
+        raise CalibrationError("--models must be omitted or exactly match the resumed model order")
+
+    raw_records = payload.get("records")
+    raw_unavailable = payload.get("unavailable_capabilities")
+    if not isinstance(raw_records, list) or not isinstance(raw_unavailable, list):
+        raise CalibrationError("resume report has no completed outcome lists")
+    records: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+    outcome_keys: set[tuple[str, str]] = set()
+    unavailable_keys: set[tuple[str, str]] = set()
+    request_ids: set[str] = set()
+    calculated_by_profile: dict[str, int] = defaultdict(int)
+    final_capacity = payload.get("final_capacity")
+    final_events = (
+        recent_turn_events(final_capacity)
+        if isinstance(final_capacity, dict)
+        and "calibration_recent_turn_limit" in final_capacity
+        else {}
+    )
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            raise CalibrationError("resume report contains a non-object record")
+        profile_id, model, leg, request_id = (
+            raw.get("profile_id"), raw.get("model"), raw.get("leg"), raw.get("request_id")
+        )
+        if (
+            profile_id not in profiles
+            or model not in models
+            or not isinstance(leg, str)
+            or not leg
+            or not isinstance(request_id, str)
+            or not request_id
+        ):
+            raise CalibrationError("resume report record has an invalid identity")
+        key = (profile_id, leg)
+        if key in outcome_keys or request_id in request_ids:
+            raise CalibrationError("resume report contains duplicate completed evidence")
+        api_cost = raw.get("api_cost")
+        usage = raw.get("usage")
+        if not isinstance(api_cost, dict) or not isinstance(usage, dict):
+            raise CalibrationError("resume report record has no exact usage/cost vector")
+        parsed_cost = {
+            field: as_int(api_cost.get(field), f"resume record api_cost.{field}")
+            for field in EVENT_MONEY_FIELDS
+        }
+        for field in EVENT_TOKEN_FIELDS:
+            as_int(usage.get(field), f"resume record usage.{field}")
+        actual = as_int(raw.get("actual_nanousd"), "resume record actual_nanousd")
+        if actual <= 0 or parsed_cost["api_total_nanousd"] != actual:
+            raise CalibrationError("resume report record has an inconsistent actual cost")
+        if sum(parsed_cost[field] for field in EVENT_MONEY_FIELDS[:-1]) != actual:
+            raise CalibrationError("resume report record has a broken exact cost vector")
+        schedule = raw.get("tariff_schedule_id")
+        if not isinstance(schedule, str) or not schedule:
+            legacy_event = final_events.get(request_id)
+            schedule = legacy_event.get("tariff_schedule_id") if legacy_event else None
+        if not isinstance(schedule, str) or not schedule:
+            raise CalibrationError("resume report record has no exact tariff schedule identity")
+        outcome_keys.add(key)
+        request_ids.add(request_id)
+        calculated_by_profile[profile_id] += actual
+        parsed_record = dict(raw)
+        parsed_record["tariff_schedule_id"] = schedule
+        records.append(parsed_record)
+    for raw in raw_unavailable:
+        if not isinstance(raw, dict):
+            raise CalibrationError("resume report contains a non-object unavailable capability")
+        profile_id, model, capability = (
+            raw.get("profile_id"), raw.get("model"), raw.get("capability")
+        )
+        if (
+            profile_id not in profiles
+            or model not in models
+            or not isinstance(capability, str)
+            or not capability
+        ):
+            raise CalibrationError("resume report unavailable capability has an invalid identity")
+        key = (profile_id, capability)
+        if key in unavailable_keys:
+            raise CalibrationError("resume report contains duplicate unavailable outcomes")
+        unavailable_keys.add(key)
+        outcome_keys.add(key)
+        unavailable.append(dict(raw))
+
+    spent_nano = as_int(payload.get("spent_nanousd_total"), "resume spent total")
+    if sum(calculated_by_profile.values()) != spent_nano:
+        raise CalibrationError("resume report spend does not equal its immutable records")
+    raw_by_profile = payload.get("spent_nanousd_per_profile")
+    if not isinstance(raw_by_profile, dict):
+        raise CalibrationError("resume report has no per-profile spend")
+    spent_by_profile = {
+        profile: as_int(raw_by_profile.get(profile, 0), f"resume spend {profile}")
+        for profile in profiles
+    }
+    if spent_by_profile != {profile: calculated_by_profile.get(profile, 0) for profile in profiles}:
+        raise CalibrationError("resume report per-profile spend does not equal its records")
+    if spent_nano > budget_nano:
+        raise CalibrationError("resume report already exceeds the aggregate budget")
+    return ResumeState(
+        run_id=run_id,
+        profiles=profiles,
+        models=models,
+        records=records,
+        unavailable=unavailable,
+        spent_nano=spent_nano,
+        spent_by_profile=spent_by_profile,
+    )
 
 
 def require_healthy_delivery(payload: dict[str, Any], require_empty: bool = True) -> None:
@@ -727,6 +898,7 @@ class Runner:
             "stream": leg.stream,
             "image_size": leg.image_size,
             "request_id": event["request_id"],
+            "tariff_schedule_id": event["tariff_schedule_id"],
             "counted_input_tokens": str(input_tokens),
             "upper_bound_nanousd": str(upper),
             "actual_nanousd": str(actual),
@@ -805,6 +977,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--profile-delay", type=float, default=DEFAULT_PROFILE_DELAY_SECONDS)
     parser.add_argument("--http-timeout", type=int, default=240)
     parser.add_argument("--report", default="/tmp/gemini-calibration-report.json")
+    parser.add_argument("--resume-report")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
     parser.add_argument("--production-api-over-ssh", action="store_true")
     return parser.parse_args(argv)
@@ -836,6 +1009,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "full-input-context-ceiling-for-hidden-provider-prompts",
             "single-aggregate-budget",
             "no-paid-request-retry",
+            "resume-only-from-explicit-provider-stop",
         ],
         "execute_requires": "--execute plus a capacity source and production/admin API access",
     }
@@ -849,6 +1023,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.execute:
         print(json.dumps(dry_run_plan(args, budget_nano), ensure_ascii=False, indent=2))
         return 0
+    resume = (
+        load_resume_report(args.resume_report, budget_nano, args.models)
+        if args.resume_report
+        else None
+    )
     api_key = os.getenv(args.api_key_env, "")
     if not args.production_api_over_ssh and not api_key:
         raise CalibrationError(f"missing API key environment variable: {args.api_key_env}")
@@ -863,30 +1042,80 @@ def main(argv: list[str] | None = None) -> int:
     require_healthy_delivery(baseline)
     states = profile_state(baseline)
     now = int(time.time())
-    profiles = sorted(profile for profile, state in states.items() if state["authenticated"] and state["cooling_until"] <= now and state["persistence_ok"])
+    healthy_profiles = sorted(
+        profile
+        for profile, state in states.items()
+        if state["authenticated"]
+        and state["cooling_until"] <= now
+        and state["persistence_ok"]
+    )
+    profiles = resume.profiles if resume else healthy_profiles
     if not profiles:
         raise CalibrationError("no healthy exact-target Gemini profiles")
-    missing_plan = [profile for profile in profiles if not states[profile]["plan"]]
+    missing_plan = [
+        profile for profile in profiles if profile in states and not states[profile]["plan"]
+    ]
     if missing_plan:
         raise CalibrationError("Gemini profiles have no authoritative paid plan: " + ", ".join(missing_plan))
     rates = rate_catalog(baseline)
-    models = args.models or sorted(rates)
+    models = resume.models if resume else (args.models or sorted(rates))
     unknown = sorted(set(models) - set(rates))
     if unknown:
         raise CalibrationError("models have no authoritative Gemini rate card: " + ", ".join(unknown))
-    run_id = f"gemini-cal-{int(time.time())}-{uuid.uuid4().hex[:8]}"
-    budget = Budget(budget_nano)
+    if resume:
+        drifted_records = [
+            record
+            for record in resume.records
+            if record["tariff_schedule_id"] != rates[record["model"]].tariff_schedule_id
+            or (
+                record["profile_id"] in states
+                and states[record["profile_id"]]["plan"]
+                and record.get("plan") != states[record["profile_id"]]["plan"]
+            )
+        ]
+        if drifted_records:
+            raise CalibrationError(
+                "resume report crossed a paid-plan or tariff-schedule identity cutover"
+            )
+    run_id = resume.run_id if resume else f"gemini-cal-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    budget = Budget(
+        budget_nano,
+        resume.spent_nano if resume else 0,
+        defaultdict(int, resume.spent_by_profile if resume else {}),
+    )
     runner = Runner(api, capacity, rates, budget, args.evidence_timeout, args.profile_delay, run_id)
-    unavailable: list[dict[str, Any]] = []
-    stopped: dict[str, str] = {}
+    runner.records = list(resume.records) if resume else []
+    unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
+    stopped: dict[str, str] = {
+        profile: "target profile is not currently authenticated or is cooling"
+        for profile in profiles
+        if profile not in healthy_profiles
+    }
+    legs = build_coverage_legs(models, run_id, rates)
+    expected = {(profile, leg.name): leg for leg in legs for profile in profiles}
+    completed = {
+        (record["profile_id"], record["leg"])
+        for record in runner.records
+    } | {
+        (item["profile_id"], item["capability"])
+        for item in unavailable
+    }
+    unknown_completed = sorted(completed - set(expected))
+    if unknown_completed:
+        raise CalibrationError(
+            "resume report outcomes do not match the current coverage matrix: "
+            + ", ".join(f"{profile}/{leg}" for profile, leg in unknown_completed)
+        )
     failure: str | None = None
     try:
-        for leg in build_coverage_legs(models, run_id, rates):
+        for leg in legs:
             for profile in profiles:
-                if profile in stopped:
+                key = (profile, leg.name)
+                if profile in stopped or key in completed:
                     continue
                 try:
                     record = runner.execute_leg(leg, profile)
+                    completed.add(key)
                     if record["coverage_error"]:
                         unavailable.append({
                             "profile_id": profile,
@@ -901,6 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
                         "capability": leg.name,
                         "reason": str(error),
                     })
+                    completed.add(key)
                     continue
                 except HttpCalibrationError as error:
                     if error.status in {400, 403, 404}:
@@ -911,8 +1141,9 @@ def main(argv: list[str] | None = None) -> int:
                             "http_status": error.status,
                             "reason": error.detail[:300],
                         })
+                        completed.add(key)
                         continue
-                    if error.status == 429:
+                    if is_explicit_transient_stop(error):
                         stopped[profile] = str(error)
                         continue
                     raise
@@ -923,11 +1154,23 @@ def main(argv: list[str] | None = None) -> int:
     except (CalibrationError, subprocess.TimeoutExpired) as error:
         final = baseline
         failure = failure or f"final Gemini capacity read failed: {error}"
+    pending = [
+        {
+            "profile_id": profile,
+            "model": leg.model,
+            "capability": leg.name,
+        }
+        for (profile, _), leg in expected.items()
+        if (profile, leg.name) not in completed
+    ]
+    complete = failure is None and not pending
+    resume_safe = failure is None and bool(pending)
     report = {
         "schema": "gemini-live-calibration/v1",
         "run_id": run_id,
-        "complete": failure is None,
+        "complete": complete,
         "failure": failure,
+        "resume_safe": resume_safe,
         "budget_nanousd_total": str(budget_nano),
         "spent_nanousd_total": str(budget.total_nano),
         "spent_nanousd_per_profile": {key: str(value) for key, value in sorted(budget.by_profile.items())},
@@ -936,14 +1179,16 @@ def main(argv: list[str] | None = None) -> int:
         "records": runner.records,
         "unavailable_capabilities": unavailable,
         "profile_stops": stopped,
+        "pending_legs": pending,
         "model_profitability": model_profitability(runner.records),
         "final_capacity": final,
     }
     report_path = Path(args.report)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(f"report: {report_path}")
-    if failure:
-        raise CalibrationError(f"{failure}; partial report: {report_path}")
+    if not complete:
+        reason = failure or f"{len(pending)} Gemini coverage legs remain after explicit provider stops"
+        raise CalibrationError(f"{reason}; partial report: {report_path}")
     return 0
 
 

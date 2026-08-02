@@ -40,6 +40,27 @@ def capacity(events=None):
     }
 
 
+def report_record(
+    request_id: str = "req-1",
+    profile: str = "profile-a",
+    model: str = "gemini-2.5-flash",
+    leg: str = "thinking:gemini-2.5-flash:default",
+):
+    immutable = event(request_id, profile, model)
+    return {
+        "profile_id": profile,
+        "plan": "google_ai_pro",
+        "leg": leg,
+        "kind": "thinking",
+        "model": model,
+        "request_id": request_id,
+        "tariff_schedule_id": immutable["tariff_schedule_id"],
+        "actual_nanousd": immutable["api_total_nanousd"],
+        "usage": {field: immutable[field] for field in run_live.EVENT_TOKEN_FIELDS},
+        "api_cost": {field: immutable[field] for field in run_live.EVENT_MONEY_FIELDS},
+    }
+
+
 class GeminiLiveCalibrationTests(unittest.TestCase):
     def test_dry_run_is_the_default_and_sends_nothing(self):
         with mock.patch.object(run_live, "CapacityReader") as capacity_reader, mock.patch.object(
@@ -336,6 +357,201 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertEqual(result, {"totalTokens": 10})
         self.assertEqual(invoked.call_count, 2)
 
+    def test_only_explicit_provider_stops_are_resume_safe(self):
+        retry_info = (
+            '{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo"}],'
+            '"status":"UNAVAILABLE"}}'
+        )
+        self.assertTrue(
+            run_live.is_explicit_transient_stop(
+                run_live.HttpCalibrationError("/generate", 503, retry_info)
+            )
+        )
+        self.assertTrue(
+            run_live.is_explicit_transient_stop(
+                run_live.HttpCalibrationError("/generate", 429, "quota reached")
+            )
+        )
+        self.assertFalse(
+            run_live.is_explicit_transient_stop(
+                run_live.HttpCalibrationError("/generate", 503, "generic proxy failure")
+            )
+        )
+        self.assertFalse(
+            run_live.is_explicit_transient_stop(
+                run_live.HttpCalibrationError("/generate", 502, retry_info)
+            )
+        )
+
+    def test_resume_rehydrates_exact_spend_and_rejects_ambiguous_paid_failure(self):
+        payload = {
+            "schema": "gemini-live-calibration/v1",
+            "run_id": "gemini-cal-12345678-deadbeef",
+            "complete": False,
+            "failure": None,
+            "resume_safe": True,
+            "budget_nanousd_total": "1000000000",
+            "spent_nanousd_total": "100",
+            "spent_nanousd_per_profile": {"profile-a": "100", "profile-b": "0"},
+            "profiles": ["profile-a", "profile-b"],
+            "models": ["gemini-2.5-flash"],
+            "records": [report_record()],
+            "unavailable_capabilities": [{
+                "profile_id": "profile-a",
+                "model": "gemini-2.5-flash",
+                "capability": "thinking:gemini-2.5-flash:default",
+                "reason": "thinking token class was not observed",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            report = os.path.join(directory, "report.json")
+            with open(report, "w", encoding="utf-8") as report_file:
+                json.dump(payload, report_file)
+            state = run_live.load_resume_report(report, 1_000_000_000, None)
+            self.assertEqual(state.spent_nano, 100)
+            self.assertEqual(state.spent_by_profile, {"profile-a": 100, "profile-b": 0})
+            self.assertEqual(state.records[0]["request_id"], "req-1")
+            self.assertEqual(len(state.unavailable), 1)
+
+            payload["resume_safe"] = False
+            payload["failure"] = "paid generation SSH transport failed: ambiguous"
+            with open(report, "w", encoding="utf-8") as report_file:
+                json.dump(payload, report_file)
+            with self.assertRaises(run_live.CalibrationError):
+                run_live.load_resume_report(report, 1_000_000_000, None)
+
+    def test_legacy_retryinfo_503_partial_report_can_resume_but_keeps_budget_identity(self):
+        payload = {
+            "schema": "gemini-live-calibration/v1",
+            "run_id": "gemini-cal-12345678-deadbeef",
+            "complete": False,
+            "failure": (
+                '/generate returned HTTP 503: {"details":[{"@type":'
+                '"type.googleapis.com/google.rpc.RetryInfo"}],"status":"UNAVAILABLE"}'
+            ),
+            "budget_nanousd_total": "1000000000",
+            "spent_nanousd_total": "100",
+            "spent_nanousd_per_profile": {"profile-a": "100"},
+            "profiles": ["profile-a"],
+            "models": ["gemini-2.5-flash"],
+            "records": [report_record()],
+            "unavailable_capabilities": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            report = os.path.join(directory, "report.json")
+            with open(report, "w", encoding="utf-8") as report_file:
+                json.dump(payload, report_file)
+            state = run_live.load_resume_report(report, 1_000_000_000, ["gemini-2.5-flash"])
+            self.assertEqual(state.run_id, payload["run_id"])
+            with self.assertRaises(run_live.CalibrationError):
+                run_live.load_resume_report(report, 999_999_999, None)
+
+    def test_resume_skips_completed_leg_continues_healthy_profile_and_checkpoints_stop(self):
+        model = {
+            "id": "gemini-2.5-flash",
+            "tariff_schedule_id": "google/test/v1",
+            "input_token_limit": "1048576",
+            "output_token_limit": "8192",
+            "rates": {
+                "input_nanousd_per_token": "1",
+                "audio_input_nanousd_per_token": "1",
+                "cached_input_nanousd_per_token": "1",
+                "cached_audio_input_nanousd_per_token": "1",
+                "output_nanousd_per_token": "1",
+                "image_output_nanousd_per_token": "0",
+                "long_context_threshold": str(2**64 - 1),
+                "long_input_nanousd_per_token": "1",
+                "long_audio_input_nanousd_per_token": "1",
+                "long_cached_input_nanousd_per_token": "1",
+                "long_cached_audio_input_nanousd_per_token": "1",
+                "long_output_nanousd_per_token": "1",
+            },
+            "search": {"billing_unit": "grounded_prompt", "nanousd_per_unit": "1"},
+        }
+        baseline = capacity()
+        baseline["profiles"] = [
+            {
+                "id": profile,
+                "plan": "google_ai_pro",
+                "authenticated": True,
+                "cooling_until": 0,
+                "calibration_persistence_ok": True,
+                "windows": [],
+            }
+            for profile in ("profile-a", "profile-b")
+        ]
+        baseline["conversion_models"] = [model]
+        payload = {
+            "schema": "gemini-live-calibration/v1",
+            "run_id": "gemini-cal-12345678-deadbeef",
+            "complete": False,
+            "failure": None,
+            "resume_safe": True,
+            "budget_nanousd_total": "1000000000",
+            "spent_nanousd_total": "100",
+            "spent_nanousd_per_profile": {"profile-a": "100", "profile-b": "0"},
+            "profiles": ["profile-a", "profile-b"],
+            "models": ["gemini-2.5-flash"],
+            "records": [report_record()],
+            "unavailable_capabilities": [],
+        }
+        calls = []
+
+        def execute(runner, leg, profile):
+            calls.append((profile, leg.name))
+            if profile == "profile-b":
+                raise run_live.HttpCalibrationError(
+                    "/generate",
+                    503,
+                    '{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo"}],'
+                    '"status":"UNAVAILABLE"}',
+                )
+            record = report_record(
+                request_id=f"req-{len(calls) + 1}",
+                profile=profile,
+                leg=leg.name,
+            )
+            record["coverage_error"] = None
+            runner.budget.charge(profile, 100, 1_000)
+            runner.records.append(record)
+            return record
+
+        fake_capacity = mock.Mock()
+        fake_capacity.read.return_value = baseline
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.json")
+            report = os.path.join(directory, "report.json")
+            with open(source, "w", encoding="utf-8") as report_file:
+                json.dump(payload, report_file)
+            with mock.patch.dict(os.environ, {"APITOKEN_API_KEY": "test-key"}), mock.patch.object(
+                run_live, "CapacityReader", return_value=fake_capacity
+            ), mock.patch.object(run_live, "JsonHttpClient", return_value=mock.Mock()), mock.patch.object(
+                run_live.Runner, "execute_leg", new=execute
+            ):
+                with self.assertRaises(run_live.CalibrationError):
+                    run_live.main([
+                        "--execute",
+                        "--budget-usd",
+                        "1",
+                        "--capacity-command",
+                        "unused",
+                        "--resume-report",
+                        source,
+                        "--report",
+                        report,
+                    ])
+            with open(report, encoding="utf-8") as report_file:
+                result = json.load(report_file)
+        self.assertNotIn(
+            ("profile-a", "thinking:gemini-2.5-flash:default"),
+            calls,
+        )
+        self.assertEqual(calls[0], ("profile-b", "thinking:gemini-2.5-flash:default"))
+        self.assertTrue(result["resume_safe"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["spent_nanousd_total"], "800")
+        self.assertEqual({item["profile_id"] for item in result["pending_legs"]}, {"profile-b"})
+
     def test_partial_failure_writes_an_explicit_incomplete_report(self):
         conversion_model = {
             "id": "gemini-2.5-flash",
@@ -395,6 +611,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             with open(report, encoding="utf-8") as report_file:
                 payload = json.load(report_file)
             self.assertFalse(payload["complete"])
+            self.assertFalse(payload["resume_safe"])
             self.assertIn("simulated paid-stage failure", payload["failure"])
             self.assertEqual(payload["spent_nanousd_total"], "0")
 

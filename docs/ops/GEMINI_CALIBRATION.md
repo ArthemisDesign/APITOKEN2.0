@@ -41,6 +41,12 @@ Backend estimator остаётся workload-dependent: он оценивает A
   ограниченные 1K/2K/4K SKU (1 120/1 680/2 520 токенов) плюс requested text-output ceiling.
 - Платный запрос после transport ambiguity не повторяется. GET и `countTokens` можно безопасно
   повторить, но generation имеет ровно одну попытку.
+- Явный provider `429` или `503 UNAVAILABLE` с `google.rpc.RetryInfo` останавливает только целевой
+  профиль, а не оставшуюся матрицу здоровых профилей. Partial report можно продолжить через
+  `--resume-report`: runner сохраняет тот же `run_id`, общий budget, cache lineage и exact spend,
+  пропускает уже завершённые/доказанно недоступные legs и не добавляет новые профили или модели.
+  Generic 5xx, SSH/HTTP transport ambiguity и любой иной непроверенный failure помечаются
+  `resume_safe=false`; такой платный leg повторять запрещено.
 - Для каждого платного turn runner заранее создаёт canonical UUIDv4 и передаёт его admin-only
   заголовком `x-apitoken-calibration-request-id` вместе с exact profile target. В immutable backend
   evidence должен появиться именно этот request id с ожидаемыми profile/model и полным token/
@@ -65,6 +71,24 @@ python3 tools/gemini_calibration/run_live.py \
   --report /tmp/gemini-calibration-report.json
 ```
 
+После явного временного provider stop тот же прогон продолжается без повторного расхода:
+
+```bash
+python3 tools/gemini_calibration/run_live.py \
+  --execute \
+  --production-capacity-over-ssh \
+  --production-api-over-ssh \
+  --budget-usd 40 \
+  --resume-report /tmp/gemini-calibration-report.json \
+  --report /tmp/gemini-calibration-report.json
+```
+
+`--budget-usd` при resume — исходный aggregate cap, а не добавочный бюджет; значение обязано точно
+совпадать с checkpoint. `complete=false`, `resume_safe=true` и `pending_legs` явно показывают, что
+ещё осталось после cooling. `resume_safe=false` означает терминальный ручной разбор без повторения
+платного запроса. Смена paid plan или effective tariff schedule между попытками также прекращает
+resume: evidence разных денежных identity в один прогон не объединяется.
+
 Production SSH path читает `/gemini-subs` через стабильную Gemini-плоскость `127.0.0.1:8794` и
 отправляет generation туда же с remote-only forwarding-admin key. Секрет не возвращается через SSH.
 
@@ -76,7 +100,7 @@ python3 -m unittest tools.gemini_calibration.test_run_live
 
 Тесты покрывают dry-run, жёсткий `$40` guard, authority/FIFO baseline, exact attribution на фоне
 нескольких новых событий, cost-vector integrity, long-context/search/image bounds, полную матрицу
-capabilities и byte-identical cache/audio replay.
+capabilities, byte-identical cache/audio replay и fail-closed resume с точным восстановлением spend.
 
 ## Результат
 
