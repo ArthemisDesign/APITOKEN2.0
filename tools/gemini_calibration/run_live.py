@@ -33,6 +33,8 @@ SAFE_READ_ATTEMPTS = 3
 SAFE_READ_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_EVIDENCE_TIMEOUT_SECONDS = 180
 DEFAULT_PROFILE_DELAY_SECONDS = 16.0
+DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
+DEFAULT_PRODUCTION_API_PORT = 8794
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
@@ -726,9 +728,34 @@ class JsonHttpClient:
         return payload
 
 
+def validate_production_ssh_target(value: str) -> str:
+    if (
+        not value
+        or len(value) > 255
+        or not value[0].isalnum()
+        or not all(char.isascii() and (char.isalnum() or char in ".-_:@") for char in value)
+        or value.count("@") > 1
+    ):
+        raise CalibrationError(f"invalid production SSH target: {value!r}")
+    return value
+
+
+def validate_production_api_port(value: int) -> int:
+    if isinstance(value, bool) or not 1 <= value <= 65_535:
+        raise CalibrationError(f"invalid production API port: {value!r}")
+    return value
+
+
 class ProductionSshJsonHttpClient:
-    def __init__(self, timeout: int) -> None:
+    def __init__(
+        self,
+        timeout: int,
+        ssh_target: str = DEFAULT_PRODUCTION_SSH_TARGET,
+        api_port: int = DEFAULT_PRODUCTION_API_PORT,
+    ) -> None:
         self.timeout = timeout
+        self.ssh_target = validate_production_ssh_target(ssh_target)
+        self.api_port = validate_production_api_port(api_port)
 
     def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
                 target_profile: str | None = None, raw_ok: bool = False,
@@ -762,14 +789,14 @@ class ProductionSshJsonHttpClient:
             "%header{x-apitoken-execution-state}' "
             f"-X {method} "
             f"-H \"x-goog-api-key: $calibration_key\" {header_args} {data_arg} "
-            f"{shlex.quote('http://127.0.0.1:8794' + path)}"
+            f"{shlex.quote(f'http://127.0.0.1:{self.api_port}' + path)}"
         )
         data = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
         safe = method == "GET" or path.endswith(":countTokens")
         attempts = SAFE_READ_ATTEMPTS if safe else 1
         result = None
         for attempt in range(attempts):
-            result = subprocess.run(["ssh", "apitokensale", remote], input=data, capture_output=True,
+            result = subprocess.run(["ssh", self.ssh_target, remote], input=data, capture_output=True,
                                     timeout=self.timeout + 30, check=False)
             if result.returncode == 0:
                 break
@@ -1013,10 +1040,16 @@ def model_profitability(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def remote_capacity_command() -> str:
+def remote_capacity_command(
+    ssh_target: str = DEFAULT_PRODUCTION_SSH_TARGET,
+    api_port: int = DEFAULT_PRODUCTION_API_PORT,
+) -> str:
+    ssh_target = validate_production_ssh_target(ssh_target)
+    api_port = validate_production_api_port(api_port)
     return (
-        "ssh apitokensale 'set -a; . /srv/claude-api/data/server.env; set +a; "
-        'curl -fsS -H "x-api-key: $CLAUDE_API_PANEL_KEY" http://127.0.0.1:8794/gemini-subs\''
+        f"ssh {shlex.quote(ssh_target)} 'set -a; . /srv/claude-api/data/server.env; set +a; "
+        'curl -fsS -H "x-api-key: $CLAUDE_API_PANEL_KEY" '
+        f"http://127.0.0.1:{api_port}/gemini-subs'"
     )
 
 
@@ -1037,7 +1070,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--resume-report")
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
     parser.add_argument("--production-api-over-ssh", action="store_true")
-    return parser.parse_args(argv)
+    parser.add_argument("--production-ssh-target", default=DEFAULT_PRODUCTION_SSH_TARGET)
+    parser.add_argument("--production-api-port", type=int, default=DEFAULT_PRODUCTION_API_PORT)
+    args = parser.parse_args(argv)
+    try:
+        validate_production_ssh_target(args.production_ssh_target)
+        validate_production_api_port(args.production_api_port)
+    except CalibrationError as error:
+        parser.error(str(error))
+    return args
 
 
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
@@ -1089,12 +1130,22 @@ def main(argv: list[str] | None = None) -> int:
     if not args.production_api_over_ssh and not api_key:
         raise CalibrationError(f"missing API key environment variable: {args.api_key_env}")
     capacity = CapacityReader(
-        remote_capacity_command() if args.production_capacity_over_ssh else args.capacity_command,
+        remote_capacity_command(args.production_ssh_target, args.production_api_port)
+        if args.production_capacity_over_ssh
+        else args.capacity_command,
         args.capacity_url,
         os.getenv(args.panel_key_env),
         args.http_timeout,
     )
-    api = ProductionSshJsonHttpClient(args.http_timeout) if args.production_api_over_ssh else JsonHttpClient(args.api_url, api_key, args.http_timeout)
+    api = (
+        ProductionSshJsonHttpClient(
+            args.http_timeout,
+            args.production_ssh_target,
+            args.production_api_port,
+        )
+        if args.production_api_over_ssh
+        else JsonHttpClient(args.api_url, api_key, args.http_timeout)
+    )
     baseline = capacity.read()
     require_healthy_delivery(baseline)
     states = profile_state(baseline)

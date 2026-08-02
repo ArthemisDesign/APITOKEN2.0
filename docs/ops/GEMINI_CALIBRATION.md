@@ -96,6 +96,12 @@ resume: evidence разных денежных identity в один прогон
 
 Production SSH path читает `/gemini-subs` через стабильную Gemini-плоскость `127.0.0.1:8794` и
 отправляет generation туда же с remote-only forwarding-admin key. Секрет не возвращается через SSH.
+Для controlled gate dormant-модели оба чтения можно направить в заранее поднятый непубличный
+exact-SHA canary на том же host через `--production-ssh-target <user@host>` и
+`--production-api-port <loopback-port>`. Target и порт валидируются до SSH; default остаётся
+`apitokensale:8794`. Canary обязан использовать production PostgreSQL authority, billing и
+immutable calibration evidence: изолированный процесс без них не является публикационным
+доказательством.
 
 ## Офлайн-проверка
 
