@@ -13,6 +13,7 @@ mod config;
 mod http;
 mod metrics_store;
 mod poller;
+mod router_auth;
 mod router_policy;
 mod router_pricing;
 

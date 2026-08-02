@@ -31,6 +31,10 @@
   Одинаковый на всех fixed planes `POST /internal/router/policy/preflight` — loopback-only
   producer-контракт фазы router 6.4a: принимает до 32 catalog-кандидатов, авторизует customer/admin
   credential и возвращает только ordered allow-list без account/policy/pricing identity.
+  Предшествующий ему bodyless `POST /internal/router/auth/preflight` — producer-first read-only
+  контракт раннего universal admission: проверяет customer/forwarding-admin credential до чтения
+  router'ом большого request body, не читает prompt, не резервирует деньги и возвращает только
+  закрытый `{schema_version:1,authenticated:true}` либо 401/503.
   Отдельный producer-first `POST /internal/router/catalog/pricing` принимает до 256 provider-native
   catalog-кандидатов и возвращает только opaque candidate ID плюс персональные integer
   nanoUSD-per-million rate cards. Customer credential разрешается через `AsyncBilling`; legacy
@@ -122,6 +126,10 @@
   admission. Legacy/shadow/unbound account и forwarding-admin остаются unrestricted; Google для
   strict binding фильтруется, пока Gemini strict admission сама fail-closed недоступна. Ответы и
   логи не содержат credential/account/model-rule identity, решения не кэшируются.
+- Router auth preflight использует тот же `authed`/`resolve_client_key`, что live admission:
+  inactive/unknown credential получает 401, сбой billing authority — 503, а success не раскрывает
+  key/account identity и не делает reserve/settle. Endpoint одинаков на всех fixed planes и
+  loopback-only; router подключается к нему только отдельным consumer-коммитом после GREEN producer.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
   `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого

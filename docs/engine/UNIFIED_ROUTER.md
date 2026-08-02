@@ -307,6 +307,31 @@ settlement и effective-tier evidence по-прежнему принадлежа
    только по HTTP, не импортирует `pool`/`forward`. Control API — loopback-only
    управление аккаунтами/прайсингом; в data-plane router'а он не участвует.
 
+### Ранний auth и граница памяти request body
+
+Universal model dispatch обязан прочитать JSON request body ради `model`, но не имеет права
+материализовать до 32 MiB от неавторизованного клиента. Producer-first контракт на каждой fixed
+plane — bodyless `POST /internal/router/auth/preflight`: forwarding-admin проверяется тем же
+in-memory `authed`, customer credential — тем же active-key `AsyncBilling` resolver, что live
+admission. Endpoint read-only, не читает prompt, не резервирует и не списывает деньги, не читает
+pricing policy и возвращает только:
+
+- `200 {"schema_version":1,"authenticated":true}`;
+- `401 unauthorized` для отсутствующего, неизвестного или неактивного credential;
+- `503 auth_unavailable` при недоступной billing authority.
+
+Публичные provider vhost'ы не маршрутизируют `/internal/*`; router обращается только к stable
+loopback origins. Consumer подключается отдельным коммитом после GREEN producer на всех плоскостях:
+последовательно перебирает transport/404/5xx для mixed-version availability, но 401 считает
+терминальным и исполняет universal request только после exact schema-v1 success. Success не
+кэшируется между запросами и credential.
+
+После auth consumer получает краткоживущий permit только на materialization одного universal body;
+совокупный memory budget ограничен независимо от provider execution. Permit освобождается сразу
+после parse/rewrite, до ожидания plane response, поэтому это не общая очередь provider capacity и
+не меняет запрет на execution semaphore/circuit breaker. Native request/response bodies и SSE не
+буферизуются.
+
 ## Миграционная политика (мягкий переезд)
 
 У продукта есть активные клиенты на существующих per-provider endpoint'ах, поэтому

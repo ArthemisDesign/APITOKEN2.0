@@ -391,6 +391,10 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/balance", get(balance))
         .route("/metrics", get(metrics))
         .route(
+            "/internal/router/auth/preflight",
+            post(crate::router_auth::preflight),
+        )
+        .route(
             "/internal/router/policy/preflight",
             post(crate::router_policy::preflight)
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
@@ -6966,6 +6970,29 @@ mod tests {
         (app, dir)
     }
 
+    async fn router_auth_request(
+        service: &Router,
+        credential: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/internal/router/auth/preflight")
+            .body(Body::empty())
+            .unwrap();
+        if let Some(credential) = credential {
+            request
+                .headers_mut()
+                .insert("x-api-key", credential.parse().unwrap());
+        }
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424))));
+        let response = service.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
     async fn router_policy_request(
         service: &Router,
         credential: Option<&str>,
@@ -7060,6 +7087,60 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[tokio::test]
+    async fn router_auth_preflight_is_bodyless_read_only_and_present_on_every_plane() {
+        for provider in [
+            forward::ProviderMode::Combined,
+            forward::ProviderMode::Anthropic,
+            forward::ProviderMode::OpenAi,
+            forward::ProviderMode::Gemini,
+        ] {
+            let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
+            let (status, body) = router_auth_request(&service, Some("admin-key")).await;
+            assert_eq!(status, StatusCode::OK, "provider={provider:?}");
+            assert_eq!(body, json!({"schema_version": 1, "authenticated": true}));
+        }
+
+        let service = router(
+            provider_test_app(forward::ProviderMode::Anthropic),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (status, body) = router_auth_request(&service, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+
+        let (app, dir) = billing_test_app("router_auth_preflight");
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        registry::account_create(&conn, "router-auth-account", None, 10_000).unwrap();
+        registry::key_issue(
+            &conn,
+            "router-auth-key",
+            "router-auth-account",
+            Some("router auth"),
+        )
+        .unwrap();
+        drop(conn);
+
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let (status, body) = router_auth_request(&service, Some("router-auth-key")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({"schema_version": 1, "authenticated": true}));
+        assert!(!body.to_string().contains("router-auth-account"));
+
+        let conn = registry::open(dir.join("data.db").to_str().unwrap()).unwrap();
+        registry::key_set_status(&conn, "router-auth-key", "inactive").unwrap();
+        drop(conn);
+        let (status, body) = router_auth_request(&service, Some("router-auth-key")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+
+        let (status, body) = router_auth_request(&service, Some("unknown-key")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+        drop(service);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

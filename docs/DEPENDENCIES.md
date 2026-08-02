@@ -147,6 +147,15 @@ Control API движка использует только на чтение. С
   credential/policy и без импорта `forward`/`registry`. Публичные provider Caddy-vhost'ы не включают
   `/internal/*` в allowlist; stable origins 8790/8792/8794 доступны router'у по loopback. Контракт и
   mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
+- **Контракт early auth preflight (provider planes → router).** Производитель — одинаковый
+  `crates/server::router_auth` на каждой fixed runtime: loopback-only bodyless
+  `POST /internal/router/auth/preflight` проверяет forwarding-admin/customer credential через тот
+  же `authed`/`AsyncBilling` resolver, что live admission, и возвращает только закрытый success
+  marker либо 401/503 без reserve, pricing/policy read и identity. Потребитель — `crates/router`
+  (подключается отдельным consumer-коммитом после GREEN producer): до materialization 32 MiB
+  universal body последовательно перебирает fixed origins, принимает только exact schema-v1
+  success, считает 401 терминальным, а mixed-version/transport/5xx fail closed. Контракт —
+  `docs/engine/UNIFIED_ROUTER.md` §«Ранний auth и граница памяти request body».
 - **Контракт catalog pricing (provider planes → router).** Производитель — одинаковый
   `crates/server::router_pricing` на каждой fixed runtime: authenticated loopback-only
   `POST /internal/router/catalog/pricing` разрешает customer/admin credential, читает только один
