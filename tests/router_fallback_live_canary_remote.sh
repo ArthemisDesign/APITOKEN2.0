@@ -165,7 +165,8 @@ wait_ready_file() {
   return 1
 }
 start_shim() {
-  local namespace=$1 upstream=$2 ready=$DATA/$namespace.ready
+  local namespace=$1 upstream=$2
+  local ready=$DATA/$namespace.ready
   python3 "$DATA/shim.py" --namespace "$namespace" --upstream-port "$upstream" \
     --ready-file "$ready" >"$DATA/$namespace.log" 2>&1 &
   local pid=$!
