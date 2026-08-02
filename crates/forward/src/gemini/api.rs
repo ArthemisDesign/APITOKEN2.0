@@ -2227,9 +2227,11 @@ async fn api_inner(
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
         let mut url = format!(
             "{}/v1internal:{suffix}",
-            gateway
-                .config()
-                .generation_upstream_for(oauth_kind, model.is_image_generation())
+            gateway.config().generation_upstream_for(
+                oauth_kind,
+                model.is_image_generation(),
+                &wire_model_id,
+            )
         );
         if !query.is_empty() {
             url.push('?');

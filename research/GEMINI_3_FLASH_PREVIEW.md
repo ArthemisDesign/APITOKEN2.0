@@ -14,8 +14,8 @@
 
 ## Executive verdict
 
-- Implementation readiness: `preview-ready`; generation publication remains blocked on the
-  controlled post-deploy live matrix below.
+- Implementation readiness: `wire-fix candidate`; the sandbox-origin baseline failed and the
+  non-sandbox daily-origin correction remains blocked on the controlled post-deploy live matrix.
 - Terms/compliance: no new OAuth identity or scope; the existing Gemini subscription review still
   governs. Undocumented subscription transport evidence is not treated as vendor permission.
 - Credential verdict: unchanged and within the existing encrypted roster threat model.
@@ -24,8 +24,8 @@
 - Streaming verdict: implementation reuses the proven incremental SSE translator, but this exact
   model still needs a live incremental frame and terminal usage.
 - Quota verdict: owned discovery proves both bounded quota rows exist, not that generation works.
-- Main unresolved risk: the current Antigravity backend may retain quota for an older preview ID
-  while rejecting generation. Such a result requires withdrawing the model from the allowlist.
+- Main unresolved risk: the non-sandbox daily origin may still reject this owned plan. That result
+  requires withdrawing the model from the allowlist rather than guessing a private alias/header.
 
 ## Official sources
 
@@ -64,7 +64,7 @@ it does not by itself prove generation.
 | Operation | URL / wrapper | Required controls | Framing / success authority | Errors and retry |
 |---|---|---|---|---|
 | model list | existing public `/v1beta/models` catalogue | public id only | native JSON catalogue | local allowlist stays fail closed |
-| `generateContent` | existing Code Assist wrapper, public wire id, `requestType=agent` | route-owned project/session/request identity | 2xx candidate, canonical public `modelVersion`, terminal non-zero usage | existing 4xx/429/5xx policy; retry only before public bytes |
+| `generateContent` | non-sandbox daily Code Assist origin, public wire id, `requestType=agent` | route-owned project/session/request identity | 2xx candidate, canonical public `modelVersion`, terminal non-zero usage | existing 4xx/429/5xx policy; retry only before public bytes |
 | `streamGenerateContent?alt=sse` | same model and wrapper | same controls | at least one incremental public SSE event plus terminal usage | no retry after first translated event |
 | `countTokens` | nested native request with route-owned model | no customer project injection | 2xx and positive `totalTokens`; quota-free and unbilled | deterministic client errors do not rotate |
 | quota | Antigravity `fetchAvailableModels` | authenticated profile transport | sanitized agent/non-agent rows | explicit zero blocks only the mapped agent generation route |
@@ -115,30 +115,64 @@ weekly calibration authority remains independent of these per-model catalogue ro
 | Source | Revision / artifact | License / authority | Relevant paths / hypothesis | Independent? | Executed? |
 |---|---|---|---|---|---|
 | Google Gemini CLI | `f47d6c6f7a1308d81f9f57acf7d279f0928c5249` | Apache-2.0; official Google client | `packages/core/src/config/models.ts`; public ID is a real Code Assist generation identity | official, not independent | no; source inspection only |
-| Installed Antigravity | signed macOS app 2.4.3 | official distributed artifact; non-normative | language server strings; agent quota id is not a generation alias | separate official artifact | no; static inspection only |
+| Installed Antigravity | signed macOS app 2.4.3, bundle `com.google.antigravity`, Team ID `EQHXZ8M8AV` | official distributed artifact; non-normative | language server contains the public model and `daily-cloudcode-pa.googleapis.com`, but neither the agent alias nor sandbox origin | separate official artifact | no; static inspection only |
+| CLIProxyAPI | `41fc5e134631789e98137245f576680c7fb9b322` | MIT; independent implementation | `internal/runtime/executor/antigravity_executor{,_request}.go`: non-sandbox daily is first generation origin; required request headers are Authorization, Content-Type and current Antigravity User-Agent | yes | no; source inspection only |
+| antigravity-oauth-proxy | `410e825a23d0181469bf4062e7cebfced2b81440` | no repository license; evidence only, no code reused | `internal/antigravity/{constants,client}.go`: only non-sandbox daily generation origin; Authorization, Content-Type and Antigravity User-Agent | yes | no; source inspection only |
 
-Public searches did not find two unrelated maintained implementations of
-`gemini-3-flash-agent`. No community source is used as authority, and the missing corroboration is
-why the gateway does not guess a private generation alias.
+The two independent implementations corroborate only the origin/header hypothesis, not model
+availability or the private quota alias. Public searches still did not find two unrelated maintained
+implementations of `gemini-3-flash-agent`; the gateway therefore does not use it as a generation ID.
+
+## Wire audit after the failed baseline
+
+The first implementation mixed evidence from different Antigravity generations: it discovered the
+model in signed Antigravity 2.4.3, but sent it through the older production sandbox origin and pinned
+2.2.1 header tuple. The post-deploy matrix then showed a decisive split: all `countTokens`
+preflights succeeded, while `minimal`, `low`, `medium`, `high`, SSE, cache, audio and tool generation
+all returned the same Google `404 NOT_FOUND` model-resource error before any immutable turn.
+
+Header classification:
+
+- `Authorization: Bearer …` and `Content-Type: application/json` are required authentication/wire
+  headers and remain server-owned.
+- `User-Agent: antigravity/hub/<version> darwin/arm64` identifies the client release. Production
+  still pins 2.2.1; signed 2.4.3 and CLIProxyAPI show that this value needs a separate controlled A/B,
+  but it is not changed together with the origin so the experiment remains attributable.
+- `x-goog-api-client` and `client-metadata` are not proven model selectors. Existing models work
+  with them, while both independent implementations omit them from generation. They stay unchanged
+  in the origin experiment and cannot be blamed merely because they differ from current clients.
+- `Accept: text/event-stream` is load-bearing only for `streamGenerateContent`; it cannot explain
+  matching non-stream 404s.
+- Model access is primarily determined by OAuth identity/plan, endpoint deployment, top-level
+  `model`, `requestType`, `project` and session/request identity. The public model ID and
+  `requestType=agent` are corroborated; the sandbox deployment is the first isolated mismatch.
+
+The safe experiment order is therefore: non-sandbox daily origin with the existing header tuple;
+only if that remains 404, update the signed User-Agent version; only after that compare the minimal
+current-client header set. This avoids changing host and headers simultaneously and falsely
+attributing success.
 
 ## Controlled live results
 
 | Date | Plan / client | Public / native model | Operation | Status | Incremental? | Usage non-zero? | Quota evidence | Sanitized result |
 |---|---|---|---|---|---|---|---|---|
 | 2026-08-02 | owned Google AI Pro / Antigravity | public preview / quota rows | model quota discovery | success | n/a | n/a | both agent and non-agent rows present | quota presence only; generation unknown |
-| post-deploy pending | same owned opaque profile | public id unchanged | countTokens + default and four thinking levels, non-stream and SSE | pending | pending | required | exact profile attribution required | publication gate |
+| 2026-08-02 | same owned opaque profile | public id unchanged on sandbox daily origin | countTokens preflight plus four thinking levels, SSE, cache, audio and tool prompt | countTokens 2xx; all generation 404 NOT_FOUND | no public frame | no; zero immutable turns and zero spend | both rows still present | endpoint/model resource mismatch before generation |
+| corrected-origin pending | same owned opaque profile | public id unchanged on non-sandbox daily origin | same controlled matrix | pending | pending | required | exact profile attribution required | next isolated experiment |
 
-The live runner must use `--profiles gemini_oauth_000001 --models gemini-3-flash-preview`, require
-its canonical calibration request attribution, and retain only the sanitized report. No paid leg is
-retried without authoritative `not_started` proof.
+The live runner must resolve exactly `gemini_oauth_000001` as the only healthy profile and use
+`--models gemini-3-flash-preview`, require canonical calibration request attribution, and retain
+only the sanitized report. No paid leg is retried without authoritative `not_started` proof.
 
 ## Conflict log
 
 | Topic | Official | Owned live | Chosen behavior | Risk / next experiment |
 |---|---|---|---|---|
-| generation ID | official CLI sends public preview id | generation pending; signed Antigravity has the same id | send public id unchanged | run all live generation legs after exact SHA is green |
+| generation ID | official CLI sends public preview id | sandbox countTokens accepts it; sandbox generation returns model-resource 404 | keep public id unchanged | test the current signed origin before any private alias |
+| generation origin | no public normative subscription contract | signed 2.4.3 and two independent implementations use non-sandbox daily; sandbox live generation is 404 | route only this preview to non-sandbox daily | rerun exact-profile matrix after deploy |
+| request headers | no normative private header contract | baseline 2.2.1 tuple works for older models; current implementations use a newer/minimal tuple | hold headers constant for the origin A/B | if still 404, test signed UA version, then minimal current header set |
 | quota identity | no normative private row contract | agent and non-agent rows exist | Antigravity agent admission uses only `gemini-3-flash-agent` | explicit zero may reveal a changed row; withdraw/fix on evidence |
-| subscription availability | public Developer API model exists | only quota presence today | candidate, not GA evidence | model-not-found/unsupported requires allowlist withdrawal |
+| subscription availability | public Developer API model exists | quota and countTokens exist, sandbox generation does not | candidate, not GA evidence | non-sandbox 404 requires allowlist withdrawal or a separately proven header correction |
 | thinking controls | public levels documented | subscription execution pending | preserve public level in `thinkingConfig` | test default plus all four levels |
 
 ## Unsupported surfaces

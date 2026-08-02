@@ -15,6 +15,11 @@ pub const GEMINI_NODE_FETCH_EXPECTED_JA4: &str = "t13d5212h1_b262b3658495_8e6e36
 pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str =
     gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION;
 pub const LEGACY_GEMINI_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
+/// Current Antigravity text-generation endpoint. The signed 2.4.3 language server and two
+/// independent maintained implementations use the non-sandbox daily host. New preview models may
+/// be absent from the older sandbox deployment even when its generic countTokens path accepts the
+/// public model id.
+pub const ANTIGRAVITY_DAILY_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
 /// The Antigravity language server sends production generation traffic here. The sandbox host is
 /// useful for the reviewed text surface, but advertises the image quota bucket without serving the
 /// image backend and returns a generic 503 for otherwise valid Nano Banana requests.
@@ -243,6 +248,7 @@ impl GeminiConfig {
         &self,
         oauth_kind: gemini_credential::OAuthKind,
         image_generation: bool,
+        model: &str,
     ) -> &str {
         // Keep loopback integration tests on their explicit mock. Paid image generation follows
         // the production Antigravity LS route observed in working implementations; text retains
@@ -252,6 +258,11 @@ impl GeminiConfig {
         }
         if oauth_kind == gemini_credential::OAuthKind::Antigravity && image_generation {
             return ANTIGRAVITY_MEDIA_UPSTREAM;
+        }
+        if oauth_kind == gemini_credential::OAuthKind::Antigravity
+            && model == "gemini-3-flash-preview"
+        {
+            return ANTIGRAVITY_DAILY_UPSTREAM;
         }
         self.upstream_for(oauth_kind)
     }

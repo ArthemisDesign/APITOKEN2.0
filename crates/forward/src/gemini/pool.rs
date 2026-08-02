@@ -2470,16 +2470,20 @@ mod tests {
             super::super::config::LEGACY_GEMINI_UPSTREAM
         );
         assert_eq!(
-            cfg.generation_upstream_for(OAuthKind::Antigravity, false),
+            cfg.generation_upstream_for(OAuthKind::Antigravity, false, "gemini-3.6-flash-medium"),
             "https://daily-cloudcode-pa.sandbox.googleapis.com"
         );
         assert_eq!(
-            cfg.generation_upstream_for(OAuthKind::Antigravity, true),
+            cfg.generation_upstream_for(OAuthKind::Antigravity, true, "gemini-3.1-flash-image"),
             super::super::config::ANTIGRAVITY_MEDIA_UPSTREAM
         );
         assert_eq!(
-            cfg.generation_upstream_for(OAuthKind::LegacyGeminiCli, true),
+            cfg.generation_upstream_for(OAuthKind::LegacyGeminiCli, true, "gemini-3.1-flash-image"),
             super::super::config::LEGACY_GEMINI_UPSTREAM
+        );
+        assert_eq!(
+            cfg.generation_upstream_for(OAuthKind::Antigravity, false, "gemini-3-flash-preview"),
+            super::super::config::ANTIGRAVITY_DAILY_UPSTREAM
         );
         assert_eq!(
             cfg.user_agent(OAuthKind::Antigravity, "gemini-test"),

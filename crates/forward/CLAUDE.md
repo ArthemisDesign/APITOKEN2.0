@@ -656,7 +656,9 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
-   Antigravity text сохраняет live-verified configured endpoint; image generation всегда идёт на
+   Antigravity text обычно сохраняет live-verified configured endpoint; `gemini-3-flash-preview`
+   идёт на compile-fixed `daily-cloudcode-pa.googleapis.com`, потому что sandbox принимает
+   countTokens, но не содержит generation resource и отвечает 404. Image generation всегда идёт на
    production `cloudcode-pa.googleapis.com`, как официальный LS: sandbox публикует image quota row,
    но отвечает 503 на генерацию. Literal loopback mocks не перенаправляются.
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process

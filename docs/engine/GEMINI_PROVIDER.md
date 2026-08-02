@@ -13,7 +13,7 @@ authbot 127.0.0.1:8796              Caddy stable origin 127.0.0.1:8794
                                       active/passive slots :8795/:8799
                                                     │
                                                     ▼
-                         daily-cloudcode-pa.sandbox.googleapis.com
+                     per-model reviewed Cloud Code origin
 ```
 
 The Gemini runtime, router, OAuth credentials, proxy clients, health/cooling state and deployment
@@ -309,8 +309,13 @@ CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 and production Cloud Code hosts. Literal HTTP loopback is available only behind the explicit test
 opt-in; arbitrary hosts, ports, userinfo, path, query and fragment are rejected. Legacy Gemini CLI
 credentials ignore the Antigravity default and remain pinned to
-`https://cloudcode-pa.googleapis.com`. The production systemd `ExecStart` pins the roster path,
-Antigravity origin and insecure-loopback switch after all shared environment files.
+`https://cloudcode-pa.googleapis.com`. Antigravity `gemini-3-flash-preview` is routed to
+`https://daily-cloudcode-pa.googleapis.com`: the owned 2026-08-02 baseline proved that the sandbox
+host accepts `countTokens` but returns `404 NOT_FOUND` for every generation variant, while the
+signed Antigravity 2.4.3 artifact and two pinned independent implementations use the non-sandbox
+daily origin. The production systemd `ExecStart` pins the roster path, Antigravity default origin
+and insecure-loopback switch after all shared environment files; the model-specific origin is a
+compile-fixed mapping, not caller input.
 
 The same argv-level boundary pins the attested official runtime profile:
 
@@ -557,7 +562,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash` | official Gemini CLI commit `f47d6c6` and signed local Antigravity 2.4.3 both send the public id unchanged; owned quota discovery on 2026-08-02 confirms both bounded quota rows; generation/SSE/countTokens remain the post-deploy publication gate | candidate until the controlled live row below records 2xx + usage |
+| `gemini-3-flash-preview` | wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash`; generation origin: non-sandbox daily | exact-profile sandbox baseline: countTokens 2xx, every generation/thinking/SSE/cache/audio/tool leg 404 with no usage; signed Antigravity 2.4.3 plus pinned CLIProxyAPI and antigravity-oauth-proxy source all point generation at the non-sandbox daily origin | candidate; publish only after the corrected-origin live matrix proves output, usage and incremental SSE |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -616,12 +621,18 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02:
   [`f47d6c6f7a1308d81f9f57acf7d279f0928c5249`](https://github.com/google-gemini/gemini-cli/commit/f47d6c6f7a1308d81f9f57acf7d279f0928c5249)
   defines `PREVIEW_GEMINI_FLASH_MODEL = "gemini-3-flash-preview"` and sends that ID unchanged;
 - the locally installed, signed Antigravity 2.4.3 language server contains the same public model ID
-  and no `gemini-3-flash-agent` generation ID. Combined with its already pinned
+  and no `gemini-3-flash-agent` generation ID. It contains the non-sandbox daily origin and not the
+  sandbox origin. Combined with its already pinned
   `requestType=agent` wrapper and owned `fetchAvailableModels` rows, this separates the public wire
   ID from private quota accounting instead of guessing a public-to-private model alias;
-- quota presence does not prove generation. The controlled production smoke must target the owned
+- the initial production smoke on the sandbox origin proved `countTokens` but every paid generation
+  capability returned the same model-resource `404`; zero immutable turns and zero spend were
+  recorded. This isolates the failure before response translation, streaming and billing;
+- quota presence and a successful token count do not prove generation. The corrected-origin
+  production smoke must target the owned
   opaque profile, cover non-stream, incremental SSE and countTokens, require non-zero authoritative
-  usage, and then replace the candidate verdict in this matrix with dated live evidence.
+  usage, and then replace the candidate verdict in this matrix with dated live evidence. The full
+  header/host audit and pinned independent source table live in the dossier below.
 
 The reproducible source/plan/rate/wire dossier is
 [`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md).
