@@ -2159,10 +2159,12 @@ export const pricingReleaseAssignmentsV2 = pgTable("pricing_release_assignments_
 export const pricingFundingNormalizationsV2 = pgTable("pricing_funding_normalizations_v2", {
   releaseGeneration: bigint("release_generation", { mode: "bigint" }).notNull(),
   engineAccountId: text("engine_account_id").notNull(),
-  fundingGeneration: bigint("funding_generation", { mode: "bigint" }).notNull(),
+  fundingGeneration: bigint("funding_generation", { mode: "bigint" }),
   expectedSourceDigest: text("expected_source_digest").notNull(),
-  targetFundingDigest: text("target_funding_digest").notNull(),
+  targetFundingDigest: text("target_funding_digest"),
   appliedFundingDigest: text("applied_funding_digest"),
+  normalizationSource: text("normalization_source"),
+  blockers: jsonb("blockers").$type<Array<{ code: string; detail: string }>>(),
   status: text("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2186,15 +2188,33 @@ export const pricingFundingNormalizationsV2 = pgTable("pricing_funding_normaliza
     .where(sql`${table.status} IN ('pending', 'retry')`),
   check("pricing_funding_normalizations_v2_shape_check", sql`
     ${table.engineAccountId} <> ''
-    AND ${table.fundingGeneration} > 0
+    AND (${table.fundingGeneration} IS NULL OR ${table.fundingGeneration} > 0)
     AND ${table.expectedSourceDigest} <> ''
-    AND ${table.targetFundingDigest} <> ''
+    AND (${table.targetFundingDigest} IS NULL OR ${table.targetFundingDigest} <> '')
+    AND (
+      ${table.normalizationSource} IS NULL
+      OR ${table.normalizationSource} IN (
+        'aggregate_paid_only', 'ledger_replay', 'legacy_buckets', 'stored_generation'
+      )
+    )
+    AND (${table.blockers} IS NULL OR jsonb_typeof(${table.blockers}) = 'array')
     AND ${table.attempts} >= 0
     AND ${table.status} IN ('pending', 'processing', 'retry', 'ready', 'blocker')
-    AND (${table.status} <> 'ready' OR (
-      ${table.appliedFundingDigest} IS NOT NULL
-      AND ${table.appliedFundingDigest} = ${table.targetFundingDigest}
-    ))
+    AND (
+      (
+        ${table.status} = 'ready'
+        AND ${table.fundingGeneration} IS NOT NULL
+        AND ${table.targetFundingDigest} IS NOT NULL
+        AND ${table.appliedFundingDigest} = ${table.targetFundingDigest}
+        AND ${table.blockers} IS NULL
+      )
+      OR (${table.status} <> 'ready' AND ${table.appliedFundingDigest} IS NULL)
+    )
+    AND (
+      ${table.status} <> 'blocker'
+      OR ${table.blockers} IS NULL
+      OR jsonb_array_length(${table.blockers}) > 0
+    )
   `),
 ]);
 

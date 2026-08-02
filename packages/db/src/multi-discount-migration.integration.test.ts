@@ -789,17 +789,76 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(27);
+        expect(await migrationCount(client)).toBe(28);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(27);
+        expect(await migrationCount(client)).toBe(28);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
     } finally {
       await rm(legacyMigrationsFolder, { recursive: true, force: true });
+    }
+  }, TEST_TIMEOUT_MS);
+
+  it("preserves pre-expand blocker rows and accepts exact blocked plans without target identity", async () => {
+    const migrationsThrough0026 = await createMigrationsThrough(26);
+    try {
+      await withTemporaryDatabase("funding-blockers", async (client) => {
+        await applyMigrations(client, migrationsThrough0026);
+        await client.query(`
+          INSERT INTO pricing_release_plans_v2 (
+            generation, release_kind, schema_version,
+            commerce_inventory_digest, engine_inventory_digest,
+            openkeys_inventory_digest, service_inventory_digest,
+            policy_manifest_digest, assignment_manifest_digest,
+            funding_manifest_digest, engine_release_digest, content_digest
+          ) VALUES (
+            1, 'target', 2,
+            'commerce', 'engine', 'openkeys', 'service',
+            'policies', 'assignments', 'funding', 'engine-release', 'release'
+          )
+        `);
+        await client.query(`
+          INSERT INTO pricing_funding_normalizations_v2 (
+            release_generation, engine_account_id, funding_generation,
+            expected_source_digest, target_funding_digest, status
+          ) VALUES (1, 'acct_legacy_blocker', 1, 'source', 'target', 'blocker')
+        `);
+
+        await applyMigrations(client, MIGRATIONS_FOLDER);
+        expect(await migrationCount(client)).toBe(28);
+        const legacy = await client.query(`
+          SELECT funding_generation::text, target_funding_digest,
+                 normalization_source, blockers, status
+          FROM pricing_funding_normalizations_v2
+          WHERE release_generation = 1 AND engine_account_id = 'acct_legacy_blocker'
+        `);
+        expect(legacy.rows[0]).toEqual({
+          funding_generation: "1",
+          target_funding_digest: "target",
+          normalization_source: null,
+          blockers: null,
+          status: "blocker",
+        });
+
+        await client.query(`
+          INSERT INTO pricing_funding_normalizations_v2 (
+            release_generation, engine_account_id, funding_generation,
+            expected_source_digest, target_funding_digest,
+            normalization_source, blockers, status
+          ) VALUES (
+            1, 'acct_exact_blocker', NULL,
+            'sha256:v2:source', NULL, 'ledger_replay',
+            '[{"code":"active_legacy_reservation","detail":"retry account locally"}]'::jsonb,
+            'blocker'
+          )
+        `);
+      });
+    } finally {
+      await rm(migrationsThrough0026, { recursive: true, force: true });
     }
   }, TEST_TIMEOUT_MS);
 

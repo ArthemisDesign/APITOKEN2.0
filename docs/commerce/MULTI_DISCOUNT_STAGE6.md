@@ -1,8 +1,9 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer и strict TypeScript transport consumer реализованы; bounded orchestration
-job подключается отдельным checkpoint. Stage 6 не требует maintenance window, остановки money
-writers, нуля всех reservations или ручной проверки аккаунтов.
+Статус: engine producer и strict TypeScript transport consumer реализованы. Commerce expand-схема
+для durable blocked/retry evidence подготовлена migration-first; bounded orchestration job
+подключается только после зелёного migration SHA. Stage 6 не требует maintenance window, остановки
+money writers, нуля всех reservations или ручной проверки аккаунтов.
 
 ## Source policy
 
@@ -143,6 +144,11 @@ funding allocation.
 
 Такой blocker исправляется кодом или повторным планом на свежем state; production traffic ради него
 не останавливается.
+
+Durable queue хранит точные `source_state_digest`, `source`, `blockers[]` и nullable target identity.
+Для `ready` target generation/digest и exact applied digest остаются обязательными. Это позволяет
+сохранять честный blocked-план без placeholder-значений; наличие expand-схемы само по себе не
+запускает backfill.
 
 ## Completion evidence
 

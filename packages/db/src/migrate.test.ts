@@ -439,4 +439,46 @@ describe("migration configuration", () => {
       snapshot.tables["public.pricing_release_activation_receipts_v2"]?.uniqueConstraints,
     ).toHaveProperty("pricing_release_activation_receipts_v2_head_unique");
   });
+
+  it("expands funding normalization storage for exact blocked plans without fabricated targets", () => {
+    const migrationName = "0027_funding_normalization_blockers.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 26);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 27);
+
+    expect(currentEntry).toMatchObject({
+      idx: 27,
+      version: "7",
+      tag: "0027_funding_normalization_blockers",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:UPDATE|DELETE|TRUNCATE|DROP TABLE)\b/im);
+    expect(migrationSql).toContain('ALTER COLUMN "funding_generation" DROP NOT NULL');
+    expect(migrationSql).toContain('ALTER COLUMN "target_funding_digest" DROP NOT NULL');
+    expect(migrationSql).toContain('ADD COLUMN "normalization_source" text');
+    expect(migrationSql).toContain('ADD COLUMN "blockers" jsonb');
+    expect(migrationSql).toContain('"status" = \'ready\'');
+    expect(migrationSql).toContain('"applied_funding_digest" = "pricing_funding_normalizations_v2"."target_funding_digest"');
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0027_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, { columns: Record<string, { notNull: boolean; type: string }> }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0026_snapshot.json"), "utf8"),
+    ) as { id: string };
+    const funding = snapshot.tables["public.pricing_funding_normalizations_v2"]!;
+
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(funding.columns.funding_generation).toMatchObject({ notNull: false });
+    expect(funding.columns.target_funding_digest).toMatchObject({ notNull: false });
+    expect(funding.columns.normalization_source).toMatchObject({ notNull: false, type: "text" });
+    expect(funding.columns.blockers).toMatchObject({ notNull: false, type: "jsonb" });
+  });
 });

@@ -43,3 +43,10 @@ Stage 8 evidence and activation receipts. Service policies deliberately have no 
 product switch pins: they are `meter_only` and capability-gated. The declarations in
 `packages/db/src/schema.ts` exist to keep Drizzle metadata exact; no deployed consumer may read or
 write these tables until this migration SHA has green `deploy/migration` and `deploy/watchdog`.
+
+Migration `0027_funding_normalization_blockers.sql` expands the Stage 6 account queue so an exact
+engine plan that is not ready can be persisted without inventing a target funding digest or
+generation. Target identity is nullable only while the row is unfinished; a `ready` row still
+requires an applied digest equal to its target. The additive `normalization_source` and `blockers`
+fields preserve the producer's typed technical evidence for retry or fail-closed handling. The
+orchestration consumer is delivered only after this migration SHA is green in production.
