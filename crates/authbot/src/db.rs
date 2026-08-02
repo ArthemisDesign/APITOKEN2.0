@@ -647,8 +647,9 @@ impl Store {
             .optional()?;
         if session.is_some() {
             tx.execute(
-                "UPDATE gemini_oauth_sessions SET status='processing' WHERE state=?1 AND status='pending'",
-                rusqlite::params![state],
+                "UPDATE gemini_oauth_sessions SET status='processing',ts=?2
+                 WHERE state=?1 AND status='pending'",
+                rusqlite::params![state, now()],
             )?;
         }
         tx.commit()?;
@@ -694,6 +695,59 @@ impl Store {
                 },
             )
             .optional()?)
+    }
+
+    /// Read the one exact OAuth generation regardless of whether its callback is merely pending or
+    /// already claimed. `/cancel` needs the sealed egress from a claimed generation so it can rotate
+    /// the seller-job token, delete the old capability and immediately issue fresh links without
+    /// asking for the proxy again.
+    pub fn active_gemini_session(&self, chat_id: i64) -> Result<Option<GeminiOAuthSession>> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state,chat_id,sealed_payload,expires_ts,
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_oauth_sessions WHERE chat_id=?1",
+                rusqlite::params![chat_id],
+                |row| {
+                    let kind: String = row.get(4)?;
+                    let offer_id: i64 = row.get(5)?;
+                    let batch_id: i64 = row.get(6)?;
+                    let item_no: i64 = row.get(7)?;
+                    let token: String = row.get(8)?;
+                    Ok(GeminiOAuthSession {
+                        state: row.get(0)?,
+                        chat_id: row.get(1)?,
+                        sealed_payload: row.get(2)?,
+                        expires_ts: row.get(3)?,
+                        job: (!kind.is_empty()).then(|| SellerJobRef {
+                            kind,
+                            offer_id,
+                            batch_id,
+                            item_no,
+                            token,
+                        }),
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Claimed callbacks cannot be resumed after a process restart: the one-use Google code may
+    /// already have been exchanged. The new process lists only those generations and replaces each
+    /// with a fresh state+PKCE transaction through the normal generation-rotating restart path.
+    pub fn interrupted_gemini_chats(&self) -> Result<Vec<i64>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT chat_id FROM gemini_oauth_sessions
+             WHERE status='processing' ORDER BY ts,chat_id",
+        )?;
+        let chats = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(chats)
     }
 
     /// Read one still-pending phase for form rendering without claiming its one-use capability.
@@ -3507,6 +3561,12 @@ mod tests {
         assert!(s.pending_gemini_session(111).unwrap().is_none());
         // Заклеймленная сессия видна отдельно: откат обязан отказать, а не молча деградировать.
         assert!(s.gemini_oauth_in_flight(111).unwrap());
+        let claimed = s
+            .active_gemini_session(111)
+            .unwrap()
+            .expect("/cancel видит exact processing generation");
+        assert_eq!(claimed.state, "pending-state");
+        assert_eq!(s.interrupted_gemini_chats().unwrap(), vec![111]);
 
         // Истёкшая сессия тоже не годится: её код всё равно уже не обменять.
         s.start_gemini_oauth(222, "expired-state", "sealed", now() - 1, 0)

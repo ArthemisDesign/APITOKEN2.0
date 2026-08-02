@@ -538,6 +538,8 @@ async fn main() -> Result<()> {
     let _ = bot.delete_webhook().await;
 
     let uname = bot.get_me().await.unwrap_or_else(|_| "?".into());
+    let recovered_gemini_callbacks =
+        bot::recover_interrupted_gemini_oauth(&bot, &store, &cfg).await;
     bot::resume_batches(&bot, &store, &cfg).await;
     let (users, offers) = store.counts();
     let admin_state = if cfg.admins_id.is_empty() && cfg.admins_name.is_empty() {
@@ -557,6 +559,11 @@ async fn main() -> Result<()> {
     }
     if recovered_gemini > 0 {
         eprintln!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}");
+    }
+    if recovered_gemini_callbacks > 0 {
+        eprintln!(
+            "authbot: перезапущено прерванных Gemini OAuth callback: {recovered_gemini_callbacks}"
+        );
     }
     if recovered_seller_jobs > 0 {
         eprintln!("authbot: восстановлено активных seller jobs: {recovered_seller_jobs}");

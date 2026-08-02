@@ -102,6 +102,9 @@ the Antigravity checks below remain decisive.
    performs verified userinfo. Before issuing a second consent it rejects an already published
    subject or incompatible legacy-profile proxy. The resulting legacy tokens never enter a roster;
    missing legacy Code Assist project/tier evidence neither admits nor rejects the subscription.
+   Successful claim processing is detached before the handler returns `202 Accepted`; terminal
+   failure cleanup is detached before its bounded `4xx`/`503` page is returned as well. Closing the
+   browser cannot cancel exchange, failure cleanup or the eventual Telegram result.
 5. After the Antigravity consent, paid-plan admission uses the actual tier/project and reviewed
    tier evidence. A stable reviewed
    tier ID is authoritative even when Google changes its display name; an exact known name that
@@ -139,6 +142,16 @@ the Antigravity checks below remain decisive.
    on its health loop without restart. A direct Antigravity callback created before this rollout
    remains decodable for deployment compatibility and retains the former in-place reauthorization
    rule because its already-issued consent may have invalidated the old token.
+
+`/cancel` is the explicit full-restart boundary for a Gemini seller handoff. Under the same
+publication/terminal lock it first decrypts or resolves the exact pinned egress, atomically deletes
+the pending or already-claimed capability and rotates the seller-job generation, then aborts the
+old local worker and starts again from the Gemini CLI phase with a fresh state and PKCE verifier.
+The generation check immediately before publication makes an old task harmless even if cancellation
+arrives while Google I/O is in progress. A malformed/missing egress still fences the old generation
+instead of leaving `processing` behind; seller-owned egress is requested again, while fixed egress
+fails closed for operator repair. On Auth Bot startup every persisted `processing` session follows
+the same restart path. Its one-use Google code is never replayed after a crash or deployment.
 
 Auth Bot's two token exchanges, userinfo, Antigravity `loadCodeAssist`, onboarding and generation
 acceptance use the same bounded Node helper source as the runtime through the seller's dedicated

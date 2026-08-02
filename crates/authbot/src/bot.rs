@@ -1076,9 +1076,14 @@ pub async fn on_message(
         }
     }
 
-    if text == "/cancel" {
+    if is_cancel_command(text) {
         // Для продавца «отмена» всегда означала «верни меня назад», а не «расторгни сделку».
-        // Теперь это ровно тот же механизм, что кнопка и слово «назад»: один смысл, три входа.
+        // Gemini — явное исключение: callback уже мог забрать одноразовый код, поэтому /cancel
+        // не ждёт его и не переиспользует. Он атомарно ротирует generation, гасит старую OAuth
+        // capability и сразу выдаёт полностью новые ссылки на том же egress.
+        if restart_gemini_oauth_attempt(bot, store, cfg, chat, GeminiRestart::Requested).await {
+            return;
+        }
         if !admin && store.active_seller_job(chat).ok().flatten().is_some() {
             offer_handoff_back(bot, store, cfg, chat, false).await;
             return;
@@ -1481,6 +1486,156 @@ pub async fn on_message(
         return;
     }
     let _ = bot.send(chat, "Используй /start, кнопку «📦 Создать оффер», или пришли <b>email</b> аккаунта для выпуска токена.").await;
+}
+
+/// Telegram appends `@bot_username` to commands sent from group chats. Treat that syntax as the
+/// same exact command, but reject arguments and malformed suffixes so ordinary text cannot trigger
+/// a destructive OAuth generation rotation.
+fn is_cancel_command(text: &str) -> bool {
+    if text == "/cancel" {
+        return true;
+    }
+    text.strip_prefix("/cancel@").is_some_and(|username| {
+        !username.is_empty()
+            && username
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
+}
+
+#[derive(Clone, Copy)]
+enum GeminiRestart {
+    Requested,
+    Interrupted,
+}
+
+/// Replace one Gemini OAuth generation without touching the paid deal or its egress.
+///
+/// The publication lock gives cancellation a linearization point against the final credential
+/// write. If cancellation wins, `rewind_handoff_step` rotates the seller-job token before the old
+/// task is aborted, so that task can neither publish nor mutate the new attempt. If publication
+/// already won, the completed job no longer matches and cancellation becomes a harmless no-op.
+async fn restart_gemini_oauth_attempt(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    reason: GeminiRestart,
+) -> bool {
+    let Some(oauth) = cfg.gemini_oauth.as_ref() else {
+        return false;
+    };
+    let _terminal_guard = oauth.terminal_guard().await;
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return false;
+    };
+    if handoff_kind(&job.product) != HandoffKind::Gemini || job.phase != "processing" {
+        return false;
+    }
+    let Some(user) = store.get_user(chat).ok().flatten() else {
+        return false;
+    };
+    let egress = gemini_oauth::active_egress(store, oauth, chat)
+        .or_else(|| (!user.hproxy.is_empty()).then(|| (user.hproxy.clone(), user.hproxy_order)))
+        .or_else(|| pinned_job_egress(store, &job.reference));
+    let Some((proxy, proxy_order_id)) = egress else {
+        // Corrupt or externally removed egress must not keep an already-claimed callback alive.
+        // Fence the generation anyway; a seller-owned proxy can then be entered again, while a
+        // fixed-proxy position remains stopped for operator repair instead of hanging forever.
+        let fenced = store
+            .rewind_handoff_step(
+                chat,
+                &job.reference,
+                &user.want,
+                "gm_gproxy",
+                Some(("", user.hproxy_order)),
+            )
+            .unwrap_or(None)
+            .is_some();
+        if fenced {
+            oauth.abort_inflight(chat);
+        }
+        drop(_terminal_guard);
+        eprintln!(
+            "[gemini-oauth] chat={} restart {} but could not recover the sealed or pinned egress",
+            chat,
+            if fenced {
+                "fenced the old generation"
+            } else {
+                "was rejected"
+            }
+        );
+        if fenced {
+            let replaceable = job_accepts_seller_proxy(store, &job.reference, user.hproxy_order);
+            let _ = bot
+                .send(
+                    chat,
+                    if replaceable {
+                        "🔄 <b>Старая Gemini-авторизация полностью остановлена.</b> Сохранённый прокси оказался недоступен, поэтому пришли его заново — после этого бот создаст новую попытку."
+                    } else {
+                        "🔄 <b>Старая Gemini-авторизация полностью остановлена.</b> Закреплённый прокси не удалось восстановить; новая попытка не запущена, администратор уже уведомлён."
+                    },
+                )
+                .await;
+            notify_admins(
+                bot,
+                cfg,
+                "⚠️ Gemini /cancel погасил зависшее поколение, но не смог восстановить его запечатанный или закреплённый egress. Проверь источник прокси текущей позиции; старый callback уже недействителен.",
+                None,
+            )
+            .await;
+        }
+        return fenced;
+    };
+    let fresh_job = store
+        .rewind_handoff_step(
+            chat,
+            &job.reference,
+            &user.want,
+            "gm_ready",
+            Some((proxy.as_str(), proxy_order_id)),
+        )
+        .unwrap_or(None);
+    if fresh_job.is_none() {
+        return false;
+    }
+    oauth.abort_inflight(chat);
+    let message = match reason {
+        GeminiRestart::Requested => {
+            "🔄 <b>Старая Gemini-авторизация полностью остановлена.</b> Её ссылки и callback больше ничего не могут опубликовать. Ниже — новая попытка с тем же прокси."
+        }
+        GeminiRestart::Interrupted => {
+            "🔄 <b>Прерванная Gemini-проверка безопасно восстановлена.</b> Старое поколение погашено. Используй только новые ссылки ниже; прокси сохранён."
+        }
+    };
+    let _ = bot.send(chat, message).await;
+    start_gemini_handoff(bot, store, cfg, chat, Some(&proxy), proxy_order_id).await;
+    true
+}
+
+/// A claimed Google code is never replayed after an authbot restart or detached-task panic.
+/// Instead, the normal `/cancel` fence rotates the exact seller generation and issues new PKCE.
+pub(crate) async fn restart_interrupted_gemini_oauth(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+) -> bool {
+    restart_gemini_oauth_attempt(bot, store, cfg, chat, GeminiRestart::Interrupted).await
+}
+
+pub(crate) async fn recover_interrupted_gemini_oauth(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+) -> usize {
+    let mut recovered = 0;
+    for chat in store.interrupted_gemini_chats().unwrap_or_default() {
+        if restart_interrupted_gemini_oauth(bot, store, cfg, chat).await {
+            recovered += 1;
+        }
+    }
+    recovered
 }
 
 /// Первое число из строки цены («20$» → 20.0, «9 990₽» → 9.99? нет — берём слитную группу).
@@ -4702,6 +4857,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         let path = format!("{directory}/authbot.db");
         Arc::new(Store::open(&path).unwrap())
+    }
+
+    #[test]
+    fn cancel_command_accepts_telegram_addressing_but_no_arguments() {
+        assert!(is_cancel_command("/cancel"));
+        assert!(is_cancel_command("/cancel@ClaudeApiBot"));
+        assert!(is_cancel_command("/cancel@bot_123"));
+        assert!(!is_cancel_command("/cancel "));
+        assert!(!is_cancel_command("/cancel now"));
+        assert!(!is_cancel_command("/cancel@"));
+        assert!(!is_cancel_command("/cancel@bad-name"));
+        assert!(!is_cancel_command("cancel"));
     }
 
     /// Продукт оффера разводит три несовместимые передачи доступа. В частности, Gemini никогда не

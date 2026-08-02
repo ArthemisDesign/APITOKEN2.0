@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use gemini_credential::{
     decode_envelope, encode_envelope, CredentialKeyring, GeminiCredential, OAuthKind,
@@ -25,13 +25,13 @@ use gemini_credential::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -135,6 +135,12 @@ pub struct Config {
     active_key_id: String,
     publish_lock: Arc<tokio::sync::Mutex<()>>,
     callback_limit: Arc<tokio::sync::Semaphore>,
+    inflight: Arc<Mutex<HashMap<i64, InflightCompletion>>>,
+}
+
+struct InflightCompletion {
+    state: String,
+    abort: tokio::task::AbortHandle,
 }
 
 impl std::fmt::Debug for Config {
@@ -196,7 +202,41 @@ impl Config {
             // A batch is sequential, and serializing completion across sellers prevents authbot
             // from creating its own CONNECT burst against residential proxy gateways.
             callback_limit: Arc::new(tokio::sync::Semaphore::new(1)),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    pub(crate) async fn terminal_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.publish_lock.clone().lock_owned().await
+    }
+
+    fn register_inflight(&self, chat_id: i64, state: String, abort: tokio::task::AbortHandle) {
+        let replaced = self
+            .inflight
+            .lock()
+            .unwrap()
+            .insert(chat_id, InflightCompletion { state, abort });
+        if let Some(replaced) = replaced {
+            replaced.abort.abort();
+        }
+    }
+
+    fn clear_inflight(&self, chat_id: i64, state: &str) {
+        let mut inflight = self.inflight.lock().unwrap();
+        if inflight
+            .get(&chat_id)
+            .is_some_and(|completion| completion.state == state)
+        {
+            inflight.remove(&chat_id);
+        }
+    }
+
+    pub(crate) fn abort_inflight(&self, chat_id: i64) -> bool {
+        let Some(completion) = self.inflight.lock().unwrap().remove(&chat_id) else {
+            return false;
+        };
+        completion.abort.abort();
+        true
     }
 
     /// Re-seal existing profiles under the active key during authbot startup. Operators can add a
@@ -749,7 +789,7 @@ async fn callback(
                     .unwrap_or_default();
                 code_form(callback_state, phase)
             }
-            None => callback_html(StatusCode::BAD_REQUEST, false),
+            None => status_page(StatusPage::InvalidLink),
         };
     }
     finish_oauth(&state, callback_state, code, callback_error).await
@@ -793,17 +833,14 @@ async fn finish_oauth(
     callback_error: Option<&str>,
 ) -> Response {
     let Some(callback_state) = callback_state.filter(|value| valid_oauth_state(value)) else {
-        return callback_html(StatusCode::BAD_REQUEST, false);
+        return status_page(StatusPage::InvalidLink);
     };
     let Some(oauth) = state.config.gemini_oauth.as_ref() else {
-        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
-    };
-    let Ok(_callback_permit) = oauth.callback_limit.clone().acquire_owned().await else {
-        return callback_html(StatusCode::SERVICE_UNAVAILABLE, false);
+        return status_page(StatusPage::ServiceUnavailable);
     };
     let session = match state.store.claim_gemini_oauth(callback_state) {
         Ok(Some(session)) => session,
-        Ok(None) | Err(_) => return callback_html(StatusCode::BAD_REQUEST, false),
+        Ok(None) | Err(_) => return status_page(StatusPage::ExpiredLink),
     };
     if !oauth_session_handoff_is_current(&state.store, &session) {
         let _ = state.store.fail_gemini_oauth(&session.state);
@@ -811,28 +848,38 @@ async fn finish_oauth(
             "[gemini-oauth] chat={} rejected stale seller generation before code exchange",
             session.chat_id
         );
-        return callback_html(StatusCode::BAD_REQUEST, false);
+        return status_page(StatusPage::ExpiredLink);
     }
     if callback_error.is_some() {
-        fail_callback(state, &session, Failure::Authorization).await;
-        return callback_html(StatusCode::BAD_REQUEST, false);
+        spawn_callback_failure(
+            state.clone(),
+            oauth.clone(),
+            session,
+            Failure::Authorization,
+        );
+        return status_page(StatusPage::AuthorizationDenied);
     }
     let Some(code) = code.filter(|value| valid_oauth_value(value, 4_096)) else {
-        fail_callback(state, &session, Failure::Authorization).await;
-        return callback_html(StatusCode::BAD_REQUEST, false);
+        spawn_callback_failure(
+            state.clone(),
+            oauth.clone(),
+            session,
+            Failure::Authorization,
+        );
+        return status_page(StatusPage::InvalidCallback);
     };
     let payload_envelope: SealedCredential = match serde_json::from_str(&session.sealed_payload) {
         Ok(envelope) => envelope,
         Err(_) => {
-            fail_callback(state, &session, Failure::Storage).await;
-            return callback_html(StatusCode::BAD_GATEWAY, false);
+            spawn_callback_failure(state.clone(), oauth.clone(), session, Failure::Storage);
+            return status_page(StatusPage::ServiceUnavailable);
         }
     };
     let decrypted_payload = match oauth.keyring.open_secret(&session.state, &payload_envelope) {
         Ok(payload) => payload,
         Err(_) => {
-            fail_callback(state, &session, Failure::Storage).await;
-            return callback_html(StatusCode::BAD_GATEWAY, false);
+            spawn_callback_failure(state.clone(), oauth.clone(), session, Failure::Storage);
+            return status_page(StatusPage::ServiceUnavailable);
         }
     };
     let pending: PendingOAuthSecret =
@@ -843,10 +890,115 @@ async fn finish_oauth(
                 pending
             }
             _ => {
-                fail_callback(state, &session, Failure::Storage).await;
-                return callback_html(StatusCode::BAD_GATEWAY, false);
+                spawn_callback_failure(state.clone(), oauth.clone(), session, Failure::Storage);
+                return status_page(StatusPage::ServiceUnavailable);
             }
         };
+    let phase = pending.phase;
+    spawn_oauth_completion(
+        state.clone(),
+        oauth.clone(),
+        session,
+        Zeroizing::new(code.to_string()),
+        pending,
+    );
+    status_page(match phase {
+        OAuthPhase::LegacyBootstrap => StatusPage::CheckingIdentity,
+        OAuthPhase::AntigravityFinal | OAuthPhase::DirectAntigravity => {
+            StatusPage::CheckingSubscription
+        }
+    })
+}
+
+fn spawn_oauth_completion(
+    state: CallbackState,
+    oauth: Config,
+    session: GeminiOAuthSession,
+    code: Zeroizing<String>,
+    pending: PendingOAuthSecret,
+) {
+    spawn_supervised_oauth(
+        state,
+        oauth,
+        session,
+        move |state, oauth, session| async move {
+            process_oauth_completion(&state, &oauth, &session, code, pending).await;
+        },
+    );
+}
+
+fn spawn_callback_failure(
+    state: CallbackState,
+    oauth: Config,
+    session: GeminiOAuthSession,
+    failure: Failure,
+) {
+    spawn_supervised_oauth(
+        state,
+        oauth,
+        session,
+        move |state, _oauth, session| async move {
+            fail_callback(&state, &session, failure).await;
+        },
+    );
+}
+
+/// Register a claimed callback before the HTTP handler returns, then run all terminal work in a
+/// supervised task whose lifetime is independent of the browser connection. The start barrier
+/// closes the small race where a very fast task could finish before its abort handle was indexed.
+fn spawn_supervised_oauth<F, Fut>(
+    state: CallbackState,
+    oauth: Config,
+    session: GeminiOAuthSession,
+    completion: F,
+) where
+    F: FnOnce(CallbackState, Config, GeminiOAuthSession) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let chat_id = session.chat_id;
+    let oauth_state = session.state.clone();
+    let recovery_state = state.clone();
+    let supervisor_oauth = oauth.clone();
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
+        completion(state, oauth, session).await;
+    });
+    let abort = worker.abort_handle();
+    supervisor_oauth.register_inflight(chat_id, oauth_state.clone(), abort);
+    tokio::spawn(async move {
+        let outcome = worker.await;
+        supervisor_oauth.clear_inflight(chat_id, &oauth_state);
+        if outcome.is_err_and(|error| error.is_panic()) {
+            eprintln!(
+                "[gemini-oauth] chat={} detached completion panicked; restarting the exact handoff generation",
+                chat_id
+            );
+            crate::bot::restart_interrupted_gemini_oauth(
+                &recovery_state.bot,
+                &recovery_state.store,
+                &recovery_state.config,
+                chat_id,
+            )
+            .await;
+        }
+    });
+    let _ = start_tx.send(());
+}
+
+async fn process_oauth_completion(
+    state: &CallbackState,
+    oauth: &Config,
+    session: &GeminiOAuthSession,
+    code: Zeroizing<String>,
+    pending: PendingOAuthSecret,
+) {
+    let Ok(_callback_permit) = oauth.callback_limit.clone().acquire_owned().await else {
+        fail_callback(state, session, Failure::Interrupted).await;
+        return;
+    };
     let exchange_redirect = if pending.redirect_uri.is_empty() {
         oauth.redirect_uri.as_str()
     } else {
@@ -856,7 +1008,7 @@ async fn finish_oauth(
         &state.store,
         oauth,
         &session,
-        code,
+        code.as_str(),
         pending.verifier.as_str(),
         pending.proxy.as_str(),
         pending.proxy_order_id,
@@ -904,22 +1056,19 @@ async fn finish_oauth(
                             &links.submit_url,
                         )
                         .await;
-                    callback_bootstrap_html()
                 }
                 Ok(_) => {
                     eprintln!(
                         "[gemini-oauth] chat={} Antigravity phase became stale immediately after transition",
                         session.chat_id
                     );
-                    callback_html(StatusCode::BAD_REQUEST, false)
                 }
                 Err(_) => {
                     fail_callback(state, &session, Failure::Storage).await;
-                    callback_html(StatusCode::BAD_GATEWAY, false)
                 }
             }
         }
-        Ok(Completion::Published(profile)) => {
+        Ok(Completion::Published(profile, _terminal_guard)) => {
             let _ = state.store.finish_gemini_oauth(&session.state);
             let current = crate::bot::seller_handoff_is_current(
                 &state.store,
@@ -977,11 +1126,9 @@ async fn finish_oauth(
                 crate::bot::HandoffKind::Gemini,
             )
             .await;
-            callback_html(StatusCode::OK, true)
         }
         Err(failure) => {
             fail_callback(state, &session, failure).await;
-            callback_html(StatusCode::BAD_GATEWAY, false)
         }
     }
 }
@@ -996,19 +1143,97 @@ fn oauth_session_handoff_is_current(store: &Store, session: &GeminiOAuthSession)
         )
 }
 
-fn callback_html(status: StatusCode, success: bool) -> Response {
-    let body = if success {
-        "<!doctype html><meta charset=utf-8><title>Gemini connected</title><h1>Gemini подключён</h1><p>Можно закрыть эту вкладку и вернуться в Telegram.</p>"
-    } else {
-        "<!doctype html><meta charset=utf-8><title>Gemini authorization failed</title><h1>Авторизация не завершена</h1><p>Вернитесь в Telegram и начните подключение заново.</p>"
-    };
-    secure_html(status, body.to_string(), false)
+#[derive(Clone, Copy)]
+enum StatusPage {
+    InvalidLink,
+    InvalidCallback,
+    ExpiredLink,
+    AuthorizationDenied,
+    ServiceUnavailable,
+    CheckingIdentity,
+    CheckingSubscription,
 }
 
-fn callback_bootstrap_html() -> Response {
+const PAGE_STYLES: &str = r#"
+:root{color-scheme:light;--ink:#11182d;--muted:#66708a;--paper:#f7f8fc;--card:#fff;--line:#dfe4f1;--blue:#3267e3;--violet:#7654d8;--mint:#15a37f;--amber:#d47c11;--red:#c94b57;--shadow:0 24px 70px rgba(38,48,91,.15)}*{box-sizing:border-box}html{min-height:100%;background:radial-gradient(circle at 12% 8%,rgba(79,126,235,.14),transparent 34rem),radial-gradient(circle at 88% 92%,rgba(125,84,216,.12),transparent 32rem),var(--paper)}body{min-height:100vh;margin:0;padding:clamp(20px,5vw,64px) 18px;display:grid;place-items:center;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{width:min(100%,620px)}.brand{display:flex;align-items:center;gap:10px;margin:0 0 18px 6px;font-size:13px;font-weight:720;letter-spacing:.08em;text-transform:uppercase;color:#4d5875}.brand-mark{width:24px;height:24px;display:grid;place-items:center;border-radius:8px;color:#fff;background:linear-gradient(135deg,var(--blue),var(--violet));font:800 13px ui-rounded,"SF Pro Rounded",sans-serif;box-shadow:0 7px 18px rgba(71,94,190,.28)}.card{position:relative;overflow:hidden;padding:clamp(26px,6vw,48px);border:1px solid rgba(207,214,232,.88);border-radius:28px;background:rgba(255,255,255,.94);box-shadow:var(--shadow)}.card:before{content:"";position:absolute;inset:0 0 auto;height:4px;background:linear-gradient(90deg,var(--blue),#5f78ef 43%,var(--violet))}.signal{position:relative;width:70px;height:70px;margin-bottom:26px;display:grid;place-items:center}.signal:before,.signal:after{content:"";position:absolute;border-radius:50%}.signal:before{inset:0;border:1px solid #ced7ed;background:linear-gradient(145deg,#fff,#eef2fb)}.signal:after{width:13px;height:13px;top:4px;right:8px;background:var(--tone,var(--blue));box-shadow:0 0 0 6px color-mix(in srgb,var(--tone,var(--blue)) 14%,transparent);animation:orbit 2.8s ease-in-out infinite}.signal-core{position:relative;width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:color-mix(in srgb,var(--tone,var(--blue)) 11%,white);color:var(--tone,var(--blue));font:800 18px ui-rounded,"SF Pro Rounded",sans-serif}.card[data-tone=good]{--tone:var(--mint)}.card[data-tone=wait]{--tone:var(--blue)}.card[data-tone=warn]{--tone:var(--amber)}.card[data-tone=bad]{--tone:var(--red)}.kicker{margin:0 0 9px;color:var(--tone,var(--blue));font:750 12px ui-monospace,"SFMono-Regular",monospace;letter-spacing:.12em;text-transform:uppercase}h1{max-width:14ch;margin:0;font:760 clamp(31px,7vw,48px)/1.02 ui-rounded,"SF Pro Rounded",-apple-system,sans-serif;letter-spacing:-.045em}p{font-size:17px;line-height:1.58}.lead{margin:20px 0 0;color:#46516c}.rail{margin:30px 0 0;display:grid;grid-template-columns:auto 1fr auto 1fr auto;align-items:center;gap:9px}.step{display:grid;place-items:center;min-width:38px;height:32px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:#f8f9fd;color:#79829a;font:720 11px ui-monospace,"SFMono-Regular",monospace}.step.done{border-color:#b9dfd4;background:#eef9f5;color:#08795d}.step.active{border-color:color-mix(in srgb,var(--tone,var(--blue)) 38%,white);background:color-mix(in srgb,var(--tone,var(--blue)) 9%,white);color:var(--tone,var(--blue))}.track{height:1px;background:var(--line)}.callout{margin-top:26px;padding:16px 18px;border:1px solid #e3e7f2;border-radius:16px;background:#f8f9fc;color:#505b75;font-size:14px;line-height:1.5}.privacy{margin:16px 8px 0;color:#7a8399;font-size:12px;line-height:1.5}.field{display:block;margin-top:28px;color:#303a54;font-size:14px;font-weight:700}.field input{width:100%;margin-top:9px;padding:15px 16px;border:1px solid #cfd6e7;border-radius:14px;background:#fbfcff;color:#11182d;font:500 16px/1.35 ui-monospace,"SFMono-Regular",monospace;outline:none;box-shadow:inset 0 1px 1px rgba(23,31,62,.04)}.field input:focus{border-color:var(--blue);box-shadow:0 0 0 4px rgba(50,103,227,.13)}button{width:100%;margin-top:14px;padding:15px 18px;border:0;border-radius:14px;background:linear-gradient(135deg,var(--blue),#6556db);color:#fff;font:760 16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 12px 28px rgba(67,84,192,.25)}button:focus-visible{outline:3px solid rgba(50,103,227,.32);outline-offset:3px}button:active{transform:translateY(1px)}.form-note{margin:13px 2px 0;color:#737d94;font-size:13px;line-height:1.45}@keyframes orbit{0%,100%{transform:translate(0,0);opacity:1}50%{transform:translate(-7px,5px);opacity:.66}}@media(max-width:420px){body{padding:18px 12px}.card{border-radius:22px}.rail{gap:5px}.step{min-width:32px;padding:0 7px;font-size:10px}}@media(prefers-reduced-motion:reduce){.signal:after{animation:none}button{transition:none}}
+"#;
+
+fn status_page(page: StatusPage) -> Response {
+    let (status, tone, mark, kicker, title, lead, callout, active_step) = match page {
+        StatusPage::InvalidLink => (
+            StatusCode::BAD_REQUEST,
+            "bad",
+            "!",
+            "Ссылка не принята",
+            "Откройте актуальную кнопку в Telegram",
+            "Адрес неполный или изменён. Не редактируйте OAuth-ссылку и не используйте старую вкладку.",
+            "Вернитесь в Telegram. Команда /cancel погасит старую попытку и сразу выдаст новую.",
+            0,
+        ),
+        StatusPage::InvalidCallback => (
+            StatusCode::BAD_REQUEST,
+            "bad",
+            "!",
+            "Неверный callback",
+            "Нужен весь localhost-адрес",
+            "Скопируйте адрес целиком из строки браузера: от http://localhost:51121 до последнего символа.",
+            "Короткий код, текст страницы и адрес без state не подходят. В Telegram отправлять callback не нужно.",
+            1,
+        ),
+        StatusPage::ExpiredLink => (
+            StatusCode::CONFLICT,
+            "warn",
+            "↻",
+            "Попытка завершена",
+            "Эта ссылка уже не активна",
+            "Одноразовая попытка была использована, отменена или успела истечь.",
+            "Отправьте /cancel в Telegram — бот безопасно остановит старое поколение и выдаст новые ссылки с тем же прокси.",
+            1,
+        ),
+        StatusPage::AuthorizationDenied => (
+            StatusCode::BAD_REQUEST,
+            "warn",
+            "×",
+            "Google не завершил вход",
+            "Доступ не был подтверждён",
+            "Google отменил согласие или вернул OAuth-ошибку. Подписка в пул не добавлена.",
+            "Вернитесь в Telegram и отправьте /cancel, чтобы полностью начать авторизацию заново.",
+            1,
+        ),
+        StatusPage::ServiceUnavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "warn",
+            "…",
+            "Проверка остановлена",
+            "Доступ не был опубликован",
+            "Сервис не смог безопасно завершить эту одноразовую попытку.",
+            "Прокси и сделка сохранены. Команда /cancel в Telegram создаст новое поколение без зависшего запроса.",
+            2,
+        ),
+        StatusPage::CheckingIdentity => (
+            StatusCode::ACCEPTED,
+            "wait",
+            "01",
+            "Код принят",
+            "Проверяем Google-аккаунт",
+            "Проверка уже выполняется независимо от этой вкладки. Закрытие браузера её не прервёт.",
+            "Результат придёт в Telegram. Если хотите остановить попытку, отправьте /cancel — старый запрос потеряет право что-либо опубликовать.",
+            0,
+        ),
+        StatusPage::CheckingSubscription => (
+            StatusCode::ACCEPTED,
+            "wait",
+            "02",
+            "Callback принят",
+            "Проверяем подписку и генерацию",
+            "OAuth-код уже передан защищённому фоновому процессу. Вкладку можно закрыть.",
+            "Тариф, проект и реальная генерация проверяются через тот же прокси. Итог придёт в Telegram; /cancel в любой момент начнёт всё заново.",
+            2,
+        ),
+    };
     secure_html(
-        StatusCode::OK,
-        "<!doctype html><meta charset=utf-8><title>Gemini CLI initialized</title><h1>Первый этап завершён</h1><p>Вернитесь в Telegram: бот уже выдал вторую ссылку Antigravity. Не меняйте аккаунт, профиль браузера или прокси.</p>".to_string(),
+        status,
+        page_shell(tone, mark, kicker, title, lead, callout, active_step, ""),
         false,
     )
 }
@@ -1017,25 +1242,75 @@ fn code_form(state: &str, phase: OAuthPhase) -> Response {
     // `valid_oauth_state` limits this interpolation to URL-safe ASCII, so the hidden value cannot
     // break out of its quoted attribute. The authorization code is submitted only in the POST body
     // and therefore stays out of Telegram, browser history, referrers and ordinary access logs.
-    let (instruction, label, placeholder, button) = if phase == OAuthPhase::LegacyBootstrap {
+    let (kicker, title, instruction, label, placeholder, button, active_step) = if phase
+        == OAuthPhase::LegacyBootstrap
+    {
         (
+            "Этап 1 из 2",
+            "Подтвердите Gemini CLI",
             "После согласия Google откроет страницу Gemini CLI с одноразовым кодом. Скопируйте только этот код и вставьте ниже.",
             "Одноразовый код Gemini CLI",
             "4/…",
             "Завершить инициализацию",
+            0,
         )
     } else {
         (
+            "Этап 2 из 2",
+            "Завершите Antigravity OAuth",
             "После согласия Google перенаправит браузер на localhost; страница может не открыться — это нормально. Скопируйте весь адрес из адресной строки и вставьте ниже.",
             "Полный localhost callback URL",
             "http://localhost:51121/oauth-callback?state=…&amp;code=…",
             "Подключить подписку",
+            1,
         )
     };
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Подключить Gemini</title><h1>Завершить подключение Gemini</h1><p>{instruction}</p><form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><p><label>{label}<br><input name=code required autofocus autocomplete=off maxlength=4096 size=72 placeholder=\"{placeholder}\"></label></p><button type=submit>{button}</button></form><p>Код отправляется напрямую Auth Bot по HTTPS и не попадает в Telegram.</p>"
+    let form = format!(
+        "<form method=post action=\"/oauth/callback\"><input type=hidden name=state value=\"{state}\"><label class=field>{label}<input name=code required autofocus autocomplete=off autocapitalize=off spellcheck=false maxlength=4096 placeholder=\"{placeholder}\"></label><button type=submit>{button}</button><p class=form-note>Данные отправляются напрямую Auth Bot по HTTPS и не попадают в Telegram или журналы доступа.</p></form>"
+    );
+    let body = page_shell(
+        "wait",
+        if phase == OAuthPhase::LegacyBootstrap {
+            "01"
+        } else {
+            "02"
+        },
+        kicker,
+        title,
+        instruction,
+        "Не меняйте Google-аккаунт, профиль браузера или прокси между двумя этапами.",
+        active_step,
+        &form,
     );
     secure_html(StatusCode::OK, body, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn page_shell(
+    tone: &str,
+    mark: &str,
+    kicker: &str,
+    title: &str,
+    lead: &str,
+    callout: &str,
+    active_step: usize,
+    content: &str,
+) -> String {
+    let step = |index: usize| {
+        if index < active_step {
+            "step done"
+        } else if index == active_step {
+            "step active"
+        } else {
+            "step"
+        }
+    };
+    format!(
+        "<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=theme-color content=#f7f8fc><title>{title} · Gemini</title><style>{PAGE_STYLES}</style></head><body><main class=shell><div class=brand><span class=brand-mark>G</span>Gemini access</div><section class=card data-tone={tone} aria-live=polite><div class=signal aria-hidden=true><span class=signal-core>{mark}</span></div><p class=kicker>{kicker}</p><h1>{title}</h1><p class=lead>{lead}</p><div class=rail aria-label=\"Этапы подключения\"><span class=\"{}\">CLI</span><span class=track></span><span class=\"{}\">OAuth</span><span class=track></span><span class=\"{}\">Тест</span></div><div class=callout>{callout}</div>{content}</section><p class=privacy>Одноразовые коды и токены не сохраняются в странице. Результат подключения подтверждается только сообщением бота.</p></main></body></html>",
+        step(0),
+        step(1),
+        step(2),
+    )
 }
 
 fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
@@ -1045,13 +1320,18 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
         "cache-control",
         axum::http::HeaderValue::from_static("no-store, max-age=0"),
     );
+    let style_hash = STANDARD.encode(Sha256::digest(PAGE_STYLES.as_bytes()));
+    let form_action = if allow_form {
+        " form-action 'self';"
+    } else {
+        ""
+    };
+    let policy = format!(
+        "default-src 'none'; style-src 'sha256-{style_hash}';{form_action} base-uri 'none'; frame-ancestors 'none'"
+    );
     headers.insert(
         "content-security-policy",
-        axum::http::HeaderValue::from_static(if allow_form {
-            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-        } else {
-            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-        }),
+        axum::http::HeaderValue::from_str(&policy).expect("static CSP is a valid header"),
     );
     headers.insert(
         "cross-origin-opener-policy",
@@ -1083,13 +1363,14 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
 }
 
 async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
+    let Some(oauth) = state.config.gemini_oauth.as_ref() else {
+        return;
+    };
+    let (pending_proxy, pending_proxy_order_id) = pending_proxy(oauth, session).unwrap_or_default();
+    // `/cancel`, publication and failure all serialize here. Whichever wins first rotates or
+    // consumes the exact seller generation; every later path is guarded by the now-stale token.
+    let _terminal_guard = oauth.terminal_guard().await;
     let _ = state.store.fail_gemini_oauth(&session.state);
-    let (pending_proxy, pending_proxy_order_id) = state
-        .config
-        .gemini_oauth
-        .as_ref()
-        .and_then(|oauth| pending_proxy(oauth, session))
-        .unwrap_or_default();
     let accepts_proxy_input = session.job.as_ref().is_some_and(|expected| {
         crate::bot::gemini_job_accepts_proxy_input(&state.store, expected, pending_proxy_order_id)
     });
@@ -1198,6 +1479,14 @@ pub(crate) fn pending_egress(store: &Store, config: &Config, chat: i64) -> Optio
     pending_proxy(config, &session)
 }
 
+/// Egress for an explicit restart. Unlike the ordinary back button, `/cancel` is allowed to fence
+/// a claimed callback, so it must be able to recover the proxy from both pending and processing
+/// generations before the generation-rotating DB transition deletes the old envelope.
+pub(crate) fn active_egress(store: &Store, config: &Config, chat: i64) -> Option<(String, i64)> {
+    let session = store.active_gemini_session(chat).ok().flatten()?;
+    pending_proxy(config, &session)
+}
+
 fn valid_oauth_value(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
@@ -1241,6 +1530,7 @@ fn valid_pending_phase(pending: &PendingOAuthSecret) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
     Authorization,
+    Interrupted,
     CodeAssistApiDisabled,
     TransportUnavailable,
     Temporary,
@@ -1258,6 +1548,7 @@ impl Failure {
     fn code(self) -> &'static str {
         match self {
             Self::Authorization => "authorization",
+            Self::Interrupted => "interrupted",
             Self::CodeAssistApiDisabled => "code_assist_api_disabled",
             Self::TransportUnavailable => "transport_unavailable",
             Self::Temporary => "temporary_upstream",
@@ -1275,6 +1566,7 @@ impl Failure {
     fn public_message(self) -> &'static str {
         match self {
             Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Прокси сохранён: отправь <code>повторить</code> для новой авторизации либо пришли новый прокси, чтобы заменить его.",
+            Self::Interrupted => "🔁 Проверка была прервана до завершения. Прокси сохранён: отправь <code>/cancel</code>, и бот немедленно выдаст полностью новую безопасную попытку.",
             Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Прокси сохранён: отправь <code>повторить</code>; если ошибка вернётся, администратор проверит причину.",
             Self::TransportUnavailable => "⚠️ OAuth-транспорт не установил стабильный CONNECT/TLS-путь после автоматических попыток. Подписка не отклонена; прокси сохранён. Отправь <code>повторить</code>, а если ошибка повторяется — пришли новый прокси для замены.",
             Self::Temporary => "⚠️ Google временно не завершил служебную проверку. Прокси не был отклонён — менять его не нужно. Подожди немного и отправь <code>повторить</code>.",
@@ -1292,6 +1584,7 @@ impl Failure {
     fn fixed_proxy_message(self) -> &'static str {
         match self {
             Self::Authorization => "❌ Google не подтвердил вход или ссылка истекла. Подключение осталось закреплено за прокси этой позиции. Отправь <code>повторить</code>, чтобы начать авторизацию заново.",
+            Self::Interrupted => "🔁 Проверка была прервана до завершения. Отправь <code>/cancel</code>, и бот немедленно выдаст полностью новую безопасную попытку с тем же закреплённым прокси.",
             Self::CodeAssistApiDisabled => "❌ Google не разрешил подключить этот аккаунт через Antigravity OAuth. Включать API в своём Cloud-проекте не нужно. Отправь <code>повторить</code>; если ошибка вернётся, администратор проверит причину.",
             Self::TransportUnavailable => "⚠️ OAuth-транспорт не установил стабильный CONNECT/TLS-путь после автоматических попыток. Подписка не отклонена, прокси позиции сохранён. Подожди немного и отправь <code>повторить</code>.",
             Self::Temporary => "⚠️ Google временно не завершил служебную проверку. Закреплённый прокси не был отклонён — менять его не нужно. Подожди немного и отправь <code>повторить</code>.",
@@ -1436,7 +1729,7 @@ struct ResolvedAccount {
 
 enum Completion {
     LegacyBootstrap { subject: Zeroizing<String> },
-    Published(PublishedProfile),
+    Published(PublishedProfile, tokio::sync::OwnedMutexGuard<()>),
 }
 
 struct PublishedProfile {
@@ -1805,7 +2098,7 @@ async fn complete(
         proxy_order_id,
         issued_at: now(),
     };
-    let _guard = config.publish_lock.lock().await;
+    let terminal_guard = config.terminal_guard().await;
     // Generation acceptance may take long enough for the seller to cancel, rewind or replace the
     // exact job generation. Re-check after waiting for the filesystem publication lock and as close
     // as possible to the credential write; SQLite and the roster cannot form one atomic transaction.
@@ -1841,7 +2134,7 @@ async fn complete(
             failure.code()
         ),
     }
-    published.map(Completion::Published)
+    published.map(|profile| Completion::Published(profile, terminal_guard))
 }
 
 fn validate_final_subject(
@@ -2892,6 +3185,11 @@ mod tests {
             .query_pairs()
             .any(|(name, value)| { name == "code_challenge_method" && value == "S256" }));
         let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
+        assert_eq!(
+            active_egress(&store, &config, 42),
+            Some((format!("{proxy}/"), 777))
+        );
+        assert_eq!(store.interrupted_gemini_chats().unwrap(), vec![42]);
         assert!(!session.sealed_payload.contains("user:pass"));
         assert!(!session.sealed_payload.contains(LEGACY_CLIENT_SECRET));
         let envelope: SealedCredential = serde_json::from_str(&session.sealed_payload).unwrap();
@@ -2927,7 +3225,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_guard_rejects_a_rotated_seller_generation() {
+    fn cancel_fence_restarts_with_fresh_pkce_and_rejects_the_old_generation() {
         let (root, ring) = fixture();
         let database = root.join("state").join("authbot.db");
         let store = Store::open(database.to_str().unwrap()).unwrap();
@@ -2952,17 +3250,99 @@ mod tests {
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
             .unwrap();
-        let session = store
-            .pending_gemini_session_by_state(&state)
-            .unwrap()
-            .unwrap();
+        let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
         assert!(oauth_session_handoff_is_current(&store, &session));
+        assert_eq!(
+            active_egress(&store, &config, 42),
+            Some(("http://user:pass@127.0.0.1:8080/".into(), 777))
+        );
         let job = links.job.unwrap();
-        assert!(store
+        let fresh_job = store
             .rewind_handoff_step(42, &job, "gm_wait", "gm_gproxy", Some(("", 777)))
             .unwrap()
-            .is_some());
+            .expect("/cancel rotates the exact seller generation");
         assert!(!oauth_session_handoff_is_current(&store, &session));
+        assert!(store.active_gemini_session(42).unwrap().is_none());
+        assert_ne!(fresh_job.token, job.token);
+
+        let restarted =
+            begin(&store, &config, 42, "http://user:pass@127.0.0.1:8080/", 777).unwrap();
+        let restarted_state = reqwest::Url::parse(&restarted.authorize_url)
+            .unwrap()
+            .query_pairs()
+            .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
+            .unwrap();
+        assert_ne!(restarted_state, state);
+        assert!(store.claim_gemini_oauth(&state).unwrap().is_none());
+        let restarted_session = store
+            .pending_gemini_session_by_state(&restarted_state)
+            .unwrap()
+            .expect("fresh PKCE generation is immediately pending");
+        assert!(oauth_session_handoff_is_current(&store, &restarted_session));
+        assert_ne!(restarted.job.unwrap().token, fresh_job.token);
+        // A late old worker cannot move the seller back onto a retry step after the restart.
+        assert!(!store
+            .set_handoff_state_for_seller_job(
+                42,
+                session.job.as_ref().unwrap(),
+                "gm_gproxy",
+                "http://attacker.invalid:8080",
+                0,
+            )
+            .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn claimed_invalid_callback_finishes_outside_the_http_future() {
+        let (root, ring) = fixture();
+        let store = Arc::new(Store::open(root.join("state/authbot.db").to_str().unwrap()).unwrap());
+        let oauth = Config::new(
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.join("gemini").to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+        let links = begin(&store, &oauth, 42, "http://user:pass@127.0.0.1:8080", 777).unwrap();
+        let oauth_state = reqwest::Url::parse(&links.authorize_url)
+            .unwrap()
+            .query_pairs()
+            .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
+            .unwrap();
+        let bot_config = Arc::new(BotConfig {
+            admins_id: HashSet::new(),
+            admins_name: HashSet::new(),
+            claude_bin: String::new(),
+            claude_config_dir: String::new(),
+            database_url: String::new(),
+            fleet: String::new(),
+            bsc_python: String::new(),
+            bsc_script: String::new(),
+            iproyal_key: String::new(),
+            codex_bin: String::new(),
+            codex_homes_dir: String::new(),
+            codex_roster: None,
+            gemini_dir: root.join("gemini").to_string_lossy().into_owned(),
+            gemini_oauth: Some(oauth.clone()),
+        });
+        let callback = CallbackState {
+            bot: Bot::new("unused-test-token"),
+            store: store.clone(),
+            config: bot_config,
+        };
+
+        let response = finish_oauth(&callback, Some(&oauth_state), Some(""), None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while store.active_gemini_session(42).unwrap().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached terminal task removes the claimed session");
+        assert!(!oauth.abort_inflight(42));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2983,7 +3363,8 @@ mod tests {
 
     #[test]
     fn callback_page_is_non_cacheable_and_cannot_load_or_refer() {
-        let response = callback_html(StatusCode::OK, true);
+        let response = status_page(StatusPage::CheckingSubscription);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
         assert_eq!(response.headers()["referrer-policy"], "no-referrer");
         assert_eq!(response.headers()["x-frame-options"], "DENY");
@@ -2995,10 +3376,44 @@ mod tests {
             response.headers()["cross-origin-resource-policy"],
             "same-origin"
         );
-        assert!(response.headers()["content-security-policy"]
+        let csp = response.headers()["content-security-policy"]
             .to_str()
-            .unwrap()
-            .contains("default-src 'none'"));
+            .unwrap();
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("style-src 'sha256-"));
+        assert!(!csp.contains("'unsafe-inline'"));
+        let page = page_shell(
+            "wait",
+            "02",
+            "Callback принят",
+            "Проверяем подписку",
+            "Вкладку можно закрыть.",
+            "Результат придёт в Telegram; /cancel начнёт всё заново.",
+            2,
+            "",
+        );
+        assert!(page.contains("viewport-fit=cover"));
+        assert!(page.contains("/cancel начнёт всё заново"));
+        assert!(page.contains("prefers-reduced-motion"));
+    }
+
+    #[tokio::test]
+    async fn inflight_completion_is_aborted_exactly_once() {
+        let (root, ring) = fixture();
+        let config = Config::new(
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.join("gemini").to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+        let task = tokio::spawn(std::future::pending::<()>());
+        config.register_inflight(42, "A".repeat(43), task.abort_handle());
+        assert!(config.abort_inflight(42));
+        assert!(!config.abort_inflight(42));
+        assert!(task.await.unwrap_err().is_cancelled());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
