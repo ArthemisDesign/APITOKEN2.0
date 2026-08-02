@@ -475,10 +475,18 @@ Google subject. The same subject under another project/file is rejected at start
 
 ## GeminiProfileUnauthenticated
 
-The labeled profile returned repeated `401` after one single-flight refresh, or `403`. Check the
-Google account entitlement and OAuth app status without putting tokens, subject, email, project or
-proxy in argv/logs/URLs. Re-authorize through Auth Bot; never hand-edit an envelope. Keep the old
-profile quarantined until the roster is safely repaired.
+The labeled profile received Google's explicit `400 invalid_grant` refresh verdict, which is the
+only refresh response that marks a Gemini credential revoked. A `401`, `403`, another `400`, 5xx or
+transport failure leaves the credential authenticated and puts it into bounded cooling instead;
+those responses often identify proxy reputation, provider policy or a transient control-plane
+failure and must not trigger destructive re-authorization.
+
+Check the bounded `token refresh rejected` journal class without putting tokens, subject, email,
+project or proxy in argv/logs/URLs. For `invalid_grant`, re-authorize the exact Google subject
+through Auth Bot; its fresh OAuth material replaces the same profile in place. Never hand-edit an
+envelope or restart the Gemini slot merely to reload it. If authentication and quota probes are
+healthy but exact-profile generation alone fails, use the transactional proxy replacement and
+rollback procedure in `docs/engine/GEMINI_PROVIDER.md` before replacing the subscription.
 
 ## GeminiUpstreamRateLimited
 

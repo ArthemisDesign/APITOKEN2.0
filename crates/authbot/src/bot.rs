@@ -1656,7 +1656,7 @@ fn parse_proxy_input(raw: &str) -> ProxyInput {
     }
 }
 
-fn proxy_url(raw: &str) -> String {
+pub(crate) fn proxy_url(raw: &str) -> String {
     parse_proxy_input(raw).url
 }
 

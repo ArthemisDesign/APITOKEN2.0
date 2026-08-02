@@ -134,6 +134,11 @@ seller lock освобождается, response становится `cancelled
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
    envelope. Startup rewrap переводит старые envelopes на active kid, сохраняя online key rotation.
+   Ручная смена egress выполняется только локальными operator-командами `gemini-proxy-stage`,
+   `gemini-proxy-commit` и `gemini-proxy-rollback` при остановленном Auth Bot: proxy читается из
+   stdin, старый envelope остаётся зашифрованным rollback, а runtime подхватывает atomic replace без
+   рестарта. Telegram, argv и вывод команды proxy не содержат. Stage не принимает proxy другого
+   профиля и сбрасывает IPRoyal order в `0`, потому что внешний proxy бот продлевать не может.
 7. После неуспешного OAuth retry сохраняет exact egress для buyer/IPRoyal и seller-proxy. В
    seller-proxy работе команда `повторить` создаёт новую PKCE generation с сохранённым proxy, а новое
    proxy-сообщение явно заменяет его. До инструкции по созданию аккаунта выполняется только локальная

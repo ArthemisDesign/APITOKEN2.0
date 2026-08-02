@@ -77,17 +77,19 @@ result is an OAuth credential for the internal Cloud Code/Antigravity gateway.
 7. Auth Bot validates verified Google userinfo, calls Antigravity `loadCodeAssist`, completes
    `onboardUser` when required, and re-loads the actual tier/project. Control-plane calls fall back
    only among the three reviewed Cloud Code hosts.
-8. Unknown/free Google subjects and reused proxy URLs fail closed. A duplicate subject is rejected
-   except for a one-way migration of that subject's existing legacy Gemini CLI credential to
-   Antigravity through the same canonical proxy. The migration preserves the opaque profile id,
-   roster bytes and existing IPRoyal lifecycle metadata, and atomically replaces only the sealed
-   credential; an existing Antigravity credential, reverse transition or proxy mismatch remains an
-   error. Proxy URLs are canonicalized before comparison, so spelling differences such as an
-   explicit default port or equivalent percent-encoded credentials cannot place one egress identity
-   into rotation twice. Paid-plan admission matches reviewed tier labels exactly rather than
-   accepting a future tier merely because its name contains `pro` or `ultra`. A valid paid profile
-   is sealed and published atomically; the runtime discovers it on the health loop without restart
-   and refreshes tokens with the official per-profile OAuth material.
+8. Unknown/free Google subjects and reused proxy URLs fail closed. Re-authorizing the same
+   Antigravity subject through the same canonical proxy atomically replaces its sealed OAuth
+   material in place: Google may invalidate the previous refresh token before Auth Bot can detect
+   that the subject already exists, so rejecting the fresh token would destroy the live profile.
+   A legacy Gemini CLI credential may likewise migrate one-way to Antigravity for the exact same
+   subject and proxy. Both paths preserve the opaque profile id and roster bytes; reverse migration
+   and an OAuth-time proxy mismatch remain errors. Proxy URLs are canonicalized before comparison,
+   so spelling differences such as an explicit default port or equivalent percent-encoded
+   credentials cannot place one egress identity into rotation twice. Paid-plan admission matches
+   reviewed tier labels exactly rather than accepting a future tier merely because its name contains
+   `pro` or `ultra`. A valid paid profile is sealed and published atomically; the runtime discovers
+   it on the health loop without restart and refreshes tokens with the official per-profile OAuth
+   material.
 
 Auth Bot's token exchange, userinfo, `loadCodeAssist` and onboarding use the same bounded Node helper
 source as the runtime through the seller's dedicated authenticated proxy. The wire identity is
@@ -179,6 +181,38 @@ id zero and remain externally managed.
 A missing/corrupt key, unexpected path or duplicate account stops rotation without publishing a
 partially trusted roster. Individual file replacements are atomic, and both keys remain readable
 during the transition.
+
+### Transactional manual proxy replacement
+
+Changing a published profile's proxy by repeating OAuth is intentionally rejected: Google can
+invalidate the old refresh token before the proxy mismatch is detected. Use the Auth Bot operator
+commands instead. They read the replacement proxy only from stdin, retain the old credential as a
+private encrypted rollback envelope, atomically replace the active envelope, and never print either
+proxy. Stop Auth Bot around every operator command so it cannot race a seller publication; the
+Gemini runtime stays online and reloads the replacement on its health loop.
+
+```bash
+profile_id=gemini_oauth_000002
+set -a
+. /srv/claude-api/data/authbot.env
+set +a
+systemctl stop claude-authbot.service
+read -r -s -p 'Replacement proxy: ' GEMINI_REPLACEMENT_PROXY
+printf '%s\n' "$GEMINI_REPLACEMENT_PROXY" \
+  | runuser -u deploy -p -- /srv/claude-api/releases/current/authbot \
+      gemini-proxy-stage "$profile_id"
+unset GEMINI_REPLACEMENT_PROXY
+systemctl start claude-authbot.service
+```
+
+After the runtime reloads, require a successful admin-only exact-profile `countTokens` and one
+non-stream generation with non-zero immutable usage/cost evidence. A normal request without
+`x-apitoken-calibration-profile` is not proof because it may spill to another profile. If the exact
+test succeeds, stop Auth Bot and run `gemini-proxy-commit <profile_id>` under the same sourced env
+and `runuser` boundary; otherwise run `gemini-proxy-rollback <profile_id>`. Start Auth Bot again in
+either case. `stage` refuses a second pending replacement and reuse of another profile's canonical
+proxy. A manual replacement clears the IPRoyal order id because Auth Bot cannot extend a proxy it
+did not issue.
 
 ## Environment
 

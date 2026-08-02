@@ -19,8 +19,10 @@ use anyhow::{anyhow, Context, Result};
 use db::Store;
 use std::collections::HashSet;
 use std::env;
+use std::io::Read as _;
 use std::sync::Arc;
 use tg::Bot;
+use zeroize::Zeroizing;
 
 pub struct Config {
     pub admins_id: HashSet<i64>,
@@ -126,6 +128,42 @@ fn gemini_oauth_config(gemini_dir: &str) -> Result<Option<gemini_oauth::Config>>
         .rewrap_existing()
         .context("Gemini credential key rotation failed closed")?;
     Ok(Some(config))
+}
+
+fn run_gemini_proxy_operator(command: &str, profile_id: &str) -> Result<()> {
+    let gemini_dir =
+        env_opt("AUTH_BOT_GEMINI_DIR").unwrap_or_else(|| "/srv/claude-api/data/gemini".into());
+    let config = gemini_oauth_config(&gemini_dir)?
+        .ok_or_else(|| anyhow!("Gemini credential keyring is not configured"))?;
+    match command {
+        "gemini-proxy-stage" => {
+            let mut raw = Zeroizing::new(String::new());
+            std::io::stdin()
+                .lock()
+                .take(4_097)
+                .read_to_string(&mut raw)
+                .context("read Gemini replacement proxy from stdin")?;
+            if raw.len() > 4_096 {
+                return Err(anyhow!("Gemini replacement proxy input is too long"));
+            }
+            let proxy = bot::proxy_url(&raw);
+            if proxy.is_empty() {
+                return Err(anyhow!("Gemini replacement proxy input is invalid"));
+            }
+            config.stage_proxy_replacement(profile_id, &proxy)?;
+            println!("Gemini proxy replacement staged for {profile_id}");
+        }
+        "gemini-proxy-rollback" => {
+            config.rollback_proxy_replacement(profile_id)?;
+            println!("Gemini proxy replacement rolled back for {profile_id}");
+        }
+        "gemini-proxy-commit" => {
+            config.commit_proxy_replacement(profile_id)?;
+            println!("Gemini proxy replacement committed for {profile_id}");
+        }
+        _ => return Err(anyhow!("unsupported Auth Bot operator command")),
+    }
+    Ok(())
 }
 
 async fn dispatch(bot: Bot, store: Arc<Store>, cfg: Arc<Config>, upd: tg::Update) {
@@ -446,6 +484,18 @@ async fn proxy_check_once(cfg: &Config, ipr: &iproyal::Iproyal) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut args = env::args().skip(1);
+    if let Some(command) = args.next() {
+        let profile_id = args
+            .next()
+            .ok_or_else(|| anyhow!("Auth Bot operator command requires one opaque profile id"))?;
+        if args.next().is_some() {
+            return Err(anyhow!(
+                "Auth Bot operator command accepts exactly one opaque profile id"
+            ));
+        }
+        return run_gemini_proxy_operator(&command, &profile_id);
+    }
     let token = env_opt("AUTH_BOT_TOKEN").ok_or_else(|| anyhow!("AUTH_BOT_TOKEN не задан"))?;
     let (admins_id, admins_name) = parse_admins(&env_opt("AUTH_BOT_ADMIN").unwrap_or_default());
     let home = env::var("HOME").unwrap_or_default();

@@ -242,6 +242,155 @@ impl Config {
         }
         Ok(leases)
     }
+
+    /// Stage a manual proxy replacement for one opaque profile while retaining an encrypted,
+    /// private rollback envelope. Operators must stop Auth Bot around this command so it cannot
+    /// race a concurrent OAuth publication; the Gemini runtime may stay online and picks up the
+    /// atomic credential replacement on its health loop.
+    pub fn stage_proxy_replacement(&self, profile_id: &str, proxy: &str) -> anyhow::Result<()> {
+        gemini_credential::validate_profile_id(profile_id)?;
+        let replacement_proxy = normalize_proxy_url(proxy)
+            .map_err(|_| anyhow::anyhow!("invalid Gemini replacement proxy"))?;
+        let roster_path = self.root.join("profiles.json");
+        let credentials_dir = self.root.join("credentials");
+        private_dir(&self.root)?;
+        private_dir(&credentials_dir)?;
+        let roster: ProfilesFile = serde_json::from_slice(&read_private(&roster_path)?)
+            .context("parse Gemini roster for proxy replacement")?;
+        let rollback_path = proxy_rollback_path(&credentials_dir, profile_id);
+        match fs::symlink_metadata(&rollback_path) {
+            Ok(_) => bail!("Gemini profile already has a pending proxy replacement"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("stat Gemini proxy rollback envelope"),
+        }
+
+        let mut ids = HashSet::new();
+        let mut subjects = HashSet::new();
+        let mut proxies = HashSet::new();
+        let mut proxy_orders = HashSet::new();
+        let mut target = None;
+        for profile in roster.profiles {
+            gemini_credential::validate_profile_id(&profile.id)?;
+            if !ids.insert(profile.id.clone()) {
+                bail!("duplicate Gemini profile id during proxy replacement");
+            }
+            let expected = credentials_dir.join(format!("{}.json", profile.id));
+            if Path::new(&profile.credential_file) != expected {
+                bail!("Gemini credential path is outside the proxy replacement roster");
+            }
+            let bytes = read_private(&expected)?;
+            let envelope = decode_envelope(&bytes)?;
+            let credential = self.keyring.open(&profile.id, &envelope)?;
+            if !subjects.insert(credential.subject.clone()) {
+                bail!("duplicate Gemini subscription during proxy replacement");
+            }
+            let current_proxy = normalize_proxy_url(&credential.proxy)
+                .map_err(|_| anyhow::anyhow!("invalid Gemini proxy during replacement"))?;
+            if !proxies.insert(current_proxy.clone()) {
+                bail!("duplicate Gemini proxy during replacement");
+            }
+            if credential.proxy_order_id > 0 && !proxy_orders.insert(credential.proxy_order_id) {
+                bail!("duplicate Gemini IPRoyal order during proxy replacement");
+            }
+            if profile.id == profile_id {
+                target = Some((expected, bytes, credential, current_proxy));
+            }
+        }
+        let Some((credential_path, previous_envelope, mut credential, current_proxy)) = target
+        else {
+            bail!("Gemini proxy replacement target is absent from the roster");
+        };
+        if current_proxy == replacement_proxy {
+            bail!("Gemini profile already uses the requested proxy");
+        }
+        if proxies.contains(&replacement_proxy) {
+            bail!("Gemini replacement proxy is already assigned to another profile");
+        }
+
+        credential.proxy = replacement_proxy;
+        // A manually supplied replacement has no IPRoyal order that Auth Bot can safely extend.
+        credential.proxy_order_id = 0;
+        let replacement = self
+            .keyring
+            .seal(&self.active_key_id, profile_id, &credential)?;
+        let replacement = encode_envelope(&replacement)?;
+
+        write_new_private(&rollback_path, &previous_envelope)?;
+        fs::File::open(&credentials_dir)?.sync_all()?;
+        if let Err(error) = atomic_private_replace(&credential_path, &replacement) {
+            let cleanup = fs::remove_file(&rollback_path)
+                .and_then(|()| fs::File::open(&credentials_dir)?.sync_all());
+            if cleanup.is_err() {
+                return Err(error).context(
+                    "stage Gemini proxy replacement failed; encrypted rollback cleanup also failed",
+                );
+            }
+            return Err(error).context("stage Gemini proxy replacement");
+        }
+        Ok(())
+    }
+
+    /// Restore the exact encrypted credential retained by [`Self::stage_proxy_replacement`].
+    pub fn rollback_proxy_replacement(&self, profile_id: &str) -> anyhow::Result<()> {
+        let (credential_path, rollback_path) =
+            self.proxy_replacement_paths(profile_id, "rollback")?;
+        let previous_envelope = read_private(&rollback_path)?;
+        let decoded = decode_envelope(&previous_envelope)?;
+        self.keyring.open(profile_id, &decoded)?;
+        atomic_private_replace(&credential_path, &previous_envelope)?;
+        fs::remove_file(&rollback_path)?;
+        fs::File::open(
+            credential_path
+                .parent()
+                .context("Gemini credential path has no parent")?,
+        )?
+        .sync_all()?;
+        Ok(())
+    }
+
+    /// Remove the encrypted rollback envelope after the replacement passed exact-profile live
+    /// validation. The active credential is not rewritten.
+    pub fn commit_proxy_replacement(&self, profile_id: &str) -> anyhow::Result<()> {
+        let (credential_path, rollback_path) =
+            self.proxy_replacement_paths(profile_id, "commit")?;
+        let rollback = decode_envelope(&read_private(&rollback_path)?)?;
+        self.keyring.open(profile_id, &rollback)?;
+        fs::remove_file(&rollback_path)?;
+        fs::File::open(
+            credential_path
+                .parent()
+                .context("Gemini credential path has no parent")?,
+        )?
+        .sync_all()?;
+        Ok(())
+    }
+
+    fn proxy_replacement_paths(
+        &self,
+        profile_id: &str,
+        operation: &str,
+    ) -> anyhow::Result<(PathBuf, PathBuf)> {
+        gemini_credential::validate_profile_id(profile_id)?;
+        let credentials_dir = self.root.join("credentials");
+        let roster: ProfilesFile =
+            serde_json::from_slice(&read_private(&self.root.join("profiles.json"))?)
+                .with_context(|| format!("parse Gemini roster for proxy {operation}"))?;
+        let credential_path = credentials_dir.join(format!("{profile_id}.json"));
+        if !roster.profiles.iter().any(|profile| {
+            profile.id == profile_id && Path::new(&profile.credential_file) == credential_path
+        }) {
+            bail!("Gemini proxy replacement target is absent from the roster");
+        }
+        read_private(&credential_path)?;
+        Ok((
+            credential_path,
+            proxy_rollback_path(&credentials_dir, profile_id),
+        ))
+    }
+}
+
+fn proxy_rollback_path(credentials_dir: &Path, profile_id: &str) -> PathBuf {
+    credentials_dir.join(format!(".{profile_id}.proxy-rollback.json"))
 }
 
 #[derive(Debug)]
@@ -2342,6 +2491,100 @@ mod tests {
         ] {
             assert!(!debug.contains(private));
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn operator_proxy_replacement_is_atomic_secret_safe_and_reversible() {
+        let (root, ring) = fixture();
+        let published = publish(&root, &ring, "current", credential("replace-subject")).unwrap();
+        let credential_path = root
+            .join("credentials")
+            .join(format!("{}.json", published.id));
+        let rollback_path = proxy_rollback_path(&root.join("credentials"), &published.id);
+        let original = fs::read(&credential_path).unwrap();
+        let roster = fs::read(root.join("profiles.json")).unwrap();
+        let config = Config::new(
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+        let replacement = "http://other:replacement-secret@127.0.0.2:9000";
+
+        config
+            .stage_proxy_replacement(&published.id, replacement)
+            .unwrap();
+        assert_eq!(fs::read(root.join("profiles.json")).unwrap(), roster);
+        assert_eq!(fs::read(&rollback_path).unwrap(), original);
+        assert_eq!(
+            fs::symlink_metadata(&rollback_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let staged_bytes = fs::read(&credential_path).unwrap();
+        let staged_text = String::from_utf8(staged_bytes.clone()).unwrap();
+        assert!(!staged_text.contains("replacement-secret"));
+        let staged = config
+            .keyring
+            .open(&published.id, &decode_envelope(&staged_bytes).unwrap())
+            .unwrap();
+        assert_eq!(
+            staged.proxy,
+            gemini_credential::normalize_proxy_url(replacement).unwrap()
+        );
+        assert_eq!(staged.proxy_order_id, 0);
+        assert!(config
+            .stage_proxy_replacement(&published.id, replacement)
+            .is_err());
+
+        config.rollback_proxy_replacement(&published.id).unwrap();
+        assert_eq!(fs::read(&credential_path).unwrap(), original);
+        assert!(!rollback_path.exists());
+
+        config
+            .stage_proxy_replacement(&published.id, replacement)
+            .unwrap();
+        let committed = fs::read(&credential_path).unwrap();
+        config.commit_proxy_replacement(&published.id).unwrap();
+        assert_eq!(fs::read(&credential_path).unwrap(), committed);
+        assert!(!rollback_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn operator_proxy_replacement_rejects_another_profiles_egress() {
+        let (root, ring) = fixture();
+        let first = publish(&root, &ring, "current", credential("replace-first")).unwrap();
+        let mut second_credential = credential("replace-second");
+        second_credential.proxy = "http://second:secret@127.0.0.2:9000".into();
+        second_credential.proxy_order_id = 43;
+        let second = publish(&root, &ring, "current", second_credential).unwrap();
+        let first_path = root.join("credentials").join(format!("{}.json", first.id));
+        let before = fs::read(&first_path).unwrap();
+        let config = Config::new(
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+
+        assert!(config
+            .stage_proxy_replacement(&first.id, "http://second:secret@127.0.0.2:9000")
+            .is_err());
+        assert_eq!(fs::read(first_path).unwrap(), before);
+        assert!(!proxy_rollback_path(&root.join("credentials"), &first.id).exists());
+        assert!(root
+            .join("credentials")
+            .join(format!("{}.json", second.id))
+            .exists());
         let _ = fs::remove_dir_all(root);
     }
 }

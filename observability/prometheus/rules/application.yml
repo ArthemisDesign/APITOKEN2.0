@@ -306,7 +306,7 @@ groups:
           component: gemini-provider
         annotations:
           summary: 'Gemini profile {{ $labels.profile }} is unauthenticated'
-          description: 'The paid API credential no longer validates. Replace its key file and restart or wait for the health probe after repair.'
+          description: 'Google explicitly revoked this refresh credential with invalid_grant. Re-authorize the exact subject through Auth Bot; the sealed profile reloads without a Gemini restart.'
           runbook: 'docs/ops/MONITORING.md#geminiprofileunauthenticated'
 
       - alert: GeminiUpstreamRateLimited
