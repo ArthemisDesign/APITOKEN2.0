@@ -14,6 +14,7 @@ mod http;
 mod metrics_store;
 mod poller;
 mod router_policy;
+mod router_pricing;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};

@@ -146,6 +146,15 @@ Control API движка использует только на чтение. С
   credential/policy и без импорта `forward`/`registry`. Публичные provider Caddy-vhost'ы не включают
   `/internal/*` в allowlist; stable origins 8790/8792/8794 доступны router'у по loopback. Контракт и
   mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
+- **Контракт catalog pricing (provider planes → router).** Производитель — одинаковый
+  `crates/server::router_pricing` на каждой fixed runtime: authenticated loopback-only
+  `POST /internal/router/catalog/pricing` разрешает customer/admin credential, читает только один
+  coherent pricing bundle для strict account и проецирует audited `crates/metering` rates через
+  effective payable multiplier в integer nanoUSD-per-million strings. Ответ не содержит key,
+  account, balance, policy или rule identity и ничего не резервирует/списывает. Потребитель —
+  `crates/router` после отдельного producer-first GREEN SHA; он обязан валидировать ordered subset,
+  не кэшировать credential-specific overlay и никогда не добавлять его в общий catalog TTL-cache.
+  Публичные provider vhost'ы `/internal/*` не обслуживают.
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics` на 8798 с ровно 18
   `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy

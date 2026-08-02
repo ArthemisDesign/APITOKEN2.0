@@ -31,6 +31,13 @@
   Одинаковый на всех fixed planes `POST /internal/router/policy/preflight` — loopback-only
   producer-контракт фазы router 6.4a: принимает до 32 catalog-кандидатов, авторизует customer/admin
   credential и возвращает только ordered allow-list без account/policy/pricing identity.
+  Отдельный producer-first `POST /internal/router/catalog/pricing` принимает до 256 provider-native
+  catalog-кандидатов и возвращает только opaque candidate ID плюс персональные integer
+  nanoUSD-per-million rate cards. Customer credential разрешается через `AsyncBilling`; legacy
+  account использует live `mult_bp`, strict account — тот же coherent bundle/resolver и payable
+  multiplier, что admission. Тарифные корзины берутся только из `metering`; endpoint read-only,
+  не резервирует деньги и не возвращает credential/account/policy/rule identity. Он установлен на
+  каждой fixed plane до подключения consumer в `crates/router`.
 - `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): контракт,
   которым БУДУЩАЯ КОММЕРЦИЯ (отдельный сервис) управляет движком. Гейт — `forward::control_authed`
   (control-ключ, ОТДЕЛЬНО от forwarding-admin). Все записи — через single-writer актор `AsyncBilling`

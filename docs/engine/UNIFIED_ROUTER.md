@@ -329,9 +329,55 @@ Bedrock, Vertex) route planner сможет выбирать между ними
 OpenCode/Kilo) могут на его основе показать отдельную Fast-модель, сохранив исходный API model ID
 и добавив canonical `service_tier:"priority"` либо совместимый `serviceTier:"priority"`;
 Standard-модель и reasoning variants при этом остаются независимыми. У Anthropic/Gemini поле
-отсутствует. Источник правды для каталога —
-существующий versioned multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
-`crates/registry/src/pricing.rs`).
+отсутствует. Product/model eligibility принадлежит существующему versioned multi-provider pricing
+catalog (`docs/engine/CONTROL_API.md`, `crates/registry/src/pricing.rs`), а точные provider token
+rates — только `crates/metering`.
+
+Персональная ценовая проекция использует отдельный producer-first loopback-контракт
+`POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда
+customer credential verbatim и bounded список `(opaque catalog id, provider, native model id)`;
+движок применяет live legacy scalar либо exact strict-policy payable multiplier к audited tariff и
+возвращает только integer `nano_usd_per_million_tokens` rate cards. Account/key/policy/rule identity,
+баланс и settlement в ответ не входят. Общий 30-секундный cache хранит только model/capability
+catalog: персональные ставки в нём запрещены. Полный key-scoped `/v1/models` response также нельзя
+класть в shared cache; публичная поверхность после подключения consumer получает
+`Cache-Control: private, no-store`. До отдельного consumer SHA внутренний endpoint dormant и не
+меняет существующий `/v1/models`.
+
+Wire schema v1 закрыта для неизвестных полей. Request содержит `schema_version:1` и не более 256
+уникальных кандидатов:
+
+```json
+{"schema_version":1,"candidates":[
+  {"id":"openai/gpt-5.6","provider_id":"openai","model_id":"gpt-5.6"}
+]}
+```
+
+Успех возвращает `mode:admin|legacy|strict`, exact unit и ordered subset входных ID:
+
+```json
+{"schema_version":1,"unit":"nano_usd_per_million_tokens","mode":"legacy","entries":[{
+  "id":"openai/gpt-5.6",
+  "standard":{"input":"5000000000","output":"30000000000",
+    "cache_read":"500000000","cache_write":"6250000000"},
+  "priority":{"input":"10000000000","output":"60000000000",
+    "cache_read":"1000000000","cache_write":"12500000000"},
+  "long_context":{"threshold_tokens":272000,
+    "standard":{"input":"10000000000","output":"45000000000",
+      "cache_read":"1000000000","cache_write":"12500000000"},
+    "priority":{"input":"20000000000","output":"90000000000",
+      "cache_read":"2000000000","cache_write":"25000000000"}}
+}]}
+```
+
+Значения примера иллюстрируют full-price GPT и не являются отдельным прайс-листом документа.
+Anthropic `cache_write` означает обычный 5m class и дополнительно публикует optional
+`cache_write_1h`; Gemini без отдельной write-корзины возвращает `"0"`. `priority` есть только у
+фактически поддерживающих Fast GPT. `long_context` сохраняет provider threshold, даже когда клиент
+не умеет его учитывать. Неподдержанная/запрещённая модель отсутствует в ordered subset. Невалидный
+request получает `400 invalid_request`, неизвестный/неактивный credential — `401 unauthorized`,
+недоступный pricing authority — `503 pricing_unavailable`; никакой из этих исходов не заменяется
+нулевой или глобально закэшированной ценой.
 
 `/v1/models` — единственная коллизия путей native-плоскостей: unified endpoint обязан
 агрегировать каталоги всех плоскостей (кэш, частичный каталог при падении одной
