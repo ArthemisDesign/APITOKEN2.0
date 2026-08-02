@@ -1673,6 +1673,19 @@ async fn complete(
             return Err(failure);
         }
     };
+    // A previously published subject is a duplicate regardless of how Google currently spells
+    // the paid-tier fields. Detect it before plan admission so a repeated onboarding cannot show
+    // the misleading "subscription not found" result or reach a second consent that invalidates
+    // the live Antigravity refresh token. New subjects still fail closed on an unknown plan.
+    if phase == OAuthPhase::LegacyBootstrap {
+        preflight_bootstrap_candidate(
+            &config.root,
+            &config.keyring,
+            &user.id,
+            proxy,
+            proxy_order_id,
+        )?;
+    }
     if !supported_paid_plan(&resolved.plan) {
         eprintln!(
             "[gemini-oauth] chat={} rejected: unsupported Google plan {}",
@@ -1682,13 +1695,6 @@ async fn complete(
         return Err(Failure::UnsupportedPlan);
     }
     if phase == OAuthPhase::LegacyBootstrap {
-        preflight_bootstrap_candidate(
-            &config.root,
-            &config.keyring,
-            &user.id,
-            proxy,
-            proxy_order_id,
-        )?;
         eprintln!(
             "[gemini-oauth] chat={} legacy Code Assist bootstrap passed; no credential published",
             session.chat_id
@@ -1809,13 +1815,7 @@ async fn resolve_antigravity_account(
     }
     let project_id = project_from_value(loaded.cloudaicompanion_project.as_ref())
         .ok_or(Failure::UnsupportedPlan)?;
-    let paid = loaded.paid_tier.as_ref();
-    let tier = paid
-        .or(loaded.current_tier.as_ref())
-        .ok_or(Failure::UnsupportedPlan)?;
-    let tier_id = tier.id.clone().unwrap_or_default();
-    let tier_name = tier.name.clone().unwrap_or_default();
-    let plan = classify_plan(&tier_id, &tier_name, paid.is_some());
+    let (tier_id, tier_name, plan) = resolve_reported_tier(&loaded)?;
     Ok(ResolvedAccount {
         project_id,
         tier_id,
@@ -1845,13 +1845,7 @@ async fn resolve_legacy_account(
     }
     let project_id = project_from_value(loaded.cloudaicompanion_project.as_ref())
         .ok_or(Failure::UnsupportedPlan)?;
-    let paid = loaded.paid_tier.as_ref();
-    let tier = paid
-        .or(loaded.current_tier.as_ref())
-        .ok_or(Failure::UnsupportedPlan)?;
-    let tier_id = tier.id.clone().unwrap_or_default();
-    let tier_name = tier.name.clone().unwrap_or_default();
-    let plan = classify_plan(&tier_id, &tier_name, paid.is_some());
+    let (tier_id, tier_name, plan) = resolve_reported_tier(&loaded)?;
     Ok(ResolvedAccount {
         project_id,
         tier_id,
@@ -2370,6 +2364,56 @@ fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> Strin
     } else {
         "individual_free".into()
     }
+}
+
+/// Google can expose both `paidTier` and `currentTier`, and their display shapes do not always
+/// change in lock-step. Prefer an exact reviewed mapping from either field, but never infer access
+/// from a familiar substring. Two contradictory reviewed mappings are an upstream inconsistency
+/// and fail closed; when neither field is reviewed, preserve the existing unsupported-plan
+/// classification for the seller-safe error path.
+fn resolve_reported_tier(
+    loaded: &LoadCodeAssistResponse,
+) -> Result<(String, String, String), Failure> {
+    let paid = loaded.paid_tier.as_ref();
+    let current = loaded.current_tier.as_ref();
+    let paid_plan = paid.and_then(|tier| {
+        gemini_credential::supported_plan_for_tier(
+            tier.id.as_deref().unwrap_or_default(),
+            tier.name.as_deref().unwrap_or_default(),
+        )
+    });
+    let current_plan = current.and_then(|tier| {
+        gemini_credential::supported_plan_for_tier(
+            tier.id.as_deref().unwrap_or_default(),
+            tier.name.as_deref().unwrap_or_default(),
+        )
+    });
+    let (tier, plan) = match (paid_plan, current_plan) {
+        (Some(paid_plan), Some(current_plan)) if paid_plan != current_plan => {
+            eprintln!("[gemini-oauth] conflicting reviewed paid/current tier fields");
+            return Err(Failure::UnsupportedPlan);
+        }
+        (Some(plan), _) => (paid.ok_or(Failure::UnsupportedPlan)?, plan.to_string()),
+        (_, Some(plan)) => {
+            if paid.is_some() {
+                eprintln!(
+                    "[gemini-oauth] using reviewed current tier because paid tier shape is unreviewed"
+                );
+            }
+            (current.ok_or(Failure::UnsupportedPlan)?, plan.to_string())
+        }
+        (None, None) => {
+            let tier = paid.or(current).ok_or(Failure::UnsupportedPlan)?;
+            let tier_id = tier.id.as_deref().unwrap_or_default();
+            let tier_name = tier.name.as_deref().unwrap_or_default();
+            (tier, classify_plan(tier_id, tier_name, paid.is_some()))
+        }
+    };
+    Ok((
+        tier.id.clone().unwrap_or_default(),
+        tier.name.clone().unwrap_or_default(),
+        plan,
+    ))
 }
 
 fn supported_paid_plan(plan: &str) -> bool {
@@ -3208,6 +3252,49 @@ mod tests {
         );
         assert!(!supported_paid_plan("google_ai_plus_unsupported"));
         assert!(!supported_paid_plan("unknown_paid_unsupported"));
+    }
+
+    #[test]
+    fn reported_tier_uses_only_exact_reviewed_fields_and_rejects_conflicts() {
+        let pro = Tier {
+            id: Some("g1-pro-tier".into()),
+            name: Some("Gemini Code Assist in Google One AI Pro".into()),
+            is_default: false,
+        };
+        let ultra = Tier {
+            id: Some("g1-ultra-tier".into()),
+            name: Some("Gemini Code Assist in Google One AI Ultra".into()),
+            is_default: false,
+        };
+        let drifted_paid = Tier {
+            id: Some("new-paid-shape".into()),
+            name: Some("New Paid Shape".into()),
+            is_default: false,
+        };
+        let resolved = resolve_reported_tier(&LoadCodeAssistResponse {
+            current_tier: Some(pro.clone()),
+            paid_tier: Some(drifted_paid.clone()),
+            ..LoadCodeAssistResponse::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.0, "g1-pro-tier");
+        assert_eq!(resolved.2, "google_ai_pro");
+
+        assert_eq!(
+            resolve_reported_tier(&LoadCodeAssistResponse {
+                current_tier: Some(ultra),
+                paid_tier: Some(pro),
+                ..LoadCodeAssistResponse::default()
+            }),
+            Err(Failure::UnsupportedPlan)
+        );
+
+        let unsupported = resolve_reported_tier(&LoadCodeAssistResponse {
+            paid_tier: Some(drifted_paid),
+            ..LoadCodeAssistResponse::default()
+        })
+        .unwrap();
+        assert_eq!(unsupported.2, "unknown_paid_unsupported");
     }
 
     #[test]

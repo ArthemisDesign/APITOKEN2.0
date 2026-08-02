@@ -78,11 +78,13 @@ Antigravity transaction remains a fresh client-bound consent rather than token c
 4. Auth Bot claims the legacy `state` once, exchanges the code with the same client/redirect and
    performs verified userinfo, legacy `loadCodeAssist` with `FULL_ELIGIBILITY_CHECK`, and official
    `onboardUser` operation polling when needed. The resulting legacy tokens never enter a roster.
-5. Paid-plan admission uses the actual tier/project and exact reviewed labels. Before issuing the
-   Antigravity consent, Auth Bot scans the encrypted roster: an existing Antigravity subject is
-   rejected while its live refresh token is still safe; a legacy profile may continue only through
-   its exact subject, canonical proxy and IPRoyal identity. Unknown/free tiers and reused egress fail
-   closed.
+5. Paid-plan admission uses the actual tier/project and exact reviewed labels. When Google returns
+   both `paidTier` and `currentTier`, an exact reviewed mapping from either field is accepted; no
+   substring inference is allowed, and contradictory reviewed mappings fail closed. Before applying
+   the mutable tier display to a new subject or issuing the Antigravity consent, Auth Bot scans the
+   encrypted roster: an existing Antigravity subject is reported as an already connected duplicate
+   while its live refresh token is still safe; a legacy profile may continue only through its exact
+   subject, canonical proxy and IPRoyal identity. Unknown/free tiers and reused egress fail closed.
 6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
    phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
    are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement

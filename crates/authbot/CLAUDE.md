@@ -136,7 +136,9 @@ seller lock освобождается, response становится `cancelled
    acceptance.
 5. Google subject — quota identity: два РАЗНЫХ subject не могут делить профиль, а один subject
    всегда занимает ровно один профиль. Legacy preflight распознаёт уже опубликованный Antigravity
-   subject ДО второго consent и отклоняет дубликат, не аннулируя живой refresh-token. Существующий
+   subject ДО проверки изменчивого tier display и второго consent, поэтому повтор уже подключённого
+   аккаунта возвращает exact duplicate outcome, а не ложное «подписка не найдена», и не аннулирует
+   живой refresh-token. Существующий
    legacy-профиль может мигрировать в Antigravity только с тем же subject/proxy; id профиля, roster и
    IPRoyal lifecycle сохраняются. In-flight Antigravity callback старой версии остаётся совместимым
    и при exact same subject/proxy может атомарно заменить материал на месте, потому что его consent
@@ -145,6 +147,10 @@ seller lock освобождается, response становится `cancelled
    залогиненный аккаунт без экрана выбора, и продавец, делающий позиции batch подряд в одном
    профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
    project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
+   Если Google одновременно возвращает `paidTier` и `currentTier`, принимается exact reviewed
+   соответствие из любого поля; знакомые подстроки не дают доступ, а два противоречащих известных
+   тарифа fail-closed. Это позволяет пережить display-shape drift одного поля без расширения
+   allowlist.
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
