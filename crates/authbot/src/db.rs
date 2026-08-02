@@ -532,6 +532,61 @@ impl Store {
         Ok(session)
     }
 
+    /// Незавершённая PKCE-транзакция продавца — только чтобы вернуть работу на шаг назад, не
+    /// спрашивая egress заново.
+    ///
+    /// Намеренно НЕ видит `status='processing'`: если callback уже забрал код, откат обязан
+    /// отказать, а не гонку с обменом устраивать. Секрет остаётся запечатанным — распечатывает его
+    /// только `gemini_oauth`, и наружу он не выходит.
+    pub fn pending_gemini_session(&self, chat_id: i64) -> Result<Option<GeminiOAuthSession>> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state,chat_id,sealed_payload,expires_ts,
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_oauth_sessions
+                 WHERE chat_id=?1 AND status='pending' AND expires_ts>=?2",
+                rusqlite::params![chat_id, now()],
+                |row| {
+                    let kind: String = row.get(4)?;
+                    let offer_id: i64 = row.get(5)?;
+                    let batch_id: i64 = row.get(6)?;
+                    let item_no: i64 = row.get(7)?;
+                    let token: String = row.get(8)?;
+                    Ok(GeminiOAuthSession {
+                        state: row.get(0)?,
+                        chat_id: row.get(1)?,
+                        sealed_payload: row.get(2)?,
+                        expires_ts: row.get(3)?,
+                        job: (!kind.is_empty()).then(|| SellerJobRef {
+                            kind,
+                            offer_id,
+                            batch_id,
+                            item_no,
+                            token,
+                        }),
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Идёт ли прямо сейчас обмен одноразового кода этого продавца.
+    ///
+    /// Пока идёт, шаг назад обязан отказать: код уже отдан Google и второй раз не сработает, а
+    /// публикация может завершиться в любой момент. Отказать честно дешевле, чем оставить
+    /// продавца с ощущением, что он вернулся, и разъехавшимся состоянием.
+    pub fn gemini_oauth_in_flight(&self, chat_id: i64) -> Result<bool> {
+        Ok(self.c.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM gemini_oauth_sessions
+             WHERE chat_id=?1 AND status='processing')",
+            rusqlite::params![chat_id],
+            |row| row.get::<_, i64>(0),
+        )? == 1)
+    }
+
     pub fn finish_gemini_oauth(&self, state: &str) -> Result<()> {
         self.c.lock().unwrap().execute(
             "DELETE FROM gemini_oauth_sessions WHERE state=?1",
@@ -548,55 +603,6 @@ impl Store {
         Ok(())
     }
 
-    /// Cancel every outstanding OAuth capability for this chat before allowing a fresh flow. The
-    /// non-secret IPRoyal order id stays attached so retrying the issued proxy preserves renewal.
-    pub fn cancel_gemini_oauth(
-        &self,
-        chat_id: i64,
-        expected: Option<&SellerJobRef>,
-    ) -> Result<bool> {
-        let mut connection = self.c.lock().unwrap();
-        let transaction = connection.transaction()?;
-        let current = if let Some(expected) = expected {
-            transaction.execute(
-                "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?7
-                 WHERE seller_chat=?1 AND kind=?2 AND offer_id=?3 AND batch_id=?4
-                   AND item_no=?5 AND job_token=?6 AND phase='processing'",
-                rusqlite::params![
-                    chat_id,
-                    expected.kind,
-                    expected.offer_id,
-                    expected.batch_id,
-                    expected.item_no,
-                    expected.token,
-                    now()
-                ],
-            )? == 1
-        } else {
-            // Legacy unbound OAuth sessions can still be cancelled, but never let that path
-            // mutate a seller who now owns an exact single/batch job.
-            !transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM seller_jobs WHERE seller_chat=?1)",
-                rusqlite::params![chat_id],
-                |row| row.get::<_, bool>(0),
-            )?
-        };
-        if !current {
-            transaction.rollback()?;
-            return Ok(false);
-        }
-        transaction.execute(
-            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
-            rusqlite::params![chat_id],
-        )?;
-        transaction.execute(
-            "UPDATE users SET want='gm_gproxy', hproxy='' WHERE chat_id=?1",
-            rusqlite::params![chat_id],
-        )?;
-        transaction.commit()?;
-        Ok(true)
-    }
-
     /// A Claude OAuth child cannot survive a bot restart. Keep the proxy, but ask for email again
     /// so the seller receives a fresh authorization session instead of getting stuck at ho_code.
     pub fn recover_interrupted_handoffs(&self) -> Result<usize> {
@@ -605,6 +611,17 @@ impl Store {
             .lock()
             .unwrap()
             .execute("UPDATE users SET want='ho_email' WHERE want='ho_code'", [])?)
+    }
+
+    /// The Codex device-flow child cannot survive a restart either, and its one-time code expires
+    /// unattended. Return the seller to the email step so a fresh device flow can be issued instead
+    /// of leaving them waiting for a confirmation nothing is polling for any more.
+    pub fn recover_interrupted_codex_handoffs(&self) -> Result<usize> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET want='cx_email' WHERE want='cx_wait'", [])?)
     }
 
     /// Normalize every removed Gemini custom-client wizard state to the single official-CLI proxy
@@ -976,6 +993,119 @@ impl Store {
             ],
         )?;
         Ok(changed == 1)
+    }
+
+    /// Ровно один шаг назад в передаче доступа продавца.
+    ///
+    /// Атомарно проверяет, что продавец всё ещё стоит на `expected_want` и что работа не сменила
+    /// поколение, переписывает состояние, удаляет незавершённую Gemini-сессию и выдаёт новое
+    /// поколение. Возвращает новый `SellerJobRef`, либо `None`, если откатывать уже нечего.
+    ///
+    /// Предикат `want=?expected_want` живёт внутри того же statement, что и generation guard, —
+    /// это единственная точка сериализации во всей схеме. Двойное нажатие кнопки приходит двумя
+    /// параллельными задачами (`tokio::spawn` на каждый апдейт), и без такого предиката
+    /// read-then-write в хендлере увёл бы продавца на два шага вместо одного.
+    ///
+    /// `proxy: None` — `hproxy`/`hproxy_order` не трогаются вовсе (переход внутри одной egress).
+    /// `Some((proxy, order))` — переписываются оба поля, и вызывающий обязан передать ТЕКУЩИЙ
+    /// `hproxy_order`, а не `0`: это единственная ручка на оплаченный IPRoyal lease.
+    ///
+    /// `phase='processing'` в guard'е сам по себе отказывает работе в фазе `paying`, которая
+    /// остаётся неизменяемой до admin review.
+    pub fn rewind_handoff_step(
+        &self,
+        seller_chat: i64,
+        expected: &SellerJobRef,
+        expected_want: &str,
+        want: &str,
+        proxy: Option<(&str, i64)>,
+    ) -> Result<Option<SellerJobRef>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        // Два отдельных литерала вместо COALESCE: пустая строка — осмысленное значение прокси,
+        // и «не трогать» от «стереть» она отличаться обязана.
+        let changed = match proxy {
+            Some((proxy, proxy_order_id)) => tx.execute(
+                "UPDATE users SET want=?1,hproxy=?2,hproxy_order=?3 WHERE chat_id=?4 AND want=?10
+                   AND EXISTS (
+                       SELECT 1 FROM seller_jobs
+                       WHERE seller_chat=?4 AND kind=?5 AND offer_id=?6 AND batch_id=?7
+                         AND item_no=?8 AND job_token=?9 AND phase='processing')",
+                rusqlite::params![
+                    want,
+                    proxy,
+                    proxy_order_id,
+                    seller_chat,
+                    expected.kind,
+                    expected.offer_id,
+                    expected.batch_id,
+                    expected.item_no,
+                    expected.token,
+                    expected_want
+                ],
+            )?,
+            None => tx.execute(
+                "UPDATE users SET want=?1 WHERE chat_id=?2 AND want=?8
+                   AND EXISTS (
+                       SELECT 1 FROM seller_jobs
+                       WHERE seller_chat=?2 AND kind=?3 AND offer_id=?4 AND batch_id=?5
+                         AND item_no=?6 AND job_token=?7 AND phase='processing')",
+                rusqlite::params![
+                    want,
+                    seller_chat,
+                    expected.kind,
+                    expected.offer_id,
+                    expected.batch_id,
+                    expected.item_no,
+                    expected.token,
+                    expected_want
+                ],
+            )?,
+        };
+        if changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        // У продавца ровно одна активная работа, поэтому любая ожидающая PKCE-транзакция
+        // принадлежит именно той capability, которую этот откат и гасит.
+        tx.execute(
+            "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1",
+            rusqlite::params![seller_chat],
+        )?;
+        let rotated = tx.execute(
+            "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))),ts=?6
+             WHERE seller_chat=?1 AND kind=?2 AND offer_id=?3 AND batch_id=?4
+               AND item_no=?5 AND job_token=?7 AND phase='processing'",
+            rusqlite::params![
+                seller_chat,
+                expected.kind,
+                expected.offer_id,
+                expected.batch_id,
+                expected.item_no,
+                now(),
+                expected.token
+            ],
+        )?;
+        if rotated != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        let updated = tx.query_row(
+            "SELECT kind,offer_id,batch_id,item_no,job_token
+             FROM seller_jobs WHERE seller_chat=?1",
+            rusqlite::params![seller_chat],
+            |row| {
+                Ok(SellerJobRef {
+                    kind: row.get(0)?,
+                    offer_id: row.get(1)?,
+                    batch_id: row.get(2)?,
+                    item_no: row.get(3)?,
+                    token: row.get(4)?,
+                })
+            },
+        )?;
+        tx.commit()?;
+        Ok(Some(updated))
     }
 
     /// Expand-only rollout compatibility: active batches win, then one already accepted deal per
@@ -2471,8 +2601,9 @@ mod tests {
         s.set_hproxy_order(222, 42).unwrap();
         s.start_gemini_oauth(222, "pending-state", "sealed", now() + 60, 0)
             .unwrap();
-        assert!(s.cancel_gemini_oauth(222, None).unwrap());
-        assert!(s.claim_gemini_oauth("pending-state").unwrap().is_none());
+        // Незавершённая транзакция переживает рестарт и остаётся видимой для шага назад,
+        // а номер IPRoyal-заказа не теряется.
+        assert!(s.pending_gemini_session(222).unwrap().is_some());
         assert_eq!(s.get_user(222).unwrap().unwrap().hproxy_order, 42);
         assert_eq!(s.approved_sellers().unwrap(), vec![111]);
         // машина создания оффера НЕ потеряна (это и был баг Python-версии)
@@ -2483,6 +2614,35 @@ mod tests {
         let o = s.get_offer(1).unwrap().unwrap();
         assert_eq!(o.product, "Claude Max20x");
         assert_eq!(o.seller_chat, 111);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Дочерний процесс device-флоу не переживает рестарт, а его одноразовый код истекает без
+    /// присмотра. Продавец обязан вернуться на шаг email, иначе он ждёт подтверждения, которое
+    /// больше никто не опрашивает.
+    #[test]
+    fn restart_returns_a_waiting_codex_seller_to_the_email_step() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        {
+            let s = Store::open(&p).unwrap();
+            s.register_user(111, 111, "codex-seller").unwrap();
+            s.set_want(111, "cx_wait").unwrap();
+            s.set_hproxy(111, "http://user:pass@1.2.3.4:8080").unwrap();
+            s.register_user(222, 222, "codex-seller-at-email").unwrap();
+            s.set_want(222, "cx_email").unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.recover_interrupted_codex_handoffs().unwrap(), 1);
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "cx_email");
+        // Прокси сохраняется: повторный device-флоу обязан уйти с того же egress.
+        assert_eq!(
+            s.get_user(111).unwrap().unwrap().hproxy,
+            "http://user:pass@1.2.3.4:8080"
+        );
+        // Продавец, уже стоящий на шаге email, не трогается.
+        assert_eq!(s.get_user(222).unwrap().unwrap().want, "cx_email");
+        assert_eq!(s.recover_interrupted_codex_handoffs().unwrap(), 0);
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 
@@ -2959,6 +3119,239 @@ mod tests {
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 
+    /// Откат обязан быть атомарным и одноразовым: он двигает шаг, гасит незавершённую
+    /// PKCE-транзакцию и выдаёт новое поколение, после чего любая capability, захваченная до него,
+    /// пишет с устаревшим токеном и молча проваливается.
+    #[test]
+    fn rewind_handoff_step_moves_one_step_and_rotates_the_generation() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xseller").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let stale = s.active_seller_job(111).unwrap().unwrap().reference;
+        assert!(s
+            .set_handoff_state_for_seller_job(111, &stale, "gm_ready", "http://u:p@1.1.1.1:8000", 0)
+            .unwrap());
+        s.start_gemini_oauth(111, "pending-state", "sealed", now() + 60, 0)
+            .unwrap();
+        // `start_gemini_oauth` сам переводит продавца в `gm_wait` и выдаёт новое поколение.
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_wait");
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+
+        let fresh = s
+            .rewind_handoff_step(111, &live, "gm_wait", "gm_gproxy", Some(("", 0)))
+            .unwrap()
+            .expect("шаг назад выполнен");
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_gproxy");
+        assert_eq!(s.get_user(111).unwrap().unwrap().hproxy, "");
+        assert_ne!(fresh.token, live.token);
+        // Незавершённая PKCE-транзакция погашена внутри той же транзакции.
+        assert!(s.claim_gemini_oauth("pending-state").unwrap().is_none());
+        // Захваченное до отката поколение больше ничего записать не может.
+        assert!(!s.set_want_for_seller_job(111, &live, "gm_wait").unwrap());
+        assert!(!s
+            .set_handoff_state_for_seller_job(111, &live, "gm_ready", "http://x:y@2.2.2.2:9000", 0)
+            .unwrap());
+        assert!(s.set_want_for_seller_job(111, &fresh, "gm_gproxy").unwrap());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Апдейты диспатчатся конкурентно, поэтому двойное нажатие кнопки — настоящая гонка. Предикат
+    /// исходного шага живёт в том же statement, что и generation guard, поэтому второй вызов
+    /// обязан ничего не сделать, а не увести продавца ещё на шаг назад.
+    #[test]
+    fn rewind_handoff_step_refuses_a_stale_step_so_a_double_press_is_idempotent() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xseller").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+        assert!(s
+            .set_handoff_state_for_seller_job(111, &live, "gm_ready", "http://u:p@1.1.1.1:8000", 0)
+            .unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+
+        let fresh = s
+            .rewind_handoff_step(111, &live, "gm_ready", "gm_gproxy", Some(("", 0)))
+            .unwrap()
+            .expect("первый шаг назад");
+        // Повтор с актуальным поколением, но с уже пройденным исходным шагом — отказ.
+        assert!(s
+            .rewind_handoff_step(111, &fresh, "gm_ready", "gm_gproxy", Some(("", 0)))
+            .unwrap()
+            .is_none());
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_gproxy");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// `hproxy_order` — единственная ручка на оплаченный 30-дневный IPRoyal lease. Ни один путь
+    /// отката не имеет права записать туда ноль: прокси станет сиротой, а деньги уже уплачены.
+    #[test]
+    fn rewind_handoff_step_preserves_the_iproyal_order_id() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xseller").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+        assert!(s
+            .set_handoff_state_for_seller_job(
+                111,
+                &live,
+                "gm_ready",
+                "http://u:p@1.1.1.1:8000",
+                4242
+            )
+            .unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+
+        assert!(s
+            .rewind_handoff_step(111, &live, "gm_ready", "gm_gproxy", Some(("", 4242)))
+            .unwrap()
+            .is_some());
+        let user = s.get_user(111).unwrap().unwrap();
+        assert_eq!(user.hproxy, "");
+        assert_eq!(user.hproxy_order, 4242);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Переход внутри одной egress не имеет права трогать закреплённый прокси: его перезапишет
+    /// только шаг ввода прокси, до которого этот откат не доходит.
+    #[test]
+    fn rewind_handoff_step_keeps_the_pinned_proxy_when_it_only_moves_the_step() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch(
+                "Claude Max20x",
+                "$20",
+                2,
+                "$40",
+                999,
+                111,
+                "buyer",
+                &[
+                    "http://u:p@1.1.1.1:8000".to_string(),
+                    "http://u:p@1.1.1.2:8000".to_string(),
+                ],
+            )
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        assert!(s.claim_batch_payment(batch).unwrap());
+        assert!(s.mark_batch_paid(batch, "0xbuyer").unwrap());
+        assert!(s.start_batch_item(batch, 1).unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+        assert!(s
+            .set_handoff_state_for_seller_job(111, &live, "ho_code", "http://u:p@1.1.1.1:8000", 77)
+            .unwrap());
+        let live = s.active_seller_job(111).unwrap().unwrap().reference;
+
+        assert!(s
+            .rewind_handoff_step(111, &live, "ho_code", "ho_email", None)
+            .unwrap()
+            .is_some());
+        let user = s.get_user(111).unwrap().unwrap();
+        assert_eq!(user.want, "ho_email");
+        assert_eq!(user.hproxy, "http://u:p@1.1.1.1:8000");
+        assert_eq!(user.hproxy_order, 77);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Работа в неопределённой фазе `paying` неизменяема до admin review — откат не исключение.
+    #[test]
+    fn rewind_handoff_step_refuses_a_job_that_is_not_processing() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        let batch = s
+            .create_batch("Google AI Pro", "$20", 2, "$40", 999, 111, "seller", &[])
+            .unwrap();
+        assert!(s.accept_batch(batch, 111).unwrap());
+        let accepted = s.active_seller_job(111).unwrap().unwrap();
+        assert_ne!(accepted.phase, "processing");
+        s.set_want(111, "gm_ready").unwrap();
+        assert!(s
+            .rewind_handoff_step(
+                111,
+                &accepted.reference,
+                "gm_ready",
+                "gm_gproxy",
+                Some(("", 0))
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_ready");
+
+        assert!(s.claim_batch_payment(batch).unwrap());
+        let paying = s.active_seller_job(111).unwrap().unwrap();
+        assert_eq!(paying.phase, "paying");
+        // Переход в `paying` сбрасывает состояние продавца; ставим шаг заново, чтобы проверять
+        // именно отказ по фазе, а не отсутствие исходного шага.
+        s.set_want(111, "gm_ready").unwrap();
+        assert!(s
+            .rewind_handoff_step(
+                111,
+                &paying.reference,
+                "gm_ready",
+                "gm_gproxy",
+                Some(("", 0))
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(s.get_user(111).unwrap().unwrap().want, "gm_ready");
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Как только callback забрал одноразовый код, откатывать поздно: читатель обязан замолчать,
+    /// чтобы шаг назад не устраивал гонку с обменом кода.
+    #[test]
+    fn pending_gemini_session_returns_only_unclaimed_sessions() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        s.register_user(111, 111, "seller").unwrap();
+        assert!(s.pending_gemini_session(111).unwrap().is_none());
+        s.start_gemini_oauth(111, "pending-state", "sealed", now() + 60, 0)
+            .unwrap();
+        let session = s.pending_gemini_session(111).unwrap().expect("сессия ждёт");
+        assert_eq!(session.state, "pending-state");
+        assert_eq!(session.sealed_payload, "sealed");
+        assert!(!s.gemini_oauth_in_flight(111).unwrap());
+        assert!(s.claim_gemini_oauth("pending-state").unwrap().is_some());
+        assert!(s.pending_gemini_session(111).unwrap().is_none());
+        // Заклеймленная сессия видна отдельно: откат обязан отказать, а не молча деградировать.
+        assert!(s.gemini_oauth_in_flight(111).unwrap());
+
+        // Истёкшая сессия тоже не годится: её код всё равно уже не обменять.
+        s.start_gemini_oauth(222, "expired-state", "sealed", now() - 1, 0)
+            .unwrap();
+        assert!(s.pending_gemini_session(222).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
     #[test]
     fn admin_can_rewind_only_the_previous_batch_position() {
         let p = tmp();
@@ -3119,10 +3512,18 @@ mod tests {
         let expected_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
         let session = s.claim_gemini_oauth("bound-state").unwrap().unwrap();
         assert_eq!(session.job, Some(expected_job.clone()));
-        assert!(s.cancel_gemini_oauth(111, Some(&expected_job)).unwrap());
+        // Шаг назад — единственный механизм возврата: он же ротирует поколение, после чего
+        // повтор с тем же поколением и завершение работы по нему обязаны провалиться.
+        assert!(s
+            .rewind_handoff_step(111, &expected_job, "gm_wait", "gm_gproxy", Some(("", 0)))
+            .unwrap()
+            .is_some());
         let retry_job = s.active_seller_job(111).unwrap().unwrap().job_ref();
         assert_ne!(retry_job.token, expected_job.token);
-        assert!(!s.cancel_gemini_oauth(111, Some(&expected_job)).unwrap());
+        assert!(s
+            .rewind_handoff_step(111, &expected_job, "gm_wait", "gm_gproxy", Some(("", 0)))
+            .unwrap()
+            .is_none());
         assert!(!s.finish_offer_job(111, offer, &expected_job.token).unwrap());
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }

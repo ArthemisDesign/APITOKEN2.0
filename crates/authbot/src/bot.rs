@@ -449,30 +449,29 @@ const GEMINI_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подгото
 5️⃣ Не закрывай профиль и не меняй прокси: они понадобятся на следующем этапе. Когда аккаунт и подписка готовы, нажми кнопку <b>«Аккаунт готов — продолжить»</b> ниже.\n\n\
 🔒 Бот не попросит пароль, cookie, банковские данные или коды из почты.";
 
-const CLAUDE_MANUAL_PROXY: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n\
-🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Claude</b>\n\
+const MANUAL_PROXY_WARNING: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n";
+
+const CLAUDE_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Claude</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
 
-const CODEX_MANUAL_PROXY: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n\
-🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
+const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
-
-const GEMINI_MANUAL_PROXY: &str = "⚠️ Автоматически выдать прокси сейчас не получилось.\n\n\
-🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Gemini</b>\n\
-Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
-Не регистрируй Google-аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
 
 const GEMINI_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Gemini</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй Google-аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
 
-fn gemini_ready_kb() -> Keyboard {
-    vec![vec![(
+fn gemini_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
+    let mut keyboard = vec![vec![(
         "✅ Аккаунт готов — продолжить".into(),
         "gemini:ready".into(),
-    )]]
+    )]];
+    if let Some(step) = back {
+        keyboard.push(handoff_back_row(step, "gm_ready"));
+    }
+    keyboard
 }
 
 fn seller_offer_guide(product: &str) -> &'static str {
@@ -492,12 +491,19 @@ fn account_setup_prompt(step: &str) -> &'static str {
     }
 }
 
-fn manual_proxy_prompt(step: &str) -> &'static str {
+/// Чистый промпт шага ввода прокси, без причины, по которой продавец на нём оказался.
+fn proxy_prompt(step: &str) -> &'static str {
     match step {
-        "cx_proxy" => CODEX_MANUAL_PROXY,
-        "gm_gproxy" => GEMINI_MANUAL_PROXY,
-        _ => CLAUDE_MANUAL_PROXY,
+        "cx_proxy" => CODEX_PROXY_PROMPT,
+        "gm_gproxy" => GEMINI_PROXY_PROMPT,
+        _ => CLAUDE_PROXY_PROMPT,
     }
+}
+
+/// Тот же промпт, но с предупреждением о неудавшейся автоматической выдаче. Осознанный шаг назад
+/// продавца этим предупреждением сопровождать нельзя: там ничего не ломалось.
+fn manual_proxy_prompt(step: &str) -> String {
+    format!("{MANUAL_PROXY_WARNING}{}", proxy_prompt(step))
 }
 
 fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
@@ -1071,39 +1077,11 @@ pub async fn on_message(
     }
 
     if text == "/cancel" {
-        if !admin {
-            let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
-            if matches!(
-                rec.want.as_str(),
-                "gm_gid" | "gm_gsecret" | "gm_gproxy" | "gm_ready" | "gm_wait"
-            ) {
-                let cancelled = store
-                    .active_seller_job(chat)
-                    .ok()
-                    .flatten()
-                    .filter(|job| {
-                        seller_job_matches_handoff(job, &job.reference, HandoffKind::Gemini)
-                    })
-                    .is_some_and(|job| {
-                        store
-                            .cancel_gemini_oauth(chat, Some(&job.reference))
-                            .unwrap_or(false)
-                    });
-                let _ = if cancelled {
-                    bot.send(
-                        chat,
-                        &format!("Авторизация отменена.\n\n{GEMINI_PROXY_PROMPT}"),
-                    )
-                    .await
-                } else {
-                    bot.send(
-                        chat,
-                        "Эта авторизация уже не относится к активной сделке. Отправь /start.",
-                    )
-                    .await
-                };
-                return;
-            }
+        // Для продавца «отмена» всегда означала «верни меня назад», а не «расторгни сделку».
+        // Теперь это ровно тот же механизм, что кнопка и слово «назад»: один смысл, три входа.
+        if !admin && store.active_seller_job(chat).ok().flatten().is_some() {
+            offer_handoff_back(bot, store, cfg, chat, false).await;
+            return;
         }
         let cleared = store.clear_admin_state(chat).unwrap_or(false);
         let _ = bot
@@ -1222,6 +1200,12 @@ pub async fn on_message(
     // не-админ: строгий режим — принимаем только ожидаемый сейчас ввод (state-machine)
     if !admin {
         let rec = store.get_user(chat).ok().flatten().unwrap_or_default();
+        // Слово «назад» проверяем ДО разбора шага: иначе на шаге ввода прокси его съест парсер
+        // прокси и ответит «не разобрал», а продавец останется без выхода.
+        if is_handoff_back(text) && store.active_seller_job(chat).ok().flatten().is_some() {
+            offer_handoff_back(bot, store, cfg, chat, false).await;
+            return;
+        }
         match rec.want.as_str() {
             "reg_address" => {
                 if is_bep20(text) {
@@ -1259,7 +1243,13 @@ pub async fn on_message(
             "ho_proxy" => {
                 let purl = proxy_url(text);
                 if purl.is_empty() {
-                    let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.",
+                            handoff_back_kb(store, cfg, chat).as_ref(),
+                        )
+                        .await;
                 } else {
                     let applied = store
                         .active_seller_job(chat)
@@ -1281,7 +1271,11 @@ pub async fn on_message(
                         });
                     if applied {
                         let _ = bot
-                            .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CLAUDE_ACCOUNT_SETUP}"))
+                            .send_kb(
+                                chat,
+                                &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CLAUDE_ACCOUNT_SETUP}"),
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
                             .await;
                     }
                 }
@@ -1289,9 +1283,10 @@ pub async fn on_message(
             "ho_email" => {
                 if !looks_like_email(text) {
                     let _ = bot
-                        .send(
+                        .send_kb(
                             chat,
                             "Это не похоже на email. Пришли адрес аккаунта ещё раз.",
+                            handoff_back_kb(store, cfg, chat).as_ref(),
                         )
                         .await;
                 } else {
@@ -1301,7 +1296,13 @@ pub async fn on_message(
             "cx_proxy" => {
                 let purl = proxy_url(text);
                 if purl.is_empty() {
-                    let _ = bot.send(chat, "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.").await;
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "🤔 Не разобрал прокси. Пришли его одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.",
+                            handoff_back_kb(store, cfg, chat).as_ref(),
+                        )
+                        .await;
                 } else {
                     let applied = store
                         .active_seller_job(chat)
@@ -1323,7 +1324,11 @@ pub async fn on_message(
                         });
                     if applied {
                         let _ = bot
-                            .send(chat, &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CODEX_ACCOUNT_SETUP}"))
+                            .send_kb(
+                                chat,
+                                &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{CODEX_ACCOUNT_SETUP}"),
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
                             .await;
                     }
                 }
@@ -1331,14 +1336,27 @@ pub async fn on_message(
             "cx_email" => {
                 if !looks_like_email(text) {
                     let _ = bot
-                        .send(
+                        .send_kb(
                             chat,
                             "Это не похоже на email. Пришли адрес аккаунта ещё раз.",
+                            handoff_back_kb(store, cfg, chat).as_ref(),
                         )
                         .await;
                 } else {
                     start_codex_handoff(bot, store, cfg, chat, text, &rec.hproxy).await;
                 }
+            }
+            // Device-флоу опрашивает OpenAI в фоне: от продавца здесь не ждут ни одного сообщения.
+            // Шаг существует явно, чтобы у ожидания был предшественник и продавец не оказался в
+            // общем `_ =>` арме без единой подсказки.
+            "cx_wait" => {
+                let _ = bot
+                    .send_kb(
+                        chat,
+                        "Подтверждение ChatGPT ещё идёт: открой выданную ссылку и введи одноразовый код. Присылать сюда ничего не нужно — бот сам сообщит результат.",
+                        handoff_back_kb(store, cfg, chat).as_ref(),
+                    )
+                    .await;
             }
             // `gm_gid`/`gm_gsecret` are accepted only as restart compatibility for users who were
             // in the removed custom-client wizard during deployment.
@@ -1400,7 +1418,13 @@ pub async fn on_message(
                             chat,
                             proxy_input_fingerprint(text)
                         );
-                        let _ = bot.send(chat, GEMINI_STEP_PROXY_RETRY).await;
+                        let _ = bot
+                            .send_kb(
+                                chat,
+                                GEMINI_STEP_PROXY_RETRY,
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
+                            .await;
                     }
                 }
             }
@@ -1412,23 +1436,30 @@ pub async fn on_message(
                         .send_kb(
                             chat,
                             "Когда новый Google-аккаунт создан и подписка из оффера активна, нажми кнопку ниже. До этого не меняй профиль или прокси.",
-                            Some(&gemini_ready_kb()),
+                            Some(&gemini_ready_kb(current_handoff_back(store, cfg, chat).as_ref())),
                         )
                         .await;
                 }
             }
             "gm_wait" => {
                 let _ = bot
-                    .send(
+                    .send_kb(
                         chat,
-                        "Авторизация уже ждёт localhost callback. Заверши вход по первой ссылке, скопируй полный адрес из адресной строки, затем открой кнопку «Завершить подключение» и вставь URL в защищённую форму. В Telegram его не присылай. /cancel начнёт заново.",
+                        "Авторизация уже ждёт localhost callback. Заверши вход по первой ссылке, скопируй полный адрес из адресной строки, затем открой кнопку «Завершить подключение» и вставь URL в защищённую форму. В Telegram его не присылай.",
+                        handoff_back_kb(store, cfg, chat).as_ref(),
                     )
                     .await;
             }
             "ho_code" => match extract_code_state(text) {
                 Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
                 None => {
-                    let _ = bot.send(chat, "Пришли <b>весь адрес страницы из адресной строки</b>: от <code>https://</code> до самого конца. Одного короткого кода недостаточно.").await;
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "Пришли <b>весь адрес страницы из адресной строки</b>: от <code>https://</code> до самого конца. Одного короткого кода недостаточно.",
+                            handoff_back_kb(store, cfg, chat).as_ref(),
+                        )
+                        .await;
                 }
             },
             _ => {
@@ -1912,7 +1943,7 @@ async fn prepare_gemini_account(
         let _ = bot.send(chat, GEMINI_PROXY_PROMPT).await;
         return;
     }
-    let replaceable_proxy = gemini_job_accepts_proxy_input(store, &expected_job, effective_order);
+    let replaceable_proxy = job_accepts_seller_proxy(store, &expected_job, effective_order);
     let effective_proxy = match gemini_oauth::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
         Err(_) => {
@@ -1973,7 +2004,9 @@ async fn prepare_gemini_account(
         .send_kb(
             chat,
             &format!("✅ Прокси принят и закреплён за аккаунтом.\n\n{GEMINI_ACCOUNT_SETUP}"),
-            Some(&gemini_ready_kb()),
+            Some(&gemini_ready_kb(
+                current_handoff_back(store, cfg, chat).as_ref(),
+            )),
         )
         .await;
 }
@@ -2034,7 +2067,7 @@ async fn start_gemini_handoff(
             .send_kb(
                 chat,
                 "⚠️ Подключение Gemini сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз этой же кнопкой после исправления.",
-                Some(&gemini_ready_kb()),
+                Some(&gemini_ready_kb(current_handoff_back(store, cfg, chat).as_ref())),
             )
             .await;
         notify_admins(
@@ -2097,7 +2130,13 @@ async fn start_gemini_handoff(
                     .unwrap_or(false)
                 {
                     let _ = bot
-                        .send_kb(chat, error.public_message(), Some(&gemini_ready_kb()))
+                        .send_kb(
+                            chat,
+                            error.public_message(),
+                            Some(&gemini_ready_kb(
+                                current_handoff_back(store, cfg, chat).as_ref(),
+                            )),
+                        )
                         .await;
                 }
             }
@@ -2133,9 +2172,405 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
     }
 }
 
+/// Куда вернётся продавец, нажав «назад», и что при этом произойдёт.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HandoffStepBack {
+    /// Шаг, на который вернётся продавец.
+    pub(crate) target: &'static str,
+    /// Целевой шаг — ввод прокси: `hproxy` очищается, а `hproxy_order` обязан пережить откат.
+    pub(crate) clears_proxy: bool,
+    /// На текущем шаге уже выдана одноразовая ссылка или код: нужен явный confirm и teardown.
+    pub(crate) invalidates_link: bool,
+}
+
+/// Ровно один шаг назад внутри ветки передачи доступа.
+///
+/// Единственный источник истины и для кнопки, и для мутации: `None` здесь означает и что кнопка
+/// не рисуется, и что callback вместе со словом «назад» отказывают. Решение принимается только по
+/// этим четырём входам, а состояние читается заново на каждом вызове — истории шагов нет и она не
+/// нужна, потому что ветка это линия.
+///
+/// * `proxy_replaceable` — из [`job_accepts_seller_proxy`]. У закреплённого прокси покупателя и у
+///   живого IPRoyal-лиза шага «ввод прокси» в истории продавца просто нет, поэтому назад некуда.
+/// * `pinned_egress_known` — важен только для `gm_wait`, где прокси лежит не в `users.hproxy`
+///   (его стирает `start_gemini_oauth`), а внутри запечатанной PKCE-транзакции. Остальные шаги
+///   держат прокси в `users` и передают `true`.
+pub(crate) fn handoff_step_back(
+    kind: HandoffKind,
+    want: &str,
+    proxy_replaceable: bool,
+    pinned_egress_known: bool,
+) -> Option<HandoffStepBack> {
+    let to_proxy_step = |target: &'static str, invalidates_link: bool| {
+        proxy_replaceable.then_some(HandoffStepBack {
+            target,
+            clears_proxy: true,
+            invalidates_link,
+        })
+    };
+    match (kind, want) {
+        (HandoffKind::Claude, "ho_email") => to_proxy_step("ho_proxy", false),
+        (HandoffKind::Claude, "ho_code") => Some(HandoffStepBack {
+            target: "ho_email",
+            clears_proxy: false,
+            invalidates_link: true,
+        }),
+        (HandoffKind::Codex, "cx_email") => to_proxy_step("cx_proxy", false),
+        (HandoffKind::Codex, "cx_wait") => Some(HandoffStepBack {
+            target: "cx_email",
+            clears_proxy: false,
+            invalidates_link: true,
+        }),
+        (HandoffKind::Gemini, "gm_ready") => to_proxy_step("gm_gproxy", false),
+        // Единственное двухисходное ребро. Без восстановленного egress шаг назад привёл бы на
+        // `gm_ready` с пустым `hproxy`, который `gemini_ready_handoff` отвергает — это тупик,
+        // поэтому деградируем до ввода прокси, и только когда продавцу вообще можно его менять.
+        (HandoffKind::Gemini, "gm_wait") => {
+            if pinned_egress_known {
+                Some(HandoffStepBack {
+                    target: "gm_ready",
+                    clears_proxy: false,
+                    invalidates_link: true,
+                })
+            } else {
+                to_proxy_step("gm_gproxy", true)
+            }
+        }
+        // Первые шаги веток, legacy-состояния Gemini, регистрация и любая пара «не тот kind ×
+        // не тот шаг» предшественника не имеют.
+        _ => None,
+    }
+}
+
+/// Имя шага на проводе callback-кнопки.
+///
+/// Совпадает с `want`, но проходит через явный whitelist: callback data приходит от пользователя,
+/// и произвольная строка не должна попадать в резолвер даже теоретически. Функция работает в обе
+/// стороны — и для отрисовки кнопки, и для разбора нажатия.
+fn back_step_wire(want: &str) -> Option<&'static str> {
+    match want {
+        "ho_email" => Some("ho_email"),
+        "ho_code" => Some("ho_code"),
+        "cx_email" => Some("cx_email"),
+        "cx_wait" => Some("cx_wait"),
+        "gm_ready" => Some("gm_ready"),
+        "gm_wait" => Some("gm_wait"),
+        _ => None,
+    }
+}
+
+/// Продавец просит шаг назад словом, а не кнопкой. Отдельно от `повторить`: то ребро означает
+/// «тот же прокси, новое поколение, остаться на шаге» и обязано продолжать работать как раньше.
+fn is_handoff_back(input: &str) -> bool {
+    matches!(
+        input.trim().to_lowercase().as_str(),
+        "назад" | "back" | "/back"
+    )
+}
+
+/// Строка клавиатуры под кнопку «назад». Подпись называет последствие, а не механизм.
+fn handoff_back_row(step: &HandoffStepBack, from_wire: &str) -> Vec<(String, String)> {
+    let label = if step.clears_proxy {
+        "↩️ Изменить прокси"
+    } else if step.target == "gm_ready" {
+        "↩️ Назад: новая ссылка"
+    } else {
+        "↩️ Назад: другой email"
+    };
+    // Одноразовую ссылку молча не гасим: сначала явное подтверждение.
+    let action = if step.invalidates_link { "ask" } else { "go" };
+    vec![(label.into(), format!("hoback:{from_wire}:{action}"))]
+}
+
+/// Чем сейчас является «шаг назад» для этого продавца.
+enum HandoffBack {
+    /// Откат возможен: работа, ребро и egress, который надо восстановить на целевом шаге.
+    Ready {
+        job: SellerJob,
+        step: HandoffStepBack,
+        egress: Option<(String, i64)>,
+    },
+    /// Callback уже забрал одноразовый код — откатывать поздно, надо дождаться результата.
+    Busy,
+    /// Откатывать некуда: первый шаг ветки, закреплённый прокси или неподходящая фаза работы.
+    Nowhere,
+}
+
+/// Единственный путь чтения состояния: им пользуются и отрисовка кнопки, и callback, и слово
+/// «назад», и `/cancel`. Ровно поэтому UI и мутация не могут разойтись.
+fn resolve_handoff_back(store: &Store, cfg: &Config, chat: i64) -> HandoffBack {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return HandoffBack::Nowhere;
+    };
+    let kind = handoff_kind(&job.product);
+    if !seller_job_matches_handoff(&job, &job.reference, kind) {
+        return HandoffBack::Nowhere;
+    }
+    let Some(user) = store.get_user(chat).ok().flatten() else {
+        return HandoffBack::Nowhere;
+    };
+    if kind == HandoffKind::Gemini
+        && user.want == "gm_wait"
+        && store.gemini_oauth_in_flight(chat).unwrap_or(false)
+    {
+        return HandoffBack::Busy;
+    }
+    let proxy_replaceable = job_accepts_seller_proxy(store, &job.reference, user.hproxy_order);
+    // Egress восстанавливаем только там, где `users.hproxy` его уже не хранит.
+    let egress = if kind == HandoffKind::Gemini && user.want == "gm_wait" {
+        cfg.gemini_oauth
+            .as_ref()
+            .and_then(|oauth| gemini_oauth::pending_egress(store, oauth, chat))
+            .or_else(|| pinned_job_egress(store, &job.reference))
+    } else {
+        None
+    };
+    let pinned_egress_known = user.want != "gm_wait" || egress.is_some();
+    match handoff_step_back(kind, &user.want, proxy_replaceable, pinned_egress_known) {
+        Some(step) => HandoffBack::Ready { job, step, egress },
+        None => HandoffBack::Nowhere,
+    }
+}
+
+/// Закреплённый egress работы как источник последней надежды для `gm_wait`: PKCE-транзакция могла
+/// истечь, но прокси покупателя никуда не делся, и спрашивать его у продавца нельзя.
+fn pinned_job_egress(store: &Store, expected: &SellerJobRef) -> Option<(String, i64)> {
+    match expected.kind.as_str() {
+        "offer" => store
+            .get_offer(expected.offer_id)
+            .ok()
+            .flatten()
+            .filter(|offer| !offer.buyer_proxy.is_empty())
+            .map(|offer| (offer.buyer_proxy, 0)),
+        "batch" => store
+            .batch_items(expected.batch_id)
+            .ok()?
+            .into_iter()
+            .find(|item| item.item_no == expected.item_no && !item.proxy.is_empty())
+            .map(|item| (item.proxy, 0)),
+        _ => None,
+    }
+}
+
+/// Разрешённый прямо сейчас шаг назад, без остальных подробностей резолвера.
+fn current_handoff_back(store: &Store, cfg: &Config, chat: i64) -> Option<HandoffStepBack> {
+    match resolve_handoff_back(store, cfg, chat) {
+        HandoffBack::Ready { step, .. } => Some(step),
+        _ => None,
+    }
+}
+
+/// Клавиатура «назад» для текущего шага — ровно тогда, когда резолвер разрешает шаг назад.
+fn handoff_back_kb(store: &Store, cfg: &Config, chat: i64) -> Option<Keyboard> {
+    let step = current_handoff_back(store, cfg, chat)?;
+    let want = store.get_user(chat).ok().flatten()?.want;
+    Some(vec![handoff_back_row(&step, back_step_wire(&want)?)])
+}
+
+/// Текст подтверждения для шага, на котором уже выдана одноразовая ссылка или код.
+///
+/// Продавец обязан узнать не только что старая ссылка умрёт, но и что уже подтверждённый в
+/// браузере доступ может всё равно засчитаться: этой гонки не избежать, её можно только назвать.
+fn handoff_back_confirm_text(want: &str) -> &'static str {
+    match want {
+        "ho_code" => "⚠️ Вернуться к вводу email?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору, чтобы он сверил результат.",
+        "cx_wait" => "⚠️ Вернуться к вводу email?\n\nВыданный одноразовый код ChatGPT перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
+        _ => "⚠️ Вернуться на шаг назад?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую с тем же прокси. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору.",
+    }
+}
+
+/// Единая точка входа для кнопки, слова «назад» и `/cancel`.
+///
+/// `confirmed` приходит только из явного подтверждения; для рёбер, гасящих одноразовую ссылку,
+/// без него показывается подтверждение, а состояние не двигается.
+async fn offer_handoff_back(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    confirmed: bool,
+) {
+    match resolve_handoff_back(store, cfg, chat) {
+        HandoffBack::Busy => {
+            let _ = bot
+                .send(
+                    chat,
+                    "⏳ Бот уже проверяет твою авторизацию — вернуться назад сейчас нельзя. Дождись результата: он придёт сюда сам.",
+                )
+                .await;
+        }
+        HandoffBack::Nowhere => {
+            let _ = bot
+                .send(
+                    chat,
+                    "Назад отсюда некуда: это первый шаг сделки либо прокси закреплён за позицией и заменить его нельзя.",
+                )
+                .await;
+            let want = store
+                .get_user(chat)
+                .ok()
+                .flatten()
+                .map(|user| user.want)
+                .unwrap_or_default();
+            send_handoff_step_card(bot, store, cfg, chat, &want, false).await;
+        }
+        HandoffBack::Ready { job, step, egress } => {
+            let Some(user) = store.get_user(chat).ok().flatten() else {
+                return;
+            };
+            if step.invalidates_link && !confirmed {
+                let Some(wire) = back_step_wire(&user.want) else {
+                    return;
+                };
+                let keyboard = vec![vec![(
+                    "⚠️ Да, вернуться на шаг назад".to_string(),
+                    format!("hoback:{wire}:go"),
+                )]];
+                let _ = bot
+                    .send_kb(chat, handoff_back_confirm_text(&user.want), Some(&keyboard))
+                    .await;
+                return;
+            }
+            apply_handoff_back(bot, store, cfg, chat, &job, &step, &user, egress).await;
+        }
+    }
+}
+
+/// Выполнить ровно один шаг назад: сначала атомарная запись, затем teardown.
+///
+/// Порядок принципиален. Guarded `UPDATE` — единственная точка сериализации: всё, снесённое до
+/// него, конкурентный обработчик с ещё актуальным поколением может законно пересоздать, а после
+/// него любой путь завершения уже пишет устаревшим токеном и проваливается fail-closed. Teardown
+/// поэтому — освобождение ресурсов, а не защита инварианта.
+#[allow(clippy::too_many_arguments)]
+async fn apply_handoff_back(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    job: &SellerJob,
+    step: &HandoffStepBack,
+    user: &crate::db::UserRow,
+    egress: Option<(String, i64)>,
+) {
+    // `hproxy_order` — единственная ручка на оплаченный IPRoyal lease, поэтому переносим текущий,
+    // а не пишем ноль. На шаге ввода прокси стирается только сам прокси.
+    let proxy = if step.clears_proxy {
+        Some((String::new(), user.hproxy_order))
+    } else {
+        egress
+    };
+    let rewound = store
+        .rewind_handoff_step(
+            chat,
+            &job.reference,
+            &user.want,
+            step.target,
+            proxy
+                .as_ref()
+                .map(|(proxy, order)| (proxy.as_str(), *order)),
+        )
+        .unwrap_or(None);
+    if rewound.is_none() {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже устарела — состояние сделки изменилось. Ниже актуальный шаг.",
+            )
+            .await;
+        let want = store
+            .get_user(chat)
+            .ok()
+            .flatten()
+            .map(|user| user.want)
+            .unwrap_or_default();
+        send_handoff_step_card(bot, store, cfg, chat, &want, false).await;
+        return;
+    }
+    // Дочерние процессы вызываем безусловно: без активной capability это no-op, зато утёкший от
+    // прошлой ошибки процесс не переживёт откат.
+    setup_token::kill(chat);
+    crate::codex_login::cancel(chat);
+    send_handoff_step_card(bot, store, cfg, chat, step.target, true).await;
+}
+
+/// Переиздать карточку шага, на который вернулся продавец.
+async fn send_handoff_step_card(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    step: &str,
+    rewound: bool,
+) {
+    // Префикс «вернулись» врать не имеет права: тем же путём карточка переиздаётся и при отказе,
+    // когда состояние никуда не двигалось.
+    let moved = |text: &str| {
+        if rewound {
+            format!("↩️ {text}\n\n")
+        } else {
+            String::new()
+        }
+    };
+    let back = current_handoff_back(store, cfg, chat);
+    let back_kb = back.as_ref().and_then(|back| {
+        let want = store.get_user(chat).ok().flatten()?.want;
+        Some(vec![handoff_back_row(back, back_step_wire(&want)?)])
+    });
+    match step {
+        "ho_proxy" | "cx_proxy" | "gm_gproxy" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{}",
+                        moved("Вернулись к вводу прокси. Прошлый прокси сброшен — следующий заменит его."),
+                        proxy_prompt(step)
+                    ),
+                    back_kb.as_ref(),
+                )
+                .await;
+        }
+        "ho_email" | "cx_email" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "↩️ Вернулись к вводу email.\n\n{}",
+                        account_setup_prompt(step)
+                    ),
+                    back_kb.as_ref(),
+                )
+                .await;
+        }
+        "gm_ready" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{GEMINI_ACCOUNT_SETUP}",
+                        moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
+                    ),
+                    Some(&gemini_ready_kb(back.as_ref())),
+                )
+                .await;
+        }
+        _ => {
+            let _ = bot
+                .send(chat, "Открой актуальную карточку сделки через /jobs.")
+                .await;
+        }
+    }
+}
+
 /// A seller-proxy job may replace its proxy after a failed OAuth transaction. Buyer-proxy jobs
 /// and legacy jobs backed by an issued IPRoyal order remain pinned to their assigned egress.
-pub(crate) fn gemini_job_accepts_proxy_input(
+///
+/// `hproxy_order` alone cannot answer this for Claude and Codex: `deliver_issued_proxy` records the
+/// IPRoyal order id only for Gemini and writes a literal `0` otherwise, so a Claude or Codex legacy
+/// offer holding a paid 30-day lease would look replaceable and a rewind would orphan it. The
+/// product-independent durable flag is `offers.proxy_issued`, and an unreadable offer fails closed.
+pub(crate) fn job_accepts_seller_proxy(
     store: &Store,
     expected: &SellerJobRef,
     current_proxy_order_id: i64,
@@ -2152,11 +2587,23 @@ pub(crate) fn gemini_job_accepts_proxy_input(
             .flatten()
             .is_some_and(|offer| match offer.proxy_source.as_str() {
                 PROXY_SOURCE_SELLER => true,
-                PROXY_SOURCE_LEGACY => current_proxy_order_id == 0,
+                PROXY_SOURCE_LEGACY => {
+                    current_proxy_order_id == 0
+                        && !store.offer_proxy_issued(expected.offer_id).unwrap_or(true)
+                }
                 _ => false,
             }),
         _ => false,
     }
+}
+
+/// Historical name kept for the Gemini retry path in `gemini_oauth`.
+pub(crate) fn gemini_job_accepts_proxy_input(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy_order_id: i64,
+) -> bool {
+    job_accepts_seller_proxy(store, expected, current_proxy_order_id)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2175,7 +2622,7 @@ fn select_gemini_proxy_retry(
     current_proxy_order_id: i64,
     input: &str,
 ) -> GeminiProxyRetry {
-    if gemini_job_accepts_proxy_input(store, expected, current_proxy_order_id) {
+    if job_accepts_seller_proxy(store, expected, current_proxy_order_id) {
         if is_gemini_proxy_retry(input) && !current_proxy.is_empty() {
             return GeminiProxyRetry::Retained(current_proxy.to_string(), current_proxy_order_id);
         }
@@ -2331,7 +2778,7 @@ async fn start_batch_item(
                 seller_chat,
                 &format!(
                     "{payment_line}{position}Теперь пришли прокси продавца для этой позиции.\n\n{}",
-                    manual_proxy_prompt(proxy_step)
+                    proxy_prompt(proxy_step)
                 ),
             )
             .await;
@@ -2618,7 +3065,7 @@ async fn start_codex_handoff(
     };
     if !expected_job.as_ref().is_some_and(|expected| {
         store
-            .set_want_for_seller_job(chat, expected, "")
+            .set_want_for_seller_job(chat, expected, "cx_wait")
             .unwrap_or(false)
     }) {
         crate::codex_login::cancel(chat);
@@ -2944,7 +3391,7 @@ async fn start_seller_offer_handoff(
         oid,
         esc(&product),
         esc(hash),
-        manual_proxy_prompt(proxy_step)
+        proxy_prompt(proxy_step)
     );
     let _ = bot.send(seller_chat, &seller_prompt).await;
 }
@@ -2962,6 +3409,35 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
     // Readiness is state-bound: an old or forwarded button cannot skip account preparation.
     if data == "gemini:ready" {
         continue_gemini_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
+    // Шаг назад продавца. Кнопка ничего не авторизует сама по себе: и разрешение, и цель заново
+    // выводятся из состояния, а исходный шаг с провода лишь отсеивает устаревшую кнопку.
+    if let Some(rest) = data.strip_prefix("hoback:") {
+        let mut parts = rest.splitn(2, ':');
+        let from = parts.next().unwrap_or_default();
+        let action = parts.next().unwrap_or_default();
+        let current = store
+            .get_user(chat)
+            .ok()
+            .flatten()
+            .map(|user| user.want)
+            .unwrap_or_default();
+        if back_step_wire(from).is_none() || back_step_wire(&current) != back_step_wire(from) {
+            let _ = bot
+                .send(
+                    chat,
+                    "Эта кнопка уже устарела — шаг сделки изменился. Открой актуальную карточку через /jobs.",
+                )
+                .await;
+            return;
+        }
+        match action {
+            "ask" => offer_handoff_back(bot, store, cfg, chat, false).await,
+            "go" => offer_handoff_back(bot, store, cfg, chat, true).await,
+            _ => {}
+        }
         return;
     }
 
@@ -4515,13 +4991,33 @@ mod tests {
         assert!(GEMINI_ACCOUNT_SETUP.contains("Google AI Pro или Ultra"));
         assert!(GEMINI_ACCOUNT_SETUP.contains("https://one.google.com"));
         assert!(GEMINI_ACCOUNT_SETUP.contains("Аккаунт готов — продолжить"));
-        assert!(CLAUDE_MANUAL_PROXY.contains("аккаунта Claude"));
-        assert!(CODEX_MANUAL_PROXY.contains("аккаунта ChatGPT"));
-        assert!(GEMINI_MANUAL_PROXY.contains("аккаунта Gemini"));
-        for fallback in [CLAUDE_MANUAL_PROXY, CODEX_MANUAL_PROXY, GEMINI_MANUAL_PROXY] {
-            assert!(fallback.contains("регистрация и дальнейшая авторизация"));
-            assert!(fallback.contains("ip:port:user:pass"));
+        assert!(CLAUDE_PROXY_PROMPT.contains("аккаунта Claude"));
+        assert!(CODEX_PROXY_PROMPT.contains("аккаунта ChatGPT"));
+        assert!(GEMINI_PROXY_PROMPT.contains("аккаунта Gemini"));
+        for prompt in [CLAUDE_PROXY_PROMPT, CODEX_PROXY_PROMPT, GEMINI_PROXY_PROMPT] {
+            assert!(prompt.contains("регистрация и дальнейшая авторизация"));
+            assert!(prompt.contains("ip:port:user:pass"));
         }
+    }
+
+    /// Предупреждение о неудавшейся автовыдаче отделено от самого промпта: осознанный шаг назад
+    /// продавца сопровождать им нельзя — там ничего не ломалось.
+    #[test]
+    fn proxy_prompt_keeps_the_manual_warning_separate() {
+        for step in ["ho_proxy", "cx_proxy", "gm_gproxy"] {
+            let clean = proxy_prompt(step);
+            assert!(!clean.contains("не получилось"), "{step}");
+            assert_eq!(
+                manual_proxy_prompt(step),
+                format!("{MANUAL_PROXY_WARNING}{clean}"),
+                "{step}"
+            );
+        }
+        assert_eq!(proxy_prompt("gm_gproxy"), GEMINI_PROXY_PROMPT);
+        assert_eq!(proxy_prompt("cx_proxy"), CODEX_PROXY_PROMPT);
+        // Неизвестный шаг падает на Claude — так же, как в прямом направлении.
+        assert_eq!(proxy_prompt("ho_proxy"), CLAUDE_PROXY_PROMPT);
+        assert_eq!(proxy_prompt("что-то ещё"), CLAUDE_PROXY_PROMPT);
     }
 
     #[test]
@@ -4535,9 +5031,9 @@ mod tests {
             CLAUDE_ACCOUNT_SETUP,
             CODEX_ACCOUNT_SETUP,
             GEMINI_ACCOUNT_SETUP,
-            CLAUDE_MANUAL_PROXY,
-            CODEX_MANUAL_PROXY,
-            GEMINI_MANUAL_PROXY,
+            MANUAL_PROXY_WARNING,
+            CLAUDE_PROXY_PROMPT,
+            CODEX_PROXY_PROMPT,
             GEMINI_PROXY_PROMPT,
             accepted_next_step("Google AI Pro", PROXY_SOURCE_LEGACY),
         ];
@@ -4579,7 +5075,7 @@ mod tests {
         store.set_hproxy(chat, "").unwrap();
         assert!(gemini_ready_handoff(&store, chat).is_none());
 
-        let keyboard = gemini_ready_kb();
+        let keyboard = gemini_ready_kb(None);
         assert_eq!(keyboard[0][0].0, "✅ Аккаунт готов — продолжить");
         assert_eq!(keyboard[0][0].1, "gemini:ready");
     }
@@ -4646,7 +5142,7 @@ mod tests {
     #[test]
     fn the_three_handovers_never_share_a_step_name() {
         let claude = ["ho_proxy", "ho_email", "ho_code"];
-        let codex = ["cx_proxy", "cx_email"];
+        let codex = ["cx_proxy", "cx_email", "cx_wait"];
         let gemini = ["gm_gid", "gm_gsecret", "gm_gproxy", "gm_ready", "gm_wait"];
         for step in claude {
             assert!(!codex.contains(&step) && !gemini.contains(&step));
@@ -4654,6 +5150,214 @@ mod tests {
         for step in codex {
             assert!(!gemini.contains(&step));
         }
+    }
+
+    /// Обратная таблица обязана быть полной и однозначной: кнопка «назад» и сама мутация читают
+    /// ровно её, поэтому любая лишняя или потерянная строка немедленно разводит UI и состояние.
+    #[test]
+    fn handoff_back_maps_every_seller_step_to_exactly_one_predecessor() {
+        use HandoffKind::{Claude, Codex, Gemini};
+        let reversible = [
+            (Claude, "ho_email", "ho_proxy", true, false),
+            (Claude, "ho_code", "ho_email", false, true),
+            (Codex, "cx_email", "cx_proxy", true, false),
+            (Codex, "cx_wait", "cx_email", false, true),
+            (Gemini, "gm_ready", "gm_gproxy", true, false),
+            (Gemini, "gm_wait", "gm_ready", false, true),
+        ];
+        for (kind, want, target, clears_proxy, invalidates_link) in reversible {
+            assert_eq!(
+                handoff_step_back(kind, want, true, true),
+                Some(HandoffStepBack {
+                    target,
+                    clears_proxy,
+                    invalidates_link,
+                }),
+                "{kind:?}/{want}"
+            );
+        }
+
+        // Первые шаги веток, legacy-состояния Gemini, регистрация и пустое состояние назад не ходят.
+        for (kind, want) in [
+            (Claude, "ho_proxy"),
+            (Codex, "cx_proxy"),
+            (Gemini, "gm_gproxy"),
+            (Gemini, "gm_gid"),
+            (Gemini, "gm_gsecret"),
+            (Claude, "reg_address"),
+            (Claude, ""),
+            (Claude, "нет такого шага"),
+        ] {
+            assert_eq!(
+                handoff_step_back(kind, want, true, true),
+                None,
+                "{kind:?}/{want} не должен иметь предшественника"
+            );
+        }
+
+        // Шаг чужой ветки — не предшественник, а рассинхрон: продукт работы решает всё.
+        for (kind, want) in [
+            (Claude, "gm_wait"),
+            (Claude, "cx_email"),
+            (Codex, "ho_code"),
+            (Codex, "gm_ready"),
+            (Gemini, "ho_email"),
+            (Gemini, "cx_wait"),
+        ] {
+            assert_eq!(
+                handoff_step_back(kind, want, true, true),
+                None,
+                "{kind:?}/{want}"
+            );
+        }
+    }
+
+    /// Закреплённый прокси покупателя и живой IPRoyal-лиз не имеют шага «ввод прокси» в истории
+    /// продавца. Шаги после выдачи ссылки при этом обязаны оставаться обратимыми.
+    #[test]
+    fn handoff_back_refuses_to_unpin_a_pinned_proxy() {
+        use HandoffKind::{Claude, Codex, Gemini};
+        for (kind, want) in [
+            (Claude, "ho_email"),
+            (Codex, "cx_email"),
+            (Gemini, "gm_ready"),
+        ] {
+            assert_eq!(handoff_step_back(kind, want, false, true), None, "{kind:?}");
+        }
+        for (kind, want, target) in [
+            (Claude, "ho_code", "ho_email"),
+            (Codex, "cx_wait", "cx_email"),
+            (Gemini, "gm_wait", "gm_ready"),
+        ] {
+            assert_eq!(
+                handoff_step_back(kind, want, false, true).map(|step| step.target),
+                Some(target),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// `gm_wait` — единственное двухисходное ребро. Без восстановленного egress возврат на
+    /// `gm_ready` дал бы состояние с пустым `hproxy`, которое `gemini_ready_handoff` отвергает,
+    /// поэтому деградируем до ввода прокси — и только когда продавцу вообще можно его менять.
+    #[test]
+    fn handoff_back_from_gm_wait_degrades_to_the_proxy_step_only_when_it_is_replaceable() {
+        assert_eq!(
+            handoff_step_back(HandoffKind::Gemini, "gm_wait", true, false),
+            Some(HandoffStepBack {
+                target: "gm_gproxy",
+                clears_proxy: true,
+                invalidates_link: true,
+            })
+        );
+        // Закреплённый прокси плюс потерянная сессия: возвращать некуда, тупик не создаём.
+        assert_eq!(
+            handoff_step_back(HandoffKind::Gemini, "gm_wait", false, false),
+            None
+        );
+    }
+
+    /// Callback data приходит от пользователя: резолвер обязан видеть только whitelist шагов.
+    #[test]
+    fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
+        for step in [
+            "ho_email", "ho_code", "cx_email", "cx_wait", "gm_ready", "gm_wait",
+        ] {
+            assert_eq!(back_step_wire(step), Some(step));
+        }
+        for rejected in [
+            "ho_proxy",
+            "cx_proxy",
+            "gm_gproxy",
+            "reg_address",
+            "",
+            "gm_wait:go",
+            "../../etc/passwd",
+        ] {
+            assert_eq!(back_step_wire(rejected), None, "{rejected:?}");
+        }
+    }
+
+    /// `hproxy_order` не может отвечать за закреплённость у Claude/Codex: `deliver_issued_proxy`
+    /// пишет туда номер заказа только для Gemini. Legacy-оффер с оплаченным лизом обязан остаться
+    /// закреплённым, иначе откат осиротит прокси, за который уже заплачено.
+    #[test]
+    fn legacy_claude_offer_with_an_issued_lease_is_not_proxy_replaceable() {
+        let store = store();
+        store.register_user(111, 111, "claude-seller").unwrap();
+        let offer = store
+            .create_offer("Claude Max20x", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        // До выдачи прокси legacy-оффер заменяем: продавец сам присылает egress.
+        assert!(job_accepts_seller_proxy(&store, &reference, 0));
+        store.mark_offer_proxy_issued(offer).unwrap();
+        // После выдачи — закреплён, хотя `hproxy_order` у Claude так и остался нулём.
+        assert!(!job_accepts_seller_proxy(&store, &reference, 0));
+
+        // Gemini-путь не меняется: там закреплённость видна и по номеру заказа.
+        let gemini = store
+            .create_offer("Google AI Pro", "$20", 999, 111)
+            .unwrap();
+        let gemini_reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: gemini,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        assert!(job_accepts_seller_proxy(&store, &gemini_reference, 0));
+        assert!(!job_accepts_seller_proxy(&store, &gemini_reference, 4242));
+    }
+
+    /// Кнопка обязана нести исходный шаг и правильное действие: молча гасить одноразовую ссылку
+    /// нельзя, а на безопасном ребре лишний экран подтверждения только мешает.
+    #[test]
+    fn handoff_back_button_action_matches_the_edge() {
+        use HandoffKind::{Claude, Codex, Gemini};
+        for (kind, want) in [
+            (Claude, "ho_email"),
+            (Codex, "cx_email"),
+            (Gemini, "gm_ready"),
+        ] {
+            let step = handoff_step_back(kind, want, true, true).expect("ребро есть");
+            let row = handoff_back_row(&step, back_step_wire(want).unwrap());
+            assert_eq!(row.len(), 1);
+            assert_eq!(row[0].0, "↩️ Изменить прокси");
+            assert_eq!(row[0].1, format!("hoback:{want}:go"));
+        }
+        for (kind, want, label) in [
+            (Claude, "ho_code", "↩️ Назад: другой email"),
+            (Codex, "cx_wait", "↩️ Назад: другой email"),
+            (Gemini, "gm_wait", "↩️ Назад: новая ссылка"),
+        ] {
+            let step = handoff_step_back(kind, want, true, true).expect("ребро есть");
+            let row = handoff_back_row(&step, back_step_wire(want).unwrap());
+            assert_eq!(row[0].0, label);
+            // Одноразовую ссылку гасим только после явного подтверждения.
+            assert_eq!(row[0].1, format!("hoback:{want}:ask"));
+        }
+    }
+
+    /// «Назад» и «повторить» — разные рёбра: второе означает «тот же прокси, новое поколение,
+    /// остаться на шаге» и обязано продолжать работать как раньше.
+    #[test]
+    fn typed_back_word_is_distinct_from_the_retry_word() {
+        for accepted in ["назад", "Назад", "  НАЗАД  ", "back", "/back"] {
+            assert!(is_handoff_back(accepted), "{accepted:?}");
+        }
+        for rejected in ["повторить", "повтори", "retry", "", "назад пожалуйста"]
+        {
+            assert!(!is_handoff_back(rejected), "{rejected:?}");
+        }
+        assert!(!is_gemini_proxy_retry("назад"));
+        assert!(is_gemini_proxy_retry("повторить"));
     }
 
     /// Прокси продавца приходит в разных формах; в реестр и в `proxy.url` должен уходить URL.

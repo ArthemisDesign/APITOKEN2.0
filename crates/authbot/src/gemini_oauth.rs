@@ -768,6 +768,18 @@ fn pending_proxy(config: &Config, session: &GeminiOAuthSession) -> Option<(Strin
     }
 }
 
+/// Egress незавершённой транзакции продавца — только чтобы вернуть работу на шаг назад, не
+/// спрашивая прокси заново.
+///
+/// `start_gemini_oauth` стирает `users.hproxy`, поэтому на шаге `gm_wait` единственная копия
+/// egress живёт внутри запечатанной PKCE-транзакции. Читатель в `db` намеренно не видит уже
+/// заклеймленную сессию, так что откат не может обогнать обмен одноразового кода. Секрет
+/// возвращается вызывающему и никогда не попадает ни в журнал, ни в Telegram.
+pub(crate) fn pending_egress(store: &Store, config: &Config, chat: i64) -> Option<(String, i64)> {
+    let session = store.pending_gemini_session(chat).ok().flatten()?;
+    pending_proxy(config, &session)
+}
+
 fn valid_oauth_value(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| byte.is_ascii_graphic())
 }

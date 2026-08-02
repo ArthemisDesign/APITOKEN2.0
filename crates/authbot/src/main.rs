@@ -62,7 +62,9 @@ fn codex_roster_config() -> Result<Option<codex_login::RosterConfig>> {
         env_opt("AUTH_BOT_CODEX_ROSTER_DIR").unwrap_or_else(|| "/srv/claude-api/data/codex".into()),
     );
     if dir.is_relative() {
-        return Err(anyhow!("AUTH_BOT_CODEX_ROSTER_DIR должен быть абсолютным путём"));
+        return Err(anyhow!(
+            "AUTH_BOT_CODEX_ROSTER_DIR должен быть абсолютным путём"
+        ));
     }
     Ok(Some(codex_login::RosterConfig {
         dir,
@@ -478,6 +480,7 @@ async fn main() -> Result<()> {
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;
+    let recovered_codex = store.recover_interrupted_codex_handoffs()?;
     let recovered_gemini = store.recover_legacy_gemini_handoffs()?;
     let recovered_seller_jobs = store.recover_seller_jobs()?;
     preflight_authority(authority_cfg(&cfg)).await?;
@@ -498,6 +501,9 @@ async fn main() -> Result<()> {
     );
     if recovered > 0 {
         eprintln!("authbot: восстановлено прерванных Claude handoff: {recovered}");
+    }
+    if recovered_codex > 0 {
+        eprintln!("authbot: восстановлено прерванных ChatGPT handoff: {recovered_codex}");
     }
     if recovered_gemini > 0 {
         eprintln!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}");
