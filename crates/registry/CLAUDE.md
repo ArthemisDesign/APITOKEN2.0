@@ -233,6 +233,21 @@ side effect. `serve` may only perform the read-only schema verification before c
   reservation нормализованного аккаунта без ровно одного compatible funding snapshot. Runtime
   writers подключаются только отдельным SHA после зелёного migration/watchdog; funding head после
   первой normalization не удаляется и двигается только monotonic generation/version step.
+- **Pre-cutover funding dual writers:** все три PostgreSQL reserve-пути (scalar,
+  legacy-snapshot и strict-policy), settlement outbox и `account_topup` сериализуются в порядке
+  `request advisory → funding account advisory → reread head → row locks/money writes` (у top-up
+  нет request lock). Пока funding head отсутствует, transaction сохраняет прежнюю legacy-семантику;
+  после появления head та же transaction обязана обновить account aggregate, active generation,
+  lots и immutable reservation allocations вместе. Reserve распределяет `welcome_bonus` первым,
+  затем `paid`; единственный разрешённый overrun не превышает `$1` и относится к последней paid
+  allocation, включая zero paid anchor для bonus-only/zero hold. Нормализованная
+  balance-generation обязана поэтому содержать paid lot даже при нулевом residual; его отсутствие
+  fail closed. Settlement использует только
+  reserve-time allocation, пишет `funding_ledger_allocations_v2`, а terminal replay не повторяет
+  money mutation и остаётся валиден после monotonic advance funding head. `signup-bonus:*`
+  top-up создаёт welcome lot, остальные credits и negative adjustments — paid lot. Реальный
+  PostgreSQL gate: `pg::tests::pre_cutover_funding_v2_writer_postgres_matrix`; он доказывает
+  replay/cancel/settle/overrun/outbox recovery и обе lock-order гонки.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact active-account coverage и готовые funding dependencies. Ни один метод не

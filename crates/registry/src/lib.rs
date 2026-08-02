@@ -9,6 +9,7 @@
 
 pub mod authority;
 pub mod funding;
+mod funding_v2;
 pub mod pg;
 pub mod pricing;
 mod provider_calibration;

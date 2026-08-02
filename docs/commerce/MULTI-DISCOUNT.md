@@ -148,7 +148,8 @@ money writers:
 1. прочитать актуальный aggregate balance, ledger и уже нормализованные lots;
 2. восстановить остаток точных `signup-bonus:*` credits;
 3. записать его как `welcome_bonus`;
-4. классифицировать весь прочий остаток как `paid`;
+4. классифицировать весь прочий остаток как `paid` и материализовать нулевой paid anchor, если
+   residual равен нулю;
 5. проверить `sum(bucket balance/reserved/spent) == account balance/reserved/spent`;
 6. атомарно отметить funding generation готовой.
 
@@ -221,6 +222,28 @@ activation route и он не публикует v2 runtime-capability claim, п
 dormant и не могут изменить data-plane. После зелёного `deploy/watchdog` exact producer SHA строгие
 wire-схемы и typed prepare/read methods добавляются в `packages/contracts` и
 `packages/engine-client`; activation method и вызывающий application job по-прежнему отсутствуют.
+
+Отдельный pre-cutover writer checkpoint подключает migration 0024 только после её зелёного
+production SHA. Его поведение намеренно account-local:
+
+- reserve берёт request lock, затем funding-account lock, повторно читает head и только после этого
+  блокирует/меняет money rows;
+- пока head отсутствует, legacy aggregate остаётся единственным writer path; после появления head
+  aggregate, active generation, bonus-first lots и immutable allocation меняются одной transaction;
+- top-up/bonus/negative adjust используют тот же funding-account lock и dual-write после head;
+- cancel/settlement завершают сохранённые reserve-time allocations, а charge ledger получает exact
+  `funding_ledger_allocations_v2`, достаточные для будущего `paid_funded_nano` consumer;
+- terminal replay только проверяет snapshot и не повторяет money mutation; monotonic переход head
+  на следующее поколение не инвалидирует уже terminal snapshot;
+- paid overrun ограничен существующим `$1` account floor и может лечь только в последнюю paid
+  allocation. Для bonus-only/zero hold normalized generation содержит zero paid lot, а reserve
+  заранее сохраняет его как zero allocation anchor.
+
+Checkpoint не создаёт release head, не меняет активную цену и ещё не включает release-v2 либо
+`meter_only` data-plane. Эти consumer stages остаются отдельными producer-first релизами.
+
+До запуска full-inventory normalization последующие producer-first checkpoints должны довести
+runtime до полного состояния, которое:
 
 - продолжает обслуживать текущий active legacy release;
 - умеет читать новый release schema;
@@ -359,6 +382,9 @@ consumer, но новый consumer их не использует; удален�
   разрешены, bonus-funded usage не комиссионируется.
 - Referral: paid-funded commission сохраняется без pricing-mode eligibility.
 - Funding backfill: concurrent topup/reserve/settle, account-local lock, exact replay, bucket sums.
+- Pre-cutover writers: real PostgreSQL bonus-first reserve, terminal replay после advance funding
+  generation, cancel/refund, paid overrun, top-up classification, outbox recovery и доказанный
+  lock order без reservation-row lock до funding-account lock.
 - In-flight cutover: reserve до activation и settlement после неё используют один snapshot.
 - Provisioning race: новый active account не может отсутствовать в target release.
 - Stage 8: 100% inventory/shadow, Gemini, no legacy-format inflight, exact runtime floor.

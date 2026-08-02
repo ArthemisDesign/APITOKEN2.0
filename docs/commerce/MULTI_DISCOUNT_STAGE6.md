@@ -12,6 +12,8 @@ Funding normalization нужна для paid/bonus attribution и реферал
 - существующая выдача сохраняет фактический номинал `$4`;
 - новые выдачи после изменения контракта имеют номинал `$5`;
 - весь остальной существующий остаток по решению владельца классифицируется `paid`;
+- paid lot материализуется и при нулевом residual: это immutable anchor для разрешённого `$1`
+  overrun у bonus-only/zero-hold request;
 - bonus разрешён для любой модели, доступной B2C policy;
 - reserve расходует bonus-first, затем paid;
 - referral commission получает только paid-funded settlement amount.
@@ -31,6 +33,40 @@ Immutable historical rows могут сохранять старые значе�
 5. уметь завершать старую reservation по её immutable legacy snapshot.
 
 Это приложение выкатывается blue-green при старом active release и само по себе не меняет цену.
+
+### Pre-cutover writer checkpoint
+
+PostgreSQL writer выбирает путь только после account-local serialization:
+
+```text
+reserve/settlement: request advisory lock → funding account advisory lock
+                    → reread active funding head → row locks/money writes
+topup/adjust:       funding account advisory lock → reread active funding head
+                    → row locks/money writes
+```
+
+Отсутствующий head означает полностью legacy transaction. Существующий head означает обязательный
+dual-write: account aggregate, active generation, lots и reservation snapshot/allocation либо
+commit вместе, либо полностью rollback. Это же правило закрывает гонку с normalization: writer,
+который ждал её lock, перечитывает уже новый head и не может продолжить как legacy writer.
+
+Reserve сохраняет bonus-first allocation. Overdraft разрешён только в paid и не больше старого
+account floor `$1`; normalized generation обязана содержать paid lot даже с нулевым residual, и
+bonus-only или нулевой hold сохраняет его как zero allocation anchor, чтобы возможный settlement
+overrun не был ошибочно отнесён к bonus. Cancel возвращает весь hold по сохранённым
+allocations. Settlement превращает ровно эти allocations в charged/released, обновляет lots и
+пишет charge attribution в `funding_ledger_allocations_v2`. Exact terminal replay ничего повторно
+не списывает и проверяет исходную immutable generation даже после последующего monotonic head
+advance.
+
+`account_topup` классифицирует положительный `signup-bonus:*` как `welcome_bonus`; остальные
+credits и negative adjustments — как `paid`. Exact idempotency replay возвращает первую ledger
+строку до любой повторной lot mutation. Durable outbox recovery выполняет тот же settlement path.
+
+Real PostgreSQL evidence —
+`pg::tests::pre_cutover_funding_v2_writer_postgres_matrix`: bonus-first/replay/cancel/settlement,
+paid overrun, top-up/bonus/adjust, recovery после enqueue, writer после normalization wait и
+проверка, что settlement не захватывает reservation row до funding-account lock.
 
 Пока global release head отсутствует, snapshot составной: существующий immutable
 `pricing_admission_snapshots` закрепляет старую активную цену, а

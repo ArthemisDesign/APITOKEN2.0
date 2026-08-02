@@ -1213,13 +1213,16 @@ impl PgStore {
         execution: &crate::ExecutionAttempt,
     ) -> Result<Option<i64>> {
         let hold = hold_nano.max(0);
-        let ts = now();
+        let preflight_ts = now();
         let mut tx = self.client.transaction()?;
-        Self::assert_owner(&mut tx, owner, ts)?;
+        Self::assert_owner(&mut tx, owner, preflight_ts)?;
         tx.query_one(
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&request_id],
         )?;
+        crate::funding_v2::lock_funding_account_v2(&mut tx, account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, account_id)?;
+        Self::assert_owner_locked(&mut tx, owner, now())?;
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,owner_epoch, \
                     state,group_id,attempt \
@@ -1238,6 +1241,16 @@ impl PgStore {
                 bail!("reservation request ID belongs to a different or completed operation");
             }
             let balance = row.get(3);
+            if let Some(head) = funding_head.as_ref() {
+                crate::funding_v2::validate_active_reservation_funding_v2(
+                    &mut tx,
+                    head,
+                    request_id,
+                    account_id,
+                    hold,
+                )?;
+            }
+            Self::assert_owner_locked(&mut tx, owner, now())?;
             tx.commit()?;
             return Ok(Some(balance));
         }
@@ -1251,6 +1264,8 @@ impl PgStore {
         const OVERDRAFT_NANO: i64 = 1_000_000_000;
         // Гейт `balance-hold >= -OVERDRAFT` пишем как `balance + OVERDRAFT >= hold`: вычитание двух
         // bind-параметров Postgres не типизирует, а сложение с bigint-колонкой выводит тип параметра.
+        let reservation_ts = now();
+        Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
         let Some(row) = tx.query_opt(
             "UPDATE accounts SET balance_nano=balance_nano-$1, reserved_nano=reserved_nano+$1 \
              WHERE id=$2 AND status='active' AND balance_nano + $3 >= $1 RETURNING balance_nano",
@@ -1277,9 +1292,22 @@ impl PgStore {
              owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,group_id,attempt) \
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
             &[&request_id, &account_id, &key, &hold, &balance, &owner.instance_id,
-              &owner.epoch, &(ts + lease_secs.max(1)), &ts, &execution.group_id(),
+              &owner.epoch, &(reservation_ts.saturating_add(lease_secs.max(1))), &reservation_ts,
+              &execution.group_id(),
               &execution.attempt()],
         )?;
+        if let Some(head) = funding_head.as_ref() {
+            crate::funding_v2::reserve_funding_v2(
+                &mut tx,
+                head,
+                request_id,
+                account_id,
+                hold,
+                reservation_ts,
+                true,
+            )?;
+        }
+        Self::assert_owner_locked(&mut tx, owner, now())?;
         tx.commit()?;
         Ok(Some(balance))
     }
@@ -1389,6 +1417,8 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&request_id],
         )?;
+        crate::funding_v2::lock_funding_account_v2(&mut tx, account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, account_id)?;
         let fence_ts = now();
         Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
         if let Some(conflict) = window_conflict(fence_ts)? {
@@ -1441,6 +1471,15 @@ impl PgStore {
                 }
             };
             if matches!(&outcome, Outcome::Unchanged(_)) {
+                if let Some(head) = funding_head.as_ref() {
+                    crate::funding_v2::validate_active_reservation_funding_v2(
+                        &mut tx,
+                        head,
+                        request_id,
+                        account_id,
+                        hold,
+                    )?;
+                }
                 Self::assert_owner_locked(&mut tx, owner, now())?;
                 if !commit_gate() {
                     tx.rollback()?;
@@ -1505,6 +1544,17 @@ impl PgStore {
         {
             let _ = tx.rollback();
             return Err(error);
+        }
+        if let Some(head) = funding_head.as_ref() {
+            crate::funding_v2::reserve_funding_v2(
+                &mut tx,
+                head,
+                request_id,
+                account_id,
+                hold,
+                reservation_ts,
+                true,
+            )?;
         }
         Self::assert_owner_locked(&mut tx, owner, now())?;
         if !commit_gate() {
@@ -1621,6 +1671,8 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&request_id],
         )?;
+        crate::funding_v2::lock_funding_account_v2(&mut tx, account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, account_id)?;
         let fence_ts = now();
         Self::assert_owner_locked(&mut tx, owner, fence_ts)?;
         if let Some(conflict) = window_conflict(fence_ts)? {
@@ -1666,6 +1718,15 @@ impl PgStore {
                 }
             };
             if matches!(&outcome, Outcome::Unchanged(_)) {
+                if let Some(head) = funding_head.as_ref() {
+                    crate::funding_v2::validate_active_reservation_funding_v2(
+                        &mut tx,
+                        head,
+                        request_id,
+                        account_id,
+                        hold,
+                    )?;
+                }
                 Self::assert_owner_locked(&mut tx, owner, now())?;
                 if !commit_gate() {
                     tx.rollback()?;
@@ -1966,6 +2027,17 @@ impl PgStore {
         if remaining != 0 {
             bail!("strict funding allocation did not cover the reserved hold");
         }
+        if let Some(head) = funding_head.as_ref() {
+            crate::funding_v2::reserve_funding_v2(
+                &mut tx,
+                head,
+                request_id,
+                account_id,
+                hold,
+                reservation_ts,
+                false,
+            )?;
+        }
         Self::assert_owner_locked(&mut tx, owner, now())?;
         if !commit_gate() {
             tx.rollback()?;
@@ -2096,14 +2168,46 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&request_id],
         )?;
+        let account_id: String = tx
+            .query_opt(
+                "SELECT account_id FROM reservations WHERE request_id=$1",
+                &[&request_id],
+            )?
+            .context("settlement reservation does not exist")?
+            .get(0);
+        crate::funding_v2::lock_funding_account_v2(&mut tx, &account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, &account_id)?;
         let reservation = tx
             .query_opt(
-                "SELECT hold_nano, state FROM reservations WHERE request_id=$1 FOR UPDATE",
+                "SELECT account_id,hold_nano,state,actual_nano
+                   FROM reservations WHERE request_id=$1 FOR UPDATE",
                 &[&request_id],
             )?
             .context("settlement reservation does not exist")?;
-        let hold: i64 = reservation.get(0);
-        let state: String = reservation.get(1);
+        if reservation.get::<_, String>(0) != account_id {
+            bail!("settlement reservation account changed while acquiring funding lock");
+        }
+        let hold: i64 = reservation.get(1);
+        let state: String = reservation.get(2);
+        if matches!(state.as_str(), "settled" | "canceled") {
+            crate::funding_v2::validate_terminal_reservation_funding_v2(
+                &mut tx,
+                request_id,
+                &account_id,
+                hold,
+                reservation
+                    .get::<_, Option<i64>>(3)
+                    .context("terminal reservation lacks actual amount")?,
+            )?;
+        } else if let Some(head) = funding_head.as_ref() {
+            crate::funding_v2::validate_active_reservation_funding_v2(
+                &mut tx,
+                head,
+                request_id,
+                &account_id,
+                hold,
+            )?;
+        }
         let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
             &mut tx, request_id, true,
         )? {
@@ -2211,6 +2315,20 @@ impl PgStore {
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
             &[&request_id],
         )?;
+        let Some(account_row) = tx.query_opt(
+            "SELECT reservation.account_id
+               FROM settlement_outbox outbox
+               JOIN reservations reservation USING(request_id)
+              WHERE outbox.request_id=$1",
+            &[&request_id],
+        )? else {
+            tx.rollback()?;
+            return Ok(None);
+        };
+        let locked_account_id: String = account_row.get(0);
+        crate::funding_v2::lock_funding_account_v2(&mut tx, &locked_account_id)?;
+        let funding_head =
+            crate::funding_v2::active_funding_head_v2(&mut tx, &locked_account_id)?;
         let Some(row) = tx.query_opt(
             "SELECT o.actual_nano,o.disposition,o.reference,o.model,o.input_tokens,o.output_tokens, \
              o.cache_read_tokens,o.cache_write_5m_tokens,o.cache_write_1h_tokens,o.web_search_requests, \
@@ -2229,6 +2347,9 @@ impl PgStore {
         let outbox_state: String = row.get(21);
         let reservation_state: String = row.get(25);
         let account_id: String = row.get(22);
+        if account_id != locked_account_id {
+            bail!("settlement reservation account changed while acquiring funding lock");
+        }
         let actual: i64 = row.get(0);
         let effective_group_id: String = row.get(26);
         let execution_attempt: i32 = row.get(27);
@@ -2250,6 +2371,13 @@ impl PgStore {
             if row.get::<_, Option<i64>>(28) != Some(expected_actual) {
                 bail!("stored settlement differs from durable execution-group winner");
             }
+            crate::funding_v2::validate_terminal_reservation_funding_v2(
+                &mut tx,
+                request_id,
+                &account_id,
+                row.get(24),
+                expected_actual,
+            )?;
             let balance = tx
                 .query_opt(
                     "SELECT balance_nano FROM accounts WHERE id=$1",
@@ -2325,6 +2453,15 @@ impl PgStore {
         } else {
             disposition.as_str()
         };
+        let funding_v2 = crate::funding_v2::settle_funding_v2(
+            &mut tx,
+            funding_head.as_ref(),
+            request_id,
+            &account_id,
+            hold,
+            effective_actual,
+            ts,
+        )?;
         let balance: i64;
         if let Some(snapshot) = policy_snapshot.as_ref() {
             balance = postgres_process_policy_settlement(
@@ -2398,6 +2535,27 @@ impl PgStore {
                       &cache_write_1h_nano,&web_search_nano,&priced_ts,&provider],
                 )?;
                 }
+            }
+        }
+        if let Some(funding) = funding_v2.as_ref() {
+            if !funding.allocations.is_empty() {
+                let ledger_id: i64 = tx
+                    .query_opt(
+                        "SELECT id FROM ledger WHERE kind='charge' AND request_id=$1",
+                        &[&request_id],
+                    )?
+                    .context("funding v2 settlement charge ledger row is missing")?
+                    .get(0);
+                crate::funding_v2::insert_settlement_ledger_allocations_v2(
+                    &mut tx,
+                    ledger_id,
+                    &account_id,
+                    funding_head
+                        .as_ref()
+                        .context("funding v2 settlement lacks an active head")?
+                        .generation,
+                    funding,
+                )?;
             }
         }
         let final_state = if effective_disposition == "cancel" {
@@ -3044,6 +3202,8 @@ impl PgStore {
         let ts = now();
         let kind = if amount_nano >= 0 { "topup" } else { "adjust" };
         let mut tx = self.client.transaction()?;
+        crate::funding_v2::lock_funding_account_v2(&mut tx, id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut tx, id)?;
         if let Some(reference) = reference {
             if let Some(row) = tx.query_opt(
                 "SELECT account_id,kind,amount_nano,balance_after_nano FROM ledger \
@@ -3129,6 +3289,17 @@ impl PgStore {
                     &direction,
                     &allocation_amount,
                 ],
+            )?;
+        }
+        if let Some(head) = funding_head.as_ref() {
+            crate::funding_v2::apply_topup_funding_v2(
+                &mut tx,
+                head,
+                ledger_id,
+                id,
+                amount_nano,
+                reference,
+                ts,
             )?;
         }
         tx.commit()?;
@@ -8494,6 +8665,816 @@ mod tests {
         );
 
         pg.client.batch_execute("ROLLBACK").unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    fn seed_active_funding_v2(
+        pg: &mut PgStore,
+        account_id: &str,
+        lots: &[(&str, &str, &str, i64)],
+    ) {
+        let account = pg
+            .client
+            .query_one(
+                "SELECT balance_nano,reserved_nano,spent_nano FROM accounts WHERE id=$1",
+                &[&account_id],
+            )
+            .unwrap();
+        let balance_nano: i64 = account.get(0);
+        let reserved_nano: i64 = account.get(1);
+        let spent_nano: i64 = account.get(2);
+        assert_eq!(reserved_nano, 0, "test normalization requires no active hold");
+        assert_eq!(spent_nano, 0, "test normalization starts before usage");
+        let lot_balance = lots.iter().try_fold(0_i64, |total, lot| {
+            total.checked_add(lot.3).ok_or("test lot balance overflow")
+        });
+        assert_eq!(lot_balance.unwrap(), balance_nano);
+
+        let timestamp = now();
+        let source_state_digest = format!("writer-source:{account_id}");
+        let normalization_digest = format!("writer-normalization:{account_id}");
+        let mut tx = pg.client.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts)
+             VALUES($1,1,2,$2,$3,$4,0,0,1,$5,$5)",
+            &[
+                &account_id,
+                &source_state_digest,
+                &normalization_digest,
+                &balance_nano,
+                &timestamp,
+            ],
+        )
+        .unwrap();
+        for &(lot_id, source_type, source_ref, lot_balance) in lots {
+            let status = if lot_balance > 0 {
+                "active"
+            } else {
+                "exhausted"
+            };
+            tx.execute(
+                "INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts)
+                 VALUES($1,$2,1,$3,$4,$5,0,0,1,$6,$7,$7)",
+                &[
+                    &lot_id,
+                    &account_id,
+                    &source_type,
+                    &source_ref,
+                    &lot_balance,
+                    &status,
+                    &timestamp,
+                ],
+            )
+            .unwrap();
+        }
+        tx.execute(
+            "INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts)
+             VALUES($1,1,1,$2)",
+            &[&account_id, &timestamp],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn funding_v2_money_state(pg: &mut PgStore, account_id: &str, request_id: &str) -> String {
+        pg.client
+            .query_one(
+                "SELECT jsonb_build_object(
+                     'account',(
+                         SELECT jsonb_build_array(balance_nano,reserved_nano,spent_nano)
+                         FROM accounts WHERE id=$1
+                     ),
+                     'generation',(
+                         SELECT jsonb_build_array(balance_nano,reserved_nano,spent_nano,version)
+                         FROM account_funding_generations_v2
+                         WHERE account_id=$1 AND generation=1
+                     ),
+                     'lots',(
+                         SELECT COALESCE(jsonb_agg(jsonb_build_array(
+                             lot_id,source_type,balance_nano,reserved_nano,spent_nano,version,status
+                         ) ORDER BY lot_id),'[]'::jsonb)
+                         FROM funding_lots_v2
+                         WHERE account_id=$1 AND funding_generation=1
+                     ),
+                     'snapshot',(
+                         SELECT jsonb_build_array(
+                             funding_generation,funding_head_version,hold_nano,snapshot_digest
+                         )
+                         FROM funding_reservation_snapshots_v2 WHERE request_id=$2
+                     ),
+                     'allocations',(
+                         SELECT COALESCE(jsonb_agg(jsonb_build_array(
+                             allocation_order,lot_id,lot_source_type,lot_version,reserved_nano,
+                             charged_nano,released_nano
+                         ) ORDER BY allocation_order),'[]'::jsonb)
+                         FROM funding_reservation_allocations_v2 WHERE request_id=$2
+                     ),
+                     'ledger_allocations',(
+                         SELECT COALESCE(jsonb_agg(jsonb_build_array(
+                             allocation.allocation_order,allocation.lot_id,
+                             allocation.lot_source_type,allocation.lot_version,
+                             allocation.direction,allocation.amount_nano
+                         ) ORDER BY allocation.allocation_order),'[]'::jsonb)
+                         FROM funding_ledger_allocations_v2 allocation
+                         JOIN ledger ON ledger.id=allocation.ledger_id
+                         WHERE ledger.request_id=$2
+                     )
+                 )::text",
+                &[&account_id, &request_id],
+            )
+            .unwrap()
+            .get(0)
+    }
+
+    fn wait_for_postgres_lock(client: &mut Client, application_name: &str) {
+        for _ in 0..100 {
+            let waiting: bool = client
+                .query_one(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM pg_stat_activity
+                         WHERE application_name=$1 AND wait_event_type='Lock'
+                     )",
+                    &[&application_name],
+                )
+                .unwrap()
+                .get(0);
+            if waiting {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("PostgreSQL writer {application_name} did not reach the expected lock wait");
+    }
+
+    /// Real PostgreSQL proof for the pre-cutover Stage 6 dual writers. The matrix covers exact
+    /// replay, bonus-first allocation, cancellation, paid overrun, top-up classifications,
+    /// durable outbox recovery, and both account-lock ordering races.
+    ///
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::pre_cutover_funding_v2_writer_postgres_matrix`
+    #[test]
+    fn pre_cutover_funding_v2_writer_postgres_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping funding v2 writer PostgreSQL matrix: test URL is unset");
+            return;
+        };
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let owner = pg.claim_instance("funding-v2-writer", 600).unwrap();
+
+        const BILLION: i64 = 1_000_000_000;
+        pg.account_create("funding-v2-main", None, 5_000).unwrap();
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                5 * BILLION,
+                Some("signup-bonus:writer-seed"),
+            )
+            .unwrap(),
+            Some(5 * BILLION)
+        );
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                10 * BILLION,
+                Some("platega:writer-seed"),
+            )
+            .unwrap(),
+            Some(15 * BILLION)
+        );
+        pg.key_issue("funding-v2-main-key", "funding-v2-main", None)
+            .unwrap();
+        seed_active_funding_v2(
+            &mut pg,
+            "funding-v2-main",
+            &[
+                (
+                    "funding-v2-main-bonus",
+                    "welcome_bonus",
+                    "signup-bonus:writer-seed",
+                    5 * BILLION,
+                ),
+                (
+                    "funding-v2-main-paid",
+                    "paid",
+                    "platega:writer-seed",
+                    10 * BILLION,
+                ),
+            ],
+        );
+
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-main-settle",
+                "funding-v2-main",
+                "funding-v2-main-key",
+                7 * BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(8 * BILLION)
+        );
+        let allocation_order: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     lot_source_type || ':' || reserved_nano::text,',' ORDER BY allocation_order
+                 ) FROM funding_reservation_allocations_v2 WHERE request_id=$1",
+                &[&"funding-v2-main-settle"],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            allocation_order,
+            "welcome_bonus:5000000000,paid:2000000000"
+        );
+        let reserved_state =
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle");
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-main-settle",
+                "funding-v2-main",
+                "funding-v2-main-key",
+                7 * BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(8 * BILLION)
+        );
+        assert_eq!(
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle"),
+            reserved_state,
+            "exact reserve replay must not repeat any funding mutation"
+        );
+
+        assert_eq!(
+            pg.settle_request(
+                "funding-v2-main-settle",
+                6 * BILLION,
+                Some("funding-v2-main-charge"),
+                None,
+            )
+            .unwrap(),
+            Some(9 * BILLION)
+        );
+        let terminal_allocations: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     lot_source_type || ':' || charged_nano::text || ':' || released_nano::text,
+                     ',' ORDER BY allocation_order
+                 ) FROM funding_reservation_allocations_v2 WHERE request_id=$1",
+                &[&"funding-v2-main-settle"],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            terminal_allocations,
+            "welcome_bonus:5000000000:0,paid:1000000000:1000000000"
+        );
+        let settlement_ledger: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     allocation.lot_source_type || ':' || allocation.amount_nano::text,
+                     ',' ORDER BY allocation.allocation_order
+                 )
+                 FROM funding_ledger_allocations_v2 allocation
+                 JOIN ledger ON ledger.id=allocation.ledger_id
+                 WHERE ledger.request_id=$1",
+                &[&"funding-v2-main-settle"],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(settlement_ledger, "welcome_bonus:5000000000,paid:1000000000");
+        let terminal_state =
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle");
+        assert_eq!(
+            pg.settle_request(
+                "funding-v2-main-settle",
+                6 * BILLION,
+                Some("funding-v2-main-charge"),
+                None,
+            )
+            .unwrap(),
+            Some(9 * BILLION)
+        );
+        assert_eq!(
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle"),
+            terminal_state,
+            "terminal replay must validate immutable evidence without repeating money writes"
+        );
+
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-main-cancel",
+                "funding-v2-main",
+                "funding-v2-main-key",
+                2 * BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(7 * BILLION)
+        );
+        assert_eq!(
+            pg.cancel_request("funding-v2-main-cancel").unwrap(),
+            Some(9 * BILLION)
+        );
+        let canceled: (String, i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT reservation.state,allocation.charged_nano,
+                            allocation.released_nano,
+                            (SELECT COUNT(*)::bigint FROM ledger
+                             WHERE request_id=reservation.request_id)
+                     FROM reservations reservation
+                     JOIN funding_reservation_allocations_v2 allocation USING(request_id)
+                     WHERE reservation.request_id=$1",
+                    &[&"funding-v2-main-cancel"],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(canceled, ("canceled".into(), 0, 2 * BILLION, 0));
+
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                3 * BILLION,
+                Some("platega:writer-post-head"),
+            )
+            .unwrap(),
+            Some(12 * BILLION)
+        );
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                3 * BILLION,
+                Some("platega:writer-post-head"),
+            )
+            .unwrap(),
+            Some(12 * BILLION),
+            "exact top-up replay must not append a second funding lot mutation"
+        );
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                5 * BILLION,
+                Some("signup-bonus:writer-post-head"),
+            )
+            .unwrap(),
+            Some(17 * BILLION)
+        );
+        assert_eq!(
+            pg.account_topup(
+                "funding-v2-main",
+                -BILLION,
+                Some("manual-adjust:writer-post-head"),
+            )
+            .unwrap(),
+            Some(16 * BILLION)
+        );
+        let topup_allocations: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     lot.source_type || ':' || allocation.direction || ':' ||
+                     allocation.amount_nano::text,',' ORDER BY ledger.ref
+                 )
+                 FROM funding_ledger_allocations_v2 allocation
+                 JOIN ledger ON ledger.id=allocation.ledger_id
+                 JOIN funding_lots_v2 lot ON lot.lot_id=allocation.lot_id
+                 WHERE ledger.ref IN(
+                     'platega:writer-post-head',
+                     'signup-bonus:writer-post-head',
+                     'manual-adjust:writer-post-head'
+                 )",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            topup_allocations,
+            "paid:debit:1000000000,paid:credit:3000000000,welcome_bonus:credit:5000000000"
+        );
+        let aggregate: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT account.balance_nano,generation.balance_nano,
+                            sum(lot.balance_nano)::bigint
+                     FROM accounts account
+                     JOIN account_funding_generations_v2 generation
+                       ON generation.account_id=account.id AND generation.generation=1
+                     JOIN funding_lots_v2 lot ON lot.account_id=account.id
+                     WHERE account.id=$1
+                     GROUP BY account.balance_nano,generation.balance_nano",
+                    &[&"funding-v2-main"],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(aggregate, (16 * BILLION, 16 * BILLION, 16 * BILLION));
+
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-outbox-recovery",
+                "funding-v2-main",
+                "funding-v2-main-key",
+                4 * BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(12 * BILLION)
+        );
+        pg.enqueue_settlement(
+            "funding-v2-outbox-recovery",
+            3 * BILLION,
+            Some("funding-v2-outbox-recovery"),
+            None,
+        )
+        .unwrap();
+        let mut recovery = PgStore::connect(&url).unwrap();
+        assert_eq!(recovery.drain_outbox(10).unwrap(), 1);
+        let recovered: (String, String, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT reservation.state,outbox.state,account.balance_nano,
+                            generation.balance_nano
+                     FROM reservations reservation
+                     JOIN settlement_outbox outbox USING(request_id)
+                     JOIN accounts account ON account.id=reservation.account_id
+                     JOIN account_funding_generations_v2 generation
+                       ON generation.account_id=account.id AND generation.generation=1
+                     WHERE reservation.request_id=$1",
+                    &[&"funding-v2-outbox-recovery"],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(
+            recovered,
+            ("settled".into(), "done".into(), 13 * BILLION, 13 * BILLION)
+        );
+        let generation_advance_ts = now();
+        pg.client
+            .batch_execute("BEGIN")
+            .unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts)
+                 SELECT id,2,2,'writer-source:generation-2','writer-normalization:generation-2',
+                        balance_nano,reserved_nano,spent_nano,1,$1,$1
+                 FROM accounts WHERE id='funding-v2-main'",
+                &[&generation_advance_ts],
+            )
+            .unwrap();
+        pg.client
+            .execute(
+                "INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts)
+                 SELECT
+                     'funding-v2-main-generation-2-' || source_type,
+                     account_id,2,source_type,'generation-2-' || source_type,
+                     sum(balance_nano)::bigint,sum(reserved_nano)::bigint,sum(spent_nano)::bigint,
+                     1,CASE WHEN sum(balance_nano)>0 THEN 'active' ELSE 'exhausted' END,$1,$1
+                 FROM funding_lots_v2
+                 WHERE account_id='funding-v2-main' AND funding_generation=1
+                 GROUP BY account_id,source_type",
+                &[&generation_advance_ts],
+            )
+            .unwrap();
+        pg.client
+            .execute(
+                "UPDATE account_funding_head_v2
+                 SET active_generation=2,head_version=2,updated_ts=$1
+                 WHERE account_id='funding-v2-main'",
+                &[&generation_advance_ts],
+            )
+            .unwrap();
+        pg.client.batch_execute("COMMIT").unwrap();
+        let post_advance_state =
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle");
+        assert_eq!(
+            pg.settle_request(
+                "funding-v2-main-settle",
+                6 * BILLION,
+                Some("funding-v2-main-charge"),
+                None,
+            )
+            .unwrap(),
+            Some(13 * BILLION)
+        );
+        assert_eq!(
+            funding_v2_money_state(&mut pg, "funding-v2-main", "funding-v2-main-settle"),
+            post_advance_state,
+            "terminal replay must remain valid after the active funding generation advances"
+        );
+
+        pg.account_create("funding-v2-overrun", None, 5_000)
+            .unwrap();
+        pg.account_topup(
+            "funding-v2-overrun",
+            2 * BILLION,
+            Some("signup-bonus:overrun-seed"),
+        )
+        .unwrap();
+        pg.key_issue("funding-v2-overrun-key", "funding-v2-overrun", None)
+            .unwrap();
+        seed_active_funding_v2(
+            &mut pg,
+            "funding-v2-overrun",
+            &[
+                (
+                    "funding-v2-overrun-bonus",
+                    "welcome_bonus",
+                    "signup-bonus:overrun-seed",
+                    2 * BILLION,
+                ),
+                (
+                    "funding-v2-overrun-paid",
+                    "paid",
+                    "normalized-paid-anchor",
+                    0,
+                ),
+            ],
+        );
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-paid-overrun",
+                "funding-v2-overrun",
+                "funding-v2-overrun-key",
+                BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(BILLION)
+        );
+        let overrun_reserve: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     lot_source_type || ':' || reserved_nano::text,',' ORDER BY allocation_order
+                 ) FROM funding_reservation_allocations_v2 WHERE request_id=$1",
+                &[&"funding-v2-paid-overrun"],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(overrun_reserve, "welcome_bonus:1000000000,paid:0");
+        assert_eq!(
+            pg.settle_request(
+                "funding-v2-paid-overrun",
+                BILLION + 500_000_000,
+                Some("funding-v2-paid-overrun"),
+                None,
+            )
+            .unwrap(),
+            Some(500_000_000)
+        );
+        let overrun_terminal: String = pg
+            .client
+            .query_one(
+                "SELECT string_agg(
+                     lot_source_type || ':' || reserved_nano::text || ':' ||
+                     charged_nano::text || ':' || released_nano::text,
+                     ',' ORDER BY allocation_order
+                 ) FROM funding_reservation_allocations_v2 WHERE request_id=$1",
+                &[&"funding-v2-paid-overrun"],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            overrun_terminal,
+            "welcome_bonus:1000000000:1000000000:0,paid:0:500000000:0"
+        );
+
+        pg.account_create("funding-v2-wait", None, 5_000)
+            .unwrap();
+        pg.account_topup(
+            "funding-v2-wait",
+            2 * BILLION,
+            Some("platega:wait-seed"),
+        )
+        .unwrap();
+        pg.key_issue("funding-v2-wait-key", "funding-v2-wait", None)
+            .unwrap();
+        let mut normalizer = PgStore::connect(&url).unwrap();
+        let mut normalization = normalizer.client.transaction().unwrap();
+        let funding_lock = "funding-v2-account:funding-v2-wait";
+        normalization
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&funding_lock],
+            )
+            .unwrap();
+        let normalization_ts = now();
+        normalization
+            .execute(
+                "INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts)
+                 VALUES('funding-v2-wait',1,2,'wait-source','wait-normalization',
+                        $1,0,0,1,$2,$2)",
+                &[&(2 * BILLION), &normalization_ts],
+            )
+            .unwrap();
+        normalization
+            .execute(
+                "INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts)
+                 VALUES('funding-v2-wait-paid','funding-v2-wait',1,'paid','platega:wait-seed',
+                        $1,0,0,1,'active',$2,$2)",
+                &[&(2 * BILLION), &normalization_ts],
+            )
+            .unwrap();
+        normalization
+            .execute(
+                "INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts)
+                 VALUES('funding-v2-wait',1,1,$1)",
+                &[&normalization_ts],
+            )
+            .unwrap();
+
+        let (reserve_tx, reserve_rx) = std::sync::mpsc::channel();
+        let reserve_url = url.clone();
+        let reserve_owner = owner.clone();
+        let reserve_thread = std::thread::spawn(move || {
+            let mut writer = PgStore::connect_with_application_name(
+                &reserve_url,
+                "funding-v2-normalization-writer",
+            )
+            .unwrap();
+            reserve_tx
+                .send(
+                    writer
+                        .reserve_request(
+                            &reserve_owner,
+                            "funding-v2-after-normalization",
+                            "funding-v2-wait",
+                            "funding-v2-wait-key",
+                            BILLION,
+                            60,
+                        )
+                        .map_err(|error| format!("{error:#}")),
+                )
+                .unwrap();
+        });
+        wait_for_postgres_lock(&mut pg.client, "funding-v2-normalization-writer");
+        normalization.commit().unwrap();
+        assert_eq!(
+            reserve_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+            Some(BILLION)
+        );
+        reserve_thread.join().unwrap();
+        let snapshot_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM funding_reservation_snapshots_v2
+                 WHERE request_id='funding-v2-after-normalization'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            snapshot_count, 1,
+            "writer waiting behind normalization must reread and use the new funding head"
+        );
+        assert_eq!(
+            pg.cancel_request("funding-v2-after-normalization").unwrap(),
+            Some(2 * BILLION)
+        );
+
+        assert_eq!(
+            pg.reserve_request(
+                &owner,
+                "funding-v2-settlement-lock-order",
+                "funding-v2-wait",
+                "funding-v2-wait-key",
+                BILLION,
+                60,
+            )
+            .unwrap(),
+            Some(BILLION)
+        );
+        pg.enqueue_settlement(
+            "funding-v2-settlement-lock-order",
+            BILLION,
+            Some("funding-v2-settlement-lock-order"),
+            None,
+        )
+        .unwrap();
+        let mut account_locker = PgStore::connect(&url).unwrap();
+        let mut account_lock = account_locker.client.transaction().unwrap();
+        account_lock
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&funding_lock],
+            )
+            .unwrap();
+        let (settlement_tx, settlement_rx) = std::sync::mpsc::channel();
+        let settlement_url = url.clone();
+        let settlement_thread = std::thread::spawn(move || {
+            let mut writer = PgStore::connect_with_application_name(
+                &settlement_url,
+                "funding-v2-settlement-writer",
+            )
+            .unwrap();
+            settlement_tx
+                .send(
+                    writer
+                        .process_outbox_request("funding-v2-settlement-lock-order")
+                        .map_err(|error| format!("{error:#}")),
+                )
+                .unwrap();
+        });
+        wait_for_postgres_lock(&mut pg.client, "funding-v2-settlement-writer");
+        let mut observer = PgStore::connect(&url).unwrap();
+        let mut observer_tx = observer.client.transaction().unwrap();
+        observer_tx
+            .query_one(
+                "SELECT request_id FROM reservations
+                 WHERE request_id='funding-v2-settlement-lock-order' FOR UPDATE NOWAIT",
+                &[],
+            )
+            .expect("settlement must not lock the reservation before the account funding lock");
+        observer_tx.rollback().unwrap();
+        account_lock.commit().unwrap();
+        assert_eq!(
+            settlement_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+            Some(BILLION)
+        );
+        settlement_thread.join().unwrap();
+        let lock_order_state: (String, String) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT reservation.state,outbox.state
+                     FROM reservations reservation
+                     JOIN settlement_outbox outbox USING(request_id)
+                     WHERE reservation.request_id='funding-v2-settlement-lock-order'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1))
+        };
+        assert_eq!(lock_order_state, ("settled".into(), "done".into()));
+
         lock_holder
             .client
             .query_one(
