@@ -201,6 +201,10 @@ Engine хранит prepared releases и один active release head. Подг�
 - engine migration `crates/registry/migrations_pg/0023_pricing_release_funding_v2.sql` добавляет
   release/funding authority, request snapshots, deferred aggregate/allocation invariants и nullable
   v2 lineage старых writer surfaces;
+- engine migration `crates/registry/migrations_pg/0024_pre_cutover_funding_snapshots_v2.sql`
+  добавляет независимый от prepared release immutable funding snapshot для запросов переходного
+  периода. Он разрывает цикл «release assignment требует funding generation, а normalized writer
+  требует allocation snapshot» и не создаёт release head, policy либо новый pricing path;
 - commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
   inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
   receipt authority;
@@ -226,6 +230,13 @@ wire-схемы и typed prepare/read methods добавляются в `package
 - не создаёт новых tier/track records.
 
 Новый release остаётся dormant. Поэтому deploy runtime сам по себе не меняет ни цену, ни доступ.
+
+До появления global release head точная pricing identity остаётся в существующем immutable
+`pricing_admission_snapshots`, а funding generation/bonus-first allocations — в отдельном
+`funding_reservation_{snapshots,allocations}_v2`. После активации release новые requests используют
+связанные `pricing_request_{snapshots,funding_allocations}_v2`. Оба формата закрепляют reserve-time
+решение и позволяют старому запросу завершиться после cutover; один request не может иметь оба
+funding snapshot одновременно.
 
 ### 7.3. Online backfill без остановки writers
 

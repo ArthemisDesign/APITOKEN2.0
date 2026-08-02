@@ -165,9 +165,11 @@ const MIGRATION_0021: &str = include_str!("../migrations_pg/0021_execution_group
 const MIGRATION_0022: &str =
     include_str!("../migrations_pg/0022_gemini_exact_window_calibration.sql");
 const MIGRATION_0023: &str = include_str!("../migrations_pg/0023_pricing_release_funding_v2.sql");
+const MIGRATION_0024: &str =
+    include_str!("../migrations_pg/0024_pre_cutover_funding_snapshots_v2.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_SCHEMA_VERSION: i64 = 24;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -194,6 +196,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (21, MIGRATION_0021),
     (22, MIGRATION_0022),
     (23, MIGRATION_0023),
+    (24, MIGRATION_0024),
 ];
 
 #[cfg(test)]
@@ -7933,6 +7936,40 @@ mod tests {
     }
 
     #[test]
+    fn pre_cutover_funding_snapshot_migration_is_additive_and_release_independent() {
+        let normalized = MIGRATION_0024
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for table in [
+            "funding_reservation_snapshots_v2",
+            "funding_reservation_allocations_v2",
+        ] {
+            assert!(
+                normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing pre-cutover funding v2 table {table}",
+            );
+        }
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+        assert!(!normalized.contains(" pricing_mode "));
+        assert!(!normalized.contains(" track "));
+        assert!(!normalized.contains(" tier "));
+        assert!(!normalized.contains(" retention "));
+        assert!(normalized.contains("lot_source_type IN ('paid', 'welcome_bonus')"));
+        assert!(normalized.contains("lot_source_type = 'paid'"));
+        assert!(normalized.contains("account funding v2 head cannot be deleted"));
+        assert!(
+            normalized.contains("account funding v2 head must advance one version and generation")
+        );
+        assert!(normalized
+            .contains("active normalized reservation lacks one compatible funding v2 snapshot"));
+        assert!(!normalized.contains("pricing_release_head_v2"));
+        assert!(!normalized.contains("pricing_release_activations_v2"));
+    }
+
+    #[test]
     fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         assert!(
             ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
@@ -8179,6 +8216,266 @@ mod tests {
                 "ROLLBACK TO SAVEPOINT immutable_policy; RELEASE SAVEPOINT immutable_policy",
             )
             .unwrap();
+
+        pg.client.batch_execute("ROLLBACK").unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Run with an isolated database, for example:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::pre_cutover_funding_snapshot_postgres_matrix`
+    #[test]
+    fn pre_cutover_funding_snapshot_postgres_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping pre-cutover funding v2 PostgreSQL matrix: test URL is unset");
+            return;
+        };
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+        pg.migrate().unwrap();
+        assert_eq!(pg.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 INSERT INTO accounts(
+                     id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created
+                 ) VALUES
+                     ('pre-cutover-v2','pre-cutover-v2',900,0,100,5000,'active',100,'matrix'),
+                     ('pre-cutover-legacy','pre-cutover-legacy',1000,0,0,5000,
+                      'active',100,'matrix');
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'pre-cutover-v2',1,2,'pre-cutover-source','pre-cutover-normalization',
+                     900,100,0,1,100,100
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     ('pre-cutover-bonus','pre-cutover-v2',1,'welcome_bonus',
+                      'signup-bonus:user',0,60,0,1,'exhausted',100,100),
+                     ('pre-cutover-paid','pre-cutover-v2',1,'paid','normalized-paid',
+                      900,40,0,1,'active',100,100);
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES
+                     ('pre-cutover-request','pre-cutover-v2','pre-cutover-key',100,900,
+                      'pre-cutover-owner',1,1000,'reserved',100,100),
+                     ('legacy-request','pre-cutover-legacy','legacy-key',0,1000,
+                      'pre-cutover-owner',1,1000,'reserved',100,100);
+                 INSERT INTO funding_reservation_snapshots_v2(
+                     request_id,account_id,funding_schema_version,funding_generation,
+                     funding_head_version,hold_nano,snapshot_digest,created_ts
+                 ) VALUES(
+                     'pre-cutover-request','pre-cutover-v2',2,1,1,100,
+                     'pre-cutover-snapshot-digest',100
+                 );
+                 INSERT INTO funding_reservation_allocations_v2(
+                     request_id,account_id,funding_generation,allocation_order,lot_id,
+                     lot_source_type,lot_version,reserved_nano,charged_nano,released_nano
+                 ) VALUES
+                     ('pre-cutover-request','pre-cutover-v2',1,1,'pre-cutover-bonus',
+                      'welcome_bonus',1,60,NULL,NULL),
+                     ('pre-cutover-request','pre-cutover-v2',1,2,'pre-cutover-paid',
+                      'paid',1,40,NULL,NULL);
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('pre-cutover-v2',1,1,100);
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 SET CONSTRAINTS ALL DEFERRED;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT missing_normalized_snapshot")
+            .unwrap();
+        let missing_snapshot = pg
+            .client
+            .batch_execute(
+                "INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'missing-pre-cutover-snapshot','pre-cutover-v2','missing-key',0,900,
+                     'pre-cutover-owner',1,1000,'reserved',100,100
+                 );
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .expect_err("normalized reservation without one funding snapshot must fail");
+        assert!(missing_snapshot.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("lacks one compatible funding v2 snapshot")
+        }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT missing_normalized_snapshot;
+                 RELEASE SAVEPOINT missing_normalized_snapshot;
+                 SET CONSTRAINTS ALL DEFERRED;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT delete_active_snapshot")
+            .unwrap();
+        let deleted_snapshot = pg
+            .client
+            .batch_execute(
+                "DELETE FROM funding_reservation_snapshots_v2
+                  WHERE request_id='pre-cutover-request';
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .expect_err("active normalized reservation must retain its funding snapshot");
+        assert!(deleted_snapshot.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("lacks one compatible funding v2 snapshot")
+        }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT delete_active_snapshot;
+                 RELEASE SAVEPOINT delete_active_snapshot;
+                 SET CONSTRAINTS ALL DEFERRED;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT delete_funding_head")
+            .unwrap();
+        let deleted_head = pg
+            .client
+            .batch_execute("DELETE FROM account_funding_head_v2 WHERE account_id='pre-cutover-v2';")
+            .expect_err("a normalized account cannot return to legacy funding writers");
+        assert!(deleted_head.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("funding v2 head cannot be deleted")
+        }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT delete_funding_head;
+                 RELEASE SAVEPOINT delete_funding_head;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute("SAVEPOINT paid_before_bonus")
+            .unwrap();
+        let wrong_order = pg
+            .client
+            .batch_execute(
+                "INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts
+                 ) VALUES(
+                     'wrong-order-request','pre-cutover-v2','wrong-order-key',10,900,
+                     'pre-cutover-owner',1,1000,'reserved',100,100
+                 );
+                 INSERT INTO funding_reservation_snapshots_v2(
+                     request_id,account_id,funding_schema_version,funding_generation,
+                     funding_head_version,hold_nano,snapshot_digest,created_ts
+                 ) VALUES(
+                     'wrong-order-request','pre-cutover-v2',2,1,1,10,
+                     'wrong-order-snapshot-digest',100
+                 );
+                 INSERT INTO funding_reservation_allocations_v2(
+                     request_id,account_id,funding_generation,allocation_order,lot_id,
+                     lot_source_type,lot_version,reserved_nano,charged_nano,released_nano
+                 ) VALUES
+                     ('wrong-order-request','pre-cutover-v2',1,1,'pre-cutover-paid',
+                      'paid',1,5,NULL,NULL),
+                     ('wrong-order-request','pre-cutover-v2',1,2,'pre-cutover-bonus',
+                      'welcome_bonus',1,5,NULL,NULL);
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .expect_err("pre-cutover funding allocation must remain bonus-first");
+        assert!(wrong_order
+            .as_db_error()
+            .is_some_and(|error| { error.message().contains("do not cover hold bonus-first") }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT paid_before_bonus;
+                 RELEASE SAVEPOINT paid_before_bonus;
+                 SET CONSTRAINTS ALL DEFERRED;",
+            )
+            .unwrap();
+
+        pg.client
+            .batch_execute(
+                "UPDATE accounts
+                    SET balance_nano=880,reserved_nano=0,spent_nano=120
+                  WHERE id='pre-cutover-v2';
+                 UPDATE account_funding_generations_v2
+                    SET balance_nano=880,reserved_nano=0,spent_nano=120,version=2,updated_ts=200
+                  WHERE account_id='pre-cutover-v2' AND generation=1;
+                 UPDATE funding_lots_v2
+                    SET reserved_nano=0,spent_nano=60,version=2,updated_ts=200
+                  WHERE lot_id='pre-cutover-bonus';
+                 UPDATE funding_lots_v2
+                    SET balance_nano=880,reserved_nano=0,spent_nano=60,version=2,updated_ts=200
+                  WHERE lot_id='pre-cutover-paid';
+                 UPDATE funding_reservation_allocations_v2
+                    SET charged_nano=60,released_nano=0
+                  WHERE request_id='pre-cutover-request' AND allocation_order=1;
+                 UPDATE funding_reservation_allocations_v2
+                    SET charged_nano=60,released_nano=0
+                  WHERE request_id='pre-cutover-request' AND allocation_order=2;
+                 UPDATE reservations
+                    SET state='settled',actual_nano=120,settled_ts=200,updated_ts=200
+                  WHERE request_id='pre-cutover-request';
+                 SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        let terminal = pg
+            .client
+            .query_one(
+                "SELECT account.balance_nano,account.reserved_nano,account.spent_nano,
+                        generation.balance_nano,generation.reserved_nano,generation.spent_nano,
+                        sum(allocation.charged_nano)::bigint
+                   FROM accounts account
+                   JOIN account_funding_generations_v2 generation
+                     ON generation.account_id=account.id AND generation.generation=1
+                   JOIN funding_reservation_allocations_v2 allocation
+                     ON allocation.request_id='pre-cutover-request'
+                  WHERE account.id='pre-cutover-v2'
+                  GROUP BY account.balance_nano,account.reserved_nano,account.spent_nano,
+                           generation.balance_nano,generation.reserved_nano,
+                           generation.spent_nano",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                terminal.get::<_, i64>(0),
+                terminal.get::<_, i64>(1),
+                terminal.get::<_, i64>(2),
+                terminal.get::<_, i64>(3),
+                terminal.get::<_, i64>(4),
+                terminal.get::<_, i64>(5),
+                terminal.get::<_, i64>(6),
+            ),
+            (880, 0, 120, 880, 0, 120, 120),
+        );
 
         pg.client.batch_execute("ROLLBACK").unwrap();
         lock_holder

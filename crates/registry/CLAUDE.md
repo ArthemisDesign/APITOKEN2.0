@@ -225,6 +225,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   ссылаться на snapshot для v2 rows. Service policy не имеет product catalog/switch/rules,
   `meter_only` требует нулевой customer charge. Новый runtime не использует эти структуры до
   отдельного producer SHA после зелёного migration/watchdog этого checkpoint.
+- **Pre-cutover funding snapshot checkpoint:** PostgreSQL migration `0024` добавляет независимые
+  `funding_reservation_snapshots_v2`/`funding_reservation_allocations_v2` для account-local Stage 6.
+  Они не выбирают pricing release и не создают head: до Stage 9 существующий immutable pricing
+  snapshot остаётся authority цены, а новый snapshot закрепляет только active funding generation,
+  bonus-first lot order и paid-only overdraft. Deferred coverage запрещает новую незавершённую
+  reservation нормализованного аккаунта без ровно одного compatible funding snapshot. Runtime
+  writers подключаются только отдельным SHA после зелёного migration/watchdog; funding head после
+  первой normalization не удаляется и двигается только monotonic generation/version step.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact active-account coverage и готовые funding dependencies. Ни один метод не

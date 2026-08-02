@@ -32,6 +32,14 @@ Immutable historical rows могут сохранять старые значе�
 
 Это приложение выкатывается blue-green при старом active release и само по себе не меняет цену.
 
+Пока global release head отсутствует, snapshot составной: существующий immutable
+`pricing_admission_snapshots` закрепляет старую активную цену, а
+`funding_reservation_snapshots_v2` вместе с `funding_reservation_allocations_v2` закрепляет exact
+funding generation и bonus-first lots. Это необходимо, потому что полный prepared release сам
+ссылается на уже нормализованные funding generations. После Stage 9 новые запросы атомарно пишут
+release-связанные таблицы migration 0023; pre-cutover rows продолжают завершаться по своему
+составному snapshot и не пересчитываются.
+
 ## Online plan/apply
 
 Planner строит content-addressed plan по всему inventory. Ручной resolution/reviewer artifact не
