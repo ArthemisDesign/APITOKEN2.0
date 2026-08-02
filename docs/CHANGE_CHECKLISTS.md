@@ -13,12 +13,29 @@
 
 ## Новая модель (в существующем провайдере)
 
+Публикация двухэтапная. Implementation/research мёржится первым и остаётся dormant: на этом шаге
+запрещено добавлять модель в production defaults/systemd, публичный model catalog, router presets,
+сайт и публичные docs. После GREEN exact implementation SHA выполняется controlled production live
+на owned credential. Бесплатный `countTokens` идёт первым, затем минимальный generation; aggregate
+admission budget по умолчанию не больше `$0.0001` (0,01 цента). Quota/catalog row и `countTokens`
+не доказывают generation. Публикационный gate требует одновременно generation 2xx, реальный output,
+terminal authoritative usage, incremental SSE и все заявленные controls. Только после этого
+отдельный publication-коммит проходит публичную половину чеклиста. Любой failed generation означает
+withdrawal: публичные поверхности снимаются, а immutable/dormant artifacts не переписываются.
+
+- [ ] Research/implementation commit: официальный model/price/control contract, точный private wire
+      mapping и controlled canary path; runtime implementation по умолчанию dormant.
 - [ ] `crates/metering/src/{lib,codex,gemini}.rs` — тарифная таблица (authority цен, nanoUSD).
 - [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` и/или pricing-схемы.
+- [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls подтверждены
+      на каждой заявленной subscription plan/model tier; sanitized evidence записано в provider doc.
+- [ ] Publication commit не смешан с implementation commit; при failed live вместо него выполнен
+      withdrawal из всех ошибочно затронутых public/default поверхностей.
 - [ ] `apps/web/src/lib/models.ts` — SEO-каталог (шапка файла требует синхронизации с
-      `crates/metering`).
+      `crates/metering`); выполняется только в publication commit.
 - [ ] `apps/web/src/app/docs/` — docs-портал: `integration-builder-data.ts` и, если модель
-      видна в справке, `api-reference-data.ts` / `docs-portal.tsx`.
+      видна в справке, `api-reference-data.ts` / `docs-portal.tsx`; только после live gate.
+- [ ] Production defaults/systemd и `crates/router/routing-presets.json` — только после live gate.
 - [ ] `docs/engine/<провайдер>.md` — список моделей провайдера.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — новая модель НЕ включается автоматически:
       нужна явная catalog generation (каталоги/свитчи/политики в `crates/registry/src/pricing/`

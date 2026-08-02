@@ -14,19 +14,17 @@
 
 ## Executive verdict
 
-- Implementation readiness: `wire-fix candidate`; sandbox, non-sandbox-host and signed-UA
-  experiments all failed, so the corroborated minimal current-client headers are the final
-  isolated post-deploy experiment.
+- Implementation readiness: `withdrawn`; sandbox, non-sandbox-host, signed-UA and final minimal
+  current-client-header experiments all returned the same generation 404.
 - Terms/compliance: no new OAuth identity or scope; the existing Gemini subscription review still
   governs. Undocumented subscription transport evidence is not treated as vendor permission.
 - Credential verdict: unchanged and within the existing encrypted roster threat model.
 - Usage/settlement verdict: official paid rates and all existing token/Search dimensions are exact;
   successful generation must still prove terminal non-zero `usageMetadata` on the subscription wire.
-- Streaming verdict: implementation reuses the proven incremental SSE translator, but this exact
-  model still needs a live incremental frame and terminal usage.
+- Streaming verdict: failed before any public frame; no terminal usage exists for this model.
 - Quota verdict: owned discovery proves both bounded quota rows exist, not that generation works.
-- Main unresolved risk: the minimal current-client tuple may still reject this owned plan. That
-  result requires withdrawing the model rather than guessing a private alias.
+- Final decision: withdraw from production/public surfaces. Quota and token counting do not
+  outweigh a deterministic model-resource 404, and no private generation alias is guessed.
 
 ## Official sources
 
@@ -42,8 +40,8 @@
 | Exact plan / surface | Official status | Owned live status | Native route | Usage authority | GA decision |
 |---|---|---|---|---|---|
 | Gemini Developer API paid standard | public preview model and rates documented | not required for subscription transport | public Developer API | terminal Developer API usage | pricing capability only |
-| Gemini CLI Code Assist | official CLI exposes and sends the public id | owned catalogue has `gemini-3-flash` and `gemini-3-flash-agent` | legacy Code Assist wrapper | terminal subscription usage | live generation pending |
-| Google AI Pro via Antigravity | no public normative private-wire contract | owned quota rows present on 2026-08-02 | Antigravity agent wrapper | terminal subscription usage | candidate until controlled smoke |
+| Gemini CLI Code Assist | official CLI exposes and sends the public id | owned catalogue has `gemini-3-flash` and `gemini-3-flash-agent` | legacy Code Assist wrapper | terminal subscription usage | no owned successful generation; not published |
+| Google AI Pro via Antigravity | no public normative private-wire contract | owned quota rows present on 2026-08-02; all generation hypotheses returned 404 | Antigravity agent wrapper | no terminal usage | rejected/withdrawn |
 | Google AI Ultra / Code Assist Standard / Enterprise / Workspace AI Ultra | provider accepts these paid-plan classes generally | no model-specific owned run | existing plan-specific transport | unknown for this model | no availability claim |
 
 A quota row is not generation evidence. A successful Google AI Pro run would still not prove every
@@ -53,7 +51,7 @@ other accepted paid plan.
 
 | Public id | Generation wire id | Quota identity | Controls | Price schedule | Evidence | Decision |
 |---|---|---|---|---|---|---|
-| `gemini-3-flash-preview` | unchanged public id | Antigravity agent: `gemini-3-flash-agent`; visible non-agent row: `gemini-3-flash`; legacy CLI: public id | `thinkingConfig` keeps `minimal\|low\|medium\|high`; unknown levels fail locally | `google/gemini-developer-api/2026-08-02` | official CLI + signed Antigravity inspection + owned quota | implemented; live gate pending |
+| `gemini-3-flash-preview` | unchanged public id | Antigravity agent: `gemini-3-flash-agent`; visible non-agent row: `gemini-3-flash`; legacy CLI: public id | `thinkingConfig` keeps `minimal\|low\|medium\|high`; unknown levels fail locally | `google/gemini-developer-api/2026-08-02` | official CLI + signed Antigravity inspection + owned quota, but all live generation 404 | dormant implementation only; rejected for publication |
 
 The installed, signed Antigravity 2.4.3 language server contains the public model ID and no
 `gemini-3-flash-agent` generation string. Combined with the existing pinned `requestType=agent`
@@ -91,7 +89,7 @@ charged only from provider-reported query counts.
 |---|---|---|---|---|---|
 | `gemini-3-flash-agent` | provider row may carry reset; fixed duration is not asserted | provider `remainingAmount` and/or decimal fraction | explicit zero on a fresh catalogue | owned Antigravity discovery | generation admission, steering and retry time |
 | `gemini-3-flash` | provider row may carry reset; fixed duration is not asserted | same provider fields | not used to invent a generation alias | owned Antigravity discovery | operator visibility only |
-| public id on legacy CLI | existing legacy quota response | existing provider fields | existing explicit-zero policy | official CLI identity; model-specific live row pending | legacy admission only |
+| public id on legacy CLI | existing legacy quota response | existing provider fields | existing explicit-zero policy | official CLI identity; no owned successful generation | no publication claim |
 
 Quota amount is never converted into API dollars or inferred from plan price. The existing 5h and
 weekly calibration authority remains independent of these per-model catalogue rows.
@@ -161,22 +159,21 @@ and metadata simultaneously and falsely attributing success.
 | 2026-08-02 | same owned opaque profile | public id unchanged on sandbox daily origin | countTokens preflight plus four thinking levels, SSE, cache, audio and tool prompt | countTokens 2xx; all generation 404 NOT_FOUND | no public frame | no; zero immutable turns and zero spend | both rows still present | endpoint/model resource mismatch before generation |
 | 2026-08-02 | same owned opaque profile | public id unchanged on non-sandbox daily origin, existing 2.2.1 UA | same controlled matrix | countTokens 2xx; all ten bounded generation legs 404 NOT_FOUND | no public frame | no; zero immutable turns and zero spend | both rows still present | origin alone is not the selector; current-UA A/B required |
 | 2026-08-02 | same owned opaque profile | same host/id/wrapper, signed 2.4.3 UA plus old IDE metadata | one-token micro generation | 404 NOT_FOUND after countTokens 2xx | no public frame | no; zero Preview turns and spend in immutable five-minute window | both rows still present | signed release identity alone is not the selector |
-| minimal-header pending | same owned opaque profile | same host/id/wrapper/UA, without old IDE metadata | one-token micro generation | pending | pending | required | exact profile attribution required | final isolated experiment; stop after one result |
+| 2026-08-02 | same owned opaque profile | same host/id/wrapper/UA, without old IDE metadata | successful one-token count preflight, then one-token micro generation capped at `$0.0001` | 404 NOT_FOUND | no public frame | no; exact `not_started`, no immutable turn, zero spend | both rows still present | final hypothesis rejected; withdraw model |
 
-The live runner must resolve exactly `gemini_oauth_000001` as the only healthy profile and use
-`--models gemini-3-flash-preview`, require canonical calibration request attribution, and retain
-only the sanitized report. No paid leg is retried without authoritative `not_started` proof.
+No paid leg was retried after the final result. Any future reconsideration needs new upstream
+evidence, an owned minimal canary and the two-commit live-first publication gate.
 
 ## Conflict log
 
 | Topic | Official | Owned live | Chosen behavior | Risk / next experiment |
 |---|---|---|---|---|
 | generation ID | official CLI sends public preview id | sandbox countTokens accepts it; sandbox generation returns model-resource 404 | keep public id unchanged | test the current signed origin before any private alias |
-| generation origin | no public normative subscription contract | signed 2.4.3 and two independent implementations use non-sandbox daily; sandbox and corrected-host live generation are 404 | keep only this preview on non-sandbox daily | minimal-header micro-smoke after deploy |
-| request headers | no normative private header contract | host and signed-UA tests return 404; both pinned implementations use Authorization, Content-Type and UA without the older IDE tuple | omit only the two IDE metadata headers on Preview; leave working/background routes unchanged | if still 404, withdraw the model |
+| generation origin | no public normative subscription contract | signed 2.4.3 and two independent implementations use non-sandbox daily; sandbox and corrected-host live generation are 404 | retain origin only in dormant test support | model withdrawn |
+| request headers | no normative private header contract | host, signed-UA and minimal-header tests all return 404 | retain minimal tuple only for reproducibility; leave working/background routes unchanged | model withdrawn |
 | quota identity | no normative private row contract | agent and non-agent rows exist | Antigravity agent admission uses only `gemini-3-flash-agent` | explicit zero may reveal a changed row; withdraw/fix on evidence |
-| subscription availability | public Developer API model exists | quota and countTokens exist, sandbox generation does not | candidate, not GA evidence | non-sandbox 404 requires allowlist withdrawal or a separately proven header correction |
-| thinking controls | public levels documented | subscription execution pending | preserve public level in `thinkingConfig` | test default plus all four levels |
+| subscription availability | public Developer API model exists | quota and countTokens exist; every owned generation path returns 404 | rejected for this subscription backend | require new upstream evidence before any new canary |
+| thinking controls | public levels documented | all four subscription execution probes returned 404 | preserve dormant parser behavior only | no public capability claim |
 
 ## Unsupported surfaces
 
@@ -193,8 +190,8 @@ only the sanitized report. No paid leg is retried without authoritative `not_sta
 |---|---|---|---|
 | add exact paid tariff and limits | official model and pricing pages | `crates/metering/src/gemini.rs`, exact-rate tests | remove model in a new tariff epoch only if official facts are withdrawn |
 | keep public wire id, map Antigravity quota separately | official CLI, signed artifact, owned rows | `crates/forward/src/gemini/{config,pool,api}.rs` | remove from runtime allowlist or amend mapping from new live evidence |
-| publish dormant pricing generation 4 without mutating generation 3 | immutable pricing contract | `packages/contracts`, `crates/forward/src/pricing.rs`, digest tests | leave frozen generations; publish a later additive generation |
-| expose in web/catalog and systemd allowlist | model contract plus required post-deploy smoke | web model tests, server conversion tests, watchdog regression | new fix SHA removes model from public allowlist/catalog if smoke fails |
+| retain rejected dormant pricing generation 4 without mutating generation 3 | immutable pricing contract | `packages/contracts`, `crates/forward/src/pricing.rs`, digest tests | leave frozen generations; use a later additive generation only after a new live gate |
+| withdraw from web/catalog/router/systemd defaults | final minimal-header generation 404 with exact `not_started`, no immutable turn and zero spend | web model tests, server config tests, router preset tests, watchdog regression | publication requires a new additive capability and full live gate; never reactivate frozen generation 4 |
 
 ## Secret-hygiene confirmation
 

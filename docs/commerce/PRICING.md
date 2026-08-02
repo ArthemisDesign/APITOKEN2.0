@@ -48,8 +48,12 @@ fail closed; scalar fallback запрещён.
 Текущий Gemini tariff schedule `google/gemini-developer-api/2026-08-02` включает
 `gemini-3-flash-preview`: text/image/video input `$0.50/M`, audio input `$1/M`, cached text
 `$0.05/M`, cached audio `$0.10/M`, output вместе с thinking `$3/M` и Search `$14/1000 queries`.
-В B2C после общей скидки 50% эффективные суммы составляют половину этих официальных ставок; новый
-model ID всё равно требует явной catalog generation и не появляется в OpenKeys автоматически.
+Эта запись сохраняет официальный тариф как research/metering authority, но не делает модель
+продаваемой: controlled Google AI Pro generation вернул 404 без output/usage, поэтому модель снята
+из production allowlist, public catalog, router presets и сайта. Immutable capability generation 4
+с этим ID остаётся dormant/rejected и не должна активироваться. Будущая публикация возможна только
+через новую additive capability после полного live gate; в OpenKeys модель автоматически не
+появляется.
 
 Policy versions immutable, content-addressed и доставляются catalog → switches → policy. Все
 аккаунты переключаются одним active release head, а не последовательным обновлением bindings.

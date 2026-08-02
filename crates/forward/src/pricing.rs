@@ -29,7 +29,9 @@ mod shadow;
 /// The manifest lists every reviewed capability generation side by side: generation 1 (the active
 /// production authority), generation 2 (`claude-opus-5` + `claude-fable-5`), frozen dormant
 /// generation 3 (the original tariff-pinned Gemini model set under engine provider id `google`),
-/// and dormant generation 4 (generation 3 plus Gemini 3 Flash Preview).
+/// and rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview). Generation 4 is
+/// retained only because its digest is immutable; its failed live generation gate forbids catalog
+/// materialization or activation, and future admission requires a new capability generation.
 /// Adding a member is inert — resolution keeps accepting the currently active pins until commerce
 /// materializes and the global release flow later activates a new catalog — and is required before
 /// preparation, because the resolver fails closed on any catalog/switch capability outside this

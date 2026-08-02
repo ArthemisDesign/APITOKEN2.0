@@ -367,9 +367,9 @@ fn gemini_config() -> Option<GeminiConfig> {
         // Public Gemini 3 ids require reviewed canonical→private tier routing. A model enters this
         // production default only after generate + native stream + countTokens pass on every
         // supported thinking level of the current subscription profile. In particular, 2.5 Pro
-        // advertises quota but generation returns persistent UNAVAILABLE; quota evidence alone
-        // never enables a model.
-        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        // and 3 Flash Preview advertise quota but generation remains unavailable/not found;
+        // quota evidence and countTokens alone never enable a model.
+        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)

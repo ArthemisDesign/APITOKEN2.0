@@ -45,7 +45,9 @@ owner или отсутствующий engine account — typed blocker. Акк
 восемь тарифно закреплённых Gemini-моделей; target generation 4 добавляет
 `gemini-3-flash-preview`. OpenKeys target по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
 Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет 1:1.
-Capability publication не является таким enablement.
+Capability publication не является таким enablement. После failed production generation gate
+generation 4 остаётся immutable rejected artifact: Stage 5 не должен materialize или финализировать
+target/recovery plan на её digest. До новой additive capability используется generation 3.
 
 Planner резервирует target generation и recovery generation следующего monotonic номера и строит
 immutable source/policy/assignment plan для обеих. На этой фазе balance assignments намеренно имеют

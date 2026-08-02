@@ -223,7 +223,10 @@ frozen capability generation 3 и additive generation 4, которая доба
 подготовить pinned catalog/release identities: публикация capability не двигает catalog,
 switches, account policies или release head и потому не меняет live traffic. Внутренний provider
 ID Gemini в pricing authority — `google`; продуктовые документы продолжают называть провайдера
-Gemini.
+Gemini. Generation 4 теперь является immutable rejected artifact: production live generation
+вернул 404 без usage, поэтому её digest сохраняется для исторической воспроизводимости, но catalog,
+policy и release, которые ссылаются на generation 4, нельзя materialize или activate. Рабочим
+target остаётся generation 3 до отдельной новой additive capability после полного live gate.
 
 Все три migration surfaces пусты и dormant: наличие таблиц не создаёт policy, release head,
 funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных

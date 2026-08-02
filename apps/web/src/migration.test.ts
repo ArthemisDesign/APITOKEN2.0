@@ -289,6 +289,9 @@ describe("completed Next.js migration", () => {
 
   it("keeps the verified model prices and context windows", () => {
     const marketing = readFileSync(join(root, "components", "marketing-pages.tsx"), "utf8");
+    const seoModels = readFileSync(join(root, "lib", "models.ts"), "utf8");
+    const integrationModels = readFileSync(join(appRoot, "docs", "integration-builder-data.ts"), "utf8");
+    const llms = readFileSync(join(root, "lib", "llms.ts"), "utf8");
     expect(marketing).toContain('["Claude Opus 4.8","claude-opus-4-8","1M","$5","$25"');
     expect(marketing).toContain('["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25"');
     expect(marketing).toContain('["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15"');
@@ -298,7 +301,6 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6"');
     expect(marketing).toContain('["GPT-5.5","gpt-5.5","272K","$5","$30"');
     expect(marketing).toContain('["GPT-5.4","gpt-5.4","272K","$2.50","$15"');
-    expect(marketing).toContain('["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00"');
     expect(marketing).toContain('["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50"');
     expect(marketing).toContain('["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00"');
     expect(marketing).toContain('["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*"');
@@ -306,6 +308,9 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["Gemini 2.5 Flash","gemini-2.5-flash","1M","$0.30","$2.50"');
     expect(marketing).toContain('["Gemini 2.5 Flash-Lite","gemini-2.5-flash-lite","1M","$0.10","$0.40"');
     expect(marketing).toContain('["Gemini 3.1 Flash Image (Nano Banana 2)","gemini-3.1-flash-image","128K","$0.50","$3.00"');
+    for (const publicSurface of [marketing, seoModels, integrationModels, llms]) {
+      expect(publicSurface).not.toContain("gemini-3-flash-preview");
+    }
   });
 
   it("keeps the header, terminal, workflow hover, and wave loop regression-safe", () => {

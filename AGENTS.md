@@ -152,6 +152,15 @@ Body должен объяснять:
   API, sales feed, способ оплаты, алерт) — пройди соответствующий чеклист из
   `docs/CHANGE_CHECKLISTS.md` целиком и укажи в body коммита, какой чеклист применён и какие
   пункты неприменимы с причиной. Молча пропущенный пункт — нарушение.
+- Новую модель существующего провайдера доставляй двумя этапами. Первый коммит содержит research,
+  тариф и dormant implementation/canary, но НЕ production defaults, публичный catalog, router
+  presets, сайт или публичные docs. Публикация идёт отдельным последующим коммитом только после
+  GREEN exact implementation SHA и controlled production live: generation 2xx с реальным output,
+  terminal authoritative usage, incremental SSE и все заявленные controls. Строка quota/catalog и
+  успешный `countTokens` этим доказательством не являются. Failed generation означает withdrawal,
+  а не публикацию «для проверки». Admission micro-smoke сначала делает бесплатный `countTokens`,
+  затем минимальный generation с aggregate cap `$0.0001` (0,01 цента), если человек явно не
+  разрешил больший бюджет.
 - Исключение: `docs/audits/*` — исторические снимки на дату. Их не редактируют задним числом;
   новый аудит — новым файлом с датой в названии или заголовке.
 

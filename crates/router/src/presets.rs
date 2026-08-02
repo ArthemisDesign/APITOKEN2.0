@@ -232,6 +232,10 @@ mod tests {
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.presets.len(), 4);
         assert!(parsed.models.len() >= 22);
+        assert!(parsed
+            .models
+            .iter()
+            .all(|model| model.id != "google/gemini-3-flash-preview"));
     }
 
     #[test]

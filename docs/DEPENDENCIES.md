@@ -165,9 +165,11 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 
 - `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, catalog generations и pricing release
   schemas. Frozen dormant capability generation 3 сохраняет исходный main
-  Anthropic/OpenAI/Gemini set, additive target generation 4 добавляет
-  `gemini-3-flash-preview` (`google` — internal engine provider id), а OpenKeys target set остаётся явным
-  Anthropic/OpenAI subset. `B2C_PRICING_TIERS` — cleanup target, не authority нового pricing.
+  Anthropic/OpenAI/Gemini set. Immutable generation 4 исторически добавила
+  `gemini-3-flash-preview` (`google` — internal engine provider id), но live generation gate дал
+  404, поэтому generation 4 остаётся rejected/dormant и не может быть материализована или
+  активирована; её digest не переписывается. OpenKeys target set остаётся явным Anthropic/OpenAI
+  subset. `B2C_PRICING_TIERS` — cleanup target, не authority нового pricing.
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.
 - `apps/web/src/lib/pricing-tiers.ts` — legacy cleanup target; витрина должна читать/показывать

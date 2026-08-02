@@ -389,11 +389,11 @@ export const MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES = Object.freeze([
 ]);
 
 /**
- * Canonical Gemini model identities reviewed by the native runtime and
- * `crates/metering`. The engine provider id is `google`; Gemini is the public
- * product/provider name. Keep this list byte-for-byte aligned with the
- * runtime-capable, tariff-pinned catalogue rather than inferring models from
- * aliases or remote `/models` responses.
+ * Canonical Gemini model identities pinned by the native implementation and
+ * `crates/metering`. This is compile-time pricing/capability evidence, not a
+ * production publication list: rejected dormant identities remain here when an
+ * immutable capability generation already references them. The engine provider
+ * id is `google`; Gemini is the public product/provider name.
  */
 export const CURRENT_GEMINI_CANONICAL_MODELS = [
   "gemini-2.5-flash",
@@ -436,10 +436,10 @@ export const MULTI_DISCOUNT_GEN3_MAIN_CATALOG_ENTRIES = Object.freeze([
 ]);
 
 /**
- * Dormant target capability for the global pricing-release rollout. Generation 4 extends the
- * frozen generation 3 identity with Gemini 3 Flash Preview while preserving the exact preceding
- * entries. Merely publishing this identity does not advance a catalog, provider switch, account
- * policy, or release head.
+ * Rejected dormant capability retained for immutable-history verification. Generation 4 extends
+ * frozen generation 3 with Gemini 3 Flash Preview, but its live generation gate returned 404.
+ * Never materialize or activate a catalog/release on this generation; a future successful model
+ * admission must use a new additive generation. The exact entries and digest remain frozen.
  *
  * The digest is reproducible with the Stage 5 capability builder over
  * `{generation: 4, schema_version: 1, entries, aliases}`. Each entry carries
