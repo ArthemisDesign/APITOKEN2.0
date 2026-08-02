@@ -15,15 +15,6 @@ pub const GEMINI_NODE_FETCH_EXPECTED_JA4: &str = "t13d5212h1_b262b3658495_8e6e36
 pub const GEMINI_GOOGLE_AUTH_LIBRARY_VERSION: &str =
     gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION;
 pub const LEGACY_GEMINI_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
-/// Current Antigravity text-generation endpoint. The signed 2.4.3 language server and two
-/// independent maintained implementations use the non-sandbox daily host. New preview models may
-/// be absent from the older sandbox deployment even when its generic countTokens path accepts the
-/// public model id.
-pub const ANTIGRAVITY_DAILY_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
-/// Signed Antigravity release that first advertises Gemini 3 Flash Preview. Keep this identity
-/// scoped to the preview experiment: the existing text fleet retains its live-proven configured
-/// release until the new tuple has independent production evidence.
-pub const ANTIGRAVITY_FLASH_PREVIEW_VERSION: &str = "2.4.3";
 /// The Antigravity language server sends production generation traffic here. The sandbox host is
 /// useful for the reviewed text surface, but advertises the image quota bucket without serving the
 /// image backend and returns a generic 503 for otherwise valid Nano Banana requests.
@@ -78,10 +69,11 @@ impl GeminiModel {
                     || level.eq_ignore_ascii_case("high")
                     || level.eq_ignore_ascii_case("thinking_level_unspecified")
                 {
-                    // Both the official Gemini CLI and Antigravity 2.4.3 send the public preview
-                    // id unchanged. Antigravity accounts it against a separate agent quota row;
-                    // that accounting identity is resolved below and never leaks into the wire.
-                    Ok("gemini-3-flash-preview")
+                    // The public Developer API id 404s on Antigravity generation. Owned live
+                    // evidence proves that the private catalogue id serves the same family and
+                    // echoes its canonical modelVersion; the public id remains the billing and
+                    // client-facing identity.
+                    Ok("gemini-3-flash")
                 } else {
                     Err("Gemini 3 Flash Preview supports minimal, low, medium, or high thinking levels.")
                 }
@@ -218,21 +210,22 @@ impl GeminiConfig {
         self.models.iter().find(|model| model.id == id)
     }
 
-    /// Resolve the provider quota row used for admission separately from the generation wire id.
-    /// Antigravity's official client sends the public Gemini 3 Flash Preview id with
-    /// `requestType=agent`, while `fetchAvailableModels` reports that capacity under the private
-    /// `gemini-3-flash-agent` row. Legacy Gemini CLI quota uses the public id directly.
-    pub fn quota_model_id_for_wire<'a>(
+    /// Match a generation wire id to the private quota rows that can account for it. The owned
+    /// catalogue exposes both Gemini 3 Flash rows and their exact debit relationship is not yet
+    /// attributable, so either row participates in admission and an explicit zero on either one
+    /// remains a conservative block. Other routes retain their exact one-row identity.
+    pub fn quota_model_id_matches_wire(
         &self,
         oauth_kind: gemini_credential::OAuthKind,
-        wire_model_id: &'a str,
-    ) -> &'a str {
+        wire_model_id: &str,
+        quota_model_id: &str,
+    ) -> bool {
         if oauth_kind == gemini_credential::OAuthKind::Antigravity
-            && wire_model_id == "gemini-3-flash-preview"
+            && wire_model_id == "gemini-3-flash"
         {
-            "gemini-3-flash-agent"
+            matches!(quota_model_id, "gemini-3-flash" | "gemini-3-flash-agent")
         } else {
-            wire_model_id
+            quota_model_id == wire_model_id
         }
     }
 
@@ -252,7 +245,7 @@ impl GeminiConfig {
         &self,
         oauth_kind: gemini_credential::OAuthKind,
         image_generation: bool,
-        model: &str,
+        _model: &str,
     ) -> &str {
         // Keep loopback integration tests on their explicit mock. Paid image generation follows
         // the production Antigravity LS route observed in working implementations; text retains
@@ -263,22 +256,13 @@ impl GeminiConfig {
         if oauth_kind == gemini_credential::OAuthKind::Antigravity && image_generation {
             return ANTIGRAVITY_MEDIA_UPSTREAM;
         }
-        if oauth_kind == gemini_credential::OAuthKind::Antigravity
-            && model == "gemini-3-flash-preview"
-        {
-            return ANTIGRAVITY_DAILY_UPSTREAM;
-        }
         self.upstream_for(oauth_kind)
     }
 
     pub fn user_agent(&self, oauth_kind: gemini_credential::OAuthKind, model: &str) -> String {
         match oauth_kind {
             gemini_credential::OAuthKind::Antigravity => {
-                let version = if model == "gemini-3-flash-preview" {
-                    ANTIGRAVITY_FLASH_PREVIEW_VERSION
-                } else {
-                    &self.antigravity_version
-                };
+                let version = &self.antigravity_version;
                 format!(
                     "antigravity/hub/{version} {}",
                     gemini_credential::ANTIGRAVITY_PLATFORM

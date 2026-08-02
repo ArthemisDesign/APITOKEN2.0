@@ -565,13 +565,14 @@ impl GeminiProfile {
         if quota.updated_at.saturating_add(stale_secs) <= now {
             return (true, None);
         }
-        let quota_model_id = cfg.quota_model_id_for_wire(self.oauth_kind, model_id);
         (
             false,
             quota
                 .buckets
                 .iter()
-                .filter(|bucket| bucket.model_id == quota_model_id)
+                .filter(|bucket| {
+                    cfg.quota_model_id_matches_wire(self.oauth_kind, model_id, &bucket.model_id)
+                })
                 .filter_map(|bucket| bucket.remaining_fraction)
                 .min_by(f64::total_cmp),
         )
@@ -613,11 +614,12 @@ impl GeminiProfile {
             return 0;
         }
         let stale_at = quota.updated_at.saturating_add(stale_secs);
-        let quota_model_id = cfg.quota_model_id_for_wire(self.oauth_kind, model_id);
         let matching = quota
             .buckets
             .iter()
-            .filter(|bucket| bucket.model_id == quota_model_id)
+            .filter(|bucket| {
+                cfg.quota_model_id_matches_wire(self.oauth_kind, model_id, &bucket.model_id)
+            })
             .collect::<Vec<_>>();
         if matching.is_empty() {
             // A fresh official quota catalogue is also a per-profile availability catalogue. Once
@@ -2486,16 +2488,16 @@ mod tests {
             super::super::config::LEGACY_GEMINI_UPSTREAM
         );
         assert_eq!(
-            cfg.generation_upstream_for(OAuthKind::Antigravity, false, "gemini-3-flash-preview"),
-            super::super::config::ANTIGRAVITY_DAILY_UPSTREAM
+            cfg.generation_upstream_for(OAuthKind::Antigravity, false, "gemini-3-flash"),
+            "https://daily-cloudcode-pa.sandbox.googleapis.com"
         );
         assert_eq!(
             cfg.user_agent(OAuthKind::Antigravity, "gemini-test"),
             "antigravity/hub/2.2.1 darwin/arm64"
         );
         assert_eq!(
-            cfg.user_agent(OAuthKind::Antigravity, "gemini-3-flash-preview"),
-            "antigravity/hub/2.4.3 darwin/arm64"
+            cfg.user_agent(OAuthKind::Antigravity, "gemini-3-flash"),
+            "antigravity/hub/2.2.1 darwin/arm64"
         );
         assert!(cfg
             .user_agent(OAuthKind::LegacyGeminiCli, "gemini-test")
@@ -2627,7 +2629,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_generation_uses_the_antigravity_agent_quota_row() {
+    fn preview_generation_joins_both_antigravity_quota_rows() {
         let (dir, ring) = fixture();
         let first = write_antigravity_credential(&dir, &ring, "profile_a", "subject-a");
         let roster = dir.join("profiles.json");
@@ -2650,7 +2652,7 @@ mod tests {
             }],
         };
         assert!(gateway
-            .select("gemini-3-flash-preview", &HashSet::new(), None, true,)
+            .select("gemini-3-flash", &HashSet::new(), None, true,)
             .is_some());
 
         profile
@@ -2666,7 +2668,25 @@ mod tests {
             .buckets[0]
             .remaining_fraction = Some(0.0);
         assert!(gateway
-            .select("gemini-3-flash-preview", &HashSet::new(), None, true,)
+            .select("gemini-3-flash", &HashSet::new(), None, true,)
+            .is_none());
+
+        let mut quota = profile
+            .quota
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        quota.buckets[0].remaining_amount = Some(1);
+        quota.buckets[0].remaining_fraction = Some(0.5);
+        quota.buckets.push(GeminiQuotaBucketStatus {
+            model_id: "gemini-3-flash".to_string(),
+            remaining_amount: Some(0),
+            remaining_fraction: Some(0.0),
+            reset_time: None,
+            token_type: Some("REQUESTS".to_string()),
+        });
+        drop(quota);
+        assert!(gateway
+            .select("gemini-3-flash", &HashSet::new(), None, true,)
             .is_none());
         let _ = fs::remove_dir_all(dir);
     }

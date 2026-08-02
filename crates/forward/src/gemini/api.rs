@@ -2227,11 +2227,11 @@ async fn api_inner(
         let profile = lease.profile().clone();
         let oauth_kind = profile.oauth_kind();
         let upstream_user_agent = gateway.config().user_agent(oauth_kind, &wire_model_id);
-        // Signed Antigravity 2.4.3 and both pinned independent clients send Preview generation
-        // without the older IDE metadata tuple. Keep the live-proven headers on every existing
-        // model and on background quota/health calls so this final A/B remains model-local.
-        let include_antigravity_metadata = !(oauth_kind == OAuthKind::Antigravity
-            && wire_model_id == "gemini-3-flash-preview");
+        // The owned private-route probe served Preview without the older IDE metadata tuple. Keep
+        // that minimal identity model-local while the rest of the fleet and background calls
+        // retain their live-proven metadata.
+        let include_antigravity_metadata =
+            !(oauth_kind == OAuthKind::Antigravity && model.id == "gemini-3-flash-preview");
         let mut url = format!(
             "{}/v1internal:{suffix}",
             gateway.config().generation_upstream_for(
@@ -3338,10 +3338,7 @@ mod tests {
             Some("medium"),
             Some("high"),
         ] {
-            assert_eq!(
-                flash_preview.wire_model_id(level),
-                Ok("gemini-3-flash-preview")
-            );
+            assert_eq!(flash_preview.wire_model_id(level), Ok("gemini-3-flash"));
         }
         assert!(flash_preview.wire_model_id(Some("future")).is_err());
         assert_eq!(
@@ -4442,19 +4439,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flash_preview_uses_the_current_minimal_identity_without_changing_existing_models() {
-        let server = start_mock(MockState::with_replies([(
-            PROFILE_A_KEY,
-            vec![MockReply::json(
-                StatusCode::OK,
-                json!({
-                    "candidates": [],
+    async fn flash_preview_uses_private_wire_for_generate_stream_and_count_tokens() {
+        let non_stream = MockReply::json(
+            StatusCode::OK,
+            json!({
+                "response": {
+                    "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
                     "usageMetadata": {
                         "promptTokenCount": 2,
-                        "candidatesTokenCount": 1
-                    }
-                }),
-            )],
+                        "candidatesTokenCount": 1,
+                        "thoughtsTokenCount": 3
+                    },
+                    "modelVersion": "gemini-3-flash"
+                }
+            }),
+        );
+        let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1,\"thoughtsTokenCount\":3},\"modelVersion\":\"gemini-3-flash\"}}\n\n",
+        ))]);
+        let count = MockReply::json(StatusCode::OK, json!({"totalTokens": 2}));
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![non_stream, stream, count],
         )]))
         .await;
         let fixture = gateway_fixture_with_models(
@@ -4466,23 +4472,66 @@ mod tests {
             64,
             &["gemini-3-flash-preview"],
         );
+        let app = app_state(fixture.gateway.clone(), None);
+        let generation = json!({
+            "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+        });
         let response = invoke_uri(
-            app_state(fixture.gateway.clone(), None),
+            app.clone(),
             "/v1beta/models/gemini-3-flash-preview:generateContent",
-            json!({"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}),
+            generation.clone(),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["modelVersion"],
+            "gemini-3-flash-preview"
+        );
+
+        let response = invoke_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse",
+            generation,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stream_body = to_bytes(response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        let stream_text = std::str::from_utf8(&stream_body).unwrap();
+        assert!(stream_text.contains("\"modelVersion\":\"gemini-3-flash-preview\""));
+        assert!(!stream_text.contains("\"modelVersion\":\"gemini-3-flash\"}"));
+
+        let response = invoke_uri(
+            app,
+            "/v1beta/models/gemini-3-flash-preview:countTokens",
+            json!({
+                "generateContentRequest": {
+                    "model": "models/caller-controlled",
+                    "contents": [{"role": "user", "parts": [{"text": "hello"}]}]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["totalTokens"], 2);
 
         let seen = server.state.seen();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].credential, PROFILE_A_KEY);
-        assert_eq!(
-            seen[0].user_agent,
-            "antigravity/hub/2.4.3 darwin/arm64"
-        );
-        assert!(seen[0].google_api_client.is_empty());
-        assert!(seen[0].client_metadata.is_empty());
+        assert_eq!(seen.len(), 3);
+        for request in &seen {
+            assert_eq!(request.credential, PROFILE_A_KEY);
+            assert_eq!(request.user_agent, "antigravity/hub/2.2.1 darwin/arm64");
+            assert!(request.google_api_client.is_empty());
+            assert!(request.client_metadata.is_empty());
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let wire = body
+                .get("model")
+                .and_then(Value::as_str)
+                .or_else(|| body.pointer("/request/model").and_then(Value::as_str))
+                .unwrap();
+            assert_eq!(wire.trim_start_matches("models/"), "gemini-3-flash");
+        }
     }
 
     #[tokio::test]

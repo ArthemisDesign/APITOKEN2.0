@@ -30,8 +30,11 @@ runtime-capable Gemini model under `meter_only`. Activation is the global zero-d
 The immutable pricing authority uses internal provider id `google`. Frozen dormant capability
 generation 3 pins the original eight tariff-backed models from `crates/metering/src/gemini.rs`;
 immutable generation 4 adds `gemini-3-flash-preview` without mutating generation 3. Its production
-generation gate failed with 404 and no usage, so generation 4 is a rejected dormant artifact: keep
-its digest for historical verification, but never materialize or activate a catalog/release on it.
+gate on the old public wire failed with 404 and no usage, so generation 4 is a rejected dormant
+artifact: keep its digest for historical verification, but never materialize or activate a
+catalog/release on it. The later live-proven private-wire implementation remains dormant and does
+not rewrite that artifact; publication requires GREEN exact-SHA evidence and a later additive
+capability generation.
 The Stage 5 main catalog must opt in explicitly to a live-proven capability, while the
 contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI until a separate reviewed
 1:1 OpenKeys generation enables Gemini.
@@ -324,13 +327,14 @@ CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 and production Cloud Code hosts. Literal HTTP loopback is available only behind the explicit test
 opt-in; arbitrary hosts, ports, userinfo, path, query and fragment are rejected. Legacy Gemini CLI
 credentials ignore the Antigravity default and remain pinned to
-`https://cloudcode-pa.googleapis.com`. Dormant test support for `gemini-3-flash-preview` retains the
-isolated non-sandbox daily origin and signed Antigravity 2.4.3 minimal-header tuple for reproducible
-research only. Sandbox, corrected-host, signed-UA and final minimal-header runs all accepted
-`countTokens` but returned `404 NOT_FOUND` before output or usage; the final one-call micro-smoke had
-authoritative `not_started`, no immutable turn and zero spend. Production systemd/default lists
-therefore exclude this model. Existing published text models and background health/quota calls keep
-their live-proven full 2.2.1 tuple. The production systemd `ExecStart` pins the roster path,
+`https://cloudcode-pa.googleapis.com`. Dormant support for `gemini-3-flash-preview` now uses the
+production-configured Antigravity origin and 2.2.1 UA, omits the old IDE metadata, and maps the
+public id to the live-proven private wire `gemini-3-flash`. The prior public-wire experiments still
+document the 404 withdrawal, while the 2026-08-03 owned private-wire probe supplied generation,
+output, usage, SSE and low/high evidence on one Ultra profile. Production systemd/default lists
+still exclude the model until the complete exact-SHA control matrix and all claimed plans pass.
+Existing published text models and background health/quota calls keep their live-proven full 2.2.1
+tuple. The production systemd `ExecStart` pins the roster path,
 Antigravity default origin and insecure-loopback switch after all shared environment files.
 
 The same argv-level boundary pins the attested official runtime profile:
@@ -488,9 +492,10 @@ models plus the separately routed Nano Banana 2 image model, all reconfirmed aga
 Google AI Pro profile on 2026-07-31:
 `gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
-`gemini-2.5-flash-lite`. `gemini-3-flash-preview` is deliberately not published after its complete
-2026-08-02 generation matrix and isolated minimal-header micro-smoke returned 404 without output or
-usage. `gemini-2.5-pro` is also deliberately not published: it is absent from the
+`gemini-2.5-flash-lite`. `gemini-3-flash-preview` remains deliberately unpublished: its 2026-08-02
+public-wire matrix returned 404, and the later working private route has only raw owned Ultra
+evidence rather than the required exact implementation SHA, full controls and claimed-plan matrix.
+`gemini-2.5-pro` is also deliberately not published: it is absent from the
 official Antigravity reasoning-model table, and its residual quota bucket does not produce a
 working generation route. Private tier ids are never public model names, while
 unreviewed agent/foreign-provider ids have no honest public model mapping.
@@ -579,7 +584,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | dormant test wire: same public id; Antigravity `requestType=agent` quota row: `gemini-3-flash-agent`; control-plane discovery also exposes non-agent `gemini-3-flash`; non-sandbox daily; signed 2.4.3 minimal headers | exact-profile sandbox, corrected-host, signed-UA and minimal-header tests: countTokens 2xx, generation 404 with no output/usage; final micro had exact `not_started`, no immutable turn and zero spend | rejected/withdrawn from production and public catalog |
+| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers | raw owned Ultra probe: generate 200 with real output, terminal usage and canonical echo; incremental SSE 200; default/low/high work. Exact implementation SHA, minimal/medium, tools/cache/audio/Search/long-context and broader plan coverage remain unproven | dormant pending full exact-SHA gate; absent from production defaults and public catalog |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -632,7 +637,7 @@ Official evidence reviewed on 2026-07-31:
 - REST schema/discovery revision `20260729`:
   <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta>.
 
-Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02:
+Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02 and 2026-08-03:
 
 - Google's Apache-2.0 Gemini CLI at commit
   [`f47d6c6f7a1308d81f9f57acf7d279f0928c5249`](https://github.com/google-gemini/gemini-cli/commit/f47d6c6f7a1308d81f9f57acf7d279f0928c5249)
@@ -655,13 +660,21 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02:
 - the final minimal-header micro-smoke also returned `404` after a successful one-token
   `countTokens`. It was bounded to one generation request and `$0.0001`, returned exact
   `x-apitoken-execution-state: not_started`, created no immutable Preview turn and spent zero;
-- quota presence and a successful token count do not prove generation. The failed final isolated
-  hypothesis closes this admission attempt: the model is withdrawn from production defaults,
-  public catalogue, router presets, website and public docs. Future reconsideration requires new
-  upstream evidence and the two-commit live-first publication gate, never a guessed private alias.
+- quota presence and a successful token count did not prove generation, so the 2026-08-02 public
+  wire attempt correctly withdrew every public/default surface instead of guessing an alias;
+- the 2026-08-03 owned Ultra probe in
+  [`research/GEMINI_3_FLASH_PRIVATE_ROUTE.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE.md)
+  supplied the missing route evidence: private `gemini-3-flash` returned generation 2xx, real text,
+  terminal usage with thoughts, canonical `modelVersion`, incremental SSE and working low/high;
+  `gemini-3-flash-agent` also served but echoed the weaker `gemini-default` alias identity;
+- the dormant gateway therefore maps public `gemini-3-flash-preview` to `gemini-3-flash`, rewrites
+  native and SSE `modelVersion` back to the public id, and conservatively joins both observed quota
+  rows. This is not publication evidence: the raw probe covered one Ultra account and omitted
+  minimal/medium, tools, cache, audio, Search, long context and exact-SHA engine execution.
 
-The reproducible source/plan/rate/wire dossier is
-[`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md).
+The reproducible source/plan/rate/wire dossiers are
+[`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md) and
+[`research/GEMINI_3_FLASH_PRIVATE_ROUTE.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE.md).
 
 ## Failure and stream safety
 

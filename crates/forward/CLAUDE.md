@@ -662,18 +662,18 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
    Новые profiles обычно используют live-проверенный Antigravity 2.2.1 UA,
    `Go-http-client/2.0` refresh и reviewed bounded Antigravity
-   `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Dormant explicit-test route
-   `gemini-3-flash-preview` сохраняет compile-fixed UA подписанного Antigravity 2.4.3 без старых IDE
-   `Client-Metadata`/`x-goog-api-client` только для воспроизводимости исследования. Финальный
-   minimal-header micro-smoke сохранил 404 без usage, поэтому production/public allowlist эту модель
-   не содержит. Все работающие модели и background quota/health сохраняют полный live-проверенный
-   tuple.
+   `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Dormant route
+   `gemini-3-flash-preview` использует тот же 2.2.1 UA, но без старых IDE
+   `Client-Metadata`/`x-goog-api-client`: именно этот минимальный tuple дал owned generation 2xx на
+   private wire `gemini-3-flash`. Полный exact-SHA capability gate ещё не пройден, поэтому
+   production/public allowlist модель не содержит. Остальные модели и background quota/health
+   сохраняют полный live-проверенный tuple.
    Старые Gemini CLI credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
-   Antigravity text обычно сохраняет live-verified configured endpoint; dormant explicit-test route
-   `gemini-3-flash-preview` сохраняет compile-fixed `daily-cloudcode-pa.googleapis.com`, хотя и
-   sandbox, и этот origin возвращают 404 на generation. Image generation всегда идёт на
+   Antigravity text, включая dormant `gemini-3-flash-preview`, сохраняет live-verified configured
+   endpoint; owned private-wire probe прошёл на production-configured sandbox daily origin. Image
+   generation всегда идёт на
    production `cloudcode-pa.googleapis.com`, как официальный LS: sandbox публикует image quota row,
    но отвечает 503 на генерацию. Literal loopback mocks не перенаправляются.
    Helper получает proxy secret только первым IPC frame, multiplexes bounded NDJSON, reaps process
@@ -707,10 +707,11 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.
    Публичный model ceiling 65,536 сохраняется, но Antigravity wire `maxOutputTokens` ограничен 65,535.
-   Canonical Gemini 3 model id отдельно от private effort/quota id: dormant test support для
-   3 Flash Preview отправляет публичный `gemini-3-flash-preview` без wire-подмены, но Antigravity
-   `requestType=agent` проверяет по quota row `gemini-3-flash-agent` (legacy Gemini CLI сохраняет
-   публичный quota id); production allowlist этот rejected route не публикует. 3.6 Flash выбирает
+   Canonical Gemini 3 model id отдельно от private effort/quota id: dormant support для
+   3 Flash Preview отображает public `gemini-3-flash-preview` в live-проверенный private wire
+   `gemini-3-flash`, а quota admission консервативно связывает обе наблюдаемые строки
+   `gemini-3-flash`/`gemini-3-flash-agent` до точной атрибуции debit. Production allowlist не
+   публикует route до полного exact-SHA gate. 3.6 Flash выбирает
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
    Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,
