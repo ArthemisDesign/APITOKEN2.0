@@ -322,10 +322,11 @@ mod tests {
 
     /// Origin, который гарантированно отказывает соединения.
     async fn dead_origin() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        format!("http://{addr}")
+        // Не освобождаем случайный ephemeral port: параллельный тест может немедленно занять его,
+        // и запрос, который должен получить ConnectionRefused, попадёт в чужую mock-плоскость.
+        // TCP port 0 нельзя назначить listener'у, поэтому он остаётся детерминированным отказом
+        // без гонки за повторное использование порта на macOS и production Linux.
+        "http://127.0.0.1:0".to_string()
     }
 
     fn make_router(anthropic: &str, openai: &str, gemini: &str, ttl: Duration) -> Router {
