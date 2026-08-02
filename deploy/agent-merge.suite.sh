@@ -397,6 +397,7 @@ for blocked in \
   'git push origin HEAD:master' \
   'git worktree add ~/wt/task -b feat/task origin/master' \
   'git worktree remove ../other-agent' \
+  'MODE=repair git checkout master' \
   'cargo build && git checkout master'; do
   guard "$blocked" && wd_die "the git guard allowed a destructive command: $blocked"
 done
@@ -413,6 +414,9 @@ for allowed in \
   './deploy/agent-worktree.sh doctor' \
   './deploy/agent-worktree.sh gc' \
   'cargo test --locked --workspace' \
+  'MODE=inspect git status --short' \
+  'MODE=inspect' \
+  $'node - <<\'JS\'\npath=\'crates/authbot/src/main.rs\'\nconsole.log(path)\nJS' \
   'grep -rn "git merge" BRANCHES.md' \
   'echo "run git checkout to switch branches"'; do
   guard "$allowed" || wd_die "the git guard blocked a legitimate command: $allowed"
@@ -535,6 +539,12 @@ done
   || wd_die 'the report-only shim outlived its purpose; the installed watchdog no longer calls it'
 grep -Fq 'guard-git.sh' "$ROOT/.claude/settings.json" \
   || wd_die 'the git guard is not registered as a PreToolUse hook'
+node -e '
+const settings = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const timeout = settings?.hooks?.PreToolUse?.[0]?.hooks?.[0]?.timeout;
+if (timeout !== 15) process.exit(1);
+' "$ROOT/.claude/settings.json" \
+  || wd_die 'the git guard must have a bounded Claude Code timeout'
 grep -Fq '.claude/worktrees/' "$ROOT/.gitignore" \
   || wd_die 'agent worktrees under .claude/ would be committed'
 for document in CLAUDE.md AGENTS.md BRANCHES.md CONTRIBUTING.md; do

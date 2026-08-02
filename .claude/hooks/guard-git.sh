@@ -43,7 +43,10 @@ deny() {
 while IFS= read -r segment || [[ -n $segment ]]; do
   segment=${segment#"${segment%%[![:space:]]*}"}
   # Skip leading environment assignments and common prefixes.
-  while [[ $segment == *=* && ${segment%%[[:space:]]*} == *=* ]]; do
+  # A bare assignment is a complete shell segment, not a prefix to strip. Requiring trailing
+  # whitespace also guarantees that removing the first word makes progress instead of looping
+  # forever on heredoc bodies such as `path='crates/authbot/src/main.rs'`.
+  while [[ $segment == *[[:space:]]* && ${segment%%[[:space:]]*} == *=* ]]; do
     segment=${segment#*[[:space:]]}
     segment=${segment#"${segment%%[![:space:]]*}"}
   done
