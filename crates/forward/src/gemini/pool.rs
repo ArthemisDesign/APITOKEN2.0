@@ -2489,6 +2489,10 @@ mod tests {
             cfg.user_agent(OAuthKind::Antigravity, "gemini-test"),
             "antigravity/hub/2.2.1 darwin/arm64"
         );
+        assert_eq!(
+            cfg.user_agent(OAuthKind::Antigravity, "gemini-3-flash-preview"),
+            "antigravity/hub/2.4.3 darwin/arm64"
+        );
         assert!(cfg
             .user_agent(OAuthKind::LegacyGeminiCli, "gemini-test")
             .starts_with("GeminiCLI/0.53.0/gemini-test "));

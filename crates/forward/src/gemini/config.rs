@@ -20,6 +20,10 @@ pub const LEGACY_GEMINI_UPSTREAM: &str = "https://cloudcode-pa.googleapis.com";
 /// be absent from the older sandbox deployment even when its generic countTokens path accepts the
 /// public model id.
 pub const ANTIGRAVITY_DAILY_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
+/// Signed Antigravity release that first advertises Gemini 3 Flash Preview. Keep this identity
+/// scoped to the preview experiment: the existing text fleet retains its live-proven configured
+/// release until the new tuple has independent production evidence.
+pub const ANTIGRAVITY_FLASH_PREVIEW_VERSION: &str = "2.4.3";
 /// The Antigravity language server sends production generation traffic here. The sandbox host is
 /// useful for the reviewed text surface, but advertises the image quota bucket without serving the
 /// image backend and returns a generic 503 for otherwise valid Nano Banana requests.
@@ -269,11 +273,17 @@ impl GeminiConfig {
 
     pub fn user_agent(&self, oauth_kind: gemini_credential::OAuthKind, model: &str) -> String {
         match oauth_kind {
-            gemini_credential::OAuthKind::Antigravity => format!(
-                "antigravity/hub/{} {}",
-                self.antigravity_version,
-                gemini_credential::ANTIGRAVITY_PLATFORM
-            ),
+            gemini_credential::OAuthKind::Antigravity => {
+                let version = if model == "gemini-3-flash-preview" {
+                    ANTIGRAVITY_FLASH_PREVIEW_VERSION
+                } else {
+                    &self.antigravity_version
+                };
+                format!(
+                    "antigravity/hub/{version} {}",
+                    gemini_credential::ANTIGRAVITY_PLATFORM
+                )
+            }
             gemini_credential::OAuthKind::LegacyGeminiCli => {
                 // OAuth2Client's request interceptor appends this library token on the actual wire.
                 format!(

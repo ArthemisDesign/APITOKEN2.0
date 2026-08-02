@@ -651,9 +651,12 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    включая percent encoding, запрещён.
 3. Production HTTPS принадлежит persistent per-profile Node helper: exact pinned
    `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
-   Новые profiles используют Antigravity 2.2.1 UA, `Go-http-client/2.0` refresh и reviewed bounded
-   Antigravity `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Старые Gemini CLI
-   credentials сохраняют прежний wire до миграции.
+   Новые profiles обычно используют live-проверенный Antigravity 2.2.1 UA,
+   `Go-http-client/2.0` refresh и reviewed bounded Antigravity
+   `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Только
+   `gemini-3-flash-preview` использует compile-fixed UA подписанного Antigravity 2.4.3: host-only
+   A/B сохранил 404, поэтому текущий эксперимент меняет client release без воздействия на уже
+   работающие модели. Старые Gemini CLI credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
    Antigravity text обычно сохраняет live-verified configured endpoint; `gemini-3-flash-preview`

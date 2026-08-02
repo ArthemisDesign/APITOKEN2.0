@@ -14,8 +14,8 @@
 
 ## Executive verdict
 
-- Implementation readiness: `wire-fix candidate`; the sandbox-origin baseline failed and the
-  non-sandbox daily-origin correction remains blocked on the controlled post-deploy live matrix.
+- Implementation readiness: `wire-fix candidate`; sandbox and non-sandbox host matrices both
+  failed, so the signed 2.4.3 User-Agent is the next isolated post-deploy experiment.
 - Terms/compliance: no new OAuth identity or scope; the existing Gemini subscription review still
   governs. Undocumented subscription transport evidence is not treated as vendor permission.
 - Credential verdict: unchanged and within the existing encrypted roster threat model.
@@ -24,8 +24,9 @@
 - Streaming verdict: implementation reuses the proven incremental SSE translator, but this exact
   model still needs a live incremental frame and terminal usage.
 - Quota verdict: owned discovery proves both bounded quota rows exist, not that generation works.
-- Main unresolved risk: the non-sandbox daily origin may still reject this owned plan. That result
-  requires withdrawing the model from the allowlist rather than guessing a private alias/header.
+- Main unresolved risk: the current host plus signed User-Agent may still reject this owned plan.
+  That result requires testing the minimal current-client header set once, then withdrawing the
+  model rather than guessing a private alias.
 
 ## Official sources
 
@@ -148,9 +149,9 @@ Header classification:
   `requestType=agent` are corroborated; the sandbox deployment is the first isolated mismatch.
 
 The safe experiment order is therefore: non-sandbox daily origin with the existing header tuple;
-only if that remains 404, update the signed User-Agent version; only after that compare the minimal
-current-client header set. This avoids changing host and headers simultaneously and falsely
-attributing success.
+that retained 404, so the next deployed A/B updates only the signed User-Agent version. Only if it
+also remains 404 may a later experiment compare the minimal current-client header set. This avoids
+changing host and headers simultaneously and falsely attributing success.
 
 ## Controlled live results
 
@@ -158,7 +159,8 @@ attributing success.
 |---|---|---|---|---|---|---|---|---|
 | 2026-08-02 | owned Google AI Pro / Antigravity | public preview / quota rows | model quota discovery | success | n/a | n/a | both agent and non-agent rows present | quota presence only; generation unknown |
 | 2026-08-02 | same owned opaque profile | public id unchanged on sandbox daily origin | countTokens preflight plus four thinking levels, SSE, cache, audio and tool prompt | countTokens 2xx; all generation 404 NOT_FOUND | no public frame | no; zero immutable turns and zero spend | both rows still present | endpoint/model resource mismatch before generation |
-| corrected-origin pending | same owned opaque profile | public id unchanged on non-sandbox daily origin | same controlled matrix | pending | pending | required | exact profile attribution required | next isolated experiment |
+| 2026-08-02 | same owned opaque profile | public id unchanged on non-sandbox daily origin, existing 2.2.1 UA | same controlled matrix | countTokens 2xx; all ten bounded generation legs 404 NOT_FOUND | no public frame | no; zero immutable turns and zero spend | both rows still present | origin alone is not the selector; current-UA A/B required |
+| current-UA pending | same owned opaque profile | same host/id/wrapper, signed 2.4.3 UA | one micro generation first; expand only after success | pending | pending | required | exact profile attribution required | next isolated experiment; paid smoke capped at $0.0001 actual target |
 
 The live runner must resolve exactly `gemini_oauth_000001` as the only healthy profile and use
 `--models gemini-3-flash-preview`, require canonical calibration request attribution, and retain
@@ -169,8 +171,8 @@ only the sanitized report. No paid leg is retried without authoritative `not_sta
 | Topic | Official | Owned live | Chosen behavior | Risk / next experiment |
 |---|---|---|---|---|
 | generation ID | official CLI sends public preview id | sandbox countTokens accepts it; sandbox generation returns model-resource 404 | keep public id unchanged | test the current signed origin before any private alias |
-| generation origin | no public normative subscription contract | signed 2.4.3 and two independent implementations use non-sandbox daily; sandbox live generation is 404 | route only this preview to non-sandbox daily | rerun exact-profile matrix after deploy |
-| request headers | no normative private header contract | baseline 2.2.1 tuple works for older models; current implementations use a newer/minimal tuple | hold headers constant for the origin A/B | if still 404, test signed UA version, then minimal current header set |
+| generation origin | no public normative subscription contract | signed 2.4.3 and two independent implementations use non-sandbox daily; sandbox and corrected-host live generation are 404 | keep only this preview on non-sandbox daily | current-UA micro-smoke after deploy |
+| request headers | no normative private header contract | 2.2.1 works for older models but both preview host matrices return 404; signed client is 2.4.3 | update only Preview to signed UA; leave working models unchanged | if still 404, test one minimal current header set, then withdraw |
 | quota identity | no normative private row contract | agent and non-agent rows exist | Antigravity agent admission uses only `gemini-3-flash-agent` | explicit zero may reveal a changed row; withdraw/fix on evidence |
 | subscription availability | public Developer API model exists | quota and countTokens exist, sandbox generation does not | candidate, not GA evidence | non-sandbox 404 requires allowlist withdrawal or a separately proven header correction |
 | thinking controls | public levels documented | subscription execution pending | preserve public level in `thinkingConfig` | test default plus all four levels |
