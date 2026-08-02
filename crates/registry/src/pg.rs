@@ -120,9 +120,11 @@ const MIGRATION_0018: &str = include_str!("../migrations_pg/0018_codex_credit_ca
 const MIGRATION_0019: &str = include_str!("../migrations_pg/0019_provider_turn_calibration.sql");
 const MIGRATION_0020: &str = include_str!("../migrations_pg/0020_anthropic_window_calibration.sql");
 const MIGRATION_0021: &str = include_str!("../migrations_pg/0021_execution_group_fencing.sql");
+const MIGRATION_0022: &str =
+    include_str!("../migrations_pg/0022_gemini_exact_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 21;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -147,6 +149,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (19, MIGRATION_0019),
     (20, MIGRATION_0020),
     (21, MIGRATION_0021),
+    (22, MIGRATION_0022),
 ];
 
 #[cfg(test)]
@@ -7564,6 +7567,21 @@ mod tests {
     }
 
     #[test]
+    fn gemini_exact_migration_is_additive_and_plan_scoped() {
+        let normalized = MIGRATION_0022
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(normalized.contains("CREATE TABLE IF NOT EXISTS gemini_exact_window_calibrations"));
+        assert!(normalized.contains("PRIMARY KEY (profile_id, plan, bucket_id)"));
+        assert!(normalized.contains("measurement_resolution_fraction_units bigint NOT NULL"));
+        assert!(normalized.contains("unattributed_fraction_units bigint NOT NULL DEFAULT 0"));
+        assert!(normalized.contains("observation_source text NOT NULL"));
+        assert!(!normalized.contains("ALTER TABLE gemini_window_calibrations"));
+        assert!(!normalized.contains("DROP TABLE"));
+    }
+
+    #[test]
     fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         assert!(
             ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
@@ -7631,6 +7649,7 @@ mod tests {
              pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions, \
              anthropic_window_observations,anthropic_window_calibrations, \
              provider_turn_calibration_events,provider_calibration_subject_spend, \
+             gemini_exact_window_observations,gemini_exact_window_calibrations, \
              gemini_window_observations,gemini_window_calibrations,gemini_profile_spend, \
              codex_turn_calibration_events,codex_window_observations,\
              codex_window_calibrations,codex_home_spend, \

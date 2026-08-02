@@ -82,6 +82,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   runtime таблицы не читает и не пишет, поэтому migration SHA безопасно выкатывается до dependent
   application commit. Операторский read отдельных событий всегда newest-first и bounded максимум
   512 строками; безлимитный ledger scan в control-room запрещён.
+- Gemini exact-calibration migration 0022 expand-only создаёт новую plan-scoped authority для
+  `gemini-5h`/`gemini-weekly`, не меняя legacy-таблицы, в которые продолжает писать старый runtime.
+  Новая raw observation сохраняет реальное decimal resolution, source/request attribution и exact
+  cumulative spend из общего migration-0019 ledger; CAS-state добавляет unattributed movement и
+  честные nullable bounds. Dependent runtime переключается на эти таблицы только после отдельного
+  migration SHA с зелёным deploy, а старое derived evidence не переносится без недостающих
+  plan/resolution/source фактов.
 - Claude calibration migration 0020 expand-only создаёт отдельные fixed-point authority для 5h/7d
   окон: plan входит в identity, raw observation хранит реальное разрешение quota fraction, источник
   и optional request ID, а CAS-state — exact observed spend/fraction, low/high/confidence и

@@ -1567,6 +1567,91 @@ pub fn open(path: &str) -> Result<Connection> {
         "ALTER TABLE gemini_window_calibrations ADD COLUMN observed_spend_nano INTEGER NOT NULL DEFAULT 0 CHECK(observed_spend_nano >= 0)",
         [],
     );
+    // Migration 0022 keeps the legacy Gemini estimator tables intact for migration-first rollout.
+    // The exact authority is plan-scoped and preserves provider measurement resolution/source so
+    // a later estimator can replay every accepted interval without inferred metadata.
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS gemini_exact_window_calibrations( \
+           profile_id TEXT NOT NULL CHECK(profile_id <> ''), \
+           plan TEXT NOT NULL CHECK(plan <> ''), \
+           bucket_id TEXT NOT NULL CHECK(bucket_id IN ('gemini-5h','gemini-weekly')), \
+           window_kind TEXT NOT NULL CHECK(window_kind IN ('5h','weekly')), \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           anchor_used_fraction_units INTEGER NOT NULL \
+             CHECK(anchor_used_fraction_units BETWEEN 0 AND 100000000), \
+           anchor_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(anchor_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           anchor_spend_nano INTEGER NOT NULL CHECK(anchor_spend_nano >= 0), \
+           used_fraction_units INTEGER NOT NULL \
+             CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
+           measurement_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(measurement_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           observed_fraction_units INTEGER NOT NULL DEFAULT 0 \
+             CHECK(observed_fraction_units >= 0), \
+           observed_spend_nano INTEGER NOT NULL DEFAULT 0 CHECK(observed_spend_nano >= 0), \
+           samples INTEGER NOT NULL DEFAULT 0 CHECK(samples >= 0), \
+           unattributed_fraction_units INTEGER NOT NULL DEFAULT 0 \
+             CHECK(unattributed_fraction_units >= 0), \
+           current_capacity_nano INTEGER \
+             CHECK(current_capacity_nano IS NULL OR current_capacity_nano >= 0), \
+           current_low_nano INTEGER CHECK(current_low_nano IS NULL OR current_low_nano >= 0), \
+           current_high_nano INTEGER CHECK(current_high_nano IS NULL OR current_high_nano >= 0), \
+           current_confidence_bp INTEGER NOT NULL DEFAULT 0 \
+             CHECK(current_confidence_bp BETWEEN 0 AND 10000), \
+           last_measured_at INTEGER CHECK(last_measured_at IS NULL OR last_measured_at > 0), \
+           estimator_version INTEGER NOT NULL DEFAULT 1 CHECK(estimator_version > 0), \
+           version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), \
+           updated_ts INTEGER NOT NULL CHECK(updated_ts > 0), \
+           PRIMARY KEY(profile_id,plan,bucket_id), \
+           CHECK((bucket_id='gemini-5h' AND window_kind='5h' AND window_duration_mins=300) \
+             OR (bucket_id='gemini-weekly' AND window_kind='weekly' \
+               AND window_duration_mins=10080)), \
+           CHECK(current_low_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(current_high_nano IS NULL OR current_capacity_nano IS NOT NULL), \
+           CHECK(current_low_nano IS NULL OR current_capacity_nano >= current_low_nano), \
+           CHECK(current_high_nano IS NULL OR current_capacity_nano <= current_high_nano), \
+           CHECK(current_low_nano IS NULL OR current_high_nano IS NULL \
+             OR current_low_nano <= current_high_nano), \
+           CHECK((samples=0 AND observed_fraction_units=0 AND observed_spend_nano=0 \
+               AND current_capacity_nano IS NULL AND current_low_nano IS NULL \
+               AND current_high_nano IS NULL AND current_confidence_bp=0 \
+               AND last_measured_at IS NULL) \
+             OR (samples>0 AND observed_fraction_units>0 AND observed_spend_nano>0 \
+               AND current_capacity_nano IS NOT NULL AND current_low_nano IS NOT NULL \
+               AND last_measured_at IS NOT NULL))); \
+         CREATE INDEX IF NOT EXISTS gemini_exact_window_calibrations_cohort \
+           ON gemini_exact_window_calibrations(plan,bucket_id,window_duration_mins); \
+         CREATE TABLE IF NOT EXISTS gemini_exact_window_observations( \
+           id INTEGER PRIMARY KEY AUTOINCREMENT, \
+           profile_id TEXT NOT NULL CHECK(profile_id <> ''), \
+           plan TEXT NOT NULL CHECK(plan <> ''), \
+           bucket_id TEXT NOT NULL CHECK(bucket_id IN ('gemini-5h','gemini-weekly')), \
+           window_kind TEXT NOT NULL CHECK(window_kind IN ('5h','weekly')), \
+           window_duration_mins INTEGER NOT NULL CHECK(window_duration_mins > 0), \
+           resets_at INTEGER NOT NULL CHECK(resets_at > 0), \
+           observed_at INTEGER NOT NULL CHECK(observed_at > 0), \
+           used_fraction_units INTEGER NOT NULL \
+             CHECK(used_fraction_units BETWEEN 0 AND 100000000), \
+           measurement_resolution_fraction_units INTEGER NOT NULL \
+             CHECK(measurement_resolution_fraction_units BETWEEN 1 AND 100000000), \
+           gateway_spend_nano INTEGER NOT NULL CHECK(gateway_spend_nano >= 0), \
+           observation_source TEXT NOT NULL CHECK(observation_source IN ('response','poll')), \
+           source_request_id TEXT, \
+           CHECK((bucket_id='gemini-5h' AND window_kind='5h' AND window_duration_mins=300) \
+             OR (bucket_id='gemini-weekly' AND window_kind='weekly' \
+               AND window_duration_mins=10080)), \
+           CHECK((observation_source='response' AND source_request_id IS NOT NULL \
+               AND source_request_id <> '') \
+             OR (observation_source='poll' AND source_request_id IS NULL)), \
+           UNIQUE(profile_id,plan,bucket_id,source_request_id), \
+           UNIQUE(profile_id,plan,bucket_id,resets_at,observed_at,used_fraction_units, \
+             measurement_resolution_fraction_units,gateway_spend_nano,observation_source)); \
+         CREATE INDEX IF NOT EXISTS gemini_exact_window_observations_window \
+           ON gemini_exact_window_observations( \
+             profile_id,plan,bucket_id,resets_at,observed_at);",
+    )?;
     // Разбивка расхода по токенам/моделям для клиентских дашбордов (per-request). НЕ money-БД:
     // авторитет денег — accounts.balance_nano + ledger. Эта таблица — аналитика (что реально
     // потрачено по корзинам токенов и моделям), пишется рядом с charge, обрезается по ретенции.
@@ -8919,6 +9004,118 @@ mod tests {
             .execute(
                 insert,
                 rusqlite::params!["profile-b", "gemini-5h", "5h", 300, 100_000_001],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn gemini_exact_calibration_schema_is_plan_scoped_and_replayable() {
+        let c = db();
+        let tables: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ( \
+                   'gemini_exact_window_calibrations','gemini_exact_window_observations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+
+        let columns = c
+            .prepare("SELECT name FROM pragma_table_info('gemini_exact_window_calibrations')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            name.contains("prior") || name.contains("ema") || name.contains("nominal")
+        }));
+        for name in [
+            "plan",
+            "bucket_id",
+            "anchor_resolution_fraction_units",
+            "measurement_resolution_fraction_units",
+            "observed_fraction_units",
+            "observed_spend_nano",
+            "unattributed_fraction_units",
+            "current_capacity_nano",
+            "current_low_nano",
+            "current_high_nano",
+        ] {
+            assert!(columns.contains(&name.to_owned()), "missing {name}");
+        }
+
+        let insert_state = "INSERT INTO gemini_exact_window_calibrations( \
+            profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at, \
+            anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano, \
+            used_fraction_units,measurement_resolution_fraction_units,observed_at,updated_ts) \
+            VALUES(?1,?2,?3,?4,?5,2000000000,?6,?7,0,?6,?7,100,100)";
+        c.execute(
+            insert_state,
+            rusqlite::params!["profile-a", "google_ai_pro", "gemini-5h", "5h", 300, 10, 1],
+        )
+        .unwrap();
+        c.execute(
+            insert_state,
+            rusqlite::params!["profile-a", "google_ai_ultra", "gemini-5h", "5h", 300, 10, 1],
+        )
+        .unwrap();
+        c.execute(
+            insert_state,
+            rusqlite::params![
+                "profile-a",
+                "google_ai_pro",
+                "gemini-weekly",
+                "weekly",
+                10_080,
+                20,
+                1_000_000
+            ],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                insert_state,
+                rusqlite::params![
+                    "profile-b",
+                    "google_ai_pro",
+                    "gemini-weekly",
+                    "weekly",
+                    300,
+                    1,
+                    1
+                ],
+            )
+            .is_err());
+
+        let insert_observation = "INSERT INTO gemini_exact_window_observations( \
+            profile_id,plan,bucket_id,window_kind,window_duration_mins,resets_at,observed_at, \
+            used_fraction_units,measurement_resolution_fraction_units,gateway_spend_nano, \
+            observation_source,source_request_id) \
+            VALUES('profile-a','google_ai_pro','gemini-5h','5h',300,2000000000,?1, \
+                ?2,?3,?4,?5,?6)";
+        c.execute(
+            insert_observation,
+            rusqlite::params![101, 10, 1, 1_000, "poll", Option::<String>::None],
+        )
+        .unwrap();
+        c.execute(
+            insert_observation,
+            rusqlite::params![102, 20, 10, 2_000, "response", "gemini-cal-a"],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                insert_observation,
+                rusqlite::params![103, 30, 10, 3_000, "response", "gemini-cal-a"],
+            )
+            .is_err());
+        assert!(c
+            .execute(
+                insert_observation,
+                rusqlite::params![104, 40, 10, 4_000, "response", Option::<String>::None],
             )
             .is_err());
     }
