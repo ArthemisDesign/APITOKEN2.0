@@ -1,11 +1,12 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer и strict TypeScript transport consumer реализованы. Существующая bounded
-commerce orchestration была построена вокруг заранее известного funding manifest; после выявления
-циклической зависимости она остаётся dormant и должна быть переведена на двухфазную финализацию
-только после GREEN migration `0029_pricing_release_two_phase_finalize.sql`. Stage 6 не требует
-maintenance window, остановки money writers, нуля всех reservations или ручной проверки аккаунтов
-и ничего не активирует.
+Статус: engine producer, strict TypeScript transport consumer и bounded commerce orchestration
+реализованы поверх уже доставленной migration `0029_pricing_release_two_phase_finalize.sql`.
+Orchestration связывается с exact Stage 5 plan, вычисляет funding manifest только из фактического
+full-inventory readback и затем двухфазно финализирует target/recovery releases. Наличие кода само
+по себе ничего не запускает: worker начинает POST только после явного idempotent staging. Stage 6
+не требует maintenance window, остановки money writers, нуля всех reservations или ручной
+проверки аккаунтов и ничего не активирует.
 
 ## Source policy
 
@@ -128,12 +129,15 @@ backfill, потому что active release остаётся legacy; Stage 9 т
 
 ## Bounded orchestration
 
-Двухфазный `stageFundingNormalizationJobV2` принимает только exact generation/content digest
-существующего target plan с nullable final identities и идемпотентно создаёт один
+Двухфазный `stageFundingNormalizationJobV2` принимает только exact `plan_digest` полностью ACKed
+Stage 5 run в состоянии `materializing`, у которого target/recovery skeletons ещё имеют nullable
+final identities, и идемпотентно создаёт один
 `pricing_release_control_jobs_v2` с `job_kind=normalize_funding`. Payload identity связывает
-immutable Stage 5 plan, engine/service inventory и funding-plan digest, но не содержит ещё не
-существующий final funding manifest. Worker не ищет release для автоматического запуска: отсутствие
-явно staged job означает отсутствие любых normalization POST.
+immutable Stage 5 run/plan, оба skeleton plan digest, engine/service inventories и funding-plan
+digest, но не содержит ещё не существующий final funding manifest. `planned`, blocked/failed,
+already-finalized или изменившийся Stage 5 run отклоняется до создания job. Replay уже
+подтверждённого `prepared` run возвращает тот же job ID. Worker не ищет release для автоматического
+запуска: отсутствие явно staged job означает отсутствие любых normalization POST.
 
 На каждом resumable slice worker:
 
@@ -164,14 +168,35 @@ Parent становится `confirmed` только при одновремен
 
 Новый account после этого evidence инвалидирует следующий Stage 8 inventory digest; Stage 9 ещё
 раз проверяет полное покрытие под global release lock непосредственно перед single-head CAS.
-В той же `SERIALIZABLE` confirmation transaction runner заполняет каждую balance assignment только
-переходом `funding_generation: NULL → positive`, сохраняет canonical `funding_manifest_digest` и
-создаёт эквивалентное funding evidence для заранее подготовленного recovery plan. Любая replacement,
-missing/extra assignment или несовпадение ready queue откатывает всю финализацию. Затем Stage 5
-consumer строит exact target/recovery engine releases, выполняет prepare+readback и только после
-этого сохраняет `engine_release_digest`, target/recovery digests и статус `prepared`. DB guards
-запрещают более ранний `prepared` и замораживают assignments после него. Runner не двигает release
-head и не меняет balances или pricing policy.
+Первая короткая `SERIALIZABLE` confirmation transaction заполняет каждую balance assignment только
+переходом `funding_generation: NULL → positive`, сохраняет одинаковый canonical
+`funding_manifest_digest` и копирует exact funding evidence в заранее подготовленный recovery plan.
+Любая replacement, missing/extra assignment или несовпадение ready queue откатывает всю локальную
+финализацию. После commit consumer строит exact target/recovery engine releases и recovery link,
+выполняет три prepare+readback без удержания PostgreSQL transaction, а затем второй короткой
+`SERIALIZABLE` transaction сохраняет три ACK, `engine_release_digest`, target/recovery digests и
+статус `prepared`. Retryable transport/DB failure оставляет parent неподтверждённым и допускает
+idempotent retry; immutable readback drift или изменившийся local bundle останавливается fail
+closed. DB guards запрещают более ранний `prepared` и замораживают assignments после него. Runner
+не создаёт activation job/Stage 8 evidence, не двигает release head и не меняет balances или
+pricing policy.
+
+## Staging и status
+
+CLI принимает только `DATABASE_URL` и exact Stage 5 plan digest; engine credentials ему не нужны,
+потому что все account-local и release prepare выполняет уже запущенный worker. `status` ничего не
+пишет и показывает lineage, состояния обоих plans/job, attempts/last error, разбиение queue и обе
+final identities.
+`stage` идемпотентно создаёт job и затем печатает тот же status snapshot:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage6-v2 status sha256:v2:<exact-stage5-plan-digest>
+pnpm --filter @claude-api/db pricing:stage6-v2 stage sha256:v2:<exact-stage5-plan-digest>
+```
+
+Это package entrypoint для защищённого production control-plane, а не разрешение запускать команду
+по SSH. До появления штатной host/admin operation production Stage 5/6 остаются невыполненными;
+наличие CLI или локального integration evidence не заменяет production `confirmed` status.
 
 Bounded параметры worker имеют безопасные defaults и жёсткие пределы:
 

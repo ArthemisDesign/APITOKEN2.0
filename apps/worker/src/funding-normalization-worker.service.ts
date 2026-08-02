@@ -233,7 +233,7 @@ export class FundingNormalizationWorkerService implements OnModuleInit, OnApplic
           false,
         );
       }
-      const resultDigest = await confirmFundingNormalizationJobV2(this.database, job, this.workerId, {
+      const resultDigest = await confirmFundingNormalizationJobV2(this.database, this.engine, job, this.workerId, {
         engineInventory: finalInventory,
       });
       this.logger.log(

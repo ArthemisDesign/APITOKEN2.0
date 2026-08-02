@@ -187,6 +187,18 @@ prepares an engine release or moves capability/catalog/switch/release heads. Run
 come only from `DATABASE_URL`, `ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY` and optional loopback
 `OPENKEYS_INTERNAL_BASE_URL` / `OPENKEYS_CONTROL_KEY`; they are not command arguments or output.
 
+Stage 6 is explicitly staged and observed by the exact Stage 5 plan digest:
+
+```bash
+pnpm --filter @claude-api/db pricing:stage6-v2 status sha256:v2:<exact-stage5-plan-digest>
+pnpm --filter @claude-api/db pricing:stage6-v2 stage sha256:v2:<exact-stage5-plan-digest>
+```
+
+The CLI reads only `DATABASE_URL`; the deployed worker performs bounded account-local engine
+normalization and target/recovery prepare. It never creates an activation job or advances a head.
+The entrypoint must be invoked by the protected production control-plane, not through ad-hoc SSH;
+until that operation records a confirmed production job, Stage 6 is not complete.
+
 Stage 8 adds a read-only synchronization report for the commerce side:
 
 ```bash

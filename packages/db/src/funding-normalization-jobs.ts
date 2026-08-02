@@ -3,11 +3,31 @@ import { createHash } from "node:crypto";
 import type {
   FundingNormalizationPlanV2,
   PricingReleaseInventoryAccountV2,
+  PricingReleaseRecoveryLinkV2,
+  PricingReleaseV2,
 } from "@claude-api/contracts";
+import {
+  MAIN_PRICING_PRODUCT_ID,
+  OPENKEYS_PRICING_PRODUCT_ID,
+  PRICING_RELEASE_SCHEMA_VERSION_V2,
+  pricingCatalogSpecSchema,
+  pricingReleaseRecoveryLinkV2Schema,
+  pricingReleaseV2Schema,
+  providerSwitchSpecSchema,
+} from "@claude-api/contracts";
+import type { EngineClient } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import type { Database } from "./client.js";
+import {
+  buildStage5ServiceInventoryV2,
+  stage5V2CanonicalJson,
+  stage5V2Digest,
+  stage5V2EngineIdentityDigest,
+} from "./pricing-stage5-materializer-v2.js";
 
 const sha256V2Pattern = /^sha256:v2:[0-9a-f]{64}$/;
+const sha256V2Schema = z.string().regex(sha256V2Pattern);
 
 export type FundingNormalizationParentStatus =
   | "pending"
@@ -30,7 +50,12 @@ export interface FundingNormalizationJobV2 {
   attempts: number;
   engineInventoryDigest: string;
   serviceInventoryDigest: string;
-  fundingManifestDigest: string;
+  fundingManifestDigest: string | null;
+  stage5RunId: string;
+  stage5PlanDigest: string;
+  fundingPlanDigest: string;
+  recoveryGeneration: bigint;
+  recoveryPlanDigest: string;
 }
 
 export interface FundingNormalizationQueueRowV2 {
@@ -68,7 +93,7 @@ export interface FundingNormalizationStateV2 {
     status: "planned" | "materializing" | "prepared" | "active" | "superseded" | "failed";
     engineInventoryDigest: string;
     serviceInventoryDigest: string;
-    fundingManifestDigest: string;
+    fundingManifestDigest: string | null;
   };
   queue: FundingNormalizationQueueRowV2[];
   services: FundingNormalizationServiceInventoryRowV2[];
@@ -117,7 +142,12 @@ interface ParentJobRow {
   attempts: number;
   engine_inventory_digest: string;
   service_inventory_digest: string;
-  funding_manifest_digest: string;
+  funding_manifest_digest: string | null;
+  stage5_run_id: string;
+  stage5_plan_digest: string;
+  funding_plan_digest: string;
+  recovery_generation: string;
+  recovery_plan_digest: string;
 }
 
 interface ReleaseRow {
@@ -126,9 +156,68 @@ interface ReleaseRow {
   release_kind: "target" | "recovery";
   status: FundingNormalizationStateV2["release"]["status"];
   engine_inventory_digest: string;
+  commerce_inventory_digest: string;
+  openkeys_inventory_digest: string;
   service_inventory_digest: string;
-  funding_manifest_digest: string;
+  policy_manifest_digest: string;
+  assignment_manifest_digest: string;
+  funding_manifest_digest: string | null;
+  engine_release_digest: string | null;
 }
+
+interface Stage5RunRow {
+  run_id: string;
+  plan_digest: string;
+  funding_plan_digest: string;
+  target_generation: string;
+  recovery_generation: string;
+  target_digest: string | null;
+  recovery_digest: string | null;
+  plan_artifact: unknown;
+  blocker_count: string;
+  status: "blocked" | "planned" | "materializing" | "prepared" | "failed";
+}
+
+interface ReleaseAssignmentRow {
+  release_generation: string;
+  engine_account_id: string;
+  account_class: "b2c" | "b2b" | "openkeys" | "service";
+  owner_context: "commerce" | "openkeys" | "service";
+  owner_id: string;
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+  billing_mode: "balance" | "meter_only";
+  funding_generation: string | null;
+  purpose: string | null;
+  responsible: string | null;
+  assignment_digest: string;
+}
+
+interface Stage6PrepareAck {
+  artifact_kind: "target_release" | "recovery_release" | "recovery_link";
+  artifact_id: string;
+  artifact_version: number;
+  expected_digest: string;
+  mutation_result: "stored" | "unchanged";
+  readback_digest: string;
+}
+
+export interface FundingNormalizationReleaseBundleV2 {
+  stage5RunId: string;
+  target: PricingReleaseV2;
+  recovery: PricingReleaseV2;
+  recoveryLink: PricingReleaseRecoveryLinkV2;
+  fundingManifestDigest: string;
+}
+
+export type FundingNormalizationReleaseEngineV2 = Pick<
+  EngineClient,
+  | "preparePricingReleaseV2"
+  | "getPricingReleaseV2"
+  | "preparePricingReleaseRecoveryLinkV2"
+  | "getPricingReleaseRecoveryLinkV2"
+>;
 
 interface QueueRow {
   engine_account_id: string;
@@ -194,6 +283,15 @@ function parsePositiveBigInt(value: string, label: string): bigint {
   return parsed;
 }
 
+function positiveSafeNumber(value: bigint | string, label: string): number {
+  const parsed = typeof value === "bigint" ? value : BigInt(value);
+  const number = Number(parsed);
+  if (!Number.isSafeInteger(number) || number <= 0 || BigInt(number) !== parsed) {
+    throw new FundingNormalizationJobV2Error(`${label} must be a positive safe integer`, true);
+  }
+  return number;
+}
+
 function requireSha256V2(value: string, label: string): void {
   if (!sha256V2Pattern.test(value)) {
     throw new FundingNormalizationJobV2Error(`${label} is not a canonical sha256:v2 digest`, true);
@@ -218,7 +316,7 @@ function inventoryIdentity(accounts: readonly PricingReleaseInventoryAccountV2[]
 export function fundingNormalizationEngineInventoryDigestV2(
   accounts: readonly PricingReleaseInventoryAccountV2[],
 ): string {
-  return canonicalDigest("pricing-funding-normalization-engine-inventory-v2", inventoryIdentity(accounts));
+  return stage5V2EngineIdentityDigest(accounts);
 }
 
 export function sameFundingNormalizationInventoryIdentityV2(
@@ -231,18 +329,15 @@ export function sameFundingNormalizationInventoryIdentityV2(
 export function fundingNormalizationServiceInventoryDigestV2(
   services: readonly FundingNormalizationServiceInventoryRowV2[],
 ): string {
-  const manifest = services
-    .map((service) => ({
-      service_id: service.serviceId,
-      engine_account_id: service.engineAccountId,
-      purpose: service.purpose,
-      responsible: service.responsible,
-      status: service.status,
-      source_version: service.sourceVersion.toString(),
-      content_digest: service.contentDigest,
-    }))
-    .sort((left, right) => compareUtf8(left.service_id, right.service_id));
-  return canonicalDigest("pricing-funding-normalization-service-inventory-v2", manifest);
+  return buildStage5ServiceInventoryV2(services.map((service) => ({
+    service_id: service.serviceId,
+    engine_account_id: service.engineAccountId,
+    purpose: service.purpose,
+    responsible: service.responsible,
+    status: service.status,
+    source_version: positiveSafeNumber(service.sourceVersion, `service ${service.serviceId} source version`),
+    content_digest: service.contentDigest,
+  }))).inventory_digest;
 }
 
 export function fundingNormalizationManifestDigestV2(
@@ -270,13 +365,21 @@ export function fundingNormalizationManifestDigestV2(
   return canonicalDigest("pricing-funding-normalization-manifest-v2", manifest);
 }
 
-function fundingNormalizationPayloadDigestV2(release: ReleaseRow): string {
+function fundingNormalizationPayloadDigestV2(
+  run: Stage5RunRow,
+  target: ReleaseRow,
+  recovery: ReleaseRow,
+): string {
   return canonicalDigest("pricing-funding-normalization-job-v2", {
-    release_generation: release.generation,
-    release_digest: release.release_digest,
-    engine_inventory_digest: release.engine_inventory_digest,
-    service_inventory_digest: release.service_inventory_digest,
-    funding_manifest_digest: release.funding_manifest_digest,
+    stage5_run_id: run.run_id,
+    stage5_plan_digest: run.plan_digest,
+    funding_plan_digest: run.funding_plan_digest,
+    target_generation: target.generation,
+    target_plan_digest: target.release_digest,
+    recovery_generation: recovery.generation,
+    recovery_plan_digest: recovery.release_digest,
+    engine_inventory_digest: target.engine_inventory_digest,
+    service_inventory_digest: target.service_inventory_digest,
   });
 }
 
@@ -290,6 +393,11 @@ function parentFromRow(row: ParentJobRow): FundingNormalizationJobV2 {
     engineInventoryDigest: row.engine_inventory_digest,
     serviceInventoryDigest: row.service_inventory_digest,
     fundingManifestDigest: row.funding_manifest_digest,
+    stage5RunId: row.stage5_run_id,
+    stage5PlanDigest: row.stage5_plan_digest,
+    fundingPlanDigest: row.funding_plan_digest,
+    recoveryGeneration: parsePositiveBigInt(row.recovery_generation, "recovery generation"),
+    recoveryPlanDigest: row.recovery_plan_digest,
   };
 }
 
@@ -330,11 +438,14 @@ async function selectRelease(
   client: PoolClient,
   releaseGeneration: bigint,
   releaseDigest: string,
+  expectedKind: "target" | "recovery" = "target",
   lock: "" | "FOR SHARE" | "FOR UPDATE" = "FOR SHARE",
 ): Promise<ReleaseRow> {
   const result = await client.query<ReleaseRow>(`
     SELECT generation::text, content_digest AS release_digest, release_kind, status,
-           engine_inventory_digest, service_inventory_digest, funding_manifest_digest
+           commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+           service_inventory_digest, policy_manifest_digest, assignment_manifest_digest,
+           funding_manifest_digest, engine_release_digest
     FROM pricing_release_plans_v2
     WHERE generation = $1 AND content_digest = $2
     ${lock}
@@ -343,33 +454,95 @@ async function selectRelease(
   if (!row) {
     throw new FundingNormalizationJobV2Error("exact target release plan does not exist", true);
   }
-  if (row.release_kind !== "target") {
-    throw new FundingNormalizationJobV2Error("funding normalization requires a target release", true);
-  }
-  if (row.status === "active" || row.status === "superseded" || row.status === "failed") {
+  if (row.release_kind !== expectedKind) {
     throw new FundingNormalizationJobV2Error(
-      `target release cannot normalize funding while status is ${row.status}`,
+      `funding normalization requires a ${expectedKind} release`,
       true,
     );
   }
-  requireSha256V2(row.engine_inventory_digest, "target engine inventory digest");
-  requireSha256V2(row.service_inventory_digest, "target service inventory digest");
-  requireSha256V2(row.funding_manifest_digest, "target funding manifest digest");
+  if (row.status === "active" || row.status === "superseded" || row.status === "failed") {
+    throw new FundingNormalizationJobV2Error(
+      `${expectedKind} release cannot normalize funding while status is ${row.status}`,
+      true,
+    );
+  }
+  requireSha256V2(row.engine_inventory_digest, `${expectedKind} engine inventory digest`);
+  requireSha256V2(row.service_inventory_digest, `${expectedKind} service inventory digest`);
+  if (row.funding_manifest_digest !== null) {
+    requireSha256V2(row.funding_manifest_digest, `${expectedKind} funding manifest digest`);
+  }
+  if (row.engine_release_digest !== null) {
+    requireSha256V2(row.engine_release_digest, `${expectedKind} engine release digest`);
+  }
+  return row;
+}
+
+async function selectStage5Run(
+  client: PoolClient,
+  planDigest: string,
+  lock: "" | "FOR SHARE" | "FOR UPDATE" = "FOR SHARE",
+): Promise<Stage5RunRow> {
+  const result = await client.query<Stage5RunRow>(`
+    SELECT run_id::text, plan_digest, funding_plan_digest,
+           target_generation::text, recovery_generation::text,
+           target_digest, recovery_digest, plan_artifact, blocker_count::text, status
+    FROM pricing_stage5_runs_v2
+    WHERE plan_digest = $1
+    ${lock}
+  `, [planDigest]);
+  const row = result.rows[0];
+  if (!row) throw new FundingNormalizationJobV2Error("exact Stage 5 plan does not exist", true);
+  requireSha256V2(row.plan_digest, "Stage 5 plan digest");
+  requireSha256V2(row.funding_plan_digest, "Stage 5 funding plan digest");
+  if (row.blocker_count !== "0" || row.status === "blocked" || row.status === "failed") {
+    throw new FundingNormalizationJobV2Error(
+      `Stage 5 plan cannot normalize funding while status is ${row.status}`,
+      true,
+    );
+  }
   return row;
 }
 
 export async function stageFundingNormalizationJobV2(
   database: Database,
-  input: { releaseGeneration: bigint; releaseDigest: string },
+  input: { planDigest: string },
 ): Promise<string> {
-  if (input.releaseGeneration <= 0n) throw new RangeError("releaseGeneration must be positive");
-  assertNonEmpty(input.releaseDigest, "releaseDigest");
+  requireSha256V2(input.planDigest, "Stage 5 plan digest");
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const release = await selectRelease(client, input.releaseGeneration, input.releaseDigest, "FOR SHARE");
-    const payloadDigest = fundingNormalizationPayloadDigestV2(release);
-    const idempotencyKey = `pricing:v2:normalize-funding:${release.generation}:${release.release_digest}`;
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('pricing-stage6-v2:stage', 0))");
+    const run = await selectStage5Run(client, input.planDigest, "FOR UPDATE");
+    const targetGeneration = parsePositiveBigInt(run.target_generation, "target generation");
+    const recoveryGeneration = parsePositiveBigInt(run.recovery_generation, "recovery generation");
+    const planRows = await client.query<{
+      generation: string;
+      release_kind: "target" | "recovery";
+      content_digest: string;
+    }>(`
+      SELECT generation::text, release_kind, content_digest
+      FROM pricing_release_plans_v2
+      WHERE generation IN ($1, $2)
+      ORDER BY generation
+    `, [targetGeneration, recoveryGeneration]);
+    const targetDigest = planRows.rows.find((row) => row.release_kind === "target")?.content_digest;
+    const recoveryDigest = planRows.rows.find((row) => row.release_kind === "recovery")?.content_digest;
+    if (!targetDigest || !recoveryDigest || planRows.rows.length !== 2) {
+      throw new FundingNormalizationJobV2Error("Stage 5 target or recovery skeleton is missing", true);
+    }
+    const target = await selectRelease(client, targetGeneration, targetDigest, "target", "FOR UPDATE");
+    const recovery = await selectRelease(client, recoveryGeneration, recoveryDigest, "recovery", "FOR UPDATE");
+    if (
+      target.engine_inventory_digest !== recovery.engine_inventory_digest
+      || target.service_inventory_digest !== recovery.service_inventory_digest
+      || target.commerce_inventory_digest !== recovery.commerce_inventory_digest
+      || target.openkeys_inventory_digest !== recovery.openkeys_inventory_digest
+      || target.policy_manifest_digest !== recovery.policy_manifest_digest
+    ) {
+      throw new FundingNormalizationJobV2Error("Stage 5 target and recovery lineage differs", true);
+    }
+    const payloadDigest = fundingNormalizationPayloadDigestV2(run, target, recovery);
+    const idempotencyKey = `pricing:v2:normalize-funding:${run.plan_digest}`;
     const existing = await client.query<{
       id: string;
       job_kind: string;
@@ -386,8 +559,8 @@ export async function stageFundingNormalizationJobV2(
     if (row) {
       if (
         row.job_kind !== "normalize_funding"
-        || row.release_generation !== release.generation
-        || row.release_digest !== release.release_digest
+        || row.release_generation !== target.generation
+        || row.release_digest !== target.release_digest
         || row.payload_digest !== payloadDigest
       ) {
         throw new FundingNormalizationJobV2Error(
@@ -398,12 +571,28 @@ export async function stageFundingNormalizationJobV2(
       await client.query("COMMIT");
       return row.id;
     }
+    if (run.status !== "materializing" || run.target_digest !== null || run.recovery_digest !== null) {
+      throw new FundingNormalizationJobV2Error(
+        "Stage 6 requires one fully ACKed, unfinalized Stage 5 materialization",
+        true,
+      );
+    }
     const inserted = await client.query<{ id: string }>(`
       INSERT INTO pricing_release_control_jobs_v2 (
         job_kind, release_generation, release_digest, idempotency_key, payload_digest
       ) VALUES ('normalize_funding', $1, $2, $3, $4)
       RETURNING id
-    `, [input.releaseGeneration, input.releaseDigest, idempotencyKey, payloadDigest]);
+    `, [targetGeneration, target.release_digest, idempotencyKey, payloadDigest]);
+    await client.query(`
+      UPDATE pricing_stage5_runs_v2
+      SET status = 'materializing', updated_at = now()
+      WHERE run_id = $1 AND status IN ('planned', 'materializing')
+    `, [run.run_id]);
+    await client.query(`
+      UPDATE pricing_release_plans_v2
+      SET status = 'materializing', updated_at = now()
+      WHERE generation IN ($1, $2) AND status IN ('planned', 'materializing')
+    `, [targetGeneration, recoveryGeneration]);
     await client.query("COMMIT");
     return inserted.rows[0]!.id;
   } catch (error) {
@@ -412,6 +601,107 @@ export async function stageFundingNormalizationJobV2(
   } finally {
     client.release();
   }
+}
+
+export interface FundingNormalizationStageStatusV2 {
+  stage5_plan_digest: string;
+  stage5_status: Stage5RunRow["status"];
+  target_generation: string;
+  target_plan_digest: string;
+  target_release_digest: string | null;
+  target_status: FundingNormalizationStateV2["release"]["status"];
+  recovery_generation: string;
+  recovery_plan_digest: string;
+  recovery_release_digest: string | null;
+  recovery_status: FundingNormalizationStateV2["release"]["status"];
+  job_id: string | null;
+  job_status: FundingNormalizationParentStatus | null;
+  job_attempts: number | null;
+  job_last_error: string | null;
+  job_result_digest: string | null;
+  pending_accounts: number;
+  processing_accounts: number;
+  retry_accounts: number;
+  ready_accounts: number;
+  blocker_accounts: number;
+  target_funding_manifest_digest: string | null;
+  recovery_funding_manifest_digest: string | null;
+}
+
+export async function getFundingNormalizationStageStatusV2(
+  database: Database,
+  planDigest: string,
+): Promise<FundingNormalizationStageStatusV2> {
+  requireSha256V2(planDigest, "Stage 5 plan digest");
+  const result = await database.pool.query<{
+    stage5_plan_digest: string;
+    stage5_status: Stage5RunRow["status"];
+    target_generation: string;
+    target_plan_digest: string;
+    target_release_digest: string | null;
+    target_status: FundingNormalizationStateV2["release"]["status"];
+    recovery_generation: string;
+    recovery_plan_digest: string;
+    recovery_release_digest: string | null;
+    recovery_status: FundingNormalizationStateV2["release"]["status"];
+    job_id: string | null;
+    job_status: FundingNormalizationParentStatus | null;
+    job_attempts: number | null;
+    job_last_error: string | null;
+    job_result_digest: string | null;
+    pending_accounts: string;
+    processing_accounts: string;
+    retry_accounts: string;
+    ready_accounts: string;
+    blocker_accounts: string;
+    target_funding_manifest_digest: string | null;
+    recovery_funding_manifest_digest: string | null;
+  }>(`
+    SELECT run.plan_digest AS stage5_plan_digest, run.status AS stage5_status,
+           run.target_generation::text, target.content_digest AS target_plan_digest,
+           run.target_digest AS target_release_digest, target.status AS target_status,
+           run.recovery_generation::text, recovery.content_digest AS recovery_plan_digest,
+           run.recovery_digest AS recovery_release_digest, recovery.status AS recovery_status,
+           job.id::text AS job_id, job.status AS job_status,
+           job.attempts AS job_attempts, job.last_error AS job_last_error,
+           job.result_digest AS job_result_digest,
+           count(normalization.engine_account_id) FILTER (WHERE normalization.status = 'pending')::text AS pending_accounts,
+           count(normalization.engine_account_id) FILTER (WHERE normalization.status = 'processing')::text AS processing_accounts,
+           count(normalization.engine_account_id) FILTER (WHERE normalization.status = 'retry')::text AS retry_accounts,
+           count(normalization.engine_account_id) FILTER (WHERE normalization.status = 'ready')::text AS ready_accounts,
+           count(normalization.engine_account_id) FILTER (WHERE normalization.status = 'blocker')::text AS blocker_accounts,
+           target.funding_manifest_digest AS target_funding_manifest_digest,
+           recovery.funding_manifest_digest AS recovery_funding_manifest_digest
+    FROM pricing_stage5_runs_v2 run
+    JOIN pricing_release_plans_v2 target ON target.generation = run.target_generation
+    JOIN pricing_release_plans_v2 recovery ON recovery.generation = run.recovery_generation
+    LEFT JOIN pricing_release_control_jobs_v2 job
+      ON job.job_kind = 'normalize_funding'
+     AND job.release_generation = run.target_generation
+     AND job.release_digest = target.content_digest
+     AND job.idempotency_key = 'pricing:v2:normalize-funding:' || run.plan_digest
+    LEFT JOIN pricing_funding_normalizations_v2 normalization
+      ON normalization.release_generation = run.target_generation
+    WHERE run.plan_digest = $1
+    GROUP BY run.run_id, target.generation, recovery.generation, job.id
+  `, [planDigest]);
+  const row = result.rows[0];
+  if (!row) throw new FundingNormalizationJobV2Error("exact Stage 5 plan does not exist", true);
+  const toCount = (value: string): number => {
+    const count = Number(value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new FundingNormalizationJobV2Error("Stage 6 status count is invalid", true);
+    }
+    return count;
+  };
+  return {
+    ...row,
+    pending_accounts: toCount(row.pending_accounts),
+    processing_accounts: toCount(row.processing_accounts),
+    retry_accounts: toCount(row.retry_accounts),
+    ready_accounts: toCount(row.ready_accounts),
+    blocker_accounts: toCount(row.blocker_accounts),
+  };
 }
 
 async function recoverExpiredFundingNormalizationLeases(
@@ -487,14 +777,26 @@ export async function claimNextFundingNormalizationJobV2(
       UPDATE pricing_release_control_jobs_v2 job
       SET status = 'processing', attempts = job.attempts + 1,
           locked_at = now(), locked_by = $1, updated_at = now()
-      FROM candidate, pricing_release_plans_v2 release
+      FROM candidate, pricing_release_plans_v2 release,
+           pricing_stage5_runs_v2 stage5,
+           pricing_release_plans_v2 recovery
       WHERE job.id = candidate.id
         AND release.generation = job.release_generation
         AND release.content_digest = job.release_digest
+        AND stage5.target_generation = release.generation
+        AND job.idempotency_key = 'pricing:v2:normalize-funding:' || stage5.plan_digest
+        AND stage5.status IN ('materializing', 'prepared')
+        AND recovery.generation = stage5.recovery_generation
+        AND recovery.release_kind = 'recovery'
       RETURNING job.id, job.release_generation::text, job.release_digest,
                 job.payload_digest, job.attempts,
                 release.engine_inventory_digest, release.service_inventory_digest,
-                release.funding_manifest_digest
+                release.funding_manifest_digest,
+                stage5.run_id::text AS stage5_run_id,
+                stage5.plan_digest AS stage5_plan_digest,
+                stage5.funding_plan_digest,
+                stage5.recovery_generation::text,
+                recovery.content_digest AS recovery_plan_digest
     `, [workerId]);
     await client.query("COMMIT");
     const row = claimed.rows[0];
@@ -502,7 +804,9 @@ export async function claimNextFundingNormalizationJobV2(
     const job = parentFromRow(row);
     requireSha256V2(job.engineInventoryDigest, "target engine inventory digest");
     requireSha256V2(job.serviceInventoryDigest, "target service inventory digest");
-    requireSha256V2(job.fundingManifestDigest, "target funding manifest digest");
+    if (job.fundingManifestDigest !== null) {
+      requireSha256V2(job.fundingManifestDigest, "target funding manifest digest");
+    }
     return job;
   } catch (error) {
     await client.query("ROLLBACK");
@@ -532,10 +836,25 @@ export async function renewFundingNormalizationJobLeaseV2(
 async function selectFundingNormalizationState(
   client: PoolClient,
   job: FundingNormalizationJobV2,
-  releaseLock: "" | "FOR SHARE" = "FOR SHARE",
+  releaseLock: "" | "FOR SHARE" | "FOR UPDATE" = "FOR SHARE",
 ): Promise<FundingNormalizationStateV2> {
-  const release = await selectRelease(client, job.releaseGeneration, job.releaseDigest, releaseLock);
-  const expectedPayload = fundingNormalizationPayloadDigestV2(release);
+  const release = await selectRelease(client, job.releaseGeneration, job.releaseDigest, "target", releaseLock);
+  const run = await selectStage5Run(client, job.stage5PlanDigest, releaseLock);
+  const recovery = await selectRelease(
+    client,
+    job.recoveryGeneration,
+    job.recoveryPlanDigest,
+    "recovery",
+    releaseLock,
+  );
+  if (
+    run.run_id !== job.stage5RunId
+    || run.target_generation !== job.releaseGeneration.toString()
+    || run.recovery_generation !== job.recoveryGeneration.toString()
+  ) {
+    throw new FundingNormalizationJobV2Error("Stage 5 lineage changed behind the normalization job", true);
+  }
+  const expectedPayload = fundingNormalizationPayloadDigestV2(run, release, recovery);
   if (expectedPayload !== job.payloadDigest) {
     throw new FundingNormalizationJobV2Error("target release changed behind immutable job payload", true);
   }
@@ -741,11 +1060,16 @@ export async function storeFundingNormalizationPlanV2(
       release_generation, engine_account_id, funding_generation,
       expected_source_digest, target_funding_digest, applied_funding_digest,
       normalization_source, blockers, status, next_attempt_at, last_error
-    ) VALUES (
+    )
+    SELECT
       $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
       CASE WHEN $9 IN ('retry', 'blocker') THEN now() + $10 * interval '1 millisecond' ELSE now() END,
       $11
-    )
+    FROM pricing_release_control_jobs_v2 parent
+    WHERE parent.id = $13 AND parent.job_kind = 'normalize_funding'
+      AND parent.status = 'processing' AND parent.locked_by = $12
+      AND parent.release_generation = $1
+      AND parent.release_digest = $14 AND parent.payload_digest = $15
     ON CONFLICT (release_generation, engine_account_id) DO UPDATE
     SET funding_generation = EXCLUDED.funding_generation,
         expected_source_digest = EXCLUDED.expected_source_digest,
@@ -773,11 +1097,14 @@ export async function storeFundingNormalizationPlanV2(
     retryMs,
     disposition.lastError,
     workerId,
+    job.id,
+    job.releaseDigest,
+    job.payloadDigest,
   ]);
   const row = result.rows[0];
   if (!row) {
     throw new FundingNormalizationJobV2Error(
-      `funding normalization account ${plan.account_id} is leased by another worker`,
+      `funding normalization job or account ${plan.account_id} lost its lease`,
       false,
     );
   }
@@ -904,17 +1231,195 @@ function exactAccountSet(actual: readonly string[], expected: readonly string[])
   return sortedActual.every((accountId, index) => accountId === sortedExpected[index]);
 }
 
-export async function confirmFundingNormalizationJobV2(
+const stage5FinalizationArtifactSchema = z.object({
+  schema_version: z.literal(PRICING_RELEASE_SCHEMA_VERSION_V2),
+  plan_digest: sha256V2Schema,
+  funding_plan_digest: sha256V2Schema,
+  target_generation: z.number().int().safe().positive(),
+  recovery_generation: z.number().int().safe().positive(),
+  capability: z.object({
+    generation: z.number().int().safe().positive(),
+    content_digest: z.string().min(1),
+  }).passthrough(),
+  catalogs: z.array(pricingCatalogSpecSchema).length(2),
+  switches: providerSwitchSpecSchema,
+  target: z.object({
+    generation: z.number().int().safe().positive(),
+    release_kind: z.literal("target"),
+    content_digest: sha256V2Schema,
+  }).passthrough(),
+  recovery: z.object({
+    generation: z.number().int().safe().positive(),
+    release_kind: z.literal("recovery"),
+    content_digest: sha256V2Schema,
+  }).passthrough(),
+}).passthrough();
+
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return stage5V2CanonicalJson(left) === stage5V2CanonicalJson(right);
+}
+
+async function selectReleaseAssignments(
+  client: PoolClient,
+  generation: bigint,
+): Promise<ReleaseAssignmentRow[]> {
+  const result = await client.query<ReleaseAssignmentRow>(`
+    SELECT release_generation::text, engine_account_id, account_class, owner_context, owner_id,
+           policy_id, policy_version::text, policy_digest, billing_mode,
+           funding_generation::text, purpose, responsible, assignment_digest
+    FROM pricing_release_assignments_v2
+    WHERE release_generation = $1
+    ORDER BY engine_account_id COLLATE "C"
+  `, [generation]);
+  return result.rows;
+}
+
+function comparableAssignment(row: ReleaseAssignmentRow): Record<string, unknown> {
+  return {
+    engine_account_id: row.engine_account_id,
+    account_class: row.account_class,
+    owner_context: row.owner_context,
+    owner_id: row.owner_id,
+    policy_id: row.policy_id,
+    policy_version: row.policy_version,
+    policy_digest: row.policy_digest,
+    billing_mode: row.billing_mode,
+    purpose: row.purpose,
+    responsible: row.responsible,
+  };
+}
+
+function assertReleaseGraphsMatch(
+  target: readonly ReleaseAssignmentRow[],
+  recovery: readonly ReleaseAssignmentRow[],
+): void {
+  if (!sameCanonical(target.map(comparableAssignment), recovery.map(comparableAssignment))) {
+    throw new FundingNormalizationJobV2Error(
+      "Stage 5 target and recovery assignment graphs differ",
+      true,
+    );
+  }
+}
+
+function buildEngineReleaseV2(
+  run: Stage5RunRow,
+  release: ReleaseRow,
+  assignments: readonly ReleaseAssignmentRow[],
+): PricingReleaseV2 {
+  const artifact = stage5FinalizationArtifactSchema.parse(run.plan_artifact);
+  const artifactRelease = release.release_kind === "target" ? artifact.target : artifact.recovery;
+  if (
+    artifact.plan_digest !== run.plan_digest
+    || artifact.funding_plan_digest !== run.funding_plan_digest
+    || artifact.target_generation !== positiveSafeNumber(run.target_generation, "target generation")
+    || artifact.recovery_generation !== positiveSafeNumber(run.recovery_generation, "recovery generation")
+    || artifactRelease.generation !== positiveSafeNumber(release.generation, `${release.release_kind} generation`)
+    || artifactRelease.release_kind !== release.release_kind
+    || artifactRelease.content_digest !== release.release_digest
+  ) {
+    throw new FundingNormalizationJobV2Error("Stage 5 plan artifact differs from relational lineage", true);
+  }
+  const mainCatalog = artifact.catalogs.find((catalog) => catalog.product_id === MAIN_PRICING_PRODUCT_ID);
+  const openKeysCatalog = artifact.catalogs.find((catalog) => catalog.product_id === OPENKEYS_PRICING_PRODUCT_ID);
+  if (!mainCatalog || !openKeysCatalog) {
+    throw new FundingNormalizationJobV2Error("Stage 5 plan lacks one exact product catalog", true);
+  }
+  if (release.funding_manifest_digest === null) {
+    throw new FundingNormalizationJobV2Error("funding manifest is not finalized", false);
+  }
+  const wireAssignments = assignments.map((assignment) => ({
+    account_id: assignment.engine_account_id,
+    account_class: assignment.account_class === "openkeys" ? "open_keys" as const : assignment.account_class,
+    policy_id: assignment.policy_id,
+    policy_version: positiveSafeNumber(assignment.policy_version, "policy version"),
+    policy_digest: assignment.policy_digest,
+    billing_mode: assignment.billing_mode,
+    funding_generation: assignment.funding_generation === null
+      ? null
+      : positiveSafeNumber(assignment.funding_generation, "funding generation"),
+    purpose: assignment.purpose,
+    responsible: assignment.responsible,
+    assignment_digest: assignment.assignment_digest,
+  }));
+  const base = {
+    generation: positiveSafeNumber(release.generation, `${release.release_kind} generation`),
+    release_kind: release.release_kind,
+    schema_version: PRICING_RELEASE_SCHEMA_VERSION_V2,
+    capability_generation: artifact.capability.generation,
+    capability_digest: artifact.capability.content_digest,
+    main_catalog_generation: mainCatalog.generation,
+    main_catalog_digest: mainCatalog.content_digest,
+    openkeys_catalog_generation: openKeysCatalog.generation,
+    openkeys_catalog_digest: openKeysCatalog.content_digest,
+    switch_generation: artifact.switches.generation,
+    switch_digest: artifact.switches.content_digest,
+    inventory_digest: release.engine_inventory_digest,
+    policy_manifest_digest: release.policy_manifest_digest,
+    assignment_manifest_digest: release.assignment_manifest_digest,
+    funding_manifest_digest: release.funding_manifest_digest,
+    minimum_runtime_schema_version: PRICING_RELEASE_SCHEMA_VERSION_V2,
+    assignments: wireAssignments,
+  };
+  return pricingReleaseV2Schema.parse({
+    ...base,
+    content_digest: stage5V2Digest("engine-release", base),
+  });
+}
+
+function buildRecoveryLinkV2(
+  target: PricingReleaseV2,
+  recovery: PricingReleaseV2,
+): PricingReleaseRecoveryLinkV2 {
+  const base = {
+    target_generation: target.generation,
+    target_digest: target.content_digest,
+    recovery_generation: recovery.generation,
+    recovery_digest: recovery.content_digest,
+  };
+  return pricingReleaseRecoveryLinkV2Schema.parse({
+    ...base,
+    link_digest: stage5V2Digest("recovery-link", base),
+  });
+}
+
+function assertCompleteFundingState(
+  state: FundingNormalizationStateV2,
+  coverage: FundingNormalizationCoverageV2,
+): string {
+  const queueIds = state.queue.map((row) => row.engineAccountId);
+  if (!exactAccountSet(queueIds, coverage.balanceAccountIds)) {
+    throw new FundingNormalizationJobV2Error(
+      "final funding queue has missing or extra balance accounts",
+      false,
+    );
+  }
+  const incomplete = state.queue.filter((row) =>
+    row.status !== "ready"
+    || row.fundingGeneration === null
+    || row.targetFundingDigest === null
+    || row.appliedFundingDigest !== row.targetFundingDigest
+    || row.blockers !== null);
+  if (incomplete.length > 0) {
+    throw new FundingNormalizationJobV2Error(
+      `final funding queue still has ${incomplete.length} incomplete accounts`,
+      false,
+    );
+  }
+  return fundingNormalizationManifestDigestV2(state.queue);
+}
+
+async function finalizeFundingManifestV2(
   database: Database,
   job: FundingNormalizationJobV2,
   workerId: string,
   evidence: {
     engineInventory: readonly PricingReleaseInventoryAccountV2[];
   },
-): Promise<string> {
+): Promise<FundingNormalizationReleaseBundleV2> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('pricing-stage6-v2:finalize', 0))");
     const parent = await client.query<{ id: string }>(`
       SELECT id FROM pricing_release_control_jobs_v2
       WHERE id = $1 AND job_kind = 'normalize_funding'
@@ -925,37 +1430,305 @@ export async function confirmFundingNormalizationJobV2(
     if (!parent.rows[0]) {
       throw new FundingNormalizationJobV2Error(`funding normalization job ${job.id} lost its lease`, false);
     }
-    const state = await selectFundingNormalizationState(client, job);
+    const state = await selectFundingNormalizationState(client, job, "FOR UPDATE");
     const coverage = buildFundingNormalizationCoverageV2(evidence.engineInventory, state);
-    const queueIds = state.queue.map((row) => row.engineAccountId);
-    if (!exactAccountSet(queueIds, coverage.balanceAccountIds)) {
+    const fundingManifestDigest = assertCompleteFundingState(state, coverage);
+    if (state.release.fundingManifestDigest !== null
+        && state.release.fundingManifestDigest !== fundingManifestDigest) {
       throw new FundingNormalizationJobV2Error(
-        "final funding queue has missing or extra balance accounts",
-        false,
-      );
-    }
-    const incomplete = state.queue.filter((row) =>
-      row.status !== "ready"
-      || row.fundingGeneration === null
-      || row.targetFundingDigest === null
-      || row.appliedFundingDigest !== row.targetFundingDigest
-      || row.blockers !== null);
-    if (incomplete.length > 0) {
-      throw new FundingNormalizationJobV2Error(
-        `final funding queue still has ${incomplete.length} incomplete accounts`,
-        false,
-      );
-    }
-    const fundingManifestDigest = fundingNormalizationManifestDigestV2(state.queue);
-    if (fundingManifestDigest !== state.release.fundingManifestDigest) {
-      throw new FundingNormalizationJobV2Error(
-        "applied funding manifest does not match the immutable target release plan",
+        "final funding manifest conflicts with a previously finalized identity",
         true,
       );
     }
+    const targetAssignments = await selectReleaseAssignments(client, job.releaseGeneration);
+    const recoveryAssignments = await selectReleaseAssignments(client, job.recoveryGeneration);
+    assertReleaseGraphsMatch(targetAssignments, recoveryAssignments);
+    const expectedAllAccounts = [...coverage.balanceAccountIds, ...coverage.serviceAccountIds].sort(compareUtf8);
+    if (
+      !exactAccountSet(targetAssignments.map((row) => row.engine_account_id), expectedAllAccounts)
+      || !exactAccountSet(recoveryAssignments.map((row) => row.engine_account_id), expectedAllAccounts)
+    ) {
+      throw new FundingNormalizationJobV2Error(
+        "Stage 5 assignment graph no longer covers the exact engine inventory",
+        false,
+      );
+    }
+    const queueById = new Map(state.queue.map((row) => [row.engineAccountId, row]));
+    for (const assignment of targetAssignments) {
+      if (assignment.billing_mode === "meter_only") {
+        if (assignment.funding_generation !== null) {
+          throw new FundingNormalizationJobV2Error("service assignment unexpectedly has funding", true);
+        }
+        continue;
+      }
+      const queue = queueById.get(assignment.engine_account_id);
+      if (!queue?.fundingGeneration) {
+        throw new FundingNormalizationJobV2Error(
+          `missing ready funding identity for ${assignment.engine_account_id}`,
+          false,
+        );
+      }
+      const updated = await client.query(`
+        UPDATE pricing_release_assignments_v2
+        SET funding_generation = $3
+        WHERE release_generation IN ($1, $2) AND engine_account_id = $4
+          AND billing_mode = 'balance'
+          AND (funding_generation IS NULL OR funding_generation = $3)
+      `, [job.releaseGeneration, job.recoveryGeneration, queue.fundingGeneration, assignment.engine_account_id]);
+      if (updated.rowCount !== 2) {
+        throw new FundingNormalizationJobV2Error(
+          `funding assignment ${assignment.engine_account_id} could not finalize exactly once per release`,
+          true,
+        );
+      }
+    }
+    await client.query(`
+      INSERT INTO pricing_funding_normalizations_v2 (
+        release_generation, engine_account_id, funding_generation,
+        expected_source_digest, target_funding_digest, applied_funding_digest,
+        normalization_source, blockers, status, attempts, next_attempt_at, last_error
+      )
+      SELECT $2, engine_account_id, funding_generation,
+             expected_source_digest, target_funding_digest, applied_funding_digest,
+             normalization_source, NULL, 'ready', attempts, now(), NULL
+      FROM pricing_funding_normalizations_v2
+      WHERE release_generation = $1 AND status = 'ready'
+      ON CONFLICT (release_generation, engine_account_id) DO NOTHING
+    `, [job.releaseGeneration, job.recoveryGeneration]);
+    const recoveryQueue = await client.query<QueueRow>(`
+      SELECT engine_account_id, funding_generation::text, expected_source_digest,
+             target_funding_digest, applied_funding_digest, normalization_source,
+             blockers, status, attempts, next_attempt_at, locked_at, locked_by,
+             last_error, updated_at
+      FROM pricing_funding_normalizations_v2
+      WHERE release_generation = $1
+      ORDER BY engine_account_id COLLATE "C"
+    `, [job.recoveryGeneration]);
+    const recoveryQueueRows = recoveryQueue.rows.map(queueFromRow);
+    const queueEvidence = (rows: readonly FundingNormalizationQueueRowV2[]) => rows.map((row) => ({
+      engine_account_id: row.engineAccountId,
+      funding_generation: row.fundingGeneration?.toString() ?? null,
+      expected_source_digest: row.expectedSourceDigest,
+      target_funding_digest: row.targetFundingDigest,
+      applied_funding_digest: row.appliedFundingDigest,
+      normalization_source: row.normalizationSource,
+      blockers: row.blockers,
+      status: row.status,
+    }));
+    if (
+      fundingNormalizationManifestDigestV2(recoveryQueueRows) !== fundingManifestDigest
+      || !sameCanonical(queueEvidence(recoveryQueueRows), queueEvidence(state.queue))
+      || recoveryQueueRows.some((row) => row.status !== "ready" || row.blockers !== null)
+    ) {
+      throw new FundingNormalizationJobV2Error(
+        "recovery funding evidence differs from the target manifest",
+        true,
+      );
+    }
+    const plans = await client.query(`
+      UPDATE pricing_release_plans_v2
+      SET funding_manifest_digest = $3, status = 'materializing', updated_at = now()
+      WHERE generation IN ($1, $2)
+        AND status IN ('planned', 'materializing')
+        AND (funding_manifest_digest IS NULL OR funding_manifest_digest = $3)
+    `, [job.releaseGeneration, job.recoveryGeneration, fundingManifestDigest]);
+    if (plans.rowCount !== 2) {
+      throw new FundingNormalizationJobV2Error("target/recovery funding manifests did not finalize together", true);
+    }
+    const run = await selectStage5Run(client, job.stage5PlanDigest, "FOR UPDATE");
+    const target = await selectRelease(client, job.releaseGeneration, job.releaseDigest, "target", "FOR UPDATE");
+    const recovery = await selectRelease(
+      client,
+      job.recoveryGeneration,
+      job.recoveryPlanDigest,
+      "recovery",
+      "FOR UPDATE",
+    );
+    const finalizedTargetAssignments = await selectReleaseAssignments(client, job.releaseGeneration);
+    const finalizedRecoveryAssignments = await selectReleaseAssignments(client, job.recoveryGeneration);
+    const targetRelease = buildEngineReleaseV2(run, target, finalizedTargetAssignments);
+    const recoveryRelease = buildEngineReleaseV2(run, recovery, finalizedRecoveryAssignments);
+    const recoveryLink = buildRecoveryLinkV2(targetRelease, recoveryRelease);
+    await client.query("COMMIT");
+    return {
+      stage5RunId: run.run_id,
+      target: targetRelease,
+      recovery: recoveryRelease,
+      recoveryLink,
+      fundingManifestDigest,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function successfulMutationResult(result: { result: string }, label: string): "stored" | "unchanged" {
+  if (result.result === "stored" || result.result === "unchanged") return result.result;
+  throw new FundingNormalizationJobV2Error(`${label} prepare was rejected with ${result.result}`, true);
+}
+
+async function prepareEngineReleaseBundleV2(
+  engine: FundingNormalizationReleaseEngineV2,
+  bundle: FundingNormalizationReleaseBundleV2,
+): Promise<Stage6PrepareAck[]> {
+  const acks: Stage6PrepareAck[] = [];
+  for (const [kind, release] of [
+    ["target_release", bundle.target],
+    ["recovery_release", bundle.recovery],
+  ] as const) {
+    const mutation = await engine.preparePricingReleaseV2(release);
+    const result = successfulMutationResult(mutation, `${kind} ${release.generation}`);
+    const readback = await engine.getPricingReleaseV2(release.generation);
+    if (!readback || !sameCanonical(readback, release)) {
+      throw new FundingNormalizationJobV2Error(`${kind} readback differs from prepare`, true);
+    }
+    acks.push({
+      artifact_kind: kind,
+      artifact_id: `pricing-release-v2:${release.release_kind}`,
+      artifact_version: release.generation,
+      expected_digest: release.content_digest,
+      mutation_result: result,
+      readback_digest: readback.content_digest,
+    });
+  }
+  const linkMutation = await engine.preparePricingReleaseRecoveryLinkV2(bundle.recoveryLink);
+  const linkResult = successfulMutationResult(linkMutation, "recovery link");
+  const linkReadback = await engine.getPricingReleaseRecoveryLinkV2(
+    bundle.recoveryLink.target_generation,
+    bundle.recoveryLink.recovery_generation,
+  );
+  if (!linkReadback || !sameCanonical(linkReadback, bundle.recoveryLink)) {
+    throw new FundingNormalizationJobV2Error("recovery link readback differs from prepare", true);
+  }
+  acks.push({
+    artifact_kind: "recovery_link",
+    artifact_id: "pricing-release-v2:target-recovery",
+    artifact_version: bundle.recoveryLink.recovery_generation,
+    expected_digest: bundle.recoveryLink.link_digest,
+    mutation_result: linkResult,
+    readback_digest: linkReadback.link_digest,
+  });
+  return acks;
+}
+
+async function commitFundingNormalizationFinalizationV2(
+  database: Database,
+  job: FundingNormalizationJobV2,
+  workerId: string,
+  expectedBundle: FundingNormalizationReleaseBundleV2,
+  acks: readonly Stage6PrepareAck[],
+  evidence: { engineInventory: readonly PricingReleaseInventoryAccountV2[] },
+): Promise<string> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('pricing-stage6-v2:finalize', 0))");
+    const parent = await client.query<{ id: string }>(`
+      SELECT id FROM pricing_release_control_jobs_v2
+      WHERE id = $1 AND job_kind = 'normalize_funding'
+        AND status = 'processing' AND locked_by = $2
+        AND release_generation = $3 AND release_digest = $4 AND payload_digest = $5
+      FOR UPDATE
+    `, [job.id, workerId, job.releaseGeneration, job.releaseDigest, job.payloadDigest]);
+    if (!parent.rows[0]) {
+      throw new FundingNormalizationJobV2Error(`funding normalization job ${job.id} lost its lease`, false);
+    }
+    const state = await selectFundingNormalizationState(client, job, "FOR UPDATE");
+    const coverage = buildFundingNormalizationCoverageV2(evidence.engineInventory, state);
+    const fundingManifestDigest = assertCompleteFundingState(state, coverage);
+    if (fundingManifestDigest !== expectedBundle.fundingManifestDigest) {
+      throw new FundingNormalizationJobV2Error("funding manifest changed before final commit", true);
+    }
+    const run = await selectStage5Run(client, job.stage5PlanDigest, "FOR UPDATE");
+    const target = await selectRelease(client, job.releaseGeneration, job.releaseDigest, "target", "FOR UPDATE");
+    const recovery = await selectRelease(
+      client,
+      job.recoveryGeneration,
+      job.recoveryPlanDigest,
+      "recovery",
+      "FOR UPDATE",
+    );
+    const actualBundle: FundingNormalizationReleaseBundleV2 = {
+      stage5RunId: run.run_id,
+      target: buildEngineReleaseV2(run, target, await selectReleaseAssignments(client, job.releaseGeneration)),
+      recovery: buildEngineReleaseV2(run, recovery, await selectReleaseAssignments(client, job.recoveryGeneration)),
+      recoveryLink: expectedBundle.recoveryLink,
+      fundingManifestDigest,
+    };
+    actualBundle.recoveryLink = buildRecoveryLinkV2(actualBundle.target, actualBundle.recovery);
+    if (!sameCanonical(actualBundle, expectedBundle)) {
+      throw new FundingNormalizationJobV2Error("release bundle changed after engine prepare", true);
+    }
+    if (acks.length !== 3) {
+      throw new FundingNormalizationJobV2Error("engine release ACK set is incomplete", true);
+    }
+    for (const ack of acks) {
+      if (ack.expected_digest !== ack.readback_digest) {
+        throw new FundingNormalizationJobV2Error("engine release ACK readback digest differs", true);
+      }
+      const ackBase = { run_id: run.run_id, ...ack };
+      const ackDigest = stage5V2Digest("prepare-ack", ackBase);
+      const inserted = await client.query<{
+        expected_digest: string;
+        readback_digest: string;
+      }>(`
+        INSERT INTO pricing_stage5_prepare_acks_v2 (
+          run_id, artifact_kind, artifact_id, artifact_version,
+          expected_digest, mutation_result, readback_digest, ack_digest
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (run_id, artifact_kind, artifact_id, artifact_version) DO UPDATE
+        SET expected_digest = pricing_stage5_prepare_acks_v2.expected_digest
+        RETURNING expected_digest, readback_digest
+      `, [
+        run.run_id,
+        ack.artifact_kind,
+        ack.artifact_id,
+        ack.artifact_version,
+        ack.expected_digest,
+        ack.mutation_result,
+        ack.readback_digest,
+        ackDigest,
+      ]);
+      if (!sameCanonical(inserted.rows[0], {
+        expected_digest: ack.expected_digest,
+        readback_digest: ack.readback_digest,
+      })) {
+        throw new FundingNormalizationJobV2Error("stored engine release ACK conflicts with readback", true);
+      }
+    }
+    for (const release of [actualBundle.target, actualBundle.recovery]) {
+      const updated = await client.query(`
+        UPDATE pricing_release_plans_v2
+        SET engine_release_digest = $2, status = 'prepared', updated_at = now()
+        WHERE generation = $1 AND status IN ('materializing', 'prepared')
+          AND funding_manifest_digest = $3
+          AND (engine_release_digest IS NULL OR engine_release_digest = $2)
+      `, [release.generation, release.content_digest, fundingManifestDigest]);
+      if (updated.rowCount !== 1) {
+        throw new FundingNormalizationJobV2Error(`${release.release_kind} release did not finalize`, true);
+      }
+    }
+    const runUpdated = await client.query(`
+      UPDATE pricing_stage5_runs_v2
+      SET target_digest = $2, recovery_digest = $3,
+          status = 'prepared', updated_at = now()
+      WHERE run_id = $1 AND status IN ('materializing', 'prepared')
+        AND (target_digest IS NULL OR target_digest = $2)
+        AND (recovery_digest IS NULL OR recovery_digest = $3)
+    `, [run.run_id, actualBundle.target.content_digest, actualBundle.recovery.content_digest]);
+    if (runUpdated.rowCount !== 1) {
+      throw new FundingNormalizationJobV2Error("Stage 5 run did not finalize with both release identities", true);
+    }
     const resultDigest = canonicalDigest("pricing-funding-normalization-result-v2", {
-      release_generation: job.releaseGeneration.toString(),
-      release_digest: job.releaseDigest,
+      stage5_plan_digest: run.plan_digest,
+      target_generation: actualBundle.target.generation,
+      target_digest: actualBundle.target.content_digest,
+      recovery_generation: actualBundle.recovery.generation,
+      recovery_digest: actualBundle.recovery.content_digest,
+      recovery_link_digest: actualBundle.recoveryLink.link_digest,
       engine_inventory_digest: coverage.engineInventoryDigest,
       service_inventory_digest: coverage.serviceInventoryDigest,
       funding_manifest_digest: fundingManifestDigest,
@@ -965,8 +1738,8 @@ export async function confirmFundingNormalizationJobV2(
       UPDATE pricing_release_control_jobs_v2
       SET status = 'confirmed', result_digest = $2, confirmed_at = now(),
           locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-      WHERE id = $1 AND status = 'processing'
-    `, [job.id, resultDigest]);
+      WHERE id = $1 AND status = 'processing' AND locked_by = $3
+    `, [job.id, resultDigest, workerId]);
     if (confirmed.rowCount !== 1) {
       throw new FundingNormalizationJobV2Error(`funding normalization job ${job.id} lost its lease`, false);
     }
@@ -978,4 +1751,23 @@ export async function confirmFundingNormalizationJobV2(
   } finally {
     client.release();
   }
+}
+
+export async function confirmFundingNormalizationJobV2(
+  database: Database,
+  engine: FundingNormalizationReleaseEngineV2,
+  job: FundingNormalizationJobV2,
+  workerId: string,
+  evidence: { engineInventory: readonly PricingReleaseInventoryAccountV2[] },
+): Promise<string> {
+  const bundle = await finalizeFundingManifestV2(database, job, workerId, evidence);
+  const acks = await prepareEngineReleaseBundleV2(engine, bundle);
+  return commitFundingNormalizationFinalizationV2(
+    database,
+    job,
+    workerId,
+    bundle,
+    acks,
+    evidence,
+  );
 }

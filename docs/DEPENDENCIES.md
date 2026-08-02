@@ -33,8 +33,11 @@ exact producer SHA `packages/contracts` валидирует strict release/fund
 `packages/engine-client` является единственным typed transport consumer. `apps/worker` через
 `packages/db/src/funding-normalization-jobs.ts` реализует отдельный bounded/resumable Stage 6
 application consumer: exhaustive cursor scans, exact service exclusion, fresh GET перед каждым
-account-local POST и full-coverage parent confirmation. Наличие transport-методов или runner без
-явно staged target job не запускает backfill и не активирует release.
+account-local POST, full-coverage parent confirmation, одинаковое target/recovery funding evidence
+и prepare+readback обоих releases/recovery link. Job staging/status привязан к exact Stage 5 plan
+digest и доступен через DB package entrypoint только будущему защищённому production control-plane;
+CLI не является разрешением на ручной SSH. Наличие transport-методов или runner без явно staged
+job не запускает backfill, не создаёт Stage 8 evidence и не активирует release.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

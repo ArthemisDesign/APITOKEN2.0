@@ -33,7 +33,7 @@ function state(inventory: readonly PricingReleaseInventoryAccountV2[]): FundingN
     responsible: "platform",
     status: "active" as const,
     sourceVersion: 1n,
-    contentDigest: "service-content",
+    contentDigest: `sha256:v2:${"a".repeat(64)}`,
   }];
   return {
     release: {
