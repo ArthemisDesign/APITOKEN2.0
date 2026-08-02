@@ -1,11 +1,16 @@
 //! Shared customer admission and exact native-Gemini settlement.
 
 use super::config::GeminiModel;
+use super::pricing_snapshot::{prepare_gemini_legacy_quote, GeminiLegacyQuoteInput};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
-use crate::pricing::EnginePricingRequestId;
+use crate::pricing::{
+    EnginePricingRequestId, PricingBridgeDecision, PricingBridgeFallbackReason,
+    PricingBridgePrepare,
+};
 use crate::proxy::{authorize, Authz, HoldGuard};
 use crate::state::AppState;
 use axum::http::HeaderMap;
+use registry::pricing::{LegacyScalarReserveOutcome, SnapshotProvider};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 
@@ -79,51 +84,188 @@ impl PendingGeminiAdmission {
                 },
                 Some(billing),
             ) => {
-                let Some((affordable_output_tokens, hold)) = reservation_for_budget(
-                    model,
-                    estimated_input_tokens,
-                    requested_output_tokens,
-                    image_output_tokens,
-                    grounding_enabled,
-                    allow_output_cap,
-                    *mult_bp,
-                    *available_nano,
-                ) else {
-                    return Err(AdmissionError::LowBalance);
-                };
-                effective_output_tokens = affordable_output_tokens;
                 let request_id = self.calibration_request_id.clone();
-                match billing
-                    .reserve_request_for_execution(
-                        &request_id,
+                let provider = SnapshotProvider::Google;
+                let (affordable_output_tokens, hold) = if app.cfg.pricing_bridge.enabled() {
+                    let Some(typed_request_id) =
+                        EnginePricingRequestId::from_engine_uuid_v4(&request_id)
+                    else {
+                        app.metrics.pricing_bridge_failure(provider);
+                        eprintln!(
+                            "Gemini pricing bridge rejected the engine-owned request identity"
+                        );
+                        return Err(AdmissionError::Unavailable);
+                    };
+                    match app.cfg.pricing_bridge.decision(provider, &typed_request_id) {
+                        PricingBridgeDecision::Fallback(reason) => {
+                            app.metrics.pricing_bridge_fallback(provider, reason);
+                            reserve_gemini_legacy(
+                                billing,
+                                account_id,
+                                key,
+                                model,
+                                estimated_input_tokens,
+                                requested_output_tokens,
+                                image_output_tokens,
+                                grounding_enabled,
+                                allow_output_cap,
+                                *mult_bp,
+                                *available_nano,
+                                &request_id,
+                                &self.execution,
+                            )
+                            .await?
+                        }
+                        PricingBridgeDecision::Selected => {
+                            app.metrics.pricing_bridge_selected(provider);
+                            let quote_ts = pool::now();
+                            match prepare_gemini_legacy_quote(GeminiLegacyQuoteInput {
+                                request_id: typed_request_id,
+                                account_id: account_id.clone(),
+                                model: model.clone(),
+                                quote_ts,
+                                payable_multiplier_bp: *mult_bp,
+                                estimated_input_tokens,
+                                requested_output_tokens,
+                                image_output_tokens,
+                                grounding_enabled,
+                                allow_output_cap,
+                            }) {
+                                Ok(PricingBridgePrepare::Eligible(prepared)) => {
+                                    let _bridge_latency =
+                                        app.metrics.pricing_bridge_latency_timer(provider);
+                                    let quote = match prepared.quote(*available_nano) {
+                                        Ok(Some(quote)) => quote,
+                                        Ok(None) => {
+                                            app.metrics.pricing_bridge_not_reserved(provider);
+                                            return Err(AdmissionError::LowBalance);
+                                        }
+                                        Err(error) => {
+                                            app.metrics.pricing_bridge_failure(provider);
+                                            eprintln!(
+                                                "Gemini pricing bridge quote failed: {error:#}"
+                                            );
+                                            return Err(AdmissionError::Unavailable);
+                                        }
+                                    };
+                                    let affordable_output = quote.effective_output_tokens();
+                                    let hold = quote.snapshot().charged_hold_nano();
+                                    match billing
+                                        .reserve_request_with_legacy_snapshot_for_execution(
+                                            key,
+                                            quote.into_snapshot(),
+                                            self.execution.clone(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
+                                            app.metrics.pricing_bridge_inserted(provider);
+                                            if let Some(shadow) = &app.pricing_shadow {
+                                                shadow.try_enqueue(&receipt.snapshot);
+                                            }
+                                            (affordable_output, hold)
+                                        }
+                                        Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
+                                            app.metrics.pricing_bridge_unchanged(provider);
+                                            if let Some(shadow) = &app.pricing_shadow {
+                                                shadow.try_enqueue(&receipt.snapshot);
+                                            }
+                                            (affordable_output, hold)
+                                        }
+                                        Ok(LegacyScalarReserveOutcome::NotReserved) => {
+                                            app.metrics.pricing_bridge_not_reserved(provider);
+                                            return Err(AdmissionError::LowBalance);
+                                        }
+                                        Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
+                                            app.metrics.pricing_bridge_conflict(provider);
+                                            eprintln!(
+                                                "Gemini pricing bridge reserve conflict: {conflict:?}"
+                                            );
+                                            return Err(AdmissionError::Unavailable);
+                                        }
+                                        Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
+                                            app.metrics.pricing_bridge_failure(provider);
+                                            eprintln!(
+                                                "Gemini pricing bridge commit handoff was aborted"
+                                            );
+                                            return Err(AdmissionError::Unavailable);
+                                        }
+                                        Err(error) => {
+                                            app.metrics.pricing_bridge_failure(provider);
+                                            eprintln!(
+                                                "Gemini pricing bridge reservation failed: {error:#}"
+                                            );
+                                            return Err(AdmissionError::Unavailable);
+                                        }
+                                    }
+                                }
+                                Ok(PricingBridgePrepare::Fallback(reason)) => {
+                                    app.metrics.pricing_bridge_fallback(provider, reason);
+                                    reserve_gemini_legacy(
+                                        billing,
+                                        account_id,
+                                        key,
+                                        model,
+                                        estimated_input_tokens,
+                                        requested_output_tokens,
+                                        image_output_tokens,
+                                        grounding_enabled,
+                                        allow_output_cap,
+                                        *mult_bp,
+                                        *available_nano,
+                                        &request_id,
+                                        &self.execution,
+                                    )
+                                    .await?
+                                }
+                                Err(error) => {
+                                    app.metrics.pricing_bridge_failure(provider);
+                                    eprintln!(
+                                        "Gemini pricing bridge preparation failed: {error:#}"
+                                    );
+                                    return Err(AdmissionError::Unavailable);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    app.metrics.pricing_bridge_fallback(
+                        provider,
+                        PricingBridgeFallbackReason::BridgeDisabled,
+                    );
+                    reserve_gemini_legacy(
+                        billing,
                         account_id,
                         key,
-                        hold,
-                        self.execution.clone(),
+                        model,
+                        estimated_input_tokens,
+                        requested_output_tokens,
+                        image_output_tokens,
+                        grounding_enabled,
+                        allow_output_cap,
+                        *mult_bp,
+                        *available_nano,
+                        &request_id,
+                        &self.execution,
                     )
-                    .await
-                {
-                    Ok(Some(_)) => Some(Reservation {
-                        billing: billing.clone(),
-                        account_id: account_id.clone(),
-                        key: key.clone(),
-                        mult_bp: *mult_bp,
+                    .await?
+                };
+                effective_output_tokens = affordable_output_tokens;
+                Some(Reservation {
+                    billing: billing.clone(),
+                    account_id: account_id.clone(),
+                    key: key.clone(),
+                    mult_bp: *mult_bp,
+                    hold,
+                    request_id: request_id.clone(),
+                    guard: HoldGuard::new(
+                        Some(billing.clone()),
+                        account_id.clone(),
+                        key.clone(),
                         hold,
-                        request_id: request_id.clone(),
-                        guard: HoldGuard::new(
-                            Some(billing.clone()),
-                            account_id.clone(),
-                            key.clone(),
-                            hold,
-                            request_id,
-                        ),
-                    }),
-                    Ok(None) => return Err(AdmissionError::LowBalance),
-                    Err(error) => {
-                        eprintln!("Gemini billing reservation failed: {error:#}");
-                        return Err(AdmissionError::Unavailable);
-                    }
-                }
+                        request_id,
+                    ),
+                })
             }
             _ => None,
         };
@@ -390,14 +532,13 @@ pub(crate) async fn begin_admission(
     })
 }
 
-fn reserve_cost(
-    model: &GeminiModel,
+pub(super) fn reserve_cost_with_prices(
+    prices: metering::GeminiPrices,
     estimated_input_tokens: u64,
     requested_output_tokens: u64,
     image_output_tokens: u64,
     grounding_enabled: bool,
 ) -> i128 {
-    let prices = metering::gemini_prices_at(&model.id, pool::now()).unwrap_or(model.prices);
     let input_rate = [
         prices.input,
         prices.audio_input,
@@ -430,12 +571,54 @@ fn reserve_cost(
         .saturating_add(grounding)
 }
 
+#[cfg(test)]
+fn reserve_cost(
+    model: &GeminiModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: u64,
+    image_output_tokens: u64,
+    grounding_enabled: bool,
+) -> i128 {
+    let prices = metering::gemini_prices_at(&model.id, pool::now()).unwrap_or(model.prices);
+    reserve_cost_with_prices(
+        prices,
+        estimated_input_tokens,
+        requested_output_tokens,
+        image_output_tokens,
+        grounding_enabled,
+    )
+}
+
 /// Fit the requested output ceiling into the customer's currently available balance. Text routes
 /// can write a lower `generationConfig.maxOutputTokens` before upstream. Image generation has a
 /// fixed media-output component and is admitted only when the full request fits, because silently
 /// lowering image size would change the requested product.
 fn reservation_for_budget(
     model: &GeminiModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: u64,
+    image_output_tokens: u64,
+    grounding_enabled: bool,
+    allow_output_cap: bool,
+    mult_bp: i64,
+    available_nano: i64,
+) -> Option<(u64, i64)> {
+    let prices = metering::gemini_prices_at(&model.id, pool::now()).unwrap_or(model.prices);
+    reservation_for_budget_with_prices(
+        prices,
+        estimated_input_tokens,
+        requested_output_tokens,
+        image_output_tokens,
+        grounding_enabled,
+        allow_output_cap,
+        mult_bp,
+        available_nano,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reservation_for_budget_with_prices(
+    prices: metering::GeminiPrices,
     estimated_input_tokens: u64,
     requested_output_tokens: u64,
     image_output_tokens: u64,
@@ -456,8 +639,8 @@ fn reservation_for_budget(
     }
     let cost = |output_tokens| {
         metering::apply_multiplier(
-            reserve_cost(
-                model,
+            reserve_cost_with_prices(
+                prices,
                 estimated_input_tokens,
                 output_tokens,
                 image_output_tokens,
@@ -486,6 +669,47 @@ fn reservation_for_budget(
     }
     let hold = cost(low) as i64;
     Some((low, hold))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_gemini_legacy(
+    billing: &crate::billing::AsyncBilling,
+    account_id: &str,
+    key: &str,
+    model: &GeminiModel,
+    estimated_input_tokens: u64,
+    requested_output_tokens: u64,
+    image_output_tokens: u64,
+    grounding_enabled: bool,
+    allow_output_cap: bool,
+    mult_bp: i64,
+    available_nano: i64,
+    request_id: &str,
+    execution: &registry::ExecutionAttempt,
+) -> Result<(u64, i64), AdmissionError> {
+    let Some((effective_output_tokens, hold)) = reservation_for_budget(
+        model,
+        estimated_input_tokens,
+        requested_output_tokens,
+        image_output_tokens,
+        grounding_enabled,
+        allow_output_cap,
+        mult_bp,
+        available_nano,
+    ) else {
+        return Err(AdmissionError::LowBalance);
+    };
+    match billing
+        .reserve_request_for_execution(request_id, account_id, key, hold, execution.clone())
+        .await
+    {
+        Ok(Some(_)) => Ok((effective_output_tokens, hold)),
+        Ok(None) => Err(AdmissionError::LowBalance),
+        Err(error) => {
+            eprintln!("Gemini billing reservation failed: {error:#}");
+            Err(AdmissionError::Unavailable)
+        }
+    }
 }
 
 fn settled_charge(
@@ -589,7 +813,10 @@ mod tests {
         ProxyConfig,
     };
     use pool::{Pool, Reserve};
-    use registry::pricing::{FundingEnforcement, PolicyEnforcement, PricingMode};
+    use registry::pricing::{
+        FundingEnforcement, LegacyScalarReserveOutcome, PolicyEnforcement, PricingMode,
+        SnapshotProvider,
+    };
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -876,6 +1103,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(identity, (Some(GROUP.into()), 9));
+        let snapshots: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_admission_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshots, 0);
+        assert_eq!(
+            app.metrics.pricing_bridge_fallback_count(
+                SnapshotProvider::Google,
+                PricingBridgeFallbackReason::BridgeDisabled,
+            ),
+            1
+        );
+
+        drop(connection);
+        drop(admission);
+        billing.flush().await.unwrap();
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn selected_gemini_bridge_atomically_persists_snapshot_and_hands_it_to_shadow() {
+        const ACCOUNT: &str = "bridge-google-account";
+        const KEY: &str = "bridge-google-key";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-pricing-bridge-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing =
+            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
+        billing.create_account(ACCOUNT, None, 5_000).await.unwrap();
+        billing
+            .topup(ACCOUNT, 1_000_000_000, Some("bridge-google-seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+
+        let mut app = app_state(Arc::clone(&billing), &path_string);
+        Arc::make_mut(&mut app.cfg).pricing_bridge =
+            PricingBridgeConfig::from_parts(true, 10_000).unwrap();
+        app.pricing_shadow = Some(
+            crate::pricing::PricingShadowRuntime::start(
+                PricingShadowConfig::default(),
+                (*app.pricing_manifest).clone(),
+                None,
+                Arc::clone(&app.metrics),
+            )
+            .unwrap(),
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-goog-api-key", KEY.parse().unwrap());
+        let peer = "198.51.100.10:12345".parse().unwrap();
+        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
+        let (admission, effective_output) = pending
+            .reserve(&app, &model(), 2_048, 1_024, 0, true, true)
+            .await
+            .unwrap();
+        assert_eq!(effective_output, 1_024);
+        let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
+
+        let connection = registry::open(&path_string).unwrap();
+        let snapshot =
+            registry::pricing::sqlite_legacy_scalar_admission_snapshot(&connection, &request_id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(snapshot.provider(), SnapshotProvider::Google);
+        assert_eq!(snapshot.account_id(), ACCOUNT);
+        assert_eq!(snapshot.canonical_model_id(), "gemini-2.5-flash");
+        assert!(matches!(
+            billing
+                .reserve_request_with_legacy_snapshot_for_execution(
+                    KEY,
+                    snapshot,
+                    registry::ExecutionAttempt::direct(),
+                )
+                .await
+                .unwrap(),
+            LegacyScalarReserveOutcome::Unchanged(_)
+        ));
+        assert_eq!(
+            app.metrics
+                .pricing_bridge_inserted_count(SnapshotProvider::Google),
+            1
+        );
+        assert_eq!(
+            app.metrics.pricing_shadow_enqueue_count(
+                SnapshotProvider::Google,
+                crate::pricing::PricingShadowEnqueueResult::Disabled,
+            ),
+            1
+        );
 
         drop(connection);
         drop(admission);

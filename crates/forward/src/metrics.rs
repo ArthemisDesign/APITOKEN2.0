@@ -12,7 +12,7 @@ use registry::pricing::{
     PricingShadowReadErrorCode, PricingShadowRejectionCode, SnapshotProvider,
 };
 
-const PRICING_BRIDGE_PROVIDER_COUNT: usize = 2;
+const PRICING_BRIDGE_PROVIDER_COUNT: usize = 3;
 const PRICING_BRIDGE_FALLBACK_REASON_COUNT: usize = 6;
 pub const PRICING_BRIDGE_LATENCY_BUCKETS_MS: [u64; 10] =
     [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000];
@@ -50,6 +50,7 @@ impl From<SnapshotProvider> for StrictPricingProvider {
         match provider {
             SnapshotProvider::Anthropic => Self::Anthropic,
             SnapshotProvider::OpenAi => Self::OpenAi,
+            SnapshotProvider::Google => Self::Gemini,
         }
     }
 }
@@ -156,6 +157,7 @@ fn pricing_bridge_provider_index(provider: SnapshotProvider) -> usize {
     match provider {
         SnapshotProvider::Anthropic => 0,
         SnapshotProvider::OpenAi => 1,
+        SnapshotProvider::Google => 2,
     }
 }
 
@@ -701,6 +703,7 @@ mod tests {
         let metrics = Metrics::new();
         metrics.pricing_bridge_selected(SnapshotProvider::Anthropic);
         metrics.pricing_bridge_selected(SnapshotProvider::OpenAi);
+        metrics.pricing_bridge_selected(SnapshotProvider::Google);
         metrics.pricing_bridge_inserted(SnapshotProvider::Anthropic);
         metrics.pricing_bridge_unchanged(SnapshotProvider::OpenAi);
         metrics.pricing_bridge_not_reserved(SnapshotProvider::Anthropic);
@@ -720,6 +723,10 @@ mod tests {
         );
         assert_eq!(
             metrics.pricing_bridge_selected_count(SnapshotProvider::OpenAi),
+            1
+        );
+        assert_eq!(
+            metrics.pricing_bridge_selected_count(SnapshotProvider::Google),
             1
         );
         assert_eq!(

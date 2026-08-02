@@ -971,7 +971,11 @@ async fn metrics(
          # TYPE claude_api_pricing_bridge_fallback_total counter\n\
          # TYPE claude_api_pricing_bridge_atomic_reserve_duration_seconds histogram"
     );
-    for provider in [SnapshotProvider::Anthropic, SnapshotProvider::OpenAi] {
+    for provider in [
+        SnapshotProvider::Anthropic,
+        SnapshotProvider::OpenAi,
+        SnapshotProvider::Google,
+    ] {
         let provider_id = provider.as_str();
         let _ = writeln!(
             body,
@@ -1107,7 +1111,11 @@ async fn metrics(
             runtime.manifest().manifest_digest(),
         );
     }
-    for provider in [SnapshotProvider::Anthropic, SnapshotProvider::OpenAi] {
+    for provider in [
+        SnapshotProvider::Anthropic,
+        SnapshotProvider::OpenAi,
+        SnapshotProvider::Google,
+    ] {
         let provider_id = provider.as_str();
         for result in PricingShadowEnqueueResult::ALL {
             let _ = writeln!(
@@ -6557,7 +6565,7 @@ mod tests {
                 "pricing shadow metrics leaked unbounded label {forbidden_label}"
             );
         }
-        for provider in ["anthropic", "openai"] {
+        for provider in ["anthropic", "openai", "google"] {
             assert!(body.contains(&format!(
                 "claude_api_pricing_shadow_enqueue_total{{provider=\"{provider}\",result=\"accepted\"}} 0"
             )));

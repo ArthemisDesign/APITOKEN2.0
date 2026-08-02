@@ -310,12 +310,16 @@ Data-plane reserve/settlement этот глобальный lock не берут
 
 ### 7.5. Full shadow вместо canary
 
-До cutover новый resolver вычисляется в shadow для 100% поддержанных запросов. Shadow ничего не
-резервирует и не списывает второй раз. Он сравнивает admission, official cost, resolved discount,
-funding availability и release lineage с ожидаемым target.
+До cutover новый resolver вычисляется в shadow для 100% поддержанных запросов Anthropic, OpenAI и
+Gemini. Durable pricing provider ID для Gemini — `google`. Shadow ничего не резервирует и не
+списывает второй раз: actual snapshot сохраняется атомарно с единственным legacy reserve, а
+evaluation сравнивает admission, official cost, resolved discount, funding availability и release
+lineage с ожидаемым target.
 
 Canary-account list не создаётся. Stage 8 принимает только полное покрытие инвентаря и отсутствие
-необъяснённых расхождений.
+необъяснённых расхождений. Внешние Gemini usage/admission counters — только audit context; без
+реальных Google actual snapshots и shadow evaluations provider coverage не считается выполненным.
+Само наличие Google legacy shadow producer не включает strict Gemini или Stage 9 runtime.
 
 ### 7.6. Атомарный массовый cutover
 

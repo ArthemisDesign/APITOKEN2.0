@@ -795,6 +795,7 @@ mod tests {
         LegacyPremiumModifiers, LegacyScalarAdmissionSnapshotInput, PricingPolicySnapshot,
         PricingReadBundle, PricingRuntimeCapabilityEvidence, PricingShadowEvaluationOutcome,
         PricingShadowReadErrorCode, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed,
+        SnapshotGeminiContextRate, SnapshotGeminiSearchBilling,
     };
     use std::sync::atomic::AtomicU64;
 
@@ -851,6 +852,31 @@ mod tests {
                 speed: SnapshotAnthropicSpeed::Standard,
                 inference_geo: SnapshotAnthropicInferenceGeo::Global,
                 inference_geo_basis_points: 10_000,
+            },
+        })
+        .unwrap()
+    }
+
+    fn google_snapshot(request_id: &str) -> LegacyScalarAdmissionSnapshot {
+        let now = pool::now();
+        LegacyScalarAdmissionSnapshot::new(LegacyScalarAdmissionSnapshotInput {
+            request_id: request_id.to_owned(),
+            account_id: "google-shadow-account".to_owned(),
+            provider: SnapshotProvider::Google,
+            requested_model_id: "gemini-3.6-flash".to_owned(),
+            canonical_model_id: "gemini-3.6-flash".to_owned(),
+            alias_generation: 1,
+            tariff_schedule_id: metering::gemini::TARIFF_SCHEDULE_ID.to_owned(),
+            tariff_priced_ts: now,
+            admission_ts: now,
+            payable_multiplier_bp: 8_000,
+            official_hold_nano: 1_000,
+            charged_hold_nano: 800,
+            premium_modifiers: LegacyPremiumModifiers::GeminiV1 {
+                context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+                search_billing: SnapshotGeminiSearchBilling::PerQuery,
+                grounding_enabled: true,
+                search_reserve_units: 32,
             },
         })
         .unwrap()
@@ -961,6 +987,30 @@ mod tests {
             metrics.pricing_shadow_enqueue_count(
                 SnapshotProvider::Anthropic,
                 PricingShadowEnqueueResult::Disabled,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn google_snapshot_uses_the_same_bounded_enqueue_path() {
+        let config = PricingShadowConfig::from_values(enabled_values()).unwrap();
+        let metrics = Arc::new(Metrics::new());
+        let (sender, mut receiver) = mpsc::channel(1);
+        let runtime = producer_runtime(config, Some(sender), Arc::clone(&metrics));
+        let snapshot = google_snapshot("123e4567-e89b-42d3-a456-426614174000");
+
+        assert_eq!(
+            runtime.try_enqueue(&snapshot),
+            PricingShadowEnqueueResult::Accepted
+        );
+        let work = receiver.try_recv().unwrap();
+        assert_eq!(work.provider(), SnapshotProvider::Google);
+        assert_eq!(work.account_id(), "google-shadow-account");
+        assert_eq!(
+            metrics.pricing_shadow_enqueue_count(
+                SnapshotProvider::Google,
+                PricingShadowEnqueueResult::Accepted,
             ),
             1
         );
@@ -1449,13 +1499,17 @@ mod tests {
                 .unwrap();
         let anthropic = shadow_sampler_bucket_v1(SnapshotProvider::Anthropic, &request);
         let openai = shadow_sampler_bucket_v1(SnapshotProvider::OpenAi, &request);
+        let google = shadow_sampler_bucket_v1(SnapshotProvider::Google, &request);
         assert_eq!(
             anthropic,
             shadow_sampler_bucket_v1(SnapshotProvider::Anthropic, &request)
         );
         assert_ne!(anthropic, openai);
+        assert_ne!(anthropic, google);
+        assert_ne!(openai, google);
         assert!(anthropic < 10_000);
         assert!(openai < 10_000);
+        assert!(google < 10_000);
     }
 
     #[test]

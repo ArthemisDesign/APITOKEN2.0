@@ -256,8 +256,10 @@ mod tests {
         let request = request_id();
         let anthropic = sampler_bucket_v1(SnapshotProvider::Anthropic, &request);
         let openai = sampler_bucket_v1(SnapshotProvider::OpenAi, &request);
+        let google = sampler_bucket_v1(SnapshotProvider::Google, &request);
         assert_eq!(anthropic, 5_862);
         assert_eq!(openai, 9_992);
+        assert_eq!(google, 2_942);
 
         let below = PricingBridgeConfig::from_parts(true, i64::from(anthropic)).unwrap();
         assert_eq!(

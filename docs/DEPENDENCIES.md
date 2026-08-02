@@ -87,11 +87,13 @@ Control API движка использует только на чтение. С
   Изменение цены/модели — ревьюимый коммит сюда. Потребители: `crates/forward` (основной),
   `crates/server` (типы/тарифные идентификаторы).
 - `crates/registry/src/pricing/` — НЕ прайс-лист, а durable-идентичности multi-discount:
-  каталоги/свитчи/политики, admission-снапшоты (`docs/commerce/MULTI-DISCOUNT.md`).
+  каталоги/свитчи/политики, admission-снапшоты (`docs/commerce/MULTI-DISCOUNT.md`). Fixed provider
+  IDs actual/shadow contract — `anthropic|openai|google`; `gemini` не является durable authority.
 - `crates/forward/src/pricing*` — pricing-resolver и shadow-evaluation конвейер. Живой:
   resolver вызывается в admission-пути strict-политики (`proxy.rs`) и в Codex-биллинге
-  (`codex/billing.rs`), shadow-runtime стартует в проде (`crates/server`). НЕ читает БД
-  и не считает стоимость токенов.
+  (`codex/billing.rs`); atomic legacy snapshot producers находятся в Anthropic, Codex и Gemini
+  billing paths, а shadow-runtime для всех трёх fixed planes стартует в проде (`crates/server`).
+  НЕ читает БД и не считает стоимость токенов.
 - **Provider data-plane (`crates/forward` → `crates/router`).** Плоскости производят
   native и universal HTTP-поверхности, router потребляет их только через stable loopback
   origins. В частности, `/v1/messages/count_tokens` доступен на всех трёх плоскостях и

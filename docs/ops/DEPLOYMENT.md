@@ -203,13 +203,17 @@ cancel that timer once the policy is active. Either let it fire and re-run the i
 The Stage 3B1c.3 application release is safe to deploy with the producer disabled. Shipping the
 binary is not authorization to activate it: production activation is a separate observed config
 checkpoint after the default-off SHA has a green exact-SHA `deploy/watchdog`. The producer may run
-only on the PostgreSQL-backed fixed Anthropic or OpenAI plane with billing enabled. It must never be
-enabled on Gemini or a live SQLite composition.
+only on a PostgreSQL-backed fixed Anthropic, OpenAI or Gemini plane with billing enabled; live
+SQLite composition remains unsupported. The durable provider identity of the Gemini plane is
+`google`, never `gemini`. Each plane keeps an independent default-off config and must complete the
+same observed rollout ladder after the producer SHA is green.
 
-That restriction describes the currently delivered Stage 3 shadow and is a known implementation
-gap for the approved target. Stage 8/9 must not proceed until a producer-first extension supports
-Gemini and the new release/funding snapshot, then demonstrates 100% target shadow coverage. Do not
-misreport the current Anthropic/OpenAI-only sampler as full-inventory evidence.
+This checkpoint produces immutable legacy-scalar actual snapshots and target-policy shadow
+evaluations for all three planes. It does not enable strict Gemini, create a release-v2
+reserve/settlement snapshot or authorize Stage 9. Stage 8/9 must not proceed until 100% target
+shadow coverage includes real Google snapshot/evaluation rows and the remaining release/funding
+runtime is delivered. External Gemini usage/admission counters are audit context, not a substitute
+for those rows.
 
 The startup validator rejects unknown boolean spellings, incoherent enabled/sample pairs, and every
 value outside these bounds:
@@ -228,14 +232,15 @@ value outside these bounds:
 | `CLAUDE_API_PRICING_SHADOW_RATE_BURST` | `40` | `1..=rate_per_sec*60` |
 | `CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS` | `2` | `1..=8` |
 
-Keep every ceiling fixed while changing only one rollout dimension at a time. The required order is:
-default-off binary → bridge small sample → bridge target sample → bridge 100% of eligible traffic →
-shadow small sample → wider shadow sample → 100% of snapshot-bearing eligible traffic. Observe a
-complete peak traffic interval between steps. Before each increase, compare customer admission and
-reserve p95/p99, customer 5xx/status/body, billing FIFO depth, engine PostgreSQL connections and lock
-waits, shadow queue depth/high-water/age, enqueue drop ratio, processing/read/write errors, CPU, and
-memory against the recorded pre-activation baseline. Early shadow before policy backfill validates
-transport and persistence only; it is not Stage 8 financial-parity evidence.
+Keep every ceiling fixed while changing only one rollout dimension on one fixed plane at a time.
+For Anthropic, OpenAI and Gemini the required order is: default-off binary → bridge small sample →
+bridge target sample → bridge 100% of eligible traffic → shadow small sample → wider shadow sample
+→ 100% of snapshot-bearing eligible traffic. Observe a complete peak traffic interval between
+steps. Before each increase, compare customer admission and reserve p95/p99, customer
+5xx/status/body, billing FIFO depth, engine PostgreSQL connections and lock waits, shadow queue
+depth/high-water/age, enqueue drop ratio, processing/read/write errors, CPU, and memory against the
+recorded pre-activation baseline. Early shadow before policy backfill validates transport and
+persistence only; it is not Stage 8 financial-parity evidence.
 
 Disable the independent shadow switch immediately, without changing schema or using shadow output
 as a rollback input, when any of these stop criteria occurs:
@@ -276,8 +281,9 @@ pnpm --filter @claude-api/db pricing:stage8-evidence > stage8-commerce-evidence.
 ```
 
 Run the engine report from the exact deployed application with the normal protected engine
-environment. Every argument is explicit; `gemini-client-admissions` is the independently aggregated
-client-edge observation for the same half-open window and must never contain identities:
+environment. Every argument is explicit; `gemini-client-admissions` is a bounded independently
+aggregated client-edge audit count for the same half-open window and must never contain identities.
+It is recorded in the report but does not satisfy Google provider coverage:
 
 ```bash
 claude-api db stage8-evidence \
@@ -305,9 +311,11 @@ Required target evidence includes:
 - runtime capability on the serving slot, inactive slot and allowed rollback floor;
 - no pending/processing/retry/dead pricing control jobs.
 
-Gemini traffic is required product evidence, not a blocker. Any missing provider sample, stale ACK,
-unclassified account, funding mismatch, runtime drift or catalog/policy mismatch fails the report.
-Do not edit rows to make it green.
+Gemini traffic is required product evidence, not a blocker. Google must have the configured minimum
+of immutable snapshots and matching evaluations just like Anthropic and OpenAI; usage/outbox or the
+external aggregate alone cannot pass coverage. Any missing provider sample, stale ACK, unclassified
+account, funding mismatch, runtime drift or catalog/policy mismatch fails the report. Do not edit
+rows to make it green.
 
 Immediately before Stage 9, rerun both reports and require fresh `passed=true` results. Stage 9
 changes one global active release head; it does not select a canary list and does not require a

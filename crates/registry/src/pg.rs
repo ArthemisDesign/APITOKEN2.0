@@ -1940,8 +1940,7 @@ impl PgStore {
               WHERE id=$2 AND status='active' AND balance_nano >= $1
               RETURNING balance_nano",
             &[&hold, &account_id],
-        )?
-        else {
+        )? else {
             tx.rollback()?;
             return Ok(Outcome::NotReserved);
         };
@@ -2321,7 +2320,8 @@ impl PgStore {
                JOIN reservations reservation USING(request_id)
               WHERE outbox.request_id=$1",
             &[&request_id],
-        )? else {
+        )?
+        else {
             tx.rollback()?;
             return Ok(None);
         };
@@ -7167,6 +7167,25 @@ mod tests {
     }
 
     fn stage8_pg_catalog(product_id: &str) -> crate::pricing::PricingCatalogSpec {
+        let mut entries = vec![
+            crate::pricing::PricingCatalogEntrySpec {
+                provider_id: "anthropic".into(),
+                canonical_model_id: "claude-sonnet-5".into(),
+                enabled: true,
+            },
+            crate::pricing::PricingCatalogEntrySpec {
+                provider_id: "openai".into(),
+                canonical_model_id: "gpt-5.6-sol".into(),
+                enabled: true,
+            },
+        ];
+        if product_id == "main" {
+            entries.push(crate::pricing::PricingCatalogEntrySpec {
+                provider_id: "google".into(),
+                canonical_model_id: "gemini-3-flash-preview".into(),
+                enabled: true,
+            });
+        }
         crate::pricing::PricingCatalogSpec {
             product_id: product_id.into(),
             generation: 1,
@@ -7174,18 +7193,7 @@ mod tests {
             capability_generation: 1,
             capability_digest: "stage8-capability-1".into(),
             content_digest: format!("stage8-{product_id}-catalog-1"),
-            entries: vec![
-                crate::pricing::PricingCatalogEntrySpec {
-                    provider_id: "anthropic".into(),
-                    canonical_model_id: "claude-sonnet-5".into(),
-                    enabled: true,
-                },
-                crate::pricing::PricingCatalogEntrySpec {
-                    provider_id: "openai".into(),
-                    canonical_model_id: "gpt-5.6-sol".into(),
-                    enabled: true,
-                },
-            ],
+            entries,
         }
     }
 
@@ -7193,18 +7201,23 @@ mod tests {
         use crate::pricing::{PolicySegment, ProviderSwitchEntrySpec, ProviderSwitchScope};
 
         let mut entries = Vec::new();
-        for provider_id in ["anthropic", "openai"] {
+        for provider_id in ["anthropic", "openai", "google"] {
             entries.push(ProviderSwitchEntrySpec {
                 provider_id: provider_id.into(),
                 scope: ProviderSwitchScope::Master,
                 catalog_generation: None,
                 enabled: true,
             });
-            for product_id in ["main", "openkeys"] {
+            let products: &[&str] = if provider_id == "google" {
+                &["main"]
+            } else {
+                &["main", "openkeys"]
+            };
+            for product_id in products {
                 entries.push(ProviderSwitchEntrySpec {
                     provider_id: provider_id.into(),
                     scope: ProviderSwitchScope::Product {
-                        product_id: product_id.into(),
+                        product_id: (*product_id).into(),
                     },
                     catalog_generation: Some(1),
                     enabled: true,
@@ -7271,6 +7284,7 @@ mod tests {
             rules: vec![
                 stage8_pg_rule("anthropic", 2_000),
                 stage8_pg_rule("openai", 3_000),
+                stage8_pg_rule("google", 4_000),
             ],
         }
     }
@@ -7305,6 +7319,19 @@ mod tests {
                         context_tier: crate::pricing::SnapshotOpenAiContextTier::Standard,
                         input_multiplier_basis_points: 10_000,
                         output_multiplier_basis_points: 10_000,
+                    },
+                ),
+                "google" => (
+                    crate::pricing::SnapshotProvider::Google,
+                    "gemini-3-flash-preview",
+                    "gemini-3-flash-preview",
+                    "google/gemini-developer-api/2026-08-02",
+                    crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                        context_rate:
+                            crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                        search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                        grounding_enabled: false,
+                        search_reserve_units: 0,
                     },
                 ),
                 other => panic!("unsupported Stage 8 test provider {other}"),
@@ -7370,10 +7397,11 @@ mod tests {
                     },
                     rule: stage8_pg_rule(
                         provider_id,
-                        if provider_id == "anthropic" {
-                            2_000
-                        } else {
-                            3_000
+                        match provider_id {
+                            "anthropic" => 2_000,
+                            "openai" => 3_000,
+                            "google" => 4_000,
+                            other => panic!("unsupported Stage 8 test provider {other}"),
                         },
                     ),
                 },
@@ -7514,8 +7542,14 @@ mod tests {
                 window_start_ts + 20,
                 90_000_000,
             ),
+            stage8_pg_snapshot(
+                "stage8-google-request",
+                "google",
+                window_start_ts + 30,
+                80_000_000,
+            ),
         ];
-        for (snapshot, provider_id) in snapshots.iter().zip(["anthropic", "openai"]) {
+        for (snapshot, provider_id) in snapshots.iter().zip(["anthropic", "openai", "google"]) {
             assert!(matches!(
                 pg.reserve_request_with_legacy_snapshot(&owner, "stage8-key", 600, snapshot)
                     .unwrap(),
@@ -7569,7 +7603,7 @@ mod tests {
             window_start_ts,
             window_end_ts,
             min_samples_per_provider: 1,
-            financial_sample_size: 2,
+            financial_sample_size: 3,
             gemini_client_admissions: 0,
             runtime_manifest: stage8_pg_manifest(),
         };
@@ -7578,22 +7612,25 @@ mod tests {
         assert_eq!(report.counts.active_accounts, 1);
         assert_eq!(report.counts.reconciled_accounts, 1);
         assert_eq!(report.counts.scalar_parity_rows, 1);
-        assert_eq!(report.counts.policy_divergence_rows, 1);
-        assert_eq!(report.financial_samples.len(), 2);
+        assert_eq!(report.counts.policy_divergence_rows, 2);
+        assert_eq!(report.counts.snapshots_by_provider.get("google"), Some(&1));
+        assert_eq!(report.financial_samples.len(), 3);
         assert!(report.evidence_digest.starts_with("sha256:v1:"));
         let serialized = serde_json::to_string(&report).unwrap();
         assert!(!serialized.contains("stage8-account"));
         assert!(!serialized.contains("stage8-anthropic-request"));
         assert!(!serialized.contains("stage8-openai-request"));
+        assert!(!serialized.contains("stage8-google-request"));
 
-        let mut blocked_request = request.clone();
-        blocked_request.gemini_client_admissions = 1;
-        let blocked = pg.stage8_engine_evidence(&blocked_request).unwrap();
-        assert!(!blocked.passed);
-        assert!(blocked
-            .blockers
-            .iter()
-            .any(|blocker| blocker.code == "gemini_client_admissions_nonzero"));
+        let mut audited_request = request.clone();
+        audited_request.gemini_client_admissions = 1;
+        let audited = pg.stage8_engine_evidence(&audited_request).unwrap();
+        assert!(
+            audited.passed,
+            "unexpected blockers: {:?}",
+            audited.blockers
+        );
+        assert_eq!(audited.gemini_client_admissions, 1);
         let durable_after: (i64, i64, i64, i64) = {
             let row = pg
                 .client

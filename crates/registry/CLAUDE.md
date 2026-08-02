@@ -155,7 +155,7 @@ side effect. `serve` may only perform the read-only schema verification before c
   создаёт heads, policies или seed data.
 - **Stage 3B1c.1/3B1c.2 actual legacy snapshot foundation:** typed
   `LegacyScalarAdmissionSnapshot` фиксирует exact request/account, fixed-plane provider
-  (`anthropic|openai`), requested/canonical model, alias/tariff identities, timestamps, scalar,
+  (`anthropic|openai|google`), requested/canonical model, alias/tariff identities, timestamps, scalar,
   official/charged hold и provider-typed premium modifiers. Registry сам строит и при каждом чтении
   перепроверяет `sha256:v1:<hex>` по versioned binary TLV с отдельным domain separator; JSON premium
   modifiers — только строгая storage-проекция, не digest source. Новые
@@ -170,8 +170,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   полностью откатывает попытку как `AbortedBeforeCommit`. `NotReserved`, conflict и более ранняя
   ошибка gate не вызывают. Старые reserve API не изменены и snapshot не создают. Миграции не
   добавлялись: используется actual schema `0006`. Default-off live sampler и atomic caller
-  обслуживают Anthropic/OpenAI; только snapshot-bearing success может передать работу bounded
-  shadow producer. Production config остаётся выключенным.
+  обслуживают Anthropic/OpenAI/Google; Google хранит typed `gemini_v1` reserve modifiers и durable
+  provider ID `google`, а не deprecated `gemini`. Только snapshot-bearing success может передать
+  работу bounded shadow producer. Production config остаётся выключенным.
   Новый PostgreSQL writer после потенциального ожидания request-lock повторно проверяет owner через
   `FOR UPDATE`, удерживает epoch-row до commit и использует свежий reservation timestamp; real-PG
   race test доказывает rollback старого epoch без money/orphan writes. Snapshot constructor
@@ -206,9 +207,11 @@ side effect. `serve` may only perform the read-only schema verification before c
 - **Stage 8 engine evidence:** PostgreSQL-only read report материализуется в одной
   `REPEATABLE READ READ ONLY` транзакции. Он проверяет active main/openkeys graph, runtime
   capability, classifications/funding parity, frozen policy lineage, полное actual→shadow покрытие,
-  exact integer nanoUSD и canonical typed sample; внешний Gemini admission aggregate сверяется с
-  durable provider=`google` usage/outbox. Subject identities выходят только как SHA-256 digests.
-  Report ничего не активирует и не исправляет; любой blocker должен остановить Stage 9.
+  exact integer nanoUSD и canonical typed sample отдельно для `anthropic`, `openai` и `google`.
+  Внешний Gemini admission aggregate и durable provider=`google` usage/outbox остаются bounded
+  audit counts, но не заменяют обязательные Google actual snapshots и shadow evaluations. Subject
+  identities выходят только как SHA-256 digests. Report ничего не активирует и не исправляет;
+  любой blocker должен остановить Stage 9.
 - **Целевой Stage 5/6/9 контракт:** authoritative inventories полностью заменяют ручную assignment
   matrix. Funding normalizes online account-local transactions: exact historical welcome остаётся
   bonus, residual считается paid; новые grants `$5`, reviewer artifact и global money drain не

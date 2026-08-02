@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 
 const STAGE8_ENGINE_EVIDENCE_SCHEMA_VERSION: i64 = 1;
 const BLOCKER_SUBJECT_LIMIT: usize = 20;
+const STAGE8_SHADOW_PROVIDERS: [&str; 3] = ["anthropic", "openai", "google"];
 
 #[derive(Clone, Debug)]
 pub struct Stage8EngineEvidenceRequest {
@@ -261,6 +262,16 @@ fn supports_capability(
     })
 }
 
+fn insufficient_provider_coverage(counts: &BTreeMap<String, i64>, minimum: i64) -> Vec<String> {
+    STAGE8_SHADOW_PROVIDERS
+        .iter()
+        .filter_map(|provider| {
+            let count = counts.get(*provider).copied().unwrap_or(0);
+            (count < minimum).then(|| format!("{provider}:{count}"))
+        })
+        .collect()
+}
+
 pub(crate) fn postgres_stage8_engine_evidence(
     client: &mut Client,
     request: &Stage8EngineEvidenceRequest,
@@ -358,6 +369,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
         "active_product_graph_incomplete",
         "WITH required_catalog(product_id,provider_id) AS (VALUES \
              ('main'::text,'anthropic'::text),('main','openai'), \
+             ('main','google'), \
              ('openkeys','anthropic'),('openkeys','openai')), \
          missing_catalog AS ( \
            SELECT product_id||':'||provider_id subject FROM required_catalog required \
@@ -370,13 +382,17 @@ pub(crate) fn postgres_stage8_engine_evidence(
            SELECT entry.product_id||':'||entry.provider_id FROM pricing_catalog_heads head \
            JOIN pricing_catalog_entries entry ON entry.product_id=head.product_id \
             AND entry.generation=head.active_generation \
-           WHERE entry.provider_id NOT IN('anthropic','openai')), \
+           WHERE entry.provider_id NOT IN('anthropic','openai','google') \
+              OR(entry.product_id='openkeys' AND entry.provider_id='google')), \
          required_switch(provider_id,scope_type,product_id,segment) AS (VALUES \
-           ('anthropic'::text,'master'::text,''::text,''::text),('openai','master','',''), \
+           ('anthropic'::text,'master'::text,''::text,''::text),('openai','master','',''),('google','master','',''), \
            ('anthropic','product','main',''),('openai','product','main',''), \
+           ('google','product','main',''), \
            ('anthropic','product','openkeys',''),('openai','product','openkeys',''), \
            ('anthropic','segment','main','b2c'),('openai','segment','main','b2c'), \
-           ('anthropic','segment','main','b2b'),('openai','segment','main','b2b')), \
+           ('google','segment','main','b2c'), \
+           ('anthropic','segment','main','b2b'),('openai','segment','main','b2b'), \
+           ('google','segment','main','b2b')), \
          missing_switch AS ( \
            SELECT provider_id||':'||scope_type||':'||product_id||':'||segment FROM required_switch required \
            WHERE NOT EXISTS(SELECT 1 FROM provider_switch_head head \
@@ -391,7 +407,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
     query_blocker(
         &mut transaction,
         &mut blockers,
-        "active_product_graph_contains_gemini",
+        "active_product_graph_contains_deprecated_gemini_provider_id",
         "SELECT subject FROM( \
            SELECT 'catalog:'||entry.product_id||':'||entry.canonical_model_id subject \
            FROM pricing_catalog_heads head JOIN pricing_catalog_entries entry \
@@ -506,9 +522,8 @@ pub(crate) fn postgres_stage8_engine_evidence(
         &[&request.window_start_ts],
     )?;
 
-    let providers = ["anthropic", "openai"];
-    let mut insufficient_providers = Vec::new();
-    for provider in providers {
+    let mut shadow_provider_counts = BTreeMap::new();
+    for provider in STAGE8_SHADOW_PROVIDERS {
         let count = query_count(
             &mut transaction,
             "SELECT COUNT(*)::bigint FROM pricing_admission_snapshots \
@@ -516,14 +531,12 @@ pub(crate) fn postgres_stage8_engine_evidence(
               AND admission_ts >= $2 AND admission_ts < $3",
             &[&provider, &request.window_start_ts, &request.window_end_ts],
         )?;
-        if count < request.min_samples_per_provider {
-            insufficient_providers.push(format!("{provider}:{count}"));
-        }
+        shadow_provider_counts.insert(provider.to_owned(), count);
     }
     push_subjects(
         &mut blockers,
         "insufficient_shadow_provider_coverage",
-        insufficient_providers,
+        insufficient_provider_coverage(&shadow_provider_counts, request.min_samples_per_provider),
     );
     query_blocker(
         &mut transaction,
@@ -533,7 +546,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
          LEFT JOIN pricing_shadow_admission_evaluations evaluation \
           ON evaluation.request_id=snapshot.request_id \
          WHERE snapshot.snapshot_kind='legacy_scalar' \
-          AND snapshot.provider_id IN('anthropic','openai') \
+          AND snapshot.provider_id IN('anthropic','openai','google') \
           AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
           AND(evaluation.request_id IS NULL OR evaluation.enqueued_ts < snapshot.admission_ts \
            OR evaluation.evaluated_ts < evaluation.enqueued_ts OR evaluation.evaluated_ts >= $2)",
@@ -546,7 +559,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
         "SELECT evaluation.request_id FROM pricing_shadow_admission_evaluations evaluation \
          JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
          WHERE snapshot.snapshot_kind='legacy_scalar' \
-          AND snapshot.provider_id IN('anthropic','openai') \
+          AND snapshot.provider_id IN('anthropic','openai','google') \
           AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
           AND(evaluation.outcome<>'resolved' \
            OR evaluation.runtime_manifest_generation<>$3 \
@@ -575,7 +588,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
          LEFT JOIN provider_switch_versions switch_version \
           ON switch_version.generation=switch_head.active_generation \
          WHERE snapshot.snapshot_kind='legacy_scalar' \
-          AND snapshot.provider_id IN('anthropic','openai') \
+          AND snapshot.provider_id IN('anthropic','openai','google') \
           AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
           AND(evaluation.outcome='resolved') AND( \
            evaluation.effective_policy_version IS DISTINCT FROM policy.effective_version \
@@ -606,7 +619,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
            FROM pricing_shadow_admission_evaluations evaluation \
            JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
            WHERE snapshot.snapshot_kind='legacy_scalar' \
-            AND snapshot.provider_id IN('anthropic','openai') \
+            AND snapshot.provider_id IN('anthropic','openai','google') \
             AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
             AND evaluation.outcome='resolved'), expected AS( \
            SELECT candidate.*,CASE WHEN legacy_hold_nano::numeric<scalar_uncapped \
@@ -632,17 +645,6 @@ pub(crate) fn postgres_stage8_engine_evidence(
          WHERE provider='google' AND created_ts >= $1 AND created_ts < $2",
         &[&request.window_start_ts, &request.window_end_ts],
     )?;
-    if request.gemini_client_admissions != 0 || gemini_usage_rows != 0 || gemini_outbox_rows != 0 {
-        push_subjects(
-            &mut blockers,
-            "gemini_client_admissions_nonzero",
-            vec![format!(
-                "observed:{}:usage:{}:outbox:{}",
-                request.gemini_client_admissions, gemini_usage_rows, gemini_outbox_rows
-            )],
-        );
-    }
-
     let account_classes = grouped_counts(
         &mut transaction,
         "SELECT binding.account_class,COUNT(*)::bigint FROM accounts account \
@@ -650,19 +652,13 @@ pub(crate) fn postgres_stage8_engine_evidence(
          WHERE account.status='active' GROUP BY binding.account_class ORDER BY binding.account_class",
         &[],
     )?;
-    let snapshots_by_provider = grouped_counts(
-        &mut transaction,
-        "SELECT provider_id,COUNT(*)::bigint FROM pricing_admission_snapshots \
-         WHERE snapshot_kind='legacy_scalar' AND provider_id IN('anthropic','openai') \
-          AND admission_ts >= $1 AND admission_ts < $2 GROUP BY provider_id ORDER BY provider_id",
-        &[&request.window_start_ts, &request.window_end_ts],
-    )?;
+    let snapshots_by_provider = shadow_provider_counts;
     let evaluations_by_outcome = grouped_counts(
         &mut transaction,
         "SELECT evaluation.outcome,COUNT(*)::bigint FROM pricing_shadow_admission_evaluations evaluation \
          JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
          WHERE snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-          AND snapshot.provider_id IN('anthropic','openai') GROUP BY evaluation.outcome ORDER BY evaluation.outcome",
+          AND snapshot.provider_id IN('anthropic','openai','google') GROUP BY evaluation.outcome ORDER BY evaluation.outcome",
         &[&request.window_start_ts, &request.window_end_ts],
     )?;
     let comparisons = grouped_counts(
@@ -671,7 +667,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
          FROM pricing_shadow_admission_evaluations evaluation \
          JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
          WHERE snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-          AND snapshot.provider_id IN('anthropic','openai') \
+          AND snapshot.provider_id IN('anthropic','openai','google') \
          GROUP BY evaluation.comparison_result ORDER BY evaluation.comparison_result",
         &[&request.window_start_ts, &request.window_end_ts],
     )?;
@@ -682,7 +678,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
              FROM pricing_shadow_admission_evaluations evaluation \
              JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
              WHERE snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-              AND snapshot.provider_id IN('anthropic','openai') AND evaluation.outcome='resolved'",
+              AND snapshot.provider_id IN('anthropic','openai','google') AND evaluation.outcome='resolved'",
             &[&request.window_start_ts, &request.window_end_ts],
         )?;
         (row.get(0), row.get(1))
@@ -697,7 +693,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
              FROM pricing_shadow_admission_evaluations evaluation \
              JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
              WHERE snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-              AND snapshot.provider_id IN('anthropic','openai') AND evaluation.outcome='resolved' \
+              AND snapshot.provider_id IN('anthropic','openai','google') AND evaluation.outcome='resolved' \
              ORDER BY evaluation.evaluation_digest COLLATE \"C\" LIMIT $3",
             &[
                 &request.window_start_ts,
@@ -843,5 +839,17 @@ mod tests {
         invalid = valid;
         invalid.gemini_client_admissions = -1;
         assert!(invalid.validate(200).is_err());
+    }
+
+    #[test]
+    fn provider_coverage_requires_google_and_accepts_all_three_authorities() {
+        let mut counts =
+            BTreeMap::from([("anthropic".to_owned(), 100), ("openai".to_owned(), 100)]);
+        assert_eq!(
+            insufficient_provider_coverage(&counts, 100),
+            vec!["google:0"]
+        );
+        counts.insert("google".to_owned(), 100);
+        assert!(insufficient_provider_coverage(&counts, 100).is_empty());
     }
 }

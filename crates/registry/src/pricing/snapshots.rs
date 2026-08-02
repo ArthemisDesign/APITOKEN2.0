@@ -54,6 +54,7 @@ pub(crate) fn validate_request_lifecycle_prune_cutoff(
 pub enum SnapshotProvider {
     Anthropic,
     OpenAi,
+    Google,
 }
 
 impl SnapshotProvider {
@@ -61,6 +62,7 @@ impl SnapshotProvider {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::Google => "google",
         }
     }
 
@@ -68,6 +70,7 @@ impl SnapshotProvider {
         match value {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::OpenAi),
+            "google" => Ok(Self::Google),
             _ => bail!("stored pricing snapshot has an unsupported provider"),
         }
     }
@@ -128,6 +131,38 @@ pub enum SnapshotOpenAiContextTier {
     Long,
 }
 
+/// Gemini reserves with the largest applicable context rates because exact modality/context
+/// usage is known only after the provider returns authoritative usage metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotGeminiContextRate {
+    ConservativeMaximum,
+}
+
+impl SnapshotGeminiContextRate {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConservativeMaximum => "conservative_maximum",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotGeminiSearchBilling {
+    PerQuery,
+    PerGroundedPrompt,
+}
+
+impl SnapshotGeminiSearchBilling {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PerQuery => "per_query",
+            Self::PerGroundedPrompt => "per_grounded_prompt",
+        }
+    }
+}
+
 impl SnapshotOpenAiContextTier {
     const fn as_str(self) -> &'static str {
         match self {
@@ -158,6 +193,13 @@ pub enum LegacyPremiumModifiers {
         context_tier: SnapshotOpenAiContextTier,
         input_multiplier_basis_points: i64,
         output_multiplier_basis_points: i64,
+    },
+    #[serde(rename = "gemini_v1")]
+    GeminiV1 {
+        context_rate: SnapshotGeminiContextRate,
+        search_billing: SnapshotGeminiSearchBilling,
+        grounding_enabled: bool,
+        search_reserve_units: i64,
     },
 }
 
@@ -215,6 +257,27 @@ impl LegacyPremiumModifiers {
                     bail!("invalid OpenAI context-tier multipliers");
                 }
             }
+            (
+                SnapshotProvider::Google,
+                Self::GeminiV1 {
+                    context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing,
+                    grounding_enabled,
+                    search_reserve_units,
+                },
+            ) => {
+                let expected_units = if !grounding_enabled {
+                    0
+                } else {
+                    match search_billing {
+                        SnapshotGeminiSearchBilling::PerQuery => 32,
+                        SnapshotGeminiSearchBilling::PerGroundedPrompt => 1,
+                    }
+                };
+                if *search_reserve_units != expected_units {
+                    bail!("invalid Gemini grounding reserve units");
+                }
+            }
             _ => bail!("pricing snapshot provider and premium modifiers do not match"),
         }
         Ok(())
@@ -264,6 +327,20 @@ impl LegacyPremiumModifiers {
                 encoder.string(24, context_tier.as_str());
                 encoder.i64(25, *input_multiplier_basis_points);
                 encoder.i64(26, *output_multiplier_basis_points);
+            }
+            Self::GeminiV1 {
+                context_rate,
+                search_billing,
+                grounding_enabled,
+                search_reserve_units,
+            } => {
+                // New tags deliberately follow the frozen Anthropic/OpenAI tag ranges so their
+                // published digest vectors remain byte-for-byte stable.
+                encoder.string(18, "gemini_v1");
+                encoder.string(27, context_rate.as_str());
+                encoder.string(28, search_billing.as_str());
+                encoder.i64(29, i64::from(*grounding_enabled));
+                encoder.i64(30, *search_reserve_units);
             }
         }
     }
@@ -678,6 +755,29 @@ mod tests {
         }
     }
 
+    fn google_input() -> LegacyScalarAdmissionSnapshotInput {
+        LegacyScalarAdmissionSnapshotInput {
+            request_id: "request-google-1".into(),
+            account_id: "account-google-1".into(),
+            provider: SnapshotProvider::Google,
+            requested_model_id: "gemini-3.1-pro-preview".into(),
+            canonical_model_id: "gemini-3.1-pro-preview".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "google/gemini-developer-api/2026-08-02".into(),
+            tariff_priced_ts: 1_788_220_799,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano: 500_000_000,
+            charged_hold_nano: 100_000_000,
+            premium_modifiers: LegacyPremiumModifiers::GeminiV1 {
+                context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+                search_billing: SnapshotGeminiSearchBilling::PerQuery,
+                grounding_enabled: true,
+                search_reserve_units: 32,
+            },
+        }
+    }
+
     #[test]
     fn legacy_snapshot_digest_has_a_stable_golden_vector() {
         let snapshot = LegacyScalarAdmissionSnapshot::new(anthropic_input()).unwrap();
@@ -695,6 +795,17 @@ mod tests {
             snapshot.snapshot_digest().as_str(),
             "sha256:v1:e0a2d6d1053f0de667fcf9cadf159ddd0a085c271418c10c1cd1fd9c92ae8227"
         );
+        snapshot.validate().unwrap();
+    }
+
+    #[test]
+    fn google_legacy_snapshot_digest_has_a_stable_golden_vector() {
+        let snapshot = LegacyScalarAdmissionSnapshot::new(google_input()).unwrap();
+        assert_eq!(
+            snapshot.snapshot_digest().as_str(),
+            "sha256:v1:2f2241e0ce63e69462041ce90091b6e35a072530f0224f98744eb1fe067905b8"
+        );
+        assert_eq!(snapshot.provider().as_str(), "google");
         snapshot.validate().unwrap();
     }
 
@@ -793,6 +904,32 @@ mod tests {
         };
         assert!(invalid_long
             .validate_for_provider(SnapshotProvider::OpenAi)
+            .is_err());
+
+        let google = LegacyPremiumModifiers::GeminiV1 {
+            context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+            search_billing: SnapshotGeminiSearchBilling::PerGroundedPrompt,
+            grounding_enabled: true,
+            search_reserve_units: 1,
+        };
+        let encoded = google.to_canonical_json().unwrap();
+        assert!(encoded.contains(r#""kind":"gemini_v1""#));
+        assert_eq!(LegacyPremiumModifiers::from_json(&encoded).unwrap(), google);
+        google
+            .validate_for_provider(SnapshotProvider::Google)
+            .unwrap();
+        assert!(google
+            .validate_for_provider(SnapshotProvider::Anthropic)
+            .is_err());
+
+        let invalid_google = LegacyPremiumModifiers::GeminiV1 {
+            context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+            search_billing: SnapshotGeminiSearchBilling::PerQuery,
+            grounding_enabled: false,
+            search_reserve_units: 32,
+        };
+        assert!(invalid_google
+            .validate_for_provider(SnapshotProvider::Google)
             .is_err());
     }
 

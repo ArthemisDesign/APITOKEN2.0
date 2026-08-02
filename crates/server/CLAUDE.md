@@ -83,14 +83,16 @@
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
   пары отклоняются. Enabled требует sample `1..=10000` и активирует только atomic actual-snapshot
-  reserve caller Anthropic/OpenAI; policy shadow/resolver он не включает. Rollout выполняется
+  reserve caller fixed Anthropic/OpenAI/Gemini plane (durable Gemini provider ID — `google`);
+  policy shadow/resolver он сам не включает. Rollout выполняется
   отдельными наблюдаемыми config-ступенями, а не изменением безопасного default.
 - Pricing shadow config читается только здесь под `CLAUDE_API_PRICING_SHADOW_*`. Default —
   disabled/0 bp; queue 256, workers 2, timeout 750ms, max age 300s, field 512 B, item 16 KiB,
   rate 20/s burst 40, PostgreSQL readers 2. Все значения strict-validated; max age всегда `<24h`.
-  Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI plane. Server собирает fixed
+  Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI/Gemini plane. Server собирает fixed
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
-  FIFO flush.
+  FIFO flush. Это разрешает Google legacy-snapshot shadow evidence, но не включает strict Gemini
+  или Stage 9 release activation.
 - Тот же compile-fixed pricing manifest используется независимо от shadow enablement при claim
   PostgreSQL owner epoch, startup heartbeat и каждом регулярном heartbeat. Active strict
   dependencies, которых нет в manifest, не получают новый owner; drift после claim снимает

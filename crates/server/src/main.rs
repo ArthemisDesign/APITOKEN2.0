@@ -1211,9 +1211,13 @@ async fn serve() -> Result<()> {
         }
         if !matches!(
             s.provider,
-            forward::ProviderMode::Anthropic | forward::ProviderMode::OpenAi
+            forward::ProviderMode::Anthropic
+                | forward::ProviderMode::OpenAi
+                | forward::ProviderMode::Gemini
         ) {
-            bail!("pricing shadow producer requires a fixed Anthropic or OpenAI provider plane");
+            bail!(
+                "pricing shadow producer requires a fixed Anthropic, OpenAI, or Gemini provider plane"
+            );
         }
     }
 

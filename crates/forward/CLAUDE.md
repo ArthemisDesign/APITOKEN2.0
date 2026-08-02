@@ -164,17 +164,20 @@ canonical lowercase UUIDv4 request ID, stable typed decisions/reasons. Sampler �
 а provider-owned builders рядом с текущими
 legacy quote implementations сами выводят canonical/tariff/modifier identity через `metering` и
 строят validated snapshot из одного frozen timestamp. Anthropic builder вызывает неизменённый
-`cap_to_balance`, OpenAI pricing builder — неизменённый `reserve_cost`; provider/canonical/tariff и
-hold caller не задаёт.
+`cap_to_balance`, OpenAI pricing builder — неизменённый `reserve_cost`, Google builder — те же
+`reservation_for_budget`/conservative Gemini rates и search reserve units, что scalar path;
+provider/canonical/tariff и hold caller не задаёт.
 
-Live metered Anthropic/OpenAI admission теперь применяет sampler до денег. Disabled/not-sampled и
-typed pre-money fallback идут в byte-equivalent scalar reserve без snapshot; selected request
-атомарно сохраняет reservation+actual snapshot. После выбора atomic path invariant/DB/handoff или
+Live metered Anthropic/OpenAI/Gemini admission теперь применяет sampler до денег. Durable identity
+Gemini plane — `google`; deprecated provider ID `gemini` не создаётся. Disabled/not-sampled и typed
+pre-money fallback идут в byte-equivalent scalar reserve без snapshot; selected request атомарно
+сохраняет reservation+actual snapshot. После выбора atomic path invariant/DB/handoff или
 idempotency conflict fail closed без второго scalar reserve. Успешный hold продолжает прежний
-mark-delivering/cancel/settlement lifecycle. Default config остаётся `false/0`; включение требует
-явного bounded sample. Метрики имеют только фиксированные provider/reason labels и fixed-bucket
-atomic reserve latency histogram. Gemini, policy read/resolver, shadow queue, readiness и
-settlement pricing этим caller не затронуты.
+mark-delivering/cancel/settlement lifecycle и только после durable success передаёт snapshot в
+bounded shadow queue. Default config остаётся `false/0`; включение требует явного bounded sample.
+Метрики имеют только три фиксированных provider label, bounded reason labels и fixed-bucket atomic
+reserve latency histogram. Strict Gemini, release-v2 reserve/settlement snapshot и Stage 9
+activation этим producer checkpoint не включены.
 
 **Целевой Stage 9 runtime:** active pricing release выбирается одним global head. B2C использует
 discount rules с приоритетом model → provider → global 50%; B2B имеет независимую policy,

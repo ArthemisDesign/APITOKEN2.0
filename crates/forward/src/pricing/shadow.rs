@@ -423,7 +423,8 @@ mod tests {
         PolicySegment, PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode,
         PricingPolicySnapshot, PricingRuntimeCapabilityEvidence, PricingShadowComparison,
         ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState,
-        RuleOrigin, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed, SnapshotProvider,
+        RuleOrigin, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed,
+        SnapshotGeminiContextRate, SnapshotGeminiSearchBilling, SnapshotProvider,
     };
 
     const CAPABILITY_GENERATION: i64 = 17;
@@ -610,6 +611,73 @@ mod tests {
         PricingShadowWorkItem::new(snapshot, evidence(), ENQUEUED_TS).unwrap()
     }
 
+    fn google_snapshot() -> LegacyScalarAdmissionSnapshot {
+        LegacyScalarAdmissionSnapshot::new(LegacyScalarAdmissionSnapshotInput {
+            request_id: "google-shadow-request".into(),
+            account_id: "acct".into(),
+            provider: SnapshotProvider::Google,
+            requested_model_id: "gemini-3-flash-preview".into(),
+            canonical_model_id: "gemini-3-flash-preview".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "google/gemini-developer-api/2026-08-02".into(),
+            tariff_priced_ts: ADMISSION_TS - 1,
+            admission_ts: ADMISSION_TS,
+            payable_multiplier_bp: 8_000,
+            official_hold_nano: 1_000,
+            charged_hold_nano: 800,
+            premium_modifiers: LegacyPremiumModifiers::GeminiV1 {
+                context_rate: SnapshotGeminiContextRate::ConservativeMaximum,
+                search_billing: SnapshotGeminiSearchBilling::PerQuery,
+                grounding_enabled: true,
+                search_reserve_units: 32,
+            },
+        })
+        .unwrap()
+    }
+
+    fn google_bundle() -> PricingReadBundle {
+        let mut state = bundle();
+        let google_catalog_entries = vec![PricingCatalogEntrySpec {
+            provider_id: "google".into(),
+            canonical_model_id: "gemini-3-flash-preview".into(),
+            enabled: true,
+        }];
+        for catalog in [
+            state.policy_catalog.as_mut().unwrap(),
+            state.admission_catalog.as_mut().unwrap(),
+        ] {
+            catalog.entries = google_catalog_entries.clone();
+        }
+        let google_switch_entries = vec![
+            ProviderSwitchEntrySpec {
+                provider_id: "google".into(),
+                scope: ProviderSwitchScope::Master,
+                catalog_generation: None,
+                enabled: true,
+            },
+            ProviderSwitchEntrySpec {
+                provider_id: "google".into(),
+                scope: ProviderSwitchScope::Segment {
+                    product_id: "main".into(),
+                    segment: PolicySegment::B2b,
+                },
+                catalog_generation: Some(3),
+                enabled: true,
+            },
+        ];
+        for switches in [
+            state.policy_switches.as_mut().unwrap(),
+            state.admission_switches.as_mut().unwrap(),
+        ] {
+            switches.entries = google_switch_entries.clone();
+        }
+        let PricingPolicySnapshot::Active(active) = &mut state.policy else {
+            panic!("fixture must carry an active policy")
+        };
+        active.policy.rules = vec![provider_rule("google", 6_000)];
+        state
+    }
+
     #[test]
     fn work_item_rejects_early_timestamps_and_accepts_exact_funding_cap() {
         let valid = snapshot("claude-sonnet-4", "claude-sonnet-4", 8_000, 1_000, 800);
@@ -679,6 +747,26 @@ mod tests {
         assert_eq!(resolved.admission_lineage.catalog.target.version, 3);
         assert_eq!(resolved.admission_lineage.switches.target.version, 5);
         assert_eq!(resolved.rule.rule_id, "anthropic-provider");
+    }
+
+    #[test]
+    fn google_actual_snapshot_resolves_through_the_same_target_shadow_contract() {
+        let snapshot = google_snapshot();
+        let built = build_pricing_shadow_evaluation(
+            work_for(&snapshot),
+            PricingShadowEvaluationSource::Bundle(&google_bundle()),
+            EVALUATED_TS,
+            ShadowDiagnosticContext::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(built.actual().provider(), SnapshotProvider::Google);
+        let PricingShadowEvaluationOutcome::Resolved(resolved) = built.outcome() else {
+            panic!("expected resolved Google shadow outcome")
+        };
+        assert_eq!(resolved.rule.rule_id, "google-provider");
+        assert_eq!(resolved.policy_hold_nano(), 600);
+        assert_eq!(resolved.comparison(), PricingShadowComparison::Different);
     }
 
     #[test]
