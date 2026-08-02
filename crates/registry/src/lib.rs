@@ -19,6 +19,109 @@ pub use provider_calibration::*;
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static EXECUTION_GROUP_DOUBLE_WINNER_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Validated identity of one provider-plane execution. Direct requests deliberately keep a
+/// nullable group so old and new writers share the same durable representation: the reservation
+/// request ID is the effective group when `group_id` is absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionAttempt {
+    group_id: Option<String>,
+    attempt: i32,
+}
+
+impl ExecutionAttempt {
+    pub fn direct() -> Self {
+        Self {
+            group_id: None,
+            attempt: 1,
+        }
+    }
+
+    pub fn grouped(group_id: impl Into<String>, attempt: i32) -> Result<Self> {
+        let group_id = group_id.into();
+        if !is_canonical_uuid_v4(&group_id) {
+            bail!("execution group must be a canonical lowercase UUIDv4");
+        }
+        if attempt <= 0 {
+            bail!("execution attempt must be positive");
+        }
+        Ok(Self {
+            group_id: Some(group_id),
+            attempt,
+        })
+    }
+
+    pub fn group_id(&self) -> Option<&str> {
+        self.group_id.as_deref()
+    }
+
+    pub fn attempt(&self) -> i32 {
+        self.attempt
+    }
+
+    pub fn effective_group_id<'a>(&'a self, request_id: &'a str) -> &'a str {
+        self.group_id.as_deref().unwrap_or(request_id)
+    }
+}
+
+impl Default for ExecutionAttempt {
+    fn default() -> Self {
+        Self::direct()
+    }
+}
+
+fn is_canonical_uuid_v4(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || bytes[8] != b'-'
+        || bytes[13] != b'-'
+        || bytes[18] != b'-'
+        || bytes[23] != b'-'
+        || bytes[14] != b'4'
+        || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+    {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(index, byte)| {
+        matches!(index, 8 | 13 | 18 | 23) || matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+    })
+}
+
+/// Process-global monotonic counter exported by every engine slot. The winner-table primary key is
+/// the correctness mechanism; this counter is only an always-zero operational tripwire.
+pub fn execution_group_double_winner_total() -> u64 {
+    EXECUTION_GROUP_DOUBLE_WINNER_TOTAL.load(Ordering::Relaxed)
+}
+
+pub(crate) fn record_execution_group_loser(
+    group_id: &str,
+    winner_request_id: &str,
+    loser_request_id: &str,
+    attempt: i32,
+) {
+    fn bounded(value: &str) -> String {
+        value
+            .chars()
+            .take(128)
+            .map(|character| match character {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | ':' => character,
+                _ => '?',
+            })
+            .collect()
+    }
+
+    EXECUTION_GROUP_DOUBLE_WINNER_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!(
+        "event=execution_group_double_winner group_id={} winner_request_id={} loser_request_id={} attempt={}",
+        bounded(group_id),
+        bounded(winner_request_id),
+        bounded(loser_request_id),
+        attempt,
+    );
+}
 
 /// Рантайм-запись подписки с УЖЕ разрешённым токеном (inline или из файла).
 #[derive(Clone, Debug)]
@@ -1505,7 +1608,8 @@ pub fn open(path: &str) -> Result<Connection> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS billing_reservations( \
            request_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, key TEXT NOT NULL, \
-           hold_nano INTEGER NOT NULL, state TEXT NOT NULL, \
+           hold_nano INTEGER NOT NULL, group_id TEXT CHECK(group_id IS NULL OR group_id<>''), \
+           attempt INTEGER NOT NULL DEFAULT 1 CHECK(attempt>0), state TEXT NOT NULL, \
            balance_after_reserve_nano INTEGER NOT NULL, actual_nano INTEGER, \
            balance_after_settle_nano INTEGER, reference TEXT, lease_until INTEGER NOT NULL, \
            created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, settled_ts INTEGER); \
@@ -1517,7 +1621,18 @@ pub fn open(path: &str) -> Result<Connection> {
            next_attempt_ts INTEGER NOT NULL DEFAULT 0, last_error TEXT, \
            created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, committed_ts INTEGER); \
          CREATE INDEX IF NOT EXISTS billing_outbox_pending \
-           ON billing_settlement_outbox(state,next_attempt_ts,created_ts);"
+           ON billing_settlement_outbox(state,next_attempt_ts,created_ts); \
+         CREATE TABLE IF NOT EXISTS execution_group_winner( \
+           group_id TEXT PRIMARY KEY CHECK(group_id<>''), \
+           winner_request_id TEXT NOT NULL CHECK(winner_request_id<>''), \
+           decided_at INTEGER NOT NULL);"
+    )?;
+    ensure_sqlite_column(&c, "billing_reservations", "group_id", "TEXT")?;
+    ensure_sqlite_column(
+        &c,
+        "billing_reservations",
+        "attempt",
+        "INTEGER NOT NULL DEFAULT 1",
     )?;
     migrate_pricing_policy_schema(&c)?;
     Ok(c)
@@ -3461,6 +3576,30 @@ pub fn sqlite_reserve_request(
     hold_nano: i64,
     lease_secs: i64,
 ) -> Result<Option<i64>> {
+    sqlite_reserve_request_for_execution(
+        conn,
+        request_id,
+        account_id,
+        key,
+        hold_nano,
+        lease_secs,
+        &ExecutionAttempt::direct(),
+    )
+}
+
+/// Group-aware reservation primitive used by provider-plane runtime admissions. Existing callers
+/// stay direct through `sqlite_reserve_request`, while exact replay also fences the immutable
+/// execution group and one-based attempt.
+#[allow(clippy::too_many_arguments)]
+pub fn sqlite_reserve_request_for_execution(
+    conn: &Connection,
+    request_id: &str,
+    account_id: &str,
+    key: &str,
+    hold_nano: i64,
+    lease_secs: i64,
+    execution: &ExecutionAttempt,
+) -> Result<Option<i64>> {
     if request_id.trim().is_empty()
         || account_id.trim().is_empty()
         || key.trim().is_empty()
@@ -3471,7 +3610,7 @@ pub fn sqlite_reserve_request(
     }
     let tx = conn.unchecked_transaction()?;
     let existing = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano \
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -3481,12 +3620,19 @@ pub fn sqlite_reserve_request(
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i32>(6)?,
             ))
         },
     );
     match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance)) => {
-            if stored_account != account_id || stored_key != key || stored_hold != hold_nano {
+        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
+            if stored_account != account_id
+                || stored_key != key
+                || stored_hold != hold_nano
+                || group_id.as_deref() != execution.group_id()
+                || attempt != execution.attempt()
+            {
                 anyhow::bail!("reservation request ID was reused with different parameters");
             }
             if state == "reserved" || state == "delivering" {
@@ -3506,10 +3652,20 @@ pub fn sqlite_reserve_request(
     let timestamp = now();
     tx.execute(
         "INSERT INTO billing_reservations( \
-           request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,lease_until,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,'reserved',?5,?6,?7,?7)",
-        rusqlite::params![request_id, account_id, key, hold_nano, balance,
-            timestamp.saturating_add(lease_secs), timestamp],
+           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
+           lease_until,created_ts,updated_ts) \
+         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
+        rusqlite::params![
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            execution.group_id(),
+            execution.attempt(),
+            balance,
+            timestamp.saturating_add(lease_secs),
+            timestamp
+        ],
     )?;
     tx.commit()?;
     Ok(Some(balance))
@@ -3527,7 +3683,30 @@ pub fn sqlite_reserve_request_with_legacy_snapshot(
     lease_secs: i64,
     snapshot: &pricing::LegacyScalarAdmissionSnapshot,
 ) -> Result<pricing::LegacyScalarReserveOutcome> {
-    sqlite_reserve_request_with_legacy_snapshot_guarded(conn, key, lease_secs, snapshot, || true)
+    sqlite_reserve_request_with_legacy_snapshot_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        &ExecutionAttempt::direct(),
+    )
+}
+
+pub fn sqlite_reserve_request_with_legacy_snapshot_for_execution(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
+    execution: &ExecutionAttempt,
+) -> Result<pricing::LegacyScalarReserveOutcome> {
+    sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        execution,
+        || true,
+    )
 }
 
 /// Guarded variant for an async handoff: `commit_gate` runs after all fallible writes and
@@ -3539,6 +3718,24 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
     key: &str,
     lease_secs: i64,
     snapshot: &pricing::LegacyScalarAdmissionSnapshot,
+    commit_gate: impl FnMut() -> bool,
+) -> Result<pricing::LegacyScalarReserveOutcome> {
+    sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        &ExecutionAttempt::direct(),
+        commit_gate,
+    )
+}
+
+pub fn sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::LegacyScalarAdmissionSnapshot,
+    execution: &ExecutionAttempt,
     mut commit_gate: impl FnMut() -> bool,
 ) -> Result<pricing::LegacyScalarReserveOutcome> {
     use pricing::{
@@ -3573,7 +3770,7 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
     let hold_nano = snapshot.charged_hold_nano;
     let tx = conn.unchecked_transaction()?;
     let existing = match tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano \
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -3583,6 +3780,8 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i32>(6)?,
             ))
         },
     ) {
@@ -3594,10 +3793,14 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
         tx.rollback()?;
         return Ok(Outcome::Conflict(conflict));
     }
-    if let Some((stored_account, stored_key, stored_hold, state, balance)) = existing {
+    if let Some((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) =
+        existing
+    {
         let outcome = if stored_account != account_id
             || stored_key != key
             || stored_hold != hold_nano
+            || group_id.as_deref() != execution.group_id()
+            || attempt != execution.attempt()
         {
             Outcome::Conflict(Conflict::ReservationIdentity)
         } else if state != "reserved" && state != "delivering" {
@@ -3630,10 +3833,20 @@ pub fn sqlite_reserve_request_with_legacy_snapshot_guarded(
     let timestamp = now();
     tx.execute(
         "INSERT INTO billing_reservations( \
-           request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,lease_until,created_ts,updated_ts) \
-         VALUES(?1,?2,?3,?4,'reserved',?5,?6,?7,?7)",
-        rusqlite::params![request_id, account_id, key, hold_nano, balance,
-            timestamp.saturating_add(lease_secs), timestamp],
+           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano, \
+           lease_until,created_ts,updated_ts) \
+         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
+        rusqlite::params![
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            execution.group_id(),
+            execution.attempt(),
+            balance,
+            timestamp.saturating_add(lease_secs),
+            timestamp
+        ],
     )?;
     if let Err(error) = pricing::sqlite_insert_legacy_scalar_admission_snapshot(&tx, snapshot) {
         let _ = tx.rollback();
@@ -3803,7 +4016,30 @@ pub fn sqlite_reserve_request_with_policy_snapshot(
     lease_secs: i64,
     snapshot: &pricing::PolicyAdmissionSnapshot,
 ) -> Result<pricing::PolicyReserveOutcome> {
-    sqlite_reserve_request_with_policy_snapshot_guarded(conn, key, lease_secs, snapshot, || true)
+    sqlite_reserve_request_with_policy_snapshot_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        &ExecutionAttempt::direct(),
+    )
+}
+
+pub fn sqlite_reserve_request_with_policy_snapshot_for_execution(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    execution: &ExecutionAttempt,
+) -> Result<pricing::PolicyReserveOutcome> {
+    sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        execution,
+        || true,
+    )
 }
 
 /// Guarded strict reserve for the async writer. The callback is the final linearization gate for
@@ -3814,6 +4050,24 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
     key: &str,
     lease_secs: i64,
     snapshot: &pricing::PolicyAdmissionSnapshot,
+    commit_gate: impl FnMut() -> bool,
+) -> Result<pricing::PolicyReserveOutcome> {
+    sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
+        conn,
+        key,
+        lease_secs,
+        snapshot,
+        &ExecutionAttempt::direct(),
+        commit_gate,
+    )
+}
+
+pub fn sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
+    conn: &Connection,
+    key: &str,
+    lease_secs: i64,
+    snapshot: &pricing::PolicyAdmissionSnapshot,
+    execution: &ExecutionAttempt,
     mut commit_gate: impl FnMut() -> bool,
 ) -> Result<pricing::PolicyReserveOutcome> {
     use pricing::{
@@ -3848,7 +4102,7 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
     let hold = snapshot.charged_hold_nano();
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let existing = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano
+        "SELECT account_id,key,hold_nano,state,balance_after_reserve_nano,group_id,attempt
            FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -3858,31 +4112,37 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i32>(6)?,
             ))
         },
     );
     match existing {
-        Ok((stored_account, stored_key, stored_hold, state, balance)) => {
-            let outcome =
-                if stored_account != account_id || stored_key != key || stored_hold != hold {
-                    Outcome::Conflict(Conflict::ReservationIdentity)
-                } else if state != "reserved" && state != "delivering" {
-                    Outcome::Conflict(Conflict::TerminalReservation)
-                } else {
-                    match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
-                        Lookup::Missing => {
-                            Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
-                        }
-                        Lookup::NonPolicy => Outcome::Conflict(Conflict::ExistingNonPolicySnapshot),
-                        Lookup::Policy(stored) if stored.as_ref() == snapshot => {
-                            Outcome::Unchanged(Receipt {
-                                balance_after_reserve_nano: balance,
-                                snapshot: *stored,
-                            })
-                        }
-                        Lookup::Policy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+        Ok((stored_account, stored_key, stored_hold, state, balance, group_id, attempt)) => {
+            let outcome = if stored_account != account_id
+                || stored_key != key
+                || stored_hold != hold
+                || group_id.as_deref() != execution.group_id()
+                || attempt != execution.attempt()
+            {
+                Outcome::Conflict(Conflict::ReservationIdentity)
+            } else if state != "reserved" && state != "delivering" {
+                Outcome::Conflict(Conflict::TerminalReservation)
+            } else {
+                match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
+                    Lookup::Missing => {
+                        Outcome::Conflict(Conflict::ExistingReservationWithoutSnapshot)
                     }
-                };
+                    Lookup::NonPolicy => Outcome::Conflict(Conflict::ExistingNonPolicySnapshot),
+                    Lookup::Policy(stored) if stored.as_ref() == snapshot => {
+                        Outcome::Unchanged(Receipt {
+                            balance_after_reserve_nano: balance,
+                            snapshot: *stored,
+                        })
+                    }
+                    Lookup::Policy(_) => Outcome::Conflict(Conflict::SnapshotPayload),
+                }
+            };
             if matches!(&outcome, Outcome::Unchanged(_)) && !commit_gate() {
                 tx.rollback()?;
                 return Ok(Outcome::AbortedBeforeCommit);
@@ -3966,14 +4226,16 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded(
     let timestamp = now();
     tx.execute(
         "INSERT INTO billing_reservations(
-           request_id,account_id,key,hold_nano,state,balance_after_reserve_nano,lease_until,
-           created_ts,updated_ts)
-         VALUES(?1,?2,?3,?4,'reserved',?5,?6,?7,?7)",
+           request_id,account_id,key,hold_nano,group_id,attempt,state,balance_after_reserve_nano,
+           lease_until,created_ts,updated_ts)
+         VALUES(?1,?2,?3,?4,?5,?6,'reserved',?7,?8,?9,?9)",
         rusqlite::params![
             request_id,
             account_id,
             key,
             hold,
+            execution.group_id(),
+            execution.attempt(),
             balance,
             timestamp.saturating_add(lease_secs),
             timestamp
@@ -4363,6 +4625,30 @@ fn sqlite_write_policy_attribution(
     Ok(())
 }
 
+fn sqlite_terminal_expected_actual(
+    conn: &Connection,
+    request_id: &str,
+    original_actual: i64,
+) -> Result<i64> {
+    if original_actual <= 0 {
+        return Ok(original_actual.max(0));
+    }
+    conn.query_row(
+        "SELECT CASE
+           WHEN winner.winner_request_id IS NOT NULL AND winner.winner_request_id<>reservation.request_id
+             THEN 0
+           ELSE ?2
+         END
+           FROM billing_reservations reservation
+           LEFT JOIN execution_group_winner winner
+             ON winner.group_id=COALESCE(reservation.group_id,reservation.request_id)
+          WHERE reservation.request_id=?1",
+        rusqlite::params![request_id, original_actual],
+        |row| row.get(0),
+    )
+    .context("terminal SQLite reservation is missing")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sqlite_enqueue_settlement(
     conn: &Connection,
@@ -4418,7 +4704,8 @@ fn sqlite_enqueue_settlement(
         actual_nano.max(0)
     };
     if state == "settled" {
-        if stored_actual == Some(actual) && stored_ref.as_deref() == reference {
+        let expected_actual = sqlite_terminal_expected_actual(&tx, request_id, actual)?;
+        if stored_actual == Some(expected_actual) && stored_ref.as_deref() == reference {
             tx.commit()?;
             return Ok(stored_balance);
         }
@@ -4492,6 +4779,7 @@ fn sqlite_process_policy_settlement(
     usage: Option<&UsageEventInput>,
     disposition: &str,
     snapshot: &pricing::PolicyAdmissionSnapshot,
+    update_outbox_attribution: bool,
 ) -> Result<i64> {
     validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
     let funding = sqlite_policy_funding_evidence(conn, request_id, hold_nano, actual_nano)?;
@@ -4720,21 +5008,23 @@ fn sqlite_process_policy_settlement(
             )?;
         }
     }
-    sqlite_write_policy_attribution(
-        conn,
-        "billing_settlement_outbox",
-        request_id,
-        snapshot,
-        usage,
-        disposition,
-        &funding,
-    )?;
+    if update_outbox_attribution {
+        sqlite_write_policy_attribution(
+            conn,
+            "billing_settlement_outbox",
+            request_id,
+            snapshot,
+            usage,
+            disposition,
+            &funding,
+        )?;
+    }
     Ok(balance)
 }
 
 /// Apply one already-durable SQLite settlement intent atomically with its ledger/usage rows.
 pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<Option<i64>> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let outbox = tx.query_row(
         "SELECT actual_nano,reference,usage_json,state,disposition
            FROM billing_settlement_outbox WHERE request_id=?1",
@@ -4755,7 +5045,8 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         Err(error) => return Err(error.into()),
     };
     let reservation = tx.query_row(
-        "SELECT account_id,key,hold_nano,state,actual_nano,balance_after_settle_nano \
+        "SELECT account_id,key,hold_nano,state,actual_nano,balance_after_settle_nano, \
+                COALESCE(group_id,request_id),attempt \
          FROM billing_reservations WHERE request_id=?1",
         rusqlite::params![request_id],
         |row| {
@@ -4766,11 +5057,14 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i32>(7)?,
             ))
         },
     )?;
     if matches!(reservation.3.as_str(), "settled" | "canceled") || outbox_state == "done" {
-        if reservation.4 != Some(actual) {
+        let expected_actual = sqlite_terminal_expected_actual(&tx, request_id, actual)?;
+        if reservation.4 != Some(expected_actual) {
             anyhow::bail!("stored settlement differs from outbox");
         }
         tx.execute(
@@ -4788,9 +5082,36 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         .as_deref()
         .map(serde_json::from_str::<UsageEventInput>)
         .transpose()?;
+    let mut losing_attempt: Option<(String, String, i32)> = None;
+    let effective_actual = if actual > 0 {
+        tx.execute(
+            "INSERT INTO execution_group_winner(group_id,winner_request_id,decided_at)
+             VALUES(?1,?2,?3) ON CONFLICT(group_id) DO NOTHING",
+            rusqlite::params![reservation.6, request_id, now()],
+        )?;
+        let winner: String = tx.query_row(
+            "SELECT winner_request_id FROM execution_group_winner WHERE group_id=?1",
+            rusqlite::params![reservation.6],
+            |row| row.get(0),
+        )?;
+        if winner == request_id {
+            actual
+        } else {
+            losing_attempt = Some((reservation.6.clone(), winner, reservation.7));
+            0
+        }
+    } else {
+        0
+    };
     let policy_snapshot = match pricing::sqlite_policy_snapshot_lookup(&tx, request_id)? {
         pricing::PolicySnapshotLookup::Policy(snapshot) => Some(*snapshot),
         pricing::PolicySnapshotLookup::Missing | pricing::PolicySnapshotLookup::NonPolicy => None,
+    };
+    let effective_usage = losing_attempt.is_none().then_some(usage.as_ref()).flatten();
+    let effective_disposition = if losing_attempt.is_some() {
+        "cancel"
+    } else {
+        disposition.as_str()
     };
     let balance = if let Some(snapshot) = policy_snapshot.as_ref() {
         sqlite_process_policy_settlement(
@@ -4799,11 +5120,12 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
             &reservation.0,
             &reservation.1,
             reservation.2,
-            actual,
+            effective_actual,
             reference.as_deref(),
-            usage.as_ref(),
-            &disposition,
+            effective_usage,
+            effective_disposition,
             snapshot,
+            losing_attempt.is_none(),
         )?
     } else {
         account_settle_in(
@@ -4811,14 +5133,14 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
             &reservation.0,
             &reservation.1,
             reservation.2,
-            actual,
+            effective_actual,
             reference.as_deref(),
-            usage.as_ref(),
+            effective_usage,
         )?
         .ok_or_else(|| anyhow::anyhow!("settlement account no longer exists"))?
     };
     let timestamp = now();
-    let final_state = if policy_snapshot.is_some() && disposition == "cancel" {
+    let final_state = if effective_disposition == "cancel" {
         "canceled"
     } else {
         "settled"
@@ -4830,7 +5152,7 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         rusqlite::params![
             request_id,
             final_state,
-            actual,
+            effective_actual,
             balance,
             reference,
             timestamp
@@ -4842,6 +5164,9 @@ pub fn sqlite_process_settlement(conn: &Connection, request_id: &str) -> Result<
         rusqlite::params![request_id, timestamp],
     )?;
     tx.commit()?;
+    if let Some((group_id, winner_request_id, attempt)) = losing_attempt {
+        record_execution_group_loser(&group_id, &winner_request_id, request_id, attempt);
+    }
     Ok(Some(balance))
 }
 
@@ -5040,6 +5365,14 @@ pub fn sqlite_maintenance_prune(
              AND request_id NOT IN (SELECT request_id FROM billing_settlement_outbox) \
            ORDER BY settled_ts,request_id LIMIT 5000)",
         rusqlite::params![older_than_ts],
+    )?;
+    tx.execute(
+        "DELETE FROM execution_group_winner AS winner
+          WHERE NOT EXISTS (
+            SELECT 1 FROM billing_reservations reservation
+             WHERE COALESCE(reservation.group_id,reservation.request_id)=winner.group_id
+          )",
+        [],
     )?;
     tx.commit()?;
     Ok(crate::pg::MaintenanceReport {
@@ -7318,6 +7651,7 @@ mod tests {
             "funding_buckets",
             "pricing_admission_snapshots",
             "pricing_shadow_admission_evaluations",
+            "execution_group_winner",
         ] {
             let count: i64 = c
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -7329,6 +7663,8 @@ mod tests {
         for (table, column) in [
             ("ledger", "request_id"),
             ("usage_events", "request_id"),
+            ("billing_reservations", "group_id"),
+            ("billing_reservations", "attempt"),
             ("ledger", "provider"),
             ("billing_settlement_outbox", "snapshot_digest"),
             ("usage_events", "funding_allocation_json"),
@@ -9142,6 +9478,340 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_execution_group_charges_only_the_first_nonzero_settlement() {
+        const GROUP: &str = "018f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        const ZERO_GROUP: &str = "128f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+
+        let c = db();
+        acct_with_key(&c, "group-account", "group-key", 1_000, 2_000);
+        let first = ExecutionAttempt::grouped(GROUP, 1).unwrap();
+        let second = ExecutionAttempt::grouped(GROUP, 2).unwrap();
+        assert_eq!(
+            sqlite_reserve_request_for_execution(
+                &c,
+                "group-request-1",
+                "group-account",
+                "group-key",
+                400,
+                60,
+                &first,
+            )
+            .unwrap(),
+            Some(600),
+        );
+        assert_eq!(
+            sqlite_reserve_request_for_execution(
+                &c,
+                "group-request-1",
+                "group-account",
+                "group-key",
+                400,
+                60,
+                &first,
+            )
+            .unwrap(),
+            Some(600),
+        );
+        assert!(sqlite_reserve_request_for_execution(
+            &c,
+            "group-request-1",
+            "group-account",
+            "group-key",
+            400,
+            60,
+            &second,
+        )
+        .is_err());
+        assert!(sqlite_reserve_request(
+            &c,
+            "group-request-1",
+            "group-account",
+            "group-key",
+            400,
+            60,
+        )
+        .is_err());
+        assert_eq!(
+            sqlite_reserve_request_for_execution(
+                &c,
+                "group-request-2",
+                "group-account",
+                "group-key",
+                300,
+                60,
+                &second,
+            )
+            .unwrap(),
+            Some(300),
+        );
+
+        // Settlement order, not attempt number, chooses the durable winner.
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "group-request-2",
+                "group-account",
+                "group-key",
+                300,
+                200,
+                Some("provider:second"),
+                None,
+            )
+            .unwrap(),
+            Some(400),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "group-request-1",
+                "group-account",
+                "group-key",
+                400,
+                150,
+                Some("provider:first"),
+                None,
+            )
+            .unwrap(),
+            Some(800),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "group-request-1",
+                "group-account",
+                "group-key",
+                400,
+                150,
+                Some("provider:first"),
+                None,
+            )
+            .unwrap(),
+            Some(800),
+        );
+        let account = account_get(&c, "group-account").unwrap().unwrap();
+        assert_eq!(
+            (
+                account.balance_nano,
+                account.spent_nano,
+                account.reserved_nano
+            ),
+            (800, 200, 0),
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT
+                   (SELECT winner_request_id FROM execution_group_winner WHERE group_id=?1),
+                   (SELECT COUNT(*) FROM ledger WHERE kind='charge'
+                     AND ref IN ('provider:first','provider:second')),
+                   (SELECT actual_nano FROM billing_reservations
+                     WHERE request_id='group-request-1'),
+                   (SELECT state FROM billing_reservations
+                     WHERE request_id='group-request-1'),
+                   (SELECT actual_nano FROM billing_settlement_outbox
+                     WHERE request_id='group-request-1')",
+                rusqlite::params![GROUP],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                )),
+            )
+            .unwrap(),
+            ("group-request-2".into(), 1, 0, "canceled".into(), 150),
+        );
+
+        // A zero settlement does not consume the group winner slot.
+        let zero = ExecutionAttempt::grouped(ZERO_GROUP, 1).unwrap();
+        let positive = ExecutionAttempt::grouped(ZERO_GROUP, 2).unwrap();
+        assert_eq!(
+            sqlite_reserve_request_for_execution(
+                &c,
+                "zero-request",
+                "group-account",
+                "group-key",
+                100,
+                60,
+                &zero,
+            )
+            .unwrap(),
+            Some(700),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "zero-request",
+                "group-account",
+                "group-key",
+                100,
+                0,
+                None,
+                None,
+            )
+            .unwrap(),
+            Some(800),
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM execution_group_winner WHERE group_id=?1",
+                rusqlite::params![ZERO_GROUP],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+        );
+        assert_eq!(
+            sqlite_reserve_request_for_execution(
+                &c,
+                "positive-request",
+                "group-account",
+                "group-key",
+                100,
+                60,
+                &positive,
+            )
+            .unwrap(),
+            Some(700),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "positive-request",
+                "group-account",
+                "group-key",
+                100,
+                50,
+                Some("provider:positive"),
+                None,
+            )
+            .unwrap(),
+            Some(750),
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT winner_request_id FROM execution_group_winner WHERE group_id=?1",
+                rusqlite::params![ZERO_GROUP],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "positive-request",
+        );
+    }
+
+    #[test]
+    fn sqlite_execution_group_winner_is_pruned_only_after_all_group_replays_expire() {
+        const GROUP: &str = "228f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+
+        let c = db();
+        acct_with_key(
+            &c,
+            "retained-group-account",
+            "retained-group-key",
+            1_000,
+            2_000,
+        );
+        for (request_id, attempt) in [("retained-winner", 1), ("retained-loser", 2)] {
+            assert!(sqlite_reserve_request_for_execution(
+                &c,
+                request_id,
+                "retained-group-account",
+                "retained-group-key",
+                100,
+                60,
+                &ExecutionAttempt::grouped(GROUP, attempt).unwrap(),
+            )
+            .unwrap()
+            .is_some());
+        }
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "retained-winner",
+                "retained-group-account",
+                "retained-group-key",
+                100,
+                50,
+                Some("retained:winner"),
+                None,
+            )
+            .unwrap(),
+            Some(850),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "retained-loser",
+                "retained-group-account",
+                "retained-group-key",
+                100,
+                60,
+                Some("retained:loser"),
+                None,
+            )
+            .unwrap(),
+            Some(950),
+        );
+        c.execute(
+            "UPDATE billing_reservations SET settled_ts=1 WHERE request_id='retained-winner'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE billing_settlement_outbox SET committed_ts=1 WHERE request_id='retained-winner'",
+            [],
+        )
+        .unwrap();
+        let first_prune = sqlite_maintenance_prune(&c, 2).unwrap();
+        assert_eq!((first_prune.outbox, first_prune.reservations), (1, 1));
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM execution_group_winner WHERE group_id=?1",
+                rusqlite::params![GROUP],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "retained-loser",
+                "retained-group-account",
+                "retained-group-key",
+                100,
+                60,
+                Some("retained:loser"),
+                None,
+            )
+            .unwrap(),
+            Some(950),
+        );
+
+        c.execute(
+            "UPDATE billing_reservations SET settled_ts=1 WHERE request_id='retained-loser'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE billing_settlement_outbox SET committed_ts=1 WHERE request_id='retained-loser'",
+            [],
+        )
+        .unwrap();
+        let second_prune = sqlite_maintenance_prune(&c, 2).unwrap();
+        assert_eq!((second_prune.outbox, second_prune.reservations), (1, 1));
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM execution_group_winner WHERE group_id=?1",
+                rusqlite::params![GROUP],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+        );
+    }
+
+    #[test]
     fn sqlite_legacy_snapshot_reserve_is_atomic_and_exactly_idempotent() {
         use pricing::{LegacyScalarReserveConflict as Conflict, LegacyScalarReserveOutcome as O};
 
@@ -9634,6 +10304,7 @@ mod tests {
                    (SELECT COUNT(*) FROM billing_reservations),
                    (SELECT COUNT(*) FROM pricing_admission_snapshots),
                    (SELECT COUNT(*) FROM pricing_shadow_admission_evaluations),
+                   (SELECT COUNT(*) FROM execution_group_winner),
                    (SELECT COUNT(*) FROM ledger)",
                 [],
                 |row| Ok((
@@ -9641,10 +10312,11 @@ mod tests {
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 )),
             )
             .unwrap(),
-            (0, 0, 0, ledger_before)
+            (0, 0, 0, 0, ledger_before)
         );
     }
 
@@ -11037,6 +11709,139 @@ mod tests {
         assert_eq!(topup.funding_allocations.len(), 1);
         assert_eq!(topup.funding_allocations[0].source_ref, "strict-topup");
         assert_eq!(topup.funding_allocations[0].direction, "credit");
+
+        const EXECUTION_GROUP: &str = "328f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        let grouped_winner = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+            request_id: "strict-group-winner".into(),
+            official_hold_nano: 200,
+            charged_hold_nano: 100,
+            ..track_snapshot.as_input()
+        })
+        .unwrap();
+        let grouped_loser = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+            request_id: "strict-group-loser".into(),
+            official_hold_nano: 200,
+            charged_hold_nano: 100,
+            ..track_snapshot.as_input()
+        })
+        .unwrap();
+        assert!(matches!(
+            sqlite_reserve_request_with_policy_snapshot_for_execution(
+                &c,
+                "strict-key",
+                60,
+                &grouped_winner,
+                &ExecutionAttempt::grouped(EXECUTION_GROUP, 1).unwrap(),
+            )
+            .unwrap(),
+            PolicyReserveOutcome::Inserted(_)
+        ));
+        assert!(matches!(
+            sqlite_reserve_request_with_policy_snapshot_for_execution(
+                &c,
+                "strict-key",
+                60,
+                &grouped_loser,
+                &ExecutionAttempt::grouped(EXECUTION_GROUP, 2).unwrap(),
+            )
+            .unwrap(),
+            PolicyReserveOutcome::Inserted(_)
+        ));
+        let mut winner_usage = usage.clone();
+        winner_usage.real_nano = 120;
+        winner_usage.input_nano = 120;
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "strict-group-winner",
+                "strict-account",
+                "strict-key",
+                100,
+                60,
+                Some("strict-group:winner"),
+                Some(&winner_usage),
+            )
+            .unwrap(),
+            Some(740),
+        );
+        let mut loser_usage = usage.clone();
+        loser_usage.real_nano = 140;
+        loser_usage.input_nano = 140;
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "strict-group-loser",
+                "strict-account",
+                "strict-key",
+                100,
+                70,
+                Some("strict-group:loser"),
+                Some(&loser_usage),
+            )
+            .unwrap(),
+            Some(840),
+        );
+        assert_eq!(
+            sqlite_settle_request(
+                &c,
+                "strict-group-loser",
+                "strict-account",
+                "strict-key",
+                100,
+                70,
+                Some("strict-group:loser"),
+                Some(&loser_usage),
+            )
+            .unwrap(),
+            Some(840),
+        );
+        let strict_group_state: (i64, i64, i64, String, i64, i64, i64, i64, i64) = c
+            .query_row(
+                "SELECT account.balance_nano,account.spent_nano,account.reserved_nano,
+                        reservation.state,reservation.actual_nano,
+                        allocation.charged_nano,allocation.released_nano,
+                        outbox.actual_nano,
+                        (SELECT COUNT(*) FROM ledger
+                          WHERE request_id='strict-group-loser')
+                   FROM accounts account
+                   JOIN billing_reservations reservation ON reservation.account_id=account.id
+                   JOIN reservation_funding_allocations allocation
+                     ON allocation.request_id=reservation.request_id
+                   JOIN billing_settlement_outbox outbox USING(request_id)
+                  WHERE account.id='strict-account'
+                    AND reservation.request_id='strict-group-loser'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            strict_group_state,
+            (840, 360, 0, "canceled".into(), 0, 0, 100, 70, 0),
+        );
+        let loser_official_cost: String = c
+            .query_row(
+                "SELECT official_cost_json FROM billing_settlement_outbox
+                  WHERE request_id='strict-group-loser'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let loser_official_cost =
+            serde_json::from_str::<serde_json::Value>(&loser_official_cost).unwrap();
+        assert_eq!(loser_official_cost["official_nano"], 140);
+        assert!(loser_official_cost.get("disposition").is_none());
 
         let static_snapshot = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
             request_id: "strict-static-request".into(),

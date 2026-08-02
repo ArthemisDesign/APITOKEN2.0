@@ -51,6 +51,14 @@ pub const AUTH_HEADERS: [HeaderName; 3] = [
 /// заголовок снимает — за его условия отвечает только сам движок.
 const EXECUTION_STATE_HEADER: HeaderName = HeaderName::from_static("x-apitoken-execution-state");
 const EXECUTION_STATE_NOT_STARTED: &[u8] = b"not_started";
+pub const EXECUTION_GROUP_HEADER: HeaderName =
+    HeaderName::from_static("x-apitoken-execution-group");
+pub const EXECUTION_ATTEMPT_HEADER: HeaderName = HeaderName::from_static("x-apitoken-attempt");
+
+pub struct ExecutionAttemptHeaders {
+    pub group_id: String,
+    pub attempt: usize,
+}
 
 /// Единственные два доказательства, разрешающие следующий universal attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +113,7 @@ pub async fn proxy_attempt(
     target_lane: Lane,
     error_lane: Lane,
     req: Request<Body>,
+    execution: Option<&ExecutionAttemptHeaders>,
 ) -> ProxyAttempt {
     let path_query = req
         .uri()
@@ -113,7 +122,28 @@ pub async fn proxy_attempt(
         .unwrap_or("/");
     let url = format!("{origin}{path_query}");
     let method = req.method().clone();
-    let headers = strip_hop_by_hop(req.headers());
+    let mut headers = strip_hop_by_hop(req.headers());
+    // These headers are a router-owned capability. Client copies are always erased, including on
+    // native and universal single-attempt lanes; only the explicit fallback engine can add them.
+    headers.remove(&EXECUTION_GROUP_HEADER);
+    headers.remove(&EXECUTION_ATTEMPT_HEADER);
+    if let Some(execution) = execution {
+        headers.insert(
+            EXECUTION_GROUP_HEADER,
+            execution
+                .group_id
+                .parse()
+                .expect("router-generated UUIDv4 is a valid header value"),
+        );
+        headers.insert(
+            EXECUTION_ATTEMPT_HEADER,
+            execution
+                .attempt
+                .to_string()
+                .parse()
+                .expect("positive attempt is a valid header value"),
+        );
+    }
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
 
     let upstream = client
@@ -198,7 +228,9 @@ pub async fn proxy_request(
     lane: Lane,
     req: Request<Body>,
 ) -> Response<Body> {
-    proxy_attempt(client, origin, lane, lane, req).await.response
+    proxy_attempt(client, origin, lane, lane, req, None)
+        .await
+        .response
 }
 
 fn error_chain_has_connection_refused(error: &(dyn StdError + 'static)) -> bool {

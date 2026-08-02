@@ -203,6 +203,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     object.remove("models");
     let surface_label = surface.label(parts.uri.path());
     let attempt_count = attempts.len();
+    let group_id = match fresh_execution_group_id() {
+        Ok(group_id) => group_id,
+        Err(()) => return surface.catalog_unavailable(),
+    };
     for (index, attempt) in attempts.into_iter().enumerate() {
         value
             .as_object_mut()
@@ -217,12 +221,17 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         };
         let origin = origin_for_lane(&state, attempt.lane);
         let request = request_from_parts(&parts, attempt_bytes);
+        let execution = proxy::ExecutionAttemptHeaders {
+            group_id: group_id.clone(),
+            attempt: index + 1,
+        };
         let result = proxy::proxy_attempt(
             &state.client,
             origin,
             attempt.lane,
             surface.error_lane(),
             request,
+            Some(&execution),
         )
         .await;
         let status = result.response.status();
@@ -281,9 +290,42 @@ async fn proxy_single(
     };
     let origin = origin_for_lane(state, lane);
     let request = Request::from_parts(parts, Body::from(bytes));
-    proxy::proxy_attempt(&state.client, origin, lane, surface.error_lane(), request)
-        .await
-        .response
+    proxy::proxy_attempt(
+        &state.client,
+        origin,
+        lane,
+        surface.error_lane(),
+        request,
+        None,
+    )
+    .await
+    .response
+}
+
+fn fresh_execution_group_id() -> Result<String, ()> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| ())?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    ))
 }
 
 fn request_from_parts(parts: &Parts, body: Bytes) -> Request {

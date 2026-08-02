@@ -834,6 +834,12 @@ async fn metrics(
     use std::fmt::Write as _;
     let _ = writeln!(
         body,
+        "# TYPE claude_api_execution_group_double_winner_total counter\n\
+         claude_api_execution_group_double_winner_total {}",
+        registry::execution_group_double_winner_total()
+    );
+    let _ = writeln!(
+        body,
         "# TYPE claude_api_gemini_usage_metadata_missing_total counter\n\
          claude_api_gemini_usage_metadata_missing_total {}",
         g(&m.gemini_usage_missing)

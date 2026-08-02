@@ -1538,6 +1538,15 @@ grep -Fq 'header_up Host 127.0.0.1:8791' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Key "<ADMIN_AUTH_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-Admin-Domain {http.request.host}' "$ROOT/deploy/Caddyfile"
 ! grep -Fqi 'X-Apitoken-Api-Plane' "$ROOT/deploy/Caddyfile"
+grep -Fq '(strip_execution_identity) {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'request_header -X-Apitoken-Execution-Group' "$ROOT/deploy/Caddyfile"
+grep -Fq 'request_header -X-Apitoken-Attempt' "$ROOT/deploy/Caddyfile"
+for execution_fenced_vhost in \
+  api.apitoken.sale openai.api.apitoken.sale gemini.api.apitoken.sale router.apitoken.sale; do
+  execution_fenced_block=$(sed -n "/^${execution_fenced_vhost//./\\.} {$/,/^}$/p" \
+    "$ROOT/deploy/Caddyfile")
+  grep -Fq 'import strip_execution_identity' <<<"$execution_fenced_block"
+done
 # Each backend snippet is imported exactly once — by its per-provider vhost. Since the stage-1b
 # cutover the unified router.apitoken.sale vhost proxies to the claude-router process instead of
 # importing plane backends (docs/engine/UNIFIED_ROUTER.md).
@@ -1599,7 +1608,8 @@ grep -Fq 'reverse_proxy 127.0.0.1:8798' <<<"$router_vhost" \
   || wd_die 'unified router must proxy to the claude-router loopback origin'
 [[ $(grep -Fc 'reverse_proxy' <<<"$router_vhost") == 1 ]] \
   || wd_die 'unified router must have exactly one upstream: the router process'
-! grep -Eq '^[[:space:]]*import ' <<<"$router_vhost" \
+! grep -Eq '^[[:space:]]*import (engine_backend|openai_engine_backend|gemini_engine_backend)([[:space:]]|$)' \
+  <<<"$router_vhost" \
   || wd_die 'unified router must not import plane backends after the stage-1b cutover'
 ! grep -Eq '^[[:space:]]*encode ' <<<"$router_vhost" \
   || wd_die 'unified router must not compress any lane (SSE buffering risk)'

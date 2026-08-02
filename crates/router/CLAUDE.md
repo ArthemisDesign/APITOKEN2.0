@@ -20,6 +20,12 @@
   4xx; signed 429 — capacity-отказ) либо доказанного TCP `ConnectionRefused`.
   Timeout, DNS/generic connect error, unsigned 5xx, reset/обрыв и ответ после
   заголовков никогда не ретраятся (`docs/engine/ROUTING_FENCING.md` §3.3).
+- **Execution identity — capability, не клиентский input.** Для каждой явной fallback-цепочки
+  router один раз генерирует CSPRNG UUIDv4 и инжектирует
+  `x-apitoken-execution-group` + positive attempt `1..N`. Перед инжектом клиентские копии всегда
+  удаляются; native и universal single-attempt paths оба заголовка не отправляют. Caddy независимо
+  стирает их на внешнем ingress. Identity допустима только во внутренних router→plane запросах и
+  никогда не возвращается клиенту.
 - **Никаких очередей, semaphore, circuit breaker, rate limits** (инвариант 3).
   Readiness (`/health`, `/live`, `/ready`) — router-local, никогда не
   конъюнкция health плоскостей; синхронных health-check'ов на пути запроса нет.
@@ -54,6 +60,7 @@
   dispatch; с `models` до первой попытки валидирует всю цепочку одним aggregate
   catalog snapshot, отбрасывает дубликаты alias/namespaced одной модели,
   удаляет `models`, подставляет выбранный `model` и исполняет retry matrix.
+  Явная цепочка также владеет одной CSPRNG execution-group UUIDv4 и монотонным attempt per model.
   Логи attempts содержат только surface/index, публичный catalog ID, lane,
   status и bounded retry reason — без URL, headers, credentials и тел запросов.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.

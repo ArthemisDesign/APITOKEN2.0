@@ -603,16 +603,18 @@ fn run_pg_snapshot_reserve_with_retry(
     owner: &registry::pg::Owner,
     key: &str,
     snapshot: &LegacyScalarAdmissionSnapshot,
+    execution: &registry::ExecutionAttempt,
     handoff: &AtomicU8,
     lease_secs: i64,
 ) -> anyhow::Result<LegacyScalarReserveOutcome> {
     let deadline = Instant::now() + PG_OPERATION_RETRY_DEADLINE;
     loop {
-        match pg.reserve_request_with_legacy_snapshot_guarded(
+        match pg.reserve_request_with_legacy_snapshot_guarded_for_execution(
             owner,
             key,
             lease_secs,
             snapshot,
+            execution,
             || authorize_snapshot_reserve_commit(handoff),
         ) {
             Ok(value) => return Ok(value),
@@ -666,16 +668,18 @@ fn run_pg_policy_snapshot_reserve_with_retry(
     owner: &registry::pg::Owner,
     key: &str,
     snapshot: &PolicyAdmissionSnapshot,
+    execution: &registry::ExecutionAttempt,
     handoff: &AtomicU8,
     lease_secs: i64,
 ) -> anyhow::Result<PolicyReserveOutcome> {
     let deadline = Instant::now() + PG_OPERATION_RETRY_DEADLINE;
     loop {
-        match pg.reserve_request_with_policy_snapshot_guarded(
+        match pg.reserve_request_with_policy_snapshot_guarded_for_execution(
             owner,
             key,
             lease_secs,
             snapshot,
+            execution,
             || authorize_snapshot_reserve_commit(handoff),
         ) {
             Ok(value) => return Ok(value),
@@ -876,18 +880,21 @@ enum WriteCmd {
         account_id: String,
         key: String,
         hold: i64,
+        execution: registry::ExecutionAttempt,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<Option<i64>>>,
     },
     ReserveWithLegacySnapshot {
         key: String,
         snapshot: LegacyScalarAdmissionSnapshot,
+        execution: registry::ExecutionAttempt,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<LegacyScalarReserveOutcome>>,
     },
     ReserveWithPolicySnapshot {
         key: String,
         snapshot: PolicyAdmissionSnapshot,
+        execution: registry::ExecutionAttempt,
         handoff: Arc<AtomicU8>,
         reply: oneshot::Sender<anyhow::Result<PolicyReserveOutcome>>,
     },
@@ -1822,38 +1829,41 @@ impl AsyncBilling {
                         })();
                         let _ = reply.send(result);
                     }
-                    WriteCmd::Reserve { request_id, account_id, key, hold, handoff, reply } => {
-                        let result = registry::sqlite_reserve_request(
+                    WriteCmd::Reserve { request_id, account_id, key, hold, execution, handoff, reply } => {
+                        let result = registry::sqlite_reserve_request_for_execution(
                             &conn, &request_id, &account_id, &key, hold, RESERVATION_LEASE_SECS,
+                            &execution,
                         );
                         finish_reserve(request_id, account_id, key, hold, handoff, reply, result);
                     }
-                    WriteCmd::ReserveWithLegacySnapshot { key, snapshot, handoff, reply } => {
+                    WriteCmd::ReserveWithLegacySnapshot { key, snapshot, execution, handoff, reply } => {
                         if handoff.load(Ordering::Acquire) == SNAPSHOT_RESERVE_HANDOFF_CANCELED {
                             let _ = reply.send(Ok(
                                 LegacyScalarReserveOutcome::AbortedBeforeCommit,
                             ));
                             continue;
                         }
-                        let result = registry::sqlite_reserve_request_with_legacy_snapshot_guarded(
+                        let result = registry::sqlite_reserve_request_with_legacy_snapshot_guarded_for_execution(
                             &conn,
                             &key,
                             RESERVATION_LEASE_SECS,
                             &snapshot,
+                            &execution,
                             || authorize_snapshot_reserve_commit(&handoff),
                         );
                         finish_snapshot_reserve(&handoff, reply, result);
                     }
-                    WriteCmd::ReserveWithPolicySnapshot { key, snapshot, handoff, reply } => {
+                    WriteCmd::ReserveWithPolicySnapshot { key, snapshot, execution, handoff, reply } => {
                         if handoff.load(Ordering::Acquire) == SNAPSHOT_RESERVE_HANDOFF_CANCELED {
                             let _ = reply.send(Ok(PolicyReserveOutcome::AbortedBeforeCommit));
                             continue;
                         }
-                        let result = registry::sqlite_reserve_request_with_policy_snapshot_guarded(
+                        let result = registry::sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
                             &conn,
                             &key,
                             RESERVATION_LEASE_SECS,
                             &snapshot,
+                            &execution,
                             || authorize_snapshot_reserve_commit(&handoff),
                         );
                         finish_policy_snapshot_reserve(&handoff, reply, result);
@@ -2435,15 +2445,15 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::Reserve { request_id, account_id, key, hold, handoff, reply } => {
+                        WriteCmd::Reserve { request_id, account_id, key, hold, execution, handoff, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg,
                                 &writer_url,
                                 &writer_owner,
                                 "reserve",
-                                |pg| pg.reserve_request(
+                                |pg| pg.reserve_request_for_execution(
                                     &writer_owner, &request_id, &account_id, &key, hold,
-                                    RESERVATION_LEASE_SECS,
+                                    RESERVATION_LEASE_SECS, &execution,
                                 ),
                             );
                             let result = match result {
@@ -2491,7 +2501,7 @@ impl AsyncBilling {
                                 Err(state) => eprintln!("billing PostgreSQL reserve handoff unexpected state {state}"),
                             }
                         }
-                        WriteCmd::ReserveWithLegacySnapshot { key, snapshot, handoff, reply } => {
+                        WriteCmd::ReserveWithLegacySnapshot { key, snapshot, execution, handoff, reply } => {
                             if handoff.load(Ordering::Acquire)
                                 == SNAPSHOT_RESERVE_HANDOFF_CANCELED
                             {
@@ -2506,6 +2516,7 @@ impl AsyncBilling {
                                 &writer_owner,
                                 &key,
                                 &snapshot,
+                                &execution,
                                 &handoff,
                                 RESERVATION_LEASE_SECS,
                             );
@@ -2516,7 +2527,7 @@ impl AsyncBilling {
                             }
                             finish_snapshot_reserve(&handoff, reply, result);
                         }
-                        WriteCmd::ReserveWithPolicySnapshot { key, snapshot, handoff, reply } => {
+                        WriteCmd::ReserveWithPolicySnapshot { key, snapshot, execution, handoff, reply } => {
                             if handoff.load(Ordering::Acquire)
                                 == SNAPSHOT_RESERVE_HANDOFF_CANCELED
                             {
@@ -2531,6 +2542,7 @@ impl AsyncBilling {
                                 &writer_owner,
                                 &key,
                                 &snapshot,
+                                &execution,
                                 &handoff,
                                 RESERVATION_LEASE_SECS,
                             );
@@ -3356,6 +3368,24 @@ impl AsyncBilling {
         key: &str,
         hold: i64,
     ) -> anyhow::Result<Option<i64>> {
+        self.reserve_request_for_execution(
+            request_id,
+            account_id,
+            key,
+            hold,
+            registry::ExecutionAttempt::direct(),
+        )
+        .await
+    }
+
+    pub async fn reserve_request_for_execution(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        execution: registry::ExecutionAttempt,
+    ) -> anyhow::Result<Option<i64>> {
         let (r, rx) = oneshot::channel();
         let handoff = Arc::new(AtomicU8::new(RESERVE_HANDOFF_PENDING));
         let guard = ReserveHandoffGuard {
@@ -3373,6 +3403,7 @@ impl AsyncBilling {
                 account_id: account_id.into(),
                 key: key.into(),
                 hold,
+                execution,
                 handoff,
                 reply: r,
             })
@@ -3395,6 +3426,20 @@ impl AsyncBilling {
         key: &str,
         snapshot: LegacyScalarAdmissionSnapshot,
     ) -> anyhow::Result<LegacyScalarReserveOutcome> {
+        self.reserve_request_with_legacy_snapshot_for_execution(
+            key,
+            snapshot,
+            registry::ExecutionAttempt::direct(),
+        )
+        .await
+    }
+
+    pub async fn reserve_request_with_legacy_snapshot_for_execution(
+        &self,
+        key: &str,
+        snapshot: LegacyScalarAdmissionSnapshot,
+        execution: registry::ExecutionAttempt,
+    ) -> anyhow::Result<LegacyScalarReserveOutcome> {
         let (reply, result) = oneshot::channel();
         let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
         let guard = SnapshotReserveHandoffGuard {
@@ -3404,6 +3449,7 @@ impl AsyncBilling {
             .send(WriteCmd::ReserveWithLegacySnapshot {
                 key: key.into(),
                 snapshot,
+                execution,
                 handoff,
                 reply,
             })
@@ -3431,6 +3477,20 @@ impl AsyncBilling {
         key: &str,
         snapshot: PolicyAdmissionSnapshot,
     ) -> anyhow::Result<PolicyReserveOutcome> {
+        self.reserve_request_with_policy_snapshot_for_execution(
+            key,
+            snapshot,
+            registry::ExecutionAttempt::direct(),
+        )
+        .await
+    }
+
+    pub async fn reserve_request_with_policy_snapshot_for_execution(
+        &self,
+        key: &str,
+        snapshot: PolicyAdmissionSnapshot,
+        execution: registry::ExecutionAttempt,
+    ) -> anyhow::Result<PolicyReserveOutcome> {
         let (reply, result) = oneshot::channel();
         let handoff = Arc::new(AtomicU8::new(SNAPSHOT_RESERVE_HANDOFF_PENDING));
         let guard = SnapshotReserveHandoffGuard {
@@ -3440,6 +3500,7 @@ impl AsyncBilling {
             .send(WriteCmd::ReserveWithPolicySnapshot {
                 key: key.into(),
                 snapshot,
+                execution,
                 handoff,
                 reply,
             })
@@ -5014,6 +5075,7 @@ mod tests {
                 account_id: "acct".into(),
                 key: "limited".into(),
                 hold: 500,
+                execution: registry::ExecutionAttempt::direct(),
                 handoff: Arc::clone(&handoff),
                 reply,
             })
@@ -5062,6 +5124,7 @@ mod tests {
             .send(WriteCmd::ReserveWithLegacySnapshot {
                 key: "limited".into(),
                 snapshot,
+                execution: registry::ExecutionAttempt::direct(),
                 handoff: Arc::clone(&handoff),
                 reply,
             })
@@ -5298,6 +5361,7 @@ mod tests {
             .send(WriteCmd::ReserveWithLegacySnapshot {
                 key: "limited".into(),
                 snapshot: snapshot.clone(),
+                execution: registry::ExecutionAttempt::direct(),
                 handoff: Arc::clone(&handoff),
                 reply,
             })
@@ -5425,6 +5489,7 @@ mod tests {
                 .send(WriteCmd::ReserveWithLegacySnapshot {
                     key: key.clone(),
                     snapshot: canceled_snapshot.clone(),
+                    execution: registry::ExecutionAttempt::direct(),
                     handoff: Arc::clone(&canceled_handoff),
                     reply: canceled_reply,
                 })
@@ -5443,6 +5508,7 @@ mod tests {
                 .send(WriteCmd::ReserveWithLegacySnapshot {
                     key: key.clone(),
                     snapshot: lost_snapshot.clone(),
+                    execution: registry::ExecutionAttempt::direct(),
                     handoff: Arc::clone(&lost_handoff),
                     reply: lost_reply,
                 })

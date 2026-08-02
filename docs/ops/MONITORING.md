@@ -232,6 +232,20 @@ Infrastructure delivery preserves a healthy Redis container unless
 sysctl definition also keeps `vm.overcommit_memory=1`, allowing Redis background persistence to fork
 without a false allocation refusal; verify it with `sysctl vm.overcommit_memory`.
 
+## ExecutionGroupDoubleWinner
+
+Treat any increment as a correctness incident even though the durable fence protected customer
+money: two requests in one explicit router fallback group both reached a nonzero settlement path.
+The first committed claimant remains the winner; the later attempt is settled as zero and its full
+hold is refunded, including its original strict-policy funding buckets.
+
+Preserve the engine and router journals for the affected interval. Correlate the bounded
+`event=execution_group_double_winner` record by group, winner request, loser request and attempt;
+then inspect why the router received `not_started` or `ConnectionRefused` for the earlier attempt
+despite a later nonzero settlement. Confirm all four public vhosts still strip
+`x-apitoken-execution-group` and `x-apitoken-attempt`. Do not clear the winner row, replay money,
+or enable a broader fallback canary until the execution-state boundary is fixed and verified.
+
 ## AnthropicCalibrationPersistenceFailed
 
 `claude_api_anthropic_calibration_persistence_ok` becomes zero when the exact turn FIFO has a

@@ -96,6 +96,15 @@ Control API движка использует только на чтение. С
   401/402/клиентские 4xx (кроме signed 429) не ретраятся. Второе разрешённое доказательство —
   TCP `ConnectionRefused`; timeout/generic connect/unsigned 5xx fail closed. Документ
   контракта — `docs/engine/ROUTING_FENCING.md` §3.
+- **Контракт execution group (router → provider planes → registry, этап 6.3).** Производитель
+  trusted identity — `crates/router`: одна CSPRNG UUIDv4 и attempts `1..N` только для explicit
+  fallback chain. `deploy/Caddyfile` удаляет клиентские копии на всех provider/router vhost'ах;
+  router повторно удаляет их перед собственным инжектом. `crates/forward` валидирует пару до
+  reserve и передаёт её через `AsyncBilling`; `crates/registry` сохраняет identity и атомарно
+  выбирает один nonzero settlement winner в общей PostgreSQL authority (SQLite parity для
+  rollback/tests). Потребители winner-результата — money/funding settlement и
+  `crates/server` `/metrics`; публичные API group identity не возвращают. Контракт —
+  `docs/engine/ROUTING_FENCING.md` §4.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
 
 ## 3. Модели и цены — где ещё зеркалятся

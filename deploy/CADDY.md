@@ -137,6 +137,10 @@ three provider planes, the aggregated namespaced `/v1/models` catalog with its d
 policy, lane-shaped errors, and explicit off-by-default serial model fallback. Authentication,
 billing, in-plane retry boundaries, and streaming stay inside the planes; cross-plane fallback
 uses only the planes' exact `not_started` fencing signal or proven TCP ConnectionRefused.
+Execution identity is a private router→plane capability: the shared `strip_execution_identity`
+snippet removes `X-Apitoken-Execution-Group` and `X-Apitoken-Attempt` at all four public ingress
+vhosts (`api`, `openai.api`, `gemini.api`, and `router`). The router then injects its own identity
+only for an explicit fallback chain; clients can neither choose nor replay a group.
 `/health` reaches the router as well and stays
 router-local there — unified liveness is deliberately not a conjunction of plane health. The
 router is a singleton, so `deploy.sh` restarts it only on an actual binary change and gates the

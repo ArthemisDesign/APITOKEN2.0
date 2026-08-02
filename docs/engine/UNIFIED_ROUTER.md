@@ -1,12 +1,12 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5 и фазы 6.1–6.2 реализованы; fallback 6.2 выкатывается
+Статус: **этапы 1–5 и фазы 6.1–6.3 реализованы; fallback 6.2 выкатывается
 выключенным по умолчанию.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаются фазы 6.3–6.4. Документ фиксирует целевую
+До полного OpenRouter-grade routing остаётся фаза 6.4. Документ фиксирует целевую
 картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
 обновляет этот документ и смежные инструкции в том же коммите.
 
@@ -25,7 +25,7 @@ dispatch на три плоскости. `/v1/messages/count_tokens` испол�
 | Универсальный OpenAI-compatible вход | да | да (universal lane) |
 | Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
 | Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | MVP fallback 6.2 готов default-off; preferences — фаза 6.4 |
+| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 готовы default-off; preferences — фаза 6.4 |
 
 Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
 процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
@@ -255,10 +255,13 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
   обязательного `model`. Router preflight-валидирует всю цепочку по одному catalog snapshot,
   а повторяет только по точному сигналу 6.1 либо доказанному TCP ConnectionRefused. Timeout,
   unsigned 5xx, обрыв после headers и клиентские 4xx fail closed.
-- **Зрелая версия:** общий execution group / attempt ID, идемпотентные reservations и
+- **Фаза 6.3, durable fencing:** общий execution group / attempt ID, идемпотентные reservations и
   атомарный выбор единственного billable winner — reservation identity расширяется с
   `request_id` на `(group_id, attempt_id)`, а settled-запись допускает ровно один winner
-  на группу (расширение текущего `UNIQUE ledger(kind, request_id)`).
+  на группу (расширение текущего `UNIQUE ledger(kind, request_id)`). Реализовано migration-first:
+  Caddy снимает клиентские capability headers, router инжектирует одну CSPRNG UUIDv4 на explicit
+  fallback chain, плоскости валидируют и durable сохраняют пару, registry loser-settlement
+  принудительно делает zero-charge/full refund. Любой loser увеличивает always-zero incident metric.
 - **Ambiguous disconnect → никакого автоматического повтора на другой модели.** Клиент
   получает честную ошибку и решает сам; молчаливый retry на timeout — путь к двойному
   списанию.
@@ -300,9 +303,9 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    без подписей; реплей thinking-блоков для non-Claude моделей не поддерживается.
 7. **Этап 6: fencing и fallback реализуются фазами.** Фундамент уже есть в
    `crates/registry/src/pricing.rs` (versioned catalog, provider switches, account policy).
-   Фазы 6.1–6.2 реализовали внутренний `not_started` и default-off serial fallback по
-   `models`; durable execution group/единственный billable winner остаётся фазой 6.3,
-   policy/presets/GA telemetry — фазой 6.4. Детальный контракт —
+   Фазы 6.1–6.3 реализовали внутренний `not_started`, default-off serial fallback по
+   `models` и durable execution group/единственный billable winner;
+   policy/presets/GA telemetry остаются фазой 6.4. Детальный контракт —
    `docs/engine/ROUTING_FENCING.md`.
 
 ## Существующая база (что переиспользуем)
@@ -730,8 +733,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    реализована (2026-08-02): shared router engine принимает default-off `models`,
    preflight-валидирует цепочку и делает serial retry только по exact signal либо
    ConnectionRefused; timeout/unsigned 5xx/client 4xx fail closed, внутренний header
-   никогда не виден клиенту. Фазы 6.3–6.4 добавят durable group winner,
-   policy/presets и GA telemetry. Отдельно —
+   никогда не виден клиенту. Фаза 6.3 реализована (2026-08-02): trusted group/attempt identity
+   проходит router→plane→reservation, а SQLite/PostgreSQL settle выбирает ровно одного
+   billable winner и полностью возвращает loser hold; `ExecutionGroupDoubleWinner` гейтит любой
+   такой инцидент. Фаза 6.4 добавит policy/presets и GA telemetry. Отдельно —
    Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
    `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
    покрыта — это Stage 3, а не блокер router'а).

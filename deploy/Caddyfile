@@ -64,6 +64,13 @@
 	}
 }
 
+# Execution groups are an internal router→plane capability. Public clients can never choose or
+# replay them: every provider hostname and the unified router erase both headers at first ingress.
+(strip_execution_identity) {
+	request_header -X-Apitoken-Execution-Group
+	request_header -X-Apitoken-Attempt
+}
+
 # Every provider route targets its own stable loopback origin. Only those loopback sites know
 # runtime ports; applications and public/admin vhosts never select a deployment slot themselves.
 (engine_backend) {
@@ -115,6 +122,7 @@
 }
 
 api.apitoken.sale {
+	import strip_execution_identity
 	@public_core path /v1/* /health /balance
 	handle @public_core {
 		import engine_backend
@@ -123,6 +131,7 @@ api.apitoken.sale {
 }
 
 openai.api.apitoken.sale {
+	import strip_execution_identity
 	# Compress only complete JSON documents. Responses SSE must stay identity-encoded so the
 	# compressor cannot buffer small lifecycle frames and increase time-to-first-token.
 	encode zstd gzip {
@@ -139,6 +148,7 @@ openai.api.apitoken.sale {
 }
 
 gemini.api.apitoken.sale {
+	import strip_execution_identity
 	header {
 		-Server
 		X-Content-Type-Options nosniff
@@ -175,6 +185,7 @@ gemini.api.apitoken.sale {
 # lane-shaped errors. The planes keep authentication, billing, retry boundaries and streaming
 # behavior behind their stable origins; nothing changes on the per-provider hostnames.
 router.apitoken.sale {
+	import strip_execution_identity
 	@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/models* /v1beta/* /health /balance
 	handle @public_core {
 		reverse_proxy 127.0.0.1:8798

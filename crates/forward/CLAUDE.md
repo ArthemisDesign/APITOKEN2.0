@@ -90,6 +90,15 @@ full-hold, дропнутый TeeMeter на 2xx-пути, fallback-сборки 
 charge возможен. Gemini Messages skin следует тому же правилу для своей поверхности. Router
 обязан снимать заголовок с транзитных ответов (см. crates/router/CLAUDE.md).
 
+**Execution-group capability (этап 6.3):** `x-apitoken-execution-group` и
+`x-apitoken-attempt` — только router→plane. Caddy удаляет клиентские значения на каждом публичном
+ingress. Admission один раз парсит пару до money mutation: оба отсутствуют → direct execution;
+оба присутствуют ровно один раз → canonical lowercase UUIDv4 + canonical positive decimal;
+partial/duplicate/malformed/noncanonical → fail closed. Anthropic парсит в `proxy::forward`,
+Codex/Gemini — в `begin_admission`; identity проходит через scalar, legacy-snapshot и strict-policy
+reserve в `AsyncBilling`. При отправке во внешний Anthropic upstream оба внутренних заголовка
+удаляются. Плоскость не генерирует и не исправляет identity самостоятельно.
+
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** каждый
 успешный Anthropic turn, включая неметеренный admin traffic, после authoritative usage строит один
 immutable event с внутренним request ID, subject/email, model, Standard/Fast, inference geography,

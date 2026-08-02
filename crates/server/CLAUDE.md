@@ -22,6 +22,9 @@
   `/admin/*` (control-плоскость,
   см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,
   а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.
+  `/metrics` экспортирует registry incident-tripwire
+  `claude_api_execution_group_double_winner_total`; метрика должна оставаться нулевой, а
+  transactional winner correctness не зависит от процесса или Prometheus.
 - `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): контракт,
   которым БУДУЩАЯ КОММЕРЦИЯ (отдельный сервис) управляет движком. Гейт — `forward::control_authed`
   (control-ключ, ОТДЕЛЬНО от forwarding-admin). Все записи — через single-writer актор `AsyncBilling`

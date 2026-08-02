@@ -31,6 +31,7 @@ pub(crate) struct GeminiAdmission {
 
 pub(crate) struct PendingGeminiAdmission {
     authz: Authz,
+    execution: registry::ExecutionAttempt,
 }
 
 impl PendingGeminiAdmission {
@@ -79,7 +80,13 @@ impl PendingGeminiAdmission {
                 effective_output_tokens = affordable_output_tokens;
                 let request_id = crate::upstream::fresh_request_id();
                 match billing
-                    .reserve_request(&request_id, account_id, key, hold)
+                    .reserve_request_for_execution(
+                        &request_id,
+                        account_id,
+                        key,
+                        hold,
+                        self.execution.clone(),
+                    )
                     .await
                 {
                     Ok(Some(_)) => Some(Reservation {
@@ -195,6 +202,13 @@ pub(crate) async fn begin_admission(
     if !app.authority_ready.load(Ordering::Acquire) {
         return Err(AdmissionError::Unavailable);
     }
+    let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
+        eprintln!(
+            "Gemini execution identity rejected class={}",
+            error.as_str()
+        );
+        AdmissionError::Unavailable
+    })?;
     let authz = authorize(app, headers, peer).await;
     match &authz {
         Authz::Admin { .. } => {}
@@ -218,7 +232,7 @@ pub(crate) async fn begin_admission(
     }
     Metrics::inc(&app.metrics.requests);
 
-    Ok(PendingGeminiAdmission { authz })
+    Ok(PendingGeminiAdmission { authz, execution })
 }
 
 fn reserve_cost(
@@ -614,6 +628,62 @@ mod tests {
         assert_eq!(auth.funding_enforcement, Some(FundingEnforcement::Strict));
 
         drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn gemini_reservation_persists_router_execution_identity() {
+        const ACCOUNT: &str = "grouped-gemini-account";
+        const KEY: &str = "grouped-gemini-key";
+        const GROUP: &str = "828f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-gemini-execution-{}-{unique}.sqlite",
+            std::process::id(),
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let billing =
+            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
+        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
+        billing
+            .topup(ACCOUNT, 1_000_000_000, Some("grouped-gemini-seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT, None, None, None)
+            .await
+            .unwrap();
+        let app = app_state(Arc::clone(&billing), &path_string);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-goog-api-key", KEY.parse().unwrap());
+        headers.insert("x-apitoken-execution-group", GROUP.parse().unwrap());
+        headers.insert("x-apitoken-attempt", "9".parse().unwrap());
+        let peer = "198.51.100.10:12345".parse().unwrap();
+        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
+        let (admission, _) = pending
+            .reserve(&app, &model(), 1, 1, 0, false, true)
+            .await
+            .unwrap();
+        let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
+        let connection = registry::open(&path_string).unwrap();
+        let identity: (Option<String>, i32) = connection
+            .query_row(
+                "SELECT group_id,attempt FROM billing_reservations WHERE request_id=?1",
+                [request_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, (Some(GROUP.into()), 9));
+
+        drop(connection);
+        drop(admission);
+        billing.flush().await.unwrap();
         drop(app);
         drop(billing);
         let _ = std::fs::remove_file(path);

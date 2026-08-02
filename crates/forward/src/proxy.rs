@@ -203,6 +203,7 @@ fn skip_req_header(name: &str) -> bool {
         | "x-claude-code-session-id" | "x-conversation-id" | "x-session-id"
         | "x-apitoken-api-plane"
         | "x-apitoken-calibration-profile"
+        | "x-apitoken-execution-group" | "x-apitoken-attempt"
         | "transfer-encoding" | "upgrade" | "proxy-connection" | "proxy-authorization"
         | "keep-alive" | "te" | "trailer"
         // Клиентские forwarding/hop-заголовки НЕ пробрасываем апстриму: они раскрыли бы цепочку прокси
@@ -884,6 +885,20 @@ pub async fn forward(
         );
     }
     let (parts, body) = req.into_parts();
+    let execution = match crate::execution::parse_execution_attempt(&parts.headers) {
+        Ok(execution) => execution,
+        Err(error) => {
+            eprintln!(
+                "Anthropic execution identity rejected class={}",
+                error.as_str()
+            );
+            return with_not_started(local_err_for(
+                LocalErr::Overloaded,
+                "invalid_execution_identity",
+                Some(2),
+            ));
+        }
+    };
     let billable = parts.method == Method::POST && parts.uri.path() == "/v1/messages";
     let authz = authorize(&app, &parts.headers, &peer).await;
     match &authz {
@@ -1353,7 +1368,11 @@ pub async fn forward(
                 }
             };
             match billing
-                .reserve_request_with_policy_snapshot(key, policy_snapshot)
+                .reserve_request_with_policy_snapshot_for_execution(
+                    key,
+                    policy_snapshot,
+                    execution.clone(),
+                )
                 .await
             {
                 Ok(PolicyReserveOutcome::Inserted(_)) | Ok(PolicyReserveOutcome::Unchanged(_)) => {
@@ -1429,7 +1448,11 @@ pub async fn forward(
                 let eff_mt = quote.effective_max_output_tokens();
                 let hold = quote.snapshot().charged_hold_nano();
                 match billing
-                    .reserve_request_with_legacy_snapshot(key, quote.into_snapshot())
+                    .reserve_request_with_legacy_snapshot_for_execution(
+                        key,
+                        quote.into_snapshot(),
+                        execution.clone(),
+                    )
                     .await
                 {
                     Ok(LegacyScalarReserveOutcome::Inserted(receipt)) => {
@@ -1519,7 +1542,13 @@ pub async fn forward(
                     None => break,
                 };
                 match billing
-                    .reserve_request(&engine_request_id, account_id, key, hold)
+                    .reserve_request_for_execution(
+                        &engine_request_id,
+                        account_id,
+                        key,
+                        hold,
+                        execution.clone(),
+                    )
                     .await
                 {
                     Ok(Some(_)) => {
@@ -2463,6 +2492,7 @@ mod tests {
 
     async fn invoke_anthropic_bridge(
         pricing_bridge: PricingBridgeConfig,
+        execution: Option<(&str, &str)>,
     ) -> (AppState, Arc<AsyncBilling>, std::path::PathBuf, Response) {
         const ACCOUNT: &str = "anthropic-bridge-account";
         const KEY: &str = "sk-pool-anthropic-bridge";
@@ -2489,11 +2519,17 @@ mod tests {
             .await
             .unwrap();
         let app = anthropic_bridge_app(Arc::clone(&billing), pricing_bridge);
-        let request = axum::extract::Request::builder()
+        let mut request_builder = axum::extract::Request::builder()
             .method(Method::POST)
             .uri("/v1/messages")
             .header("x-api-key", KEY)
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if let Some((group_id, attempt)) = execution {
+            request_builder = request_builder
+                .header("x-apitoken-execution-group", group_id)
+                .header("x-apitoken-attempt", attempt);
+        }
+        let request = request_builder
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "model": "claude-sonnet-4-6",
@@ -2873,7 +2909,7 @@ mod tests {
     #[tokio::test]
     async fn sampled_anthropic_request_persists_snapshot_before_legacy_cancel_lifecycle() {
         let config = PricingBridgeConfig::from_parts(true, 10_000).unwrap();
-        let (app, billing, path, _response) = invoke_anthropic_bridge(config).await;
+        let (app, billing, path, _response) = invoke_anthropic_bridge(config, None).await;
 
         assert_eq!(
             app.metrics
@@ -2922,7 +2958,7 @@ mod tests {
     #[tokio::test]
     async fn disabled_anthropic_bridge_preserves_scalar_reserve_without_snapshot() {
         let (app, billing, path, _response) =
-            invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
 
         assert_eq!(
             app.metrics
@@ -2952,6 +2988,27 @@ mod tests {
             .unwrap();
         assert_eq!(account.balance_nano, 20_000_000);
         assert_eq!(account.reserved_nano, 0);
+
+        drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn anthropic_reservation_persists_router_execution_identity() {
+        const GROUP: &str = "628f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        let (app, billing, path, _response) =
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled(), Some((GROUP, "7"))).await;
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let identity: (Option<String>, i32) = connection
+            .query_row(
+                "SELECT group_id,attempt FROM billing_reservations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, (Some(GROUP.into()), 7));
 
         drop(connection);
         drop(app);
@@ -3306,7 +3363,7 @@ mod tests {
         // Пустой пул → синтетический 529 с заголовком; заголовок ⇒ reserve не тарифицирован:
         // баланс целиком на месте, резерв нулевой, charge-строк в журнале нет.
         let (app, billing, path, response) =
-            invoke_anthropic_bridge(PricingBridgeConfig::disabled()).await;
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
         assert_eq!(response.status().as_u16(), 529);
         assert_eq!(
             response.headers().get(EXECUTION_STATE_HEADER).unwrap(),

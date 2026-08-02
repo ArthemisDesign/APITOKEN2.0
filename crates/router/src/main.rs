@@ -240,6 +240,8 @@ mod tests {
         x_api_key: Option<String>,
         anthropic_beta: Option<String>,
         anthropic_version: Option<String>,
+        execution_group: Option<String>,
+        execution_attempt: Option<String>,
         host: Option<String>,
     }
 
@@ -259,6 +261,8 @@ mod tests {
             x_api_key: header("x-api-key"),
             anthropic_beta: header("anthropic-beta"),
             anthropic_version: header("anthropic-version"),
+            execution_group: header("x-apitoken-execution-group"),
+            execution_attempt: header("x-apitoken-attempt"),
             host: header("host"),
         }
     }
@@ -442,6 +446,37 @@ mod tests {
         (spawn(router).await, bodies)
     }
 
+    async fn identity_attempt_plane(
+        catalog_body: &'static str,
+        catalog_path: &'static str,
+        attempt_status: StatusCode,
+        execution_state: Option<&'static str>,
+    ) -> (String, SharedLog) {
+        let log: SharedLog = Arc::new(StdMutex::new(Vec::new()));
+        let state = log.clone();
+        let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
+            let log = state.clone();
+            async move {
+                if req.uri().path() == catalog_path {
+                    return AxumResponse::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(catalog_body))
+                        .unwrap();
+                }
+                log.lock().unwrap().push(record_of(&req));
+                let mut builder = AxumResponse::builder()
+                    .status(attempt_status)
+                    .header("content-type", "application/json");
+                if let Some(value) = execution_state {
+                    builder = builder.header("x-apitoken-execution-state", value);
+                }
+                builder.body(Body::from("{}")).unwrap()
+            }
+        }));
+        (spawn(router).await, log)
+    }
+
     /// Отдаёт ровно один catalog response с `Connection: close`, затем
     /// закрывает listener. Следующая попытка к тому же origin получает
     /// доказуемый TCP ConnectionRefused.
@@ -487,6 +522,8 @@ mod tests {
             .header("x-api-key", "sk-pool-secret")
             .header("anthropic-beta", "messages-2023-12-15")
             .header("anthropic-version", "2023-06-01")
+            .header("x-apitoken-execution-group", "client-spoof")
+            .header("x-apitoken-attempt", "99")
             .header("content-type", "application/json")
             .body(payload)
             .send()
@@ -503,6 +540,8 @@ mod tests {
         assert_eq!(recorded.x_api_key.as_deref(), Some("sk-pool-secret"));
         assert_eq!(recorded.anthropic_beta.as_deref(), Some("messages-2023-12-15"));
         assert_eq!(recorded.anthropic_version.as_deref(), Some("2023-06-01"));
+        assert!(recorded.execution_group.is_none());
+        assert!(recorded.execution_attempt.is_none());
         // Host переписывается на адрес плоскости, а не прокидывается клиентский.
         assert!(recorded.host.as_deref().unwrap().starts_with("127.0.0.1:"));
     }
@@ -782,6 +821,63 @@ mod tests {
         assert!(first.get("models").is_none());
         assert!(second.get("models").is_none());
         assert!(bodies_g.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_owns_one_uuid_group_and_monotonic_attempt_headers() {
+        let (a, log_a) = identity_attempt_plane(
+            ANTHROPIC_MODELS,
+            "/v1/models",
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("not_started"),
+        )
+        .await;
+        let (o, log_o) = identity_attempt_plane(
+            OPENAI_MODELS,
+            "/v1/models",
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let (g, _) = identity_attempt_plane(
+            GEMINI_MODELS,
+            "/v1beta/models",
+            StatusCode::OK,
+            None,
+        )
+        .await;
+        let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/responses"))
+            .header("x-apitoken-execution-group", "client-controlled")
+            .header("x-apitoken-attempt", "9000")
+            .body(
+                r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"input":"hi"}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let first = log_a.lock().unwrap().first().cloned().unwrap();
+        let second = log_o.lock().unwrap().first().cloned().unwrap();
+        let group = first.execution_group.as_deref().unwrap();
+        let bytes = group.as_bytes();
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(
+            (bytes[8], bytes[13], bytes[18], bytes[23]),
+            (b'-', b'-', b'-', b'-')
+        );
+        assert_eq!(bytes[14], b'4');
+        assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
+        assert!(bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23)
+                || matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+        }));
+        assert_ne!(group, "client-controlled");
+        assert_eq!(second.execution_group.as_deref(), Some(group));
+        assert_eq!(first.execution_attempt.as_deref(), Some("1"));
+        assert_eq!(second.execution_attempt.as_deref(), Some("2"));
     }
 
     #[tokio::test]

@@ -576,6 +576,7 @@ fn postgres_process_policy_settlement(
     usage: Option<&UsageEventInput>,
     snapshot: &crate::pricing::PolicyAdmissionSnapshot,
     timestamp: i64,
+    update_outbox_attribution: bool,
 ) -> Result<i64> {
     crate::validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
     let funding = postgres_policy_funding_evidence(tx, request_id, hold_nano, actual_nano, true)?;
@@ -763,15 +764,17 @@ fn postgres_process_policy_settlement(
             &funding,
         )?;
     }
-    postgres_write_policy_attribution(
-        tx,
-        "settlement_outbox",
-        request_id,
-        snapshot,
-        usage,
-        disposition,
-        &funding,
-    )?;
+    if update_outbox_attribution {
+        postgres_write_policy_attribution(
+            tx,
+            "settlement_outbox",
+            request_id,
+            snapshot,
+            usage,
+            disposition,
+            &funding,
+        )?;
+    }
     Ok(balance)
 }
 
@@ -1137,6 +1140,28 @@ impl PgStore {
         hold_nano: i64,
         lease_secs: i64,
     ) -> Result<Option<i64>> {
+        self.reserve_request_for_execution(
+            owner,
+            request_id,
+            account_id,
+            key,
+            hold_nano,
+            lease_secs,
+            &crate::ExecutionAttempt::direct(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_request_for_execution(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold_nano: i64,
+        lease_secs: i64,
+        execution: &crate::ExecutionAttempt,
+    ) -> Result<Option<i64>> {
         let hold = hold_nano.max(0);
         let ts = now();
         let mut tx = self.client.transaction()?;
@@ -1146,7 +1171,8 @@ impl PgStore {
             &[&request_id],
         )?;
         if let Some(row) = tx.query_opt(
-            "SELECT account_id, key, hold_nano, balance_after_reserve_nano, owner_instance, owner_epoch, state \
+            "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,owner_epoch, \
+                    state,group_id,attempt \
              FROM reservations WHERE request_id=$1",
             &[&request_id],
         )? {
@@ -1155,7 +1181,9 @@ impl PgStore {
                 && row.get::<_, i64>(2) == hold
                 && row.get::<_, String>(4) == owner.instance_id
                 && row.get::<_, i64>(5) == owner.epoch
-                && row.get::<_, String>(6) == "reserved";
+                && row.get::<_, String>(6) == "reserved"
+                && row.get::<_, Option<String>>(7).as_deref() == execution.group_id()
+                && row.get::<_, i32>(8) == execution.attempt();
             if !exact {
                 bail!("reservation request ID belongs to a different or completed operation");
             }
@@ -1196,10 +1224,11 @@ impl PgStore {
         }
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano, \
-             owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9)",
+             owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,group_id,attempt) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
             &[&request_id, &account_id, &key, &hold, &balance, &owner.instance_id,
-              &owner.epoch, &(ts + lease_secs.max(1)), &ts],
+              &owner.epoch, &(ts + lease_secs.max(1)), &ts, &execution.group_id(),
+              &execution.attempt()],
         )?;
         tx.commit()?;
         Ok(Some(balance))
@@ -1217,7 +1246,31 @@ impl PgStore {
         lease_secs: i64,
         snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
     ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
-        self.reserve_request_with_legacy_snapshot_guarded(owner, key, lease_secs, snapshot, || true)
+        self.reserve_request_with_legacy_snapshot_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            &crate::ExecutionAttempt::direct(),
+        )
+    }
+
+    pub fn reserve_request_with_legacy_snapshot_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        execution: &crate::ExecutionAttempt,
+    ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
+        self.reserve_request_with_legacy_snapshot_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            execution,
+            || true,
+        )
     }
 
     /// Guarded async-handoff primitive. The caller-owned gate is evaluated only for a successful
@@ -1229,6 +1282,25 @@ impl PgStore {
         key: &str,
         lease_secs: i64,
         snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        commit_gate: impl FnMut() -> bool,
+    ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
+        self.reserve_request_with_legacy_snapshot_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            &crate::ExecutionAttempt::direct(),
+            commit_gate,
+        )
+    }
+
+    pub fn reserve_request_with_legacy_snapshot_guarded_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        execution: &crate::ExecutionAttempt,
         mut commit_gate: impl FnMut() -> bool,
     ) -> Result<crate::pricing::LegacyScalarReserveOutcome> {
         use crate::pricing::{
@@ -1275,7 +1347,7 @@ impl PgStore {
         }
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
-                    owner_epoch,state
+                    owner_epoch,state,group_id,attempt
                FROM reservations
               WHERE request_id=$1
               FOR UPDATE",
@@ -1288,11 +1360,15 @@ impl PgStore {
             let stored_owner: String = row.get(4);
             let stored_epoch: i64 = row.get(5);
             let state: String = row.get(6);
+            let stored_group_id: Option<String> = row.get(7);
+            let stored_attempt: i32 = row.get(8);
             let outcome = if stored_account != account_id
                 || stored_key != key
                 || stored_hold != hold
                 || stored_owner != owner.instance_id
                 || stored_epoch != owner.epoch
+                || stored_group_id.as_deref() != execution.group_id()
+                || stored_attempt != execution.attempt()
             {
                 Outcome::Conflict(Conflict::ReservationIdentity)
             } else if state != "reserved" && state != "delivering" {
@@ -1356,8 +1432,8 @@ impl PgStore {
         }
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,balance_after_reserve_nano,
-                 owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9)",
+                 owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,group_id,attempt)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
             &[
                 &request_id,
                 &account_id,
@@ -1368,6 +1444,8 @@ impl PgStore {
                 &owner.epoch,
                 &(reservation_ts.saturating_add(lease_secs)),
                 &reservation_ts,
+                &execution.group_id(),
+                &execution.attempt(),
             ],
         )?;
         if let Err(error) =
@@ -1399,7 +1477,31 @@ impl PgStore {
         lease_secs: i64,
         snapshot: &crate::pricing::PolicyAdmissionSnapshot,
     ) -> Result<crate::pricing::PolicyReserveOutcome> {
-        self.reserve_request_with_policy_snapshot_guarded(owner, key, lease_secs, snapshot, || true)
+        self.reserve_request_with_policy_snapshot_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            &crate::ExecutionAttempt::direct(),
+        )
+    }
+
+    pub fn reserve_request_with_policy_snapshot_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+        execution: &crate::ExecutionAttempt,
+    ) -> Result<crate::pricing::PolicyReserveOutcome> {
+        self.reserve_request_with_policy_snapshot_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            execution,
+            || true,
+        )
     }
 
     /// Guarded strict reserve for the async writer. A lost caller cannot leave behind an
@@ -1411,6 +1513,25 @@ impl PgStore {
         key: &str,
         lease_secs: i64,
         snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+        commit_gate: impl FnMut() -> bool,
+    ) -> Result<crate::pricing::PolicyReserveOutcome> {
+        self.reserve_request_with_policy_snapshot_guarded_for_execution(
+            owner,
+            key,
+            lease_secs,
+            snapshot,
+            &crate::ExecutionAttempt::direct(),
+            commit_gate,
+        )
+    }
+
+    pub fn reserve_request_with_policy_snapshot_guarded_for_execution(
+        &mut self,
+        owner: &Owner,
+        key: &str,
+        lease_secs: i64,
+        snapshot: &crate::pricing::PolicyAdmissionSnapshot,
+        execution: &crate::ExecutionAttempt,
         mut commit_gate: impl FnMut() -> bool,
     ) -> Result<crate::pricing::PolicyReserveOutcome> {
         use crate::pricing::{
@@ -1459,7 +1580,7 @@ impl PgStore {
 
         if let Some(row) = tx.query_opt(
             "SELECT account_id,key,hold_nano,balance_after_reserve_nano,owner_instance,
-                    owner_epoch,state
+                    owner_epoch,state,group_id,attempt
                FROM reservations
               WHERE request_id=$1
               FOR UPDATE",
@@ -1471,6 +1592,8 @@ impl PgStore {
                 || row.get::<_, i64>(2) != hold
                 || row.get::<_, String>(4) != owner.instance_id
                 || row.get::<_, i64>(5) != owner.epoch
+                || row.get::<_, Option<String>>(7).as_deref() != execution.group_id()
+                || row.get::<_, i32>(8) != execution.attempt()
             {
                 Outcome::Conflict(Conflict::ReservationIdentity)
             } else if !matches!(row.get::<_, String>(6).as_str(), "reserved" | "delivering") {
@@ -1728,8 +1851,8 @@ impl PgStore {
         tx.execute(
             "INSERT INTO reservations(request_id,account_id,key,hold_nano,
                  balance_after_reserve_nano,owner_instance,owner_epoch,lease_until,state,
-                 created_ts,updated_ts)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9)",
+                 created_ts,updated_ts,group_id,attempt)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9,$9,$10,$11)",
             &[
                 &request_id,
                 &account_id,
@@ -1740,6 +1863,8 @@ impl PgStore {
                 &owner.epoch,
                 &reservation_ts.saturating_add(lease_secs),
                 &reservation_ts,
+                &execution.group_id(),
+                &execution.attempt(),
             ],
         )?;
         crate::pricing::postgres::postgres_insert_policy_admission_snapshot(&mut tx, snapshot)?;
@@ -2041,7 +2166,8 @@ impl PgStore {
              o.cache_read_tokens,o.cache_write_5m_tokens,o.cache_write_1h_tokens,o.web_search_requests, \
              o.real_nano,o.speed,o.inference_geo,o.input_nano,o.output_nano,o.cache_read_nano, \
              o.cache_write_5m_nano,o.cache_write_1h_nano,o.web_search_nano,o.priced_ts,o.provider, \
-             o.state,r.account_id,r.key,r.hold_nano,r.state \
+             o.state,r.account_id,r.key,r.hold_nano,r.state,COALESCE(r.group_id,r.request_id), \
+             r.attempt,r.actual_nano \
              FROM settlement_outbox o JOIN reservations r USING(request_id) \
              WHERE o.request_id=$1 FOR UPDATE OF o,r",
             &[&request_id],
@@ -2053,7 +2179,27 @@ impl PgStore {
         let outbox_state: String = row.get(21);
         let reservation_state: String = row.get(25);
         let account_id: String = row.get(22);
+        let actual: i64 = row.get(0);
+        let effective_group_id: String = row.get(26);
+        let execution_attempt: i32 = row.get(27);
         if outbox_state == "done" || matches!(reservation_state.as_str(), "settled" | "canceled") {
+            let winner = if actual > 0 {
+                tx.query_opt(
+                    "SELECT winner_request_id FROM execution_group_winner WHERE group_id=$1",
+                    &[&effective_group_id],
+                )?
+                .map(|winner| winner.get::<_, String>(0))
+            } else {
+                None
+            };
+            let expected_actual = if winner.as_deref().is_some_and(|winner| winner != request_id) {
+                0
+            } else {
+                actual
+            };
+            if row.get::<_, Option<i64>>(28) != Some(expected_actual) {
+                bail!("stored settlement differs from durable execution-group winner");
+            }
             let balance = tx
                 .query_opt(
                     "SELECT balance_nano FROM accounts WHERE id=$1",
@@ -2068,12 +2214,33 @@ impl PgStore {
             tx.commit()?;
             return Ok(balance);
         }
-        let actual: i64 = row.get(0);
         let disposition: String = row.get(1);
         let reference: Option<String> = row.get(2);
         let model: String = row.get(3);
         let account_key: String = row.get(23);
         let hold: i64 = row.get(24);
+        let mut losing_attempt: Option<String> = None;
+        let effective_actual = if actual > 0 {
+            tx.execute(
+                "INSERT INTO execution_group_winner(group_id,winner_request_id,decided_at)
+                 VALUES($1,$2,$3) ON CONFLICT(group_id) DO NOTHING",
+                &[&effective_group_id, &request_id, &ts],
+            )?;
+            let winner: String = tx
+                .query_one(
+                    "SELECT winner_request_id FROM execution_group_winner WHERE group_id=$1",
+                    &[&effective_group_id],
+                )?
+                .get(0);
+            if winner == request_id {
+                actual
+            } else {
+                losing_attempt = Some(winner);
+                0
+            }
+        } else {
+            0
+        };
         let policy_snapshot = match crate::pricing::postgres::postgres_policy_snapshot_lookup(
             &mut tx, request_id, true,
         )? {
@@ -2082,26 +2249,32 @@ impl PgStore {
             | crate::pricing::PolicySnapshotLookup::NonPolicy => None,
         };
         let policy_usage =
-            (policy_snapshot.is_some() && disposition == "settle").then(|| UsageEventInput {
-                model: model.clone(),
-                provider: provider.clone(),
-                input_tokens: row.get(4),
-                output_tokens: row.get(5),
-                cache_read_tokens: row.get(6),
-                cache_write_5m_tokens: row.get(7),
-                cache_write_1h_tokens: row.get(8),
-                web_search_requests: row.get(9),
-                real_nano: row.get(10),
-                speed: row.get(11),
-                inference_geo: row.get(12),
-                input_nano: row.get(13),
-                output_nano: row.get(14),
-                cache_read_nano: row.get(15),
-                cache_write_5m_nano: row.get(16),
-                cache_write_1h_nano: row.get(17),
-                web_search_nano: row.get(18),
-                priced_ts: row.get(19),
-            });
+            (policy_snapshot.is_some() && disposition == "settle" && losing_attempt.is_none())
+                .then(|| UsageEventInput {
+                    model: model.clone(),
+                    provider: provider.clone(),
+                    input_tokens: row.get(4),
+                    output_tokens: row.get(5),
+                    cache_read_tokens: row.get(6),
+                    cache_write_5m_tokens: row.get(7),
+                    cache_write_1h_tokens: row.get(8),
+                    web_search_requests: row.get(9),
+                    real_nano: row.get(10),
+                    speed: row.get(11),
+                    inference_geo: row.get(12),
+                    input_nano: row.get(13),
+                    output_nano: row.get(14),
+                    cache_read_nano: row.get(15),
+                    cache_write_5m_nano: row.get(16),
+                    cache_write_1h_nano: row.get(17),
+                    web_search_nano: row.get(18),
+                    priced_ts: row.get(19),
+                });
+        let effective_disposition = if losing_attempt.is_some() {
+            "cancel"
+        } else {
+            disposition.as_str()
+        };
         let balance: i64;
         if let Some(snapshot) = policy_snapshot.as_ref() {
             balance = postgres_process_policy_settlement(
@@ -2110,24 +2283,25 @@ impl PgStore {
                 &account_id,
                 &account_key,
                 hold,
-                actual,
-                &disposition,
+                effective_actual,
+                effective_disposition,
                 reference.as_deref(),
                 policy_usage.as_ref(),
                 snapshot,
                 ts,
+                losing_attempt.is_none(),
             )?;
         } else {
             balance = tx.query_one(
             "UPDATE accounts SET balance_nano=balance_nano+$1-$2, spent_nano=spent_nano+$2, \
              reserved_nano=reserved_nano-$1 WHERE id=$3 AND reserved_nano >= $1 RETURNING balance_nano",
-            &[&hold, &actual, &account_id],
+            &[&hold, &effective_actual, &account_id],
         ).context("reservation/account aggregate invariant failed")?.get(0);
             let key_updated = tx.execute(
             "UPDATE api_keys SET spent_nano=spent_nano+$1, \
              reserved_nano=CASE WHEN reserved_nano >= $2 THEN reserved_nano-$2 ELSE reserved_nano END \
              WHERE key=$3 AND (reserved_nano >= $2 OR spend_limit_nano IS NULL)",
-            &[&actual, &hold, &account_key],
+            &[&effective_actual, &hold, &account_key],
         )?;
             if key_updated != 1 {
                 let key_still_exists = tx
@@ -2137,11 +2311,11 @@ impl PgStore {
                     bail!("reservation/key aggregate invariant failed");
                 }
             }
-            if actual > 0 {
+            if effective_actual > 0 {
                 tx.execute(
                 "INSERT INTO ledger(account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model) \
                  VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,'')) ON CONFLICT DO NOTHING",
-                &[&account_id, &account_key, &request_id, &actual, &reference, &balance, &ts, &model],
+                &[&account_id, &account_key, &request_id, &effective_actual, &reference, &balance, &ts, &model],
             )?;
                 if !model.is_empty() {
                     let input_tokens: i64 = row.get(4);
@@ -2169,21 +2343,21 @@ impl PgStore {
                      ON CONFLICT(request_id) DO NOTHING",
                     &[&request_id,&account_id,&account_key,&model,&input_tokens,&output_tokens,
                       &cache_read_tokens,&cache_write_5m_tokens,&cache_write_1h_tokens,
-                      &web_search_requests,&real_nano,&actual,&reference,&ts,&speed,&inference_geo,
+                      &web_search_requests,&real_nano,&effective_actual,&reference,&ts,&speed,&inference_geo,
                       &input_nano,&output_nano,&cache_read_nano,&cache_write_5m_nano,
                       &cache_write_1h_nano,&web_search_nano,&priced_ts,&provider],
                 )?;
                 }
             }
         }
-        let final_state = if disposition == "cancel" {
+        let final_state = if effective_disposition == "cancel" {
             "canceled"
         } else {
             "settled"
         };
         tx.execute(
             "UPDATE reservations SET state=$2,actual_nano=$3,settled_ts=$4,updated_ts=$4 WHERE request_id=$1",
-            &[&request_id, &final_state, &actual, &ts],
+            &[&request_id, &final_state, &effective_actual, &ts],
         )?;
         tx.execute(
             "UPDATE settlement_outbox SET state='done',attempts=attempts+1,committed_ts=$2,updated_ts=$2, \
@@ -2191,6 +2365,14 @@ impl PgStore {
             &[&request_id, &ts],
         )?;
         tx.commit()?;
+        if let Some(winner_request_id) = losing_attempt {
+            crate::record_execution_group_loser(
+                &effective_group_id,
+                &winner_request_id,
+                request_id,
+                execution_attempt,
+            );
+        }
         Ok(Some(balance))
     }
 
@@ -3721,6 +3903,14 @@ impl PgStore {
         let reservations = lifecycle_counts.get::<_, i64>(0) as usize;
         let pricing_snapshots_cascaded = lifecycle_counts.get::<_, i64>(1) as usize;
         let pricing_shadow_evaluations_cascaded = lifecycle_counts.get::<_, i64>(2) as usize;
+        tx.execute(
+            "DELETE FROM execution_group_winner winner
+              WHERE NOT EXISTS (
+                SELECT 1 FROM reservations reservation
+                 WHERE COALESCE(reservation.group_id,reservation.request_id)=winner.group_id
+              )",
+            &[],
+        )?;
         let capacity_leases = tx.execute(
             "DELETE FROM capacity_leases WHERE lease_id IN ( \
                SELECT lease_id FROM capacity_leases \
@@ -5656,7 +5846,7 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
                  provider_switch_head,provider_switch_entries,provider_switch_versions,
                  pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
-                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
                  usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )
             .unwrap();
@@ -6710,7 +6900,7 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
                  provider_switch_head,provider_switch_entries,provider_switch_versions,
                  pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
-                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
                  usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )
             .unwrap();
@@ -6936,7 +7126,7 @@ mod tests {
                 "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
                  provider_switch_head,provider_switch_entries,provider_switch_versions,
                  pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
-                 settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
                  usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )
             .unwrap();
@@ -7418,7 +7608,7 @@ mod tests {
              codex_turn_calibration_events,codex_window_observations,\
              codex_window_calibrations,codex_home_spend, \
              codex_home_health, \
-             settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
+             execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
             )
             .unwrap();
@@ -8241,7 +8431,7 @@ mod tests {
             )
             .unwrap();
         pg.client.batch_execute(
-            "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
+            "TRUNCATE execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE; \
              DELETE FROM provider_switch_entries; \
              DELETE FROM provider_switch_head; \
@@ -8471,7 +8661,7 @@ mod tests {
             let _ = std::fs::remove_file(format!("{sqlite_path_s}{suffix}"));
         }
         pg.client.batch_execute(
-            "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
+            "TRUNCATE execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances, \
              usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
         ).unwrap();
 
@@ -8810,6 +9000,153 @@ mod tests {
             .get(0);
         assert_eq!(charge_count, 1, "exact retry must not double-charge");
 
+        const EXECUTION_GROUP: &str = "428f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        const ZERO_EXECUTION_GROUP: &str = "528f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        pg.account_create("group-acct", None, 10_000).unwrap();
+        pg.account_topup("group-acct", 500, Some("group-seed"))
+            .unwrap();
+        pg.key_issue("group-key", "group-acct", None).unwrap();
+        let group_first = crate::ExecutionAttempt::grouped(EXECUTION_GROUP, 1).unwrap();
+        let group_second = crate::ExecutionAttempt::grouped(EXECUTION_GROUP, 2).unwrap();
+        assert_eq!(
+            pg.reserve_request_for_execution(
+                &owner,
+                "group-request-1",
+                "group-acct",
+                "group-key",
+                200,
+                60,
+                &group_first,
+            )
+            .unwrap(),
+            Some(300),
+        );
+        assert_eq!(
+            pg.reserve_request_for_execution(
+                &owner,
+                "group-request-1",
+                "group-acct",
+                "group-key",
+                200,
+                60,
+                &group_first,
+            )
+            .unwrap(),
+            Some(300),
+        );
+        assert!(pg
+            .reserve_request_for_execution(
+                &owner,
+                "group-request-1",
+                "group-acct",
+                "group-key",
+                200,
+                60,
+                &group_second,
+            )
+            .is_err());
+        assert_eq!(
+            pg.reserve_request_for_execution(
+                &owner,
+                "group-request-2",
+                "group-acct",
+                "group-key",
+                200,
+                60,
+                &group_second,
+            )
+            .unwrap(),
+            Some(100),
+        );
+        assert_eq!(
+            pg.settle_request("group-request-2", 120, Some("group:second"), None)
+                .unwrap(),
+            Some(180),
+        );
+        assert_eq!(
+            pg.settle_request("group-request-1", 100, Some("group:first"), None)
+                .unwrap(),
+            Some(380),
+        );
+        assert_eq!(
+            pg.settle_request("group-request-1", 100, Some("group:first"), None)
+                .unwrap(),
+            Some(380),
+        );
+        let group_state = pg
+            .client
+            .query_one(
+                "SELECT account.balance_nano,account.spent_nano,account.reserved_nano,
+                        winner.winner_request_id,
+                        loser.state,loser.actual_nano,outbox.actual_nano,
+                        (SELECT COUNT(*)::bigint FROM ledger
+                          WHERE kind='charge'
+                            AND request_id IN ('group-request-1','group-request-2'))
+                   FROM accounts account
+                   JOIN reservations loser ON loser.account_id=account.id
+                   JOIN settlement_outbox outbox USING(request_id)
+                   JOIN execution_group_winner winner ON winner.group_id=$1
+                  WHERE account.id='group-acct' AND loser.request_id='group-request-1'",
+                &[&EXECUTION_GROUP],
+            )
+            .unwrap();
+        assert_eq!(group_state.get::<_, i64>(0), 380);
+        assert_eq!(group_state.get::<_, i64>(1), 120);
+        assert_eq!(group_state.get::<_, i64>(2), 0);
+        assert_eq!(group_state.get::<_, String>(3), "group-request-2");
+        assert_eq!(group_state.get::<_, String>(4), "canceled");
+        assert_eq!(group_state.get::<_, i64>(5), 0);
+        assert_eq!(group_state.get::<_, i64>(6), 100);
+        assert_eq!(group_state.get::<_, i64>(7), 1);
+
+        let zero = crate::ExecutionAttempt::grouped(ZERO_EXECUTION_GROUP, 1).unwrap();
+        let positive = crate::ExecutionAttempt::grouped(ZERO_EXECUTION_GROUP, 2).unwrap();
+        assert_eq!(
+            pg.reserve_request_for_execution(
+                &owner,
+                "group-zero",
+                "group-acct",
+                "group-key",
+                100,
+                60,
+                &zero,
+            )
+            .unwrap(),
+            Some(280),
+        );
+        assert_eq!(
+            pg.settle_request("group-zero", 0, None, None).unwrap(),
+            Some(380),
+        );
+        assert_eq!(
+            pg.client
+                .query_one(
+                    "SELECT COUNT(*)::bigint FROM execution_group_winner WHERE group_id=$1",
+                    &[&ZERO_EXECUTION_GROUP],
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            0,
+        );
+        assert_eq!(
+            pg.reserve_request_for_execution(
+                &owner,
+                "group-positive",
+                "group-acct",
+                "group-key",
+                100,
+                60,
+                &positive,
+            )
+            .unwrap(),
+            Some(280),
+        );
+        assert_eq!(
+            pg.settle_request("group-positive", 50, Some("group:positive"), None)
+                .unwrap(),
+            Some(330),
+        );
+
         assert_eq!(
             pg.reserve_request(&owner, "req-2", "acct", "key", 300, 60)
                 .unwrap(),
@@ -9074,7 +9411,7 @@ mod tests {
         pg.migrate().unwrap();
         pg.client
             .batch_execute(
-                "TRUNCATE settlement_outbox,reservations,capacity_leases,leader_leases,
+                "TRUNCATE execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,
                  engine_instances,usage_events,ledger,api_keys,accounts,pool_state,subs
                  RESTART IDENTITY CASCADE",
             )

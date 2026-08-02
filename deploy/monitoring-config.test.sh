@@ -336,6 +336,11 @@ for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooli
     "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
 done
+grep -Fq 'claude_api_execution_group_double_winner_total' "$ROOT/crates/server/src/http.rs" \
+  || { printf 'engine does not export execution-group winner conflicts\n' >&2; exit 1; }
+grep -Fq 'increase(claude_api_execution_group_double_winner_total[5m]) > 0' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'execution-group winner conflicts do not page\n' >&2; exit 1; }
 grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }

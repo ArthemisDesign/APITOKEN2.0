@@ -94,12 +94,16 @@ side effect. `serve` may only perform the read-only schema verification before c
   replay, reset jitter, one-snapshot lag, plan pooling и delivery retry принадлежат `forward`/`server`.
   PostgreSQL initial CAS insert обязан явно типизировать version placeholder как `bigint`: выражение
   с untyped integer literal иначе выводит параметр как `int4` и блокирует durable FIFO до recovery.
-- Execution-group fencing migration 0021 expand-only добавляет к `reservations` nullable
-  `group_id` и one-based `attempt` с default 1, а также insert-first-wins таблицу
-  `execution_group_winner`. `group_id IS NULL` намеренно сохраняет совместимость со старым writer и
-  означает effective group `request_id`; dependent runtime обязан использовать
-  `COALESCE(group_id, request_id)`. Сама миграция не меняет reserve/settle behavior и не включает
-  router fallback.
+- **Execution-group fencing runtime (phase 6.3):** migration 0021 expand-only добавила к
+  `reservations` nullable `group_id`, positive one-based `attempt` и insert-first-wins
+  `execution_group_winner`. `group_id IS NULL` означает effective group `request_id`; все reserve
+  API сохраняют direct wrappers и group-aware варианты, а exact replay сравнивает оба поля.
+  Nonzero settlement в той же транзакции захватывает winner slot; loser получает effective actual
+  0/full refund, strict funding terminalизируется как cancel без usage/charge, исходный outbox
+  payload не переписывается. Zero/cancel winner не назначают. Winner pruning разрешён только после
+  удаления последней reservation с тем же `COALESCE(group_id,request_id)`. SQLite и PostgreSQL
+  обязаны оставаться семантически идентичны; процессный loser counter/log — только incident-tripwire,
+  correctness принадлежит PK таблицы.
 - **Multi-provider pricing Stage 3A** (`pricing`) — dormant persistence contract: immutable
   catalog/switch/account-policy versions сначала `prepare`, затем отдельные heads/binding двигаются
   только явным monotonic CAS `activate`. SQLite и PostgreSQL обязаны возвращать одинаковые typed

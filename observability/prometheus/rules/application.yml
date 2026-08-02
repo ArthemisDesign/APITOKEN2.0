@@ -108,6 +108,16 @@ groups:
           description: 'Turn evidence is pending, was quarantined/dropped, or the calibration authority cannot be read. Current API-dollar remaining is intentionally fail-closed.'
           runbook: 'docs/ops/MONITORING.md#anthropiccalibrationpersistencefailed'
 
+      - alert: ExecutionGroupDoubleWinner
+        expr: increase(claude_api_execution_group_double_winner_total[5m]) > 0
+        labels:
+          severity: critical
+          component: execution-fencing
+        annotations:
+          summary: 'A fallback execution group attempted a second nonzero settlement'
+          description: 'The durable winner fence refunded a later provider execution. Investigate the started/not-started boundary before enabling more fallback traffic.'
+          runbook: 'docs/ops/MONITORING.md#executiongroupdoublewinner'
+
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
   # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
   - name: codex-provider

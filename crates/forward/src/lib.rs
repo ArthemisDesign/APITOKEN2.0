@@ -16,6 +16,7 @@ mod billing;
 mod breaker;
 pub mod codex;
 mod config;
+mod execution;
 pub mod gemini;
 mod meter;
 mod metrics;

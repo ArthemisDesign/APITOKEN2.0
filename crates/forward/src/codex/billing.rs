@@ -47,6 +47,7 @@ pub(crate) struct CodexAdmission {
 pub(crate) struct PendingCodexAdmission {
     tenant_scope: String,
     authz: Authz,
+    execution: registry::ExecutionAttempt,
 }
 
 impl PendingCodexAdmission {
@@ -91,6 +92,7 @@ impl PendingCodexAdmission {
                         fast,
                         *paid_available_nano,
                         *track_available_nano,
+                        &self.execution,
                     )
                     .await?
                 } else {
@@ -118,6 +120,7 @@ impl PendingCodexAdmission {
                                     *mult_bp,
                                     *available_nano,
                                     Some(request_id),
+                                    &self.execution,
                                 )
                                 .await?
                             }
@@ -154,9 +157,10 @@ impl PendingCodexAdmission {
                                         };
                                         let hold = quote.snapshot().charged_hold_nano();
                                         match billing
-                                            .reserve_request_with_legacy_snapshot(
+                                            .reserve_request_with_legacy_snapshot_for_execution(
                                                 key,
                                                 quote.into_snapshot(),
+                                                self.execution.clone(),
                                             )
                                             .await
                                         {
@@ -215,6 +219,7 @@ impl PendingCodexAdmission {
                                             *mult_bp,
                                             *available_nano,
                                             Some(request_id),
+                                            &self.execution,
                                         )
                                         .await?
                                     }
@@ -245,6 +250,7 @@ impl PendingCodexAdmission {
                             *mult_bp,
                             *available_nano,
                             None,
+                            &self.execution,
                         )
                         .await?
                     };
@@ -287,6 +293,7 @@ async fn reserve_codex_strict(
     fast: bool,
     paid_available_nano: Option<i64>,
     track_available_nano: Option<i64>,
+    execution: &registry::ExecutionAttempt,
 ) -> Result<(String, i64, i64, Option<i64>), AdmissionError> {
     let provider = SnapshotProvider::OpenAi;
     let quote_ts = pool::now();
@@ -417,7 +424,7 @@ async fn reserve_codex_strict(
                 AdmissionError::Unavailable
             })?;
     match billing
-        .reserve_request_with_policy_snapshot(key, policy_snapshot)
+        .reserve_request_with_policy_snapshot_for_execution(key, policy_snapshot, execution.clone())
         .await
     {
         Ok(PolicyReserveOutcome::Inserted(_)) | Ok(PolicyReserveOutcome::Unchanged(_)) => {
@@ -479,6 +486,7 @@ async fn reserve_codex_legacy(
     mult_bp: i64,
     available_nano: i64,
     request_id: Option<String>,
+    execution: &registry::ExecutionAttempt,
 ) -> Result<(String, i64), AdmissionError> {
     let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
     let base = reserve_cost(model, estimated, requested_output_tokens, pool::now(), fast);
@@ -488,7 +496,7 @@ async fn reserve_codex_legacy(
     let hold = hold.min(available_nano.max(1));
     let request_id = request_id.unwrap_or_else(crate::upstream::fresh_request_id);
     match billing
-        .reserve_request(&request_id, account_id, key, hold)
+        .reserve_request_for_execution(&request_id, account_id, key, hold, execution.clone())
         .await
     {
         Ok(Some(_)) => Ok((request_id, hold)),
@@ -628,6 +636,13 @@ pub(crate) async fn begin_admission(
     if !app.authority_ready.load(Ordering::Acquire) {
         return Err(AdmissionError::Unavailable);
     }
+    let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
+        eprintln!(
+            "OpenAI execution identity rejected class={}",
+            error.as_str()
+        );
+        AdmissionError::Unavailable
+    })?;
     let authz = authorize(app, headers, peer).await;
     let tenant_scope = match &authz {
         Authz::Admin { affinity_scope } => affinity_scope.clone(),
@@ -648,6 +663,7 @@ pub(crate) async fn begin_admission(
     Ok(PendingCodexAdmission {
         tenant_scope,
         authz,
+        execution,
     })
 }
 
@@ -961,6 +977,7 @@ mod tests {
 
     async fn pending_bridge_admission(
         pricing_bridge: PricingBridgeConfig,
+        execution: registry::ExecutionAttempt,
     ) -> (CodexAdmission, AppState, Arc<AsyncBilling>, PathBuf) {
         const ACCOUNT: &str = "codex-bridge-account";
         const KEY: &str = "sk-pool-codex-bridge";
@@ -991,6 +1008,7 @@ mod tests {
         let app = bridge_app(Arc::clone(&billing), pricing_bridge);
         let pending = PendingCodexAdmission {
             tenant_scope: ACCOUNT.to_string(),
+            execution,
             authz: Authz::Metered {
                 account_id: ACCOUNT.to_string(),
                 key: KEY.to_string(),
@@ -1018,6 +1036,7 @@ mod tests {
     fn strict_pending() -> PendingCodexAdmission {
         PendingCodexAdmission {
             tenant_scope: "strict-codex-account".to_string(),
+            execution: registry::ExecutionAttempt::direct(),
             authz: Authz::Metered {
                 account_id: "strict-codex-account".to_string(),
                 key: "strict-codex-key".to_string(),
@@ -1690,6 +1709,7 @@ mod tests {
             false,
             Some(100_000),
             Some(100_000),
+            &registry::ExecutionAttempt::direct(),
         )
         .await;
         assert_eq!(result, Err(AdmissionError::Unavailable));
@@ -1717,7 +1737,8 @@ mod tests {
     #[tokio::test]
     async fn sampled_codex_admission_atomically_persists_snapshot_and_keeps_cancel_lifecycle() {
         let config = PricingBridgeConfig::from_parts(true, 10_000).unwrap();
-        let (admission, app, billing, path) = pending_bridge_admission(config).await;
+        let (admission, app, billing, path) =
+            pending_bridge_admission(config, registry::ExecutionAttempt::direct()).await;
         let reservation = admission.reservation.as_ref().unwrap();
         let request_id = reservation.request_id.clone();
         let hold = reservation.hold;
@@ -1779,8 +1800,11 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_codex_bridge_preserves_scalar_reserve_without_snapshot() {
-        let (admission, app, billing, path) =
-            pending_bridge_admission(PricingBridgeConfig::disabled()).await;
+        let (admission, app, billing, path) = pending_bridge_admission(
+            PricingBridgeConfig::disabled(),
+            registry::ExecutionAttempt::direct(),
+        )
+        .await;
         let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
 
         assert_eq!(
@@ -1806,6 +1830,33 @@ mod tests {
         drop(admission);
         billing.flush().await.unwrap();
         drop(connection);
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn codex_reservation_persists_router_execution_identity() {
+        const GROUP: &str = "728f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
+        let (admission, app, billing, path) = pending_bridge_admission(
+            PricingBridgeConfig::disabled(),
+            registry::ExecutionAttempt::grouped(GROUP, 8).unwrap(),
+        )
+        .await;
+        let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
+        let connection = registry::open(path.to_str().unwrap()).unwrap();
+        let identity: (Option<String>, i32) = connection
+            .query_row(
+                "SELECT group_id,attempt FROM billing_reservations WHERE request_id=?1",
+                [request_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, (Some(GROUP.into()), 8));
+
+        drop(connection);
+        drop(admission);
+        billing.flush().await.unwrap();
         drop(app);
         drop(billing);
         let _ = std::fs::remove_file(path);

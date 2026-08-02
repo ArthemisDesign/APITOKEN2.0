@@ -1,8 +1,8 @@
 # ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
 
-Статус: design, первый пакет этапа 6 (по решению 7 `docs/engine/UNIFIED_ROUTER.md` —
-«детальный дизайн routing'а — первым пакетом после зелёных этапов 3–5, на живой телеметрии
-universal lanes»). Реализация следует этому документу; отклонение требует его пересмотра.
+Статус: фазы 6.1–6.3 реализованы; serial fallback остаётся выключенным по умолчанию до
+policy/presets/GA-пакета 6.4. Реализация следует этому документу; отклонение требует его
+пересмотра.
 
 Дата фактбазы: 2026-08-01 (аудит кода на master после этапа 4.3; этап 5.1 в конвейере).
 Ссылки вида `proxy.rs:1880` — `crates/forward/src/proxy.rs`, если не указано иное.
@@ -133,6 +133,11 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   плоскости `x-apitoken-execution-group: <group_id>` + `x-apitoken-attempt: <N>` (N = 1,2,…
   по порядку обхода списка). Без fallback-списка заголовки не выставляются — плоскость
   работает как сегодня (group = request_id).
+- **Граница доверия:** Caddy удаляет оба заголовка на публичных provider-vhost'ах и на
+  `router.apitoken.sale`. Router дополнительно удаляет клиентские копии перед каждой попыткой и
+  только затем инжектирует собственную CSPRNG UUIDv4/порядковый attempt. Плоскость принимает либо
+  полностью отсутствующую пару, либо ровно по одному каноническому значению; partial, duplicate,
+  не-lowercase/non-v4 UUID и неканонический positive decimal fail closed до reserve.
 - **Registry (expand-only миграция):** `reservations` получает nullable `group_id TEXT` и
   `attempt INTEGER NOT NULL DEFAULT 1`. PostgreSQL default не может ссылаться на другую колонку,
   поэтому `group_id IS NULL` — явное совместимое представление старой/прямой попытки, а effective
@@ -146,6 +151,13 @@ MVP-контракт §3 закрывает гонку «вторая попыт
     0 (refund), фатальный structured event `execution_group_double_winner` + метрика
     (должна быть 0 всегда; >0 = баг контракта §3, инцидент).
   Refund-settle (charge == 0) winner не назначает.
+- **Strict-policy loser:** исходный outbox payload (`actual`, usage, disposition) остаётся
+  неизменным для аудита exact replay, но money-обработка выполняется как внутренний `cancel` с
+  effective actual 0 и без usage/charge rows. Reservation и funding allocations фиксируют нулевой
+  charge и полный release. Exact replay выводит effective actual из durable winner row.
+- **Retention:** winner удаляется только после bounded terminal-prune последней reservation с тем
+  же effective group. Пока существует хотя бы одна reservation/replay-свидетельство группы,
+  winner сохраняется, даже если reservation победителя уже стала eligible для удаления.
 - **Инвариант exactly-once не ослабляется:** существующий `UNIQUE ledger(kind, request_id)`
   остаётся per-attempt; winner-правило добавляет «ровно один nonzero winner на группу».
 - Миграции — expand-only, двумя коммитами по `AGENTS.md`: сначала совместимая со старым writer
@@ -183,7 +195,9 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   URL/query, auth headers, credentials и request/response bodies запрещены.
 - Счётчики фазы 6.4: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
-  `claude_api_execution_group_double_winner_total` (always-zero алерт).
+  а фаза 6.3 уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
+  `ExecutionGroupDoubleWinner` срабатывает на любом росте за 5 минут; runbook —
+  `docs/ops/MONITORING.md#execution-group-double-winner`.
 - Групповые лейблы на существующих денежных рядах НЕ добавляются (кардинальность); после
   фазы 6.3 group_id допустим только в structured-логах попыток, не в metric labels.
 - Детекторы регрессий: `apitoken_balance_divergence_nano` (существующий),
@@ -194,8 +208,9 @@ MVP-контракт §3 закрывает гонку «вторая попыт
   заголовка) до и после включения.
 - Верификация 6.2: TCP integration router с двумя mock-плоскостями доказывает serial
   not_started/ConnectionRefused retry и fail-closed ambiguous outcomes; per-plane тесты 6.1
-  доказывают refund сигнальной попытки. Фаза 6.3 добавит fault injection winner-conflict и
-  проверку, что реальный ledger содержит ровно один charge на group.
+  доказывают refund сигнальной попытки. Фаза 6.3 покрыта SQLite и real-PostgreSQL matrix:
+  reverse settlement order, zero-settlement, exact loser replay, strict funding refund и ровно
+  один charge на group; forward-тесты отдельно проверяют durable group/attempt для всех плоскостей.
 
 ## 7. Фазировка (каждая фаза — отдельный пакет через merge-конвейер)
 
@@ -210,8 +225,9 @@ MVP-контракт §3 закрывает гонку «вторая попыт
    безопасное логирование attempts, feature-flag off-by-default; TCP mock-тесты двух
    плоскостей покрывают exact signal, 429, unsigned 5xx, 400/402, ConnectionRefused,
    timeout, malformed/duplicate/unknown models и снятие внутреннего header.
-3. **6.3 — group identity в registry/billing:** expand-only миграции, winner-правило в
-   settle, fault-injection тесты, always-zero алерт.
+3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
+   schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
+   insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
 4. **6.4 — policies/presets + telemetry GA:** фильтрация цепочек policy, presets в каталоге,
    включение флага по расписанию, нагрузочный прогон, финализация документации.
 
