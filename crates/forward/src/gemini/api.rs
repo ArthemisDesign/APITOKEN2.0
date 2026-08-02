@@ -2264,7 +2264,10 @@ async fn api_inner(
                 profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
                 continue;
             }
-            Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
+            Err(
+                SendError::Token(TokenError::Temporary | TokenError::Blocked)
+                | SendError::Transport,
+            ) => {
                 Metrics::inc(&app.metrics.upstream_5xx);
                 Metrics::inc(&app.metrics.gemini_transport_failures);
                 excluded.insert(profile.id().to_string());
@@ -2303,7 +2306,10 @@ async fn api_inner(
                     profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
                     continue;
                 }
-                Err(SendError::Token(TokenError::Temporary) | SendError::Transport) => {
+                Err(
+                    SendError::Token(TokenError::Temporary | TokenError::Blocked)
+                    | SendError::Transport,
+                ) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
                     Metrics::inc(&app.metrics.gemini_transport_failures);
                     excluded.insert(profile.id().to_string());

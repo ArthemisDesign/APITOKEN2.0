@@ -137,7 +137,12 @@ pub struct GeminiModelStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TokenError {
+    /// Google отозвал refresh-токен (`400 invalid_grant`) — credential действительно мёртв.
     Invalid,
+    /// Запрос отклонён окружением (401/403): репутация IP прокси, блок клиента. Сам grant цел,
+    /// поэтому профиль нельзя брендировать auth-ошибкой — иначе живая оплаченная подписка уходит
+    /// из ротации навсегда по причине, которой в токене нет.
+    Blocked,
     Temporary,
 }
 
@@ -380,11 +385,38 @@ impl GeminiProfile {
             .map_err(|_| TokenError::Temporary)?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
-            return Err(if matches!(status, 400 | 401 | 403) {
-                TokenError::Invalid
-            } else {
-                TokenError::Temporary
-            });
+            // Ровно один статус означает мёртвый credential: `400 invalid_grant`. Остальное —
+            // окружение. Раньше 400/401/403 схлопывались в «Invalid», и Google, отклонивший
+            // refresh по репутации IP прокси, выглядел неотличимо от отозванного токена.
+            let body = response
+                .bytes_limited_zeroizing(64 * 1024)
+                .await
+                .unwrap_or_default();
+            let google_error = serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
+            let verdict = classify_refresh_failure(status, google_error.as_deref());
+            let revoked = matches!(verdict, TokenError::Invalid);
+            // Только класс ошибки Google — ни токена, ни прокси, ни описания.
+            eprintln!(
+                "[gemini] profile={} token refresh rejected: http={} error={} verdict={}",
+                self.id(),
+                status,
+                google_error.as_deref().unwrap_or("-"),
+                if revoked {
+                    "revoked"
+                } else if matches!(verdict, TokenError::Blocked) {
+                    "blocked"
+                } else {
+                    "temporary"
+                }
+            );
+            return Err(verdict);
         }
         let bytes = response
             .bytes_limited_zeroizing(1024 * 1024)
@@ -832,6 +864,7 @@ impl GeminiProfile {
         let mut token = match self.access_token(false).await {
             Ok(token) => token,
             Err(TokenError::Invalid) => return ProbeResult::Invalid,
+            Err(TokenError::Blocked) => return ProbeResult::Blocked,
             Err(TokenError::Temporary) => return ProbeResult::Temporary,
         };
         for attempt in 0..=1 {
@@ -875,6 +908,7 @@ impl GeminiProfile {
                     token = match self.access_token(true).await {
                         Ok(token) => token,
                         Err(TokenError::Invalid) => return ProbeResult::Invalid,
+                        Err(TokenError::Blocked) => return ProbeResult::Blocked,
                         Err(TokenError::Temporary) => return ProbeResult::Temporary,
                     };
                 }
@@ -1351,11 +1385,27 @@ fn parse_rfc3339_seconds(value: &str) -> Option<i64> {
     )
 }
 
+/// Единственный статус, означающий мёртвый credential, — `400 invalid_grant`.
+///
+/// 401/403 приходят от окружения: Google отклоняет запрос по репутации IP прокси или блокирует
+/// клиента, а сам grant при этом цел. Раньше все три схлопывались в `Invalid`, и живая оплаченная
+/// подписка уходила из ротации навсегда с красным «ошибка auth» по причине, которой нет в токене.
+fn classify_refresh_failure(status: u16, google_error: Option<&str>) -> TokenError {
+    match (status, google_error) {
+        (400, Some("invalid_grant")) => TokenError::Invalid,
+        (401 | 403, _) => TokenError::Blocked,
+        _ => TokenError::Temporary,
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ProbeResult {
     Healthy,
     RateLimited,
+    /// Google отозвал grant — профиль действительно нельзя использовать.
     Invalid,
+    /// Запрос отклонён окружением (401/403): grant цел, путь временно недоступен.
+    Blocked,
     Temporary,
 }
 
@@ -2025,6 +2075,13 @@ impl GeminiGateway {
                 ProbeResult::Invalid => {
                     profile.mark_auth_failed(now + self.cfg.auth_quarantine_secs);
                 }
+                // Окружение отклонило запрос, а не Google — токен. Профиль остаётся
+                // аутентифицированным (панель не врёт «ошибка auth»), но остывает надолго,
+                // чтобы не долбить заблокированный путь.
+                ProbeResult::Blocked => {
+                    profile.cool_until(now + self.cfg.auth_quarantine_secs);
+                    healthy += 1;
+                }
                 ProbeResult::Temporary => {
                     profile.cool_until(now + self.cfg.transport_cool_secs);
                 }
@@ -2064,6 +2121,48 @@ mod tests {
     use gemini_credential::{encode_envelope, CredentialKeyring};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+
+    /// Мёртвым credential объявляет только Google, и только словом `invalid_grant`. Всё остальное —
+    /// окружение: отклонение по репутации IP прокси не имеет права выводить живую оплаченную
+    /// подписку из ротации, а раньше 400/401/403 схлопывались в один вердикт.
+    #[test]
+    fn only_an_invalid_grant_marks_a_gemini_credential_dead() {
+        assert!(matches!(
+            classify_refresh_failure(400, Some("invalid_grant")),
+            TokenError::Invalid
+        ));
+        for status in [401, 403] {
+            assert!(
+                matches!(classify_refresh_failure(status, None), TokenError::Blocked),
+                "{status}"
+            );
+            assert!(
+                matches!(
+                    classify_refresh_failure(status, Some("access_denied")),
+                    TokenError::Blocked
+                ),
+                "{status}"
+            );
+        }
+        // 400 без `invalid_grant` — протокольная неисправность, а не отзыв.
+        assert!(matches!(
+            classify_refresh_failure(400, Some("invalid_request")),
+            TokenError::Temporary
+        ));
+        assert!(matches!(
+            classify_refresh_failure(400, None),
+            TokenError::Temporary
+        ));
+        for status in [429, 500, 502, 503] {
+            assert!(
+                matches!(
+                    classify_refresh_failure(status, None),
+                    TokenError::Temporary
+                ),
+                "{status}"
+            );
+        }
+    }
 
     fn fixture() -> (PathBuf, CredentialKeyring) {
         let mut random = [0u8; 8];

@@ -314,7 +314,13 @@ pub fn begin(
         .append_pair("redirect_uri", ANTIGRAVITY_REDIRECT_URI)
         .append_pair("scope", SCOPES)
         .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
+        // `select_account` обязателен рядом с `consent`. Один `consent` показывает согласие для
+        // УЖЕ залогиненного аккаунта, без экрана выбора: продавец, который делает позиции batch
+        // подряд в одном профиле антидетект-браузера, повторно подтверждает предыдущий аккаунт,
+        // сам того не видя. Google при этом выдаёт новый refresh-токен и аннулирует прежний —
+        // только что опубликованная подписка умирает, а наша проверка на дубликат срабатывает уже
+        // после согласия и спасти токен не может.
+        .append_pair("prompt", "select_account consent")
         .append_pair("state", &state)
         .append_pair("code_challenge_method", "S256")
         .append_pair("code_challenge", &challenge);
@@ -562,7 +568,9 @@ async fn finish_oauth(
                 crate::bot::HandoffKind::Gemini,
             );
             if current {
-                let seller_outcome = if profile.migrated {
+                let seller_outcome = if profile.reauthorized {
+                    "переподключена"
+                } else if profile.migrated {
                     "переведена на Antigravity"
                 } else {
                     "подключена"
@@ -579,7 +587,9 @@ async fn finish_oauth(
                     )
                     .await;
                 for admin in &state.config.admins_id {
-                    let admin_outcome = if profile.migrated {
+                    let admin_outcome = if profile.reauthorized {
+                        "переавторизован; прежний токен был аннулирован Google, конверт заменён атомарно"
+                    } else if profile.migrated {
                         "переведён на Antigravity; профиль обновлён атомарно"
                     } else {
                         "получен; аккаунт добавлен в пул"
@@ -825,7 +835,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
-            Self::MigrationProxyMismatch => "❌ Для перехода на Antigravity используй тот же прокси, который уже закреплён за этой Google-подпиской.",
+            Self::MigrationProxyMismatch => "❌ Для этой Google-подписки уже закреплён другой прокси. Переподключать её нужно через тот же прокси — egress аккаунта менять нельзя.",
             Self::Storage => "⚠️ Подписка проверена, но добавить аккаунт не получилось. Администратор уведомлён; повторять действия пока не нужно.",
         }
     }
@@ -908,6 +918,8 @@ struct PublishedProfile {
     plan: String,
     has_proxy: bool,
     migrated: bool,
+    /// Тот же subject переавторизован свежим согласием: конверт заменён, профиль сохранён.
+    reauthorized: bool,
 }
 
 /// One serialized OAuth transaction with evidence-based CONNECT recovery. A new helper is spawned
@@ -1194,6 +1206,10 @@ async fn complete(
         .await
         .map_err(|_| Failure::Storage)?;
     match &published {
+        Ok(profile) if profile.reauthorized => eprintln!(
+            "[gemini-oauth] chat={} reauthorized profile {} in place (plan {}); the previous refresh token was invalidated by Google",
+            session.chat_id, profile.id, plan_label(&profile.plan)
+        ),
         Ok(profile) if profile.migrated => eprintln!(
             "[gemini-oauth] chat={} atomically migrated profile {} to Antigravity (plan {})",
             session.chat_id, profile.id, plan_label(&profile.plan)
@@ -1574,9 +1590,15 @@ fn publish(
     if let Some((profile_id, credential_path, existing, existing_proxy)) = migration {
         let existing_kind = existing.oauth_kind().map_err(|_| Failure::Storage)?;
         let candidate_kind = credential.oauth_kind().map_err(|_| Failure::Storage)?;
-        if existing_kind != OAuthKind::LegacyGeminiCli || candidate_kind != OAuthKind::Antigravity {
+        // Обратный переход на legacy-клиент запрещён: identity подписки не откатываем.
+        if candidate_kind != OAuthKind::Antigravity {
             return Err(Failure::Duplicate);
         }
+        // Тот же Google subject с уже опубликованным Antigravity-профилем — это НЕ дубликат, а
+        // переавторизация. Повторное согласие Google выдаёт новый refresh-токен и аннулирует
+        // прежний, поэтому отказ здесь оставлял бы в roster заведомо мёртвый credential: quota
+        // identity одна и та же, меняется только материал. Принимаем свежий токен на место старого.
+        let reauthorized = existing_kind == OAuthKind::Antigravity;
         if candidate_proxy != existing_proxy {
             return Err(Failure::MigrationProxyMismatch);
         }
@@ -1609,7 +1631,8 @@ fn publish(
             id: profile_id,
             plan: credential.plan.clone(),
             has_proxy: !credential.proxy.is_empty(),
-            migrated: true,
+            migrated: !reauthorized,
+            reauthorized,
         });
     }
     if proxies.contains(&candidate_proxy) {
@@ -1646,6 +1669,7 @@ fn publish(
         plan: credential.plan.clone(),
         has_proxy: !credential.proxy.is_empty(),
         migrated: false,
+        reauthorized: false,
     })
 }
 
@@ -2125,10 +2149,13 @@ mod tests {
                 .unwrap();
         assert!(!sealed.contains("owner@example.com"));
         assert!(!sealed.contains("refresh-token"));
-        assert!(matches!(
-            publish(&root, &ring, "current", credential("subject-1")),
-            Err(Failure::Duplicate)
-        ));
+        // Тот же subject через тот же прокси — переавторизация, а не дубликат: свежее согласие
+        // Google уже аннулировало прежний refresh-токен, поэтому отказ оставил бы в roster
+        // заведомо мёртвый credential.
+        let reauthorized = publish(&root, &ring, "current", credential("subject-1")).unwrap();
+        assert_eq!(reauthorized.id, first.id);
+        assert!(reauthorized.reauthorized);
+        assert!(!reauthorized.migrated);
         assert!(matches!(
             publish(&root, &ring, "current", credential("subject-2")),
             Err(Failure::DuplicateProxy)
@@ -2173,7 +2200,10 @@ mod tests {
     }
 
     #[test]
-    fn publication_rejects_existing_antigravity_profile_without_mutation() {
+    /// Повторное согласие того же аккаунта заменяет материал на месте: id профиля, roster и
+    /// quota identity сохраняются, меняется только конверт. Отказ здесь оставлял бы подписку
+    /// мёртвой — Google аннулирует прежний refresh-токен ещё на экране согласия.
+    fn publication_reauthorizes_an_existing_antigravity_profile_in_place() {
         let (root, ring) = fixture();
         let published =
             publish(&root, &ring, "current", credential("antigravity-duplicate")).unwrap();
@@ -2187,12 +2217,19 @@ mod tests {
         let mut duplicate = credential("antigravity-duplicate");
         duplicate.access_token = "replacement-access-token".into();
         duplicate.refresh_token = "replacement-refresh-token".into();
-        assert!(matches!(
-            publish(&root, &ring, "current", duplicate),
-            Err(Failure::Duplicate)
-        ));
+        let reauthorized = publish(&root, &ring, "current", duplicate).unwrap();
+        assert_eq!(reauthorized.id, published.id);
+        assert!(reauthorized.reauthorized);
+        // Roster не меняется: профиль тот же, подменён только запечатанный материал.
         assert_eq!(fs::read(&roster_path).unwrap(), roster_before);
-        assert_eq!(fs::read(&credential_path).unwrap(), credential_before);
+        assert_ne!(fs::read(&credential_path).unwrap(), credential_before);
+        let opened = ring
+            .open(
+                &reauthorized.id,
+                &decode_envelope(&fs::read(&credential_path).unwrap()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(opened.refresh_token, "replacement-refresh-token");
         let _ = fs::remove_dir_all(root);
     }
 

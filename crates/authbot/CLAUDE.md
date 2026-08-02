@@ -120,11 +120,16 @@ seller lock освобождается, response становится `cancelled
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
    старых callback и фактической проверки плана после OAuth.
-5. Google subject — quota identity: дубликаты запрещены даже при другом project/file. Единственное
-   исключение — односторонний переход уже опубликованного `LegacyGeminiCli` credential на
-   `Antigravity` для того же subject и того же канонического proxy. Antigravity→Antigravity,
-   обратный переход и смена proxy fail-closed. Email, subject, project, tier, OAuth secret/token и
-   authenticated proxy живут только внутри AEAD.
+5. Google subject — quota identity: два РАЗНЫХ subject не могут делить профиль, а один subject
+   всегда занимает ровно один профиль. Поэтому повторная авторизация того же subject — не дубликат,
+   а **переавторизация**: конверт заменяется на месте, id профиля и roster не меняются. Отказ здесь
+   был бы разрушительным — Google аннулирует прежний refresh-token уже на экране согласия, то есть
+   ДО нашей проверки, и отвергнутая публикация оставляла бы в roster заведомо мёртвый credential.
+   Смена proxy и обратный переход на legacy-клиент по-прежнему fail-closed. Ссылка авторизации
+   всегда несёт `prompt=select_account consent`: одного `consent` мало — он подтверждает уже
+   залогиненный аккаунт без экрана выбора, и продавец, делающий позиции batch подряд в одном
+   профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
+   project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только

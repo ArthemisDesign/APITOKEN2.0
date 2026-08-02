@@ -625,6 +625,14 @@ Provider quota/cooling по-прежнему честно дают native `429 +
    Tokens/full email/domain/project/tier/proxy дешифруются только в память и не попадают в
    log/metric/response; protected `/gemini-subs` получает только заранее выведенный bounded hint из
    четырёх символов local-part.
+1a. **Мёртвым credential объявляет только Google, и только словом `invalid_grant`.** Отказ refresh
+   классифицируется по телу ответа, а не по коду: `400 invalid_grant` → `TokenError::Invalid`
+   (профиль снимается с ротации), `401`/`403` → `TokenError::Blocked` (grant цел, отклонило
+   окружение — репутация IP прокси или блок клиента; профиль остаётся authenticated и лишь
+   остывает на `auth_quarantine_secs`), остальное → `Temporary`. Раньше все три схлопывались в
+   `Invalid`, и живая оплаченная подписка навсегда уходила из ёмкости с красным «ошибка auth» по
+   причине, которой в токене нет. Отказ логируется bounded-строкой `profile/http/error/verdict` —
+   без токена, прокси и текста Google.
 2. `GeminiGateway` обслуживается только startup-fixed `ProviderMode::Gemini`. Native allowlist:
    models get/list, generateContent, streamGenerateContent, countTokens. Клиентский `x-goog-api-key`
    (как и x-api-key/Bearer) авторизует наш ключ, но никогда не уходит Google; query `key`/`api_key`,
