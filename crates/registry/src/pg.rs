@@ -167,9 +167,11 @@ const MIGRATION_0022: &str =
 const MIGRATION_0023: &str = include_str!("../migrations_pg/0023_pricing_release_funding_v2.sql");
 const MIGRATION_0024: &str =
     include_str!("../migrations_pg/0024_pre_cutover_funding_snapshots_v2.sql");
+const MIGRATION_0025: &str =
+    include_str!("../migrations_pg/0025_pricing_release_runtime_epoch_fence.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 24;
+pub const CURRENT_SCHEMA_VERSION: i64 = 25;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -197,6 +199,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (22, MIGRATION_0022),
     (23, MIGRATION_0023),
     (24, MIGRATION_0024),
+    (25, MIGRATION_0025),
 ];
 
 #[cfg(test)]
@@ -7456,7 +7459,8 @@ mod tests {
         pg.migrate().unwrap();
         pg.client
             .batch_execute(
-                "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
                  provider_switch_head,provider_switch_entries,provider_switch_versions,
                  pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
                  execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
@@ -8385,6 +8389,29 @@ mod tests {
     }
 
     #[test]
+    fn pricing_release_runtime_epoch_fence_is_additive_and_head_gated() {
+        let normalized = MIGRATION_0025
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(normalized.contains(
+            "ADD COLUMN IF NOT EXISTS pricing_release_claim_epoch bigint"
+        ));
+        assert!(!normalized.contains("pricing_release_claim_epoch bigint NOT NULL"));
+        assert!(normalized.contains("engine_instances_release_v2_epoch_shape"));
+        assert!(normalized.contains("engine_instances_release_v2_epoch_fence"));
+        assert!(normalized.contains(
+            "SELECT 1 FROM pricing_release_head_v2 WHERE singleton = 1"
+        ));
+        assert!(normalized.contains(
+            "NEW.pricing_release_claim_epoch IS DISTINCT FROM NEW.owner_epoch"
+        ));
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+    }
+
+    #[test]
     fn anthropic_initial_calibration_version_is_bound_as_bigint() {
         assert!(
             ANTHROPIC_CALIBRATION_INSERT_SQL.contains("($22::bigint)+1"),
@@ -8422,7 +8449,9 @@ mod tests {
         pg.client.batch_execute("BEGIN").unwrap();
         pg.client
             .batch_execute(
-                "INSERT INTO accounts(
+                "TRUNCATE engine_instances RESTART IDENTITY CASCADE;
+
+                 INSERT INTO accounts(
                      id,handle,balance_nano,spent_nano,reserved_nano,mult_bp,status,created_ts,created
                  ) VALUES
                      ('v2-matrix-b2c','v2-matrix-b2c',900,0,100,5000,'active',100,'matrix'),
@@ -8500,6 +8529,10 @@ mod tests {
                      'evidence-v2',101,'release-target-v2',102,'release-recovery-v2',
                      'inventory-v2','funding-v2','shadow-v2','runtime-v2',0,0,true,100,1000
                  );
+
+                 INSERT INTO engine_instances(
+                     instance_id,owner_epoch,lease_until,started_ts,updated_ts
+                 ) VALUES('v2-epoch-fence',1,1000,100,100);
                  ",
             )
             .unwrap();
@@ -8581,6 +8614,75 @@ mod tests {
                      'snapshot-service-v2'
                  );
                  SET CONSTRAINTS ALL IMMEDIATE;",
+            )
+            .unwrap();
+
+        pg.client.batch_execute("SAVEPOINT stale_runtime_claim").unwrap();
+        let stale_runtime_claim = pg
+            .client
+            .batch_execute(
+                "UPDATE engine_instances
+                    SET owner_epoch=2,lease_until=1100,started_ts=500,updated_ts=500
+                  WHERE instance_id='v2-epoch-fence';",
+            )
+            .expect_err("an active release accepted a runtime without an epoch-bound v2 claim");
+        assert!(stale_runtime_claim.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("owner-epoch-bound runtime claim")
+        }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT stale_runtime_claim;
+                 RELEASE SAVEPOINT stale_runtime_claim;",
+            )
+            .unwrap();
+
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE engine_instances
+                        SET owner_epoch=2,lease_until=1100,started_ts=500,updated_ts=500,
+                            pricing_release_schema_version=2,funding_schema_version=2,
+                            pricing_release_runtime_digest='runtime-v2-epoch-fence',
+                            pricing_release_claim_epoch=2
+                      WHERE instance_id='v2-epoch-fence'",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            pg.client
+                .execute(
+                    "UPDATE engine_instances SET lease_until=1200,updated_ts=501
+                      WHERE instance_id='v2-epoch-fence' AND owner_epoch=2",
+                    &[],
+                )
+                .unwrap(),
+            1
+        );
+
+        pg.client
+            .batch_execute("SAVEPOINT inherited_runtime_claim")
+            .unwrap();
+        let inherited_runtime_claim = pg
+            .client
+            .batch_execute(
+                "UPDATE engine_instances
+                    SET owner_epoch=3,lease_until=1300,started_ts=502,updated_ts=502
+                  WHERE instance_id='v2-epoch-fence';",
+            )
+            .expect_err("a new owner epoch inherited the previous runtime's v2 claim");
+        assert!(inherited_runtime_claim.as_db_error().is_some_and(|error| {
+            error
+                .message()
+                .contains("owner-epoch-bound runtime claim")
+        }));
+        pg.client
+            .batch_execute(
+                "ROLLBACK TO SAVEPOINT inherited_runtime_claim;
+                 RELEASE SAVEPOINT inherited_runtime_claim;",
             )
             .unwrap();
 

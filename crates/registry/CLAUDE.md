@@ -266,6 +266,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   включая обязательный zero paid anchor. Apply атомарно создаёт generation/lots/head и не двигает
   pricing release. Real-PG gate:
   `funding_normalization_v2::tests::postgres_online_funding_normalization_v2_matrix`.
+- **Stage 9 runtime-claim fence:** migration `0025` expand-only добавляет nullable
+  `engine_instances.pricing_release_claim_epoch`. Пока global release head отсутствует, старый
+  runtime с nullable v2 claim остаётся совместимым. После первого head любой insert, heartbeat или
+  owner takeover обязан нести release/funding schema v2, непустой runtime digest и claim epoch,
+  равный текущему owner epoch. Это не даёт старому binary унаследовать v2 identity предыдущего
+  процесса через `ON CONFLICT`. Dependent claim writer доставляется только после GREEN migration
+  SHA.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact full-account coverage (`active` + `disabled`) и готовые funding

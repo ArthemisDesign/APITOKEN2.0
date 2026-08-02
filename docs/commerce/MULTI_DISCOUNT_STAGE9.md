@@ -5,7 +5,8 @@ live mutation — compare-and-set одного global active pricing release hea
 
 ## Preconditions
 
-- deployed runtime на обоих blue-green слотах поддерживает target и recovery release schema;
+- deployed runtime на обоих blue-green слотах поддерживает target и recovery release schema, а
+  каждый live claim привязан к своему exact owner epoch;
 - старый несовместимый binary исключён из rollback floor;
 - Stage 5 target/recovery manifests materialized и имеют exact ACK;
 - Stage 6 завершён для 100% inventory;
@@ -36,8 +37,9 @@ Apply не обновляет account bindings, balances, reservations или le
 commit новый reserve любого аккаунта читает target release. Reservation, созданная до commit,
 settle'ится по сохранённому прежнему snapshot.
 
-Exact replay возвращает `unchanged`. Stale evidence, inventory drift, неподдержанный runtime,
-неполная funding generation или CAS mismatch отклоняются до mutation. Отказ не требует выключать
+Exact replay возвращает `unchanged`. Stale evidence, inventory drift, неподдержанный runtime или
+унаследованный от чужого owner epoch claim, неполная funding generation либо CAS mismatch
+отклоняются до mutation. Отказ не требует выключать
 traffic: старый release продолжает обслуживаться.
 
 ## Recovery

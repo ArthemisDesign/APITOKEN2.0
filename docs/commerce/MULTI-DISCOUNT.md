@@ -206,6 +206,10 @@ Engine хранит prepared releases и один active release head. Подг�
   добавляет независимый от prepared release immutable funding snapshot для запросов переходного
   периода. Он разрывает цикл «release assignment требует funding generation, а normalized writer
   требует allocation snapshot» и не создаёт release head, policy либо новый pricing path;
+- engine migration `crates/registry/migrations_pg/0025_pricing_release_runtime_epoch_fence.sql`
+  добавляет nullable owner-epoch identity для release-v2 claim. До первого head старые binaries
+  остаются совместимыми; после head каждый claim/heartbeat обязан подтвердить v2 runtime и
+  привязать это подтверждение к свежему owner epoch, а не унаследовать его от предыдущего процесса;
 - commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
   inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
   receipt authority;
