@@ -7430,6 +7430,9 @@ mod tests {
             PolicyEnforcement, PricingMutation, ReconciliationState,
         };
 
+        const TARGET_GENERATION: i64 = 80_001;
+        const RECOVERY_GENERATION: i64 = 80_002;
+
         let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
             eprintln!(
                 "skipping PostgreSQL Stage 8 evidence contract: \
@@ -7644,7 +7647,7 @@ mod tests {
             assignment_digest: "stage8-v2-assignment-digest".into(),
         };
         let release_for_funding = crate::pricing::PricingReleaseV2 {
-            generation: 101,
+            generation: TARGET_GENERATION,
             release_kind: crate::pricing::PricingReleaseKindV2::Target,
             schema_version: 2,
             capability_generation: 1,
@@ -7696,14 +7699,14 @@ mod tests {
             .unwrap();
         for (generation, release_kind, policy_manifest, assignment_manifest, content_digest) in [
             (
-                101_i64,
+                TARGET_GENERATION,
                 "target",
                 "stage8-v2-target-policies",
                 "stage8-v2-target-assignments",
                 "stage8-v2-target-release",
             ),
             (
-                102_i64,
+                RECOVERY_GENERATION,
                 "recovery",
                 "stage8-v2-recovery-policies",
                 "stage8-v2-recovery-assignments",
@@ -7742,12 +7745,17 @@ mod tests {
             ).unwrap();
         }
         pg.client
-            .batch_execute(
+            .execute(
                 "INSERT INTO pricing_release_recovery_links( \
                    target_generation,target_digest,recovery_generation,recovery_digest,link_digest,created_ts \
-                 ) VALUES(101,'stage8-v2-target-release',102,'stage8-v2-recovery-release', \
-                          'stage8-v2-recovery-link',100); \
-                 UPDATE engine_instances SET pricing_release_schema_version=2, \
+                 ) VALUES($1,'stage8-v2-target-release',$2,'stage8-v2-recovery-release', \
+                          'stage8-v2-recovery-link',100)",
+                &[&TARGET_GENERATION, &RECOVERY_GENERATION],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute(
+                "UPDATE engine_instances SET pricing_release_schema_version=2, \
                    funding_schema_version=2,pricing_release_runtime_digest='stage8-v2-runtime' \
                  WHERE instance_id='stage8-engine';",
             )
@@ -7767,8 +7775,8 @@ mod tests {
             (row.get(0), row.get(1), row.get(2), row.get(3))
         };
         let request = crate::stage8::Stage8EngineEvidenceRequest {
-            target_generation: 101,
-            recovery_generation: 102,
+            target_generation: TARGET_GENERATION,
+            recovery_generation: RECOVERY_GENERATION,
             window_start_ts,
             window_end_ts,
             min_samples_per_provider: 1,
@@ -7785,8 +7793,8 @@ mod tests {
         assert_eq!(report.counts.snapshots_by_provider.get("google"), Some(&1));
         assert_eq!(report.financial_samples.len(), 3);
         assert!(report.evidence_digest.starts_with("sha256:v2:"));
-        assert_eq!(report.release.target_generation, 101);
-        assert_eq!(report.release.recovery_generation, 102);
+        assert_eq!(report.release.target_generation, TARGET_GENERATION);
+        assert_eq!(report.release.recovery_generation, RECOVERY_GENERATION);
         assert_eq!(report.engine_inventory_digest, inventory_digest);
         assert_eq!(report.funding_digest, funding_manifest_digest);
         assert_eq!(report.legacy_inflight_count, 0);
