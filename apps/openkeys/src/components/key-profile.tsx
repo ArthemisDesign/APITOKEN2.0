@@ -685,7 +685,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                     <button
                       type="button"
                       key={`${seg.model.provider ?? "legacy"}:${seg.model.model}:${index}`}
-                      aria-label={`${modelLabel(seg.model.model)} · ${fmtNanoUsd(seg.model.official_nano)}`}
+                      aria-label={`${modelLabel(seg.model.model, seg.model.provider)} · ${fmtNanoUsd(seg.model.official_nano)}`}
                       className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`}
                       style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }}
                       onMouseEnter={() => setMdistHover(index)}
@@ -706,7 +706,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                         className="chart-tip-dot"
                         style={{ background: modelColor.get(mdistPlaced[mdistHover]!.model.model) }}
                       />
-                      <span className="chart-tip-nm">{modelLabel(mdistPlaced[mdistHover]!.model.model)}</span>
+                      <span className="chart-tip-nm">{modelLabel(mdistPlaced[mdistHover]!.model.model, mdistPlaced[mdistHover]!.model.provider)}</span>
                       <b>{fmtNanoUsd(mdistPlaced[mdistHover]!.model.official_nano)}</b>
                     </div>
                     <div className="chart-tip-total">
@@ -744,7 +744,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                               className="tkmdl-dot"
                               style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }}
                             />
-                            {modelLabel(model.model)}
+                            {modelLabel(model.model, model.provider)}
                           </span>
                         </td>
                         <td><span className="chip">{{ openai: "GPT", gemini: "Gemini", claude: "Claude" }[usageProviderOf(model.model, model.provider)]}</span></td>

@@ -97,7 +97,7 @@ export function boundedPercent(numerator: bigint, denominator: bigint): number {
   return boundedRatio(numerator, denominator) * 100;
 }
 
-export function modelLabel(id: string): string {
+export function modelLabel(id: string, provider?: string): string {
   const gpt = id.match(/^gpt-(.+)$/i);
   if (gpt) {
     const parts = gpt[1]!.split("-");
@@ -105,7 +105,21 @@ export function modelLabel(id: string): string {
     const suffix = parts.map((part) => part ? part[0]!.toUpperCase() + part.slice(1) : "").join(" ");
     return `GPT-${version}${suffix ? ` ${suffix}` : ""}`;
   }
+
+  const isClaude = /^claude-/i.test(id) || (!/^(?:gemini)-/i.test(id) && provider === "anthropic");
   const base = id.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
+  if (!isClaude) {
+    const parts: string[] = [];
+    for (const part of base.split("-").filter(Boolean)) {
+      if (/^\d+$/.test(part) && /^\d+(?:\.\d+)*$/.test(parts.at(-1) ?? "")) {
+        parts[parts.length - 1] = `${parts.at(-1)}.${part}`;
+      } else {
+        parts.push(/^\d+(?:\.\d+)*$/.test(part) ? part : part[0]!.toUpperCase() + part.slice(1));
+      }
+    }
+    return parts.join(" ");
+  }
+
   const words: string[] = [];
   const nums: string[] = [];
   for (const part of base.split("-")) {

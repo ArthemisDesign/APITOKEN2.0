@@ -34,6 +34,10 @@ Control API из `docs/engine/CONTROL_API.md` — как и весь остал�
 выдачи или снятия. Для истории остаются `engine_account_id`, `engine_key_id`, маска и `view_token` —
 случайный 128-битный идентификатор публичной страницы расхода.
 
+Страница расхода форматирует название модели по canonical family и engine `provider`: только
+Anthropic получает префикс `Claude`, GPT остаётся GPT, Gemini — Gemini, а неизвестные будущие
+семейства показываются нейтрально. Fallback не имеет права приписывать `Claude` чужому провайдеру.
+
 Новый выпуск всегда имеет `pricing_contract=official_1_to_1`, `mult_bp=10000`: ключ с номиналом
 $50 получает ровно $50 engine balance, а $1 полной официальной стоимости модели списывает $1.
 До общего Stage 9 cutover historical `pricing_contract=legacy` остаётся migration source. Target
