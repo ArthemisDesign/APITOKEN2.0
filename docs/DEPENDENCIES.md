@@ -25,8 +25,11 @@
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
-(catalog/switches/policy). Целевое producer-first расширение добавляет immutable pricing release и
-один global prepare→activate CAS; до зелёного producer SHA потребители его не предполагают.
+(catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read под `/admin/pricing/v2/*`.
+Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory и
+nullable head; activation mutation намеренно пока отсутствует. `packages/contracts` и
+`packages/engine-client` подключаются отдельным consumer-коммитом только после зелёного exact
+producer SHA.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

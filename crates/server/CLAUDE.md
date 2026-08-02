@@ -174,6 +174,9 @@
   full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
   assignment matrix, canary accounts, maintenance window и zero-active-reservations gate не
   используются; authoritative inventories обязаны покрыть все accounts exact.
+- `/admin/pricing/v2/*` пока является producer-first prepare/read surface: immutable policy,
+  release, recovery link, cursor inventory и nullable head. Activation нельзя добавлять до
+  реализации Stage 8 freshness/runtime-floor/provisioning-race проверок и одного global CAS.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер

@@ -225,6 +225,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   ссылаться на snapshot для v2 rows. Service policy не имеет product catalog/switch/rules,
   `meter_only` требует нулевой customer charge. Новый runtime не использует эти структуры до
   отдельного producer SHA после зелёного migration/watchdog этого checkpoint.
+- **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
+  добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
+  prepare проверяет exact active-account coverage и готовые funding dependencies. Ни один метод не
+  создаёт `pricing_release_head_v2`; SQLite возвращает unavailable вместо локальной authority.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

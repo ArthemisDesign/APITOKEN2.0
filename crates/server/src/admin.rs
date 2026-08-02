@@ -12,10 +12,12 @@ use axum::response::{IntoResponse, Json, Response};
 use forward::AppState;
 use registry::pricing::{
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
-    validate_policy_active_expectation, validate_pricing_catalog, validate_provider_switches,
-    AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation,
-    PolicyActiveExpectation, PricingCatalogSpec, PricingMutation, PricingRejection,
-    ProviderSwitchSpec,
+    validate_policy_active_expectation, validate_pricing_catalog,
+    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
+    validate_pricing_release_v2, validate_provider_switches, AccountPolicyActivationSpec,
+    AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation,
+    PricingCatalogSpec, PricingMutation, PricingRejection, PricingReleasePolicyV2,
+    PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1530,6 +1532,203 @@ pub async fn activate_account_policy(
     match b.activate_account_policy(activation, expectation).await {
         Ok(mutation) => pricing_mutation_response(mutation, identity),
         Err(error) => authority_unavailable("account pricing policy activation", error),
+    }
+}
+
+/// POST /admin/pricing/v2/policy/prepare — append one immutable release-v2 policy.
+pub async fn prepare_pricing_release_policy_v2(
+    State(app): State<AppState>,
+    Json(policy): Json<PricingReleasePolicyV2>,
+) -> Response {
+    let identity = json!({
+        "policy_id": policy.policy_id,
+        "policy_version": policy.policy_version,
+        "content_digest": policy.content_digest,
+    });
+    if let Err(error) = validate_pricing_release_policy_v2(&policy) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.prepare_pricing_release_policy_v2(policy).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing release policy v2 prepare", error),
+    }
+}
+
+/// GET /admin/pricing/v2/policy/{policy_id}/version/{policy_version} — immutable policy read.
+pub async fn pricing_release_policy_v2(
+    State(app): State<AppState>,
+    Path((policy_id, policy_version)): Path<(String, i64)>,
+) -> Response {
+    if !valid_pricing_id(&policy_id) || policy_version <= 0 {
+        return invalid_pricing_path("invalid policy_id or policy_version");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .pricing_release_policy_v2(&policy_id, policy_version)
+        .await
+    {
+        Ok(Some(policy)) => Json(json!({"policy": policy})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown pricing release policy"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("pricing release policy v2 read", error),
+    }
+}
+
+/// POST /admin/pricing/v2/release/prepare — append a complete dormant full-inventory release.
+pub async fn prepare_pricing_release_v2(
+    State(app): State<AppState>,
+    Json(release): Json<PricingReleaseV2>,
+) -> Response {
+    let identity = json!({
+        "generation": release.generation,
+        "content_digest": release.content_digest,
+        "release_kind": release.release_kind,
+    });
+    if let Err(error) = validate_pricing_release_v2(&release) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.prepare_pricing_release_v2(release).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing release v2 prepare", error),
+    }
+}
+
+/// GET /admin/pricing/v2/release/{generation} — immutable release and assignments.
+pub async fn pricing_release_v2(
+    State(app): State<AppState>,
+    Path(generation): Path<i64>,
+) -> Response {
+    if generation <= 0 {
+        return invalid_pricing_path("invalid pricing release generation");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.pricing_release_v2(generation).await {
+        Ok(Some(release)) => Json(json!({"release": release})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown pricing release"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("pricing release v2 read", error),
+    }
+}
+
+/// POST /admin/pricing/v2/recovery-link/prepare — bind prepared target to newer recovery.
+pub async fn prepare_pricing_release_recovery_link_v2(
+    State(app): State<AppState>,
+    Json(link): Json<PricingReleaseRecoveryLinkV2>,
+) -> Response {
+    let identity = json!({
+        "target_generation": link.target_generation,
+        "recovery_generation": link.recovery_generation,
+        "link_digest": link.link_digest,
+    });
+    if let Err(error) = validate_pricing_release_recovery_link_v2(&link) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .prepare_pricing_release_recovery_link_v2(link)
+        .await
+    {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing release recovery link v2 prepare", error),
+    }
+}
+
+/// GET /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}.
+pub async fn pricing_release_recovery_link_v2(
+    State(app): State<AppState>,
+    Path((target_generation, recovery_generation)): Path<(i64, i64)>,
+) -> Response {
+    if target_generation <= 0 || recovery_generation <= target_generation {
+        return invalid_pricing_path("invalid pricing release recovery link generations");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .pricing_release_recovery_link_v2(target_generation, recovery_generation)
+        .await
+    {
+        Ok(Some(link)) => Json(json!({"recovery_link": link})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown pricing release recovery link"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("pricing release recovery link v2 read", error),
+    }
+}
+
+/// GET /admin/pricing/v2/head — read-only singleton; null before the final Stage 9 CAS.
+pub async fn pricing_release_head_v2(State(app): State<AppState>) -> Response {
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.pricing_release_head_v2().await {
+        Ok(head) => Json(json!({"head": head})).into_response(),
+        Err(error) => authority_unavailable("pricing release head v2 read", error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseInventoryQueryV2 {
+    after_account_id: Option<String>,
+    limit: Option<i64>,
+}
+
+/// GET /admin/pricing/v2/inventory — stable account-id cursor over all engine accounts.
+pub async fn pricing_release_inventory_v2(
+    State(app): State<AppState>,
+    Query(query): Query<PricingReleaseInventoryQueryV2>,
+) -> Response {
+    let limit = query.limit.unwrap_or(500);
+    if !(1..=500).contains(&limit)
+        || query
+            .after_account_id
+            .as_deref()
+            .is_some_and(|value| !valid_pricing_id(value))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid pricing release inventory cursor or limit"})),
+        )
+            .into_response();
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .pricing_release_inventory_v2(query.after_account_id.as_deref(), limit)
+        .await
+    {
+        Ok(page) => Json(json!({"inventory": page})).into_response(),
+        Err(error) => authority_unavailable("pricing release inventory v2 read", error),
     }
 }
 

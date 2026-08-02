@@ -419,33 +419,82 @@ typed and retain evidence:
 admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
 enable strict enforcement, or bypass the catalog → switches → policy order.
 
-### Planned pricing-release extension (producer-first, not yet deployed)
+### Pricing release v2: producer prepare/read surface
 
-Per-account prepare/activate endpoints above remain the currently deployed Stage 3C producer
-surface. The approved zero-downtime target adds an aggregate immutable release protocol before any
-consumer depends on it:
+Engine PostgreSQL exposes an additive producer-first surface for the immutable release/funding-v2
+authority. It is intentionally limited to prepare and read operations:
 
 ```text
-POST /admin/pricing/release/prepare
-GET  /admin/pricing/release/version/{generation}
-GET  /admin/pricing/release/active
-POST /admin/pricing/release/activate
+POST /admin/pricing/v2/policy/prepare
+GET  /admin/pricing/v2/policy/{policy_id}/version/{policy_version}
+POST /admin/pricing/v2/release/prepare
+GET  /admin/pricing/v2/release/{generation}
+POST /admin/pricing/v2/recovery-link/prepare
+GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
+GET  /admin/pricing/v2/head
+GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
 ```
 
-A release binds exact capability/catalog/switch identities, global B2C policy, every B2B/OpenKeys/
-service assignment, funding generation, minimum runtime capability and recovery generation under
-one content digest. Prepare never changes traffic. Activate revalidates fresh Stage 8 evidence and
-CAS-advances one global head in a short `SERIALIZABLE` transaction; it does not update N accounts.
+There is no activation route in this producer checkpoint. Policy/release/link rows are append-only
+and monotonic by policy version or release generation. Prepare returns the same typed
+`stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as Stage 3C.
+`GET .../head` returns `{ "head": null }` until the separately reviewed
+Stage 9 producer exists and a fresh full-inventory Stage 8 proof authorizes one global CAS. Therefore
+deploying or calling the routes above cannot change live traffic, admission, prices or balances.
 
-Account create/activation and release activation share a control-plane advisory lock so an account
-cannot appear between coverage validation and head commit. Data-plane reserve/settlement never takes
-that global lock. New reservations persist release/policy/funding snapshot; in-flight v2 requests may
-cross activation safely. Service extends account authority with `billing_mode=meter_only`: usage is
-durable, but balance reserve/debit and 402 are skipped.
+`PricingReleasePolicyV2` has the following exact shape (all unknown fields are rejected):
 
-These fields/routes must be introduced expand-only in an engine producer commit and documented with
-their exact DTOs before `packages/contracts` or `packages/engine-client` consumes them. Until that
-producer SHA is deployed green, no caller may synthesize or assume this API.
+```text
+policy_id, policy_version, owner_type, owner_id, account_class,
+product_id?, billing_mode, schema_version=2,
+capability_generation, capability_digest,
+catalog_generation?, catalog_digest?, switch_generation?, switch_digest?,
+content_digest,
+rules[] = { rule_id, rule_digest,
+            scope = { scope=global }
+                  | { scope=provider, provider_id }
+                  | { scope=model, provider_id, canonical_model_id },
+            discount_bps, payable_multiplier_bp }
+```
+
+Each rule's outer `scope` field contains the strict tagged snake-case object shown above; provider
+and model identity are inside that object, not sibling rule fields. Engine validation requires
+`payable_multiplier_bp = 10000 - discount_bps`, one global rule for B2C, no global rule for B2B,
+and one global zero-discount rule for OpenKeys. Service policy is rule-free, has no product/catalog/
+switch pins and uses only `billing_mode=meter_only`.
+
+`PricingReleaseV2` has:
+
+```text
+generation, release_kind=target|recovery, schema_version=2,
+capability_generation, capability_digest,
+main_catalog_generation, main_catalog_digest,
+openkeys_catalog_generation, openkeys_catalog_digest,
+switch_generation, switch_digest,
+inventory_digest, policy_manifest_digest, assignment_manifest_digest,
+funding_manifest_digest, minimum_runtime_schema_version, content_digest,
+assignments[] = { account_id, account_class, policy_id, policy_version, policy_digest,
+                  billing_mode, funding_generation?, purpose?, responsible?,
+                  assignment_digest }
+```
+
+Prepare runs under the release control-plane advisory lock and rejects any release whose unique
+assignments do not equal the exact set of currently active engine accounts. Every balance assignment
+must reference an existing funding generation; every service assignment is `meter_only`, has no
+funding generation and includes non-empty `purpose`/`responsible`. Main/OpenKeys catalogs, switches,
+policies and all digests must already exist with matching capability lineage. A recovery link binds a
+prepared `target` generation to a strictly newer prepared `recovery` generation.
+
+Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
+contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
+It contains no key secret. Consumers must exhaust the cursor and join this engine inventory with the
+authoritative commerce/OpenKeys inventories; a partial page is never release evidence.
+
+Later checkpoints add account-local funding normalization, dual-compatible money writers, runtime
+release snapshots, Stage 8 evidence and finally one activation CAS. Account creation/activation and
+that future CAS share the same control-plane lock; data-plane reserve/settlement never takes it.
+Consumers in `packages/contracts` and `packages/engine-client` are added only after the producer SHA
+has a green exact-SHA `deploy/watchdog` verdict.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

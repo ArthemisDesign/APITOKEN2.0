@@ -2883,10 +2883,16 @@ impl PgStore {
             bail!("account multiplier must be within 0..=10000 basis points");
         }
         let ts = now();
-        self.client.execute(
+        let mut transaction = self.client.transaction()?;
+        transaction.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
+        )?;
+        transaction.execute(
             "INSERT INTO accounts(id,handle,mult_bp,status,created_ts,created) VALUES($1,$2,$3,'active',$4,$5)",
             &[&id,&handle,&mult_bp,&ts,&chrono_like(ts)],
         )?;
+        transaction.commit()?;
         Ok(())
     }
     pub fn account_get(&mut self, id: &str) -> Result<Option<AccountRow>> {
@@ -2963,10 +2969,17 @@ impl PgStore {
         )?.into_iter().map(|r| account_row(&r)).collect())
     }
     pub fn account_set_status(&mut self, id: &str, status: &str) -> Result<usize> {
-        Ok(self
-            .client
-            .execute("UPDATE accounts SET status=$1 WHERE id=$2", &[&status, &id])?
-            as usize)
+        let mut transaction = self.client.transaction()?;
+        transaction.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
+        )?;
+        let affected = transaction.execute(
+            "UPDATE accounts SET status=$1 WHERE id=$2",
+            &[&status, &id],
+        )? as usize;
+        transaction.commit()?;
+        Ok(affected)
     }
     pub fn account_set_mult_bp(&mut self, id: &str, mult_bp: i64) -> Result<usize> {
         if !(0..=10_000).contains(&mult_bp) {
@@ -2978,10 +2991,17 @@ impl PgStore {
         )? as usize)
     }
     pub fn account_remove(&mut self, id: &str) -> Result<usize> {
-        Ok(self.client.execute(
+        let mut transaction = self.client.transaction()?;
+        transaction.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            &[&crate::pricing::postgres::PRICING_RELEASE_CONTROL_LOCK_V2],
+        )?;
+        let affected = transaction.execute(
             "UPDATE accounts SET status='deleted' WHERE id=$1 AND status<>'deleted'",
             &[&id],
-        )? as usize)
+        )? as usize;
+        transaction.commit()?;
+        Ok(affected)
     }
 
     /// Build the deterministic, read-only Stage 6 funding migration plan from one serializable
@@ -5939,6 +5959,85 @@ impl PgStore {
             &mut self.client,
             activation,
             expectation,
+        )
+    }
+
+    pub fn pricing_release_policy_v2(
+        &mut self,
+        policy_id: &str,
+        policy_version: i64,
+    ) -> Result<Option<crate::pricing::PricingReleasePolicyV2>> {
+        crate::pricing::postgres::postgres_pricing_release_policy_v2(
+            &mut self.client,
+            policy_id,
+            policy_version,
+        )
+    }
+
+    pub fn prepare_pricing_release_policy_v2(
+        &mut self,
+        policy: &crate::pricing::PricingReleasePolicyV2,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_pricing_release_policy_v2(
+            &mut self.client,
+            policy,
+        )
+    }
+
+    pub fn pricing_release_v2(
+        &mut self,
+        generation: i64,
+    ) -> Result<Option<crate::pricing::PricingReleaseV2>> {
+        crate::pricing::postgres::postgres_pricing_release_v2(&mut self.client, generation)
+    }
+
+    pub fn prepare_pricing_release_v2(
+        &mut self,
+        release: &crate::pricing::PricingReleaseV2,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_pricing_release_v2(
+            &mut self.client,
+            release,
+        )
+    }
+
+    pub fn prepare_pricing_release_recovery_link_v2(
+        &mut self,
+        link: &crate::pricing::PricingReleaseRecoveryLinkV2,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_pricing_release_recovery_link_v2(
+            &mut self.client,
+            link,
+        )
+    }
+
+    pub fn pricing_release_recovery_link_v2(
+        &mut self,
+        target_generation: i64,
+        recovery_generation: i64,
+    ) -> Result<Option<crate::pricing::PricingReleaseRecoveryLinkV2>> {
+        crate::pricing::postgres::postgres_pricing_release_recovery_link_v2(
+            &mut self.client,
+            target_generation,
+            recovery_generation,
+        )
+    }
+
+    pub fn pricing_release_head_v2(
+        &mut self,
+    ) -> Result<Option<crate::pricing::PricingReleaseHeadV2>> {
+        crate::pricing::postgres::postgres_pricing_release_head_v2(&mut self.client)
+    }
+
+    pub fn pricing_release_inventory_v2(
+        &mut self,
+        after_account_id: Option<&str>,
+        limit: i64,
+    ) -> Result<crate::pricing::PricingReleaseInventoryPageV2> {
+        crate::pricing::postgres::postgres_pricing_release_inventory_v2(
+            &mut self.client,
+            after_account_id,
+            limit,
         )
     }
 }

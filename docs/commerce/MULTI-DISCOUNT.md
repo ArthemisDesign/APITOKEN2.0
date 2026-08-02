@@ -211,6 +211,12 @@ Engine хранит prepared releases и один active release head. Подг�
 funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных
 production migration/watchdog exact schema SHA.
 
+Первый зависимый engine producer добавляет PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
+immutable policy/release/recovery link, полный cursor inventory и nullable release head. В нём нет
+activation route и он не публикует v2 runtime-capability claim, поэтому подготовленные rows остаются
+dormant и не могут изменить data-plane. Commerce/client consumer подключается только после зелёного
+`deploy/watchdog` exact producer SHA.
+
 - продолжает обслуживать текущий active legacy release;
 - умеет читать новый release schema;
 - сохраняет immutable pricing/funding snapshot в каждой новой reservation;

@@ -291,6 +291,62 @@ define_admin_routes!(
         "/admin/pricing/policy/test-account/activate",
         admin::activate_account_policy
     ),
+    (
+        post,
+        POST,
+        "/admin/pricing/v2/policy/prepare",
+        "/admin/pricing/v2/policy/prepare",
+        admin::prepare_pricing_release_policy_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/policy/{policy_id}/version/{policy_version}",
+        "/admin/pricing/v2/policy/test-policy/version/1",
+        admin::pricing_release_policy_v2
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/v2/release/prepare",
+        "/admin/pricing/v2/release/prepare",
+        admin::prepare_pricing_release_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/release/{generation}",
+        "/admin/pricing/v2/release/1",
+        admin::pricing_release_v2
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/v2/recovery-link/prepare",
+        "/admin/pricing/v2/recovery-link/prepare",
+        admin::prepare_pricing_release_recovery_link_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}",
+        "/admin/pricing/v2/recovery-link/1/2",
+        admin::pricing_release_recovery_link_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/head",
+        "/admin/pricing/v2/head",
+        admin::pricing_release_head_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/inventory",
+        "/admin/pricing/v2/inventory",
+        admin::pricing_release_inventory_v2
+    ),
 );
 
 async fn require_control_auth(
@@ -5257,7 +5313,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 27);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 35);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 

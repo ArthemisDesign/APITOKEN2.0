@@ -20,8 +20,10 @@ use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
     PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
-    PricingReadBundle, PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
-    ProviderSwitchSpec, VersionTarget,
+    PricingReadBundle, PricingReleaseHeadV2, PricingReleaseInventoryPageV2,
+    PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2, PricingReleaseV2,
+    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, ProviderSwitchSpec,
+    VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1196,6 +1198,18 @@ enum WriteCmd {
         expectation: PolicyActiveExpectation,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
+    PreparePricingReleasePolicyV2 {
+        policy: PricingReleasePolicyV2,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    PreparePricingReleaseV2 {
+        release: PricingReleaseV2,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    PreparePricingReleaseRecoveryLinkV2 {
+        link: PricingReleaseRecoveryLinkV2,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
     CancelReserve {
         request_id: String,
         account_id: String,
@@ -1395,6 +1409,28 @@ enum ReadCmd {
     PricingReadBundle {
         account_id: String,
         reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
+    },
+    PricingReleasePolicyV2 {
+        policy_id: String,
+        policy_version: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleasePolicyV2>>>,
+    },
+    PricingReleaseV2 {
+        generation: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseV2>>>,
+    },
+    PricingReleaseRecoveryLinkV2 {
+        target_generation: i64,
+        recovery_generation: i64,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseRecoveryLinkV2>>>,
+    },
+    PricingReleaseHeadV2 {
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseHeadV2>>>,
+    },
+    PricingReleaseInventoryV2 {
+        after_account_id: Option<String>,
+        limit: i64,
+        reply: oneshot::Sender<anyhow::Result<PricingReleaseInventoryPageV2>>,
     },
     SpendByModel {
         since_ts: i64,
@@ -2329,6 +2365,13 @@ impl AsyncBilling {
                             &conn, &activation, &expectation,
                         ));
                     }
+                    WriteCmd::PreparePricingReleasePolicyV2 { reply, .. }
+                    | WriteCmd::PreparePricingReleaseV2 { reply, .. }
+                    | WriteCmd::PreparePricingReleaseRecoveryLinkV2 { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "pricing release v2 authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -2586,6 +2629,31 @@ impl AsyncBilling {
                                     &conn,
                                     &account_id,
                                 ));
+                            }
+                            ReadCmd::PricingReleasePolicyV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::PricingReleaseV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::PricingReleaseRecoveryLinkV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::PricingReleaseHeadV2 { reply } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::PricingReleaseInventoryV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
                             }
                             ReadCmd::SpendByModel {
                                 since_ts,
@@ -3094,6 +3162,36 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::PreparePricingReleasePolicyV2 { policy, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing release policy v2 prepare",
+                                |pg| pg.prepare_pricing_release_policy_v2(&policy),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PreparePricingReleaseV2 { release, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing release v2 prepare",
+                                |pg| pg.prepare_pricing_release_v2(&release),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PreparePricingReleaseRecoveryLinkV2 { link, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing release recovery link v2 prepare",
+                                |pg| pg.prepare_pricing_release_recovery_link_v2(&link),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
                                 RESERVE_HANDOFF_CANCELED, RESERVE_HANDOFF_REFUNDING,
@@ -3428,6 +3526,42 @@ impl AsyncBilling {
                             ReadCmd::PricingReadBundle { account_id, reply } => {
                                 answer!(reply, pg.pricing_read_bundle(&account_id))
                             }
+                            ReadCmd::PricingReleasePolicyV2 {
+                                policy_id,
+                                policy_version,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_release_policy_v2(&policy_id, policy_version)
+                            ),
+                            ReadCmd::PricingReleaseV2 { generation, reply } => {
+                                answer!(reply, pg.pricing_release_v2(generation))
+                            }
+                            ReadCmd::PricingReleaseRecoveryLinkV2 {
+                                target_generation,
+                                recovery_generation,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_release_recovery_link_v2(
+                                    target_generation,
+                                    recovery_generation,
+                                )
+                            ),
+                            ReadCmd::PricingReleaseHeadV2 { reply } => {
+                                answer!(reply, pg.pricing_release_head_v2())
+                            }
+                            ReadCmd::PricingReleaseInventoryV2 {
+                                after_account_id,
+                                limit,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_release_inventory_v2(
+                                    after_account_id.as_deref(),
+                                    limit,
+                                )
+                            ),
                             ReadCmd::SpendByModel {
                                 since_ts,
                                 until_ts,
@@ -3646,6 +3780,48 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    pub async fn prepare_pricing_release_policy_v2(
+        &self,
+        policy: PricingReleasePolicyV2,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PreparePricingReleasePolicyV2 { policy, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn prepare_pricing_release_v2(
+        &self,
+        release: PricingReleaseV2,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PreparePricingReleaseV2 { release, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn prepare_pricing_release_recovery_link_v2(
+        &self,
+        link: PricingReleaseRecoveryLinkV2,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PreparePricingReleaseRecoveryLinkV2 { link, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     pub async fn pricing_catalog_by_generation(
         &self,
         product_id: &str,
@@ -3748,6 +3924,90 @@ impl AsyncBilling {
         self.reader()
             .send(ReadCmd::PricingReadBundle {
                 account_id: account_id.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_policy_v2(
+        &self,
+        policy_id: &str,
+        policy_version: i64,
+    ) -> anyhow::Result<Option<PricingReleasePolicyV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleasePolicyV2 {
+                policy_id: policy_id.to_owned(),
+                policy_version,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_v2(
+        &self,
+        generation: i64,
+    ) -> anyhow::Result<Option<PricingReleaseV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseV2 { generation, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_recovery_link_v2(
+        &self,
+        target_generation: i64,
+        recovery_generation: i64,
+    ) -> anyhow::Result<Option<PricingReleaseRecoveryLinkV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseRecoveryLinkV2 {
+                target_generation,
+                recovery_generation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_head_v2(
+        &self,
+    ) -> anyhow::Result<Option<PricingReleaseHeadV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseHeadV2 { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_inventory_v2(
+        &self,
+        after_account_id: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<PricingReleaseInventoryPageV2> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseInventoryV2 {
+                after_account_id: after_account_id.map(str::to_owned),
+                limit,
                 reply,
             })
             .await
