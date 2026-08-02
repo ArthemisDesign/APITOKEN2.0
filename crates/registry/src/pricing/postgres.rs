@@ -2512,7 +2512,7 @@ pub(crate) fn postgres_prepare_pricing_release_policy_v2(
     )
 }
 
-fn pricing_release_v2_in_transaction<C: GenericClient>(
+pub(crate) fn pricing_release_v2_in_transaction<C: GenericClient>(
     client: &mut C,
     generation: i64,
 ) -> Result<Option<super::PricingReleaseV2>> {

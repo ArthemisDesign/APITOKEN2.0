@@ -13,6 +13,10 @@ import {
 } from "@claude-api/contracts";
 import { describe, expect, it } from "vitest";
 import { stage5Digest } from "./multi-discount-backfill.js";
+import {
+  buildStage5V2Capability,
+  buildStage5V2CatalogsAndSwitches,
+} from "./pricing-stage5-materializer-v2.js";
 
 describe("target pricing capability", () => {
   const capabilityDigest = (generation: number, rawEntries: readonly {
@@ -86,5 +90,21 @@ describe("target pricing capability", () => {
       .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
+  });
+
+  it("keeps Stage 5 target and recovery materialization on admitted generation 3", () => {
+    const capability = buildStage5V2Capability();
+    const graph = buildStage5V2CatalogsAndSwitches();
+
+    expect(capability).toMatchObject({
+      generation: MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION,
+      content_digest: MULTI_DISCOUNT_GEN3_CAPABILITY_DIGEST,
+    });
+    expect(graph.catalogs.every((catalog) =>
+      catalog.capability_generation === MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION
+      && catalog.capability_digest === MULTI_DISCOUNT_GEN3_CAPABILITY_DIGEST
+    )).toBe(true);
+    expect(graph.catalogs.find((catalog) => catalog.product_id === "main")?.entries)
+      .not.toContainEqual(expect.objectContaining({ canonical_model_id: "gemini-3-flash-preview" }));
   });
 });

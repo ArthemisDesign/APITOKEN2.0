@@ -42,8 +42,9 @@ owner или отсутствующий engine account — typed blocker. Акк
 - Service: все runtime-capable модели и `billing_mode=meter_only`; balance не участвует в admission.
 
 Внутренний engine provider ID Gemini — `google`. Frozen capability generation 3 сохраняет исходные
-восемь тарифно закреплённых Gemini-моделей; target generation 4 добавляет
-`gemini-3-flash-preview`. OpenKeys target по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
+восемь тарифно закреплённых Gemini-моделей. Additive generation 4 добавила
+`gemini-3-flash-preview`, но не стала target после failed production gate. OpenKeys target
+по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
 Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет 1:1.
 Capability publication не является таким enablement. После failed production generation gate
 generation 4 остаётся immutable rejected artifact: Stage 5 не должен materialize или финализировать
@@ -100,9 +101,11 @@ Local plan сначала фиксируется под advisory lock с пов�
 та же проверка обязательна перед сохранением terminal blocker evidence. Затем consumer делает
 только dormant engine prepare для main/OpenKeys catalog generation 3, provider switches generation
 3 и каждой v2 policy, немедленно читает exact version обратно и фиксирует ACK лишь для
-`stored|unchanged` с совпавшим digest. Capability generation 4 не имеет mutation endpoint: её
-compile-fixed digest проверяется локально и через catalog lineage, поэтому фиктивный capability ACK
-не создаётся. Target/recovery release prepare, recovery link и control job до Stage 6 отсутствуют.
+`stored|unchanged` с совпавшим digest. Materializer строит capability projection, оба каталога,
+switches, customer и service policies только на generation 3. Rejected generation 4 остаётся
+compile-fixed immutable history, не входит ни в один Stage 5 target/recovery artifact и не получает
+фиктивный capability ACK. Target/recovery release prepare, recovery link и control job до Stage 6
+отсутствуют.
 
 Same-version/same-digest replay возвращает `unchanged`. Same-version/different-digest, неполное
 покрытие inventory, stale source, policy collision или unsupported runtime capability отклоняются

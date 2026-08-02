@@ -4,7 +4,10 @@
 //! snapshots and shadow evaluations must be observed in one `REPEATABLE READ READ ONLY` snapshot.
 //! It never changes a head, binding, funding bucket, reservation or charge.
 
-use crate::pricing::PricingRuntimeManifestEvidence;
+use crate::pricing::{
+    BillingModeV2, PricingReleaseKindV2, PricingReleaseV2, PricingRuntimeManifestEvidence,
+    PRICING_RELEASE_SCHEMA_VERSION, PRICING_SCHEMA_VERSION,
+};
 use anyhow::{bail, Context, Result};
 use postgres::types::ToSql;
 use postgres::{Client, GenericClient, IsolationLevel};
@@ -13,12 +16,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-const STAGE8_ENGINE_EVIDENCE_SCHEMA_VERSION: i64 = 1;
+const STAGE8_ENGINE_EVIDENCE_SCHEMA_VERSION: i64 = 2;
 const BLOCKER_SUBJECT_LIMIT: usize = 20;
 const STAGE8_SHADOW_PROVIDERS: [&str; 3] = ["anthropic", "openai", "google"];
 
 #[derive(Clone, Debug)]
 pub struct Stage8EngineEvidenceRequest {
+    pub target_generation: i64,
+    pub recovery_generation: i64,
     pub window_start_ts: i64,
     pub window_end_ts: i64,
     pub min_samples_per_provider: i64,
@@ -29,6 +34,9 @@ pub struct Stage8EngineEvidenceRequest {
 
 impl Stage8EngineEvidenceRequest {
     fn validate(&self, captured_ts: i64) -> Result<()> {
+        if self.target_generation <= 0 || self.recovery_generation <= self.target_generation {
+            bail!("Stage 8 requires a positive target and a newer recovery generation");
+        }
         if self.window_start_ts <= 0 || self.window_end_ts <= self.window_start_ts {
             bail!("Stage 8 evidence window must be a positive non-empty half-open interval");
         }
@@ -94,6 +102,28 @@ pub struct Stage8RuntimeCapabilityEvidence {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct Stage8ReleaseHeadEvidence {
+    pub active_generation: i64,
+    pub active_digest: String,
+    pub head_version: i64,
+    pub updated_ts: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Stage8ReleasePairEvidence {
+    pub target_generation: i64,
+    pub target_digest: Option<String>,
+    pub recovery_generation: i64,
+    pub recovery_digest: Option<String>,
+    pub recovery_link_digest: Option<String>,
+    pub inventory_digest: Option<String>,
+    pub funding_digest: Option<String>,
+    pub target_assignment_count: i64,
+    pub recovery_assignment_count: i64,
+    pub active_head: Option<Stage8ReleaseHeadEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Stage8FinancialSample {
     pub subject_digest: String,
     pub evaluation_digest: String,
@@ -109,6 +139,7 @@ pub struct Stage8FinancialSample {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Stage8EngineEvidenceCounts {
+    pub total_accounts: i64,
     pub active_accounts: i64,
     pub account_classes: BTreeMap<String, i64>,
     pub reconciled_accounts: i64,
@@ -119,6 +150,10 @@ pub struct Stage8EngineEvidenceCounts {
     pub policy_divergence_rows: i64,
     pub gemini_usage_rows: i64,
     pub gemini_outbox_rows: i64,
+    pub live_runtime_instances: i64,
+    pub release_capable_runtime_instances: i64,
+    pub legacy_inflight_reservations: i64,
+    pub legacy_inflight_outbox_rows: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -130,11 +165,17 @@ pub struct Stage8EngineEvidenceReport {
     pub min_samples_per_provider: i64,
     pub gemini_client_admissions: i64,
     pub passed: bool,
+    pub release: Stage8ReleasePairEvidence,
     pub runtime_manifest: Stage8RuntimeManifestEvidence,
     pub catalogs: Vec<Stage8CatalogHeadEvidence>,
     pub switches: Option<Stage8SwitchHeadEvidence>,
     pub counts: Stage8EngineEvidenceCounts,
     pub financial_samples: Vec<Stage8FinancialSample>,
+    pub engine_inventory_digest: String,
+    pub funding_digest: String,
+    pub shadow_digest: String,
+    pub runtime_floor_digest: String,
+    pub legacy_inflight_count: i64,
     pub blockers: Vec<Stage8EvidenceBlocker>,
     pub evidence_digest: String,
 }
@@ -174,10 +215,29 @@ fn subject_digest(subject: &str) -> String {
 
 fn report_digest(report: &Stage8EngineEvidenceReport) -> Result<String> {
     let encoded = serde_json::to_vec(report).context("encode Stage 8 engine evidence")?;
-    Ok(digest(
-        b"claude-api/multi-discount-stage8/engine-evidence/v1\0",
-        &encoded,
+    Ok(digest_parts(
+        b"claude-api/multi-discount-stage8/engine-evidence/v2\0",
+        std::iter::once(encoded),
     ))
+}
+
+fn digest_parts<I, P>(domain: &[u8], parts: I) -> String
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<[u8]>,
+{
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    for part in parts {
+        let part = part.as_ref();
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let mut hex = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("sha256:v2:{hex}")
 }
 
 fn query_count<C: GenericClient>(
@@ -262,6 +322,104 @@ fn supports_capability(
     })
 }
 
+#[derive(Serialize)]
+struct EngineInventoryIdentity<'a> {
+    account_id: &'a str,
+    multiplier_bp: i64,
+    status: &'a str,
+}
+
+#[derive(Serialize)]
+struct FundingManifestIdentity<'a> {
+    account_id: &'a str,
+    funding_digest: &'a str,
+    funding_generation: String,
+}
+
+#[derive(Serialize)]
+struct CanonicalScope<'a, T: Serialize> {
+    scope: &'a str,
+    value: T,
+}
+
+fn sha256_v2_json(domain: &[u8], value: &impl Serialize) -> Result<String> {
+    let encoded = serde_json::to_vec(value).context("encode Stage 8 canonical identity")?;
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(encoded);
+    let mut hex = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Ok(format!("sha256:v2:{hex}"))
+}
+
+pub(crate) fn engine_inventory_digest<C: GenericClient>(client: &mut C) -> Result<String> {
+    let rows = client.query(
+        "SELECT id,status,mult_bp FROM accounts ORDER BY id COLLATE \"C\"",
+        &[],
+    )?;
+    let identities = rows
+        .iter()
+        .map(|row| EngineInventoryIdentity {
+            account_id: row.get(0),
+            multiplier_bp: row.get(2),
+            status: row.get(1),
+        })
+        .collect::<Vec<_>>();
+    sha256_v2_json(
+        b"pricing-stage5-v2:engine-identity-inventory\n",
+        &identities,
+    )
+}
+
+pub(crate) fn funding_manifest_digest<C: GenericClient>(
+    client: &mut C,
+    release: Option<&PricingReleaseV2>,
+) -> Result<String> {
+    let Some(release) = release else {
+        return Ok(digest_parts(
+            b"claude-api/stage8-v2/missing-funding-manifest\0",
+            std::iter::empty::<&[u8]>(),
+        ));
+    };
+    let mut rows = Vec::new();
+    for assignment in &release.assignments {
+        if assignment.billing_mode != BillingModeV2::Balance {
+            continue;
+        }
+        let generation = assignment
+            .funding_generation
+            .context("balance release assignment lacks funding generation")?;
+        let row = client.query_opt(
+            "SELECT normalization_digest FROM account_funding_generations_v2 \
+             WHERE account_id=$1 AND generation=$2",
+            &[&assignment.account_id, &generation],
+        )?;
+        let digest = row
+            .as_ref()
+            .map(|row| row.get::<_, String>(0))
+            .unwrap_or_default();
+        rows.push((assignment.account_id.as_str(), digest, generation));
+    }
+    rows.sort_by(|left, right| left.0.cmp(right.0));
+    let identities = rows
+        .iter()
+        .map(|(account_id, digest, generation)| FundingManifestIdentity {
+            account_id,
+            funding_digest: digest,
+            funding_generation: generation.to_string(),
+        })
+        .collect::<Vec<_>>();
+    sha256_v2_json(
+        b"",
+        &CanonicalScope {
+            scope: "pricing-funding-normalization-manifest-v2",
+            value: identities,
+        },
+    )
+}
+
 fn insufficient_provider_coverage(counts: &BTreeMap<String, i64>, minimum: i64) -> Vec<String> {
     STAGE8_SHADOW_PROVIDERS
         .iter()
@@ -339,6 +497,252 @@ pub(crate) fn postgres_stage8_engine_evidence(
         });
     let runtime_manifest = manifest_evidence(&request.runtime_manifest);
     let mut blockers = Vec::new();
+
+    let target = crate::pricing::postgres::pricing_release_v2_in_transaction(
+        &mut transaction,
+        request.target_generation,
+    )?;
+    let recovery = crate::pricing::postgres::pricing_release_v2_in_transaction(
+        &mut transaction,
+        request.recovery_generation,
+    )?;
+    let recovery_link = transaction.query_opt(
+        "SELECT target_digest,recovery_digest,link_digest \
+         FROM pricing_release_recovery_links \
+         WHERE target_generation=$1 AND recovery_generation=$2",
+        &[&request.target_generation, &request.recovery_generation],
+    )?;
+    let active_release_head = transaction
+        .query_opt(
+            "SELECT active_generation,active_digest,head_version,updated_ts \
+         FROM pricing_release_head_v2 WHERE singleton=1",
+            &[],
+        )?
+        .map(|row| Stage8ReleaseHeadEvidence {
+            active_generation: row.get(0),
+            active_digest: row.get(1),
+            head_version: row.get(2),
+            updated_ts: row.get(3),
+        });
+    let current_inventory_digest = engine_inventory_digest(&mut transaction)?;
+    let current_funding_digest = funding_manifest_digest(&mut transaction, target.as_ref())?;
+
+    if target.is_none() {
+        push_subjects(
+            &mut blockers,
+            "target_release_missing",
+            vec![format!("target:{}", request.target_generation)],
+        );
+    }
+    if recovery.is_none() {
+        push_subjects(
+            &mut blockers,
+            "recovery_release_missing",
+            vec![format!("recovery:{}", request.recovery_generation)],
+        );
+    }
+    if recovery_link.is_none() {
+        push_subjects(
+            &mut blockers,
+            "target_recovery_link_missing",
+            vec![format!(
+                "{}:{}",
+                request.target_generation, request.recovery_generation
+            )],
+        );
+    }
+
+    if let Some(target) = target.as_ref() {
+        let mut release_failures = Vec::new();
+        if target.release_kind != PricingReleaseKindV2::Target {
+            release_failures.push("kind".to_owned());
+        }
+        if target.inventory_digest != current_inventory_digest {
+            release_failures.push("inventory".to_owned());
+        }
+        if target.funding_manifest_digest != current_funding_digest {
+            release_failures.push("funding".to_owned());
+        }
+        if target.minimum_runtime_schema_version > PRICING_RELEASE_SCHEMA_VERSION
+            || !supports_capability(
+                &runtime_manifest,
+                PRICING_SCHEMA_VERSION,
+                target.capability_generation,
+                &target.capability_digest,
+            )
+        {
+            release_failures.push("runtime".to_owned());
+        }
+        push_subjects(
+            &mut blockers,
+            "target_release_identity_drift",
+            release_failures,
+        );
+    }
+    if let Some(recovery) = recovery.as_ref() {
+        let mut release_failures = Vec::new();
+        if recovery.release_kind != PricingReleaseKindV2::Recovery {
+            release_failures.push("kind".to_owned());
+        }
+        if recovery.inventory_digest != current_inventory_digest {
+            release_failures.push("inventory".to_owned());
+        }
+        if recovery.funding_manifest_digest != current_funding_digest {
+            release_failures.push("funding".to_owned());
+        }
+        if recovery.minimum_runtime_schema_version > PRICING_RELEASE_SCHEMA_VERSION
+            || !supports_capability(
+                &runtime_manifest,
+                PRICING_SCHEMA_VERSION,
+                recovery.capability_generation,
+                &recovery.capability_digest,
+            )
+        {
+            release_failures.push("runtime".to_owned());
+        }
+        push_subjects(
+            &mut blockers,
+            "recovery_release_identity_drift",
+            release_failures,
+        );
+    }
+    if let (Some(target), Some(recovery)) = (target.as_ref(), recovery.as_ref()) {
+        let same_runtime_lineage = target.schema_version == recovery.schema_version
+            && target.capability_generation == recovery.capability_generation
+            && target.capability_digest == recovery.capability_digest
+            && target.main_catalog_generation == recovery.main_catalog_generation
+            && target.main_catalog_digest == recovery.main_catalog_digest
+            && target.openkeys_catalog_generation == recovery.openkeys_catalog_generation
+            && target.openkeys_catalog_digest == recovery.openkeys_catalog_digest
+            && target.switch_generation == recovery.switch_generation
+            && target.switch_digest == recovery.switch_digest
+            && target.inventory_digest == recovery.inventory_digest
+            && target.funding_manifest_digest == recovery.funding_manifest_digest
+            && target.minimum_runtime_schema_version == recovery.minimum_runtime_schema_version;
+        if !same_runtime_lineage {
+            push_subjects(
+                &mut blockers,
+                "target_recovery_lineage_mismatch",
+                vec![format!("{}:{}", target.generation, recovery.generation)],
+            );
+        }
+        let target_assignments = target
+            .assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.account_id.as_str(),
+                    assignment.billing_mode,
+                    assignment.funding_generation,
+                )
+            })
+            .collect::<Vec<_>>();
+        let recovery_assignments = recovery
+            .assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.account_id.as_str(),
+                    assignment.billing_mode,
+                    assignment.funding_generation,
+                )
+            })
+            .collect::<Vec<_>>();
+        if target_assignments != recovery_assignments {
+            push_subjects(
+                &mut blockers,
+                "target_recovery_funding_assignment_mismatch",
+                vec![format!("{}:{}", target.generation, recovery.generation)],
+            );
+        }
+    }
+
+    if let Some(link) = recovery_link.as_ref() {
+        let target_digest = link.get::<_, String>(0);
+        let recovery_digest = link.get::<_, String>(1);
+        if target
+            .as_ref()
+            .map(|release| release.content_digest.as_str())
+            != Some(target_digest.as_str())
+            || recovery
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                != Some(recovery_digest.as_str())
+        {
+            push_subjects(
+                &mut blockers,
+                "target_recovery_link_digest_mismatch",
+                vec![format!(
+                    "{}:{}",
+                    request.target_generation, request.recovery_generation
+                )],
+            );
+        }
+    }
+
+    for (generation, label) in [
+        (request.target_generation, "target"),
+        (request.recovery_generation, "recovery"),
+    ] {
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            &format!("{label}_release_assignment_inventory_drift"),
+            "SELECT subject FROM( \
+               SELECT 'account:'||account.id subject FROM accounts account \
+               LEFT JOIN pricing_release_assignments assignment \
+                 ON assignment.release_generation=$1 AND assignment.account_id=account.id \
+               WHERE assignment.account_id IS NULL \
+               UNION ALL \
+               SELECT 'assignment:'||assignment.account_id FROM pricing_release_assignments assignment \
+               LEFT JOIN accounts account ON account.id=assignment.account_id \
+               WHERE assignment.release_generation=$1 AND account.id IS NULL \
+             ) drift",
+            &[&generation],
+        )?;
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            &format!("{label}_release_funding_head_drift"),
+            "SELECT assignment.account_id FROM pricing_release_assignments assignment \
+             LEFT JOIN account_funding_head_v2 head ON head.account_id=assignment.account_id \
+             WHERE assignment.release_generation=$1 AND assignment.billing_mode='balance' \
+               AND head.active_generation IS DISTINCT FROM assignment.funding_generation",
+            &[&generation],
+        )?;
+    }
+    query_blocker(
+        &mut transaction,
+        &mut blockers,
+        "target_release_funding_v2_aggregate_mismatch",
+        "SELECT assignment.account_id \
+         FROM pricing_release_assignments assignment \
+         JOIN accounts account ON account.id=assignment.account_id \
+         LEFT JOIN account_funding_head_v2 head ON head.account_id=assignment.account_id \
+         LEFT JOIN account_funding_generations_v2 generation \
+           ON generation.account_id=assignment.account_id \
+          AND generation.generation=assignment.funding_generation \
+         LEFT JOIN LATERAL( \
+           SELECT COUNT(*)::bigint lot_count, \
+                  COUNT(*) FILTER(WHERE lot.source_type='paid')::bigint paid_count, \
+                  COALESCE(SUM(lot.balance_nano::numeric),0) balance_nano, \
+                  COALESCE(SUM(lot.reserved_nano::numeric),0) reserved_nano, \
+                  COALESCE(SUM(lot.spent_nano::numeric),0) spent_nano \
+           FROM funding_lots_v2 lot \
+           WHERE lot.account_id=assignment.account_id \
+             AND lot.funding_generation=assignment.funding_generation \
+         ) lots ON true \
+         WHERE assignment.release_generation=$1 AND assignment.billing_mode='balance' \
+           AND( head.active_generation IS DISTINCT FROM assignment.funding_generation \
+             OR generation.account_id IS NULL OR lots.lot_count=0 OR lots.paid_count=0 \
+             OR generation.balance_nano::numeric<>account.balance_nano::numeric \
+             OR generation.reserved_nano::numeric<>account.reserved_nano::numeric \
+             OR generation.spent_nano::numeric<>account.spent_nano::numeric \
+             OR lots.balance_nano<>generation.balance_nano::numeric \
+             OR lots.reserved_nano<>generation.reserved_nano::numeric \
+             OR lots.spent_nano<>generation.spent_nano::numeric)",
+        &[&request.target_generation],
+    )?;
 
     query_blocker(
         &mut transaction,
@@ -611,6 +1015,39 @@ pub(crate) fn postgres_stage8_engine_evidence(
     query_blocker(
         &mut transaction,
         &mut blockers,
+        "shadow_evaluation_differs_from_target_release",
+        "SELECT evaluation.request_id \
+         FROM pricing_shadow_admission_evaluations evaluation \
+         JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
+         LEFT JOIN pricing_release_assignments assignment \
+           ON assignment.release_generation=$3 AND assignment.account_id=evaluation.account_id \
+         LEFT JOIN LATERAL( \
+           SELECT rule.payable_multiplier_bp \
+           FROM pricing_release_policy_rules rule \
+           WHERE rule.policy_id=assignment.policy_id \
+             AND rule.policy_version=assignment.policy_version \
+             AND( rule.scope_type='global' \
+               OR(rule.scope_type='provider' AND rule.provider_id=snapshot.provider_id) \
+               OR(rule.scope_type='model' AND rule.provider_id=snapshot.provider_id \
+                  AND rule.canonical_model_id=snapshot.canonical_model_id)) \
+           ORDER BY CASE rule.scope_type WHEN 'model' THEN 0 WHEN 'provider' THEN 1 ELSE 2 END \
+           LIMIT 1 \
+         ) target_rule ON true \
+         WHERE snapshot.snapshot_kind='legacy_scalar' \
+           AND snapshot.provider_id IN('anthropic','openai','google') \
+           AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
+           AND(assignment.account_id IS NULL OR assignment.billing_mode<>'balance' \
+             OR target_rule.payable_multiplier_bp IS NULL \
+             OR evaluation.payable_multiplier_bp IS DISTINCT FROM target_rule.payable_multiplier_bp)",
+        &[
+            &request.window_start_ts,
+            &request.window_end_ts,
+            &request.target_generation,
+        ],
+    )?;
+    query_blocker(
+        &mut transaction,
+        &mut blockers,
         "shadow_nano_usd_mismatch",
         "WITH candidate AS( \
            SELECT evaluation.*, \
@@ -753,7 +1190,146 @@ pub(crate) fn postgres_stage8_engine_evidence(
         })
         .collect();
 
+    let shadow_evaluation_digests = transaction
+        .query(
+            "SELECT evaluation.evaluation_digest \
+             FROM pricing_shadow_admission_evaluations evaluation \
+             JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
+             WHERE snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
+               AND snapshot.provider_id IN('anthropic','openai','google') \
+             ORDER BY evaluation.evaluation_digest COLLATE \"C\"",
+            &[&request.window_start_ts, &request.window_end_ts],
+        )?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
+    let shadow_digest = digest_parts(
+        b"claude-api/stage8-v2/shadow-evaluations\0",
+        shadow_evaluation_digests.iter(),
+    );
+
+    let live_runtime_rows = transaction.query(
+        "SELECT instance_id,pricing_release_schema_version,funding_schema_version, \
+                pricing_release_runtime_digest \
+         FROM engine_instances WHERE lease_until >= $1 \
+         ORDER BY instance_id COLLATE \"C\"",
+        &[&captured_ts],
+    )?;
+    let minimum_runtime_schema_version = target
+        .as_ref()
+        .map(|release| release.minimum_runtime_schema_version)
+        .unwrap_or(PRICING_RELEASE_SCHEMA_VERSION);
+    let release_capable_runtime_instances = live_runtime_rows
+        .iter()
+        .filter(|row| {
+            row.get::<_, Option<i64>>(1)
+                .is_some_and(|version| version >= minimum_runtime_schema_version)
+                && row
+                    .get::<_, Option<i64>>(2)
+                    .is_some_and(|version| version >= PRICING_RELEASE_SCHEMA_VERSION)
+                && row
+                    .get::<_, Option<String>>(3)
+                    .is_some_and(|digest| !digest.is_empty())
+        })
+        .count() as i64;
+    if release_capable_runtime_instances != live_runtime_rows.len() as i64 {
+        let incapable = live_runtime_rows
+            .iter()
+            .filter_map(|row| {
+                let release_schema = row.get::<_, Option<i64>>(1);
+                let funding_schema = row.get::<_, Option<i64>>(2);
+                let runtime_digest = row.get::<_, Option<String>>(3);
+                (release_schema.is_none_or(|version| version < minimum_runtime_schema_version)
+                    || funding_schema
+                        .is_none_or(|version| version < PRICING_RELEASE_SCHEMA_VERSION)
+                    || runtime_digest.as_deref().is_none_or(str::is_empty))
+                .then(|| row.get::<_, String>(0))
+            })
+            .collect();
+        push_subjects(
+            &mut blockers,
+            "live_runtime_below_release_v2_floor",
+            incapable,
+        );
+    }
+    if live_runtime_rows.is_empty() {
+        push_subjects(
+            &mut blockers,
+            "live_runtime_floor_unobserved",
+            vec!["engine-instances".to_owned()],
+        );
+    }
+    let runtime_floor_parts = live_runtime_rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{}\0{}\0{}\0{}",
+                row.get::<_, String>(0),
+                row.get::<_, Option<i64>>(1)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.get::<_, Option<i64>>(2)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.get::<_, Option<String>>(3).unwrap_or_default(),
+            )
+        })
+        .chain(std::iter::once(format!(
+            "manifest\0{}\0{}",
+            runtime_manifest.generation, runtime_manifest.digest
+        )))
+        .collect::<Vec<_>>();
+    let runtime_floor_digest = digest_parts(
+        b"claude-api/stage8-v2/runtime-floor\0",
+        runtime_floor_parts.iter(),
+    );
+
+    let legacy_inflight_reservations = query_count(
+        &mut transaction,
+        "SELECT COUNT(*)::bigint FROM reservations reservation \
+         LEFT JOIN pricing_request_snapshots_v2 snapshot \
+           ON snapshot.request_id=reservation.request_id \
+         WHERE reservation.state NOT IN('settled','canceled') AND snapshot.request_id IS NULL",
+        &[],
+    )?;
+    let legacy_inflight_outbox_rows = query_count(
+        &mut transaction,
+        "SELECT COUNT(*)::bigint FROM settlement_outbox \
+         WHERE state<>'done' AND release_schema_version IS NULL",
+        &[],
+    )?;
+    let legacy_inflight_count = legacy_inflight_reservations
+        .checked_add(legacy_inflight_outbox_rows)
+        .context("Stage 8 legacy inflight count overflow")?;
+    if legacy_inflight_reservations != 0 {
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            "legacy_inflight_reservation",
+            "SELECT reservation.request_id FROM reservations reservation \
+             LEFT JOIN pricing_request_snapshots_v2 snapshot \
+               ON snapshot.request_id=reservation.request_id \
+             WHERE reservation.state NOT IN('settled','canceled') AND snapshot.request_id IS NULL",
+            &[],
+        )?;
+    }
+    if legacy_inflight_outbox_rows != 0 {
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            "legacy_inflight_settlement_outbox",
+            "SELECT request_id FROM settlement_outbox \
+             WHERE state<>'done' AND release_schema_version IS NULL",
+            &[],
+        )?;
+    }
+
     blockers.sort_by(|left, right| left.code.cmp(&right.code));
+    let total_accounts = query_count(
+        &mut transaction,
+        "SELECT COUNT(*)::bigint FROM accounts",
+        &[],
+    )?;
     let active_accounts = query_count(
         &mut transaction,
         "SELECT COUNT(*)::bigint FROM accounts WHERE status='active'",
@@ -766,6 +1342,32 @@ pub(crate) fn postgres_stage8_engine_evidence(
           AND binding.reconciliation_state='verified'",
         &[],
     )?;
+    let release = Stage8ReleasePairEvidence {
+        target_generation: request.target_generation,
+        target_digest: target
+            .as_ref()
+            .map(|release| release.content_digest.clone()),
+        recovery_generation: request.recovery_generation,
+        recovery_digest: recovery
+            .as_ref()
+            .map(|release| release.content_digest.clone()),
+        recovery_link_digest: recovery_link.as_ref().map(|row| row.get::<_, String>(2)),
+        inventory_digest: target
+            .as_ref()
+            .map(|release| release.inventory_digest.clone()),
+        funding_digest: target
+            .as_ref()
+            .map(|release| release.funding_manifest_digest.clone()),
+        target_assignment_count: target
+            .as_ref()
+            .map(|release| release.assignments.len() as i64)
+            .unwrap_or(0),
+        recovery_assignment_count: recovery
+            .as_ref()
+            .map(|release| release.assignments.len() as i64)
+            .unwrap_or(0),
+        active_head: active_release_head,
+    };
     let mut report = Stage8EngineEvidenceReport {
         schema_version: STAGE8_ENGINE_EVIDENCE_SCHEMA_VERSION,
         captured_ts,
@@ -774,10 +1376,12 @@ pub(crate) fn postgres_stage8_engine_evidence(
         min_samples_per_provider: request.min_samples_per_provider,
         gemini_client_admissions: request.gemini_client_admissions,
         passed: blockers.is_empty(),
+        release,
         runtime_manifest,
         catalogs,
         switches,
         counts: Stage8EngineEvidenceCounts {
+            total_accounts,
             active_accounts,
             account_classes,
             reconciled_accounts,
@@ -788,8 +1392,17 @@ pub(crate) fn postgres_stage8_engine_evidence(
             policy_divergence_rows: parity.1,
             gemini_usage_rows,
             gemini_outbox_rows,
+            live_runtime_instances: live_runtime_rows.len() as i64,
+            release_capable_runtime_instances,
+            legacy_inflight_reservations,
+            legacy_inflight_outbox_rows,
         },
         financial_samples,
+        engine_inventory_digest: current_inventory_digest,
+        funding_digest: current_funding_digest,
+        shadow_digest,
+        runtime_floor_digest,
+        legacy_inflight_count,
         blockers,
         evidence_digest: String::new(),
     };
@@ -819,6 +1432,8 @@ mod tests {
     #[test]
     fn request_bounds_are_fail_closed() {
         let valid = Stage8EngineEvidenceRequest {
+            target_generation: 1,
+            recovery_generation: 2,
             window_start_ts: 100,
             window_end_ts: 200,
             min_samples_per_provider: 1,
@@ -851,5 +1466,39 @@ mod tests {
         );
         counts.insert("google".to_owned(), 100);
         assert!(insufficient_provider_coverage(&counts, 100).is_empty());
+    }
+
+    #[test]
+    fn release_inventory_and_funding_digests_match_the_typescript_canonical_contract() {
+        let inventory = vec![
+            EngineInventoryIdentity {
+                account_id: "a",
+                multiplier_bp: 5_000,
+                status: "active",
+            },
+            EngineInventoryIdentity {
+                account_id: "b",
+                multiplier_bp: 10_000,
+                status: "disabled",
+            },
+        ];
+        assert_eq!(
+            sha256_v2_json(b"pricing-stage5-v2:engine-identity-inventory\n", &inventory,).unwrap(),
+            "sha256:v2:a8ed9afc4feeaf0e4f648ad55533ea87dd99852f796ee035713636b0e99258b0"
+        );
+
+        let funding = CanonicalScope {
+            scope: "pricing-funding-normalization-manifest-v2",
+            value: vec![FundingManifestIdentity {
+                account_id: "a",
+                funding_digest:
+                    "sha256:v2:1111111111111111111111111111111111111111111111111111111111111111",
+                funding_generation: "1".to_owned(),
+            }],
+        };
+        assert_eq!(
+            sha256_v2_json(b"", &funding).unwrap(),
+            "sha256:v2:96886f1dc94223e2ef37fbbc1bad307ad1cf84ec22f21b586253072f48307fef"
+        );
     }
 }

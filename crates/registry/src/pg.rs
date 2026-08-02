@@ -7564,6 +7564,13 @@ mod tests {
                 crate::pricing::PricingShadowEvaluationWrite::Inserted(_)
             ));
         }
+        for request_id in [
+            "stage8-anthropic-request",
+            "stage8-openai-request",
+            "stage8-google-request",
+        ] {
+            pg.cancel_request(request_id).unwrap();
+        }
         let totals = pg
             .client
             .query_one(
@@ -7586,6 +7593,166 @@ mod tests {
             )
             .unwrap();
 
+        let normalization_digest = format!("sha256:v2:{}", "1".repeat(64));
+        let mut funding_tx = pg.client.transaction().unwrap();
+        funding_tx
+            .execute(
+                "INSERT INTO account_funding_generations_v2( \
+                   account_id,generation,schema_version,source_state_digest,normalization_digest, \
+                   balance_nano,reserved_nano,spent_nano,version,normalized_ts,updated_ts \
+                 ) VALUES('stage8-account',1,2,$1,$2,$3,$4,$5,1,$6,$6)",
+                &[
+                    &format!("sha256:v2:{}", "2".repeat(64)),
+                    &normalization_digest,
+                    &balance_nano,
+                    &reserved_nano,
+                    &spent_nano,
+                    &authority_ts,
+                ],
+            )
+            .unwrap();
+        funding_tx
+            .execute(
+                "INSERT INTO funding_lots_v2( \
+                   lot_id,account_id,funding_generation,source_type,source_ref,balance_nano, \
+                   reserved_nano,spent_nano,version,status,created_ts,updated_ts \
+                 ) VALUES('stage8-v2-paid','stage8-account',1,'paid','stage6:paid-residual:v2', \
+                          $1,$2,$3,1,'active',$4,$4)",
+                &[&balance_nano, &reserved_nano, &spent_nano, &authority_ts],
+            )
+            .unwrap();
+        funding_tx
+            .execute(
+                "INSERT INTO account_funding_head_v2(account_id,active_generation,head_version,updated_ts) \
+                 VALUES('stage8-account',1,1,$1)",
+                &[&authority_ts],
+            )
+            .unwrap();
+        funding_tx.commit().unwrap();
+
+        let inventory_digest = crate::stage8::engine_inventory_digest(&mut pg.client).unwrap();
+        let release_assignment = crate::pricing::PricingReleaseAssignmentV2 {
+            account_id: "stage8-account".into(),
+            account_class: crate::pricing::AccountClass::B2c,
+            policy_id: "stage8-v2-policy".into(),
+            policy_version: 1,
+            policy_digest: "stage8-v2-policy-digest".into(),
+            billing_mode: crate::pricing::BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "stage8-v2-assignment-digest".into(),
+        };
+        let release_for_funding = crate::pricing::PricingReleaseV2 {
+            generation: 101,
+            release_kind: crate::pricing::PricingReleaseKindV2::Target,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            main_catalog_generation: 1,
+            main_catalog_digest: "stage8-main-catalog-1".into(),
+            openkeys_catalog_generation: 1,
+            openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+            switch_generation: 1,
+            switch_digest: "stage8-switches-1".into(),
+            inventory_digest: inventory_digest.clone(),
+            policy_manifest_digest: "stage8-v2-policy-manifest".into(),
+            assignment_manifest_digest: "stage8-v2-assignment-manifest".into(),
+            funding_manifest_digest: String::new(),
+            minimum_runtime_schema_version: 2,
+            content_digest: "stage8-v2-target-release".into(),
+            assignments: vec![release_assignment],
+        };
+        let funding_manifest_digest =
+            crate::stage8::funding_manifest_digest(&mut pg.client, Some(&release_for_funding))
+                .unwrap();
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_release_policy_versions( \
+                   policy_id,policy_version,owner_type,owner_id,account_class,product_id, \
+                   billing_mode,schema_version,capability_generation,capability_digest, \
+                   catalog_generation,catalog_digest,switch_generation,switch_digest, \
+                   content_digest,created_ts \
+                 ) VALUES( \
+                   'stage8-v2-policy',1,'global_b2c','global','b2c','main','balance',2, \
+                   1,'stage8-capability-1',1,'stage8-main-catalog-1',1,'stage8-switches-1', \
+                   'stage8-v2-policy-digest',100 \
+                 ); \
+                 INSERT INTO pricing_release_policy_rules( \
+                   policy_id,policy_version,rule_id,rule_digest,scope_type,provider_id, \
+                   canonical_model_id,discount_bps,payable_multiplier_bp \
+                 ) VALUES \
+                 ( \
+                   'stage8-v2-policy',1,'stage8-v2-global','stage8-v2-global-digest', \
+                   'global',NULL,NULL,8000,2000 \
+                 ),( \
+                   'stage8-v2-policy',1,'stage8-v2-openai','stage8-v2-openai-digest', \
+                   'provider','openai',NULL,7000,3000 \
+                 ),( \
+                   'stage8-v2-policy',1,'stage8-v2-google','stage8-v2-google-digest', \
+                   'provider','google',NULL,6000,4000 \
+                 );",
+            )
+            .unwrap();
+        for (generation, release_kind, policy_manifest, assignment_manifest, content_digest) in [
+            (
+                101_i64,
+                "target",
+                "stage8-v2-target-policies",
+                "stage8-v2-target-assignments",
+                "stage8-v2-target-release",
+            ),
+            (
+                102_i64,
+                "recovery",
+                "stage8-v2-recovery-policies",
+                "stage8-v2-recovery-assignments",
+                "stage8-v2-recovery-release",
+            ),
+        ] {
+            pg.client
+                .execute(
+                    "INSERT INTO pricing_release_versions( \
+                   generation,release_kind,schema_version,capability_generation,capability_digest, \
+                   main_catalog_generation,main_catalog_digest,openkeys_catalog_generation, \
+                   openkeys_catalog_digest,switch_generation,switch_digest,inventory_digest, \
+                   policy_manifest_digest,assignment_manifest_digest,funding_manifest_digest, \
+                   minimum_runtime_schema_version,content_digest,created_ts \
+                 ) VALUES($1,$2,2,1,'stage8-capability-1',1,'stage8-main-catalog-1',1, \
+                          'stage8-openkeys-catalog-1',1,'stage8-switches-1',$3,$4,$5,$6,2,$7,$8)",
+                    &[
+                        &generation,
+                        &release_kind,
+                        &inventory_digest,
+                        &policy_manifest,
+                        &assignment_manifest,
+                        &funding_manifest_digest,
+                        &content_digest,
+                        &authority_ts,
+                    ],
+                )
+                .unwrap();
+            pg.client.execute(
+                "INSERT INTO pricing_release_assignments( \
+                   release_generation,account_id,account_class,policy_id,policy_version, \
+                   policy_digest,billing_mode,funding_generation,purpose,responsible,assignment_digest \
+                 ) VALUES($1,'stage8-account','b2c','stage8-v2-policy',1, \
+                          'stage8-v2-policy-digest','balance',1,NULL,NULL,$2)",
+                &[&generation, &format!("stage8-v2-assignment-{generation}")],
+            ).unwrap();
+        }
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_release_recovery_links( \
+                   target_generation,target_digest,recovery_generation,recovery_digest,link_digest,created_ts \
+                 ) VALUES(101,'stage8-v2-target-release',102,'stage8-v2-recovery-release', \
+                          'stage8-v2-recovery-link',100); \
+                 UPDATE engine_instances SET pricing_release_schema_version=2, \
+                   funding_schema_version=2,pricing_release_runtime_digest='stage8-v2-runtime' \
+                 WHERE instance_id='stage8-engine';",
+            )
+            .unwrap();
+
         let durable_before: (i64, i64, i64, i64) = {
             let row = pg
                 .client
@@ -7600,6 +7767,8 @@ mod tests {
             (row.get(0), row.get(1), row.get(2), row.get(3))
         };
         let request = crate::stage8::Stage8EngineEvidenceRequest {
+            target_generation: 101,
+            recovery_generation: 102,
             window_start_ts,
             window_end_ts,
             min_samples_per_provider: 1,
@@ -7615,7 +7784,12 @@ mod tests {
         assert_eq!(report.counts.policy_divergence_rows, 2);
         assert_eq!(report.counts.snapshots_by_provider.get("google"), Some(&1));
         assert_eq!(report.financial_samples.len(), 3);
-        assert!(report.evidence_digest.starts_with("sha256:v1:"));
+        assert!(report.evidence_digest.starts_with("sha256:v2:"));
+        assert_eq!(report.release.target_generation, 101);
+        assert_eq!(report.release.recovery_generation, 102);
+        assert_eq!(report.engine_inventory_digest, inventory_digest);
+        assert_eq!(report.funding_digest, funding_manifest_digest);
+        assert_eq!(report.legacy_inflight_count, 0);
         let serialized = serde_json::to_string(&report).unwrap();
         assert!(!serialized.contains("stage8-account"));
         assert!(!serialized.contains("stage8-anthropic-request"));

@@ -134,7 +134,11 @@ function completePlanInput(): Parameters<typeof buildStage5V2Plan>[0] {
 describe("pricing Stage 5 v2 planner", () => {
   it("pins Gemini only in main while keeping OpenKeys explicit", () => {
     const { catalogs, switches } = buildStage5V2CatalogsAndSwitches();
-    expect(catalogs[0].entries.filter((entry) => entry.provider_id === "google")).toHaveLength(9);
+    const googleEntries = catalogs[0].entries.filter((entry) => entry.provider_id === "google");
+    expect(googleEntries).toHaveLength(8);
+    expect(googleEntries).not.toContainEqual(expect.objectContaining({
+      canonical_model_id: "gemini-3-flash-preview",
+    }));
     expect(catalogs[1].entries.some((entry) => entry.provider_id === "google")).toBe(false);
     expect(switches.entries).toContainEqual({
       provider_id: "google",

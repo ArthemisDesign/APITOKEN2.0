@@ -179,6 +179,12 @@ enum DbOp {
     VerifyPostgres,
     /// Print read-only Stage 8 engine synchronization and shadow evidence as JSON.
     Stage8Evidence {
+        /// Exact prepared target pricing release generation.
+        #[arg(long)]
+        target_generation: i64,
+        /// Exact prepared recovery pricing release generation.
+        #[arg(long)]
+        recovery_generation: i64,
         /// Frozen authority window start, inclusive, as Unix epoch seconds.
         #[arg(long)]
         window_start_ts: i64,
@@ -544,6 +550,8 @@ fn db_cmd(op: DbOp) -> Result<()> {
             );
         }
         DbOp::Stage8Evidence {
+            target_generation,
+            recovery_generation,
             window_start_ts,
             window_end_ts,
             min_samples_per_provider,
@@ -552,6 +560,8 @@ fn db_cmd(op: DbOp) -> Result<()> {
         } => {
             pg.verify_schema()?;
             let request = registry::stage8::Stage8EngineEvidenceRequest {
+                target_generation,
+                recovery_generation,
                 window_start_ts,
                 window_end_ts,
                 min_samples_per_provider,

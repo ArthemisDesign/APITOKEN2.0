@@ -204,14 +204,20 @@ side effect. `serve` may only perform the read-only schema verification before c
   не выполняет persistence. Timed PostgreSQL wrappers set transaction-local statement/lock timeout;
   live reads use a separate bounded actor budget, while inserts pass through the existing billing
   writer without transient retry. SQLite APIs remain for parity/tests and have no live producer.
-- **Stage 8 engine evidence:** PostgreSQL-only read report материализуется в одной
-  `REPEATABLE READ READ ONLY` транзакции. Он проверяет active main/openkeys graph, runtime
-  capability, classifications/funding parity, frozen policy lineage, полное actual→shadow покрытие,
-  exact integer nanoUSD и canonical typed sample отдельно для `anthropic`, `openai` и `google`.
-  Внешний Gemini admission aggregate и durable provider=`google` usage/outbox остаются bounded
-  audit counts, но не заменяют обязательные Google actual snapshots и shadow evaluations. Subject
-  identities выходят только как SHA-256 digests. Report ничего не активирует и не исправляет;
-  любой blocker должен остановить Stage 9.
+- **Stage 8 engine evidence v2:** PostgreSQL-only read report материализуется в одной
+  `REPEATABLE READ READ ONLY` транзакции и принимает exact target/recovery generations. Помимо
+  active main/openkeys graph, classifications и полного actual→shadow покрытия он перечитывает
+  prepared target/recovery releases и recovery link, сверяет оба full-inventory assignment set,
+  их общий funding identity, live funding heads/lots с aggregate, текущие canonical
+  `engine_inventory_digest`/`funding_digest`, target rule precedence и ноль незавершённого
+  legacy-format inflight. Compile-fixed pricing capability и отдельный release schema version не
+  смешиваются: каждый live `engine_instances` обязан заявить release/funding schema v2 и
+  непустой runtime digest; отсутствие хотя бы одного такого claim — blocker до отдельного Stage 9
+  runtime checkpoint. `shadow_digest`, `runtime_floor_digest` и весь report получают canonical
+  `sha256:v2` identity. Внешний Gemini admission aggregate и durable provider=`google`
+  usage/outbox остаются bounded audit counts, но не заменяют обязательные Google actual snapshots
+  и shadow evaluations. Subject identities выходят только как SHA-256 digests. Report ничего не
+  активирует и не исправляет; любой blocker должен остановить Stage 9.
 - **Целевой Stage 5/6/9 контракт:** authoritative inventories полностью заменяют ручную assignment
   matrix. Funding normalizes online account-local transactions: exact historical welcome остаётся
   bonus, residual считается paid; новые grants `$5`, reviewer artifact и global money drain не

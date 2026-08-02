@@ -367,8 +367,15 @@ OpenKeys issuance заранее переходит на canonical 1:1 policy. E
 ### Stage 8 — full-inventory evidence
 
 Read-only evidence связывает exact commerce/engine/OpenKeys inventories, все policy ACK, funding
-generation, 100% shadow, runtime capability и prepared/recovery release digests. Evidence имеет TTL
-и становится stale при любом control-plane изменении.
+generation, 100% shadow, runtime capability и prepared/recovery release digests. Engine report v2
+принимает exact target/recovery generations и в одном snapshot хеширует текущий engine inventory,
+target funding manifest, shadow evaluation set и live runtime floor. Он требует одинаковую
+funding/runtime lineage у target/recovery, полное assignment-покрытие active и disabled accounts,
+паритет funding heads/lots с aggregate, соответствие каждого shadow result exact target rule и
+ноль незавершённого legacy-format inflight. Evidence имеет TTL и становится stale при любом
+control-plane изменении. Producer намеренно остаётся blocked, пока все live engine instances не
+публикуют release/funding schema v2 claims; этот claim writer доставляется Stage 9 runtime
+checkpoint, а не обходится ослаблением Stage 8.
 
 ### Stage 9 — one-head activation
 

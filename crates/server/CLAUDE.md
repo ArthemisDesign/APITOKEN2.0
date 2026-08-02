@@ -101,9 +101,13 @@
   `activation_policy_ack {effective_policy_version, policy_digest}`. Для strict binding exact ACK
   обязателен; отсутствующий/stale/wrong identity даёт 409, malformed identity — 400. Disable не
   требует ACK. Секрет ключа по-прежнему выдаётся один раз и только после durable ACK check.
-- `db stage8-evidence` получает тот же compile-fixed runtime manifest из `Settings`, требует явное
-  frozen window/sample limits и внешний агрегат Gemini admissions, печатает read-only JSON и
-  возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
+- `db stage8-evidence` получает тот же compile-fixed runtime manifest из `Settings`, требует
+  exact `--target-generation`/`--recovery-generation`, явное frozen window/sample limits и
+  внешний агрегат Gemini admissions. Report schema v2 связывает prepared release pair с текущими
+  inventory/funding/shadow/runtime-floor digests и legacy-inflight count, печатает read-only JSON
+  и возвращает ошибку после печати при любом blocker. До Stage 9 runtime claims отсутствие
+  release/funding schema v2 у любого live instance намеренно оставляет report красным. Команда не
+  меняет heads, bindings или деньги.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
 - Router policy preflight не открывает authority сам: metered credential резолвится через
   `AsyncBilling`, strict account читает ровно один `PricingReadBundle`, а решение каждой модели

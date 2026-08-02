@@ -287,6 +287,8 @@ It is recorded in the report but does not satisfy Google provider coverage:
 
 ```bash
 claude-api db stage8-evidence \
+  --target-generation <exact-prepared-target-generation> \
+  --recovery-generation <exact-newer-recovery-generation> \
   --window-start-ts <inclusive-epoch-seconds> \
   --window-end-ts <exclusive-epoch-seconds> \
   --min-samples-per-provider <required-minimum> \
@@ -297,7 +299,9 @@ claude-api db stage8-evidence \
 
 Both commands use one `REPEATABLE READ READ ONLY` snapshot, print JSON before returning a non-zero
 exit on blockers, hash account/request/binding subjects, and never print a database DSN. Store both
-reports in the protected release evidence location and record their `sha256:v1` digests.
+reports in the protected release evidence location. The commerce report currently has
+`schema_version=1`/`sha256:v1`; the engine report has `schema_version=2` and a canonical
+`sha256:v2` `evidence_digest`. Never compare or combine them as if they used one digest domain.
 
 Required target evidence includes:
 
@@ -307,15 +311,25 @@ Required target evidence includes:
 - Stage 6 funding generation for every account;
 - zero unfinished legacy-format reservations/outbox rows (active v2 rows are allowed);
 - 100% shadow coverage, exact nanoUSD parity and no unresolved outcome;
-- exact prepared target and recovery release digests;
-- runtime capability on the serving slot, inactive slot and allowed rollback floor;
+- exact prepared target/recovery release and recovery-link digests, with equal runtime/funding
+  lineage and one assignment for every active or disabled engine account;
+- current engine inventory and target funding-manifest digests, active funding heads and exact
+  aggregate/lot parity;
+- target release rule precedence against every shadow evaluation;
+- release/funding schema v2 claims and a nonempty runtime digest on every live engine instance,
+  in addition to compile-fixed pricing capability support;
 - no pending/processing/retry/dead pricing control jobs.
 
-Gemini traffic is required product evidence, not a blocker. Google must have the configured minimum
+Gemini traffic is required product evidence, not a substitute for durable coverage. Google must have the configured minimum
 of immutable snapshots and matching evaluations just like Anthropic and OpenAI; usage/outbox or the
 external aggregate alone cannot pass coverage. Any missing provider sample, stale ACK, unclassified
 account, funding mismatch, runtime drift or catalog/policy mismatch fails the report. Do not edit
 rows to make it green.
+
+The Stage 8 producer checkpoint is intentionally fail-closed before the Stage 9 runtime checkpoint:
+the current runtime claim writer does not yet populate the release-v2/funding-v2 columns, so
+`live_runtime_below_release_v2_floor` is expected until that compatible runtime is deployed on all
+live slots. Do not weaken this blocker and do not treat a producer-only report as completed Stage 8.
 
 Immediately before Stage 9, rerun both reports and require fresh `passed=true` results. Stage 9
 changes one global active release head; it does not select a canary list and does not require a
