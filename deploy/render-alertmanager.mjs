@@ -46,7 +46,6 @@ const replacements = new Map([
   ["__SMTP_FROM__", required(worker, "EMAIL_FROM", workerEnvironmentPath)],
   ["__SMTP_USERNAME__", required(worker, "SMTP_USERNAME", workerEnvironmentPath)],
   ["__SMTP_PASSWORD__", required(worker, "SMTP_PASSWORD", workerEnvironmentPath)],
-  ["__ALERT_EMAIL_TO__", required(monitoring, "ALERT_EMAIL_TO", monitoringEnvironmentPath)],
 ]);
 
 let rendered = fs.readFileSync(templatePath, "utf8");

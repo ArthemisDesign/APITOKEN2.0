@@ -132,13 +132,12 @@ printf '%s\n' \
   'SMTP_PASSWORD=monitoring-password' >"$TEMP/worker.env"
 printf '%s\n' \
   'GRAFANA_ADMIN_PASSWORD=irrelevant' \
-  'MONITORING_POSTGRES_PASSWORD=irrelevant' \
-  'ALERT_EMAIL_TO=alerts@example.test' >"$TEMP/monitoring.env"
+  'MONITORING_POSTGRES_PASSWORD=irrelevant' >"$TEMP/monitoring.env"
 node "$ROOT/deploy/render-alertmanager.mjs" \
   "$ROOT/observability/alertmanager/alertmanager.yml.template" \
   "$TEMP/worker.env" "$TEMP/monitoring.env" "$TEMP/alertmanager.yml"
 grep -Fq 'smtp_smarthost: "smtp.example.test:587"' "$TEMP/alertmanager.yml"
-grep -Fq 'to: "alerts@example.test"' "$TEMP/alertmanager.yml"
+! grep -Fq 'email_configs' "$TEMP/alertmanager.yml"
 ! grep -Eq '__[A-Z0-9_]+__' "$TEMP/alertmanager.yml"
 
 # Without DEVBOT_AM_SECRET the optional Telegram fan-out is stripped entirely, and the email

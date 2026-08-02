@@ -56,13 +56,12 @@ if [[ ! -e $ENV_FILE ]]; then
   {
     printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)"
     printf 'MONITORING_POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)"
-    printf 'ALERT_EMAIL_TO=apitokensale@gmail.com\n'
   } >"$ENV_FILE"
 fi
 [[ -f $ENV_FILE && ! -L $ENV_FILE ]] || die "$ENV_FILE must be a regular file"
 chown root:root "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
-for required_key in GRAFANA_ADMIN_PASSWORD MONITORING_POSTGRES_PASSWORD ALERT_EMAIL_TO; do
+for required_key in GRAFANA_ADMIN_PASSWORD MONITORING_POSTGRES_PASSWORD; do
   [[ $(awk -F= -v key="$required_key" '$1 == key { count++ } END { print count + 0 }' "$ENV_FILE") == 1 ]] \
     || die "$ENV_FILE must contain exactly one $required_key assignment"
 done

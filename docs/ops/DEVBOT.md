@@ -35,7 +35,7 @@
 
 | Транспорт | Что несёт | Точка подключения |
 |---|---|---|
-| **Alertmanager webhook** | Все 43 alert-правила (26 critical, 17 warning) | новый `webhook_configs` receiver в `observability/alertmanager/alertmanager.yml.template` на loopback-порт бота; email-receiver сохраняется (expand-only) |
+| **Alertmanager webhook** | Все 43 alert-правила (26 critical, 17 warning) | новый `webhook_configs` receiver в `observability/alertmanager/alertmanager.yml.template` на loopback-порт бота |
 | **GitHub API поллер** | commit statuses `deploy/*` и Deployments `production-*` | тот же контракт, что у `deploy/agent-merge.sh` (`am_status`) и `deploy/watchdog-github.sh`; интервал 30–60 с |
 | **Journald tail** (этап 3) | ручные вмешательства и откаты, не отражённые в GitHub | префиксы `[watchdog]`, `[agent-merge]`, `[admin-deploy]`, `[sales-deploy]`, `[openkeys-deploy]`; чтение через `journalctl -f` |
 

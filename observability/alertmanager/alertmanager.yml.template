@@ -30,19 +30,6 @@ route:
 
 receivers:
   - name: production-email
-    email_configs:
-      - to: __ALERT_EMAIL_TO__
-        send_resolved: true
-        headers:
-          Subject: '[apiToken.sale][{{ .Status | toUpper }}][{{ .CommonLabels.severity }}] {{ .CommonLabels.alertname }}'
-        html: |-
-          <h2>{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}</h2>
-          {{ range .Alerts }}
-          <p><strong>{{ .Annotations.summary }}</strong><br>
-          {{ .Annotations.description }}<br>
-          Component: {{ .Labels.component }}<br>
-          Runbook: {{ .Annotations.runbook }}</p>
-          {{ end }}
   # DEVBOT-BEGIN
   # Loopback-only webhook into apps/devbot (systemd apitoken-devbot.service). The path secret is
   # substituted from DEVBOT_AM_SECRET by deploy/render-alertmanager.mjs.

@@ -50,7 +50,7 @@ the authoritative hourly recovery artifacts and are validated again before datab
 ## Failure-domain limitation
 
 All monitoring was explicitly requested on the production server. Consequently, a total host,
-power, network, or Docker failure also stops Alertmanager and cannot send an outage email. The
+power, network, or Docker failure also stops Alertmanager and cannot send outage notifications. The
 synthetic probes detect application, TLS, routing, and dependency failures while the host remains
 able to run. A truly independent host-down notification requires one minimal off-host dead-man or
 external uptime check; this stack does not pretend to provide that guarantee from inside the same
@@ -83,7 +83,7 @@ sudo docker compose --env-file /etc/apitoken/monitoring.env \
   summary='Operator-requested delivery test'
 ```
 
-Delete or let the short-lived test alert resolve after confirming the email. Never put SMTP,
+Delete or let the short-lived test alert resolve. Never put SMTP,
 Grafana, engine, or PostgreSQL credentials into the repository; they live in root-only environment
 or rendered files under `/etc/apitoken`.
 
