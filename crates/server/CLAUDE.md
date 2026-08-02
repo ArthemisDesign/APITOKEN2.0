@@ -25,6 +25,9 @@
   `/metrics` экспортирует registry incident-tripwire
   `claude_api_execution_group_double_winner_total`; метрика должна оставаться нулевой, а
   transactional winner correctness не зависит от процесса или Prometheus.
+  Одинаковый на всех fixed planes `POST /internal/router/policy/preflight` — loopback-only
+  producer-контракт фазы router 6.4a: принимает до 32 catalog-кандидатов, авторизует customer/admin
+  credential и возвращает только ordered allow-list без account/policy/pricing identity.
 - `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): контракт,
   которым БУДУЩАЯ КОММЕРЦИЯ (отдельный сервис) управляет движком. Гейт — `forward::control_authed`
   (control-ключ, ОТДЕЛЬНО от forwarding-admin). Все записи — через single-writer актор `AsyncBilling`
@@ -93,6 +96,12 @@
   frozen window/sample limits и внешний агрегат Gemini admissions, печатает read-only JSON и
   возвращает ошибку после печати при любом blocker. Команда не меняет heads, bindings или деньги.
 - Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
+- Router policy preflight не открывает authority сам: metered credential резолвится через
+  `AsyncBilling`, strict account читает ровно один `PricingReadBundle`, а решение каждой модели
+  использует тот же `forward::resolve_pricing` и compile-fixed runtime manifest, что live strict
+  admission. Legacy/shadow/unbound account и forwarding-admin остаются unrestricted; Google для
+  strict binding фильтруется, пока Gemini strict admission сама fail-closed недоступна. Ответы и
+  логи не содержат credential/account/model-rule identity, решения не кэшируются.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
   `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого

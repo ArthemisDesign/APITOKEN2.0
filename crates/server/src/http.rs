@@ -320,7 +320,12 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
         .route("/live", get(health))
         .route("/ready", get(ready))
         .route("/balance", get(balance))
-        .route("/metrics", get(metrics));
+        .route("/metrics", get(metrics))
+        .route(
+            "/internal/router/policy/preflight",
+            post(crate::router_policy::preflight)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
+        );
     let router = match provider {
         forward::ProviderMode::Combined => common
             .route("/pool", get(pool_status))
@@ -6196,6 +6201,306 @@ mod tests {
         let billing = forward::AsyncBilling::start(db.to_string_lossy().into_owned(), 1).unwrap();
         app.billing = Some(Arc::new(billing));
         (app, dir)
+    }
+
+    async fn router_policy_request(
+        service: &Router,
+        credential: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/internal/router/policy/preflight")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        if let Some(credential) = credential {
+            request
+                .headers_mut()
+                .insert("x-api-key", credential.parse().unwrap());
+        }
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::from((
+            [203, 0, 113, 10],
+            42_424,
+        ))));
+        let response = service.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    fn policy_candidates() -> Value {
+        json!({
+            "schema_version": 1,
+            "candidates": [
+                {
+                    "id": "anthropic/claude-sonnet-5",
+                    "provider_id": "anthropic",
+                    "canonical_model_id": "claude-sonnet-5"
+                },
+                {
+                    "id": "openai/gpt-5.6-sol",
+                    "provider_id": "openai",
+                    "canonical_model_id": "gpt-5.6-sol"
+                },
+                {
+                    "id": "google/gemini-3.6-flash",
+                    "provider_id": "google",
+                    "canonical_model_id": "gemini-3.6-flash"
+                }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn router_policy_preflight_is_present_on_every_plane_and_admin_is_unrestricted() {
+        for provider in [
+            forward::ProviderMode::Combined,
+            forward::ProviderMode::Anthropic,
+            forward::ProviderMode::OpenAi,
+            forward::ProviderMode::Gemini,
+        ] {
+            let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
+            let (status, body) =
+                router_policy_request(&service, Some("admin-key"), policy_candidates()).await;
+            assert_eq!(status, StatusCode::OK, "provider={provider:?}");
+            assert_eq!(body["schema_version"], 1);
+            assert_eq!(body["mode"], "unrestricted");
+            assert_eq!(
+                body["allowed"],
+                json!([
+                    "anthropic/claude-sonnet-5",
+                    "openai/gpt-5.6-sol",
+                    "google/gemini-3.6-flash"
+                ])
+            );
+        }
+
+        let service = router(
+            provider_test_app(forward::ProviderMode::Anthropic),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (status, body) = router_policy_request(&service, None, policy_candidates()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+
+        let mut malformed = policy_candidates();
+        malformed["authority_override"] = json!(true);
+        let (status, body) =
+            router_policy_request(&service, Some("admin-key"), malformed).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn router_policy_preflight_filters_one_coherent_strict_policy_before_execution() {
+        use registry::pricing::{
+            AccountClass, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
+            AccountPolicyRuleSpec, AccountPolicySpec, ActiveExpectation, FundingEnforcement,
+            PolicyActiveExpectation, PolicyEnforcement, PolicyOwnerType, PolicyRuleScope,
+            PolicySegment, PricingCatalogEntrySpec, PricingCatalogSpec, PricingMode,
+            PricingMutation, ProviderSwitchEntrySpec, ProviderSwitchScope, ProviderSwitchSpec,
+            ReconciliationState, RuleOrigin,
+        };
+
+        let (mut app, dir) = billing_test_app("router_policy_preflight");
+        let db = dir.join("data.db");
+        let conn = registry::open(db.to_string_lossy().as_ref()).unwrap();
+        registry::account_create(&conn, "strict-router-account", None, 10_000).unwrap();
+
+        let runtime = forward::builtin_pricing_runtime_manifest();
+        let capability = &runtime.capabilities()[0];
+        let catalog = PricingCatalogSpec {
+            product_id: "main".to_owned(),
+            generation: 1,
+            schema_version: capability.pricing_schema_version(),
+            capability_generation: capability.capability_generation(),
+            capability_digest: capability.capability_digest().to_owned(),
+            content_digest: "router-policy-catalog-v1".to_owned(),
+            entries: vec![
+                PricingCatalogEntrySpec {
+                    provider_id: "anthropic".to_owned(),
+                    canonical_model_id: "claude-sonnet-5".to_owned(),
+                    enabled: true,
+                },
+                PricingCatalogEntrySpec {
+                    provider_id: "openai".to_owned(),
+                    canonical_model_id: "gpt-5.6-sol".to_owned(),
+                    enabled: true,
+                },
+                PricingCatalogEntrySpec {
+                    provider_id: "google".to_owned(),
+                    canonical_model_id: "gemini-3.6-flash".to_owned(),
+                    enabled: true,
+                },
+            ],
+        };
+        assert_eq!(
+            registry::pricing::sqlite_prepare_pricing_catalog(&conn, &catalog).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            registry::pricing::sqlite_activate_pricing_catalog(
+                &conn,
+                "main",
+                &catalog.target(),
+                &ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        let mut switch_entries = Vec::new();
+        for provider_id in ["anthropic", "openai", "google"] {
+            switch_entries.push(ProviderSwitchEntrySpec {
+                provider_id: provider_id.to_owned(),
+                scope: ProviderSwitchScope::Master,
+                catalog_generation: None,
+                enabled: true,
+            });
+            switch_entries.push(ProviderSwitchEntrySpec {
+                provider_id: provider_id.to_owned(),
+                scope: ProviderSwitchScope::Segment {
+                    product_id: "main".to_owned(),
+                    segment: PolicySegment::B2c,
+                },
+                catalog_generation: Some(1),
+                enabled: true,
+            });
+        }
+        let switches = ProviderSwitchSpec {
+            generation: 1,
+            schema_version: capability.pricing_schema_version(),
+            capability_generation: capability.capability_generation(),
+            capability_digest: capability.capability_digest().to_owned(),
+            content_digest: "router-policy-switches-v1".to_owned(),
+            entries: switch_entries,
+        };
+        assert_eq!(
+            registry::pricing::sqlite_prepare_provider_switches(&conn, &switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            registry::pricing::sqlite_activate_provider_switches(
+                &conn,
+                &switches.target(),
+                &ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        let rule = |rule_id: &str, scope: PolicyRuleScope| AccountPolicyRuleSpec {
+            rule_id: rule_id.to_owned(),
+            rule_digest: format!("{rule_id}-digest"),
+            scope,
+            pricing_mode: PricingMode::Discount,
+            rule_origin: RuleOrigin::Managed,
+            discount_bps: Some(0),
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+        };
+        let policy = AccountPolicySpec {
+            account_id: "strict-router-account".to_owned(),
+            effective_version: 1,
+            policy_id: "router-policy".to_owned(),
+            policy_version: 1,
+            source_policy_digest: "router-policy-source-v1".to_owned(),
+            owner_type: PolicyOwnerType::GlobalB2c,
+            owner_id: "global".to_owned(),
+            account_class: AccountClass::B2c,
+            product_id: "main".to_owned(),
+            schema_version: capability.pricing_schema_version(),
+            catalog_generation: 1,
+            switch_generation: 1,
+            content_digest: "router-policy-v1".to_owned(),
+            replacement_locked: false,
+            rules: vec![
+                rule(
+                    "allow-anthropic-sonnet",
+                    PolicyRuleScope::Model {
+                        provider_id: "anthropic".to_owned(),
+                        canonical_model_id: "claude-sonnet-5".to_owned(),
+                    },
+                ),
+                rule(
+                    "allow-openai",
+                    PolicyRuleScope::Provider {
+                        provider_id: "openai".to_owned(),
+                    },
+                ),
+                rule(
+                    "allow-google",
+                    PolicyRuleScope::Provider {
+                        provider_id: "google".to_owned(),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            registry::pricing::sqlite_prepare_account_policy(&conn, &policy).unwrap(),
+            PricingMutation::Stored
+        );
+        let binding = AccountPolicyBindingSpec {
+            policy_enforcement: PolicyEnforcement::Strict,
+            funding_enforcement: FundingEnforcement::Strict,
+            reconciliation_state: ReconciliationState::Verified,
+        };
+        assert_eq!(
+            registry::pricing::sqlite_activate_account_policy(
+                &conn,
+                &AccountPolicyActivationSpec {
+                    account_id: policy.account_id.clone(),
+                    effective_version: policy.effective_version,
+                    content_digest: policy.content_digest.clone(),
+                    binding,
+                },
+                &PolicyActiveExpectation::Unbound,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        registry::key_issue_with_policy_ack(
+            &conn,
+            "strict-router-key",
+            &policy.account_id,
+            Some("router"),
+            None,
+            None,
+            Some(&registry::KeyActivationPolicyAck {
+                effective_policy_version: policy.effective_version,
+                policy_digest: policy.content_digest.clone(),
+            }),
+        )
+        .unwrap();
+        drop(conn);
+
+        app.pricing_manifest = Arc::new(runtime);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let (status, body) = router_policy_request(
+            &service,
+            Some("strict-router-key"),
+            policy_candidates(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["mode"], "strict");
+        assert_eq!(
+            body["allowed"],
+            json!([
+                "anthropic/claude-sonnet-5",
+                "openai/gpt-5.6-sol"
+            ])
+        );
+        assert!(
+            !body.to_string().contains("strict-router-account")
+                && !body.to_string().contains("router-policy-v1")
+        );
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

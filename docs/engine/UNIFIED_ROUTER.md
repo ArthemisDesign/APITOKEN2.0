@@ -1,7 +1,7 @@
 # UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
 
-Статус: **этапы 1–5 и фазы 6.1–6.3 реализованы; контракт 6.4 зафиксирован,
-producer-first реализация 6.4a–6.4c идёт при выключенном fallback.**
+Статус: **этапы 1–5, фазы 6.1–6.3 и producer 6.4a реализованы; consumer/GA
+пакеты 6.4b–6.4c идут при выключенном fallback.**
 `router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
 `claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
@@ -761,7 +761,7 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    проходит router→plane→reservation, а SQLite/PostgreSQL settle выбирает ровно одного
    billable winner и полностью возвращает loser hold; `ExecutionGroupDoubleWinner` гейтит любой
    такой инцидент. Контракт фазы 6.4 зафиксирован 2026-08-02: одинаковый authenticated
-   policy-preflight на плоскостях выкатывается producer-first; затем router добавляет strict
+   policy-preflight на плоскостях реализован producer-first; затем router добавляет strict
    `provider` preferences, version-controlled presets/ranks; последним пакетом идут router/plane
    metrics, Prometheus, load/live canary и отдельное включение production-флага. Полная схема,
    fail-closed mixed-version semantics и rollout-порядок — `docs/engine/ROUTING_FENCING.md`

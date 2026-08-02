@@ -111,6 +111,14 @@ Control API движка использует только на чтение. С
   rollback/tests). Потребители winner-результата — money/funding settlement и
   `crates/server` `/metrics`; публичные API group identity не возвращают. Контракт —
   `docs/engine/ROUTING_FENCING.md` §4.
+- **Контракт policy preflight (provider planes → router, фаза 6.4a).** Производитель — одинаковый
+  `crates/server::router_policy` на каждом fixed runtime: authenticated loopback-only
+  `POST /internal/router/policy/preflight` читает customer key и один coherent pricing bundle через
+  `AsyncBilling`, применяет engine-owned resolver и возвращает только bounded ordered allow-list.
+  Потребитель — `crates/router` (пакет 6.4b): после catalog/preferences, до attempt 1, без кэша
+  credential/policy и без импорта `forward`/`registry`. Публичные provider Caddy-vhost'ы не включают
+  `/internal/*` в allowlist; stable origins 8790/8792/8794 доступны router'у по loopback. Контракт и
+  mixed-version failure semantics — `docs/engine/ROUTING_FENCING.md` §5.1.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
 
 ## 3. Модели и цены — где ещё зеркалятся

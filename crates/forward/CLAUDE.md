@@ -178,6 +178,12 @@ Gemini metered strict admission запрещён до отдельного пр�
 strict multiplier пока fail-closed: zero-charge snapshot не получает выдуманную funding identity,
 пока отдельный контракт явно не определит такой lifecycle.
 
+Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
+`RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один
+coherent bundle фильтруют bounded catalog chain до первой router-attempt. Этот caller не строит
+quote/snapshot, не резервирует деньги и не меняет admission; legacy/shadow/unbound остаются
+unrestricted, strict Gemini — запрещён в соответствии с live admission выше.
+
 Strict counters имеют только фиксированные `provider`, `mode`, `scope`, `reason`; Gemini входит в
 фиксированный provider set и его admitted series обязана оставаться нулевой. Typed resolver
 rejections сводятся к bounded operational classes (missing policy/rule, unavailable model/switch,

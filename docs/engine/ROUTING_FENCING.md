@@ -1,7 +1,7 @@
 # ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
 
-Статус: фазы 6.1–6.3 реализованы; контракт фазы 6.4 зафиксирован 2026-08-02, реализация
-идёт producer-first пакетами 6.4a–6.4c. Serial fallback остаётся выключенным по умолчанию
+Статус: фазы 6.1–6.3 и producer 6.4a реализованы; контракт фазы 6.4 зафиксирован
+2026-08-02, реализация идёт пакетами 6.4b–6.4c. Serial fallback остаётся выключенным по умолчанию
 до завершения policy/presets/telemetry canary. Реализация следует этому документу;
 отклонение требует его пересмотра.
 
@@ -209,8 +209,8 @@ provider-плоскость добавляет одинаковый внутре
 
 Ответ содержит только версию, режим `unrestricted|strict` и ordered subset входных `id` в
 поле `allowed`; account ID, policy/rule/digest, цены и причины запрета наружу не выходят.
-Список ограничен 32 уникальными кандидатами, идентификаторы — 256 байтами, неизвестные поля
-и неизвестные provider ID отклоняются. Credential передаётся теми же auth-заголовками, что и
+Тело ограничено 64 KiB, список — 32 уникальными кандидатами, идентификаторы — 256 байтами;
+неизвестные поля и неизвестные provider ID отклоняются. Credential передаётся теми же auth-заголовками, что и
 исполняемый запрос. Env-admin получает `unrestricted`; невалидный credential — `401`, ошибка
 authority — `503`.
 
@@ -231,9 +231,12 @@ policy mutable, а credential не должен попадать в память
 точным subset исходного списка без дубликатов; иное — producer-contract failure и `503`.
 Пустой strict subset → lane-shaped `403 policy_restricted` до первой попытки.
 
-Producer endpoint выкатывается и проходит `deploy/watchdog` раньше consumer router. Такой
-порядок делает expand-only rollout безопасным; consumer всё равно понимает mixed-version
-окно и fail-closed перебирает плоскости вместо зависимости от Anthropic origin.
+Producer endpoint реализован 2026-08-02 в `crates/server/src/router_policy.rs` и зарегистрирован
+на всех runtime modes до provider-specific route composition. Публичные Caddy allowlists не
+пропускают `/internal/*`; router обращается к нему только через stable loopback origins. Endpoint
+выкатывается и проходит `deploy/watchdog` раньше consumer router. Такой порядок делает expand-only
+rollout безопасным; consumer всё равно понимает mixed-version окно и fail-closed перебирает
+плоскости вместо зависимости от Anthropic origin.
 
 ### 5.2. Provider preferences и presets (контракт 6.4b)
 
@@ -320,8 +323,10 @@ backlog. Production-флаг включается только последни�
 3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
    insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
-4. **6.4 — policies/presets + telemetry GA — КОНТРАКТ ЗАФИКСИРОВАН 2026-08-02:**
-   producer-first policy preflight (6.4a), provider preferences/presets (6.4b), metrics,
+4. **6.4 — policies/presets + telemetry GA — 6.4a РЕАЛИЗОВАН 2026-08-02:**
+   producer-first policy preflight одинаково доступен на всех fixed planes и покрыт bounded
+   validation, auth-lattice и real-SQLite strict-policy тестами. Остаются provider
+   preferences/presets (6.4b), metrics,
    Prometheus, canary/load и отдельное включение production-флага (6.4c). До завершения всех
    пакетов fallback остаётся default-off.
 

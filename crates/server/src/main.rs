@@ -13,6 +13,7 @@ mod config;
 mod http;
 mod metrics_store;
 mod poller;
+mod router_policy;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
