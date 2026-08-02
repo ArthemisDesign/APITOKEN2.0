@@ -388,6 +388,52 @@ export const MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES = Object.freeze([
   })),
 ]);
 
+/**
+ * Canonical Gemini model identities reviewed by the native runtime and
+ * `crates/metering`. The engine provider id is `google`; Gemini is the public
+ * product/provider name. Keep this list byte-for-byte aligned with the
+ * runtime-capable, tariff-pinned catalogue rather than inferring models from
+ * aliases or remote `/models` responses.
+ */
+export const CURRENT_GEMINI_CANONICAL_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+  "gemini-3.1-flash-image",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+] as const;
+
+/**
+ * Dormant target capability for the global pricing-release rollout. It
+ * extends generation 2 with every reviewed Gemini model while preserving the
+ * exact Anthropic/OpenAI prefix. Merely publishing this identity does not
+ * advance a catalog, provider switch, account policy, or release head.
+ *
+ * The digest is reproducible with the Stage 5 capability builder over
+ * `{generation: 3, schema_version: 1, entries, aliases}`. Each entry carries
+ * the usual `pricing_supported: true` capability data; the only alias remains
+ * `gpt-5.6 -> gpt-5.6-sol`.
+ */
+export const MULTI_DISCOUNT_TARGET_CAPABILITY_GENERATION = 3;
+export const MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST =
+  "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83";
+
+export const MULTI_DISCOUNT_TARGET_MAIN_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
+  ...CURRENT_GEMINI_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "google" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+]);
+
+/** OpenKeys remains explicit: generation 3 does not silently grant Gemini. */
+export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
+  MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
+
 export const pricingCatalogSpecSchema = z.object({
   product_id: pricingIdentifierSchema,
   generation: pricingVersionSchema,

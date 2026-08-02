@@ -212,6 +212,13 @@ Engine хранит prepared releases и один active release head. Подг�
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
+Compile-fixed pricing runtime manifest заранее, отдельным producer-first checkpoint, принимает
+capability generation 3 с точным Anthropic/OpenAI/Gemini model set. Это только разрешает
+подготовить pinned catalog/release identities: публикация capability не двигает catalog,
+switches, account policies или release head и потому не меняет live traffic. Внутренний provider
+ID Gemini в pricing authority — `google`; продуктовые документы продолжают называть провайдера
+Gemini.
+
 Все три migration surfaces пусты и dormant: наличие таблиц не создаёт policy, release head,
 funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных
 production migration/watchdog exact schema SHA.

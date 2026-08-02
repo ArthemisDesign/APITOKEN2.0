@@ -1049,8 +1049,8 @@ mod tests {
     #[test]
     fn pricing_shadow_manifest_is_fixed_registry_canonical_evidence() {
         let manifest = pricing_shadow_runtime_manifest();
-        assert_eq!(manifest.manifest_generation(), 2);
-        assert_eq!(manifest.capabilities().len(), 2);
+        assert_eq!(manifest.manifest_generation(), 3);
+        assert_eq!(manifest.capabilities().len(), 3);
         for (index, generation, digest) in [
             (
                 0,
@@ -1062,12 +1062,20 @@ mod tests {
                 2,
                 "sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0",
             ),
+            (
+                2,
+                3,
+                "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83",
+            ),
         ] {
             assert_eq!(
                 manifest.capabilities()[index].pricing_schema_version(),
                 registry::pricing::PRICING_SCHEMA_VERSION
             );
-            assert_eq!(manifest.capabilities()[index].capability_generation(), generation);
+            assert_eq!(
+                manifest.capabilities()[index].capability_generation(),
+                generation
+            );
             assert_eq!(manifest.capabilities()[index].capability_digest(), digest);
         }
         assert!(manifest.manifest_digest().starts_with("sha256:v1:"));

@@ -27,10 +27,12 @@ mod shadow;
 /// stamps this exact identity into the owner lease and strict reserve checks it transactionally.
 ///
 /// The manifest lists every reviewed capability generation side by side: generation 1 (the active
-/// production authority) and generation 2 (`claude-opus-5` + `claude-fable-5`). Adding a member is
-/// inert — resolution keeps accepting the generation-1 pins until commerce activates catalog
-/// generation 2 — and is required before that activation, because the resolver fails closed on any
-/// catalog/switch capability outside this manifest.
+/// production authority), generation 2 (`claude-opus-5` + `claude-fable-5`), and dormant
+/// generation 3 (the exact tariff-pinned Gemini model set under engine provider id `google`).
+/// Adding a member is inert — resolution keeps accepting the currently active pins until commerce
+/// materializes and the global release flow later activates a new catalog — and is required before
+/// preparation, because the resolver fails closed on any catalog/switch capability outside this
+/// manifest.
 pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
     let capabilities = [
         (
@@ -40,6 +42,10 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
         (
             2,
             "sha256:v1:9b23acd863d22abe2a6ed12096a4bb68a07b8d5c196351f1a15d38f11029bcd0",
+        ),
+        (
+            3,
+            "sha256:v1:e062a218571c1029490c8a28d2343f35aec0318a83a74d2244396b3e01f4fd83",
         ),
     ]
     .into_iter()
@@ -52,7 +58,7 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
         .expect("built-in pricing evaluator capability is valid")
     })
     .collect();
-    PricingRuntimeManifestEvidence::new(2, capabilities)
+    PricingRuntimeManifestEvidence::new(3, capabilities)
         .expect("built-in pricing evaluator manifest is valid")
 }
 

@@ -1,9 +1,11 @@
 # Stage 5 — materialization целевого pricing release
 
 Статус: целевой контракт; OpenKeys authoritative cursor producer и admin-managed service inventory
-producer реализованы отдельными producer-first checkpoint. Stage 5 materializer consumer ещё
-должен быть приведён к этому контракту до production apply. Stage 5 готовит immutable pricing
-authority, но не меняет live traffic.
+producer реализованы отдельными producer-first checkpoint. Compile-fixed runtime manifest также
+публикует dormant capability generation 3: exact Anthropic/OpenAI/Gemini model identity разрешена
+для последующей подготовки, но ни один catalog/switch/release head этим не активируется. Stage 5
+materializer consumer ещё должен быть приведён к этому контракту до production apply. Stage 5
+готовит immutable pricing authority, но не меняет live traffic.
 
 ## Входные inventories
 
@@ -38,6 +40,11 @@ owner или отсутствующий engine account — typed blocker. Акк
 - OpenKeys: один canonical 1:1 contract (`discount_bps=0`) для всех существующих и новых accounts.
   Старые scalar discounts не переносятся в target release.
 - Service: все runtime-capable модели и `billing_mode=meter_only`; balance не участвует в admission.
+
+Внутренний engine provider ID Gemini — `google`. Main catalog generation 3 явно включает все
+тарифно закреплённые Gemini-модели. OpenKeys generation 3 намеренно сохраняет Anthropic/OpenAI
+набор: Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет
+1:1. Capability publication не является таким enablement.
 
 Planner создаёт target release manifest и заранее подготовленный recovery release следующей
 monotonic generation. Оба связывают capability, main/OpenKeys catalogs, switches, policies,

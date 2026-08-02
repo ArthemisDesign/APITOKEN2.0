@@ -27,6 +27,12 @@ policy, OpenKeys only through an explicit 1:1 catalog entry, and service account
 runtime-capable Gemini model under `meter_only`. Activation is the global zero-downtime release in
 `docs/commerce/MULTI-DISCOUNT.md`, not an independent Gemini client canary.
 
+The immutable pricing authority uses internal provider id `google`. Dormant capability generation
+3 pins all eight tariff-backed models from `crates/metering/src/gemini.rs`; publishing that
+compile-fixed identity does not activate Gemini for any customer. The Stage 5 main catalog must opt
+in explicitly, while the contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI
+until a separate reviewed 1:1 OpenKeys generation enables Gemini.
+
 ## Accepted subscriptions
 
 Authbot asks Google for the actual tier and accepts only known Code Assist-compatible paid plans:
