@@ -696,12 +696,16 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    тексте общим `StopFilter` и output-бюджетом ~4 chars/token (как chat.rs — транспорт
    не умеет резать генерацию upstream). Capability matrix: не-дефолтный `cache_control`
    где угодно (system, content-блоки, tools), stateful/неизвестный `context_management`,
-   `mcp_servers`, `container`, `output_config` → `400 invalid_request_error` с именем
+   `mcp_servers`, `container` → `400 invalid_request_error` с именем
    параметра. Bounded no-op, который Claude Code 2.1.220 присылает по умолчанию
    (`context_management.edits` пуст либо содержит ровно
    `{type:"clear_thinking_20251015",keep:"all"}`), принимается и снимается: stateless
    adapter уже дропает входные thinking-блоки; дополнительные поля, edits и значения
-   остаются fail-closed;
+   остаются fail-closed. Native Messages `output_config.effort` (low/medium/high) →
+   Responses `reasoning.effort`, а bounded GA `output_config.format` json_schema →
+   Responses `text.format` с той же schema; unknown keys и непредставимые shapes → 400.
+   Тем самым поддержаны и structured title request, и основной adaptive turn текущего
+   Claude Code;
    `metadata` (включая `user_id`), sampling controls и неизвестные поля принимаются и
    игнорируются (та же leniency, что у chat.rs, — Claude Code шлёт `metadata.user_id`
    в каждом запросе). Ответ — зеркало словаря 4.1+4.2: message items → text-блок на

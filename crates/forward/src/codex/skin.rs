@@ -30,13 +30,15 @@
 //!
 //! Capability matrix (decision 3, fail-closed modulo defaults): non-default `cache_control`
 //! anywhere (system, content blocks, tools — Codex prompt caching is automatic), stateful or
-//! unknown `context_management`, `mcp_servers`, `container`, `output_config` →
+//! unknown `context_management`, `mcp_servers`, `container` →
 //! `400 invalid_request_error` naming the parameter in the message. Claude Code's bounded
 //! no-op context form (`clear_thinking_20251015` with `keep:"all"`) and an empty edits list are
 //! accepted and ignored; the adapter already drops replayed thinking and never claims server-side
-//! context mutation. `metadata` (including `user_id`), `temperature`/`top_p`/`top_k` and unknown
-//! fields are accepted and ignored, matching the Chat adapter's leniency for controls the
-//! transport cannot honor. Every error
+//! context mutation. Native `output_config.effort` maps to Responses `reasoning.effort`, while
+//! `output_config.format` maps to `text.format` with the same JSON Schema; both are bounded to the
+//! exact Messages GA shapes used by current Claude Code. `metadata` (including `user_id`),
+//! `temperature`/`top_p`/`top_k` and unknown fields are accepted and ignored, matching the Chat
+//! adapter's leniency for controls the transport cannot honor. Every error
 //! of this endpoint — adapter validation, shared parser, admission, billing — is rebuilt in
 //! the Anthropic envelope (`{"type":"error","error":{"type":...,"message":...}}`) with status
 //! and `Retry-After` preserved, because the endpoint speaks Messages (Claude Code recovers
@@ -293,8 +295,13 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
     if let Some(parallel) = parallel_tool_calls {
         responses.insert("parallel_tool_calls".to_string(), Value::Bool(parallel));
     }
-    if let Some(effort) = translate_thinking(object.get("thinking"))? {
+    let (output_effort, output_format) = translate_output_config(object.get("output_config"))?;
+    let thinking_effort = translate_thinking(object.get("thinking"))?;
+    if let Some(effort) = output_effort.or(thinking_effort) {
         responses.insert("reasoning".to_string(), json!({"effort": effort}));
+    }
+    if let Some(format) = output_format {
+        responses.insert("text".to_string(), json!({"format": format}));
     }
     let stop = parse_stop_sequences(object.get("stop_sequences"))?;
 
@@ -309,13 +316,12 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
 /// rejected when set to a non-default value. `metadata` and sampling controls are handled by
 /// the lenient open list below (accepted and ignored, like `chat.rs`).
 fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> {
-    let rules: [(&str, fn(&Value) -> bool); 4] = [
+    let rules: [(&str, fn(&Value) -> bool); 3] = [
         ("context_management", is_ignorable_context_management),
         ("mcp_servers", |value| {
             value.is_null() || value.as_array().is_some_and(Vec::is_empty)
         }),
         ("container", |value| value.is_null()),
-        ("output_config", |value| value.is_null()),
     ];
     for (param, is_default) in rules {
         if let Some(value) = object.get(param) {
@@ -357,6 +363,58 @@ fn is_ignorable_context_management(value: &Value) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Messages GA `output_config` → native Responses generation controls. The Codex transport
+/// supports both dimensions exactly: effort is parsed by the shared model capability resolver,
+/// and a JSON Schema becomes the Responses output schema. Keep the accepted object closed so a
+/// future Messages control cannot be silently dropped or misrepresented.
+fn translate_output_config(
+    value: Option<&Value>,
+) -> Result<(Option<String>, Option<Value>), Response> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok((None, None));
+    };
+    let object = value.as_object().ok_or_else(|| {
+        invalid_request("Invalid type for parameter: output_config must be an object.")
+    })?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "effort" | "format"))
+    {
+        return Err(invalid_request(format!(
+            "Unsupported parameter: 'output_config.{unknown}' is not supported with this endpoint."
+        )));
+    }
+
+    let effort = match object.get("effort") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(effort)) if matches!(effort.as_str(), "low" | "medium" | "high") => {
+            Some(effort.clone())
+        }
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid value for parameter: output_config.effort must be low, medium, or high.",
+            ))
+        }
+    };
+
+    let format = match object.get("format") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(format))
+            if format.len() == 2
+                && format.get("type").and_then(Value::as_str) == Some("json_schema")
+                && format.get("schema").is_some_and(Value::is_object) =>
+        {
+            Some(Value::Object(format.clone()))
+        }
+        Some(_) => {
+            return Err(invalid_request(
+                "Invalid value for parameter: output_config.format must be a json_schema with a schema object.",
+            ))
+        }
+    };
+    Ok((effort, format))
 }
 
 /// Non-default `cache_control` is rejected everywhere (system, content blocks, tools):
@@ -2002,7 +2060,6 @@ mod tests {
             ("context_management", json!({"edits": [{"type": "clear_thinking_20251015", "keep": "none"}]})),
             ("mcp_servers", json!([{"name": "srv"}])),
             ("container", json!({"id": "c"})),
-            ("output_config", json!({"effort": "high"})),
         ] {
             let (status, json) = expect_err(json!({
                 "model": "m", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
@@ -2025,6 +2082,59 @@ mod tests {
                 "mcp_servers": []
             }));
             assert!(parsed.responses.get("context_management").is_none());
+        }
+    }
+
+    #[test]
+    fn output_config_maps_claude_code_effort_and_json_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": false
+        });
+        let parsed = ok_translated(json!({
+            "model": "m", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "adaptive", "display": "omitted"},
+            "output_config": {
+                "effort": "high",
+                "format": {"type": "json_schema", "schema": schema}
+            }
+        }));
+        assert_eq!(parsed.responses["reasoning"], json!({"effort": "high"}));
+        assert_eq!(
+            parsed.responses["text"],
+            json!({"format": {"type": "json_schema", "schema": schema}})
+        );
+    }
+
+    #[tokio::test]
+    async fn output_config_unknown_or_unrepresentable_shapes_stay_fail_closed() {
+        for value in [
+            json!("high"),
+            json!({"effort": "max"}),
+            json!({"effort": 3}),
+            json!({"format": {"type": "json_schema"}}),
+            json!({"format": {"type": "json_schema", "schema": []}}),
+            json!({"format": {"type": "json_schema", "schema": {}, "future": true}}),
+            json!({"verbosity": "high"}),
+        ] {
+            let (status, json) = expect_err(json!({
+                "model": "m", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+                "output_config": value
+            }))
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+            assert_eq!(json["error"]["type"], "invalid_request_error", "{json}");
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("output_config"),
+                "{json}"
+            );
         }
     }
 

@@ -275,10 +275,14 @@ thinking/redacted_thinking дропаются — решение 6; `tools[]` �
 → default/required/none/named + `parallel_tool_calls`, `thinking` → `reasoning.effort`
 lossy по порогам <4096 → low / <16384 → medium / иначе high, <1024 → 400; capability
 matrix: не-дефолтный `cache_control` где угодно, stateful/неизвестный `context_management`,
-`mcp_servers`, `container`, `output_config` → `400 invalid_request_error`. Текущий bounded
+`mcp_servers`, `container` → `400 invalid_request_error`. Текущий bounded
 no-op Claude Code `context_management` (`edits:[]` либо ровно
 `clear_thinking_20251015` + `keep:"all"`) принимается и игнорируется: входные thinking-блоки
 этот stateless adapter и так дропает, а любое расширение формы остаётся fail-closed.
+Messages GA `output_config.effort` low/medium/high честно переводится в
+`reasoning.effort`, а exact `output_config.format` json_schema со schema-объектом — в
+Responses `text.format`; неизвестные ключи и непредставимые формы fail-closed. Это покрывает
+оба параллельных запроса Claude Code 2.1.220: structured title и основной adaptive turn.
 `metadata` (включая `user_id`), sampling controls и неизвестные поля принимаются и
 игнорируются — та же leniency, что у chat.rs, иначе сломался бы Claude Code с его
 `metadata.user_id`) и идёт

@@ -87,7 +87,9 @@ Control API движка использует только на чтение. С
   собственный namespaced-префикс до admission; GPT Fast aliases нормализует Codex plane.
   Codex Messages skin также принимает и снимает только bounded no-op `context_management`
   текущего Claude Code (`edits:[]` или exact `clear_thinking_20251015` + `keep:"all"`), а
-  stateful/неизвестные формы оставляет fail-closed. Для
+  stateful/неизвестные формы оставляет fail-closed; его GA `output_config.effort` и bounded
+  json_schema `format` переводит в эквивалентные Responses controls, включая structured
+  title request текущего Claude Code. Для
   harness без arbitrary body fields router принимает `x-apitoken-service-tier: fast|priority`
   только на исполняемой GPT-цепочке, превращает его в body `service_tier:"priority"` и снимает
   сам заголовок до вызова плоскости; Codex plane остаётся authority reserve/settlement/effective tier.
