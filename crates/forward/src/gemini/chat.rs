@@ -22,7 +22,10 @@
 //! плоскость сама мапит уровень в wire model id; `includeThoughts: true`;
 //! невалидное значение → 400 invalid_request); thought-парты ответа →
 //! OpenAI-расширение `reasoning_content` (`thoughtSignature` не выставляется —
-//! решение 4).
+//! решение 4). Tool/structured-output schemas рекурсивно приводятся к
+//! поддерживаемому Code Assist subset (снимаются `$schema` и числовые
+//! `exclusiveMinimum`/`exclusiveMaximum`), а replayed functionCall получает
+//! принятый Google context-engineering marker вместо opaque provider signature.
 //! В отличие от Anthropic-плоскости, НЕИЗВЕСТНЫЕ top-level поля тоже
 //! отклоняются: Code Assist wrapper (`wrap_code_assist_request`) пропускает
 //! только закрытый список полей GenerateContentRequest, поэтому «проксирование»
@@ -71,6 +74,15 @@ pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// для chat-клиента это неоправданный hold; 4096 — конвенция universal lane
 /// (так же, как в Anthropic-адаптере).
 pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
+
+/// Documented Gemini context-engineering marker for replayed function calls.
+///
+/// Code Assist requires a `thoughtSignature` on a model `functionCall` part
+/// when that call is replayed with its `functionResponse`. Universal clients
+/// do not preserve Gemini's opaque signatures, so the adapter uses Google's
+/// accepted stateless marker instead of exposing provider-private metadata.
+pub(crate) const REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE: &str =
+    "context_engineering_is_the_way_to_go";
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`).
@@ -633,7 +645,10 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Op
                         Some("response_format"),
                     )
                 })?;
-            Ok(Some(("application/json".to_string(), Some(schema.clone()))))
+            Ok(Some((
+                "application/json".to_string(),
+                Some(code_assist_schema(schema)),
+            )))
         }
         // text — дефолт без перевода; остальные типы отклонены matrix.
         _ => Ok(None),
@@ -710,7 +725,7 @@ fn assistant_parts(
                 })?;
             let args = parse_tool_arguments(function.get("arguments"), "messages")?;
             call_names.insert(id.to_string(), name.to_string());
-            parts.push(json!({"functionCall": {"name": name, "args": args}}));
+            parts.push(replayed_function_call_part(name, args));
         }
     }
     if let Some(function_call) = object.get("function_call").filter(|v| !v.is_null()) {
@@ -725,7 +740,7 @@ fn assistant_parts(
             })?;
         let args = parse_tool_arguments(function_call.get("arguments"), "messages")?;
         // Legacy function-ответы ссылаются по имени напрямую — карта не нужна.
-        parts.push(json!({"functionCall": {"name": name, "args": args}}));
+        parts.push(replayed_function_call_part(name, args));
     }
     if parts.is_empty() {
         return Err(invalid_request(
@@ -809,7 +824,7 @@ fn legacy_function_response_part(object: &Map<String, Value>) -> Result<Value, R
 
 /// Chat `tools[]` / legacy `functions[]` → массив functionDeclarations.
 /// Legacy functions — голые function-объекты без {"type":"function"} обёртки.
-/// `parameters` проксируются как есть (OpenAPI Schema — тот же JSON Schema);
+/// `parameters` переводятся в поддерживаемый Code Assist subset JSON Schema;
 /// отсутствующие — опускаются (поле необязательно).
 fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Response> {
     let tools = value.as_array().ok_or_else(|| {
@@ -840,8 +855,8 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
 }
 
 /// Function-дескриптор (`{name, description?, parameters?}`) →
-/// functionDeclaration: `parameters` проксируются как есть (OpenAPI Schema —
-/// тот же JSON Schema), отсутствующие поля опускаются; `strict` и прочие
+/// functionDeclaration: `parameters` санитизируются под поддерживаемый Code
+/// Assist subset JSON Schema, отсутствующие поля опускаются; `strict` и прочие
 /// обёрточные поля снимаются (constrained decoding generateContent всегда
 /// строгий). Общее ядро chat `tools[]`/`functions[]` и Responses `tools[]`
 /// (этап 4.3, `responses.rs`).
@@ -874,7 +889,9 @@ pub(crate) fn function_declaration(
     }
     match function.get("parameters") {
         None | Some(Value::Null) => {}
-        Some(schema) if schema.is_object() => declaration["parameters"] = schema.clone(),
+        Some(schema) if schema.is_object() => {
+            declaration["parameters"] = code_assist_schema(schema)
+        }
         Some(_) => {
             return Err(invalid_request(
                 &format!("Invalid type for parameter: {param} parameters must be an object."),
@@ -883,6 +900,90 @@ pub(crate) fn function_declaration(
         }
     }
     Ok(declaration)
+}
+
+/// Removes JSON Schema 2020-12 keywords rejected by the private Code Assist
+/// `Schema` parser while preserving the rest of the schema exactly.
+///
+/// Traversal follows schema-bearing JSON Schema keywords instead of blindly
+/// rewriting every object. In particular, arbitrary property names inside
+/// `properties`/`$defs` maps are data and must not be removed even when a tool
+/// parameter is literally named `$schema`, `exclusiveMinimum`, or
+/// `exclusiveMaximum`.
+pub(crate) fn code_assist_schema(schema: &Value) -> Value {
+    let mut sanitized = schema.clone();
+    sanitize_schema_node(&mut sanitized);
+    sanitized
+}
+
+fn sanitize_schema_node(schema: &mut Value) {
+    let Value::Object(object) = schema else {
+        return;
+    };
+
+    for keyword in ["$schema", "exclusiveMinimum", "exclusiveMaximum"] {
+        object.remove(keyword);
+    }
+
+    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(Value::Array(schemas)) = object.get_mut(keyword) {
+            for schema in schemas {
+                sanitize_schema_node(schema);
+            }
+        }
+    }
+
+    // `items` was an array before draft 2020-12; retaining support here makes
+    // the sanitizer safe for OpenAPI/older JSON Schema clients as well.
+    for keyword in [
+        "items",
+        "additionalItems",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "unevaluatedItems",
+        "contentSchema",
+    ] {
+        if let Some(value) = object.get_mut(keyword) {
+            match value {
+                Value::Array(schemas) => {
+                    for schema in schemas {
+                        sanitize_schema_node(schema);
+                    }
+                }
+                value => sanitize_schema_node(value),
+            }
+        }
+    }
+
+    for keyword in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(Value::Object(schemas)) = object.get_mut(keyword) {
+            for schema in schemas.values_mut() {
+                sanitize_schema_node(schema);
+            }
+        }
+    }
+}
+
+/// Builds a replay-safe Gemini model part without persisting or exposing the
+/// provider's opaque thought signature.
+pub(crate) fn replayed_function_call_part(name: &str, args: Value) -> Value {
+    json!({
+        "functionCall": {"name": name, "args": args},
+        "thoughtSignature": REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE,
+    })
 }
 
 /// `tool_choice` / legacy `function_call` → `toolConfig.functionCallingConfig`.
@@ -1804,7 +1905,13 @@ mod tests {
                 {"type": "function", "function": {
                     "name": "get_weather",
                     "description": "Weather by city",
-                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "exclusiveMinimum": 1}
+                        }
+                    }
                 }},
                 {"type": "function", "function": {"name": "ping"}}
             ]
@@ -1834,6 +1941,51 @@ mod tests {
             json!([{"functionDeclarations": [
                 {"name": "get_weather", "parameters": {"type": "object"}}
             ]}])
+        );
+    }
+
+    #[test]
+    fn schema_sanitizer_preserves_property_names_and_other_structure() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "description": "unchanged",
+            "exclusiveMinimum": 0,
+            "properties": {
+                "$schema": {"type": "string"},
+                "exclusiveMinimum": {"type": "number", "exclusiveMinimum": 1},
+                "exclusiveMaximum": {
+                    "allOf": [{"type": "number", "exclusiveMaximum": 10}]
+                },
+                "nested": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"value": {"type": "number", "exclusiveMinimum": 2}}
+                    }
+                }
+            },
+            "required": ["$schema", "exclusiveMinimum", "exclusiveMaximum"]
+        });
+        assert_eq!(
+            code_assist_schema(&schema),
+            json!({
+                "type": "object",
+                "description": "unchanged",
+                "properties": {
+                    "$schema": {"type": "string"},
+                    "exclusiveMinimum": {"type": "number"},
+                    "exclusiveMaximum": {"allOf": [{"type": "number"}]},
+                    "nested": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"value": {"type": "number"}}
+                        }
+                    }
+                },
+                "required": ["$schema", "exclusiveMinimum", "exclusiveMaximum"]
+            })
         );
     }
 
@@ -1921,7 +2073,8 @@ mod tests {
             json!([
                 {"role": "user", "parts": [{"text": "weather?"}]},
                 {"role": "model", "parts": [
-                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}}
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"}
                 ]},
                 {"role": "user", "parts": [
                     {"functionResponse": {"name": "get_weather", "response": {"result": {"temp": 20}}}},
@@ -1947,7 +2100,8 @@ mod tests {
             json!([
                 {"role": "user", "parts": [{"text": "weather?"}]},
                 {"role": "model", "parts": [
-                    {"functionCall": {"name": "get_weather", "args": {}}}
+                    {"functionCall": {"name": "get_weather", "args": {}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"}
                 ]},
                 {"role": "user", "parts": [
                     {"functionResponse": {"name": "get_weather", "response": {"result": "sunny"}}}
@@ -2166,7 +2320,10 @@ mod tests {
             "messages": [{"role": "user", "content": "Extract."}],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "profile", "strict": true,
-                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+                "schema": {"$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object", "properties": {
+                        "name": {"type": "string", "exclusiveMaximum": 10}
+                    }}
             }}
         }));
         let config = &translated.body["generationConfig"];

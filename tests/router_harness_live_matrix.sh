@@ -12,8 +12,10 @@ ROUTER_BASE_URL=${APITOKEN_ROUTER_BASE_URL:-https://router.apitoken.sale}
 CASE_TIMEOUT_SECONDS=${APITOKEN_HARNESS_CASE_TIMEOUT_SECONDS:-240}
 OPENAI_MODEL=${APITOKEN_HARNESS_OPENAI_MODEL:-openai/gpt-5.4}
 GEMINI_MODEL=${APITOKEN_HARNESS_GEMINI_MODEL:-gemini-2.5-flash-lite}
+OPENCODE_GEMINI_MODEL=${APITOKEN_HARNESS_OPENCODE_GEMINI_MODEL:-google/gemini-3.1-flash-lite}
 PLACEHOLDER_API_KEY=router-harness-placeholder-key
 PROMPT='Reply exactly OK. Do not call tools, inspect files, or change anything.'
+GEMINI_TOOL_PROMPT="Use the bash tool to run exactly: printf 'OPENCODE_GEMINI_TOOL_OK\\n' > opencode-gemini-tool-proof.txt. Do not use another tool. After the tool succeeds, reply exactly OPENCODE_GEMINI_TOOL_OK."
 CASE_FILTER=${APITOKEN_HARNESS_CASES:-}
 
 : "${APITOKEN_API_KEY:?APITOKEN_API_KEY must already be set in the caller environment}"
@@ -174,7 +176,7 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Standard attempt {sequence} sent a Fast body tier")
         if "priority" in response_tiers:
             raise SystemExit(f"{label}: Standard attempt {sequence} executed as priority")
-        if protocol != "gemini_native" and not response_tiers.intersection({"standard", "default"}):
+        if protocol != "gemini_native" and label != "opencode-gemini-tools" and not response_tiers.intersection({"standard", "default"}):
             raise SystemExit(f"{label}: Standard attempt {sequence} lacks authoritative tier evidence")
     else:
         if selector == "header" and request_header != "fast":
@@ -213,6 +215,20 @@ if label.startswith("claude-code-"):
             for attempt in attempts
         )
         raise SystemExit(f"{label}: no executable attempt carried the structured output tool (seen: {seen})")
+
+if label == "opencode-gemini-tools":
+    if len(attempts) < 2:
+        raise SystemExit(f"{label}: expected a tool-call turn and a replay turn")
+    if not any(attempt.get("request_has_bash_tool") for attempt in attempts):
+        raise SystemExit(f"{label}: OpenCode did not send its bash tool")
+    if not any(attempt.get("request_has_schema_dialect") for attempt in attempts):
+        raise SystemExit(f"{label}: raw AI SDK $schema evidence was not observed")
+    if not any(attempt.get("request_has_exclusive_bounds") for attempt in attempts):
+        raise SystemExit(f"{label}: raw AI SDK exclusive bound evidence was not observed")
+    if not any(attempt.get("response_has_tool_call") for attempt in attempts):
+        raise SystemExit(f"{label}: Gemini did not return a tool call")
+    if not any(attempt.get("request_has_replayed_tool_history") for attempt in attempts):
+        raise SystemExit(f"{label}: OpenCode did not replay tool history after execution")
 
 print(len(attempts))
 PY
@@ -341,6 +357,32 @@ run_opencode() {
       --title router-harness \
       --dir "$CASE_DIR/work" \
       "$PROMPT"
+}
+
+run_opencode_gemini_tools() {
+  local _tier=$1
+  local config_content
+  config_content=$(printf '{"permission":"allow","provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s"},"models":{"%s":{"name":"Router Gemini","tool_call":true}}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
+    "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$OPENCODE_GEMINI_MODEL" \
+    "$OPENCODE_GEMINI_MODEL" "$OPENCODE_GEMINI_MODEL")
+  run_quiet env \
+    OPENCODE_CONFIG_CONTENT="$config_content" \
+    OPENCODE_CONFIG_DIR="$CASE_DIR/config" \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    XDG_CACHE_HOME="$TEMP_ROOT/opencode-gemini-cache" \
+    XDG_CONFIG_HOME="$CASE_DIR/xdg-config" \
+    XDG_DATA_HOME="$CASE_DIR/xdg-data" \
+    XDG_STATE_HOME="$CASE_DIR/xdg-state" \
+    opencode run --pure --auto --format json \
+      --model "apitoken/$OPENCODE_GEMINI_MODEL" \
+      --agent build \
+      --dir "$CASE_DIR/work" \
+      "$GEMINI_TOOL_PROMPT"
+  [[ -f $CASE_DIR/work/opencode-gemini-tool-proof.txt ]] || return 1
+  [[ $(<"$CASE_DIR/work/opencode-gemini-tool-proof.txt") == OPENCODE_GEMINI_TOOL_OK ]]
 }
 
 run_kilo() {
@@ -521,6 +563,7 @@ run_matrix_case continue-standard openai_chat /v1/chat/completions "$OPENAI_MODE
 run_matrix_case continue-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_continue
 run_matrix_case opencode-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_opencode
 run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_opencode
+run_matrix_case opencode-gemini-tools openai_chat /v1/chat/completions "$OPENCODE_GEMINI_MODEL" standard none run_opencode_gemini_tools
 run_matrix_case kilo-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_kilo
 run_matrix_case kilo-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_kilo
 run_matrix_case codex-standard openai_responses /v1/responses "$OPENAI_MODEL" standard none run_codex

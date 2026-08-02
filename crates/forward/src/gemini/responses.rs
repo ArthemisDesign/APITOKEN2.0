@@ -51,7 +51,10 @@
 //! `text.format` json_schema → `responseMimeType: application/json` +
 //! `responseSchema` (обёртка снимается), json_object → `responseMimeType`
 //! (у generateContent есть — отличие от Messages, где json_object → 400),
-//! не-дефолтная verbosity → `400 unsupported_parameter`.
+//! не-дефолтная verbosity → `400 unsupported_parameter`. Tool/structured-output
+//! schemas проходят общий Code Assist sanitizer, а replayed functionCall-парты
+//! получают stateless context-engineering `thoughtSignature` marker; реальные
+//! opaque signatures в публичный Responses-контракт по-прежнему не выходят.
 //!
 //! Capability matrix (решение 3) — те же 9 правил, что у Anthropic-зеркала
 //! (`background`, `service_tier`, `truncation`, `include`, `prompt_cache_key`,
@@ -145,10 +148,11 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use super::chat::{
-    chat_error, convert_error_response, function_declaration, function_response_value,
-    gemini_image_part, invalid_request, map_finish_reason, merge_or_push, parse_tool_arguments,
-    synthetic_call_id, translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT,
-    DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
+    chat_error, code_assist_schema, convert_error_response, function_declaration,
+    function_response_value, gemini_image_part, invalid_request, map_finish_reason, merge_or_push,
+    parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
+    translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS,
+    RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
@@ -724,7 +728,7 @@ fn function_call_part(object: &Map<String, Value>) -> Result<(String, String, Va
     let call_id = required_string(object, "call_id")?.to_string();
     let name = required_string(object, "name")?.to_string();
     let args = parse_tool_arguments(object.get("arguments"), "input")?;
-    let part = json!({"functionCall": {"name": name, "args": args}});
+    let part = replayed_function_call_part(&name, args);
     Ok((call_id, name, part))
 }
 
@@ -918,7 +922,10 @@ fn translate_text_format(value: Option<&Value>) -> Result<Option<(String, Option
                         Some("text"),
                     )
                 })?;
-            Ok(Some(("application/json".to_string(), Some(schema.clone()))))
+            Ok(Some((
+                "application/json".to_string(),
+                Some(code_assist_schema(schema)),
+            )))
         }
         Some(_) => Err(unsupported_parameter("text")),
     }
@@ -1968,7 +1975,10 @@ mod tests {
             "tools": [
                 {"type": "function", "name": "get_weather", "description": "Current weather",
                  "strict": true,
-                 "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}},
+                 "parameters": {"$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object", "properties": {
+                        "city": {"type": "string", "exclusiveMinimum": 1}
+                    }}},
                 {"type": "function", "name": "no_args"}
             ]
         }));
@@ -2117,7 +2127,10 @@ mod tests {
             "model": "gemini-2.5-flash",
             "input": "Extract.",
             "text": {"format": {"type": "json_schema", "name": "profile", "strict": true,
-                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}
+                "schema": {"$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object", "properties": {
+                        "name": {"type": "string", "exclusiveMaximum": 10}
+                    }}}}
         }));
         let config = &translated.body["generationConfig"];
         assert_eq!(config["responseMimeType"], "application/json");
@@ -2279,7 +2292,8 @@ mod tests {
                 {"role": "user", "parts": [{"text": "weather?"}]},
                 {"role": "model", "parts": [
                     {"text": "Let me check."},
-                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}}
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"}
                 ]},
                 {"role": "user", "parts": [
                     {"functionResponse": {"name": "get_weather",
@@ -2311,8 +2325,10 @@ mod tests {
             translated.body["contents"],
             json!([
                 {"role": "model", "parts": [
-                    {"functionCall": {"name": "f", "args": {}}},
-                    {"functionCall": {"name": "g", "args": {}}}
+                    {"functionCall": {"name": "f", "args": {}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"},
+                    {"functionCall": {"name": "g", "args": {}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"}
                 ]},
                 {"role": "user", "parts": [
                     {"functionResponse": {"name": "f",

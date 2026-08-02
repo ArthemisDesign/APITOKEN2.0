@@ -323,19 +323,20 @@ id `callu_<name>[_N]`), ошибки Google-конверта конвертир�
 (принимаются только data: URL — исходящего fetch для внешних изображений на плоскости нет, поэтому
 http(s) image URL → `400 invalid_request`; `detail` != auto → `400 unsupported_parameter`),
 `response_format` json_object/json_schema → `generationConfig.responseMimeType`/`responseSchema`
-(обёртка name/strict снимается).
+(обёртка name/strict снимается). Общий рекурсивный sanitizer снимает из tool parameters и
+structured-output schemas три неподдерживаемых Code Assist keyword: `$schema`, числовые
+`exclusiveMinimum` и `exclusiveMaximum`; одноимённые ключи внутри `properties` остаются именами
+параметров и не удаляются.
 Reasoning (3.4b): `reasoning_effort` → `generationConfig.thinkingConfig`
 (`thinkingLevel` проксируется как есть — маппинг уровня в wire model id выполняет
 плоскость; `includeThoughts: true`; невалидное значение → `400 invalid_request`),
 thought-парты ответа → `message.reasoning_content`/reasoning_content-дельты
 (`thoughtSignature` не выставляется).
-Прод-проверенное upstream-ограничение (2026-08-01, обе universal lanes плоскости — chat 3.3 и
-responses 4.3): Code Assist отклоняет replayed tool-историю (functionCall в model-turn +
-functionResponse в user-turn) с `400 INVALID_ARGUMENT` при любом thinking-уровне — thinking-модели
-Gemini требуют `thoughtSignature` на functionCall-парте при replay, а подписи по решению 4
-docs/engine/UNIFIED_ROUTER.md не выставляются и на реплее не восстанавливаются. Прямой tool
-calling (модель отвечает functionCall) работает. Снятие ограничения — opaque-passthrough
-подписей, отдельное изменение решения 4.
+Replay tool-истории работает stateless: каждый восстановленный functionCall-парт получает
+подтверждённый Code Assist marker
+`thoughtSignature:"context_engineering_is_the_way_to_go"`. Реальные opaque signatures ответа
+по решению 4 по-прежнему не выставляются и не сохраняются; synthetic ids и публичные response
+shapes не меняются. Один helper обязателен для Chat, Responses и Messages skin.
 `gemini/responses.rs` — universal Responses→generateContent адаптер (этап 4.3
 docs/engine/UNIFIED_ROUTER.md, роут `POST /v1/responses` в `ProviderMode::Gemini`) —
 Gemini-зеркало `anthropic_responses.rs`: Responses-сторона словаря 4.1+4.2 (item-формы,
@@ -367,7 +368,8 @@ failed), mid-stream error-кадр → `response.failed`; ошибки — об�
 `convert_error_response` (400 API_KEY_INVALID → 401). Общие хелперы (`chat_error`,
 `invalid_request`, `unsupported_parameter`, `convert_error_response`, `merge_or_push`,
 `gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` с именем
-параметра, `function_declaration`, `function_response_value`, `synthetic_call_id`,
+параметра, `function_declaration`, `code_assist_schema`, `replayed_function_call_part`,
+`function_response_value`, `synthetic_call_id`,
 `map_finish_reason`, константы лимитов) — `pub(crate)` в `gemini/chat.rs`.
 `gemini/skin.rs` — Anthropic Skin (этап 5.2 docs/engine/UNIFIED_ROUTER.md, роуты
 `POST /v1/messages` и `/v1/messages/count_tokens` в `ProviderMode::Gemini`, dispatch по
@@ -395,9 +397,9 @@ Anthropic-конверт (400 API_KEY_INVALID → 401, 503 → 529 `overloaded_e
 Retry-After сохраняются). Хендлеры идут через общий `gemini_api()` внутренним Request на
 `generateContent|streamGenerateContent?alt=sse|:countTokens` — admission, reserve,
 affinity, ротация, wrapper, settle без единого изменения; `count_tokens` — нативный
-`:countTokens` (quota-free, без reserve), `max_tokens` там опционален. Прод-ограничение
-replayed tool-истории (400 INVALID_ARGUMENT, thoughtSignature — см. выше, решение 4)
-разделяет с chat/responses lanes плоскости; прямой tool calling работает.
+`:countTokens` (quota-free, без reserve), `max_tokens` там опционален. Tool schemas и replayed
+tool history используют те же shared sanitizer/context-engineering marker, что Chat/Responses;
+реальные opaque signatures ответа остаются скрыты по решению 4.
 Env для обоих читает только `server::config`.
 
 **Cache-first роутинг без client opt-in (`affinity.rs`):** tenant = metered `account_id` (все ключи

@@ -107,14 +107,11 @@
 //! `totalTokens` → `{"input_tokens": N}`. Dispatch в router остаётся native-Anthropic
 //! байт-прокси (его перевод на dispatch — отдельный поздний подэтап, вне 5.2).
 //!
-//! Известное upstream-ограничение плоскости (НЕ чинить здесь; зафиксировано прод-проверкой 4.3
-//! 2026-08-01, docs/engine/UNIFIED_ROUTER.md п. 3/4): Code Assist отклоняет replayed
-//! tool-историю (functionCall в model-turn + functionResponse в user-turn) с
-//! `400 INVALID_ARGUMENT` при любом thinking-уровне — thinking-модели Gemini требуют
-//! `thoughtSignature` на functionCall-парте при replay, а подписи по решению 4 не выставляются
-//! и на реплее не восстанавливаются. Skin наследует то же ограничение на replay
-//! `tool_use`/`tool_result`-блоков. Прямой tool calling (модель отвечает functionCall)
-//! работает. Снятие — opaque-passthrough подписей, отдельное изменение решения 4 (вне 5.2).
+//! Code Assist compatibility: `input_schema` рекурсивно санитизируется от неподдерживаемых
+//! `$schema` и числовых `exclusiveMinimum`/`exclusiveMaximum`; replayed `tool_use` становится
+//! functionCall-партом с принятым Google context-engineering `thoughtSignature` marker. Это
+//! сохраняет stateless Messages skin и делает многоходовый tool cycle исполнимым, не раскрывая
+//! реальные opaque provider signatures в ответах.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -131,8 +128,8 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use super::chat::{
-    function_response_value, map_finish_reason, merge_or_push, CHAT_BODY_LIMIT,
-    RESPONSE_BODY_LIMIT,
+    code_assist_schema, function_response_value, map_finish_reason, merge_or_push,
+    replayed_function_call_part, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
@@ -782,12 +779,12 @@ fn translate_tool_use(
             )))
         }
     };
-    Ok(json!({"functionCall": {"name": name, "args": args}}))
+    Ok(replayed_function_call_part(name, args))
 }
 
 /// Messages `tools[]` → массив functionDeclarations: только custom tools (дефолтный type);
-/// `input_schema` → `parameters` как есть (OpenAPI Schema — тот же JSON Schema), отсутствующая
-/// опускается (как у общего `function_declaration` chat.rs). Server tools (web_search и пр.),
+/// `input_schema` → поддерживаемый Code Assist subset `parameters`, отсутствующая опускается
+/// (как у общего `function_declaration` chat.rs). Server tools (web_search и пр.),
 /// не-дефолтный `cache_control`, не-объект `input_schema` → 400 (как 5.1).
 fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
     let tools = value.as_array().ok_or_else(|| {
@@ -829,7 +826,9 @@ fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
         }
         match object.get("input_schema") {
             None | Some(Value::Null) => {}
-            Some(schema) if schema.is_object() => declaration["parameters"] = schema.clone(),
+            Some(schema) if schema.is_object() => {
+                declaration["parameters"] = code_assist_schema(schema)
+            }
             Some(_) => {
                 return Err(invalid_request(format!(
                     "Invalid type for parameter: tools input_schema must be an object ({param}.input_schema)."
@@ -2014,7 +2013,8 @@ mod tests {
                 {"role": "user", "parts": [{"text": "weather?"}]},
                 {"role": "model", "parts": [
                     {"text": "Let me check."},
-                    {"functionCall": {"name": "weather", "args": {"city": "Paris"}}}
+                    {"functionCall": {"name": "weather", "args": {"city": "Paris"}},
+                     "thoughtSignature": "context_engineering_is_the_way_to_go"}
                 ]},
                 // functionResponse и текст после него — один user-content (склейка
                 // одноролевых, как серия tool-ответов в chat.rs 3.3).
@@ -2146,7 +2146,10 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [
                 {"name": "get_weather", "description": "Current weather",
-                 "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}},
+                 "input_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object", "properties": {
+                        "city": {"type": "string", "exclusiveMaximum": 10}
+                    }}},
                 {"type": "custom", "name": "no_args"}
             ]
         }));

@@ -627,14 +627,18 @@ settlement are identical to the native route. Responses are translated outside t
 SSE stream becomes `chat.completion.chunk` frames with a final usage chunk on EOF when
 `stream_options.include_usage` is set.
 
-Upstream limitation (prod-verified 2026-08-01, both universal lanes of this plane — chat stage
-3.3 and responses stage 4.3): the Code Assist endpoint rejects a replayed tool history
-(a `functionCall` part in a model turn followed by a `functionResponse` part in a user turn) with
-`400 INVALID_ARGUMENT` at any thinking level. Gemini thinking models require the `thoughtSignature`
-on replayed `functionCall` parts, and universal lanes neither expose signatures nor restore them
-on replay (UNIFIED_ROUTER decision 4). Direct tool calling — the model answering with a
-`functionCall` — works. Lifting the limitation means an opaque signature passthrough, which is a
-separate amendment of decision 4.
+Code Assist compatibility is normalized at the adapter boundary. Its private `Schema` parser rejects
+three legal JSON Schema 2020-12 keywords emitted by common OpenAI-compatible clients: `$schema` and
+numeric `exclusiveMinimum`/`exclusiveMaximum`. Chat and Responses tool declarations, Messages
+`input_schema`, and Chat/Responses structured-output schemas recursively remove only those schema
+keywords. Property names with the same spelling under `properties` remain intact.
+
+Replayed tool history is also stateless. Gemini thinking models require a `thoughtSignature` on a
+replayed model `functionCall` part, but OpenAI/Responses/Messages clients do not preserve Gemini's
+opaque provider signature. Every reconstructed call therefore carries Google's accepted context-
+engineering marker `context_engineering_is_the_way_to_go`. The exact marker is private-wire input
+only: actual signatures returned by Gemini are still dropped under UNIFIED_ROUTER decision 4, public
+tool-call ids and response shapes are unchanged, and no signature state is stored by the gateway.
 
 Two deliberate differences from the Anthropic-plane adapter: the capability matrix is closed at the
 top level — an unknown request field is rejected with `400 unsupported_parameter` instead of being
@@ -649,7 +653,7 @@ outbound fetch for remote images, so an `http(s)` image URL is rejected with `40
 and a non-default `detail` with `400 unsupported_parameter`. `response_format` is translated into
 `generationConfig`: `json_object` and `json_schema` both set `responseMimeType:
 application/json`, and `json_schema` additionally sets `responseSchema`, dropping the OpenAI
-`name`/`strict` wrapper.
+`name`/`strict` wrapper and applying the same Code Assist schema sanitizer used for tools.
 
 Stage 3.4b adds reasoning. `reasoning_effort` (`minimal`/`low`/`medium`/`high`; `null` or absent
 turns it off) is translated into `generationConfig.thinkingConfig` — `thinkingLevel` is proxied

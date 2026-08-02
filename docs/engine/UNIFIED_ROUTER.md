@@ -175,11 +175,14 @@ credential/general-header values, prompt, tool arguments и generated content в
 исполнимая попытка обязана дать HTTP 200 с ожидаемым tier; для Fast нужен авторитетный response
 `service_tier=priority`. Claude Code дополнительно доказывает полный Messages SSE lifecycle и
 текущие structured-output/context/cache controls; Codex — Responses lifecycle и текущие tool forms;
-Gemini CLI — native `streamGenerateContent`.
+Gemini CLI — native `streamGenerateContent`. Отдельный `opencode-gemini-tools` запускает OpenCode
+без пользовательских plugins/sanitizer, требует реальный bash-вызов и второй Chat turn, а bounded
+evidence подтверждает сырой AI SDK `$schema`/exclusive bounds, tool-call ответа и replay tool history.
 
 Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
 Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
-0.86.2: 17 executable Standard/Fast кейсов (Gemini — Standard native; остальные — оба tier).
+0.86.2: 18 executable кейсов, включая настоящий многоходовый OpenCode→Gemini bash tool cycle
+(Gemini CLI — Standard native; остальные обычные harness — оба tier).
 Roo Code 3.54.0 установлен и имеет совместимые OpenAI base URL/model/service-tier settings, но у
 расширения нет официального headless CLI, поэтому оно честно отмечено `SKIP`, а не имитируется
 через другой клиент.
@@ -476,8 +479,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` и вызывает
    общий `gemini_api()` — admission, reserve, affinity, ротация, Code Assist
    wrapper, tee-метеринг и settle без изменений. Tools: chat `tools[]`/legacy
-   `functions[]` → `tools:[{functionDeclarations}]` (parameters проксируются,
-   отсутствующие опускаются); `tool_choice`/legacy `function_call` →
+   `functions[]` → `tools:[{functionDeclarations}]` (parameters рекурсивно санитизируются
+   от неподдерживаемых Code Assist `$schema` и числовых
+   `exclusiveMinimum`/`exclusiveMaximum`, отсутствующие опускаются; одноимённые property names
+   сохраняются); `tool_choice`/legacy `function_call` →
    `toolConfig.functionCallingConfig` (auto не вставляется, required→ANY, none→NONE,
    именная → ANY+allowedFunctionNames). История: assistant `tool_calls[]`/
    `function_call` → functionCall-парты, role `tool`/`function` →
@@ -502,18 +507,16 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    Code Assist wrapper иначе выбросил бы его молча). Ошибки: Google-конверт
    `{error:{code,message,status}}` → OpenAI-конверт с сохранением статуса (402
    LowBalance тоже) и `Retry-After`; особый маппинг нативного
-   `400 API_KEY_INVALID` → `401 authentication_error`. Прод-проверенное
-   upstream-ограничение (2026-08-01): replayed tool-история (functionCall в
-   model-turn + functionResponse в user-turn) отклоняется Code Assist с
-   `400 INVALID_ARGUMENT` при любом thinking-уровне — thinking-модели Gemini
-   требуют `thoughtSignature` на functionCall-парте при replay, а подписи в
-   universal lanes не выставляются и на реплее не восстанавливаются
-   (решение 4); прямой tool calling (модель отвечает functionCall) работает,
-   ограничение общее с Responses-адаптером 4.3 (см. п. 4). Contract-тесты — табличные
+   `400 API_KEY_INVALID` → `401 authentication_error`. Replayed functionCall-парты
+   получают подтверждённый Code Assist context-engineering `thoughtSignature` marker,
+   поэтому следующий functionResponse исполняется без состояния и без opaque-signature
+   passthrough; реальные provider signatures ответа по решению 4 остаются скрытыми.
+   Contract-тесты — табличные
    в `crates/forward/src/gemini/chat.rs` (запрос, matrix, ответ, SSE); e2e-харнесс
    для Gemini-ноги не добавлялся: native-путь плоскости покрыт своими тестами, а
    мок-харнесс не умеет AEAD-конверты профилей — шов адаптера покрыт
-   unit/contract-тестами; **3.4a** — images + structured output —
+   unit/contract-тестами; production live-регресс — `opencode-gemini-tools` в
+   `tests/router_harness_live_matrix.sh`; **3.4a** — images + structured output —
    **РЕАЛИЗОВАН** (обе плоскости): image_url-части user-сообщений — Anthropic:
    data: URL → base64 source, http(s) → url source (оба нативные Messages
    image-блока); Gemini: только data: URL → inlineData (http(s) ссылки
@@ -523,7 +526,8 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    (обёрточные name/strict/description не проксируются — только схема;
    json_object у Messages нет → matrix 400), на Gemini json_object →
    `generationConfig.responseMimeType: application/json`, json_schema →
-   +`responseSchema` (обёртка аналогично снимается); **3.4b** —
+   +`responseSchema` (обёртка аналогично снимается, schema проходит общий
+   Code Assist sanitizer); **3.4b** —
    `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
    (решение 4) — **РЕАЛИЗОВАН** (обе плоскости): вход `reasoning_effort`
    minimal|low|medium|high (null/отсутствие — выкл; любое другое не-null
@@ -671,21 +675,22 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    (error.code — google.rpc status). Ошибки — общий с chat-адаптером
    `convert_error_response` (Google-конверт → OpenAI-конверт, нативный
    `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`
-   сохраняются). Временные ограничения — как после 4.2: reasoning items входа
+   сохраняются). Tool declarations и `text.format` schema проходят общий Code Assist
+   sanitizer; replayed functionCall использует тот же stateless context-engineering marker,
+   что Chat 3.3. Временные ограничения — как после 4.2: reasoning items входа
    выбрасываются, `store:true`/`previous_response_id`/`item_reference` →
-   `400 documented_limitation` (решение 5). Плюс прод-проверенное
-   upstream-ограничение плоскости (2026-08-01): replay tool-истории
-   отклоняется Code Assist с `400 INVALID_ARGUMENT` — `thoughtSignature`
-   functionCall-партов не сохраняется (решение 4), а thinking-модели Gemini
-   требуют его при replay; то же у chat-адаптера 3.3 (см. п. 3). Общие хелперы (`chat_error`,
+   `400 documented_limitation` (решение 5). Реальные `thoughtSignature` ответа по решению 4
+   не сохраняются и публично не выставляются. Общие хелперы (`chat_error`,
    `invalid_request`, `unsupported_parameter`, `convert_error_response`,
    `merge_or_push`, `gemini_image_part`/`translate_reasoning_effort`/
    `parse_tool_arguments` с именем параметра, `function_declaration`,
+   `code_assist_schema`, `replayed_function_call_part`,
    `function_response_value`, `synthetic_call_id`, `map_finish_reason`, константы
    лимитов) вынесены в `pub(crate)` в `gemini/chat.rs` (по образцу выноса 4.1 в
-   `anthropic.rs`). e2e-smoke Gemini-цепочки не добавлялся (плоскость требует
-   encrypted OAuth-пул, как в 3.3); e2e-покрытие universal lane — Anthropic-цепочка
-   в `tests/universal_chat_smoke.sh`.
+   `anthropic.rs`). Mock e2e-smoke Gemini-цепочки не добавлялся (плоскость требует
+   encrypted OAuth-пул, как в 3.3); mock e2e-покрытие universal lane — Anthropic-цепочка
+   в `tests/universal_chat_smoke.sh`, production Gemini/OpenCode tool-cycle — отдельный
+   live-case harness matrix.
 5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
    beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
    (зеркало решений 3–4, thinking без подписей). **5.1 — Anthropic Skin для `openai/*`
@@ -787,11 +792,11 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    Request на `generateContent|streamGenerateContent?alt=sse|:countTokens` — admission,
    reserve, affinity, ротация, Code Assist wrapper и usage-settlement без единого
    изменения; `count_tokens` — нативный `:countTokens` (quota-free, без reserve),
-   `max_tokens` там опционален. Ограничения 5.2: прод-ограничение replayed
-   tool-истории (`400 INVALID_ARGUMENT` Code Assist, thoughtSignature — решение 4)
-   разделяется с chat/responses lanes плоскости (прямой tool calling работает); лимит
-   тела — общий плоскости; сквозного e2e-smoke Gemini plane нет (как 3.3/4.3 — покрытие
-   unit/contract-тестами модуля). Router dispatch `/v1/messages/count_tokens` покрыт
+   `max_tokens` там опционален. Tool schemas проходят общий sanitizer, а replayed tool_use
+   получает stateless context-engineering marker; actual provider signatures ответа остаются
+   скрытыми по решению 4. Лимит тела — общий плоскости; mock e2e-smoke Gemini plane нет
+   (как 3.3/4.3 — покрытие unit/contract-тестами модуля), production OpenCode tool-cycle
+   закреплён live harness matrix. Router dispatch `/v1/messages/count_tokens` покрыт
    интеграционными mock-тестами namespace и alias-путей всех трёх плоскостей.
 6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
    fallback-списки, attempt fencing (execution group / единственный billable winner,

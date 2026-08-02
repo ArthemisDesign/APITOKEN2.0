@@ -54,6 +54,41 @@ def nested_values(value: Any, key: str) -> Iterable[Any]:
             yield from nested_values(child, key)
 
 
+def has_nested_key(value: Any, key: str) -> bool:
+    return next(nested_values(value, key), None) is not None
+
+
+def tool_name(tool: Any) -> str | None:
+    if not isinstance(tool, dict):
+        return None
+    if isinstance(tool.get("name"), str):
+        return tool["name"]
+    function = tool.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return function["name"]
+    return None
+
+
+def has_replayed_chat_tool_history(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("messages"), list):
+        return False
+    messages = value["messages"]
+    has_call = any(
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(message.get("tool_calls"), list)
+        and bool(message["tool_calls"])
+        for message in messages
+    )
+    has_result = any(
+        isinstance(message, dict)
+        and message.get("role") == "tool"
+        and isinstance(message.get("tool_call_id"), str)
+        for message in messages
+    )
+    return has_call and has_result
+
+
 def json_or_none(body: bytes) -> Any | None:
     try:
         return json.loads(body)
@@ -240,6 +275,7 @@ def main() -> None:
             request_cache_control_types = []
             request_output_config_fields = []
             request_has_structured_output_tool = False
+            request_has_bash_tool = False
             if isinstance(request_json, dict) and isinstance(request_json.get("tools"), list):
                 request_tool_types = [
                     tool.get("type")
@@ -249,6 +285,9 @@ def main() -> None:
                 request_has_structured_output_tool = any(
                     isinstance(tool, dict) and tool.get("name") == "StructuredOutput"
                     for tool in request_json["tools"]
+                )
+                request_has_bash_tool = any(
+                    tool_name(tool) == "bash" for tool in request_json["tools"]
                 )
             if isinstance(request_json, dict):
                 request_control_fields = [
@@ -279,9 +318,21 @@ def main() -> None:
                     "request_cache_control_types": request_cache_control_types,
                     "request_output_config_fields": request_output_config_fields,
                     "request_has_structured_output_tool": request_has_structured_output_tool,
+                    "request_has_bash_tool": request_has_bash_tool,
+                    "request_has_schema_dialect": has_nested_key(request_json, "$schema"),
+                    "request_has_exclusive_bounds": any(
+                        has_nested_key(request_json, key)
+                        for key in ("exclusiveMinimum", "exclusiveMaximum")
+                    ),
+                    "request_has_replayed_tool_history": has_replayed_chat_tool_history(request_json),
                     "request_fast_header": self.headers.get("x-apitoken-service-tier"),
                     "response_service_tiers": service_tiers,
                     "response_event_types": event_types[:32],
+                    "response_has_tool_call": any(
+                        bool(value)
+                        for response_value in response_values
+                        for value in nested_values(response_value, "tool_calls")
+                    ),
                 }
             )
             self.send_bytes(status, response_body, response_headers)
