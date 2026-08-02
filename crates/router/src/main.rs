@@ -17,6 +17,7 @@ mod error;
 mod messages;
 mod metrics;
 mod policy;
+mod pricing;
 mod presets;
 mod proxy;
 mod responses;
@@ -141,21 +142,34 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     let auth = proxy::auth_passthrough(&headers);
     let aggregate = state.catalog.aggregate(&state.client, &origins(&state), &auth).await;
     if aggregate.auth_rejected {
-        return auth_rejected_response();
+        return private_catalog_response(auth_rejected_response());
     }
     let entries = catalog::dedup(aggregate.entries);
     if entries.is_empty() {
-        return error::catalog_unavailable();
+        return private_catalog_response(error::catalog_unavailable());
     }
-    // Codex 0.146 refreshes the provider URL using its backend-native `ModelsResponse` schema.
-    // Keep the authenticated aggregate fetch above as the router's auth boundary, then return the
-    // same empty native overlay as the OpenAI plane; Codex merges it with its bundled metadata.
-    if codex_envelope {
-        return axum::Json(serde_json::json!({"models": []})).into_response();
-    }
-    let mut data: Vec<_> = entries.iter().map(|(ns, e)| e.to_json(ns)).collect();
-    data.extend(presets::active_catalog_entries(&entries));
-    let mut response = axum::Json(serde_json::json!({"object": "list", "data": data})).into_response();
+    let pricing = match catalog_pricing(&state, &auth, &entries).await {
+        Ok(pricing) => pricing,
+        Err(response) => return private_catalog_response(response),
+    };
+    let eligible: Vec<_> = entries
+        .iter()
+        .filter(|(_, entry)| pricing.entry(&entry.id).is_some())
+        .cloned()
+        .collect();
+    let mut data: Vec<_> = eligible
+        .iter()
+        .map(|(namespace, entry)| model_json_with_pricing(namespace, entry, &pricing))
+        .collect();
+    data.extend(presets::active_catalog_entries(&eligible));
+
+    let mut response = if codex_envelope {
+        // Codex gets its backend-native empty overlay, but only after the uncached pricing call
+        // authenticated this exact request even when the shared capability catalog was fresh.
+        axum::Json(serde_json::json!({"models": []})).into_response()
+    } else {
+        axum::Json(serde_json::json!({"object": "list", "data": data})).into_response()
+    };
     if !aggregate.degraded.is_empty() {
         response.headers_mut().insert(
             axum::http::HeaderName::from_static(catalog::DEGRADED_HEADER),
@@ -163,7 +177,7 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
                 .expect("namespace list is header-safe"),
         );
     }
-    response
+    private_catalog_response(response)
 }
 
 fn requests_codex_models_envelope(headers: &HeaderMap) -> bool {
@@ -184,11 +198,24 @@ async fn get_model(
     let auth = proxy::auth_passthrough(&headers);
     let aggregate = state.catalog.aggregate(&state.client, &origins(&state), &auth).await;
     if aggregate.auth_rejected {
-        return auth_rejected_response();
+        return private_catalog_response(auth_rejected_response());
     }
     let entries = catalog::dedup(aggregate.entries);
-    let model = presets::active_catalog_entry(&id, &entries).or_else(|| {
-        catalog::find(&entries, &id).map(|(namespace, entry)| entry.to_json(namespace))
+    if entries.is_empty() {
+        return private_catalog_response(error::catalog_unavailable());
+    }
+    let pricing = match catalog_pricing(&state, &auth, &entries).await {
+        Ok(pricing) => pricing,
+        Err(response) => return private_catalog_response(response),
+    };
+    let eligible: Vec<_> = entries
+        .iter()
+        .filter(|(_, entry)| pricing.entry(&entry.id).is_some())
+        .cloned()
+        .collect();
+    let model = presets::active_catalog_entry(&id, &eligible).or_else(|| {
+        catalog::find(&eligible, &id)
+            .map(|(namespace, entry)| model_json_with_pricing(namespace, entry, &pricing))
     });
     match model {
         Some(model) => {
@@ -200,16 +227,52 @@ async fn get_model(
                         .expect("namespace list is header-safe"),
                 );
             }
-            response
+            private_catalog_response(response)
         }
-        None => {
-            if entries.is_empty() {
-                error::catalog_unavailable()
-            } else {
-                error::model_not_found(&id)
-            }
-        }
+        None => private_catalog_response(error::model_not_found(&id)),
     }
+}
+
+async fn catalog_pricing(
+    state: &AppState,
+    auth: &HeaderMap,
+    entries: &[(String, catalog::CatalogEntry)],
+) -> Result<pricing::PricingOverlay, Response> {
+    let candidates: Vec<_> = entries
+        .iter()
+        .map(|(provider_id, entry)| pricing::PricingCandidate {
+            id: &entry.id,
+            provider_id,
+            model_id: &entry.alias,
+        })
+        .collect();
+    pricing::fetch(&state.client, &origins(state), auth, &candidates)
+        .await
+        .map_err(|error| match error {
+            pricing::PricingError::Unauthorized => auth_rejected_response(),
+            pricing::PricingError::Unavailable => error::pricing_unavailable(),
+        })
+}
+
+fn model_json_with_pricing(
+    namespace: &str,
+    entry: &catalog::CatalogEntry,
+    pricing: &pricing::PricingOverlay,
+) -> serde_json::Value {
+    let mut model = entry.to_json(namespace);
+    let rate = pricing
+        .entry(&entry.id)
+        .expect("eligible catalog entry has pricing");
+    model["apitoken"] = serde_json::json!({"pricing": rate.public_json()});
+    model
+}
+
+fn private_catalog_response(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    response
 }
 
 /// Единый 401 каталога: ключ проверяет общий billing authority плоскостей,
@@ -433,6 +496,55 @@ mod tests {
         {"name":"models/gemini-3.1-flash-lite","displayName":"Gemini 3.1 Flash-Lite"}
     ]}"#;
 
+    async fn catalog_pricing_response(req: AxumRequest<Body>) -> AxumResponse<Body> {
+        let credential = req
+            .headers()
+            .get("x-api-key")
+            .or_else(|| req.headers().get(header::AUTHORIZATION))
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let rate = match credential {
+            "key-a" | "Bearer key-a" => "1000000000",
+            "key-b" | "Bearer key-b" => "2000000000",
+            _ => "5000000000",
+        };
+        let body = to_bytes(req.into_body(), 1024 * 1024).await.unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries: Vec<_> = request["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| {
+                let id = candidate["id"].as_str().unwrap();
+                let provider = candidate["provider_id"].as_str().unwrap();
+                let card = serde_json::json!({
+                    "input": rate,
+                    "output": rate,
+                    "cache_read": rate,
+                    "cache_write": rate,
+                });
+                serde_json::json!({
+                    "id": id,
+                    "standard": card,
+                    "priority": (provider == "openai").then_some(card),
+                })
+            })
+            .collect();
+        AxumResponse::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "unit": "nano_usd_per_million_tokens",
+                    "mode": "legacy",
+                    "entries": entries,
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    }
+
     /// Каталог-плоскость: отдаёт fixture на свой catalog path, логирует запрос.
     /// `mode`: "ok" — fixture, "fail" — всегда 500, "auth" — всегда 401.
     async fn catalog_plane(body: &'static str, path: &'static str, mode: &'static str) -> (String, SharedLog) {
@@ -443,8 +555,23 @@ mod tests {
             async move {
                 let recorded = record_of(&req);
                 log.lock().unwrap().push(recorded);
+                if req.uri().path() == "/internal/router/catalog/pricing" {
+                    return match mode {
+                        "ok" => catalog_pricing_response(req).await,
+                        "pricing-auth" => AxumResponse::builder()
+                            .status(StatusCode::UNAUTHORIZED)
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                        _ => AxumResponse::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                    };
+                }
                 let status = match mode {
-                    "ok" if req.uri().path() == path => StatusCode::OK,
+                    "ok" | "pricing-fail" | "pricing-auth" if req.uri().path() == path => {
+                        StatusCode::OK
+                    }
                     "auth" => StatusCode::UNAUTHORIZED,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
@@ -518,6 +645,9 @@ mod tests {
                         .header("content-type", "application/json")
                         .body(Body::from(catalog_body))
                         .unwrap();
+                }
+                if req.uri().path() == "/internal/router/catalog/pricing" {
+                    return catalog_pricing_response(req).await;
                 }
                 if req.uri().path() == "/internal/router/policy/preflight" {
                     return match policy_reply {
@@ -2674,6 +2804,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
         assert!(response.headers().get(catalog::DEGRADED_HEADER).is_none());
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["object"], "list");
@@ -2704,9 +2835,28 @@ mod tests {
         );
         assert!(json["data"][0].get("service_tiers").is_none());
         assert!(json["data"][4].get("service_tiers").is_none());
+        assert_eq!(
+            json["data"][0]["apitoken"]["pricing"]["unit"],
+            "nano_usd_per_million_tokens"
+        );
+        assert_eq!(
+            json["data"][0]["apitoken"]["pricing"]["standard"]["input"],
+            "5000000000"
+        );
+        assert!(json["data"][0]["apitoken"]["pricing"]["priority"].is_null());
+        assert_eq!(
+            json["data"][2]["apitoken"]["pricing"]["priority"]["output"],
+            "5000000000"
+        );
 
         // Auth passthrough: ключ клиента дошёл до плоскости каталога verbatim.
-        let catalog_request = log_a.lock().unwrap().pop().expect("catalog fetch hit the plane");
+        let catalog_request = log_a
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.method == "GET")
+            .cloned()
+            .expect("catalog fetch hit the plane");
         assert_eq!(catalog_request.path, "/v1/models?limit=1000");
         assert_eq!(catalog_request.x_api_key.as_deref(), Some("sk-pool-secret"));
     }
@@ -2724,6 +2874,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
         assert_eq!(
             response.json::<serde_json::Value>().await.unwrap(),
             serde_json::json!({"models": []})
@@ -2755,6 +2906,111 @@ mod tests {
         let ids: Vec<&str> = json["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids.len(), 4);
         assert!(!ids.iter().any(|id| id.starts_with("google/")));
+    }
+
+    #[tokio::test]
+    async fn catalog_cache_never_reuses_personalized_rates_between_keys() {
+        let (a, o, g, log_a, log_o, log_g) = three_catalog_planes().await;
+        let router = spawn(make_router(&a, &o, &g, Duration::from_secs(60))).await;
+        let client = reqwest::Client::new();
+
+        let first: serde_json::Value = client
+            .get(format!("{router}/v1/models"))
+            .header("x-api-key", "key-a")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let second: serde_json::Value = client
+            .get(format!("{router}/v1/models"))
+            .header("x-api-key", "key-b")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first["data"][0]["apitoken"]["pricing"]["standard"]["input"],
+            "1000000000"
+        );
+        assert_eq!(
+            second["data"][0]["apitoken"]["pricing"]["standard"]["input"],
+            "2000000000"
+        );
+        let all_logs = [log_a, log_o, log_g];
+        assert_eq!(
+            all_logs
+                .iter()
+                .flat_map(|log| log.lock().unwrap().clone())
+                .filter(|request| request.method == "GET")
+                .count(),
+            3,
+            "the second key must reuse only the shared capability catalog"
+        );
+        let pricing_requests: Vec<_> = all_logs
+            .iter()
+            .flat_map(|log| log.lock().unwrap().clone())
+            .filter(|request| request.path == "/internal/router/catalog/pricing")
+            .collect();
+        assert_eq!(pricing_requests.len(), 2);
+        assert_eq!(pricing_requests[0].x_api_key.as_deref(), Some("key-a"));
+        assert_eq!(pricing_requests[1].x_api_key.as_deref(), Some("key-b"));
+    }
+
+    #[tokio::test]
+    async fn catalog_pricing_is_fail_closed_and_authority_401_is_terminal() {
+        let (a, _) = catalog_plane(ANTHROPIC_MODELS, "/v1/models", "pricing-fail").await;
+        let (o, _) = catalog_plane(OPENAI_MODELS, "/v1/models", "pricing-fail").await;
+        let (g, _) = catalog_plane(GEMINI_MODELS, "/v1beta/models", "pricing-fail").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .header("x-api-key", "key-a")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "pricing_unavailable"
+        );
+
+        let (a, log_a) = catalog_plane(ANTHROPIC_MODELS, "/v1/models", "pricing-auth").await;
+        let (o, log_o) = catalog_plane(OPENAI_MODELS, "/v1/models", "ok").await;
+        let (g, log_g) = catalog_plane(GEMINI_MODELS, "/v1beta/models", "ok").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .header("x-api-key", "invalid")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "invalid_api_key"
+        );
+        assert_eq!(
+            log_a
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.path == "/internal/router/catalog/pricing")
+                .count(),
+            1
+        );
+        for log in [log_o, log_g] {
+            assert!(log
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| request.path != "/internal/router/catalog/pricing"));
+        }
     }
 
     #[tokio::test]

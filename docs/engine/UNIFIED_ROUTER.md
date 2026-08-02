@@ -205,6 +205,19 @@ Codex — canonical snake_case body. Hermes Fast проверяется чере
 headless matrix не приписывает роутеру потерянную клиентом option и использует его native
 custom-provider body contract.
 
+OpenCode не выводит произвольные поля OpenAI `/v1/models` напрямую в свой внутренний model schema:
+его provider-конфиг должен один раз преобразовать `data[].apitoken.pricing.standard` в штатный
+`model.cost`, разделив exact nanoUSD/M на `1e9` до требуемого OpenCode числа USD/M. Синтетическая
+GPT Fast-модель с исходным API ID использует `pricing.priority`; Standard — `pricing.standard`.
+Такой discovery обязан выполняться синхронно с credential текущего запуска: общий файловый cache
+допустим только для capability metadata без цен, но не для полного key-scoped ответа. После этого
+OpenCode сам считает стоимость сообщения по input/output/reasoning/cache token usage; отдельный
+`usage.cost` от router не требуется. Его custom-provider schema умеет отдельный
+`context_over_200k`, поэтому plugin заполняет его только при exact provider threshold 200000;
+произвольный GPT threshold 272000 и отдельный Anthropic cache-write 1h штатная cost schema
+OpenCode 1.18.11 не выражает, но router сохраняет их в `apitoken.pricing.long_context` и
+`cache_write_1h` для клиентов с более точной моделью тарификации.
+
 Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
 Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
 0.86.2: базовые 19 executable кейсов зелёные, включая настоящий многоходовый OpenCode→Gemini
@@ -339,10 +352,21 @@ customer credential verbatim и bounded список `(opaque catalog id, provid
 движок применяет live legacy scalar либо exact strict-policy payable multiplier к audited tariff и
 возвращает только integer `nano_usd_per_million_tokens` rate cards. Account/key/policy/rule identity,
 баланс и settlement в ответ не входят. Общий 30-секундный cache хранит только model/capability
-catalog: персональные ставки в нём запрещены. Полный key-scoped `/v1/models` response также нельзя
-класть в shared cache; публичная поверхность после подключения consumer получает
-`Cache-Control: private, no-store`. До отдельного consumer SHA внутренний endpoint dormant и не
-меняет существующий `/v1/models`.
+catalog: персональные ставки в нём запрещены. Consumer вызывает pricing authority на каждом
+`GET /v1/models{,/{id}}`, валидирует версию/unit/canonical decimal strings и exact ordered subset,
+удаляет из публичного списка модели вне subset и добавляет разрешённым expand-only metadata:
+
+```json
+{"apitoken":{"pricing":{"unit":"nano_usd_per_million_tokens",
+  "standard":{"input":"5000000000","output":"30000000000",
+    "cache_read":"500000000","cache_write":"6250000000"},
+  "priority":null,"long_context":null}}}
+```
+
+Полный key-scoped `/v1/models` response нельзя класть в shared cache; все ответы поверхности
+получают `Cache-Control: private, no-store`. `401` authority терминален, а transport/non-2xx,
+malformed/mixed-version или oversized response после перебора fixed origins даёт публичный
+`503 pricing_unavailable`: нулевой, last-good или взятый у другого ключа rate card запрещён.
 
 Wire schema v1 закрыта для неизвестных полей. Request содержит `schema_version:1` и не более 256
 уникальных кандидатов:

@@ -152,8 +152,10 @@ Control API движка использует только на чтение. С
   coherent pricing bundle для strict account и проецирует audited `crates/metering` rates через
   effective payable multiplier в integer nanoUSD-per-million strings. Ответ не содержит key,
   account, balance, policy или rule identity и ничего не резервирует/списывает. Потребитель —
-  `crates/router` после отдельного producer-first GREEN SHA; он обязан валидировать ordered subset,
-  не кэшировать credential-specific overlay и никогда не добавлять его в общий catalog TTL-cache.
+  `crates/router`: после отдельного producer-first GREEN SHA он валидирует version/unit/canonical
+  integer strings и ordered subset, фильтрует недоступные модели, добавляет
+  `data[].apitoken.pricing`, помечает ответ `private, no-store` и fail-closed возвращает 401/503.
+  Credential-specific overlay не кэшируется и никогда не попадает в общий catalog TTL-cache.
   Публичные provider vhost'ы `/internal/*` не обслуживают.
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics` на 8798 с ровно 18

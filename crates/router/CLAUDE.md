@@ -83,6 +83,10 @@
   клиент engine-owned `/internal/router/policy/preflight`: все значения auth-заголовков
   передаются verbatim, fixed origins перебираются последовательно, `401` терминален,
   malformed/mixed-version ответы fail closed. Credential и policy response не кэшируются.
+- `pricing.rs` — bounded клиент engine-owned `/internal/router/catalog/pricing`: credential
+  текущего catalog-request передаётся verbatim, fixed origins перебираются последовательно,
+  `401` терминален, а schema version/unit/canonical integer strings/ordered subset проверяются
+  fail closed. Персональные rate cards существуют только в памяти запроса и не кэшируются.
 - `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
   ranks и проверенный context window. Manifest валидируется при старте; отсутствующие live
   members пропускаются, полностью пустой preset не исполняется.
@@ -113,7 +117,10 @@
   исходным API model ID; у Anthropic/Gemini это поле отсутствует. Здесь же — общий для
   universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch
   для запросов без fallback). `main.rs` добавляет только активные `preset/*` записи — если
-  aggregate snapshot содержит хотя бы один member соответствующего preset.
+  aggregate snapshot содержит хотя бы один member соответствующего preset. Затем `main.rs`
+  отдельно получает key-scoped pricing ordered subset, фильтрует недоступные модели, публикует
+  exact nanoUSD/M strings в `apitoken.pricing` и ставит `Cache-Control: private, no-store`;
+  ошибка pricing authority даёт 503 без zero/stale fallback.
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.
@@ -130,7 +137,8 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 
 Интеграционные тесты поднимают mock-плоскости на реальных loopback-сокетах и
 покрывают: passthrough тела/заголовков, небуферизованный SSE, транзитивный
-disconnect, агрегацию/деградацию/stale каталога, 401/503 каталога, alias-
+disconnect, агрегацию/деградацию/stale capability-каталога, uncached key-scoped pricing для двух
+ключей при одном shared cache, terminal pricing 401/503, canonical wire validation, alias-
 разрешение моделей, 404/405, model-based dispatch chat-, responses- и
 messages- и messages/count_tokens-запросов (namespaced без catalog fetch,
 alias через каталог, 400 невалидного/слишком большого тела, небуферизованный

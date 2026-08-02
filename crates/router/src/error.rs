@@ -118,6 +118,16 @@ pub fn catalog_unavailable() -> Response {
     )
 }
 
+/// 503 key-scoped pricing authority unavailable. A catalog without an authoritative current-key
+/// overlay would invite clients to treat absent rates as zero or reuse another account's prices.
+pub fn pricing_unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "Personalized model pricing is temporarily unavailable.",
+            "type": "server_error", "code": "pricing_unavailable"}}),
+    )
+}
+
 /// 503 account-policy authority unavailable before execution.
 pub fn policy_unavailable() -> Response {
     json_response(
