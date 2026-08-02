@@ -243,6 +243,7 @@ mod tests {
                 alias: "gpt-5.6-terra".to_string(),
                 display_name: None,
                 reasoning_efforts: None,
+                service_tiers: Some(vec!["standard".to_string(), "priority".to_string()]),
             },
         )];
         let ids: Vec<_> = active_catalog_entries(&entries)

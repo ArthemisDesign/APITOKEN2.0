@@ -184,6 +184,13 @@ evidence подтверждает сырой AI SDK `$schema`/exclusive bounds, 
 `opencode-claude-effort-xhigh` и `opencode-claude-effort-max` отдельно запускают Opus 5 без
 пользовательского plugin/request rewrite через реальные `--variant xhigh|max`; evidence требует
 HTTP 200 и подтверждает сырой `reasoning_effort` каждого уровня на router ingress.
+`opencode-fast` также работает без plugin/request rewrite: конфиг объявляет отдельный
+`openai/gpt-*-fast` с исходным API model ID и model option `service_tier:"priority"`, запускает
+его вместе с reasoning variant `low`, а evidence требует сырой body `service_tier:"priority"`,
+`reasoning_effort:"low"` и авторитетный response `usage.service_tier:"priority"`.
+Именно snake_case здесь является частью интеграционного контракта: AI SDK
+`@ai-sdk/openai-compatible` передаёт неизвестные model options в JSON verbatim, поэтому
+camelCase `serviceTier` не превращается в wire-поле и не включает Fast.
 
 Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
 Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
@@ -298,8 +305,12 @@ evidence по-прежнему принадлежат Codex plane — router т�
 `google/gemini-*`. Namespace означает семейство модели, не обязательно единственного
 исполнителя: при появлении альтернативных backends одной модели (Anthropic direct,
 Bedrock, Vertex) route planner сможет выбирать между ними. Текущие нативные ID остаются
-однозначными aliases. Источник правды для каталога — существующий versioned
-multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
+однозначными aliases. GPT-записи дополнительно публикуют expand-only capability
+`service_tiers: ["standard","priority"]`. Клиенты с model-level options (в частности,
+OpenCode) могут на его основе показать отдельную Fast-модель, сохранив исходный API model ID
+и добавив `service_tier:"priority"`; Standard-модель и reasoning variants при этом остаются
+независимыми. У Anthropic/Gemini поле отсутствует. Источник правды для каталога —
+существующий versioned multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
 `crates/registry/src/pricing.rs`).
 
 `/v1/models` — единственная коллизия путей native-плоскостей: unified endpoint обязан
@@ -427,6 +438,10 @@ multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
    `["low","medium","high","max"]`, 4.7+/5 —
    `["low","medium","high","xhigh","max"]`, legacy/unknown — `[]`; это authority для
    клиентских variant UI вместо хардкода. Поле отсутствует у записей других провайдеров.
+   GPT-записи OpenAI-плоскости аналогично получают expand-only
+   `service_tiers:["standard","priority"]`:
+   это authority для model-level Fast UI без provider-wide заголовка или request rewrite;
+   у Anthropic/Gemini поле отсутствует.
    Упавшая плоскость опускается с маркировкой `x-apitoken-catalog-degraded`, пустой каталог
    плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий

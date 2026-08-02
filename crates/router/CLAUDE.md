@@ -103,7 +103,9 @@
   встроенными metadata), не меняя OpenAI-list для остальных клиентов. Для Anthropic-записей
   router-owned expand-only поле `reasoning_efforts` публикует точную discovery-матрицу:
   Claude 4.6 — low|medium|high|max, Claude 4.7+/5 — low|medium|high|xhigh|max, legacy/unknown —
-  пустой authoritative список. Здесь же — общий для
+  пустой authoritative список. GPT-записи OpenAI-плоскости получают expand-only
+  `service_tiers:["standard","priority"]`, чтобы клиенты строили model-level Fast UI с
+  исходным API model ID; у Anthropic/Gemini это поле отсутствует. Здесь же — общий для
   universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch
   для запросов без fallback). `main.rs` добавляет только активные `preset/*` записи — если
   aggregate snapshot содержит хотя бы один member соответствующего preset.

@@ -44,6 +44,7 @@ pub const NS_GOOGLE: &str = "google";
 
 const ANTHROPIC_EFFORTS_4_6: &[&str] = &["low", "medium", "high", "max"];
 const ANTHROPIC_EFFORTS_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const OPENAI_SERVICE_TIERS: &[&str] = &["standard", "priority"];
 
 /// Router-owned discovery metadata for the OpenAI-compatible surface. The
 /// native Anthropic model list has no effort capability field, so the unified
@@ -115,6 +116,9 @@ pub struct CatalogEntry {
     /// authoritative statement that this Anthropic model has no GA adaptive
     /// effort; `None` means this catalog parser does not own such metadata.
     pub reasoning_efforts: Option<Vec<String>>,
+    /// Ordered execution tiers supported by this model. The OpenAI plane owns
+    /// Standard/Priority execution; other catalog parsers leave this absent.
+    pub service_tiers: Option<Vec<String>>,
 }
 
 impl CatalogEntry {
@@ -133,6 +137,9 @@ impl CatalogEntry {
         }
         if let Some(efforts) = &self.reasoning_efforts {
             obj["reasoning_efforts"] = serde_json::json!(efforts);
+        }
+        if let Some(tiers) = &self.service_tiers {
+            obj["service_tiers"] = serde_json::json!(tiers);
         }
         obj
     }
@@ -358,6 +365,7 @@ fn parse_anthropic(body: &Value) -> Vec<CatalogEntry> {
                         ),
                         alias: id,
                         display_name: m["display_name"].as_str().map(str::to_string),
+                        service_tiers: None,
                     })
                 })
                 .collect()
@@ -376,11 +384,18 @@ fn parse_openai(body: &Value) -> Vec<CatalogEntry> {
                     if id.is_empty() {
                         return None;
                     }
+                    let service_tiers = id.starts_with("gpt-").then(|| {
+                        OPENAI_SERVICE_TIERS
+                            .iter()
+                            .map(|tier| (*tier).to_string())
+                            .collect()
+                    });
                     Some(CatalogEntry {
                         id: format!("{NS_OPENAI}/{id}"),
                         alias: id,
                         display_name: None,
                         reasoning_efforts: None,
+                        service_tiers,
                     })
                 })
                 .collect()
@@ -405,6 +420,7 @@ fn parse_gemini(body: &Value) -> Vec<CatalogEntry> {
                         alias: id,
                         display_name: m["displayName"].as_str().map(str::to_string),
                         reasoning_efforts: None,
+                        service_tiers: None,
                     })
                 })
                 .collect()
@@ -474,6 +490,7 @@ mod tests {
         assert_eq!(entries[0].id, "anthropic/claude-opus-4-8");
         assert_eq!(entries[0].alias, "claude-opus-4-8");
         assert_eq!(entries[0].display_name.as_deref(), Some("Claude Opus 4.8"));
+        assert_eq!(entries[0].service_tiers, None);
         assert_eq!(
             entries[0].reasoning_efforts.as_deref(),
             Some(
@@ -508,13 +525,19 @@ mod tests {
     fn openai_envelope_maps_to_namespaced_entries() {
         let body = serde_json::json!({"object": "list", "data": [
             {"id": "gpt-5.6", "object": "model", "created": 0, "owned_by": "apitoken"},
-            {"id": "gpt-5.5", "object": "model", "created": 0, "owned_by": "apitoken"}
+            {"id": "gpt-5.5", "object": "model", "created": 0, "owned_by": "apitoken"},
+            {"id": "text-embedding-4", "object": "model", "created": 0, "owned_by": "apitoken"}
         ]});
         let entries = parse_openai(&body);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].id, "openai/gpt-5.6");
         assert_eq!(entries[0].alias, "gpt-5.6");
         assert_eq!(entries[0].display_name, None);
+        assert_eq!(
+            entries[0].service_tiers.as_deref(),
+            Some(["standard", "priority"].map(String::from).as_slice())
+        );
+        assert_eq!(entries[2].service_tiers, None);
     }
 
     #[test]
@@ -529,6 +552,7 @@ mod tests {
         assert_eq!(entries[0].id, "google/gemini-2.5-pro");
         assert_eq!(entries[0].alias, "gemini-2.5-pro");
         assert_eq!(entries[0].display_name.as_deref(), Some("Gemini 2.5 Pro"));
+        assert_eq!(entries[0].service_tiers, None);
     }
 
     #[test]
@@ -548,7 +572,7 @@ mod tests {
     fn dedup_keeps_first_occurrence_order() {
         let e = |id: &str| ("anthropic".to_string(), CatalogEntry {
             id: id.into(), alias: "a".into(), display_name: None,
-            reasoning_efforts: None });
+            reasoning_efforts: None, service_tiers: None });
         let deduped = dedup(vec![e("x/1"), e("x/2"), e("x/1"), e("x/3")]);
         let ids: Vec<_> = deduped.iter().map(|(_, e)| e.id.as_str()).collect();
         assert_eq!(ids, ["x/1", "x/2", "x/3"]);
@@ -560,10 +584,12 @@ mod tests {
             ("anthropic".to_string(), CatalogEntry {
                 id: "anthropic/claude-opus-4-8".into(),
                 alias: "claude-opus-4-8".into(), display_name: None,
-                reasoning_efforts: None }),
+                reasoning_efforts: None, service_tiers: None }),
             ("openai".to_string(), CatalogEntry {
                 id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None,
-                reasoning_efforts: None }),
+                reasoning_efforts: None,
+                service_tiers: Some(vec!["standard".into(), "priority".into()]),
+            }),
         ];
         assert!(find(&entries, "anthropic/claude-opus-4-8").is_some());
         assert!(find(&entries, "claude-opus-4-8").is_some());
@@ -584,6 +610,7 @@ mod tests {
                     .map(str::to_string)
                     .collect(),
             ),
+            service_tiers: None,
         };
         let json = entry.to_json("anthropic");
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
@@ -596,7 +623,17 @@ mod tests {
             json["reasoning_efforts"],
             serde_json::json!(["low", "medium", "high", "xhigh", "max"])
         );
-        let bare = CatalogEntry { id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None, reasoning_efforts: None };
+        let bare = CatalogEntry {
+            id: "openai/gpt-5.6".into(),
+            alias: "gpt-5.6".into(),
+            display_name: None,
+            reasoning_efforts: None,
+            service_tiers: Some(vec!["standard".into(), "priority".into()]),
+        };
         assert!(bare.to_json("openai").get("name").is_none());
+        assert_eq!(
+            bare.to_json("openai")["service_tiers"],
+            serde_json::json!(["standard", "priority"])
+        );
     }
 }

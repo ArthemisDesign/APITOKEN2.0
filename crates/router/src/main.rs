@@ -2628,6 +2628,12 @@ mod tests {
         );
         assert_eq!(json["data"][1]["reasoning_efforts"], serde_json::json!([]));
         assert!(json["data"][2].get("reasoning_efforts").is_none());
+        assert_eq!(
+            json["data"][2]["service_tiers"],
+            serde_json::json!(["standard", "priority"])
+        );
+        assert!(json["data"][0].get("service_tiers").is_none());
+        assert!(json["data"][4].get("service_tiers").is_none());
 
         // Auth passthrough: ключ клиента дошёл до плоскости каталога verbatim.
         let catalog_request = log_a.lock().unwrap().pop().expect("catalog fetch hit the plane");
@@ -2773,6 +2779,10 @@ mod tests {
             .get(format!("{router}/v1/models/gpt-5.6"))
             .send().await.unwrap().json().await.unwrap();
         assert_eq!(json["id"], "openai/gpt-5.6");
+        assert_eq!(
+            json["service_tiers"],
+            serde_json::json!(["standard", "priority"])
+        );
 
         let response = client.get(format!("{router}/v1/models/cohere/command-x")).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

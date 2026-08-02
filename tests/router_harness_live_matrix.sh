@@ -191,6 +191,8 @@ for attempt in attempts:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks a Fast body tier")
         if "priority" not in response_tiers:
             raise SystemExit(f"{label}: Fast attempt {sequence} lacks authoritative priority evidence")
+        if label == "opencode-fast" and attempt.get("request_reasoning_effort") != "low":
+            raise SystemExit(f"{label}: Fast model did not preserve its reasoning variant")
 
     event_types = set(attempt.get("response_event_types") or [])
     if protocol == "anthropic_messages" and not {"message_start", "message_stop"}.issubset(event_types):
@@ -357,10 +359,27 @@ openai_compatible_config() {
     "$OPENAI_MODEL" "$OPENAI_MODEL" "$OPENAI_MODEL"
 }
 
+opencode_config() {
+  local tier=$1
+  local selected_model=$OPENAI_MODEL
+  local model_config='{"name":"Router GPT","reasoning":true,"variants":{"low":{"reasoningEffort":"low"}}}'
+  if [[ $tier == fast ]]; then
+    selected_model="$OPENAI_MODEL-fast"
+    model_config=$(printf '{"id":"%s","name":"Router GPT Fast","reasoning":true,"options":{"service_tier":"priority"},"variants":{"low":{"reasoningEffort":"low"}}}' "$OPENAI_MODEL")
+  fi
+  printf '{"provider":{"apitoken":{"npm":"@ai-sdk/openai-compatible","name":"API Token Router","options":{"baseURL":"%s/v1","apiKey":"%s"},"models":{"%s":%s}}},"model":"apitoken/%s","small_model":"apitoken/%s"}' \
+    "$PROXY_BASE_URL" "$PLACEHOLDER_API_KEY" "$selected_model" "$model_config" \
+    "$selected_model" "$selected_model"
+}
+
 run_opencode() {
   local tier=$1
   local config_content
-  config_content=$(openai_compatible_config "$tier")
+  local selected_model=$OPENAI_MODEL
+  if [[ $tier == fast ]]; then
+    selected_model="$OPENAI_MODEL-fast"
+  fi
+  config_content=$(opencode_config "$tier")
   run_quiet env \
     OPENCODE_CONFIG_CONTENT="$config_content" \
     OPENCODE_CONFIG_DIR="$CASE_DIR/config" \
@@ -373,7 +392,8 @@ run_opencode() {
     XDG_DATA_HOME="$CASE_DIR/xdg-data" \
     XDG_STATE_HOME="$CASE_DIR/xdg-state" \
     opencode run --pure --format json \
-      --model "apitoken/$OPENAI_MODEL" \
+      --model "apitoken/$selected_model" \
+      --variant low \
       --agent plan \
       --title router-harness \
       --dir "$CASE_DIR/work" \
@@ -642,7 +662,7 @@ run_matrix_case cline-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast
 run_matrix_case continue-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_continue
 run_matrix_case continue-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_continue
 run_matrix_case opencode-standard openai_chat /v1/chat/completions "$OPENAI_MODEL" standard none run_opencode
-run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast header run_opencode
+run_matrix_case opencode-fast openai_chat /v1/chat/completions "$OPENAI_MODEL" fast body run_opencode
 run_matrix_case opencode-claude-native openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_MODEL" standard none run_opencode_claude_native
 run_matrix_case opencode-claude-effort-xhigh openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_xhigh
 run_matrix_case opencode-claude-effort-max openai_chat /v1/chat/completions "$OPENCODE_CLAUDE_EFFORT_MODEL" standard none run_opencode_claude_max
