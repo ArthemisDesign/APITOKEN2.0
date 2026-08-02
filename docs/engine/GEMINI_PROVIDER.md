@@ -72,9 +72,12 @@ initialized by the Gemini CLI flow introduced in `c805f6f` and wire-calibrated i
 migrated to Antigravity by `241fce3`/`9a475f0`; the resulting profile has 93 completed runtime turns.
 The second profile used direct Antigravity onboarding, passed OAuth/quota discovery, but its first
 real generation stopped before execution with HTTP 503 and zero completed turns. Therefore the
-automated flow preserves the calibrated Gemini CLI form order, headers, metadata,
-`FULL_ELIGIBILITY_CHECK` and operation polling as a regression-tested bootstrap, while the final
-Antigravity transaction remains a fresh client-bound consent rather than token conversion.
+automated flow preserves the calibrated Gemini CLI token form and verified userinfo identity as a
+regression-tested bootstrap, while the final Antigravity transaction remains a fresh client-bound
+consent rather than token conversion. Owned live evidence on 2026-08-02 showed a candidate account
+whose legacy OAuth and verified userinfo succeeded while the legacy Code Assist surface returned
+no project, `paidTier` or `currentTier`; therefore this surface is not an admission authority and
+the Antigravity checks below remain decisive.
 
 1. The seller submits only the account's dedicated proxy. When Auth Bot issues the proxy, OAuth
    starts immediately after issuance.
@@ -87,17 +90,19 @@ Antigravity transaction remains a fresh client-bound consent rather than token c
    two non-secret links. The server forces every server-side request through the dedicated proxy;
    browser egress remains a seller-enforced invariant.
 4. Auth Bot claims the legacy `state` once, exchanges the code with the same client/redirect and
-   performs verified userinfo, legacy `loadCodeAssist` with `FULL_ELIGIBILITY_CHECK`, and official
-   `onboardUser` operation polling when needed. The resulting legacy tokens never enter a roster.
-5. Paid-plan admission uses the actual tier/project and reviewed tier evidence. A stable reviewed
+   performs verified userinfo. Before issuing a second consent it rejects an already published
+   subject or incompatible legacy-profile proxy. The resulting legacy tokens never enter a roster;
+   missing legacy Code Assist project/tier evidence neither admits nor rejects the subscription.
+5. After the Antigravity consent, paid-plan admission uses the actual tier/project and reviewed
+   tier evidence. A stable reviewed
    tier ID is authoritative even when Google changes its display name; an exact known name that
    points to another plan conflicts and fails closed. When Google returns both `paidTier` and
    `currentTier`, a reviewed mapping from either field is accepted, while contradictory reviewed
    mappings, unknown IDs without exact legacy-name evidence and substring-only matches are rejected.
-   Before applying this evidence to a new subject or issuing the Antigravity consent, Auth Bot scans
-   the encrypted roster: an existing Antigravity subject is reported as an already connected
-   duplicate while its live refresh token is still safe; a legacy profile may continue only through
-   its exact subject, canonical proxy and IPRoyal identity. Every `unsupported_plan` branch emits
+   Before issuing the Antigravity consent, Auth Bot scans the encrypted roster: an existing
+   Antigravity subject is reported as an already connected duplicate while its live refresh token
+   is still safe; a legacy profile may continue only through its exact subject, canonical proxy and
+   IPRoyal identity. Every final `unsupported_plan` branch emits
    only structural diagnostics (project and tier-field presence/classes plus allowed-tier count),
    never raw tier, project or identity.
 6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
@@ -126,10 +131,9 @@ Antigravity transaction remains a fresh client-bound consent rather than token c
    remains decodable for deployment compatibility and retains the former in-place reauthorization
    rule because its already-issued consent may have invalidated the old token.
 
-Auth Bot's two token exchanges, userinfo, both `loadCodeAssist` variants, onboarding and generation
+Auth Bot's two token exchanges, userinfo, Antigravity `loadCodeAssist`, onboarding and generation
 acceptance use the same bounded Node helper source as the runtime through the seller's dedicated
-authenticated proxy. Legacy calls retain the reviewed Gemini CLI metadata; the final wire identity
-is pinned to Antigravity 2.2.1: runtime/control calls use
+authenticated proxy. The final wire identity is pinned to Antigravity 2.2.1: runtime/control calls use
 `antigravity/hub/2.2.1 darwin/arm64`, onboarding appends
 `google-api-nodejs-client/10.3.0`, and token exchange uses `Go-http-client/2.0`. There is no ambient
 proxy path or arbitrary OAuth client.

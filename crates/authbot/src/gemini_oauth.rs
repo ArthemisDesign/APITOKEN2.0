@@ -73,6 +73,21 @@ enum OAuthPhase {
     AntigravityFinal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostIdentityAction {
+    StartAntigravityConsent,
+    ResolveAntigravitySubscription,
+}
+
+fn post_identity_action(phase: OAuthPhase) -> PostIdentityAction {
+    match phase {
+        OAuthPhase::LegacyBootstrap => PostIdentityAction::StartAntigravityConsent,
+        OAuthPhase::AntigravityFinal | OAuthPhase::DirectAntigravity => {
+            PostIdentityAction::ResolveAntigravitySubscription
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 struct PendingOAuthSecret {
@@ -1406,7 +1421,6 @@ impl CodeAssistDiagnostic {
 
 #[derive(Deserialize)]
 struct OperationResponse {
-    name: Option<String>,
     #[serde(default)]
     done: bool,
     response: Option<Value>,
@@ -1658,7 +1672,7 @@ async fn complete(
         ),
         ("user-agent", token_user_agent.as_str()),
     ];
-    if phase == OAuthPhase::LegacyBootstrap {
+    if post_identity_action(phase) == PostIdentityAction::StartAntigravityConsent {
         token_headers.push(("x-goog-api-client", google_api_client.as_str()));
     }
     let response = client
@@ -1686,7 +1700,6 @@ async fn complete(
     {
         return Err(Failure::Authorization);
     }
-    let refresh_token = token.refresh_token.take().ok_or(Failure::Authorization)?;
     eprintln!(
         "[gemini-oauth] chat={} Google granted scopes: {}",
         session.chat_id,
@@ -1711,14 +1724,29 @@ async fn complete(
         );
         return Err(Failure::Authorization);
     }
-    let resolved = match phase {
-        OAuthPhase::LegacyBootstrap => {
-            resolve_legacy_account(&mut client, &token.access_token).await
-        }
-        OAuthPhase::AntigravityFinal | OAuthPhase::DirectAntigravity => {
-            resolve_antigravity_account(&mut client, &token.access_token).await
-        }
-    };
+    // The Gemini CLI OAuth transaction is an identity bootstrap, not the authority for
+    // Antigravity subscription admission. Google can return no project/tier from the legacy Code
+    // Assist surface; that absence neither proves nor disproves Antigravity eligibility.
+    // Stop after verified userinfo and duplicate/proxy preflight; the fresh Antigravity consent
+    // below still fails closed on exact tier, project, matching subject and real generation.
+    if post_identity_action(phase) == PostIdentityAction::StartAntigravityConsent {
+        preflight_bootstrap_candidate(
+            &config.root,
+            &config.keyring,
+            &user.id,
+            proxy,
+            proxy_order_id,
+        )?;
+        eprintln!(
+            "[gemini-oauth] chat={} legacy identity bootstrap passed; final subscription admission remains pending",
+            session.chat_id
+        );
+        return Ok(Completion::LegacyBootstrap {
+            subject: Zeroizing::new(std::mem::take(&mut user.id)),
+        });
+    }
+    let refresh_token = token.refresh_token.take().ok_or(Failure::Authorization)?;
+    let resolved = resolve_antigravity_account(&mut client, &token.access_token).await;
     let resolved = match resolved {
         Ok(resolved) => resolved,
         Err(failure) => {
@@ -1731,19 +1759,6 @@ async fn complete(
             return Err(failure);
         }
     };
-    // A previously published subject is a duplicate regardless of how Google currently spells
-    // the paid-tier fields. Detect it before plan admission so a repeated onboarding cannot show
-    // the misleading "subscription not found" result or reach a second consent that invalidates
-    // the live Antigravity refresh token. New subjects still fail closed on an unknown plan.
-    if phase == OAuthPhase::LegacyBootstrap {
-        preflight_bootstrap_candidate(
-            &config.root,
-            &config.keyring,
-            &user.id,
-            proxy,
-            proxy_order_id,
-        )?;
-    }
     if !supported_paid_plan(&resolved.plan) {
         log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
         eprintln!(
@@ -1752,15 +1767,6 @@ async fn complete(
             plan_label(&resolved.plan)
         );
         return Err(Failure::UnsupportedPlan);
-    }
-    if phase == OAuthPhase::LegacyBootstrap {
-        eprintln!(
-            "[gemini-oauth] chat={} legacy Code Assist bootstrap passed; no credential published",
-            session.chat_id
-        );
-        return Ok(Completion::LegacyBootstrap {
-            subject: Zeroizing::new(std::mem::take(&mut user.id)),
-        });
     }
     if validate_final_subject(phase, &user.id, bootstrap_subject).is_err() {
         eprintln!(
@@ -1897,148 +1903,6 @@ async fn resolve_antigravity_account(
         plan,
         diagnostic,
     })
-}
-
-async fn resolve_legacy_account(
-    client: &mut RecoveringClient<'_>,
-    access_token: &str,
-) -> Result<ResolvedAccount, Failure> {
-    let mut loaded = load_legacy_code_assist(client, access_token).await?;
-    if project_from_value(loaded.cloudaicompanion_project.as_ref()).is_none()
-        && loaded.current_tier.is_none()
-    {
-        let tier = loaded
-            .allowed_tiers
-            .iter()
-            .find(|tier| tier.is_default)
-            .or_else(|| loaded.allowed_tiers.first())
-            .cloned();
-        let Some(tier) = tier else {
-            log_unsupported_plan(
-                "legacy_missing_onboarding_tier",
-                CodeAssistDiagnostic::from_response(&loaded),
-            );
-            return Err(Failure::UnsupportedPlan);
-        };
-        let Some(tier_id) = tier.id.as_deref() else {
-            log_unsupported_plan(
-                "legacy_missing_onboarding_tier_id",
-                CodeAssistDiagnostic::from_response(&loaded),
-            );
-            return Err(Failure::UnsupportedPlan);
-        };
-        onboard_legacy(client, access_token, tier_id).await?;
-        loaded = load_legacy_code_assist(client, access_token).await?;
-    }
-    let diagnostic = CodeAssistDiagnostic::from_response(&loaded);
-    let Some(project_id) = project_from_value(loaded.cloudaicompanion_project.as_ref()) else {
-        log_unsupported_plan("legacy_missing_project", diagnostic);
-        return Err(Failure::UnsupportedPlan);
-    };
-    let (tier_id, tier_name, plan) = resolve_reported_tier(&loaded)?;
-    Ok(ResolvedAccount {
-        project_id,
-        tier_id,
-        tier_name,
-        plan,
-        diagnostic,
-    })
-}
-
-async fn load_legacy_code_assist(
-    client: &mut RecoveringClient<'_>,
-    access_token: &str,
-) -> Result<LoadCodeAssistResponse, Failure> {
-    legacy_json(
-        client,
-        access_token,
-        GeminiHttpMethod::Post,
-        &format!("{CODE_ASSIST_PROD_URL}/v1internal:loadCodeAssist"),
-        Some(&json!({
-            "metadata": legacy_client_metadata(None),
-            "mode": "FULL_ELIGIBILITY_CHECK"
-        })),
-        "legacy_load_code_assist",
-    )
-    .await
-}
-
-async fn onboard_legacy(
-    client: &mut RecoveringClient<'_>,
-    access_token: &str,
-    tier_id: &str,
-) -> Result<(), Failure> {
-    let operation: OperationResponse = legacy_json(
-        client,
-        access_token,
-        GeminiHttpMethod::Post,
-        &format!("{CODE_ASSIST_PROD_URL}/v1internal:onboardUser"),
-        Some(&json!({
-            "tierId": tier_id,
-            "metadata": legacy_client_metadata(None),
-        })),
-        "legacy_onboard",
-    )
-    .await?;
-    if operation.done {
-        return Ok(());
-    }
-    let name = operation.name.ok_or(Failure::Temporary)?;
-    if !valid_operation_name(&name) {
-        return Err(Failure::Temporary);
-    }
-    for _ in 0..MAX_ONBOARD_POLLS {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        let operation: OperationResponse = legacy_json(
-            client,
-            access_token,
-            GeminiHttpMethod::Get,
-            &format!("{CODE_ASSIST_PROD_URL}/v1internal/{name}"),
-            None,
-            "legacy_onboard_poll",
-        )
-        .await?;
-        if operation.done {
-            return Ok(());
-        }
-    }
-    Err(Failure::Temporary)
-}
-
-async fn legacy_json<T: for<'de> Deserialize<'de>>(
-    client: &mut RecoveringClient<'_>,
-    access_token: &str,
-    method: GeminiHttpMethod,
-    url: &str,
-    body: Option<&Value>,
-    diagnostic_phase: &'static str,
-) -> Result<T, Failure> {
-    let authorization = Zeroizing::new(format!("Bearer {access_token}"));
-    let user_agent = legacy_user_agent();
-    let google_api_client = legacy_google_api_client();
-    let encoded = Zeroizing::new(match body {
-        Some(body) => serde_json::to_vec(body).map_err(|_| Failure::Temporary)?,
-        None => Vec::new(),
-    });
-    let headers = legacy_code_assist_headers(
-        authorization.as_str(),
-        user_agent.as_str(),
-        google_api_client.as_str(),
-    );
-    let response = client
-        .control_request(method, url, &headers, &encoded, diagnostic_phase)
-        .await?;
-    if !(200..300).contains(&response.status) {
-        let status = response.status;
-        let detail = String::from_utf8_lossy(&response.body);
-        let detail: String = detail.chars().take(4_096).collect();
-        eprintln!(
-            "[gemini-oauth] chat={} {} returned HTTP {}",
-            client.chat_id, diagnostic_phase, status
-        );
-        return Err(classify_google_http_failure(status, &detail));
-    }
-    serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)
 }
 
 async fn generation_probe(
@@ -2285,15 +2149,6 @@ fn antigravity_control_user_agent() -> String {
     )
 }
 
-fn legacy_user_agent() -> String {
-    format!(
-        "GeminiCLI/{}/{} (linux; x64; cli) google-api-nodejs-client/{}",
-        gemini_credential::GEMINI_CLI_VERSION,
-        gemini_credential::GEMINI_CLI_DEFAULT_MODEL,
-        gemini_credential::GEMINI_GOOGLE_AUTH_LIBRARY_VERSION,
-    )
-}
-
 fn legacy_google_api_client() -> String {
     format!(
         "gl-node/{}",
@@ -2335,22 +2190,6 @@ fn token_exchange_form(
         .map_err(|_| Failure::Authorization)
 }
 
-fn legacy_code_assist_headers<'a>(
-    authorization: &'a str,
-    user_agent: &'a str,
-    google_api_client: &'a str,
-) -> [(&'static str, &'a str); 5] {
-    // CodeAssistServer sets Content-Type even for operation GETs and asks gaxios for JSON, which
-    // adds Accept. OAuth2Client contributes authorization and the pinned CLI runtime identity.
-    [
-        ("accept", "application/json"),
-        ("authorization", authorization),
-        ("content-type", "application/json"),
-        ("user-agent", user_agent),
-        ("x-goog-api-client", google_api_client),
-    ]
-}
-
 fn official_userinfo_headers(authorization: &str) -> [(&'static str, &str); 1] {
     // fetchAndCacheUserInfo supplies only Authorization; global fetch adds its own Undici defaults.
     [("Authorization", authorization)]
@@ -2380,18 +2219,6 @@ fn client_metadata(project: Option<&str>) -> Value {
     value
 }
 
-fn legacy_client_metadata(project: Option<&str>) -> Value {
-    let mut value = json!({
-        "ideType": "IDE_UNSPECIFIED",
-        "platform": "PLATFORM_UNSPECIFIED",
-        "pluginType": "GEMINI"
-    });
-    if let Some(project) = project {
-        value["duetProject"] = Value::String(project.to_string());
-    }
-    value
-}
-
 fn legacy_client_metadata_header() -> &'static str {
     r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
 }
@@ -2411,14 +2238,6 @@ fn project_from_value(value: Option<&Value>) -> Option<String> {
         .or_else(|| value.get("id").and_then(Value::as_str))?
         .trim();
     valid_identity(project, 512).then(|| project.to_string())
-}
-
-fn valid_operation_name(name: &str) -> bool {
-    name.starts_with("operations/")
-        && name.len() <= 512
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'))
 }
 
 fn fresh_uuid_v4() -> Result<String, ()> {
@@ -2988,15 +2807,20 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn legacy_identity_bootstrap_defers_subscription_admission_to_antigravity() {
         assert_eq!(
-            legacy_client_metadata(None),
-            json!({
-                "ideType": "IDE_UNSPECIFIED",
-                "platform": "PLATFORM_UNSPECIFIED",
-                "pluginType": "GEMINI"
-            })
+            post_identity_action(OAuthPhase::LegacyBootstrap),
+            PostIdentityAction::StartAntigravityConsent
         );
-        assert!(legacy_user_agent().starts_with("GeminiCLI/0.53.0/gemini-2.5-pro"));
+        for phase in [OAuthPhase::AntigravityFinal, OAuthPhase::DirectAntigravity] {
+            assert_eq!(
+                post_identity_action(phase),
+                PostIdentityAction::ResolveAntigravitySubscription
+            );
+        }
     }
 
     #[test]
@@ -3026,20 +2850,6 @@ mod tests {
         assert_eq!(
             legacy.as_str(),
             "client_id=client+id&code_verifier=verifier%2Fvalue&code=code%2Bvalue&grant_type=authorization_code&redirect_uri=https%3A%2F%2Fcodeassist.google.com%2Fauthcode&client_secret=client-secret"
-        );
-    }
-
-    #[test]
-    fn legacy_code_assist_headers_match_the_working_gemini_cli_wire() {
-        assert_eq!(
-            legacy_code_assist_headers("Bearer redacted", "GeminiCLI/test", "gl-node/test"),
-            [
-                ("accept", "application/json"),
-                ("authorization", "Bearer redacted"),
-                ("content-type", "application/json"),
-                ("user-agent", "GeminiCLI/test"),
-                ("x-goog-api-client", "gl-node/test"),
-            ]
         );
     }
 

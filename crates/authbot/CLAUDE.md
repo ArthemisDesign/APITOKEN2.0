@@ -97,18 +97,18 @@ seller lock освобождается, response становится `cancelled
 **Инварианты Gemini-ветки (критично):**
 1. Новый handoff — две отдельные client-bound OAuth-транзакции, а не конвертация токена. Сначала
    публичный installed-app client официального Gemini CLI с redirect
-   `https://codeassist.google.com/authcode` выполняет `FULL_ELIGIBILITY_CHECK` и при необходимости
-   `onboardUser`; его токены никогда не публикуются. Затем новый `state` + PKCE S256 использует
+   `https://codeassist.google.com/authcode` подтверждает verified Google identity; его токены
+   никогда не публикуются и его изменчивый Code Assist ответ не используется для admission. Затем
+   новый `state` + PKCE S256 использует
    публичный Antigravity client и фиксированный redirect
    `http://localhost:51121/oauth-callback`. Google subject, canonical proxy и seller-job generation
    обязаны совпасть; legacy proof переносится только внутри state-bound AEAD второй фазы. Продавец
    не создаёт OAuth client и не включает private API в своём проекте.
-2. Token exchange, userinfo, оба варианта `loadCodeAssist` и onboarding идут через тот же source
+2. Token exchange, userinfo, Antigravity `loadCodeAssist` и onboarding идут через тот же source
    `node_transport.cjs`, что runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64, per-account
-   authenticated CONNECT и `env_clear`. Legacy-фаза сохраняет `IDE_UNSPECIFIED`/`GEMINI` metadata
-   и `FULL_ELIGIBILITY_CHECK`, form-order `google-auth-library` 10.9.0 и пятизаголовочный gaxios
-   wire (`accept`, authorization, content-type даже на operation GET, Gemini CLI user-agent,
-   `x-goog-api-client`); финальная identity pinned к Antigravity 2.2.1: control plane
+   authenticated CONNECT и `env_clear`. Legacy-фаза сохраняет client-bound form-order
+   `google-auth-library` 10.9.0 и token/userinfo identity; финальная identity pinned к Antigravity
+   2.2.1: control plane
    использует `antigravity/hub/2.2.1 darwin/arm64`, onboarding добавляет
    `google-api-nodejs-client/10.3.0`, token exchange — `Go-http-client/2.0`; userinfo идёт через
    attested Node-internal Undici
@@ -122,8 +122,10 @@ seller lock освобождается, response становится `cancelled
    Короткоживущий
    proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
    form/callback claim одноразовый.
-4. До публикации обе фазы проверяют verified userinfo и фактический Code Assist tier/project;
-   принимаются только известные
+4. Legacy-фаза проверяет verified userinfo и до второго consent выполняет duplicate/proxy
+   preflight. Отсутствие проекта/tier на legacy Code Assist surface не доказывает ни совместимость,
+   ни несовместимость аккаунта, поэтому authoritative tier/project admission выполняется только
+   после свежего Antigravity consent. Принимаются только известные
    Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
