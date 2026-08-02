@@ -246,28 +246,48 @@ pub fn is_supported_paid_plan(plan: &str) -> bool {
     )
 }
 
-/// Map only reviewed Code Assist tier identities to the internal billing plan. Google One tiers
-/// use the longer names returned by `paidTier`; the short labels are retained for credentials
-/// issued by older compatible API responses. Exact comparisons keep future "Pro"-like trials from
-/// being promoted merely because their display name contains a familiar word.
-pub fn supported_plan_for_tier(tier_id: &str, tier_name: &str) -> Option<&'static str> {
+/// Map a stable, reviewed Code Assist tier id to the internal billing plan. Google's official
+/// client treats tier ids as an open string set and carries the display name separately, so a
+/// reviewed id remains authoritative when only the human-readable name changes.
+pub fn supported_plan_for_tier_id(tier_id: &str) -> Option<&'static str> {
+    match tier_id {
+        "g1-pro-tier" => Some("google_ai_pro"),
+        "g1-ultra-tier" => Some("google_ai_ultra"),
+        "standard-tier" => Some("code_assist_standard"),
+        "enterprise-tier" => Some("code_assist_enterprise"),
+        _ => None,
+    }
+}
+
+/// Map exact reviewed display names without substring inference. This is separate from the id
+/// allowlist so callers can distinguish harmless display-name drift from a known-name conflict.
+pub fn supported_plan_for_tier_name(tier_name: &str) -> Option<&'static str> {
     let tier_name = tier_name
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    match (tier_id, tier_name.as_str()) {
-        ("g1-pro-tier", "gemini code assist in google one ai pro") | (_, "google ai pro") => {
-            Some("google_ai_pro")
-        }
-        ("g1-ultra-tier", "gemini code assist in google one ai ultra") | (_, "google ai ultra") => {
-            Some("google_ai_ultra")
-        }
-        ("standard-tier", "standard") | (_, "code assist standard") => Some("code_assist_standard"),
-        ("enterprise-tier", "enterprise") | (_, "code assist enterprise") => {
-            Some("code_assist_enterprise")
-        }
-        (_, "workspace ai ultra" | "google workspace ai ultra") => Some("workspace_ai_ultra"),
+    match tier_name.as_str() {
+        "gemini code assist in google one ai pro" | "google ai pro" => Some("google_ai_pro"),
+        "gemini code assist in google one ai ultra" | "google ai ultra" => Some("google_ai_ultra"),
+        "standard" | "code assist standard" => Some("code_assist_standard"),
+        "enterprise" | "code assist enterprise" => Some("code_assist_enterprise"),
+        "workspace ai ultra" | "google workspace ai ultra" => Some("workspace_ai_ultra"),
+        _ => None,
+    }
+}
+
+/// Map only reviewed Code Assist tier evidence to the internal billing plan. A known id is the
+/// authority even when its display name is new. An exact known name that contradicts that id fails
+/// closed. Name-only compatibility is available only when Google omitted the id and remains exact
+/// (never substring based); a present unknown id cannot borrow a familiar plan name.
+pub fn supported_plan_for_tier(tier_id: &str, tier_name: &str) -> Option<&'static str> {
+    let id_plan = supported_plan_for_tier_id(tier_id);
+    let name_plan = supported_plan_for_tier_name(tier_name);
+    match (id_plan, name_plan) {
+        (Some(id_plan), Some(name_plan)) if id_plan != name_plan => None,
+        (Some(id_plan), _) => Some(id_plan),
+        (None, Some(name_plan)) if tier_id.is_empty() => Some(name_plan),
         _ => None,
     }
 }
@@ -613,8 +633,28 @@ mod tests {
             Some("google_ai_pro")
         );
         assert_eq!(
+            supported_plan_for_tier("g1-pro-tier", "Renamed paid plan display"),
+            Some("google_ai_pro")
+        );
+        assert_eq!(
+            supported_plan_for_tier("g1-pro-tier", "Google AI Ultra"),
+            None
+        );
+        assert_eq!(
             supported_plan_for_tier("future-pro-tier", "Gemini Code Assist in Google One AI Pro"),
             None
+        );
+        assert_eq!(
+            supported_plan_for_tier("future-pro-tier", "Future Pro Trial"),
+            None
+        );
+        assert_eq!(
+            supported_plan_for_tier("future-pro-tier", "Google AI Pro"),
+            None
+        );
+        assert_eq!(
+            supported_plan_for_tier("", "Google AI Pro"),
+            Some("google_ai_pro")
         );
 
         let mut candidate = credential();
@@ -640,6 +680,10 @@ mod tests {
 
         let mut candidate = credential();
         candidate.tier_name = "Future Pro Trial".into();
+        assert!(candidate.validate().is_ok());
+
+        let mut candidate = credential();
+        candidate.tier_name = "Google AI Ultra".into();
         assert!(candidate.validate().is_err());
 
         let mut candidate = credential();

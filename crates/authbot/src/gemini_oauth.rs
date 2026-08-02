@@ -1347,6 +1347,63 @@ struct LoadCodeAssistResponse {
     cloudaicompanion_project: Option<Value>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TierEvidenceClass {
+    Absent,
+    KnownIdAndName,
+    KnownIdNameDrift,
+    KnownIdNameConflict,
+    KnownNameOnly,
+    Unknown,
+}
+
+impl TierEvidenceClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::KnownIdAndName => "known_id_name_match",
+            Self::KnownIdNameDrift => "known_id_name_drift",
+            Self::KnownIdNameConflict => "known_id_name_conflict",
+            Self::KnownNameOnly => "known_name_only",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CodeAssistDiagnostic {
+    project_present: bool,
+    paid_tier: TierEvidenceClass,
+    current_tier: TierEvidenceClass,
+    allowed_tier_count: usize,
+}
+
+impl CodeAssistDiagnostic {
+    fn from_response(response: &LoadCodeAssistResponse) -> Self {
+        Self {
+            project_present: project_from_value(response.cloudaicompanion_project.as_ref())
+                .is_some(),
+            paid_tier: classify_tier_evidence(response.paid_tier.as_ref()),
+            current_tier: classify_tier_evidence(response.current_tier.as_ref()),
+            allowed_tier_count: response.allowed_tiers.len(),
+        }
+    }
+
+    fn sanitized(self) -> String {
+        format!(
+            "project={} paid={} current={} allowed_tiers={}",
+            if self.project_present {
+                "present"
+            } else {
+                "absent_or_malformed"
+            },
+            self.paid_tier.as_str(),
+            self.current_tier.as_str(),
+            self.allowed_tier_count,
+        )
+    }
+}
+
 #[derive(Deserialize)]
 struct OperationResponse {
     name: Option<String>,
@@ -1360,6 +1417,7 @@ struct ResolvedAccount {
     tier_id: String,
     tier_name: String,
     plan: String,
+    diagnostic: CodeAssistDiagnostic,
 }
 
 enum Completion {
@@ -1687,6 +1745,7 @@ async fn complete(
         )?;
     }
     if !supported_paid_plan(&resolved.plan) {
+        log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
         eprintln!(
             "[gemini-oauth] chat={} rejected: unsupported Google plan {}",
             session.chat_id,
@@ -1807,20 +1866,36 @@ async fn resolve_antigravity_account(
             .find(|tier| tier.is_default)
             .or(loaded.current_tier.as_ref())
             .or_else(|| loaded.allowed_tiers.first())
-            .cloned()
-            .ok_or(Failure::UnsupportedPlan)?;
-        let tier_id = tier.id.as_deref().ok_or(Failure::UnsupportedPlan)?;
+            .cloned();
+        let Some(tier) = tier else {
+            log_unsupported_plan(
+                "antigravity_missing_onboarding_tier",
+                CodeAssistDiagnostic::from_response(&loaded),
+            );
+            return Err(Failure::UnsupportedPlan);
+        };
+        let Some(tier_id) = tier.id.as_deref() else {
+            log_unsupported_plan(
+                "antigravity_missing_onboarding_tier_id",
+                CodeAssistDiagnostic::from_response(&loaded),
+            );
+            return Err(Failure::UnsupportedPlan);
+        };
         onboard_antigravity(client, access_token, tier_id).await?;
         loaded = load_code_assist(client, access_token).await?;
     }
-    let project_id = project_from_value(loaded.cloudaicompanion_project.as_ref())
-        .ok_or(Failure::UnsupportedPlan)?;
+    let diagnostic = CodeAssistDiagnostic::from_response(&loaded);
+    let Some(project_id) = project_from_value(loaded.cloudaicompanion_project.as_ref()) else {
+        log_unsupported_plan("antigravity_missing_project", diagnostic);
+        return Err(Failure::UnsupportedPlan);
+    };
     let (tier_id, tier_name, plan) = resolve_reported_tier(&loaded)?;
     Ok(ResolvedAccount {
         project_id,
         tier_id,
         tier_name,
         plan,
+        diagnostic,
     })
 }
 
@@ -1837,20 +1912,36 @@ async fn resolve_legacy_account(
             .iter()
             .find(|tier| tier.is_default)
             .or_else(|| loaded.allowed_tiers.first())
-            .cloned()
-            .ok_or(Failure::UnsupportedPlan)?;
-        let tier_id = tier.id.as_deref().ok_or(Failure::UnsupportedPlan)?;
+            .cloned();
+        let Some(tier) = tier else {
+            log_unsupported_plan(
+                "legacy_missing_onboarding_tier",
+                CodeAssistDiagnostic::from_response(&loaded),
+            );
+            return Err(Failure::UnsupportedPlan);
+        };
+        let Some(tier_id) = tier.id.as_deref() else {
+            log_unsupported_plan(
+                "legacy_missing_onboarding_tier_id",
+                CodeAssistDiagnostic::from_response(&loaded),
+            );
+            return Err(Failure::UnsupportedPlan);
+        };
         onboard_legacy(client, access_token, tier_id).await?;
         loaded = load_legacy_code_assist(client, access_token).await?;
     }
-    let project_id = project_from_value(loaded.cloudaicompanion_project.as_ref())
-        .ok_or(Failure::UnsupportedPlan)?;
+    let diagnostic = CodeAssistDiagnostic::from_response(&loaded);
+    let Some(project_id) = project_from_value(loaded.cloudaicompanion_project.as_ref()) else {
+        log_unsupported_plan("legacy_missing_project", diagnostic);
+        return Err(Failure::UnsupportedPlan);
+    };
     let (tier_id, tier_name, plan) = resolve_reported_tier(&loaded)?;
     Ok(ResolvedAccount {
         project_id,
         tier_id,
         tier_name,
         plan,
+        diagnostic,
     })
 }
 
@@ -2342,6 +2433,32 @@ fn fresh_uuid_v4() -> Result<String, ()> {
     ))
 }
 
+fn classify_tier_evidence(tier: Option<&Tier>) -> TierEvidenceClass {
+    let Some(tier) = tier else {
+        return TierEvidenceClass::Absent;
+    };
+    let tier_id = tier.id.as_deref().unwrap_or_default();
+    let tier_name = tier.name.as_deref().unwrap_or_default();
+    let id_plan = gemini_credential::supported_plan_for_tier_id(tier_id);
+    let name_plan = gemini_credential::supported_plan_for_tier_name(tier_name);
+    match (id_plan, name_plan) {
+        (Some(id_plan), Some(name_plan)) if id_plan != name_plan => {
+            TierEvidenceClass::KnownIdNameConflict
+        }
+        (Some(_), Some(_)) => TierEvidenceClass::KnownIdAndName,
+        (Some(_), None) => TierEvidenceClass::KnownIdNameDrift,
+        (None, Some(_)) => TierEvidenceClass::KnownNameOnly,
+        (None, None) => TierEvidenceClass::Unknown,
+    }
+}
+
+fn log_unsupported_plan(reason: &'static str, diagnostic: CodeAssistDiagnostic) {
+    eprintln!(
+        "[gemini-oauth] unsupported plan shape: reason={reason} {}",
+        diagnostic.sanitized()
+    );
+}
+
 fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> String {
     if let Some(plan) = gemini_credential::supported_plan_for_tier(tier_id, tier_name) {
         return plan.into();
@@ -2367,13 +2484,22 @@ fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> Strin
 }
 
 /// Google can expose both `paidTier` and `currentTier`, and their display shapes do not always
-/// change in lock-step. Prefer an exact reviewed mapping from either field, but never infer access
-/// from a familiar substring. Two contradictory reviewed mappings are an upstream inconsistency
-/// and fail closed; when neither field is reviewed, preserve the existing unsupported-plan
-/// classification for the seller-safe error path.
+/// change in lock-step. A reviewed id is authoritative through display-name drift, while exact
+/// known-name conflicts and contradictory field mappings fail closed. No familiar substring can
+/// promote an unknown future tier.
 fn resolve_reported_tier(
     loaded: &LoadCodeAssistResponse,
 ) -> Result<(String, String, String), Failure> {
+    let diagnostic = CodeAssistDiagnostic::from_response(loaded);
+    if matches!(diagnostic.paid_tier, TierEvidenceClass::KnownIdNameConflict)
+        || matches!(
+            diagnostic.current_tier,
+            TierEvidenceClass::KnownIdNameConflict
+        )
+    {
+        log_unsupported_plan("conflicting_tier_id_and_name", diagnostic);
+        return Err(Failure::UnsupportedPlan);
+    }
     let paid = loaded.paid_tier.as_ref();
     let current = loaded.current_tier.as_ref();
     let paid_plan = paid.and_then(|tier| {
@@ -2390,20 +2516,33 @@ fn resolve_reported_tier(
     });
     let (tier, plan) = match (paid_plan, current_plan) {
         (Some(paid_plan), Some(current_plan)) if paid_plan != current_plan => {
-            eprintln!("[gemini-oauth] conflicting reviewed paid/current tier fields");
+            log_unsupported_plan("conflicting_paid_and_current_tiers", diagnostic);
             return Err(Failure::UnsupportedPlan);
         }
-        (Some(plan), _) => (paid.ok_or(Failure::UnsupportedPlan)?, plan.to_string()),
+        (Some(plan), _) => {
+            let Some(tier) = paid else {
+                log_unsupported_plan("missing_paid_tier_after_resolution", diagnostic);
+                return Err(Failure::UnsupportedPlan);
+            };
+            (tier, plan.to_string())
+        }
         (_, Some(plan)) => {
             if paid.is_some() {
                 eprintln!(
                     "[gemini-oauth] using reviewed current tier because paid tier shape is unreviewed"
                 );
             }
-            (current.ok_or(Failure::UnsupportedPlan)?, plan.to_string())
+            let Some(tier) = current else {
+                log_unsupported_plan("missing_current_tier_after_resolution", diagnostic);
+                return Err(Failure::UnsupportedPlan);
+            };
+            (tier, plan.to_string())
         }
         (None, None) => {
-            let tier = paid.or(current).ok_or(Failure::UnsupportedPlan)?;
+            let Some(tier) = paid.or(current) else {
+                log_unsupported_plan("missing_reported_tier", diagnostic);
+                return Err(Failure::UnsupportedPlan);
+            };
             let tier_id = tier.id.as_deref().unwrap_or_default();
             let tier_name = tier.name.as_deref().unwrap_or_default();
             (tier, classify_plan(tier_id, tier_name, paid.is_some()))
@@ -2725,7 +2864,7 @@ mod tests {
             subject: subject.into(),
             email: "owner@example.com".into(),
             project_id: "managed-project".into(),
-            tier_id: "paid-tier".into(),
+            tier_id: "g1-pro-tier".into(),
             tier_name: "Google AI Pro".into(),
             plan: "google_ai_pro".into(),
             proxy: "http://user:pass@127.0.0.1:8080".into(),
@@ -3271,6 +3410,19 @@ mod tests {
             name: Some("New Paid Shape".into()),
             is_default: false,
         };
+        let renamed_pro = Tier {
+            id: Some("g1-pro-tier".into()),
+            name: Some("Google AI Pro renamed after purchase".into()),
+            is_default: false,
+        };
+        let resolved = resolve_reported_tier(&LoadCodeAssistResponse {
+            paid_tier: Some(renamed_pro),
+            ..LoadCodeAssistResponse::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.0, "g1-pro-tier");
+        assert_eq!(resolved.2, "google_ai_pro");
+
         let resolved = resolve_reported_tier(&LoadCodeAssistResponse {
             current_tier: Some(pro.clone()),
             paid_tier: Some(drifted_paid.clone()),
@@ -3279,6 +3431,19 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.0, "g1-pro-tier");
         assert_eq!(resolved.2, "google_ai_pro");
+
+        let conflicting_name = Tier {
+            id: Some("g1-pro-tier".into()),
+            name: Some("Google AI Ultra".into()),
+            is_default: false,
+        };
+        assert_eq!(
+            resolve_reported_tier(&LoadCodeAssistResponse {
+                paid_tier: Some(conflicting_name),
+                ..LoadCodeAssistResponse::default()
+            }),
+            Err(Failure::UnsupportedPlan)
+        );
 
         assert_eq!(
             resolve_reported_tier(&LoadCodeAssistResponse {
@@ -3295,6 +3460,40 @@ mod tests {
         })
         .unwrap();
         assert_eq!(unsupported.2, "unknown_paid_unsupported");
+    }
+
+    #[test]
+    fn unsupported_plan_diagnostic_is_structural_and_secret_free() {
+        let raw_project = "private-project-123";
+        let raw_tier_id = "private-future-tier";
+        let raw_tier_name = "Private Future Plan";
+        let loaded = LoadCodeAssistResponse {
+            current_tier: Some(Tier {
+                id: Some(raw_tier_id.into()),
+                name: Some(raw_tier_name.into()),
+                is_default: false,
+            }),
+            paid_tier: Some(Tier {
+                id: Some("g1-pro-tier".into()),
+                name: Some("Renamed paid display".into()),
+                is_default: false,
+            }),
+            allowed_tiers: vec![Tier::default(), Tier::default()],
+            cloudaicompanion_project: Some(json!(raw_project)),
+        };
+        let diagnostic = CodeAssistDiagnostic::from_response(&loaded).sanitized();
+        assert_eq!(
+            diagnostic,
+            "project=present paid=known_id_name_drift current=unknown allowed_tiers=2"
+        );
+        for private_value in [
+            raw_project,
+            raw_tier_id,
+            raw_tier_name,
+            "Renamed paid display",
+        ] {
+            assert!(!diagnostic.contains(private_value));
+        }
     }
 
     #[test]

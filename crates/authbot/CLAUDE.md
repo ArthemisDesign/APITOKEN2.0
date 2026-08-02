@@ -148,9 +148,11 @@ seller lock освобождается, response становится `cancelled
    профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
    project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
    Если Google одновременно возвращает `paidTier` и `currentTier`, принимается exact reviewed
-   соответствие из любого поля; знакомые подстроки не дают доступ, а два противоречащих известных
-   тарифа fail-closed. Это позволяет пережить display-shape drift одного поля без расширения
-   allowlist.
+   соответствие из любого поля. Точный reviewed tier ID — authority и переживает изменение display
+   name; exact имя другого известного плана конфликтует и fail-closed. Неизвестный ID и знакомые
+   подстроки не дают доступ, два противоречащих известных тарифа тоже fail-closed. Перед каждым
+   `unsupported_plan` журнал получает только bounded shape-классы: наличие project/paid/current,
+   число allowed tiers и `known_id`/`known_name`/`name_drift` без raw tier, project или identity.
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только

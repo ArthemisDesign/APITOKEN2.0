@@ -48,6 +48,15 @@ Daily request limits are owned and enforced by Google. Current official document
 requests/day for Pro and Standard and 2,000/day for Ultra, Enterprise and Workspace AI Ultra, but
 limits and available models can change and are not contractual capacity for this gateway.
 
+Tier-resolution implementation evidence reviewed on 2026-08-02 from Google's official Apache-2.0
+Gemini CLI repository at commit
+[`f47d6c6f7a1308d81f9f57acf7d279f0928c5249`](https://github.com/google-gemini/gemini-cli/commit/f47d6c6f7a1308d81f9f57acf7d279f0928c5249):
+`packages/core/src/code_assist/setup.ts` selects `paidTier.id ?? currentTier.id` independently from
+`paidTier.name ?? currentTier.name`, while `types.ts` defines `UserTierId` as an open string union.
+Therefore this gateway treats only its exact reviewed IDs as stable authority, uses exact names as
+additional conflict/legacy evidence, and never promotes an unknown tier from a `Pro`/`Ultra`
+substring. This source explains client behavior; live generation remains the publication gate.
+
 ## OAuth and publication flow
 
 Auth Bot uses two separate installed-application OAuth transactions with PKCE. OAuth codes and
@@ -78,13 +87,16 @@ Antigravity transaction remains a fresh client-bound consent rather than token c
 4. Auth Bot claims the legacy `state` once, exchanges the code with the same client/redirect and
    performs verified userinfo, legacy `loadCodeAssist` with `FULL_ELIGIBILITY_CHECK`, and official
    `onboardUser` operation polling when needed. The resulting legacy tokens never enter a roster.
-5. Paid-plan admission uses the actual tier/project and exact reviewed labels. When Google returns
-   both `paidTier` and `currentTier`, an exact reviewed mapping from either field is accepted; no
-   substring inference is allowed, and contradictory reviewed mappings fail closed. Before applying
-   the mutable tier display to a new subject or issuing the Antigravity consent, Auth Bot scans the
-   encrypted roster: an existing Antigravity subject is reported as an already connected duplicate
-   while its live refresh token is still safe; a legacy profile may continue only through its exact
-   subject, canonical proxy and IPRoyal identity. Unknown/free tiers and reused egress fail closed.
+5. Paid-plan admission uses the actual tier/project and reviewed tier evidence. A stable reviewed
+   tier ID is authoritative even when Google changes its display name; an exact known name that
+   points to another plan conflicts and fails closed. When Google returns both `paidTier` and
+   `currentTier`, a reviewed mapping from either field is accepted, while contradictory reviewed
+   mappings, unknown IDs and substring-only matches are rejected. Before applying this evidence to
+   a new subject or issuing the Antigravity consent, Auth Bot scans the encrypted roster: an existing
+   Antigravity subject is reported as an already connected duplicate while its live refresh token is
+   still safe; a legacy profile may continue only through its exact subject, canonical proxy and
+   IPRoyal identity. Every `unsupported_plan` branch emits only structural diagnostics (project and
+   tier-field presence/classes plus allowed-tier count), never raw tier, project or identity.
 6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
    phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
    are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement
