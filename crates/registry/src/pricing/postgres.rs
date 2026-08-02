@@ -2654,15 +2654,15 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
         );
     }
 
-    let active_count: i64 = transaction.query_one(
-        "SELECT count(*)::bigint FROM accounts WHERE status='active'",
+    let inventory_count: i64 = transaction.query_one(
+        "SELECT count(*)::bigint FROM accounts",
         &[],
     )?.get(0);
-    if active_count != release.assignments.len() as i64 {
+    if inventory_count != release.assignments.len() as i64 {
         return commit_mutation(
             transaction,
             invalid(anyhow::anyhow!(
-                "release assignments do not cover the exact active account inventory"
+                "release assignments do not cover the exact engine account inventory"
             )),
             "pricing release v2 incomplete inventory",
         );
@@ -2675,7 +2675,7 @@ pub(crate) fn postgres_prepare_pricing_release_v2(
                    JOIN pricing_release_policy_versions policy
                      ON policy.policy_id=$2 AND policy.policy_version=$3
                     AND policy.content_digest=$4
-                  WHERE account.id=$1 AND account.status='active'
+                  WHERE account.id=$1
                     AND policy.account_class=$5 AND policy.billing_mode=$6
                     AND (
                         ($6='meter_only' AND $7::bigint IS NULL)
@@ -4334,7 +4334,7 @@ mod tests {
                      id,handle,balance_nano,reserved_nano,spent_nano,mult_bp,status,created_ts,created
                  ) VALUES
                      ('pricing-v2-producer-b2c','pricing-v2-producer-b2c',100,0,0,5000,
-                      'active',100,'producer'),
+                      'disabled',100,'producer'),
                      ('pricing-v2-producer-service','pricing-v2-producer-service',0,0,0,10000,
                       'active',100,'producer');
                  INSERT INTO account_funding_generations_v2(
@@ -4506,6 +4506,7 @@ mod tests {
 
         let page = postgres_pricing_release_inventory_v2(&mut client, None, 1).unwrap();
         assert_eq!(page.accounts.len(), 1);
+        assert_eq!(page.accounts[0].status, "disabled");
         assert!(page.next_after_account_id.is_some());
         let second = postgres_pricing_release_inventory_v2(
             &mut client,

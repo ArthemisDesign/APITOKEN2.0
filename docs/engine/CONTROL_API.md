@@ -481,11 +481,13 @@ assignments[] = { account_id, account_class, policy_id, policy_version, policy_d
 ```
 
 Prepare runs under the release control-plane advisory lock and rejects any release whose unique
-assignments do not equal the exact set of currently active engine accounts. Every balance assignment
-must reference an existing funding generation; every service assignment is `meter_only`, has no
-funding generation and includes non-empty `purpose`/`responsible`. Main/OpenKeys catalogs, switches,
-policies and all digests must already exist with matching capability lineage. A recovery link binds a
-prepared `target` generation to a strictly newer prepared `recovery` generation.
+assignments do not equal the exact full engine inventory, including both `active` and `disabled`
+accounts. Keeping disabled accounts in the immutable graph guarantees that a later enablement
+cannot expose an account without its prepared policy/funding identity. Every balance assignment must
+reference an existing funding generation; every service assignment is `meter_only`, has no funding
+generation and includes non-empty `purpose`/`responsible`. Main/OpenKeys catalogs, switches,
+policies and all digests must already exist with matching capability lineage. A recovery link binds
+a prepared `target` generation to a strictly newer prepared `recovery` generation.
 
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.

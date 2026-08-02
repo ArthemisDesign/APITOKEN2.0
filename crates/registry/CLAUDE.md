@@ -259,8 +259,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   `funding_normalization_v2::tests::postgres_online_funding_normalization_v2_matrix`.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
-  prepare проверяет exact active-account coverage и готовые funding dependencies. Ни один метод не
-  создаёт `pricing_release_head_v2`; SQLite возвращает unavailable вместо локальной authority.
+  prepare проверяет exact full-account coverage (`active` + `disabled`) и готовые funding
+  dependencies. Disabled account намеренно остаётся в immutable release, чтобы последующее
+  включение не создавало дыру в policy/funding authority. Ни один метод не создаёт
+  `pricing_release_head_v2`; SQLite возвращает unavailable вместо локальной authority.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

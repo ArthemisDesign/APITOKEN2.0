@@ -456,7 +456,7 @@ pub fn validate_pricing_release_v2(release: &PricingReleaseV2) -> Result<()> {
         require_id(label, value)?;
     }
     if release.assignments.is_empty() {
-        bail!("pricing release must assign the full active account inventory");
+        bail!("pricing release must assign the full engine account inventory");
     }
     let mut accounts = BTreeSet::new();
     for assignment in &release.assignments {
