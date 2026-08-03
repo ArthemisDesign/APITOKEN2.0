@@ -118,6 +118,7 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       label: "production", status: "active", spentNano: "0",
       spendLimitNano: "25500000000", expiresAt: "2099-01-01T00:00:00.000Z",
     });
+    expect(engine.releaseHeadReads).toBe(2);
 
     const persisted = await database.pool.query("SELECT * FROM api_keys WHERE user_id = $1", [aliceId]);
     expect(JSON.stringify(persisted.rows)).not.toContain(rawKey);
@@ -228,6 +229,7 @@ class FakeEngine {
   rejectNextPolicyUpdate = false;
   readonly signupCredits: Array<{ account: string; amountNano: string; reference: string }> = [];
   readonly missingAccountIds = new Set<string>();
+  releaseHeadReads = 0;
   recoveredAccountId = "acct_alice";
   private issued = false;
   private spendLimitNano: string | null = "25500000000";
@@ -240,6 +242,10 @@ class FakeEngine {
 
   private async fetch(url: string, init?: RequestInit): Promise<Response> {
     const path = new URL(url).pathname;
+    if (path === "/admin/pricing/v2/head") {
+      this.releaseHeadReads += 1;
+      return Response.json({ head: null });
+    }
     if (path === "/admin/account" && init?.method === "POST") {
       return Response.json({ account: this.recoveredAccountId, mult_bp: 2000, handle: "user:test" });
     }
