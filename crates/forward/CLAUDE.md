@@ -565,6 +565,14 @@ Codex-плоскость имеет собственный in-memory cooling (`c
   settlement сохраняется, а pool spend/quota/calibration/affinity не меняются. Non-2xx/network
   fallback не повторяется и не раскрывается клиенту; после начатого external send снимается
   `not_started` proof как execution-ambiguous. Post-byte replay запрещён.
+- **ClaudeStore GPT emergency fallback:** отдельный default-off Codex-tier credential, не Claude
+  key. После terminal normal Codex home rotation/retry допускается максимум один внешний
+  `POST /v1/responses`, только до первого model delta и только для compile-fixed `gpt-5.5`/`gpt-5.4`.
+  В body восстанавливается public model id; `chatgpt-account-id`, originator, client metadata,
+  OAuth/proxy/private slug не отправляются. Общий Responses decoder обязан получить nonzero,
+  согласованный terminal usage; local quota/health/affinity/calibration не меняются. Non-2xx,
+  network или missing usage не повторяются, сохраняют исходный local public status и снимают
+  `not_started`. Этот transport не разрешает startup с пустым sealed Codex roster.
 
 **Антифингерпринт флота (`persona_ua`):** флот из 100 байт-в-байт одинаковых UA — сам по себе
 отпечаток. `persona_ua(cfg, email)` даёт **стабильный во времени** для подписки, но **различный между

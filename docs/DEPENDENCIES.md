@@ -201,14 +201,17 @@ Control API движка использует только на чтение. С
   `crates/server` `/metrics`; публичные API group identity не возвращают. Контракт —
   `docs/engine/ROUTING_FENCING.md` §4.
 - **ClaudeStore emergency transport (`crates/server` → `crates/forward` → ClaudeStore API3).**
-  `crates/server/src/config.rs` единолично читает strict enable switch и secret, а compile-fixed
+  `crates/server/src/config.rs` единолично читает два strict enable/key pair, а compile-fixed
   `https://api3.claudestore.store` нельзя заменить env-URL. `crates/forward/src/proxy.rs` потребляет
-  конфиг только для metered Anthropic `POST /v1/messages`: после terminal всей локальной pre-byte
-  ротации выполняет максимум один очищенный внешний attempt, сохраняет исходный request/reservation
-  identity и customer exact settlement, но не пишет local subscription spend/quota/calibration/
-  affinity. Prometheus потребляет fixed-cardinality attempts/successes/failures; failure alert и
-  rollback описаны в `docs/ops/MONITORING.md#claudestorefallbackfailing`. Контракт и evidence —
-  `docs/engine/CLAUDESTORE_FALLBACK.md`.
+  Claude pair только для metered Anthropic `POST /v1/messages`; `crates/forward/src/codex` потребляет
+  отдельный Codex-tier pair только для `gpt-5.5`/`gpt-5.4` через `POST /v1/responses`. После terminal
+  штатной local pre-byte rotation policy каждый transport выполняет максимум один очищенный внешний
+  attempt, сохраняет исходный request/reservation identity и customer exact settlement, но не пишет
+  local subscription spend/quota/calibration/affinity. Systemd fixed-provider units не наследуют
+  switch чужой plane. Prometheus потребляет fixed-cardinality attempts/successes/failures с target
+  provider label; failure alert и rollback описаны в
+  `docs/ops/MONITORING.md#claudestorefallbackfailing`. Контракт и evidence —
+  `docs/engine/CLAUDESTORE_FALLBACK.md` и `research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`.
 - **Контракт policy preflight (provider planes → router, фаза 6.4a).** Производитель — одинаковый
   `crates/server::router_policy` на каждом fixed runtime: authenticated loopback-only
   `POST /internal/router/policy/preflight` читает customer key и один coherent pricing bundle через

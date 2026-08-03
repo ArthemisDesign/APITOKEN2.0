@@ -503,9 +503,9 @@ for fallback_metric in \
   grep -Fq "$fallback_metric" "$ROOT/crates/server/src/http.rs" \
     || { printf 'engine does not export ClaudeStore fallback metric %s\n' "$fallback_metric" >&2; exit 1; }
 done
-grep -Fq 'increase(claude_api_claudestore_fallback_failures_total{provider="anthropic"}[10m]) > 0' \
+grep -Fq 'increase(claude_api_claudestore_fallback_failures_total{provider=~"anthropic|openai"}[10m]) > 0' \
   "$ROOT/observability/prometheus/rules/application.yml" \
-  || { printf 'ClaudeStore fallback failures do not alert\n' >&2; exit 1; }
+  || { printf 'ClaudeStore fallback failures do not alert on both eligible provider planes\n' >&2; exit 1; }
 grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }

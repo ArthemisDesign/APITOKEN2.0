@@ -615,23 +615,33 @@ no atomic cross-component switch.
 
 ## ClaudeStore emergency fallback
 
-The fallback binary is safe to deploy with no credential: its strict default is disabled. Enable it
-only after the exact implementation SHA is watchdog-green and the authorization/evidence record in
-`docs/engine/CLAUDESTORE_FALLBACK.md` is current. Put
-`CLAUDE_API_CLAUDESTORE_API_KEY` only in the root-owned `/srv/claude-api/data/server.env` through the
-host secret-provisioning path; never place it in Git, a command line, chat transcript, fixture or
-deploy log. Keep that file mode `0600`. The non-secret
-`CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=1` switch belongs to the Anthropic/Combined runtime config;
-enabled-without-key and enabling on OpenAI/Gemini fail startup. Because `server.env` is shared,
-the OpenAI and Gemini singleton/template units pin the switch to `0` in `ExecStart`; do not remove
-those argv-level overrides or replace them with an `Environment=` line that `EnvironmentFile` can
-supersede.
+The binary is safe to deploy with neither credential: both strict switches default to disabled.
+Enable a plane only after the exact implementation SHA is watchdog-green and its authorization/live
+evidence in `docs/engine/CLAUDESTORE_FALLBACK.md` is complete. Put secrets only in root-owned
+`/srv/claude-api/data/server.env` through the host secret-provisioning path; never place them in Git,
+a command line, chat transcript, fixture or deploy log. Keep that file mode `0600`.
 
-Use the normal watchdog-controlled engine cycle so a fresh inactive slot reads both values, then
-run the bounded authenticated smoke from the provider document. Confirm one attempt/settlement and
-zero local subscription calibration attribution. Roll back immediately by setting the switch to
-`0` (or removing the secret) through the same controlled config/secret path and cycling the engine;
-no database rollback is required. Observe
+The Claude pair is `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` plus
+`CLAUDE_API_CLAUDESTORE_API_KEY`; it belongs only to Anthropic/Combined. The GPT pair is independent:
+`CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` plus
+`CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`; it belongs only to OpenAI/Combined and also requires the
+normal Codex provider enabled with a nonempty sealed roster. ClaudeStore must switch that second key
+to Codex tier. Never reuse or retier the working Basic/Claude fallback key: doing so disables its
+Messages access. Enabled-without-own-key or a switch on the wrong fixed plane fails startup.
+
+Because secret/config env files are shared, provider isolation is argv-level: OpenAI units pin only
+the Claude switch to `0` and intentionally inherit the GPT switch; Anthropic slots pin the GPT switch
+to `0`; Gemini singleton/template units pin both. Do not move these overrides to `Environment=`,
+which a later `EnvironmentFile` may supersede.
+
+Use the normal watchdog-controlled cycle so a fresh inactive slot reads the selected pair, then run
+the bounded authenticated smoke from the provider document. For GPT, first verify key-scoped models,
+then one minimal non-stream request with terminal usage and a real incremental SSE request for each
+allowed model/control; no production enable is permitted while
+`research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md` remains credential-blocked. Confirm one
+attempt/settlement and zero local subscription calibration attribution. Roll back immediately by
+setting the plane's switch to `0` (or removing its secret) through the same controlled path and
+cycling that plane; no database rollback is required. Observe
 `claude_api_claudestore_fallback_{attempts,successes,failures}_total` and the
 `ClaudeStoreFallbackFailing` runbook while enabled.
 

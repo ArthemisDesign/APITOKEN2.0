@@ -1,28 +1,34 @@
-# ClaudeStore — аварийный fallback Claude-plane
+# ClaudeStore — аварийный fallback Claude- и GPT-plane
 
-Статус: **implemented / default-off / production live pending**. Этот transport не является частью
-локального Claude subscription-пула, не публикуется как отдельный провайдер или модель и по
-умолчанию выключен. Его единственная роль — последний Anthropic-compatible attempt после
-доказанного исчерпания всей локальной pre-byte ротации.
+Статус Claude transport: **implemented / default-off / production live pending**. Статус GPT
+transport: **implemented / default-off / blocked до отдельного Codex-tier credential и live gate**.
+Оба transport не являются частью локальных subscription-пулов, не публикуются как отдельный
+провайдер или модель и по умолчанию выключены. Их единственная роль — последний совместимый attempt
+после terminal результата штатной локальной pre-byte ротации своей provider plane.
 
 ## Граница применения
 
-- Клиентский запрос, модель, тариф и один внутренний money/request identity остаются Claude-plane.
+- Клиентский запрос, модель, тариф и один внутренний money/request identity остаются в исходной
+  Claude или GPT plane; новый публичный provider/model/catalog не появляется.
 - Локальные подписки всегда имеют приоритет. Единичный account/network/5xx/429 продолжает штатную
-  локальную ротацию и сам по себе не разрешает внешний вызов.
+  локальную rotation/retry policy и сам по себе не разрешает внешний вызов.
 - Внешний attempt допустим только до первого публичного байта и только после результата
   `local pool exhausted/unavailable`. После первого байта replay или смена transport запрещены.
-- Authoritative terminal Anthropic usage тарифицируется существующим exact metering и завершает
-  исходный reserve ровно один раз.
-- Внешний turn не создаёт Claude subscription quota/calibration observation, affinity или health
-  attribution конкретному локальному аккаунту.
+- Authoritative terminal Anthropic/OpenAI usage тарифицируется существующим exact metering своей
+  plane и завершает исходный reserve ровно один раз. GPT transport fail closed при нулевом или
+  внутренне противоречивом terminal usage.
+- Внешний turn не создаёт local subscription quota/calibration observation, affinity или health
+  attribution конкретному локальному аккаунту/profile.
 - Secret читается только `crates/server/src/config.rs`, не возвращается через API/метрики/логи и
   хранится только в production secret env. Production URL compile-fixed; произвольный upstream из
   окружения задать нельзя.
-- Switch принимается только как strict `0|1|false|true`; enabled без валидного `sk-cs4-*` secret
-  или на fixed OpenAI/Gemini plane останавливает startup.
+- Каждый switch принимается только как strict `0|1|false|true`; enabled без своего валидного
+  `sk-cs4-*` secret или не на своей fixed provider plane останавливает startup. Claude использует
+  `CLAUDE_API_CLAUDESTORE_{FALLBACK_ENABLED,API_KEY}`, GPT — отдельные
+  `CLAUDE_API_CLAUDESTORE_CODEX_{FALLBACK_ENABLED,API_KEY}`. Ключи нельзя переиспользовать:
+  ClaudeStore переключает universal key между Basic/Claude и Codex tier.
 
-## Capability manifest
+## Claude Messages capability manifest
 
 | Поле | Evidence | Состояние / решение |
 |---|---|---|
@@ -39,7 +45,7 @@
 | Data | `official`, policy v3.0 | Prompt/response content заявлен как не сохраняемый после request cycle; usage metadata хранится 12 месяцев |
 | Rollback | `decision` | Удалить/очистить secret env или выключить strict boolean; локальный пул продолжает работать без внешней зависимости |
 
-## Wire и ошибки
+## Claude Messages wire и ошибки
 
 | Операция | Контракт | Решение runtime |
 |---|---|---|
@@ -54,6 +60,37 @@
 санитизированный локальный terminal status/body и refund, но `x-apitoken-execution-state:
 not_started` снимается. Поэтому router не может начать ещё одну billable continuation по ложному
 доказательству; только полный pre-external local terminal сохранял бы этот proof.
+
+## GPT/Codex capability manifest
+
+Полный dated evidence dossier: [`research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`](../../research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md).
+
+| Поле | Evidence | Состояние / решение |
+|---|---|---|
+| Credential | `official`, 2026-08-03 | Отдельный `sk-cs4-*` universal key, переключённый в dashboard на ClaudeStore Codex tier; Basic/Claude key непригоден |
+| Native endpoint | `official` + unauthenticated live, 2026-08-03 | `POST https://api3.claudestore.store/v1/responses`, Bearer auth; без ключа endpoint и `/v1/models` возвращают bounded 401 |
+| Public adapters | `implementation` | Исходные `/v1/responses`, `/v1/chat/completions` и Anthropic skin GPT-plane сходятся во внутренний Responses turn; внешний transport всегда использует только `/v1/responses` |
+| Models | `official`; authenticated live `unknown` | Compile-fixed allowlist: `gpt-5.5`, `gpt-5.4`; live `/v1/models` не расширяет его автоматически |
+| Streaming | `official`; authenticated live `unknown` | Документация заявляет Responses SSE; mock проверяет декодирование и отсутствие replay, но настоящий incremental stream ещё не доказан |
+| Usage | `official`; authenticated live `unknown` | Требуется terminal OpenAI `usage` с ненулевым input/total и согласованной суммой; иначе attempt считается failed |
+| Tools/reasoning/structured output/Fast | `official` частично; live `unknown` | Dormant transport сохраняет внутренний Responses body; включение блокируется до controlled matrix всех реально продаваемых controls |
+| Local identity | `implementation` | Не отправляются `chatgpt-account-id`, `originator`, `client_metadata`, OAuth credential, proxy или private local upstream slug; публичный model id восстанавливается перед send |
+| Accounting | `implementation` | Существующий Codex reserve/settlement и локальный OpenAI tariff; ClaudeStore turn не пишет ChatGPT quota, affinity или calibration evidence |
+| Rollback | `decision` | Выключить Codex switch/удалить отдельный secret; локальный ChatGPT pool продолжает работать |
+
+## GPT/Codex wire и ошибки
+
+| Операция | Контракт | Решение runtime |
+|---|---|---|
+| Responses | `POST /v1/responses`, `Authorization: Bearer`, JSON Responses body, SSE | Максимум один attempt после terminal локальной rotation policy; compile-fixed origin и model allowlist |
+| Chat Completions / Anthropic skin | Публичные адаптеры APIToken.sale | Используют общий внутренний turn; отдельные вызовы ClaudeStore `/chat/completions` или `/messages` не выполняются |
+| 400/401/402/403/429/5xx/network | External terminal failure | Не повторять, не менять local home health/quota; вернуть исходный локальный status с bounded body и без `not_started` proof |
+| Output начался | Responses SSE delta | Ни локальный, ни внешний attempt больше не запускается; post-byte replay запрещён |
+| Terminal usage отсутствует/нулевой | Недостаточно authority для exact settlement | Не считать success и не писать calibration; activation gate обязан доказать nonzero usage до включения |
+
+GPT fallback намеренно не заменяет Codex provider при startup с пустым sealed roster: это аварийный
+transport действующего subscription-пула, а не самостоятельная provider plane. Конструктор OpenAI
+runtime по-прежнему требует хотя бы один валидный local profile.
 
 ## Письменное разрешение
 
@@ -71,14 +108,18 @@ APIToken.sale использовать ключ ClaudeStore как резерв�
 
 Официальные источники, просмотрены 2026-08-03:
 
-- [LLM-readable service index](https://claudestore.store/llms.txt) — canonical API3 base URL,
-  Anthropic/OpenAI surfaces и pay-as-you-go product identity.
+- [LLM-readable service index](https://claudestore.store/llms.txt) и
+  [full reference](https://claudestore.store/llms-full.txt) — canonical API3 base URL, разделение
+  Basic/Claude и Codex tier, Anthropic/OpenAI surfaces и pay-as-you-go product identity.
 - [Messages API](https://claudestore.store/docs/api-reference/messages/) — request/response fields,
   `x-api-key`, usage и заявленная Anthropic SDK compatibility.
 - [Streaming](https://claudestore.store/docs/api-reference/streaming/) — Anthropic SSE event shape.
 - [Errors](https://claudestore.store/docs/api-reference/errors/) и
   [Rate limits](https://claudestore.store/docs/guides/rate-limits/) — 4xx/5xx/529 и 429
   `Retry-After`; стабильный RPM/TPM не публикуется.
+- [OpenAI & Codex endpoints](https://claudestore.store/docs/api-reference/codex/) — отдельный
+  Codex-tier key, Bearer auth, `/v1/responses`, `/v1/chat/completions`, `/v1/models`, модели
+  `gpt-5.5`/`gpt-5.4`, заявленные SSE и terminal OpenAI usage.
 - [Privacy Policy](https://claudestore.store/legal/privacy/) `v3.0-2026-07-23` — request-cycle
   content handling и 12-month usage metadata retention.
 - Сайт ссылается на GitHub `zerofeesclub/claudestore`, но на дату проверки ссылка отвечает
@@ -87,14 +128,20 @@ APIToken.sale использовать ключ ClaudeStore как резерв�
 
 До serving остаются обязательными:
 
-1. secret provisioning вне git с подтверждёнными owner/mode и kill switch;
-2. bounded authenticated live matrix: supported model list, minimal non-stream generation с
-   terminal usage, настоящий incremental SSE, deterministic 4xx, insufficient-balance/429 и
-   secret/privacy scan;
+1. plane-specific secret provisioning вне git с подтверждёнными owner/mode и kill switch; GPT
+   требует нового отдельного key на Codex tier, которого в текущей задаче нет;
+2. bounded authenticated live matrix для каждого transport: supported model list, minimal
+   non-stream generation с terminal usage, настоящий incremental SSE, deterministic 4xx,
+   insufficient-balance/429 и secret/privacy scan; GPT дополнительно проверяет tools, reasoning,
+   structured output и Fast либо явно исключает недоказанные controls;
 3. post-deploy smoke на exact watchdog-green SHA с проверкой единственного settlement и нулевой
    local subscription calibration attribution.
 
-Mock-матрица уже фиксирует: healthy local → 0 external attempts; local retry success → 0; empty
-pool → ровно 1; external 5xx → локальный terminal + refund; успешный ответ → customer settlement
-без local subscription attribution; post-byte SSE failure → error tail без replay. Эти тесты,
-сборка и merge сами по себе не закрывают authenticated live-гейты и не означают GA.
+Claude mock-матрица уже фиксирует: healthy local → 0 external attempts; local retry success → 0;
+empty pool → ровно 1; external 5xx → локальный terminal + refund; успешный ответ → customer
+settlement без local subscription attribution; post-byte SSE failure → error tail без replay.
+GPT mock-матрица фиксирует: healthy local home → 0 external attempts; terminal local pool → ровно
+один `/v1/responses`; local identity не выходит; `gpt-5.5`/`gpt-5.4` allowlist; terminal usage
+обязателен; local calibration не меняется; failed external attempt сохраняет локальный HTTP status,
+но снимает `not_started`. Эти тесты, сборка и merge сами по себе не закрывают authenticated
+live-гейты и не означают GA.

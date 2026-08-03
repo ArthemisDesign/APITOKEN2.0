@@ -96,6 +96,8 @@ token on every refresh with strict family reuse detection. The pool therefore:
 | `CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS` | `10` | usage sweep + roster rescan cadence |
 | `CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS` | `16384` | conservative reserve allowance |
 | `CLAUDE_API_CODEX_HISTORY_*` | unchanged | tenant-bound encrypted history |
+| `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` | `0` | strict dormant emergency transport switch; OpenAI/Combined only |
+| `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY` | — (required only when fallback enabled) | separate root-owned `sk-cs4-*` key on ClaudeStore Codex tier |
 
 ## Runtime behavior
 
@@ -114,6 +116,14 @@ token on every refresh with strict family reuse detection. The pool therefore:
   client. Usage and model probes carry only the base auth/client headers. The SSE `response.*`
   stream is translated into the same internal event vocabulary the public adapters always
   consumed, so the public streaming contract is byte-identical to the app-server era.
+- **Dormant ClaudeStore emergency transport.** When separately enabled, only `gpt-5.5` and
+  `gpt-5.4` may make one compile-fixed `POST https://api3.claudestore.store/v1/responses` after the
+  normal local rotation/retry policy becomes terminal and before any model delta. It uses a
+  distinct Codex-tier Bearer key and restores the public model id; no local OAuth, ChatGPT account
+  header, first-party originator/client metadata, proxy or private model slug crosses the boundary.
+  The response must end with internally consistent nonzero OpenAI usage. It never supplies startup
+  capacity, local quota, affinity or calibration. Contract and activation blockers are in
+  `docs/engine/CLAUDESTORE_FALLBACK.md`.
 - **Selection** mirrors the Claude fleet: conversation affinity first, then freshness of quota
   evidence and in-flight envelope. Within that normal health/load class, a new unpinned conversation
   first seeds every home that has no immutable calibration turn; bucketed quota steering above 50%

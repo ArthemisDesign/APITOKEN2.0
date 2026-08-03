@@ -135,10 +135,15 @@ impl ApiError {
         response
             .extensions_mut()
             .insert(TerminalErrorReason(self.reason));
-        // Все ветки, рождающие ApiError, — отказ ДО границы доставки: ни байта клиенту не ушло,
-        // а reserve (если успели взять) закрывает дроп CodexAdmission → внутренний HoldGuard
-        // возвращает hold без charge. Статусы здесь всегда не-2xx → контракт not_started выполнен.
-        with_not_started(response)
+        // Normal ApiError branches fail before execution and may carry the router fencing proof.
+        // Once the external fallback send started, execution is ambiguous even without a public
+        // byte, so that one stable reason must return the same sanitized local error without the
+        // `not_started` header.
+        if self.reason == "claudestore_fallback_failed" {
+            response
+        } else {
+            with_not_started(response)
+        }
     }
 }
 
@@ -171,6 +176,11 @@ impl From<AdmissionError> for ApiError {
 impl From<ProcessError> for ApiError {
     fn from(value: ProcessError) -> Self {
         match value {
+            ProcessError::ExternalFallbackFailed { local } => {
+                let mut error = Self::from(*local);
+                error.reason = "claudestore_fallback_failed";
+                error
+            }
             ProcessError::ContextWindowExceeded => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: "This model's maximum context length was exceeded.".to_string(),
@@ -302,7 +312,10 @@ pub async fn responses(
     if prepared.request.stream {
         // Reject before opening the SSE stream if the whole pool is genuinely unavailable, so the client
         // sees a real 429 + Retry-After instead of a 200 that fails mid-stream.
-        if let Err(error) = gateway.preflight_capacity().await {
+        if let Err(error) = gateway
+            .preflight_capacity(&prepared.request.public_model)
+            .await
+        {
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {
@@ -3461,6 +3474,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn failed_external_fallback_keeps_local_status_but_removes_not_started_proof() {
+        let response = ApiError::from(ProcessError::ExternalFallbackFailed {
+            local: Box::new(ProcessError::UsageLimitExceeded {
+                retry_after: Some(42),
+            }),
+        })
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "42");
+        assert!(response
+            .headers()
+            .get("x-apitoken-execution-state")
+            .is_none());
+        assert_eq!(
+            response.extensions().get::<TerminalErrorReason>(),
+            Some(&TerminalErrorReason("claudestore_fallback_failed"))
+        );
     }
 
     #[test]

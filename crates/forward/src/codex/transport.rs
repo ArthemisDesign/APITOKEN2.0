@@ -34,6 +34,11 @@ pub enum ProcessError {
     BadRequest,
     AuthenticationRequired,
     SubscriptionRequired,
+    /// A ClaudeStore request was started after the local pool became terminal, but the external
+    /// turn did not produce an authoritative successful result. Keep the original local error so
+    /// the public status remains stable, while callers can remove the `not_started` proof: once an
+    /// external send begins, execution is ambiguous even when no public response byte was emitted.
+    ExternalFallbackFailed { local: Box<ProcessError> },
 }
 
 impl std::fmt::Display for ProcessError {
@@ -52,6 +57,9 @@ impl std::fmt::Display for ProcessError {
             Self::AuthenticationRequired => f.write_str("Codex profile is not authenticated"),
             Self::SubscriptionRequired => {
                 f.write_str("Codex profile is not authenticated with a ChatGPT subscription")
+            }
+            Self::ExternalFallbackFailed { local } => {
+                write!(f, "ClaudeStore fallback failed after local terminal result: {local}")
             }
         }
     }
@@ -72,6 +80,7 @@ impl ProcessError {
             Self::BadRequest => "bad_request",
             Self::AuthenticationRequired => "authentication_required",
             Self::SubscriptionRequired => "subscription_required",
+            Self::ExternalFallbackFailed { .. } => "external_fallback_failed",
         }
     }
 }
@@ -159,6 +168,25 @@ pub(crate) struct TurnEvents {
 }
 
 impl TurnEvents {
+    /// Start the shared Responses-SSE decoder for an upstream that does not own a local ChatGPT
+    /// quota snapshot. ClaudeStore uses the same public `response.*` framing, but its rate limits
+    /// must never be attributed to a subscription home.
+    pub(crate) fn from_external_response(response: wreq::Response) -> Self {
+        let (sender, receiver) = mpsc::channel(TURN_EVENT_QUEUE);
+        let (closed_sender, closed) = watch::channel(None);
+        let task = tokio::spawn(read_sse_stream(
+            response,
+            sender,
+            closed_sender,
+            Arc::new(Mutex::new(None)),
+        ));
+        Self {
+            receiver,
+            closed,
+            task: Some(task),
+        }
+    }
+
     /// Receive the next turn event while observing transport closure out of band.
     ///
     /// The per-turn event queue is deliberately bounded and EOF is carried out of band, so closure

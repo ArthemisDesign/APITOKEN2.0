@@ -7,6 +7,7 @@ use super::{
     new_id, AppServerEvent, AuthContext, CodexGateway, CodexHome, CodexModel, HomeSelection,
     ProcessError, TurnEvents, TurnRouting, TurnSlot,
 };
+use crate::metrics::Metrics;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -292,11 +293,12 @@ impl CodexGateway {
             {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
-                    return Err(
-                        last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
-                            retry_after: retry_after_from(ready_at),
-                        }),
-                    );
+                    let local = last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
+                        retry_after: retry_after_from(ready_at),
+                    });
+                    return self
+                        .run_claudestore_after_local_terminal(&request, updates, &emitted, local)
+                        .await;
                 }
             };
             tried.push(home.id().to_string());
@@ -370,11 +372,53 @@ impl CodexGateway {
             );
             if !account_fault {
                 if transport_retries_left == 0 {
-                    return Err(error);
+                    return self
+                        .run_claudestore_after_local_terminal(&request, updates, &emitted, error)
+                        .await;
                 }
                 transport_retries_left -= 1;
             }
             last_error = Some(error);
+        }
+    }
+
+    async fn run_claudestore_after_local_terminal(
+        &self,
+        request: &CodexTurnRequest,
+        updates: Option<mpsc::Sender<TurnUpdate>>,
+        emitted: &Arc<AtomicBool>,
+        local: ProcessError,
+    ) -> Result<CodexTurnResult, ProcessError> {
+        let Some(fallback) = self
+            .claudestore_fallback
+            .as_ref()
+            .filter(|fallback| fallback.supports_model(&request.model.id))
+        else {
+            return Err(local);
+        };
+        // A local delta already delivered to the public adapter makes replacement unsafe. This is
+        // checked in the normal loop too; keep the guard here so future terminal branches cannot
+        // accidentally start a second billable execution after output.
+        if emitted.load(Ordering::Acquire) {
+            return Err(local);
+        }
+
+        Metrics::inc(&self.metrics.claudestore_fallback_attempts);
+        match fallback.run_turn(request, updates, emitted).await {
+            Ok(result) => {
+                Metrics::inc(&self.metrics.claudestore_fallback_successes);
+                Ok(result)
+            }
+            Err(error) => {
+                Metrics::inc(&self.metrics.claudestore_fallback_failures);
+                eprintln!(
+                    "ClaudeStore Codex fallback failed [{}]",
+                    error.diagnostic_class()
+                );
+                Err(ProcessError::ExternalFallbackFailed {
+                    local: Box::new(local),
+                })
+            }
         }
     }
 }
@@ -456,12 +500,34 @@ impl CodexHome {
         emitted: &Arc<AtomicBool>,
         requested_fast: bool,
     ) -> Result<CodexTurnResult, ProcessError> {
-        let timeout = std::time::Duration::from_millis(self.config().turn_timeout_ms.max(1));
+        Self::consume_turn_events(
+            Some(self),
+            events,
+            updates,
+            emitted,
+            requested_fast,
+            std::time::Duration::from_millis(self.config().turn_timeout_ms.max(1)),
+            std::time::Duration::from_millis(self.config().turn_silence_timeout_ms.max(1)),
+        )
+        .await
+    }
+
+    /// Consume the shared Responses-SSE vocabulary for either a local ChatGPT home or the external
+    /// ClaudeStore emergency transport. The optional home is used only to attach its authoritative
+    /// retry-after snapshot to native subscription failures; external turns must never mutate or
+    /// read a local home's quota/calibration identity.
+    pub(super) async fn consume_turn_events(
+        home: Option<&CodexHome>,
+        events: &mut TurnEvents,
+        updates: Option<mpsc::Sender<TurnUpdate>>,
+        emitted: &Arc<AtomicBool>,
+        requested_fast: bool,
+        timeout: std::time::Duration,
+        silence_timeout: std::time::Duration,
+    ) -> Result<CodexTurnResult, ProcessError> {
         // A silence bound at or above the total deadline simply never fires: the total governs and
-        // the turn fails as `turn completion`. That is a coherent configuration, not an error, so
-        // it is left alone rather than clamped — clamping would silently relabel the failure.
-        let silence_timeout =
-            std::time::Duration::from_millis(self.config().turn_silence_timeout_ms.max(1));
+        // the turn fails as `turn completion`. That is a coherent configuration, not an error, so it
+        // is left alone rather than clamped — clamping would silently relabel the failure.
         let event_loop = async {
             let mut output = Vec::<Value>::new();
             let mut completed_output_items = HashSet::<(String, String)>::new();
@@ -577,7 +643,7 @@ impl CodexHome {
                                 .map(str::to_string);
                         }
                         if let Some(error) =
-                            classify_turn_error(self, params.pointer("/turn/error/codexErrorInfo"))
+                            classify_turn_error(home, params.pointer("/turn/error/codexErrorInfo"))
                                 .await
                         {
                             return Err(error);
@@ -595,7 +661,7 @@ impl CodexHome {
                             .unwrap_or(false)
                         {
                             if let Some(error) =
-                                classify_turn_error(self, params.pointer("/error/codexErrorInfo"))
+                                classify_turn_error(home, params.pointer("/error/codexErrorInfo"))
                                     .await
                             {
                                 return Err(error);
@@ -631,7 +697,10 @@ impl CodexHome {
 
 /// Map the wire error vocabulary onto the pool's blame classes. Retry-after comes from this
 /// home's freshest window snapshot, never from an upstream text message.
-async fn classify_turn_error(home: &CodexHome, info: Option<&Value>) -> Option<ProcessError> {
+async fn classify_turn_error(
+    home: Option<&CodexHome>,
+    info: Option<&Value>,
+) -> Option<ProcessError> {
     let info = info?;
     let kind = info
         .as_str()
@@ -648,7 +717,10 @@ async fn classify_turn_error(home: &CodexHome, info: Option<&Value>) -> Option<P
         (Some("contextWindowExceeded"), _) => Some(ProcessError::ContextWindowExceeded),
         (Some("usageLimitExceeded" | "sessionBudgetExceeded"), _) | (_, Some(429)) => {
             Some(ProcessError::UsageLimitExceeded {
-                retry_after: home.usage_limit_retry_after().await,
+                retry_after: match home {
+                    Some(home) => home.usage_limit_retry_after().await,
+                    None => None,
+                },
             })
         }
         (Some("badRequest" | "cyberPolicy"), _) | (_, Some(400)) => Some(ProcessError::BadRequest),

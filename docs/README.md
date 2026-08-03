@@ -16,7 +16,7 @@ context'ов. Правила размещения и обновления — в
 - [ARCHITECTURE.md](engine/ARCHITECTURE.md) — архитектура claude-api: слои, пул, ротация, affinity.
 - [CONTROL_API.md](engine/CONTROL_API.md) — интеграционный гайд движка для бэкенда сайта и оплаты.
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
-- [CLAUDESTORE_FALLBACK.md](engine/CLAUDESTORE_FALLBACK.md) — dormant аварийный Anthropic-compatible fallback Claude-plane и его compliance/live-гейты.
+- [CLAUDESTORE_FALLBACK.md](engine/CLAUDESTORE_FALLBACK.md) — dormant аварийные Claude/GPT transport через ClaudeStore и их compliance/live-гейты.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
 - [KIMI_PROVIDER.md](engine/KIMI_PROVIDER.md) — KIMI (Moonshot) Kimi Code subscription provider: capability manifest, backend-only, не публикуется.
 - [PROVIDER_WIRING_CHECKLIST.md](engine/PROVIDER_WIRING_CHECKLIST.md) — механическая карта подключения провайдера: точные файлы, символы, порядок и ловушки.

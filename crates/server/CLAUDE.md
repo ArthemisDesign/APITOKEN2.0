@@ -116,6 +116,11 @@
   shape-validation/redacted Debug. Enable допустим лишь для `Combined|Anthropic`; production base
   URL compile-fixed в `forward`, env override отсутствует. Secret живёт только в root-owned
   `server.env`, а runtime-контракт — `docs/engine/CLAUDESTORE_FALLBACK.md`.
+- GPT transport использует независимые `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` и
+  `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`. Enable допустим лишь для `Combined|OpenAi`, дополнительно
+  требует `CLAUDE_API_CODEX_ENABLED=1` и никогда не переиспользует Basic/Claude key. Fixed OpenAI
+  systemd unit наследует этот switch; Anthropic/Gemini units обязаны argv-level фиксировать `0`.
+  Наличие валидного конфига не закрывает authenticated live gate и не разрешает production enable.
 - Backend-only KIMI switch читается здесь как строгий default-off набор
   `CLAUDE_API_KIMI_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,BASE_URL,AUTH_SCHEME,QUOTA_POLL_SECS}` и
   передаётся целиком в `forward::kimi::config::build`. Disabled-плоскость не валидирует dormant

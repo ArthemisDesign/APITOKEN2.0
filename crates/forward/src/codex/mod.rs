@@ -9,6 +9,7 @@ mod api;
 mod billing;
 mod calibration;
 mod chat;
+mod claudestore;
 mod config;
 mod discovery;
 mod health;
@@ -38,6 +39,8 @@ pub use transport::{CodexRateLimitWindow, CodexRateLimits, ProcessError};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use crate::billing::AsyncBilling;
+use crate::config::ClaudeStoreFallbackConfig;
+use crate::metrics::Metrics;
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 use codex_credential::{CodexCredential, SecretString};
 use futures_util::StreamExt as _;
@@ -1877,6 +1880,7 @@ mod calibration_integration_tests {
     struct TestFleet {
         gateway: Arc<CodexGateway>,
         billing: Arc<AsyncBilling>,
+        metrics: Arc<Metrics>,
         root: PathBuf,
         database: PathBuf,
     }
@@ -1925,6 +1929,14 @@ mod calibration_integration_tests {
     }
 
     fn test_fleet(home_count: usize, base_url: &str) -> TestFleet {
+        test_fleet_with_fallback(home_count, base_url, None)
+    }
+
+    fn test_fleet_with_fallback(
+        home_count: usize,
+        base_url: &str,
+        fallback: Option<ClaudeStoreFallbackConfig>,
+    ) -> TestFleet {
         static TEST_FLEET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1974,8 +1986,9 @@ mod calibration_integration_tests {
         let database = root.with_extension("sqlite");
         let billing =
             Arc::new(AsyncBilling::start(database.to_string_lossy().into_owned(), 1).unwrap());
+        let metrics = Arc::new(Metrics::new());
         let gateway = Arc::new(
-            CodexGateway::new_with_calibration(
+            CodexGateway::new_with_calibration_and_fallback(
                 CodexConfig {
                     enabled: true,
                     base_url: base_url.to_string(),
@@ -1999,12 +2012,15 @@ mod calibration_integration_tests {
                     models: test_models(),
                 },
                 Some(billing.clone()),
+                fallback,
+                metrics.clone(),
             )
             .unwrap(),
         );
         TestFleet {
             gateway,
             billing,
+            metrics,
             root,
             database,
         }
@@ -2207,6 +2223,124 @@ mod calibration_integration_tests {
         mock_turn_upstream_with_usage(false).await
     }
 
+    async fn mock_terminal_upstream(status: u16) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 4_096];
+                    loop {
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let response = format!(
+                        "HTTP/1.1 {status} terminal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{address}/codex")
+    }
+
+    async fn mock_claudestore_responses(
+        status: u16,
+        authoritative_usage: bool,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 4_096];
+                    let header_end = loop {
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if let Some(offset) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break offset + 4;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end.saturating_add(content_length) {
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                    }
+                    seen.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&request).to_string());
+                    if status != 200 {
+                        let response = format!(
+                            "HTTP/1.1 {status} failed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        return;
+                    }
+                    let usage = if authoritative_usage {
+                        "\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120"
+                    } else {
+                        "\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0"
+                    };
+                    let body = format!(
+                        "event: response.output_text.delta\n\
+                         data: {{\"item_id\":\"msg_fallback\",\"delta\":\"fallback\"}}\n\n\
+                         event: response.output_item.done\n\
+                         data: {{\"item\":{{\"type\":\"message\",\"id\":\"msg_fallback\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"fallback\"}}]}}}}\n\n\
+                         event: response.completed\n\
+                         data: {{\"response\":{{\"service_tier\":\"default\",\"usage\":{{{usage}}}}}}}\n\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{address}"), requests)
+    }
+
     fn install_calibration_write_failure(database: &std::path::Path) {
         let connection = registry::open(database.to_str().unwrap()).unwrap();
         connection
@@ -2265,6 +2399,210 @@ mod calibration_integration_tests {
             output_schema: None,
             verbosity: None,
         }
+    }
+
+    #[tokio::test]
+    async fn exhausted_local_pool_uses_claudestore_once_without_local_identity_or_calibration() {
+        let local = mock_terminal_upstream(429).await;
+        let (external, requests) = mock_claudestore_responses(200, true).await;
+        let fleet = test_fleet_with_fallback(
+            1,
+            &local,
+            Some(ClaudeStoreFallbackConfig::for_test(external)),
+        );
+        let model = fleet
+            .gateway
+            .config()
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.5")
+            .unwrap()
+            .clone();
+
+        let result = fleet
+            .gateway
+            .run_turn(turn(model, false, 1), None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 100);
+        assert_eq!(result.usage.output_tokens, 20);
+        assert_eq!(result.output[0]["content"][0]["text"], "fallback");
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_attempts),
+            1
+        );
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_successes),
+            1
+        );
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_failures),
+            0
+        );
+
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let wire = captured[0].to_ascii_lowercase();
+        assert!(wire.starts_with("post /v1/responses http/1.1"));
+        assert!(wire.contains("authorization: bearer sk-cs4-test-only-placeholder"));
+        assert!(!wire.contains("chatgpt-account-id"));
+        assert!(!wire.contains("originator:"));
+        assert!(!wire.contains("client_metadata"));
+        let body = captured[0].split("\r\n\r\n").nth(1).unwrap();
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["model"], "gpt-5.5");
+        assert_eq!(body["stream"], true);
+        drop(captured);
+
+        fleet.billing.flush().await.unwrap();
+        assert!(fleet
+            .billing
+            .codex_calibration_report()
+            .await
+            .unwrap()
+            .is_empty());
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn healthy_local_codex_home_never_calls_claudestore() {
+        let (local, _) = mock_turn_upstream().await;
+        let (external, requests) = mock_claudestore_responses(200, true).await;
+        let fleet = test_fleet_with_fallback(
+            1,
+            &local,
+            Some(ClaudeStoreFallbackConfig::for_test(external)),
+        );
+        let model = fleet
+            .gateway
+            .config()
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.5")
+            .unwrap()
+            .clone();
+
+        let result = fleet
+            .gateway
+            .run_turn(turn(model, false, 5), None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.usage.input_tokens, 100);
+        assert!(requests.lock().unwrap().is_empty());
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_attempts),
+            0
+        );
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn claudestore_is_not_attempted_for_models_outside_the_reviewed_allow_list() {
+        let local = mock_terminal_upstream(429).await;
+        let (external, requests) = mock_claudestore_responses(200, true).await;
+        let fleet = test_fleet_with_fallback(
+            1,
+            &local,
+            Some(ClaudeStoreFallbackConfig::for_test(external)),
+        );
+        let model = fleet
+            .gateway
+            .config()
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.6-sol")
+            .unwrap()
+            .clone();
+
+        assert!(matches!(
+            fleet
+                .gateway
+                .run_turn(turn(model, false, 2), None, None)
+                .await,
+            Err(ProcessError::UsageLimitExceeded { .. })
+        ));
+        assert!(requests.lock().unwrap().is_empty());
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_attempts),
+            0
+        );
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn failed_claudestore_attempt_keeps_local_terminal_and_is_counted_once() {
+        let local = mock_terminal_upstream(429).await;
+        let (external, requests) = mock_claudestore_responses(500, false).await;
+        let fleet = test_fleet_with_fallback(
+            1,
+            &local,
+            Some(ClaudeStoreFallbackConfig::for_test(external)),
+        );
+        let model = fleet
+            .gateway
+            .config()
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.4")
+            .unwrap()
+            .clone();
+
+        let error = fleet
+            .gateway
+            .run_turn(turn(model, false, 3), None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ProcessError::ExternalFallbackFailed { local }
+                if matches!(*local, ProcessError::UsageLimitExceeded { .. })
+        ));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_attempts),
+            1
+        );
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_successes),
+            0
+        );
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_failures),
+            1
+        );
+        fleet.close().await;
+    }
+
+    #[tokio::test]
+    async fn claudestore_success_without_terminal_usage_fails_closed() {
+        let local = mock_terminal_upstream(429).await;
+        let (external, _) = mock_claudestore_responses(200, false).await;
+        let fleet = test_fleet_with_fallback(
+            1,
+            &local,
+            Some(ClaudeStoreFallbackConfig::for_test(external)),
+        );
+        let model = fleet
+            .gateway
+            .config()
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.5")
+            .unwrap()
+            .clone();
+
+        assert!(matches!(
+            fleet
+                .gateway
+                .run_turn(turn(model, false, 4), None, None)
+                .await,
+            Err(ProcessError::ExternalFallbackFailed { .. })
+        ));
+        assert_eq!(
+            Metrics::get(&fleet.metrics.claudestore_fallback_failures),
+            1
+        );
+        fleet.close().await;
     }
 
     #[tokio::test]
@@ -2721,6 +3059,10 @@ enum HomeSelection {
 /// Claude routing is completely independent when Codex is disabled.
 pub struct CodexGateway {
     cfg: Arc<CodexConfig>,
+    /// Optional one-shot external transport. It is not a home and therefore owns no affinity,
+    /// health, quota or calibration state.
+    claudestore_fallback: Option<claudestore::ClaudeStoreCodexFallback>,
+    metrics: Arc<Metrics>,
     calibration_store: Option<Arc<AsyncBilling>>,
     shutting_down: AtomicBool,
     abort_turns: AtomicBool,
@@ -2808,6 +3150,31 @@ impl CodexGateway {
         cfg: CodexConfig,
         calibration_store: Option<Arc<AsyncBilling>>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_calibration_and_fallback(
+            cfg,
+            calibration_store,
+            None,
+            Arc::new(Metrics::new()),
+        )
+    }
+
+    pub fn new_with_calibration_and_fallback(
+        cfg: CodexConfig,
+        calibration_store: Option<Arc<AsyncBilling>>,
+        claudestore_fallback: Option<ClaudeStoreFallbackConfig>,
+        metrics: Arc<Metrics>,
+    ) -> anyhow::Result<Self> {
+        let fallback_transport = claudestore_fallback
+            .map(|fallback| {
+                claudestore::ClaudeStoreCodexFallback::new(
+                    fallback,
+                    cfg.request_timeout_ms,
+                    cfg.turn_timeout_ms,
+                    cfg.turn_silence_timeout_ms,
+                )
+            })
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error))?;
         let history = HistoryStore::new(
             cfg.history_redis_url.as_deref(),
             cfg.history_secret.as_deref(),
@@ -2835,6 +3202,8 @@ impl CodexGateway {
         }
         Ok(Self {
             cfg,
+            claudestore_fallback: fallback_transport,
+            metrics,
             calibration_store,
             shutting_down: AtomicBool::new(false),
             abort_turns: AtomicBool::new(false),
@@ -3355,9 +3724,17 @@ impl CodexGateway {
     /// `429 + Retry-After` (soonest reset) exactly like a non-streaming request would. It runs the
     /// same selection a real turn would and releases the acquired load slot immediately. A home can
     /// still exhaust between this check and the turn; that rare race stays an in-stream failure.
-    pub(crate) async fn preflight_capacity(&self) -> Result<(), ProcessError> {
+    pub(crate) async fn preflight_capacity(&self, model: &CodexModel) -> Result<(), ProcessError> {
         match self.select_home(&[], None, &[], false, false, None).await {
             HomeSelection::Ready(_home, _slot) => Ok(()),
+            HomeSelection::Unavailable { ready_at: _ }
+                if self
+                    .claudestore_fallback
+                    .as_ref()
+                    .is_some_and(|fallback| fallback.supports_model(&model.id)) =>
+            {
+                Ok(())
+            }
             HomeSelection::Unavailable { ready_at } => Err(ProcessError::UsageLimitExceeded {
                 retry_after: ready_at
                     .map(|at| at.saturating_sub(pool::now()).clamp(1, 7 * 24 * 3600) as u64),

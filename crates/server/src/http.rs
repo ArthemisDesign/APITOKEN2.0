@@ -1082,7 +1082,7 @@ async fn metrics(
     );
     let _ = writeln!(
         body,
-        "# HELP claude_api_claudestore_fallback_attempts_total Last-resort external attempts after local Claude rotation became terminal.\n\
+        "# HELP claude_api_claudestore_fallback_attempts_total Last-resort external attempts after the local provider rotation became terminal.\n\
          # TYPE claude_api_claudestore_fallback_attempts_total counter\n\
          claude_api_claudestore_fallback_attempts_total {}\n\
          # HELP claude_api_claudestore_fallback_successes_total Successful last-resort external responses admitted to customer delivery.\n\

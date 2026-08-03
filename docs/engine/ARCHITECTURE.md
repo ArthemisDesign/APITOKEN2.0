@@ -23,6 +23,11 @@
   metered POST /v1/messages: только после terminal всей local pre-byte
   ротации/smooth-wait ── один default-off attempt ──► ClaudeStore API3
   (без OAuth/persona headers; тот же reserve + exact usage settlement)
+
+  GPT /v1/responses|chat|skin ──► local Codex home rotation/retry ──► ChatGPT backend
+                                  │ terminal до model output, gpt-5.5/5.4 only
+                                  └─ один separate-key default-off /v1/responses
+                                                           ──► ClaudeStore API3
 ```
 
 ## Слои (направление зависимостей — только вниз)
@@ -89,13 +94,16 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
 - **Identity-инжект** — цена работы на подписочном токене; вынесен в конфиг, тюнится без пересборки.
 - **Ротация до стрима** — статус ответа проверяется до отдачи тела, поэтому переключение подписок
   при 429/5xx не рвёт клиентский стрим.
-- **ClaudeStore — не новый provider plane.** Это compile-pinned default-off аварийный transport
-  только для metered Anthropic Messages: локальный пул всегда первый, внешний attempt максимум один
-  после его terminal результата и только до первого байта. Он получает очищенное исходное тело и
-  клиентские Anthropic version/beta, но не local OAuth, Claude Code identity/billing block, persona,
-  proxy или subscription identity. Customer settlement использует исходный reserve и terminal
-  Anthropic usage; local pool spend/quota/calibration/affinity не меняются. Полный контракт и
-  live-гейты — [`CLAUDESTORE_FALLBACK.md`](CLAUDESTORE_FALLBACK.md).
+- **ClaudeStore — не новый provider plane.** Это два compile-pinned default-off аварийных transport
+  с разными ключами. Claude transport выполняет один metered `/v1/messages` после terminal local
+  rotation/smooth-wait и не отправляет local OAuth, identity/billing block, persona, proxy или
+  subscription identity. GPT transport аналогично допускает один `/v1/responses` после normal Codex
+  rotation/retry, только для `gpt-5.5`/`gpt-5.4`; публичный id заменяет private local slug, а
+  `chatgpt-account-id`, originator, OAuth, proxy и calibration identity наружу не выходят. Оба
+  используют исходный customer reserve и authoritative terminal usage, не меняя local pool
+  spend/quota/calibration/affinity. GPT требует отдельный key на ClaudeStore Codex tier и остаётся
+  blocked до authenticated live gate. Полный контракт —
+  [`CLAUDESTORE_FALLBACK.md`](CLAUDESTORE_FALLBACK.md).
 - **Client dispatch без concurrency wait/reject.** Claude, Codex и Gemini принимают любой fan-out и
   сразу запускают независимые upstream attempts: process/per-account/per-profile request semaphore
   отсутствует. In-flight — только routing/observability signal и durable lifecycle accounting, не

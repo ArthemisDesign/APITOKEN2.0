@@ -104,7 +104,10 @@ pub async fn completions(
     if prepared.request.stream {
         // Reject before opening the SSE stream if the whole pool is genuinely unavailable, so the client
         // sees a real 429 + Retry-After instead of a 200 that fails mid-stream.
-        if let Err(error) = gateway.preflight_capacity().await {
+        if let Err(error) = gateway
+            .preflight_capacity(&prepared.request.public_model)
+            .await
+        {
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {

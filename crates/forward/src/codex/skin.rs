@@ -116,11 +116,14 @@ fn skin_error(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(reason));
-    // Все вызовы skin_error — отказ ДО границы доставки: reserve закрывает дроп admission
-    // (HoldGuard, refund), ни байта клиенту не ушло. Исключение — fallback сборки SSE-ответа в
-    // stream_messages: там spawn-таск с admission уже запущен и может settle'ить фактику, поэтому
-    // он снимает заголовок через without_not_started.
-    with_not_started(response)
+    // Normal skin errors are pre-execution. An external fallback failure is different: the
+    // ClaudeStore send already crossed the execution boundary, so preserving `not_started` would
+    // let the router replay an ambiguously billable request on another provider.
+    if reason == "claudestore_fallback_failed" {
+        response
+    } else {
+        with_not_started(response)
+    }
 }
 
 /// 400 adapter-validation error; the parameter name lives inside the message (the Anthropic
@@ -1572,7 +1575,10 @@ pub async fn messages(
     if prepared.request.stream {
         // Reject before opening the SSE stream if the whole pool is genuinely unavailable, so the client
         // sees a retryable error instead of a 200 that fails mid-stream.
-        if let Err(error) = gateway.preflight_capacity().await {
+        if let Err(error) = gateway
+            .preflight_capacity(&prepared.request.public_model)
+            .await
+        {
             return anthropic_error(ApiError::from(error));
         }
         if let Err(error) = admission.mark_delivering().await {
@@ -1661,6 +1667,7 @@ pub async fn count_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex::ProcessError;
 
     fn ok_translated(value: Value) -> ParsedSkin {
         translate_messages_request(value, true).expect("translation must succeed")
@@ -1707,6 +1714,18 @@ mod tests {
         }
         let ok = skin_json_response(json!({"id": "msg_1"}), "msg_1");
         assert!(ok
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
+
+        let external = anthropic_error(ApiError::from(ProcessError::ExternalFallbackFailed {
+            local: Box::new(ProcessError::UsageLimitExceeded {
+                retry_after: Some(42),
+            }),
+        }));
+        assert_eq!(external.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(external.headers().get(header::RETRY_AFTER).unwrap(), "42");
+        assert!(external
             .headers()
             .get(crate::proxy::EXECUTION_STATE_HEADER)
             .is_none());

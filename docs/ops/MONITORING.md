@@ -224,16 +224,18 @@ cascading damage while the condition persists.
 
 ## ClaudeStoreFallbackFailing
 
-This alert can fire only after the normal Claude subscription rotation and smooth-wait path has
-already become terminal. Compare the attempt/success/failure counters with
-`EngineHasNoSubscriptions`, `EngineAllSubscriptionsCooling`, the circuit breaker and local upstream
-errors. A healthy local pool should leave the attempt counter unchanged.
+This alert covers the Anthropic and OpenAI targets and can fire only after the corresponding normal
+subscription rotation has already become terminal. For `provider="anthropic"`, compare the counters
+with `EngineHasNoSubscriptions`, `EngineAllSubscriptionsCooling`, smooth-wait, the circuit breaker
+and local upstream errors. For `provider="openai"`, inspect Codex home health/quota and local
+transport failures. A healthy local provider pool should leave the attempt counter unchanged.
 
-Check ClaudeStore availability, account credit and the root-owned fallback credential without
-printing the key or upstream response body. Repeated failures should be contained by setting
-`CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0` through the secret/config rollout and starting the normal
-watchdog-controlled engine cycle. Do not add another external cascade or replay a stream that has
-already delivered bytes.
+Check ClaudeStore availability, account credit and the plane-specific root-owned credential without
+printing the key or upstream response body. Repeated Anthropic failures are contained with
+`CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0`; OpenAI failures use
+`CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0`. Apply the switch through the normal config rollout
+and start a watchdog-controlled engine cycle. Do not add another external cascade or replay a stream
+that has already delivered model output.
 
 ## EngineAffinityRedisErrors
 

@@ -42,6 +42,9 @@ pub struct Settings {
     /// Optional second provider. Disabled by default; enabling it requires the encrypted OAuth
     /// roster (sealed ChatGPT profiles) and its keyring.
     pub codex: Option<CodexConfig>,
+    /// Separate Codex-tier ClaudeStore credential for the default-off GPT emergency transport.
+    /// It must never reuse the Basic-tier key serving the Anthropic fallback.
+    pub claudestore_codex_fallback: Option<ClaudeStoreFallbackConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
     /// Backend-only KIMI plane. Exact aliases dispatch through its private runtime only when this
@@ -147,6 +150,61 @@ fn claudestore_fallback_config(provider: ProviderMode) -> Option<ClaudeStoreFall
         ev("CLAUDE_API_CLAUDESTORE_API_KEY"),
     )
     .unwrap_or_else(|message| panic!("{message}"))
+}
+
+fn parse_claudestore_codex_fallback_config(
+    provider: ProviderMode,
+    enabled: Option<&str>,
+    api_key: Option<String>,
+) -> Result<Option<ClaudeStoreFallbackConfig>, String> {
+    let enabled = parse_strict_bool(
+        "CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED",
+        enabled,
+        false,
+    )?;
+    if !enabled {
+        return Ok(None);
+    }
+    if !provider.serves_openai() {
+        return Err(
+            "CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED is valid only for combined or openai provider planes"
+                .to_owned(),
+        );
+    }
+    let api_key = api_key.ok_or_else(|| {
+        String::from(
+            "CLAUDE_API_CLAUDESTORE_CODEX_API_KEY is required when CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=1",
+        )
+    })?;
+    Ok(Some(
+        ClaudeStoreFallbackConfig::production(api_key)
+            .map_err(|message| format!("CLAUDE_API_CLAUDESTORE_CODEX_API_KEY: {message}"))?,
+    ))
+}
+
+fn claudestore_codex_fallback_config(provider: ProviderMode) -> Option<ClaudeStoreFallbackConfig> {
+    parse_claudestore_codex_fallback_config(
+        provider,
+        ev("CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED").as_deref(),
+        ev("CLAUDE_API_CLAUDESTORE_CODEX_API_KEY"),
+    )
+    .unwrap_or_else(|message| panic!("{message}"))
+}
+
+fn validate_claudestore_credential_separation(
+    claude: Option<&ClaudeStoreFallbackConfig>,
+    codex: Option<&ClaudeStoreFallbackConfig>,
+) -> Result<(), String> {
+    if claude
+        .zip(codex)
+        .is_some_and(|(claude, codex)| claude.shares_api_key_with(codex))
+    {
+        return Err(
+            "Claude and Codex ClaudeStore fallbacks require different tier-specific API keys"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn parse_pricing_bridge_config(
@@ -824,6 +882,12 @@ impl Settings {
         let provider = parse_provider_mode(ev("CLAUDE_API_PROVIDER").as_deref())
             .unwrap_or_else(|message| panic!("{message}"));
         let claudestore_fallback = claudestore_fallback_config(provider);
+        let claudestore_codex_fallback = claudestore_codex_fallback_config(provider);
+        validate_claudestore_credential_separation(
+            claudestore_fallback.as_ref(),
+            claudestore_codex_fallback.as_ref(),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
         let cfg_dir = ev("SUB_CFG_DIR").unwrap_or_else(|| {
             let home = env::var("HOME").unwrap_or_default();
             format!("{home}/.config/claude-api")
@@ -907,6 +971,11 @@ impl Settings {
         } else {
             None
         };
+        if claudestore_codex_fallback.is_some() && codex.is_none() {
+            panic!(
+                "CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=1 requires CLAUDE_API_CODEX_ENABLED=1"
+            );
+        }
         let gemini = if provider.serves_gemini() {
             gemini_config()
         } else {
@@ -978,6 +1047,7 @@ impl Settings {
                 500,
             ),
             codex,
+            claudestore_codex_fallback,
             gemini,
             kimi,
             pricing_shadow_manifest: pricing_shadow_runtime_manifest(),
@@ -1126,6 +1196,70 @@ mod tests {
         );
         assert!(
             parse_claudestore_fallback_config(ProviderMode::Gemini, Some("1"), secret,).is_err()
+        );
+    }
+
+    #[test]
+    fn claudestore_codex_fallback_is_strict_default_off_openai_only_and_uses_its_own_key() {
+        let secret = Some("sk-cs4-test-codex-secret-123456789012345".to_owned());
+        assert!(
+            parse_claudestore_codex_fallback_config(ProviderMode::OpenAi, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(parse_claudestore_codex_fallback_config(
+            ProviderMode::OpenAi,
+            Some("false"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_none());
+        assert!(parse_claudestore_codex_fallback_config(
+            ProviderMode::OpenAi,
+            Some("true"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_some());
+        assert!(parse_claudestore_codex_fallback_config(
+            ProviderMode::Combined,
+            Some("1"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_some());
+        assert!(parse_claudestore_codex_fallback_config(
+            ProviderMode::OpenAi,
+            Some("yes"),
+            secret.clone(),
+        )
+        .is_err());
+        assert!(
+            parse_claudestore_codex_fallback_config(ProviderMode::OpenAi, Some("1"), None,)
+                .is_err()
+        );
+        assert!(parse_claudestore_codex_fallback_config(
+            ProviderMode::Anthropic,
+            Some("1"),
+            secret.clone(),
+        )
+        .is_err());
+        assert!(
+            parse_claudestore_codex_fallback_config(ProviderMode::Gemini, Some("1"), secret,)
+                .is_err()
+        );
+
+        let shared = ClaudeStoreFallbackConfig::production(
+            "sk-cs4-shared-secret-12345678901234567890".to_owned(),
+        )
+        .unwrap();
+        let distinct = ClaudeStoreFallbackConfig::production(
+            "sk-cs4-distinct-secret-123456789012345678".to_owned(),
+        )
+        .unwrap();
+        assert!(validate_claudestore_credential_separation(Some(&shared), Some(&shared)).is_err());
+        assert!(
+            validate_claudestore_credential_separation(Some(&shared), Some(&distinct)).is_ok()
         );
     }
 

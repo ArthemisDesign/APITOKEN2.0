@@ -87,13 +87,13 @@ groups:
           runbook: 'docs/ops/MONITORING.md#engineupstreamservererrors'
 
       - alert: ClaudeStoreFallbackFailing
-        expr: increase(claude_api_claudestore_fallback_failures_total{provider="anthropic"}[10m]) > 0
+        expr: increase(claude_api_claudestore_fallback_failures_total{provider=~"anthropic|openai"}[10m]) > 0
         labels:
           severity: warning
           component: claude-engine
         annotations:
           summary: 'The emergency ClaudeStore transport failed'
-          description: 'At least one last-resort attempt failed after the local Claude pool had already become terminal.'
+          description: 'At least one last-resort attempt failed after the local provider pool had already become terminal.'
           runbook: 'docs/ops/MONITORING.md#claudestorefallbackfailing'
 
       - alert: EngineAffinityRedisErrors

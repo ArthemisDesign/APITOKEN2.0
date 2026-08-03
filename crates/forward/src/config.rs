@@ -59,6 +59,13 @@ impl ClaudeStoreFallbackConfig {
     pub(crate) fn api_key(&self) -> &str {
         &self.api_key
     }
+
+    /// Compare two secret-bearing configs without exposing either credential to the composition
+    /// layer. ClaudeStore keys are tier-switched, so one value cannot safely back both the Claude
+    /// and Codex emergency transports at the same time.
+    pub fn shares_api_key_with(&self, other: &Self) -> bool {
+        self.api_key == other.api_key
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -153,5 +160,13 @@ mod tests {
             "sk-cs4-test-secret-1234567890123456\n7890".to_owned()
         )
         .is_err());
+
+        let same = ClaudeStoreFallbackConfig::production(secret).unwrap();
+        let other = ClaudeStoreFallbackConfig::production(
+            "sk-cs4-other-secret-12345678901234567890".to_owned(),
+        )
+        .unwrap();
+        assert!(config.shares_api_key_with(&same));
+        assert!(!config.shares_api_key_with(&other));
     }
 }

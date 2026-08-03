@@ -1304,13 +1304,19 @@ async fn serve() -> Result<()> {
             "no shared"
         }
     );
+    let metrics = Arc::new(forward::Metrics::new());
     let codex = if let Some(config) = s.codex.clone() {
         let calibration_store = billing
             .clone()
             .context("Codex provider requires the durable billing authority for calibration")?;
         let gateway = Arc::new(
-            forward::CodexGateway::new_with_calibration(config, Some(calibration_store))
-                .context("initialize Codex provider")?,
+            forward::CodexGateway::new_with_calibration_and_fallback(
+                config,
+                Some(calibration_store),
+                s.claudestore_codex_fallback.clone(),
+                metrics.clone(),
+            )
+            .context("initialize Codex provider")?,
         );
         gateway
             .preflight()
@@ -1380,7 +1386,6 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
-    let metrics = Arc::new(forward::Metrics::new());
     let pricing_shadow = Some(forward::PricingShadowRuntime::start(
         s.proxy.pricing_shadow,
         s.pricing_shadow_manifest.clone(),

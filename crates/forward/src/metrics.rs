@@ -289,7 +289,8 @@ pub struct Metrics {
     pub cooling_hint_skips: AtomicU64,
     pub auth_failures: AtomicU64, // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
     /// Last-resort ClaudeStore transport. These counters are intentionally provider-wide and carry
-    /// no model, account, key, request, upstream-error, or customer labels.
+    /// no model, account, key, request, upstream-error, or customer labels. The Prometheus scrape
+    /// target's provider label separates Anthropic Messages from OpenAI Responses observations.
     pub claudestore_fallback_attempts: AtomicU64,
     pub claudestore_fallback_successes: AtomicU64,
     pub claudestore_fallback_failures: AtomicU64,
