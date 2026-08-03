@@ -144,11 +144,18 @@ the Antigravity checks below remain decisive.
 8. Auth Bot exchanges the final code through the same proxy, verifies that Google subject exactly
    matches the legacy proof, and resolves the Antigravity tier/project. Control-plane calls fall
    back only among the three reviewed Cloud Code hosts.
-9. Admission sends exactly one tiny non-streaming `gemini-2.5-flash-lite` generation to the
-   production-pinned sandbox endpoint using the runtime Antigravity wrapper and headers. It requires
-   HTTP 2xx, a wrapped candidate and non-zero authoritative `usageMetadata`. `503`, malformed JSON,
-   missing usage and ambiguous transport return `generation_unavailable`; the paid request is never
-   replayed automatically, no credential is published and seller payout does not complete.
+9. Admission sends one tiny non-streaming `gemini-2.5-flash-lite` generation using the runtime
+   Antigravity wrapper and headers, first to the reviewed sandbox endpoint. It requires
+   HTTP 2xx, a wrapped candidate and non-zero authoritative `usageMetadata`. An access rejection made
+   before the model ran (`403`/`404`) repeats the same probe once on the production endpoint the
+   gateway actually serves from, because a subscription can be admitted on one host and refused on
+   the other and nothing was generated or billed yet. `503`, malformed JSON,
+   missing usage and ambiguous transport return `generation_unavailable` without trying another
+   host; a generation that did run is never
+   replayed automatically, no credential is published and seller payout does not complete. The
+   journal carries the HTTP status, the surface and Google's enum fields (`error.status`,
+   `error.details[].reason`); the free-form `error.message` can name the project or account and is
+   printed only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`.
 10. Only after generation acceptance is the final Antigravity credential sealed and published
    atomically. After waiting for the publication lock, Auth Bot re-checks the exact seller-job
    generation immediately before the roster write; a cancelled, rewound or replaced job fails

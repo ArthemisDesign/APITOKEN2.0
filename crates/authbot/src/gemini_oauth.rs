@@ -2199,47 +2199,111 @@ async fn resolve_antigravity_account(
     })
 }
 
+/// The reviewed acceptance surfaces for the one paid probe generation, in order. Antigravity's own
+/// language server reads the sandbox host, but a subscription can be admitted there and rejected —
+/// or the reverse — independently of the production host the gateway actually serves from. A
+/// pre-generation rejection therefore moves to the next surface; nothing that already produced a
+/// generation is ever replayed.
+const GENERATION_PROBE_SURFACES: [(&str, &str); 2] = [
+    ("sandbox", CODE_ASSIST_SANDBOX_URL),
+    ("production", CODE_ASSIST_PROD_URL),
+];
+
 async fn generation_probe(
     client: &mut RecoveringClient<'_>,
     access_token: &str,
     project_id: &str,
     chat_id: i64,
 ) -> Result<(), Failure> {
-    let session_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
-    let request_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
-    let body = generation_probe_body(project_id, &session_id, &request_id);
-    let encoded =
-        Zeroizing::new(serde_json::to_vec(&body).map_err(|_| Failure::GenerationUnavailable)?);
-    let authorization = Zeroizing::new(format!("Bearer {access_token}"));
-    let user_agent = antigravity_user_agent();
-    let response = client
-        .generation_request(
-            &format!("{CODE_ASSIST_SANDBOX_URL}/v1internal:generateContent"),
-            &[
-                ("authorization", authorization.as_str()),
-                ("content-type", "application/json"),
-                ("user-agent", user_agent.as_str()),
-                (
-                    "x-goog-api-client",
-                    "google-cloud-sdk vscode_cloudshelleditor/0.1",
-                ),
-                ("client-metadata", legacy_client_metadata_header()),
-            ],
-            &encoded,
-        )
-        .await?;
-    validate_generation_probe_response(response.status, &response.body).map_err(|failure| {
-        eprintln!(
-            "[gemini-oauth] chat={} generation acceptance failed: HTTP {}",
-            chat_id, response.status
-        );
-        failure
-    })?;
+    let mut last = Failure::GenerationUnavailable;
+    for (surface, host) in GENERATION_PROBE_SURFACES {
+        let session_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
+        let request_id = fresh_uuid_v4().map_err(|_| Failure::GenerationUnavailable)?;
+        let body = generation_probe_body(project_id, &session_id, &request_id);
+        let encoded =
+            Zeroizing::new(serde_json::to_vec(&body).map_err(|_| Failure::GenerationUnavailable)?);
+        let authorization = Zeroizing::new(format!("Bearer {access_token}"));
+        let user_agent = antigravity_user_agent();
+        let response = client
+            .generation_request(
+                &format!("{host}/v1internal:generateContent"),
+                &[
+                    ("authorization", authorization.as_str()),
+                    ("content-type", "application/json"),
+                    ("user-agent", user_agent.as_str()),
+                    (
+                        "x-goog-api-client",
+                        "google-cloud-sdk vscode_cloudshelleditor/0.1",
+                    ),
+                    ("client-metadata", legacy_client_metadata_header()),
+                ],
+                &encoded,
+            )
+            .await?;
+        match validate_generation_probe_response(response.status, &response.body) {
+            Ok(()) => {
+                eprintln!(
+                    "[gemini-oauth] chat={chat_id} exact generation acceptance passed on {surface}"
+                );
+                return Ok(());
+            }
+            Err(failure) => {
+                log_generation_failure(chat_id, surface, response.status, &response.body);
+                // A 2xx that fails acceptance already consumed a paid generation, and any other
+                // status is not evidence that a different host would answer differently. Only an
+                // access rejection made before the model ran may try the next reviewed surface.
+                if !matches!(response.status, 403 | 404) {
+                    return Err(failure);
+                }
+                last = classify_generation_failure(&response.body).unwrap_or(failure);
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Google's private error bodies can name the project and account, so only the enum-shaped fields
+/// are journalled by default. The free-form message is available behind the same opt-in operator
+/// switch as raw tier evidence, bounded and stripped of control characters.
+fn log_generation_failure(chat_id: i64, surface: &str, status: u16, body: &[u8]) {
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let error = parsed.as_ref().and_then(|value| value.get("error"));
+    let google_status = error
+        .and_then(|error| error.get("status"))
+        .and_then(Value::as_str);
+    let reason = error
+        .and_then(|error| error.get("details"))
+        .and_then(Value::as_array)
+        .and_then(|details| {
+            details
+                .iter()
+                .find_map(|detail| detail.get("reason").and_then(Value::as_str))
+        });
     eprintln!(
-        "[gemini-oauth] chat={} exact generation acceptance passed",
-        chat_id
+        "[gemini-oauth] chat={chat_id} generation acceptance failed on {surface}: HTTP {status} google_status={} reason={}",
+        bounded_label(google_status),
+        bounded_label(reason)
     );
-    Ok(())
+    if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
+        let message = error
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str);
+        eprintln!(
+            "[gemini-oauth] chat={chat_id} generation acceptance detail: {}",
+            bounded_label(message)
+        );
+    }
+}
+
+/// A disabled Cloud Code private API is an operator-actionable state, not an exhausted or missing
+/// subscription; keep telling the seller the truth instead of "try again later".
+fn classify_generation_failure(body: &[u8]) -> Option<Failure> {
+    let detail = String::from_utf8_lossy(body);
+    matches!(
+        classify_google_http_failure(403, &detail),
+        Failure::CodeAssistApiDisabled
+    )
+    .then_some(Failure::CodeAssistApiDisabled)
 }
 
 fn generation_probe_body(project_id: &str, session_id: &str, request_id: &str) -> Value {
@@ -3583,6 +3647,39 @@ mod tests {
             TRANSPORT_RECOVERY_DELAYS.iter().sum::<Duration>(),
             Duration::from_secs(37)
         );
+    }
+
+    #[test]
+    fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionable() {
+        assert_eq!(
+            GENERATION_PROBE_SURFACES.map(|(_, host)| host),
+            [CODE_ASSIST_SANDBOX_URL, CODE_ASSIST_PROD_URL],
+            "the reviewed sandbox surface stays first; production is the fallback the engine serves"
+        );
+        let disabled = json!({
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "Cloud Code Private API has not been used in project 123 before or it is disabled. Enable cloudcode-pa.googleapis.com then retry.",
+            }
+        });
+        assert_eq!(
+            classify_generation_failure(&serde_json::to_vec(&disabled).unwrap()),
+            Some(Failure::CodeAssistApiDisabled)
+        );
+        let plain = json!({"error": {"code": 403, "status": "PERMISSION_DENIED"}});
+        assert_eq!(
+            classify_generation_failure(&serde_json::to_vec(&plain).unwrap()),
+            None,
+            "a generic access rejection must not claim the private API is disabled"
+        );
+        assert_eq!(bounded_label(None), "<none>");
+        assert_eq!(bounded_label(Some("")), "<empty>");
+        assert_eq!(
+            bounded_label(Some("PERMISSION\u{7}_DENIED")),
+            "PERMISSION_DENIED"
+        );
+        assert_eq!(bounded_label(Some(&"a".repeat(200))).len(), 96);
     }
 
     #[test]

@@ -132,12 +132,18 @@ seller lock освобождается, response становится `cancelled
    несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
    только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
    старых callback и фактической проверки плана после OAuth.
-   После финального tier check выполняется ровно один non-streaming
-   `gemini-2.5-flash-lite:generateContent` через production-pinned sandbox host и runtime headers;
-   нужны 2xx, wrapped candidate и ненулевая authoritative `usageMetadata`. 503, malformed response,
-   missing usage или ambiguous transport не публикуют credential и не завершают выплату; paid
-   generation автоматически не повторяется. `countTokens`, quota и `loadCodeAssist` не являются
-   acceptance.
+   После финального tier check выполняется non-streaming
+   `gemini-2.5-flash-lite:generateContent` с runtime headers; нужны 2xx, wrapped candidate и
+   ненулевая authoritative `usageMetadata`. Surface — сначала reviewed sandbox host, и ТОЛЬКО при
+   pre-generation отказе доступа (403/404) та же проба повторяется на production host, с которого
+   движок реально обслуживает трафик: аккаунт может быть допущен на одном хосте и отвергнут на
+   другом, а 403 означает, что модель не запускалась и платная генерация не потрачена. 503,
+   malformed response, missing usage или ambiguous transport не публикуют credential, не завершают
+   выплату и на второй surface НЕ уходят; состоявшаяся paid generation автоматически не
+   повторяется. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
+   только HTTP-статус, surface и enum-поля Google (`error.status`, `error.details[].reason`);
+   free-form `error.message` — лишь под `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, потому что он может
+   содержать project и account.
 5. Google subject — quota identity: два РАЗНЫХ subject не могут делить профиль, а один subject
    всегда занимает ровно один профиль. Legacy preflight распознаёт уже опубликованный Antigravity
    subject ДО проверки изменчивого tier display и второго consent, поэтому повтор уже подключённого
