@@ -18,6 +18,7 @@ context'ов. Правила размещения и обновления — в
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
 - [CLAUDESTORE_FALLBACK.md](engine/CLAUDESTORE_FALLBACK.md) — dormant аварийные Claude/GPT transport через ClaudeStore и их compliance/live-гейты.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
+- [GLM_PROVIDER.md](engine/GLM_PROVIDER.md) — GLM (Zhipu / Z.ai) Coding Plan subscription provider: capability manifest, backend-only, не публикуется.
 - [KIMI_PROVIDER.md](engine/KIMI_PROVIDER.md) — KIMI (Moonshot) Kimi Code subscription provider: capability manifest, backend-only, не публикуется.
 - [PROVIDER_WIRING_CHECKLIST.md](engine/PROVIDER_WIRING_CHECKLIST.md) — механическая карта подключения провайдера: точные файлы, символы, порядок и ловушки.
 - [PROVIDER_ONBOARDING.md](engine/PROVIDER_ONBOARDING.md) — полный playbook добавления нового subscription-провайдера до production GA.
