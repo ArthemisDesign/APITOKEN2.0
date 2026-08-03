@@ -333,7 +333,11 @@ settlement и effective-tier evidence по-прежнему принадлежа
    ограничен 15-секундным idle и 5-минутным абсолютным body-read deadline и не удерживает
    native/SSE response body.
    Single-model path освобождает permit после outbound upload; advanced fallback удерживает его до
-   terminal response headers, пока parsed template ещё нужен для следующей попытки.
+   terminal response headers, пока parsed template ещё нужен для следующей попытки. Data-plane
+   не имеет router-owned response-header deadline: non-stream Chat/Responses/Messages плоскость
+   может вернуть заголовки только после законного завершения длинной генерации. Lifetime после
+   connect определяют клиентский disconnect и плоскость; двухсекундный header deadline существует
+   только у безопасного read-only `/balance` failover.
 4. **SSE не буферизуется** ни в router, ни в Caddy перед ним (требование Claude Code
    gateway protocol). Disconnect клиента транзитивно рвёт соединение router→плоскость,
    чтобы существующий TeeMeter drain дочитывал authoritative usage и settle корректно.
@@ -374,9 +378,11 @@ lane-shaped 503 без очереди и billable call; body без прогре
 5 минут получает 408 и освобождает units. У single-model path parsed JSON удаляется до сети, а permit передаётся outbound
 body и освобождается после upload/отмены. Advanced routing сохраняет один parsed template для
 следующих attempts, поэтому честно удерживает его permit до terminal response headers; открытый
-SSE response permit не держит. Отдельный 30-секундный deadline ограничивает
-только ожидание plane response headers; после заголовков response body не имеет total timeout.
-Истечение deadline неоднозначно и не разрешает fallback/retry billable request.
+SSE response permit не держит. Billable data-plane attempt не имеет отдельного response-header
+или body timeout: это сохраняет одинаковую семантику длинных non-stream и streaming генераций и
+не создаёт неоднозначного локального обрыва после начала исполнения. Disconnect клиента отменяет
+ожидание. Bounded header timeout остаётся только у read-only `/balance`, где failover не может
+создать второе исполнение или списание.
 
 ## Миграционная политика (мягкий переезд)
 

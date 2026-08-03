@@ -431,15 +431,16 @@ timeouts. Personalized pricing and policy remain uncached and fail closed.
 ## RouterResponseHeaderTimeout
 
 Use the fixed `namespace` label on `claude_router_response_header_timeout_total` to identify the
-provider plane, then correlate provider and Caddy request latency. This timeout is ambiguous: the
-provider may have accepted and billed the request before losing its response. Router must return the
-lane-shaped 502 and must not continue to another model. Never convert this alert into a retry signal;
-only exact `not_started` or TCP `ConnectionRefused` can continue a billable universal request.
+read-only `/balance` authority, then inspect that plane's loopback health and shared account-state
+latency. Billable data-plane requests no longer contribute to this metric and have no router-owned
+response-header deadline: long non-stream generations wait for the provider or client disconnect.
 
-The read-only `/balance` path is the exception because it cannot execute or reserve money:
-`claude_router_balance_failover_total` records transport/5xx continuation across fixed authorities.
-A persistent increase means one runtime cannot serve shared account state and should be investigated,
-even when clients still receive a successful balance response from another plane.
+`/balance` cannot execute or reserve money, so its two-second deadline may safely continue to the
+next fixed authority. `claude_router_balance_failover_total` records that continuation alongside
+transport/5xx failover. A persistent increase means one runtime cannot serve shared account state
+within the bounded read path and should be investigated even when clients still receive a successful
+balance response from another plane. Never generalize this safe read-only retry to billable traffic;
+there only exact `not_started` or TCP `ConnectionRefused` may continue a universal request.
 
 ## AnthropicCalibrationPersistenceFailed
 

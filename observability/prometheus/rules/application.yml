@@ -285,8 +285,8 @@ groups:
           severity: warning
           component: claude-router
         annotations:
-          summary: 'A provider plane exceeded the router response-header deadline'
-          description: 'At least one provider attempt had an ambiguous response-header timeout; the router correctly did not retry it.'
+          summary: 'A read-only balance authority exceeded its response-header deadline'
+          description: 'At least one bounded /balance authority attempt timed out before headers; the router safely continued to the next read-only authority.'
           runbook: 'docs/ops/MONITORING.md#routerresponseheadertimeout'
 
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on

@@ -331,7 +331,7 @@ backlog. Production-флаг включается только последни�
   URL/query, auth headers, credentials и request/response bodies запрещены.
 - Счётчики фазы 6.4: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
-  fixed-cardinality admission/auth/catalog/pricing/policy/header-timeout/balance ряды, а фаза 6.3
+  fixed-cardinality admission/auth/catalog/pricing/policy/balance-header-timeout ряды, а фаза 6.3
   уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
   `ExecutionGroupDoubleWinner` срабатывает на любом росте за 5 минут; runbook —
   `docs/ops/MONITORING.md#executiongroupdoublewinner`. `RouterMetricsDown` закрывает потерю

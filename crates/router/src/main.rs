@@ -58,8 +58,8 @@ pub struct AppState {
 
 /// HTTP-клиент плоскостей. Только loopback HTTP: TLS не нужен. Redirect не
 /// следуем — нативный ответ плоскости отдаётся клиенту как есть. Таймаут
-/// на клиенте только connect: отдельный deadline до response headers применяется
-/// в proxy.rs, а длительные SSE-стримы не имеют общего timeout.
+/// на клиенте только connect: data-plane ожидание response headers и body
+/// ограничивают вызывающий клиент и плоскость, а не router.
 fn build_client() -> anyhow::Result<Client> {
     Ok(Client::builder()
         .connect_timeout(Duration::from_secs(2))

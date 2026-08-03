@@ -71,8 +71,10 @@
   loopback-only `/startup`, которым blue-green проверяет реальный provider data path.
 - `proxy.rs` — байт-в-байт proxy native lanes, auth passthrough и классификация
   одной попытки до публичных headers: exact `not_started` / source-chain
-  `ConnectionRefused`; 30-секундный deadline ограничивает только ожидание response headers и
-  никогда не включает retry, response body остаётся без total timeout. Внутренний заголовок снимается до сборки ответа. Перед
+  `ConnectionRefused`. Data-plane не имеет router-owned deadline ни до response headers, ни после
+  них: non-stream плоскость законно отвечает только после завершения генерации, а lifetime
+  ограничивают клиентский disconnect и сама плоскость. Отдельный двухсекундный header deadline
+  остаётся только у read-only `/balance` failover. Внутренний заголовок снимается до сборки ответа. Перед
   любой плоскостью также снимается публичный router capability-header
   `x-apitoken-service-tier`.
 - `routing.rs` — общий model dispatch и serial fallback для всех universal
@@ -109,7 +111,7 @@
   только из доступных после pricing eligibility live members: `apitoken.routing.members`,
   `variable_model_pricing:true`, минимальные гарантированные limits и intersection capabilities.
   Manifest context не подменяет runtime metadata и фиксированная цена preset не публикуется.
-- `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/header-timeout/
+- `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/balance-header-timeout/
   balance и compile-bounded `claude_router_fallback_total` (ровно 18 series). Model, credential,
   group и request identity в labels запрещены.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.
@@ -168,7 +170,8 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 покрывают: concurrent early auth до незавершённого большого body, terminal 401 и mixed-version,
 dynamic weighted 64 MiB overload без очереди, slow-body deadline, release permit при parse error,
 outbound EOF и открытом SSE,
-pre-header deadline без retry, passthrough тела/заголовков, небуферизованный SSE, транзитивный
+отсутствие data-plane pre-header deadline и bounded `/balance` deadline без retry, passthrough
+тела/заголовков, небуферизованный SSE, транзитивный
 disconnect, строгую нормализацию/деградацию/stale capability-каталога, снятие конфликтующих aliases,
 uncached key-scoped pricing для двух
 ключей при одном shared cache, terminal pricing 401/503, canonical wire validation, alias-

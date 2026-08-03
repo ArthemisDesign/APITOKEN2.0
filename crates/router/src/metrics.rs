@@ -344,7 +344,7 @@ impl RouterMetrics {
             &mut body,
             "claude_router_response_header_timeout_total",
             "counter",
-            "Provider attempts that exceeded the response-header deadline.",
+            "Bounded read-only balance attempts that exceeded the response-header deadline.",
         );
         for (lane, namespace) in NAMESPACES {
             let lane_index = namespace_index(lane);

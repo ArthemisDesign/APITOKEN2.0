@@ -26,7 +26,6 @@ use reqwest::Client;
 use crate::error::{self, Lane};
 use crate::metrics::RouterMetrics;
 
-const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const BALANCE_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Hop-by-hop заголовки (RFC 9110 §7.6.1) плюс `host` (reqwest выставляет по
@@ -114,9 +113,10 @@ pub fn strip_hop_by_hop(headers: &HeaderMap) -> HeaderMap {
 }
 
 /// Проксирование одного запроса в `origin` (stable balancer плоскости).
-/// Никакого таймаута на response body: SSE-стримы живут минуты. Connect ограничен клиентом,
-/// ожидание response headers — отдельным deadline; после заголовков жизнью body управляют
-/// клиентский disconnect и плоскость.
+/// Никакого router-owned таймаута ни на response headers, ни на response body: non-stream
+/// generation legitimately returns headers only after the provider finishes, while SSE streams
+/// can live for minutes. Connect is bounded by the shared client; after that the caller's
+/// disconnect and the provider plane own the lifetime.
 pub async fn proxy_attempt(
     client: &Client,
     origin: &str,
@@ -126,27 +126,27 @@ pub async fn proxy_attempt(
     execution: Option<&ExecutionAttemptHeaders>,
     metrics: &RouterMetrics,
 ) -> ProxyAttempt {
-    proxy_attempt_with_header_timeout(
+    proxy_attempt_with_optional_header_timeout(
         client,
         origin,
         target_lane,
         error_lane,
         req,
         execution,
-        RESPONSE_HEADER_TIMEOUT,
+        None,
         metrics,
     )
     .await
 }
 
-async fn proxy_attempt_with_header_timeout(
+async fn proxy_attempt_with_optional_header_timeout(
     client: &Client,
     origin: &str,
     target_lane: Lane,
     error_lane: Lane,
     req: Request<Body>,
     execution: Option<&ExecutionAttemptHeaders>,
-    response_header_timeout: Duration,
+    response_header_timeout: Option<Duration>,
     metrics: &RouterMetrics,
 ) -> ProxyAttempt {
     let path_query = req
@@ -181,30 +181,29 @@ async fn proxy_attempt_with_header_timeout(
     }
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
 
-    let upstream = match tokio::time::timeout(
-        response_header_timeout,
-        client
-            .request(method, &url)
-            .headers(headers)
-            .body(body)
-            .send(),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            metrics.response_header_timeout(target_lane);
-            eprintln!(
-                "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
-            );
-            return ProxyAttempt {
-                response: error::upstream_unavailable(
-                    error_lane,
-                    "The provider plane did not return response headers in time.",
-                ),
-                retry_reason: None,
-            };
-        }
+    let send = client
+        .request(method, &url)
+        .headers(headers)
+        .body(body)
+        .send();
+    let upstream = match response_header_timeout {
+        Some(limit) => match tokio::time::timeout(limit, send).await {
+            Ok(result) => result,
+            Err(_) => {
+                metrics.response_header_timeout(target_lane);
+                eprintln!(
+                    "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
+                );
+                return ProxyAttempt {
+                    response: error::upstream_unavailable(
+                        error_lane,
+                        "The provider plane did not return response headers in time.",
+                    ),
+                    retry_reason: None,
+                };
+            }
+        },
+        None => send.await,
     };
 
     match upstream {
@@ -311,14 +310,14 @@ pub async fn proxy_balance(
             .body(Body::empty())
             .expect("validated balance request parts");
         *request.headers_mut() = parts.headers.clone();
-        let attempt = proxy_attempt_with_header_timeout(
+        let attempt = proxy_attempt_with_optional_header_timeout(
             client,
             origin,
             lane,
             Lane::Anthropic,
             request,
             None,
-            BALANCE_HEADER_TIMEOUT,
+            Some(BALANCE_HEADER_TIMEOUT),
             metrics,
         )
         .await;
@@ -385,7 +384,7 @@ pub async fn ready() -> (StatusCode, axum::Json<serde_json::Value>) {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn strip_removes_hop_by_hop_host_and_connection_tokens() {
@@ -486,7 +485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_header_deadline_is_terminal_and_never_enables_retry() {
+    async fn bounded_balance_header_deadline_is_terminal_and_never_enables_retry() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -500,14 +499,14 @@ mod tests {
             .uri("/v1/messages")
             .body(Body::from("{}"))
             .unwrap();
-        let result = proxy_attempt_with_header_timeout(
+        let result = proxy_attempt_with_optional_header_timeout(
             &Client::new(),
             &format!("http://{address}"),
             Lane::Anthropic,
             Lane::Anthropic,
             request,
             None,
-            Duration::from_millis(50),
+            Some(Duration::from_millis(50)),
             &RouterMetrics::new(),
         )
         .await;
@@ -515,6 +514,51 @@ mod tests {
 
         assert_eq!(result.response.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(result.retry_reason, None);
+    }
+
+    #[tokio::test]
+    async fn every_data_plane_waits_for_legitimately_delayed_non_stream_headers() {
+        for (lane, path) in [
+            (Lane::Anthropic, "/v1/messages"),
+            (Lane::OpenAi, "/v1/chat/completions"),
+            (Lane::Gemini, "/v1beta/models/gemini-test:generateContent"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await
+                    .unwrap();
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .body(Body::from("{}"))
+                .unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                proxy_attempt(
+                    &Client::new(),
+                    &format!("http://{address}"),
+                    lane,
+                    lane,
+                    request,
+                    None,
+                    &RouterMetrics::new(),
+                ),
+            )
+            .await
+            .expect("data-plane proxy must outlive the old synthetic header deadline");
+            server.await.unwrap();
+
+            assert_eq!(result.response.status(), StatusCode::OK, "{lane:?}");
+            assert_eq!(result.retry_reason, None, "{lane:?}");
+        }
     }
 
     #[test]
