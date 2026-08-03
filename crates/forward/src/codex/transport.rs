@@ -117,6 +117,9 @@ pub struct CodexRateLimits {
 pub(crate) struct CodexModelCatalog {
     pub models: HashSet<String>,
     pub fast_models: HashSet<String>,
+    /// Provider-authored presentation name. It is intentionally optional: startup fallback and
+    /// older provider payloads must not synthesize one from the model id.
+    pub display_names: HashMap<String, String>,
     /// Provider-published input ceiling for one model. This is deliberately distinct from the
     /// locally reviewed output ceiling: `/models` is the authority for live context rollout,
     /// while the configured model contract remains the authority for output/admission.
@@ -705,6 +708,18 @@ fn parse_model_catalog(value: &Value) -> Result<CodexModelCatalog, ProcessError>
             continue;
         };
         catalog.models.insert(id.to_string());
+        if let Some(display_name) = model
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| {
+                !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+            })
+        {
+            catalog
+                .display_names
+                .insert(id.to_string(), display_name.to_string());
+        }
         if let Some(input_token_limit) = model
             .get("context_window")
             .and_then(Value::as_u64)
@@ -1368,6 +1383,7 @@ mod tests {
             "models": [
                 {
                     "slug": "gpt-current",
+                    "display_name": "GPT Current",
                     "context_window": 272000,
                     "service_tiers": [{"id": "priority", "name": "Fast"}],
                     "additional_speed_tiers": []
@@ -1388,6 +1404,7 @@ mod tests {
         assert!(!catalog.fast_models.contains("gpt-standard"));
         assert!(!catalog.fast_models.contains("gpt-string"));
         assert_eq!(catalog.input_token_limits["gpt-current"], 272_000);
+        assert_eq!(catalog.display_names["gpt-current"], "GPT Current");
         assert!(!catalog.input_token_limits.contains_key("gpt-standard"));
     }
 
@@ -1404,6 +1421,21 @@ mod tests {
         .unwrap();
         assert_eq!(catalog.input_token_limits.len(), 1);
         assert_eq!(catalog.input_token_limits["valid"], 1);
+    }
+
+    #[test]
+    fn model_catalog_omits_unsafe_display_names() {
+        let catalog = parse_model_catalog(&json!({
+            "models": [
+                {"slug": "empty", "display_name": "   "},
+                {"slug": "control", "display_name": "GPT\nInjected"},
+                {"slug": "too-long", "display_name": "x".repeat(257)},
+                {"slug": "valid", "display_name": "  GPT Valid  "}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(catalog.display_names.len(), 1);
+        assert_eq!(catalog.display_names["valid"], "GPT Valid");
     }
 
     #[test]

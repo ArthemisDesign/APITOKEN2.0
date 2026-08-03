@@ -229,9 +229,11 @@ Control API движка использует только на чтение. С
   Публичные provider vhost'ы `/internal/*` не обслуживают.
 - **Контракт catalog runtime metadata (provider planes → router).** Anthropic производит native
   `max_input_tokens`/`max_tokens`/`capabilities`; owned OpenAI и Gemini model resources производят
-  expand-only `apitoken.limits`/`apitoken.capabilities`. Codex context — last-good authenticated
-  provider evidence, агрегированное консервативно между serving profiles; output/efforts/Fast и
-  Gemini limits/efforts принадлежат reviewed runtime model contract. Потребитель —
+  expand-only `apitoken.limits`/`apitoken.capabilities`, включая modalities, tool calling,
+  structured outputs и streaming; OpenAI также может публиковать provider-authored `name`. Codex
+  context/name — last-good authenticated provider evidence, агрегированное консервативно между
+  serving profiles; output/efforts/Fast/adapter capabilities и Gemini model-specific metadata
+  принадлежат reviewed runtime contract. Потребитель —
   `crates/router`: после отдельного producer-first GREEN SHA он строго валидирует и нормализует
   metadata в unified `apitoken`, сохраняет top-level capability mirrors, а malformed metadata
   переводит плоскость на last-good/degraded. Он также снимает глобально конфликтующие aliases,

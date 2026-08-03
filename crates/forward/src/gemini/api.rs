@@ -529,7 +529,12 @@ fn model_value(model: &GeminiModel) -> Value {
             },
             "capabilities": {
                 "reasoning_efforts": model.reasoning_efforts(),
-                "service_tiers": ["standard"]
+                "service_tiers": ["standard"],
+                "input_modalities": model.input_modalities(),
+                "output_modalities": model.output_modalities(),
+                "tool_calling": model.tool_calling(),
+                "structured_outputs": model.structured_outputs(),
+                "streaming": true
             }
         }
     })
@@ -4281,7 +4286,7 @@ mod tests {
 
     #[test]
     fn model_value_is_native_shaped() {
-        let model = GeminiModel {
+        let mut model = GeminiModel {
             id: "gemini-2.5-flash".to_string(),
             display_name: "Gemini 2.5 Flash".to_string(),
             input_token_limit: 1_048_576,
@@ -4318,8 +4323,36 @@ mod tests {
             value["apitoken"]["capabilities"],
             json!({
                 "reasoning_efforts": ["minimal", "low", "medium", "high"],
-                "service_tiers": ["standard"]
+                "service_tiers": ["standard"],
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "tool_calling": true,
+                "structured_outputs": true,
+                "streaming": true
             })
+        );
+
+        model.id = "gemini-3.1-flash-image".to_string();
+        model.display_name = "Gemini 3.1 Flash Image".to_string();
+        let image = model_value(&model);
+        assert_eq!(
+            image["apitoken"]["capabilities"],
+            json!({
+                "reasoning_efforts": [],
+                "service_tiers": ["standard"],
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text", "image"],
+                "tool_calling": false,
+                "structured_outputs": false,
+                "streaming": true
+            })
+        );
+
+        model.id = "gemini-3-flash-preview".to_string();
+        let audio = model_value(&model);
+        assert_eq!(
+            audio["apitoken"]["capabilities"]["input_modalities"],
+            json!(["text", "image", "audio"])
         );
     }
 

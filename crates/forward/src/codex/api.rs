@@ -402,6 +402,9 @@ fn public_model_objects(
                 model,
                 available
                     .and_then(|catalog| catalog.input_token_limits.get(&model.upstream).copied()),
+                available
+                    .and_then(|catalog| catalog.display_names.get(&model.upstream))
+                    .map(String::as_str),
             )
         })
         .collect()
@@ -446,6 +449,10 @@ pub async fn model(
         model_object(
             model,
             available.input_token_limits.get(&model.upstream).copied(),
+            available
+                .display_names
+                .get(&model.upstream)
+                .map(String::as_str),
         ),
         &new_id("req"),
     )
@@ -686,7 +693,11 @@ pub(super) async fn available_upstream_models(
     gateway.fetch_live_models().await
 }
 
-fn model_object(model: &CodexModel, input_token_limit: Option<u64>) -> Value {
+fn model_object(
+    model: &CodexModel,
+    input_token_limit: Option<u64>,
+    display_name: Option<&str>,
+) -> Value {
     let mut limits = Map::from_iter([("output".to_string(), Value::from(model.max_output_tokens))]);
     if let Some(input) = input_token_limit {
         if let Some(context) = input.checked_add(model.max_output_tokens) {
@@ -698,7 +709,7 @@ fn model_object(model: &CodexModel, input_token_limit: Option<u64>) -> Value {
     if model.supports_fast() {
         service_tiers.push("priority");
     }
-    json!({
+    let mut value = json!({
         "id": model.id,
         "object": "model",
         "created": model.created,
@@ -707,10 +718,19 @@ fn model_object(model: &CodexModel, input_token_limit: Option<u64>) -> Value {
             "limits": limits,
             "capabilities": {
                 "reasoning_efforts": model.reasoning_efforts,
-                "service_tiers": service_tiers
+                "service_tiers": service_tiers,
+                "input_modalities": model.input_modalities,
+                "output_modalities": model.output_modalities,
+                "tool_calling": model.tool_calling,
+                "structured_outputs": model.structured_outputs,
+                "streaming": true
             }
         }
-    })
+    });
+    if let Some(display_name) = display_name {
+        value["name"] = Value::String(display_name.to_string());
+    }
+    value
 }
 
 /// Build the cache-first routing context for one turn, mirroring the Claude fleet's affinity flow.
@@ -3535,6 +3555,19 @@ mod tests {
             data[0]["apitoken"]["capabilities"]["reasoning_efforts"],
             json!(["none", "low", "medium", "high", "xhigh", "max"])
         );
+        assert_eq!(
+            data[0]["apitoken"]["capabilities"],
+            json!({
+                "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+                "service_tiers": ["standard", "priority"],
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "tool_calling": true,
+                "structured_outputs": true,
+                "streaming": true
+            })
+        );
+        assert!(data[0].get("name").is_none());
     }
 
     #[test]
@@ -3549,6 +3582,10 @@ mod tests {
         let available = crate::codex::CodexModelCatalog {
             models: HashSet::from(["gpt-5.6-sol".to_string()]),
             input_token_limits: HashMap::from([("gpt-5.6-sol".to_string(), 272_000)]),
+            display_names: HashMap::from([(
+                "gpt-5.6-sol".to_string(),
+                "GPT 5.6 Thinking".to_string(),
+            )]),
             ..Default::default()
         };
         let data = public_model_objects(&gateway, Some(&available));
@@ -3558,6 +3595,7 @@ mod tests {
             data[0]["apitoken"]["limits"],
             json!({"context": 400000, "input": 272000, "output": 128000})
         );
+        assert_eq!(data[0]["name"], "GPT 5.6 Thinking");
     }
 
     fn model() -> CodexModel {
@@ -3571,6 +3609,10 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            input_modalities: vec!["text".to_string(), "image".to_string()],
+            output_modalities: vec!["text".to_string()],
+            tool_calling: true,
+            structured_outputs: true,
             fast_multiplier_basis_points: Some(25_000),
             prices: CodexPrices {
                 input: 5_000,

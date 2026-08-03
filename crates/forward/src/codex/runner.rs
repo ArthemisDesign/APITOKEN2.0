@@ -727,6 +727,10 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            input_modalities: vec!["text".to_string(), "image".to_string()],
+            output_modalities: vec!["text".to_string()],
+            tool_calling: true,
+            structured_outputs: true,
             fast_multiplier_basis_points: Some(25_000),
             prices: crate::codex::CodexPrices {
                 input: 5_000,

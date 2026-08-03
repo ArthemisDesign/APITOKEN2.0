@@ -220,6 +220,10 @@ mod tests {
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
+            input_modalities: vec!["text".to_string(), "image".to_string()],
+            output_modalities: vec!["text".to_string()],
+            tool_calling: true,
+            structured_outputs: true,
             fast_multiplier_basis_points: spec.subscription_fast_multiplier_basis_points,
             prices: spec.prices,
         }

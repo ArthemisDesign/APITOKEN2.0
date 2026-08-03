@@ -442,23 +442,35 @@ native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini m
 {"apitoken":{
   "limits":{"context":400000,"input":272000,"output":128000},
   "capabilities":{"reasoning_efforts":["low","medium","high"],
-                  "service_tiers":["standard","priority"]}
+                  "service_tiers":["standard","priority"],
+                  "input_modalities":["text","image"],
+                  "output_modalities":["text"],
+                  "tool_calling":true,
+                  "structured_outputs":true,
+                  "streaming":true}
 }}
 ```
 
 Поля внутри `limits` независимы: неизвестные input/context опускаются, но известный output
 сохраняется. Codex input берётся из authenticated last-good `/codex/models.context_window`, а при
 несовпадении профилей публикуется минимальная общая гарантия; отсутствие metadata хотя бы у одного
-serving profile снимает гарантию. Gemini публикует configured native limits и точную model-specific
-effort matrix. Router-consumer принимает token limits только как положительные целые до `u32::MAX`,
-а capability arrays — только без повторов из закрытых множеств `none|minimal|low|medium|high|xhigh|max`
-и `standard|priority`. Anthropic `max_input_tokens` становится `limits.context` и `limits.input`,
-`max_tokens` — `limits.output`, а `capabilities.effort.*.supported` — ordered
-`reasoning_efforts`. Отсутствующая legacy metadata опускается без догадок; malformed
+serving profile снимает гарантию. Опциональный OpenAI `name` берётся только из provider-authored
+`display_name` и снимается при конфликте профилей. Gemini публикует configured native limits и
+точные model-specific capabilities: image-generation route принимает text/image, выдаёт
+text/image и явно имеет `tool_calling:false`/`structured_outputs:false`; text routes выдают text и
+поддерживают оба controls; только Gemini 3 Flash Preview дополнительно рекламирует exact PCM WAV
+audio input. Router-consumer принимает token limits только как положительные целые
+до `u32::MAX`, capability booleans — только как JSON bool, modalities — только без повторов из
+`text|image|audio`, а остальные arrays — только без повторов из закрытых множеств
+`none|minimal|low|medium|high|xhigh|max` и `standard|priority`. Anthropic `max_input_tokens`
+становится `limits.context` и `limits.input`, `max_tokens` — `limits.output`, а native
+capabilities нормализуются в те же modalities/control booleans и ordered `reasoning_efforts`.
+Отсутствующая legacy metadata опускается без догадок; malformed
 authoritative metadata делает fetch плоскости failed, поэтому router использует её last-good и
 ставит `x-apitoken-catalog-degraded`, либо опускает плоскость, если last-good ещё нет. Pricing
 overlay добавляется в тот же `apitoken` object и не затирает limits/capabilities. Лимиты нельзя
-выводить из model id, pricing threshold или клиентских таблиц.
+выводить из model id, pricing threshold или клиентских таблиц; capabilities нельзя угадывать по
+namespace/`owned_by`.
 
 Персональная ценовая проекция использует отдельный producer-first loopback-контракт
 `POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда

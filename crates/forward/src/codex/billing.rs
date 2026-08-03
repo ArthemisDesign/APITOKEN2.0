@@ -1147,6 +1147,10 @@ mod tests {
             owned_by: "test".to_string(),
             max_output_tokens: 128_000,
             reasoning_efforts: vec!["medium".to_string()],
+            input_modalities: vec!["text".to_string(), "image".to_string()],
+            output_modalities: vec!["text".to_string()],
+            tool_calling: true,
+            structured_outputs: true,
             fast_multiplier_basis_points: Some(25_000),
             prices: CodexPrices {
                 input: 5_000,

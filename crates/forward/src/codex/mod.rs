@@ -1670,6 +1670,38 @@ mod admission_tests {
     }
 
     #[test]
+    fn aggregate_catalog_keeps_only_non_conflicting_provider_display_names() {
+        let catalog = |name: Option<&str>| CodexModelCatalog {
+            models: HashSet::from(["gpt-shared".to_string()]),
+            display_names: name
+                .map(|name| {
+                    std::collections::HashMap::from([(
+                        "gpt-shared".to_string(),
+                        name.to_string(),
+                    )])
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+
+        let matching = aggregate_model_catalogs(
+            [catalog(Some("GPT Shared")), catalog(Some("GPT Shared"))],
+            true,
+        );
+        assert_eq!(matching.display_names["gpt-shared"], "GPT Shared");
+
+        let conflicting = aggregate_model_catalogs(
+            [
+                catalog(Some("GPT Shared")),
+                catalog(Some("Different rollout name")),
+                catalog(Some("GPT Shared")),
+            ],
+            true,
+        );
+        assert!(!conflicting.display_names.contains_key("gpt-shared"));
+    }
+
+    #[test]
     fn operator_email_hint_never_exposes_the_full_identity() {
         let masked = mask_codex_email("owner.account@example.com");
         assert_eq!(masked, "owne…");
@@ -1882,6 +1914,10 @@ mod calibration_integration_tests {
                     .iter()
                     .map(|effort| (*effort).to_string())
                     .collect(),
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+                output_modalities: vec!["text".to_string()],
+                tool_calling: true,
+                structured_outputs: true,
                 fast_multiplier_basis_points: model.subscription_fast_multiplier_basis_points,
                 prices: model.prices,
             })
@@ -2722,8 +2758,24 @@ fn aggregate_model_catalogs(
 ) -> CodexModelCatalog {
     let mut aggregate = CodexModelCatalog::default();
     let mut missing_limit = HashSet::new();
+    let mut conflicting_display_name = HashSet::new();
     for catalog in catalogs {
         aggregate.fast_models.extend(catalog.fast_models);
+        for (model, display_name) in catalog.display_names {
+            if conflicting_display_name.contains(&model) {
+                continue;
+            }
+            match aggregate.display_names.get(&model) {
+                Some(current) if current != &display_name => {
+                    aggregate.display_names.remove(&model);
+                    conflicting_display_name.insert(model);
+                }
+                Some(_) => {}
+                None => {
+                    aggregate.display_names.insert(model, display_name);
+                }
+            }
+        }
         for model in catalog.models {
             aggregate.models.insert(model.clone());
             if missing_limit.contains(&model) {

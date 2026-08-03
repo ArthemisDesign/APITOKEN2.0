@@ -19,6 +19,13 @@ pub struct CodexModel {
     pub owned_by: String,
     pub max_output_tokens: u64,
     pub reasoning_efforts: Vec<String>,
+    /// Input/output modalities and controls that the public OpenAI-compatible adapters can
+    /// actually execute for this model. These are part of the reviewed serving contract rather
+    /// than guesses made by discovery clients from the model id.
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    pub tool_calling: bool,
+    pub structured_outputs: bool,
     /// ChatGPT-subscription credit multiplier for Fast mode. `None` disables the tier.
     pub fast_multiplier_basis_points: Option<i64>,
     pub prices: CodexPrices,

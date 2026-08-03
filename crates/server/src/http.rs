@@ -5106,6 +5106,10 @@ mod tests {
                 .iter()
                 .map(|value| (*value).into())
                 .collect(),
+            input_modalities: vec!["text".into(), "image".into()],
+            output_modalities: vec!["text".into()],
+            tool_calling: true,
+            structured_outputs: true,
             fast_multiplier_basis_points: spec.subscription_fast_multiplier_basis_points,
             prices: spec.prices,
         };

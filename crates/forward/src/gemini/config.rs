@@ -63,6 +63,35 @@ impl GeminiModel {
         }
     }
 
+    /// Capabilities of the public universal Chat/Responses adapters for this exact model. The
+    /// subscription image route is deliberately narrower: it accepts reference images and emits
+    /// text+image, but rejects tools and structured-output controls before admission. Only the
+    /// reviewed Flash Preview route accepts audio, and only in the exact PCM WAV form enforced by
+    /// native admission.
+    pub fn input_modalities(&self) -> &'static [&'static str] {
+        if self.id == "gemini-3-flash-preview" {
+            &["text", "image", "audio"]
+        } else {
+            &["text", "image"]
+        }
+    }
+
+    pub fn output_modalities(&self) -> &'static [&'static str] {
+        if self.is_image_generation() {
+            &["text", "image"]
+        } else {
+            &["text"]
+        }
+    }
+
+    pub fn tool_calling(&self) -> bool {
+        !self.is_image_generation()
+    }
+
+    pub fn structured_outputs(&self) -> bool {
+        !self.is_image_generation()
+    }
+
     /// Resolve the public Developer API model to the exact private Antigravity quota/generation
     /// bucket. The authenticated Code Assist catalogue encodes Gemini 3 reasoning effort in the
     /// model id; sending the public family id itself returns `INVALID_ARGUMENT`/`UNAVAILABLE`.
@@ -351,6 +380,19 @@ mod tests {
         assert!(model("gemini-3.1-flash-image")
             .reasoning_efforts()
             .is_empty());
+        assert_eq!(
+            model("gemini-3.1-flash-image").output_modalities(),
+            ["text", "image"]
+        );
+        assert!(!model("gemini-3.1-flash-image").tool_calling());
+        assert!(!model("gemini-3.1-flash-image").structured_outputs());
+        assert_eq!(model("gemini-3.6-flash").output_modalities(), ["text"]);
+        assert!(model("gemini-3.6-flash").tool_calling());
+        assert!(model("gemini-3.6-flash").structured_outputs());
+        assert_eq!(
+            model("gemini-3-flash-preview").input_modalities(),
+            ["text", "image", "audio"]
+        );
     }
 
     #[test]
