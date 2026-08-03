@@ -69,6 +69,10 @@ Managed Stage 8 capture подключён цепочкой strict `packages/con
 reason и exact capture bounds; paired GET возвращает bounded local job/artifact snapshot. Worker
 сохраняет exact engine bytes до combined collector и атомарно завершает combined artifact/job;
 GET раскрывает только freshness и sanitized blocker source/code/count с hashed subjects.
+Engine subjects сохраняют canonical `sha256:v1`, commerce authority subjects — canonical
+`sha256:v2`; combined/status schema принимает обе opaque версии, не расширяя версии evidence
+identity. OpenKeys first-delivery authority берётся из prepared target 1:1 policy, а не из
+pre-cutover legacy source/engine scalar.
 Startup, migration, polling и activation request не создают capture job; capture не создаёт
 activation job и не двигает head. После GREEN commerce producer SHA `apps/admin` подключён отдельным
 consumer checkpoint: `/pricing` показывает bounded queue/artifact snapshot и stage'ит новый job

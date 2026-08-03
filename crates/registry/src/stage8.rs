@@ -2,7 +2,7 @@
 //!
 //! The report is deliberately PostgreSQL-only: production authority, immutable admission
 //! snapshots and shadow evaluations must be observed in one `REPEATABLE READ READ ONLY` snapshot.
-//! It never changes a head, binding, funding bucket, reservation or charge.
+//! It never changes a head, binding, funding authority, reservation or charge.
 
 use crate::pricing::{
     BillingModeV2, PricingReleaseKindV2, PricingReleaseV2, PricingRuntimeManifestEvidence,
@@ -1064,7 +1064,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
     query_blocker(
         &mut transaction,
         &mut blockers,
-        "active_account_unclassified_or_unreconciled",
+        "active_account_shadow_binding_drift",
         "SELECT account.id FROM accounts account \
          LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id \
          LEFT JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
@@ -1072,8 +1072,8 @@ pub(crate) fn postgres_stage8_engine_evidence(
          WHERE account.status='active' AND( \
            binding.account_id IS NULL OR binding.active_effective_version IS NULL \
            OR policy.account_id IS NULL OR binding.account_class<>policy.account_class \
-           OR binding.product_id<>policy.product_id OR binding.policy_enforcement<>'shadow' \
-           OR binding.reconciliation_state<>'verified')",
+           OR binding.product_id IS DISTINCT FROM policy.product_id \
+           OR binding.policy_enforcement<>'shadow')",
         &[],
     )?;
     query_blocker(
@@ -1093,20 +1093,9 @@ pub(crate) fn postgres_stage8_engine_evidence(
            OR policy.switch_generation IS DISTINCT FROM switches.active_generation",
         &[],
     )?;
-    query_blocker(
-        &mut transaction,
-        &mut blockers,
-        "funding_bucket_reconciliation_mismatch",
-        "SELECT account.id FROM accounts account \
-         LEFT JOIN LATERAL(SELECT COUNT(*)::bigint bucket_count, \
-             COALESCE(SUM(balance_nano::numeric),0) balance_nano, \
-             COALESCE(SUM(reserved_nano::numeric),0) reserved_nano \
-           FROM funding_buckets bucket WHERE bucket.account_id=account.id) funding ON true \
-         WHERE account.status='active' AND( funding.bucket_count=0 \
-           OR funding.balance_nano<>account.balance_nano::numeric \
-           OR funding.reserved_nano<>account.reserved_nano::numeric)",
-        &[],
-    )?;
+    // The target release funding-generation/head/lot aggregate checks above are the Stage 8
+    // authority. Legacy `funding_buckets` are intentionally absent after Stage 6 normalization
+    // and must not be reintroduced as a second, contradictory activation precondition.
     query_blocker(
         &mut transaction,
         &mut blockers,
@@ -1497,9 +1486,13 @@ pub(crate) fn postgres_stage8_engine_evidence(
     )?;
     let reconciled_accounts = query_count(
         &mut transaction,
-        "SELECT COUNT(*)::bigint FROM accounts account JOIN account_policy_bindings binding \
-         ON binding.account_id=account.id WHERE account.status='active' \
-          AND binding.reconciliation_state='verified'",
+        "SELECT COUNT(*)::bigint FROM accounts account \
+         JOIN account_policy_bindings binding ON binding.account_id=account.id \
+         JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
+          AND policy.effective_version=binding.active_effective_version \
+         WHERE account.status='active' AND binding.account_class=policy.account_class \
+          AND binding.product_id IS NOT DISTINCT FROM policy.product_id \
+          AND binding.policy_enforcement='shadow'",
         &[],
     )?;
     let release = Stage8ReleasePairEvidence {

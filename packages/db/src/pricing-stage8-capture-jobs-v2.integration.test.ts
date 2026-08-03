@@ -169,7 +169,7 @@ function blockedCombinedEvidence(
       source: "commerce",
       code: "fresh_inventory_drift",
       count: "1",
-      subject_digests: [`sha256:v1:${"1".repeat(64)}`],
+      subject_digests: [digest("fresh-inventory-drift")],
     }],
     evidence_digest: digest("placeholder-combined"),
   };

@@ -584,7 +584,10 @@ admissions is a nonnegative external aggregate. The server attaches its compile-
 `PricingRuntimeManifestEvidence` from `AppState`; the HTTP caller cannot choose runtime capability
 lineage. A bounded `AsyncBilling` reader executes the existing PostgreSQL `REPEATABLE READ READ
 ONLY` collector. It never enters the billing writer and cannot update a release head, account,
-funding bucket, balance, reservation, ledger, activation evidence or traffic state.
+funding authority, balance, reservation, ledger, activation evidence or traffic state. Stage 8
+uses the exact release-v2 assignment plus active funding generation/head/lot aggregates as the
+cutover authority. A legacy shadow binding may still have `reconciliation_state=pending`; that
+state and the retired `funding_buckets` projection are not duplicate activation preconditions.
 
 A successfully captured report is the unwrapped schema-v2 JSON object with HTTP `200` regardless
 of its `passed` value. In particular, `passed=false` plus `blockers[]` is valid durable evidence and
@@ -609,6 +612,11 @@ engine `passed=false` report is therefore a successful capture input. Retry/dead
 bounded, stale leases are recovered, and at most one capture job is processing globally. Migration,
 startup, polling and activation staging cannot infer or create a capture job; capture completion
 cannot create an activation job or move the release head.
+
+Sanitized engine blocker subjects retain their canonical `sha256:v1` domain, while commerce
+authority blockers use the canonical `sha256:v2` Stage 5 digest builder. The combined artifact and
+paired GET therefore accept both versioned forms for opaque `subject_digests`; all evidence,
+release, inventory and request identities remain canonical `sha256:v2` only.
 
 `POST /admin/pricing/v2/activate` is the only global live mutation. All unknown fields are rejected.
 The initial cutover request has this exact shape:

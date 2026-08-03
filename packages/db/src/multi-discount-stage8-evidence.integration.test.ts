@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type {
   FundingNormalizationPlanV2,
+  OpenKeysPricingInventoryAccountV2,
   PricingReleaseAssignmentExtensionV2,
   PricingReleaseHeadV2,
   PricingReleaseInventoryAccountV2,
@@ -102,6 +103,9 @@ function engineEvidence(input: {
   legacyInflightReservations?: bigint;
   legacyInflightOutboxRows?: bigint;
   activeHead?: Stage8EngineEvidenceV2["release"]["active_head"];
+  assignmentCount?: bigint;
+  totalAccounts?: bigint;
+  accountClasses?: Record<string, bigint>;
 }): Stage8EngineEvidenceV2 {
   const captured = BigInt(Math.floor(Date.now() / 1_000));
   const passed = input.passed ?? true;
@@ -123,8 +127,8 @@ function engineEvidence(input: {
       recovery_link_digest: digest("recovery-link"),
       inventory_digest: input.engineInventoryDigest,
       funding_digest: input.fundingDigest,
-      target_assignment_count: 1n,
-      recovery_assignment_count: 1n,
+      target_assignment_count: input.assignmentCount ?? 1n,
+      recovery_assignment_count: input.assignmentCount ?? 1n,
       active_head: input.activeHead ?? null,
     },
     runtime_manifest: {
@@ -165,10 +169,10 @@ function engineEvidence(input: {
       entries: 14n,
     },
     counts: {
-      total_accounts: 1n,
-      active_accounts: 1n,
-      account_classes: { b2c: 1n },
-      reconciled_accounts: 1n,
+      total_accounts: input.totalAccounts ?? 1n,
+      active_accounts: input.totalAccounts ?? 1n,
+      account_classes: input.accountClasses ?? { b2c: 1n },
+      reconciled_accounts: input.totalAccounts ?? 1n,
       snapshots_by_provider: { anthropic: 1n, google: 1n, openai: 1n },
       evaluations_by_outcome: { resolved: 3n },
       comparisons: { different: 3n },
@@ -240,7 +244,12 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     );
   });
 
-  async function seedPreparedPair(options: { recoveryOwnerDrift?: boolean } = {}): Promise<{
+  async function seedPreparedPair(options: {
+    recoveryOwnerDrift?: boolean;
+    legacyOpenKeys?: boolean;
+    openKeysDiscountBps?: number;
+    openKeysExtraRule?: boolean;
+  } = {}): Promise<{
     report: Stage8EngineEvidenceV2;
     openkeys: Stage5V2OpenKeysReader;
     authority: AuthorityHarness;
@@ -287,8 +296,35 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       funding_generation: 7,
       funding_head_version: 1,
     };
-    const engineInventoryDigest = stage5V2EngineIdentityDigest([engineAccount]);
-    const openkeysDigest = digest("openkeys-inventory-empty");
+    const openkeysSourceId = options.legacyOpenKeys ? randomUUID() : null;
+    const openkeysAccount: OpenKeysPricingInventoryAccountV2 | null = openkeysSourceId === null
+      ? null
+      : {
+        account_id: "acct_stage8_legacy_openkeys",
+        source_id: openkeysSourceId,
+        lifecycle: "active",
+        pricing_contract: "legacy",
+        source_multiplier_bp: 5_000,
+        content_digest: digest("openkeys-legacy-source-account"),
+      };
+    const openkeysEngineAccount: PricingReleaseInventoryAccountV2 | null = openkeysAccount === null
+      ? null
+      : {
+        account_id: openkeysAccount.account_id,
+        status: "active",
+        multiplier_bp: 5_000,
+        balance_nano: "1000000000",
+        reserved_nano: "0",
+        spent_nano: "0",
+        funding_generation: 7,
+        funding_head_version: 1,
+      };
+    const engineAccounts = [engineAccount, ...(openkeysEngineAccount ? [openkeysEngineAccount] : [])];
+    const openkeysAccounts = openkeysAccount ? [openkeysAccount] : [];
+    const engineInventoryDigest = stage5V2EngineIdentityDigest(engineAccounts);
+    const openkeysDigest = digest(options.legacyOpenKeys
+      ? "openkeys-legacy-source-inventory"
+      : "openkeys-inventory-empty");
     const fundingDigest = digest("funding-manifest");
     const targetPlanDigest = digest("target-plan");
     const recoveryPlanDigest = digest("recovery-plan");
@@ -307,6 +343,43 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         'main', 'balance', 2, 3, $1, 3, $2, 3, $3, $4
       )
     `, [digest("capability"), digest("main-catalog"), digest("switches"), policyDigest]);
+    if (options.legacyOpenKeys) {
+      await seed.query(`
+        INSERT INTO pricing_policy_documents_v2 (
+          policy_id, policy_version, owner_type, owner_id, account_class,
+          product_id, billing_mode, schema_version, capability_generation,
+          capability_digest, catalog_generation, catalog_digest,
+          switch_generation, switch_digest, content_digest
+        ) VALUES (
+          'release-v2:openkeys:global', 1, 'openkeys', 'openkeys', 'openkeys',
+          'openkeys', 'balance', 2, 3, $1, 3, $2, 3, $3, $4
+        )
+      `, [digest("capability"), digest("openkeys-catalog"), digest("switches"), digest("openkeys-policy")]);
+      await seed.query(`
+        INSERT INTO pricing_policy_rules_v2 (
+          policy_id, policy_version, rule_id, rule_digest, scope_type,
+          provider_id, canonical_model_id, discount_bps, payable_multiplier_bp
+        ) VALUES (
+          'release-v2:openkeys:global', 1, 'openkeys-global-1-to-1', $1,
+          'global', NULL, NULL, $2, $3
+        )
+      `, [
+        digest("openkeys-global-rule"),
+        options.openKeysDiscountBps ?? 0,
+        10_000 - (options.openKeysDiscountBps ?? 0),
+      ]);
+      if (options.openKeysExtraRule) {
+        await seed.query(`
+          INSERT INTO pricing_policy_rules_v2 (
+            policy_id, policy_version, rule_id, rule_digest, scope_type,
+            provider_id, canonical_model_id, discount_bps, payable_multiplier_bp
+          ) VALUES (
+            'release-v2:openkeys:global', 1, 'openkeys-google-1-to-1', $1,
+            'provider', 'google', NULL, 0, 10000
+          )
+        `, [digest("openkeys-extra-provider-rule")]);
+      }
+    }
     await seed.query(`
       INSERT INTO pricing_release_plans_v2 (
         generation, release_kind, schema_version,
@@ -356,6 +429,36 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         SET funding_generation = 7
         WHERE release_generation = $1 AND engine_account_id = $2
       `, [generation, accountId]);
+      if (openkeysAccount && openkeysSourceId) {
+        await seed.query(`
+          INSERT INTO pricing_release_assignments_v2 (
+            release_generation, engine_account_id, account_class, owner_context,
+            owner_id, policy_id, policy_version, policy_digest, billing_mode,
+            funding_generation, purpose, responsible, assignment_digest
+          ) VALUES (
+            $1, $2, 'openkeys', 'openkeys', $3, 'release-v2:openkeys:global', 1,
+            $4, 'balance', 7, NULL, NULL, $5
+          )
+        `, [
+          generation,
+          openkeysAccount.account_id,
+          openkeysSourceId,
+          digest("openkeys-policy"),
+          digest(`openkeys-assignment:${generation}`),
+        ]);
+        await seed.query(`
+          INSERT INTO pricing_funding_normalizations_v2 (
+            release_generation, engine_account_id, funding_generation,
+            expected_source_digest, target_funding_digest, applied_funding_digest,
+            normalization_source, blockers, status
+          ) VALUES ($1, $2, 7, $3, $4, $4, 'ledger_replay', NULL, 'ready')
+        `, [
+          generation,
+          openkeysAccount.account_id,
+          digest("openkeys-funding-source"),
+          digest("openkeys-account-funding"),
+        ]);
+      }
     }
     await seed.query(`
       UPDATE pricing_release_plans_v2 SET
@@ -373,11 +476,11 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     const openkeys: Stage5V2OpenKeysReader = {
       getPage: async () => ({
         inventory_digest: openkeysDigest,
-        accounts: [],
+        accounts: openkeysAccounts,
         next_after_account_id: null,
       }),
     };
-    const authority = authorityHarness([engineAccount], openkeys);
+    const authority = authorityHarness(engineAccounts, openkeys);
     return {
       accountId,
       userId,
@@ -386,6 +489,9 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         fundingDigest,
         targetEngineDigest,
         recoveryEngineDigest,
+        assignmentCount: BigInt(engineAccounts.length),
+        totalAccounts: BigInt(engineAccounts.length),
+        accountClasses: options.legacyOpenKeys ? { b2c: 1n, openkeys: 1n } : { b2c: 1n },
       }),
       openkeys,
       authority,
@@ -553,6 +659,58 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         passed: true,
         blocker_count: "0",
       }]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("uses the prepared OpenKeys 1:1 policy instead of pre-cutover legacy scalars", async () => {
+    const seeded = await seedPreparedPair({ legacyOpenKeys: true });
+    const database = createDatabase(databaseUrl, "stage8-openkeys-target-authority");
+    try {
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      expect(report.passed).toBe(true);
+      expect(report.blockers).toEqual([]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("fails closed when the prepared OpenKeys target policy is not 1:1", async () => {
+    const seeded = await seedPreparedPair({ legacyOpenKeys: true, openKeysDiscountBps: 5_000 });
+    const database = createDatabase(databaseUrl, "stage8-openkeys-invalid-target-authority");
+    try {
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      expect(report.passed).toBe(false);
+      expect(report.blockers.map((blocker) => blocker.code)).toContain(
+        "base_assignment_policy_authority_drift",
+      );
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("fails closed when the prepared OpenKeys target policy has extra rules", async () => {
+    const seeded = await seedPreparedPair({ legacyOpenKeys: true, openKeysExtraRule: true });
+    const database = createDatabase(databaseUrl, "stage8-openkeys-extra-target-rule");
+    try {
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      expect(report.passed).toBe(false);
+      expect(report.blockers.map((blocker) => blocker.code)).toContain(
+        "base_assignment_policy_authority_drift",
+      );
     } finally {
       await database.pool.end();
     }

@@ -78,8 +78,12 @@ interface PolicyRow {
   owner_type: "global_b2c" | "b2b_client" | "openkeys" | "service";
   owner_id: string;
   account_class: "b2c" | "b2b" | "openkeys" | "service";
+  product_id: string | null;
   billing_mode: "balance" | "meter_only";
   content_digest: string;
+  rule_count: string;
+  global_rule_count: string;
+  non_one_to_one_rule_count: string;
 }
 
 interface AuthorityClaim {
@@ -174,6 +178,80 @@ function expectedPolicyOwner(claim: AuthorityClaim): Pick<PolicyRow, "owner_type
   return { owner_type: "service", owner_id: claim.ownerId };
 }
 
+interface PolicyAssignmentIdentity {
+  policy_id: string;
+  policy_version: string | number;
+  policy_digest: string;
+  billing_mode: "balance" | "meter_only";
+}
+
+type ExtensionAssignment = PricingReleaseAssignmentExtensionV2["members"][number]["assignment"];
+
+function policyIdentity(policyId: string, policyVersion: string | number): string {
+  return `${policyId}\0${policyVersion}`;
+}
+
+async function readPolicyAuthorityRows(
+  client: PoolClient,
+  assignments: readonly PolicyAssignmentIdentity[],
+): Promise<Map<string, PolicyRow>> {
+  const identities = [...new Map(assignments.map((assignment) => [
+    policyIdentity(assignment.policy_id, assignment.policy_version),
+    [assignment.policy_id, String(assignment.policy_version)] as const,
+  ])).values()];
+  if (identities.length === 0) return new Map();
+  const policies = await client.query<PolicyRow>(`
+    SELECT policy.policy_id, policy.policy_version::text, policy.owner_type, policy.owner_id,
+           policy.account_class, policy.product_id, policy.billing_mode, policy.content_digest,
+           count(rule.rule_id)::text AS rule_count,
+           count(rule.rule_id) FILTER (WHERE rule.scope_type = 'global')::text AS global_rule_count,
+           count(rule.rule_id) FILTER (
+             WHERE rule.discount_bps <> 0 OR rule.payable_multiplier_bp <> 10000
+           )::text AS non_one_to_one_rule_count
+    FROM pricing_policy_documents_v2 policy
+    LEFT JOIN pricing_policy_rules_v2 rule
+      ON rule.policy_id = policy.policy_id AND rule.policy_version = policy.policy_version
+    WHERE (policy.policy_id, policy.policy_version) IN (
+      SELECT * FROM unnest($1::text[], $2::bigint[])
+    )
+    GROUP BY policy.policy_id, policy.policy_version, policy.owner_type, policy.owner_id,
+             policy.account_class, policy.product_id, policy.billing_mode, policy.content_digest
+  `, [identities.map(([id]) => id), identities.map(([, version]) => version)]);
+  return new Map(policies.rows.map((policy) => [
+    policyIdentity(policy.policy_id, policy.policy_version),
+    policy,
+  ]));
+}
+
+function validatePolicyIdentity(
+  assignment: PolicyAssignmentIdentity,
+  claim: AuthorityClaim,
+  policy: PolicyRow | undefined,
+): string[] {
+  if (!policy) return ["missing"];
+  const failures: string[] = [];
+  const owner = expectedPolicyOwner(claim);
+  if (policy.policy_id !== assignment.policy_id
+      || policy.policy_version !== String(assignment.policy_version)
+      || policy.content_digest !== assignment.policy_digest) failures.push("identity");
+  if (policy.owner_type !== owner.owner_type || policy.owner_id !== owner.owner_id) {
+    failures.push("owner");
+  }
+  if (policy.account_class !== claim.accountClass || policy.billing_mode !== assignment.billing_mode) {
+    failures.push("class");
+  }
+  if (claim.accountClass === "openkeys" && (
+    policy.product_id !== "openkeys"
+    || policy.rule_count !== "1"
+    || policy.global_rule_count !== "1"
+    || policy.non_one_to_one_rule_count !== "0"
+  )) failures.push("openkeys-1-to-1");
+  if (claim.accountClass === "service" && (
+    policy.product_id !== null || policy.rule_count !== "0"
+  )) failures.push("service-meter-only");
+  return failures;
+}
+
 function validateExtensionIdentity(input: {
   extension: PricingReleaseAssignmentExtensionV2;
   account: PricingReleaseInventoryAccountV2;
@@ -221,17 +299,8 @@ function validateExtensionIdentity(input: {
     ) {
       failures.push("funding");
     }
-    const owner = expectedPolicyOwner(claim);
-    if (!input.policy
-        || input.policy.policy_id !== active.policy_id
-        || input.policy.policy_version !== String(active.policy_version)
-        || input.policy.content_digest !== active.policy_digest
-        || input.policy.owner_type !== owner.owner_type
-        || input.policy.owner_id !== owner.owner_id
-        || input.policy.account_class !== claim.accountClass
-        || input.policy.billing_mode !== active.billing_mode) {
-      failures.push("policy");
-    }
+    failures.push(...validatePolicyIdentity(active, claim, input.policy).map((failure) =>
+      `policy-${failure}`));
   }
   return failures;
 }
@@ -305,6 +374,7 @@ export async function capturePricingReleaseActivationAuthorityV2(
   const recoveryAssignments = assignmentResult.rows.filter(
     (row) => row.release_generation === expectation.recoveryGeneration,
   );
+  const basePolicyByIdentity = await readPolicyAuthorityRows(client, targetAssignments);
   const recoveryByAccount = new Map(recoveryAssignments.map((row) => [row.engine_account_id, row]));
   for (const target of targetAssignments) {
     const recovery = recoveryByAccount.get(target.engine_account_id);
@@ -347,9 +417,6 @@ export async function capturePricingReleaseActivationAuthorityV2(
       purpose: null,
       responsible: null,
     });
-    if (account.pricing_contract !== "official_1_to_1" || account.source_multiplier_bp !== 10_000) {
-      blocker(blockers, "openkeys_pricing_authority_drift", [account.account_id]);
-    }
   }
   for (const account of current.service.accounts) {
     addClaim(account.engine_account_id, {
@@ -377,9 +444,6 @@ export async function capturePricingReleaseActivationAuthorityV2(
       claim.profileMultiplierBp !== claim.commerceMultiplierBp
       || claim.commerceMultiplierBp !== account.multiplier_bp
     )) blocker(blockers, "b2b_multiplier_authority_drift", [account.account_id]);
-    if (claim?.accountClass === "openkeys" && account.multiplier_bp !== 10_000) {
-      blocker(blockers, "openkeys_engine_multiplier_drift", [account.account_id]);
-    }
   }
   for (const accountId of claims.keys()) {
     if (!engineById.has(accountId)) blocker(blockers, "owner_account_missing_from_engine", [accountId]);
@@ -422,6 +486,13 @@ export async function capturePricingReleaseActivationAuthorityV2(
             || base.purpose !== claim.purpose
             || base.responsible !== claim.responsible
           ))) blocker(blockers, "base_assignment_authority_drift", [account.account_id]);
+      const policy = basePolicyByIdentity.get(policyIdentity(base.policy_id, base.policy_version));
+      const policyFailures = validatePolicyIdentity(base, claim, policy);
+      if (policyFailures.length > 0) {
+        blocker(blockers, "base_assignment_policy_authority_drift", [
+          `${account.account_id}:${policyFailures.join(",")}`,
+        ]);
+      }
       continue;
     }
     if (!postCutover || expectation.expectedHead === null) {
@@ -454,32 +525,18 @@ export async function capturePricingReleaseActivationAuthorityV2(
   }
 
   if (extensions.length > 0) {
-    const policyIdentities = extensions.map(({ extension }) => {
-      const assignment = extensionAssignment(
+    const extensionAssignments = extensions.map(({ extension }) => extensionAssignment(
         extension,
         positiveSafeInteger(expectation.targetGeneration, "target generation"),
-      );
-      return assignment ? [assignment.policy_id, assignment.policy_version] as const : null;
-    }).filter((identity): identity is readonly [string, number] => identity !== null);
-    const policies = policyIdentities.length === 0 ? { rows: [] as PolicyRow[] } : await client.query<PolicyRow>(`
-      SELECT policy_id, policy_version::text, owner_type, owner_id,
-             account_class, billing_mode, content_digest
-      FROM pricing_policy_documents_v2
-      WHERE (policy_id, policy_version) IN (
-        SELECT * FROM unnest($1::text[], $2::bigint[])
-      )
-    `, [policyIdentities.map(([id]) => id), policyIdentities.map(([, version]) => version)]);
-    const policyByIdentity = new Map(policies.rows.map((row) => [
-      `${row.policy_id}\0${row.policy_version}`,
-      row,
-    ]));
+      )).filter((assignment): assignment is ExtensionAssignment => assignment !== null);
+    const policyByIdentity = await readPolicyAuthorityRows(client, extensionAssignments);
     for (const extension of extensions) {
       const assignment = extensionAssignment(
         extension.extension,
         positiveSafeInteger(expectation.targetGeneration, "target generation"),
       );
       const policy = assignment
-        ? policyByIdentity.get(`${assignment.policy_id}\0${assignment.policy_version}`)
+        ? policyByIdentity.get(policyIdentity(assignment.policy_id, assignment.policy_version))
         : undefined;
       const failures = validateExtensionIdentity({ ...extension, policy, expectation });
       if (failures.length > 0) {

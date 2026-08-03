@@ -457,6 +457,11 @@ Uncertain failures используют bounded retry/lease/attempt state machin
 последняя попытка fail closed в `dead`. Global claim fence не допускает двух одновременных capture.
 Startup, migration, polling и activation request не stage'ят capture, а capture completion не
 stage'ит activation и не двигает global head.
+Release-v2 assignment/funding authority является единственным cutover proof: legacy shadow binding
+может оставаться `reconciliation_state=pending`, а пустая после Stage 6 таблица `funding_buckets`
+не создаёт второй blocker. Для OpenKeys preflight проверяет canonical 1:1 policy в prepared target
+release; текущие source/engine scalars не меняются заранее и перестают быть pricing authority
+только вместе со всеми клиентами при одном Stage 9 CAS.
 После exact target CAS engine Stage 8 переключает inventory-проверку на immutable base плюс exact
 paired assignment extensions и их live funding parity. Поэтому новый account не делает fresh
 recovery evidence недостижимым после истечения исходного TTL.

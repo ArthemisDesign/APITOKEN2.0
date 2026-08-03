@@ -349,13 +349,20 @@ The collector verifies the canonical Rust
 `sha256:v2` length-prefixed engine digest, rejects an engine source older than 120 seconds and
 exhausts both engine and OpenKeys cursors twice around one commerce `SERIALIZABLE` snapshot. It
 recomputes commerce/service identities and verifies exact ownership/status, B2B scalar parity,
-OpenKeys 1:1, the prepared target/recovery generations, semantic assignment lineage, engine
+OpenKeys 1:1 in the prepared target policy, the prepared target/recovery generations, semantic assignment lineage, engine
 release/funding identities and control-job backlog. После cutover immutable base manifest не
 переписывается: каждый новый account обязан иметь exact target/recovery assignment extension,
 matching policy и active funding generation/head/aggregates. Live balances не входят в стабильный
 engine identity digest и потому normal traffic/money writes не создают ложный inventory drift.
 Account/request/binding subjects are emitted only as digests; neither command prints a database
 DSN.
+
+Pre-cutover OpenKeys source/engine scalars remain legacy runtime state until the one-head CAS and
+are not rewritten early. The authority gate instead requires every target OpenKeys assignment to
+reference the canonical `openkeys` policy with exactly one global 0%-discount/10000-bp rule. The
+same release-v2 proof replaces legacy binding `reconciliation_state=verified` and the retired
+`funding_buckets` projection: a valid shadow binding may remain `pending`, while exact target
+assignment coverage and funding generation/head/lot parity stay mandatory.
 
 Новая evidence row обязана хранить тот же service-inventory digest в
 `pricing_stage8_evidence_v2.service_inventory_digest`. Legacy row с `NULL` не допускается к
@@ -377,6 +384,9 @@ digests, freshness and sanitized blocker source/code/count/digests. The response
 total plus at most 100 blocker details and a truncation flag. Stage 9 accepts only the exact,
 unexpired persisted combined row with
 `passed=true`.
+Engine subject hashes use their established canonical `sha256:v1` domain and commerce authority
+subjects use canonical `sha256:v2`; the bounded status contract accepts both opaque forms without
+relaxing any `sha256:v2` evidence/release identity.
 
 Worker bounds are validated at startup: `STAGE8_CAPTURE_POLL_MS=5000` (`1000..60000`),
 `STAGE8_CAPTURE_LEASE_MS=300000` (`30000..3600000`),

@@ -17,6 +17,7 @@ import {
 import { stage5V2Digest } from "./pricing-stage5-materializer-v2.js";
 
 const SHA256_V2_PATTERN = /^sha256:v2:[0-9a-f]{64}$/;
+const STAGE8_SUBJECT_DIGEST_PATTERN = /^sha256:v(?:1|2):[0-9a-f]{64}$/;
 const ENGINE_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024;
 const COMBINED_ARTIFACT_MAX_BYTES = 4 * 1024 * 1024;
 
@@ -835,7 +836,7 @@ function parseControlCombinedArtifact(row: CaptureArtifactControlRow): {
       || !Array.isArray(blocker.subject_digests)
       || blocker.subject_digests.length > 20
       || blocker.subject_digests.some((digest) =>
-        typeof digest !== "string" || !/^sha256:v1:[0-9a-f]{64}$/.test(digest))
+        typeof digest !== "string" || !STAGE8_SUBJECT_DIGEST_PATTERN.test(digest))
     ) {
       throw permanent("durable combined Stage 8 blocker has an invalid sanitized shape");
     }

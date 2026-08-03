@@ -36,7 +36,7 @@ transport и worker lifecycle `pending → processing → retry|dead|confirmed`.
 сохраняет immutable request до сети и принимает только persisted `passed=true`/zero-blocker
 evidence с prepared target/recovery engine digests. Перед первой сетевой доставкой worker в свежем
 `SERIALIZABLE` snapshot повторно исчерпывает engine и OpenKeys inventory, сверяет commerce/service
-ownership, status, B2B scalar authority и OpenKeys 1:1, а после cutover требует exact paired
+ownership, status, B2B scalar authority и canonical OpenKeys 1:1 prepared target policy, а после cutover требует exact paired
 assignment extension, policy и active funding generation для каждого нового account. Наружу
 выходят только digest'ы субъектов. После того как exact request впервые выдан transport lane,
 timeout, crash или lost ACK повторяет только это сохранённое тело без TTL/mutable-authority
@@ -46,6 +46,11 @@ Recovery expectation не реконструируется: она читает�
 Consumer не создаёт job автоматически. Collector теперь заполняет source engine identity из
 миграции 0031 и service identity из миграции 0032; любая legacy evidence row с `NULL` в этих полях
 непригодна для staging.
+
+До первого CAS OpenKeys source contract и `accounts.mult_bp` остаются legacy runtime scalars: их
+нельзя заранее переписать в 10000, потому что это отделило бы OpenKeys от одновременного cutover.
+Preflight доказывает 1:1 по immutable target assignment/document/rules; после CAS runtime читает эту
+release-v2 policy, а не старый scalar.
 
 ## Protected control surface
 

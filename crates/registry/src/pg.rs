@@ -8330,7 +8330,9 @@ mod tests {
         let binding = AccountPolicyBindingSpec {
             policy_enforcement: PolicyEnforcement::Shadow,
             funding_enforcement: FundingEnforcement::Shadow,
-            reconciliation_state: ReconciliationState::Verified,
+            // Legacy reconciliation is intentionally still pending: Stage 8 authority comes from
+            // the exact release-v2 assignment plus normalized funding generation below.
+            reconciliation_state: ReconciliationState::Pending,
         };
         let activation = AccountPolicyActivationSpec {
             account_id: policy.account_id.clone(),
@@ -8412,17 +8414,6 @@ mod tests {
         let balance_nano: i64 = totals.get(0);
         let reserved_nano: i64 = totals.get(1);
         let spent_nano: i64 = totals.get(2);
-        pg.client
-            .execute(
-                "INSERT INTO funding_buckets( \
-                   bucket_id,account_id,source_type,source_ref,eligibility,balance_nano, \
-                   reserved_nano,spent_nano,version,status,created_ts,updated_ts \
-                 ) VALUES( \
-                   'stage8-paid','stage8-account','paid','fixture','any',$1,$2,$3,1,'active',$4,$4)",
-                &[&balance_nano, &reserved_nano, &spent_nano, &authority_ts],
-            )
-            .unwrap();
-
         let normalization_digest = format!("sha256:v2:{}", "1".repeat(64));
         let mut funding_tx = pg.client.transaction().unwrap();
         funding_tx

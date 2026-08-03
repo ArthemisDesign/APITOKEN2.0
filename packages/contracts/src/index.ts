@@ -1165,6 +1165,7 @@ const pricingStage8PositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
   "value must be positive",
 );
 const pricingStage8Sha256V1Schema = z.string().regex(/^sha256:v1:[0-9a-f]{64}$/);
+const pricingStage8SubjectDigestSchema = z.string().regex(/^sha256:v(?:1|2):[0-9a-f]{64}$/);
 const pricingStage8NonEmptyStringSchema = z.string().min(1);
 const pricingStage8BasisPointsV2Schema = nonNegativeIntegerSchema.refine(
   (value) => BigInt(value) <= 10_000n,
@@ -1360,7 +1361,7 @@ export const pricingStage8CaptureControlV2Schema = z.object({
       source: z.enum(["commerce", "engine"]),
       code: z.string().min(1),
       count: pricingStage8PositiveIntegerV2Schema,
-      subject_digests: z.array(pricingStage8Sha256V1Schema).max(20),
+      subject_digests: z.array(pricingStage8SubjectDigestSchema).max(20),
     }).strict()).max(100).nullable(),
     combined_blockers_truncated: z.boolean().nullable(),
     completed_at: z.string().datetime({ offset: true }).nullable(),
