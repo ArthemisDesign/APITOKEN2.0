@@ -58,8 +58,9 @@ capture; старые evidence rows с `NULL` не stage'ятся. Raw identitie
 выходят. Recovery expectation берётся только из durable cutover receipt. Startup, migration,
 Stage 8 collector и worker polling не stage'ят activation job. Единственный producer — защищённый
 `POST /v1/admin/pricing-release-activation-v2/stage` в `apps/api`; paired GET отдаёт bounded local
-snapshot и отдельно timestamped engine head. `apps/admin` подключается к этому expand-only
-контракту только после GREEN producer SHA.
+snapshot и отдельно timestamped engine head. `apps/admin` подключён к этому expand-only
+контракту отдельным consumer-коммитом после GREEN producer SHA: `/pricing` показывает bounded
+snapshot и fail-closed stage'ит только explicit cutover/recovery после fresh browser preflight.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

@@ -59,6 +59,10 @@ Next.js 16 / React 19 (App Router), порт 3700. Замена однофайл
 - `src/app/subscriptions/gemini-capacity-board.tsx` — masked-email профили с provider quota/reset и
   exact workload API-$ для 5ч/7д. При degraded authority quota остаётся видна, saleable money
   показывает `обновляем`; профили вне ротации не входят в fleet total.
+- `src/app/pricing/activation-control.tsx` — отдельный 5-секундный fail-closed poller bounded
+  activation snapshot: release pair, Stage 8 freshness/blockers, engine head, jobs/receipts и
+  explicit cutover/recovery staging. Mutation требует reason + точную phrase и повторный fresh GET;
+  canary/maintenance controls здесь запрещены.
 - `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` для watchdog.
 
 ## Конвенции страниц

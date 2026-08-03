@@ -9,12 +9,12 @@ import { usePoll } from "@/lib/usePoll";
 import {
   canonicalizePricingRules,
   ManagedPolicyEditor,
-  PolicyRuleEditor,
   type ManagedPolicyView,
   type PricingCatalogView,
   type PricingRule,
 } from "../business/policy-editor";
 import { PANEL_REASON } from "../business/utils";
+import { PricingReleaseActivationControl } from "./activation-control";
 
 interface PricingData {
   catalog: PricingCatalogView | null;
@@ -265,6 +265,8 @@ export default function PricingPage() {
         sub="Global B2C, provider gates и explicit service policies"
         badge={data.catalog ? <Pill kind="ok">catalog g{data.catalog.catalogGeneration}</Pill> : <Pill kind="bad">foundation missing</Pill>}
       />
+
+      <PricingReleaseActivationControl />
 
       <SectionHeader title="Provider switches" sub="master, product, B2C и B2B — независимые gates" />
       {data.catalog ? (

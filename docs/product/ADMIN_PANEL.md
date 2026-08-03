@@ -107,13 +107,22 @@ policy. Preview/email/registration описывают provider/model досту�
 engine ACK; usable key до подтверждения policy не выдаётся.
 
 Админка не выполняет Stage 5 assignment/backfill сама и не выводит назначения B2B/service/OpenKeys
-из имён. Commerce producer теперь даёт защищённый bounded snapshot prepared target/recovery,
+из имён. Commerce producer даёт защищённый bounded snapshot prepared target/recovery,
 freshness/source completeness Stage 8, durable activation jobs/receipts и отдельно timestamped
-engine head через `GET /admin/pricing-release-activation-v2`; единственный mutation endpoint —
-explicit `POST .../stage` с verified actor/reason и canonical evidence digest. Подключение этих
-endpoint'ов к странице `/pricing` идёт отдельным consumer-коммитом после GREEN backend producer
-SHA. Пока consumer не доставлен, UI эту поверхность не вызывает. Per-account canary и
-maintenance-mode controls запрещены.
+engine head через `GET /admin/pricing-release-activation-v2`. Страница `/pricing` опрашивает этот
+snapshot отдельно каждые 5 секунд и показывает release pair, inventory identities, evidence
+freshness/blockers, engine head, jobs и validated receipts. Stale/ошибочный refresh сохраняется
+только для диагностики и fail-closed отключает mutations.
+
+Единственный mutation endpoint — explicit `POST .../stage` с verified actor/reason и canonical
+evidence digest. Для cutover и recovery оператор вводит содержательную причину и точную фразу,
+связанную с kind, generation и suffix evidence digest. Перед POST браузер заново читает control
+snapshot и требует available engine, fresh passed/source-complete evidence без local blockers,
+нулевой pricing backlog и правильное состояние global head; recovery дополнительно требует exact
+target head и durable cutover receipt. Backend остаётся окончательной authority и повторяет
+проверки атомарно. `accepted` означает durable job, а не dry-run: worker может выполнить глобальный
+CAS сразу после fresh first-delivery revalidation. Per-account canary и maintenance-mode controls
+отсутствуют и запрещены.
 
 ## GPT capacity board на странице подписок
 
