@@ -1553,8 +1553,8 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   ruleId: text("rule_id"),
   ruleDigest: text("rule_digest"),
   ruleScope: text("rule_scope"),
-  pricingMode: text("pricing_mode").notNull(),
-  ruleOrigin: text("rule_origin").notNull(),
+  pricingMode: text("pricing_mode"),
+  ruleOrigin: text("rule_origin"),
   discountBps: integer("discount_bps"),
   payableMultiplierBp: integer("payable_multiplier_bp"),
   policyId: text("policy_id"),
@@ -1620,8 +1620,8 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   check("pricing_usage_attributions_base_check", sql`
     ${table.attributionSchemaVersion} > 0
     AND ${table.snapshotKind} IN ('policy_v1', 'legacy_scalar', 'legacy_b2c_track', 'release_v2')
-    AND ${table.pricingMode} IN ('track', 'discount', 'legacy_scalar')
-    AND ${table.ruleOrigin} IN ('managed', 'legacy')
+    AND (${table.pricingMode} IS NULL OR ${table.pricingMode} IN ('track', 'discount', 'legacy_scalar'))
+    AND (${table.ruleOrigin} IS NULL OR ${table.ruleOrigin} IN ('managed', 'legacy'))
     AND ${table.chargedNano} > 0
     AND ${table.snapshotDigest} <> ''
     AND (${table.engineRequestId} IS NULL OR ${table.engineRequestId} <> '')

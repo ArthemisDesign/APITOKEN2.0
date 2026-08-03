@@ -267,6 +267,13 @@
       "when": 1785781339317,
       "tag": "0037_pricing_attribution_release_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1785782316448,
+      "tag": "0038_pricing_attribution_release_v2_nullable_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -897,4 +897,50 @@ describe("migration configuration", () => {
     expect(attributions.columns.release_billing_mode).toMatchObject({ notNull: false });
     expect(attributions.columns.release_funding_generation).toMatchObject({ notNull: false });
   });
+
+  it("makes release-v2 NULL pricing mode reachable without weakening legacy writers", () => {
+    const migrationName = "0038_pricing_attribution_release_v2_nullable_mode.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 37);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 38);
+
+    expect(currentEntry).toMatchObject({
+      idx: 38,
+      version: "7",
+      tag: "0038_pricing_attribution_release_v2_nullable_mode",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+
+    // Expand-only fixup for the unreachable release_v2 snapshot branch of 0037: the two
+    // columns merely drop NOT NULL and the base CHECK becomes a strict superset. Legacy kinds
+    // keep their NOT NULL semantics through the unchanged per-kind snapshot_check branches.
+    expect(migrationSql).toContain('ALTER COLUMN "pricing_mode" DROP NOT NULL');
+    expect(migrationSql).toContain('ALTER COLUMN "rule_origin" DROP NOT NULL');
+    expect(migrationSql).toContain(
+      '"pricing_mode" IS NULL OR "pricing_usage_attributions"."pricing_mode" IN (\'track\', \'discount\', \'legacy_scalar\')',
+    );
+    expect(migrationSql).toContain(
+      '"rule_origin" IS NULL OR "pricing_usage_attributions"."rule_origin" IN (\'managed\', \'legacy\')',
+    );
+    expect(migrationSql).not.toMatch(/^(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/DROP (?:TABLE|INDEX|COLUMN)/i);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0038_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, { columns: Record<string, { notNull: boolean }> }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0037_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    const attributions = snapshot.tables["public.pricing_usage_attributions"]!;
+    expect(attributions.columns.pricing_mode).toMatchObject({ notNull: false });
+    expect(attributions.columns.rule_origin).toMatchObject({ notNull: false });
+  });
 });

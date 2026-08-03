@@ -152,3 +152,15 @@ Existing `policy_v1`/`legacy_scalar`/`legacy_b2c_track` rows satisfy the unchang
 expression, so the swap rewrites no data and the currently deployed writer stays valid. No
 application writer stores release-v2 attributions yet; the dependent consumer ships only after this
 migration SHA has green `deploy/migration` and `deploy/watchdog` in production.
+
+Migration `0038_pricing_attribution_release_v2_nullable_mode.sql` fixes the unreachable
+release-v2 branch left by `0037_pricing_attribution_release_v2.sql`: the `release_v2` snapshot
+CHECK requires `pricing_mode IS NULL` and `rule_origin IS NULL`, but both columns were still
+`NOT NULL`, so no release-v2 attribution could ever be stored. The migration drops the two
+`NOT NULL` constraints and re-adds `pricing_usage_attributions_base_check` as a strict superset
+that permits NULL values. Legacy `policy_v1`/`legacy_scalar`/`legacy_b2c_track` writers keep
+their non-NULL semantics because the unchanged per-kind branches of
+`pricing_usage_attributions_snapshot_check` still require concrete `pricing_mode`/`rule_origin`
+values for every non-release-v2 kind. The swap rewrites no data, and the release-v2 ingest
+consumer ships only after this migration SHA has green `deploy/migration` and
+`deploy/watchdog` in production.
