@@ -511,6 +511,19 @@ L2 покрыт гейтом, а не только на бумаге: watchdog �
 In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
 снимает слот на завершении/обрыве; 4xx → `mark_ok`.
 
+**Advisory cross-slot cooling hint (тот же `affinity.rs`, keyspace `claude-api:cool:v1`):** свежий
+429 одного слота доезжает до `pool_state.cooling_until` только через debounce-персист (≥1 с + CAS);
+в это окно `acquire_capacity` на соседнем слоте всё ещё выдаёт lease на только что отлимиченную
+подписку. `publish_cooling_hint` вызывается detached на каждом `mark_cooling` боевого пути (429,
+сетевой сбой, битый прокси) и пишет keyed digest подписки (тот же `home_id`, сырой email в Redis не
+попадает) с max-merge (короткий hint не затирает длинный) и TTL = дедлайн кулдауна; hints < 3 с не
+публикуются. Выбор кандидата в proxy.rs проверяет `cooling_hint` до authority-гейта и по hint может
+ТОЛЬКО сротировать на следующего кандидата — никогда не выдать ёмкость; `acquire_capacity` остаётся
+единственным авторитетом, протухший hint стоит максимум одну ротацию. Fail-open общий с affinity:
+ошибка сети/таймаут → `claude_api_cooling_hint_{lookup,publish}_errors_total` и выбор без hint.
+Probe-cooling поллера намеренно не публикуется: его сигнал не требует суб-секундного распространения.
+Codex-плоскость имеет собственный in-memory cooling (`codex/health.rs`) и в этот контракт не входит.
+
 **Ротация/лимиты (устойчивость пула):**
 - **Пассивный сбор:** на КАЖДОМ ответе апстрима вытаскиваем unified-ratelimit (`limits_from_headers`)
   → `pool.set_util`. Так util/reset всегда свежи из боевого трафика; активный `poll_sub` (server)

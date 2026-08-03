@@ -908,6 +908,10 @@ async fn metrics(
          # TYPE claude_api_affinity_cache_root_cold_placements_total counter\nclaude_api_affinity_cache_root_cold_placements_total {}\n\
          # TYPE claude_api_affinity_claims_total counter\nclaude_api_affinity_claims_total {}\n\
          # TYPE claude_api_affinity_rebinds_total counter\nclaude_api_affinity_rebinds_total {}\n\
+         # TYPE claude_api_cooling_hint_skips_total counter\nclaude_api_cooling_hint_skips_total {}\n\
+         # TYPE claude_api_cooling_hint_publishes_total counter\nclaude_api_cooling_hint_publishes_total {}\n\
+         # TYPE claude_api_cooling_hint_lookup_errors_total counter\nclaude_api_cooling_hint_lookup_errors_total {}\n\
+         # TYPE claude_api_cooling_hint_publish_errors_total counter\nclaude_api_cooling_hint_publish_errors_total {}\n\
          # TYPE claude_api_codex_history_local_hits_total counter\nclaude_api_codex_history_local_hits_total {}\n\
          # TYPE claude_api_codex_history_redis_hits_total counter\nclaude_api_codex_history_redis_hits_total {}\n\
          # TYPE claude_api_codex_history_misses_total counter\nclaude_api_codex_history_misses_total {}\n\
@@ -943,6 +947,10 @@ async fn metrics(
         affinity.cache_root_cold_placements,
         affinity.claims,
         affinity.rebinds,
+        g(&m.cooling_hint_skips),
+        affinity.cooling_hint_publishes,
+        affinity.cooling_hint_lookup_errors,
+        affinity.cooling_hint_publish_errors,
         history.map(|stats| stats.local_hits).unwrap_or(0),
         history.map(|stats| stats.redis_hits).unwrap_or(0),
         history.map(|stats| stats.misses).unwrap_or(0),

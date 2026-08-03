@@ -1837,6 +1837,39 @@
       ],
       "title": "Money command throughput",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 127 },
+      "id": 87,
+      "panels": [],
+      "title": "Cooling hints (advisory cross-slot)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Advisory hints shared between slots when one of them cools a subscription. Skips are saved 429s; lookup/publish errors mean siblings lose the hint but every choice is still authorized by PostgreSQL acquire_capacity.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 128 },
+      "id": 88,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(claude_api_cooling_hint_skips_total[5m])", "legendFormat": "skip (saved 429)", "refId": "A" },
+        { "expr": "rate(claude_api_cooling_hint_publishes_total[5m])", "legendFormat": "publish", "refId": "B" },
+        { "expr": "rate(claude_api_cooling_hint_lookup_errors_total[5m])", "legendFormat": "lookup error", "refId": "C" },
+        { "expr": "rate(claude_api_cooling_hint_publish_errors_total[5m])", "legendFormat": "publish error", "refId": "D" }
+      ],
+      "title": "Cooling hint outcomes",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

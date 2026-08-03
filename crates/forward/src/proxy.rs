@@ -2165,6 +2165,19 @@ pub async fn forward(
                 transient_hint = Some(app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs));
                 break;
             }
+            // Advisory cross-slot hint: a sibling slot's fresh 429 has not reached pool_state yet
+            // (persist debounce), so the authority below would still grant a lease on the
+            // just-limited subscription. The hint can only cost one rotation to the next
+            // candidate; a stale or lost hint is harmless because acquire_capacity performs the
+            // authoritative cooldown validation regardless. Errors fail open inside the store.
+            if let Ok(Some(until)) = app.affinity.cooling_hint(&sub.email).await {
+                if until > pool::now() {
+                    Metrics::inc(&app.metrics.cooling_hint_skips);
+                    app.pool.mark_done(&sub.email);
+                    tried.insert(sub.email.clone());
+                    continue;
+                }
+            }
             attempt += 1;
             tried.insert(sub.email.clone());
             // The in-memory choice is only a candidate. PostgreSQL performs the authoritative atomic
@@ -2218,6 +2231,7 @@ pub async fn forward(
                 Ok(c) => c,
                 Err(e) => {
                     app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
+                    app.affinity.publish_cooling_hint(&sub.email, pool::now() + 10);
                     eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
                     last_local =
                         local_err_for(LocalErr::Overloaded, "subscription_proxy_unavailable", None);
@@ -2298,6 +2312,7 @@ pub async fn forward(
                     // Сетевой сбой остаётся per-subscription сигналом: короткий cooling и ротация.
                     // Не кормим global breaker — один нестабильный прокси не доказывает outage провайдера.
                     app.pool.mark_cooling(&sub.email, 15);
+                    app.affinity.publish_cooling_hint(&sub.email, pool::now() + 15);
                     eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
                     last_local =
                         local_err_for(LocalErr::Overloaded, "upstream_connection_error", None);
@@ -2350,6 +2365,7 @@ pub async fn forward(
                 Metrics::inc(&app.metrics.upstream_429);
                 let secs = cool_secs_429(&resp, &lim, now);
                 app.pool.mark_cooling(&sub.email, secs);
+                app.affinity.publish_cooling_hint(&sub.email, now + secs);
                 eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
                 last_upstream = Some((st, resp));
                 continue;

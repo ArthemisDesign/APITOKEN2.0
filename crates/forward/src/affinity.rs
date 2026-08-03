@@ -16,6 +16,12 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock};
 const HASH_CONTEXT: &str = "claude-api/cache-affinity/v1";
 const REDIS_PREFIX: &str = "claude-api:aff:v1";
 const REDIS_ROOT_PREFIX: &str = "claude-api:aff:v2";
+const REDIS_COOLING_PREFIX: &str = "claude-api:cool:v1";
+/// Cooling hints shorter than this are noise: the local slot's own cooling already covers the
+/// requester, and a sibling would learn nothing before the deadline passed anyway.
+const MIN_COOLING_HINT_TTL_SECS: i64 = 3;
+/// Matches MAX_COOL_SECS in proxy.rs; a hint must never outlive the cooling it describes.
+const MAX_COOLING_HINT_TTL_SECS: i64 = 8 * 24 * 3600;
 const DEFAULT_LOCAL_CAP: usize = 100_000;
 const CACHE_ROOT_MIN_BYTES: usize = 4 * 1024;
 const CACHE_ROOT_TTL_5M: u64 = 5 * 60;
@@ -140,6 +146,9 @@ pub struct AffinityStats {
     pub cache_root_cold_placements: u64,
     pub claims: u64,
     pub rebinds: u64,
+    pub cooling_hint_lookup_errors: u64,
+    pub cooling_hint_publishes: u64,
+    pub cooling_hint_publish_errors: u64,
 }
 
 #[derive(Default)]
@@ -156,6 +165,9 @@ struct Stats {
     cache_root_cold_placements: AtomicU64,
     claims: AtomicU64,
     rebinds: AtomicU64,
+    cooling_hint_lookup_errors: AtomicU64,
+    cooling_hint_publishes: AtomicU64,
+    cooling_hint_publish_errors: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -191,6 +203,7 @@ pub struct AffinityStore {
     connect_lock: AsyncMutex<()>,
     redis_retry_after: AtomicI64,
     stats: Stats,
+    cool_tenant_tag: String,
 }
 
 impl AffinityStore {
@@ -234,6 +247,7 @@ impl AffinityStore {
             connect_lock: AsyncMutex::new(()),
             redis_retry_after: AtomicI64::new(0),
             stats: Stats::default(),
+            cool_tenant_tag: digest_with_key(&key, b"cool-tenant", &[]),
         })
     }
 
@@ -551,6 +565,106 @@ impl AffinityStore {
         });
     }
 
+    fn cooling_hint_key(&self, email: &str) -> String {
+        // One tenant tag per fleet keeps every fleet key in a single cluster slot, so a future
+        // MGET over the roster stays legal; the keyed home digest keeps raw emails out of Redis.
+        format!(
+            "{REDIS_COOLING_PREFIX}:{{{}}}:h:{}",
+            self.cool_tenant_tag,
+            self.home_id(email)
+        )
+    }
+
+    /// Advisory cross-slot cooling hint for one subscription home. A sibling slot's fresh 429
+    /// takes at least the pool_state persist debounce to become visible to acquire_capacity; in
+    /// that window the authority still grants leases on the just-limited subscription. The hint
+    /// closes the window, but it can only ever make a slot rotate to the next candidate — it
+    /// never grants capacity, and PostgreSQL stays the only authority. Fail-open: any Redis
+    /// problem collapses to Err(()) with the error counter incremented, and callers proceed
+    /// without the hint exactly as before this store existed.
+    pub async fn cooling_hint(&self, email: &str) -> Result<Option<i64>, ()> {
+        let mut connection = match self.connection().await {
+            Ok(Some(connection)) => connection,
+            _ => {
+                self.stats
+                    .cooling_hint_lookup_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(());
+            }
+        };
+        let key = self.cooling_hint_key(email);
+        let query = async {
+            redis::cmd("GET")
+                .arg(&key)
+                .query_async::<Option<String>>(&mut connection)
+                .await
+        };
+        match tokio::time::timeout(self.timeout, query).await {
+            Ok(Ok(value)) => Ok(value.and_then(|raw| raw.parse::<i64>().ok())),
+            Ok(Err(_)) | Err(_) => {
+                self.reset_connection().await;
+                self.stats
+                    .cooling_hint_lookup_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(())
+            }
+        }
+    }
+
+    async fn write_cooling_hint(&self, email: &str, until: i64) -> Result<(), ()> {
+        let ttl = (until - now_secs()).clamp(0, MAX_COOLING_HINT_TTL_SECS);
+        if ttl < MIN_COOLING_HINT_TTL_SECS {
+            return Ok(());
+        }
+        let Some(mut connection) = self.connection().await? else {
+            return Err(());
+        };
+        let key = self.cooling_hint_key(email);
+        let query = async {
+            // Max-merge: a shorter sibling hint must not overwrite a longer one. The expiry
+            // always belongs to the winning deadline, so a hint can never outlive its cooling.
+            redis::Script::new(
+                "local existing = tonumber(redis.call('GET', KEYS[1]) or '0'); \
+                 if existing >= tonumber(ARGV[1]) then return 0; end; \
+                 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]); \
+                 return 1",
+            )
+            .key(&key)
+            .arg(until)
+            .arg(ttl)
+            .invoke_async::<i64>(&mut connection)
+            .await
+        };
+        match tokio::time::timeout(self.timeout, query).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(_)) | Err(_) => {
+                self.reset_connection().await;
+                Err(())
+            }
+        }
+    }
+
+    /// Share a fresh cooling deadline with sibling slots. Fire-and-forget like mark_cache_warm:
+    /// the write rides a detached task so it never delays response bytes, and its loss only costs
+    /// a sibling one extra 429 that its own circuit breaker converts into local cooling anyway.
+    pub fn publish_cooling_hint(self: &Arc<Self>, email: &str, until: i64) {
+        if self.client.is_none() {
+            return;
+        }
+        self.stats
+            .cooling_hint_publishes
+            .fetch_add(1, Ordering::Relaxed);
+        let this = Arc::clone(self);
+        let email = email.to_string();
+        tokio::spawn(async move {
+            if this.write_cooling_hint(&email, until).await.is_err() {
+                this.stats
+                    .cooling_hint_publish_errors
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
     /// Record whether a newly placed cacheable request reused an already-warm home or deliberately
     /// seeded a cold one. Aggregate counters reveal placement behavior without exposing identities.
     pub fn record_cache_root_placement(&self, input: &AffinityInput, warm: bool) {
@@ -608,6 +722,15 @@ impl AffinityStore {
                 .load(Ordering::Relaxed),
             claims: self.stats.claims.load(Ordering::Relaxed),
             rebinds: self.stats.rebinds.load(Ordering::Relaxed),
+            cooling_hint_lookup_errors: self
+                .stats
+                .cooling_hint_lookup_errors
+                .load(Ordering::Relaxed),
+            cooling_hint_publishes: self.stats.cooling_hint_publishes.load(Ordering::Relaxed),
+            cooling_hint_publish_errors: self
+                .stats
+                .cooling_hint_publish_errors
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -1129,14 +1252,25 @@ impl AffinityStore {
     }
 
     fn digest_parts(&self, domain: &[u8], parts: &[&[u8]]) -> String {
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(domain);
-        for part in parts {
-            hasher.update(&(part.len() as u64).to_le_bytes());
-            hasher.update(part);
-        }
-        hex_digest(hasher.finalize().as_bytes())
+        digest_with_key(&self.key, domain, parts)
     }
+}
+
+fn digest_with_key(key: &[u8; 32], domain: &[u8], parts: &[&[u8]]) -> String {
+    let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(domain);
+    for part in parts {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hex_digest(hasher.finalize().as_bytes())
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn source_for(kind: AliasKind) -> AffinitySource {
@@ -1711,8 +1845,7 @@ mod tests {
     /// it, so an absent value there means the shared-state backend silently disappeared and the L2
     /// invariants below would stop being proven. Failing loudly is the whole point — this proof was
     /// previously annotated as ignored and therefore never ran in the gate at all.
-    fn test_redis_url() -> Option<String> {
-        match std::env::var("CLAUDE_API_TEST_REDIS_URL") {
+    fn test_redis_url() -> Option<String> {        match std::env::var("CLAUDE_API_TEST_REDIS_URL") {
             Ok(url) if !url.is_empty() => Some(url),
             _ => {
                 assert!(
@@ -1932,5 +2065,109 @@ mod tests {
         assert!(!dump.contains("root-session-b"));
         assert!(!dump.contains("private-subscription"));
         assert!(!dump.contains("other-subscription"));
+    }
+
+    #[test]
+    fn cooling_hint_key_is_opaque_and_tenant_scoped() {
+        let store = store();
+        let key = store.cooling_hint_key("seller@example.com");
+        assert!(key.starts_with("claude-api:cool:v1:{"));
+        assert!(!key.contains("seller@example.com"));
+        assert!(!key.contains("seller"));
+        let foreign = Arc::new(
+            AffinityStore::new(None, Some("another-secret-at-least-32-characters"), 3600, 3600, 20)
+                .unwrap(),
+        );
+        assert_ne!(
+            store.cooling_hint_key("seller@example.com"),
+            foreign.cooling_hint_key("seller@example.com"),
+            "a different fleet secret must namespace the hint keyspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn cooling_hint_outage_fails_open() {
+        let store = AffinityStore::new(
+            Some("redis://127.0.0.1:1/"),
+            Some("outage-cooling-secret"),
+            3600,
+            60,
+            5,
+        )
+        .unwrap();
+        assert!(store.cooling_hint("sub@example.com").await.is_err());
+        assert!(
+            store.stats().cooling_hint_lookup_errors > 0,
+            "a failed hint lookup must be counted, not silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn cooling_hint_round_trips_across_processes_and_max_merges() {
+        let Some(url) = test_redis_url() else {
+            return;
+        };
+        let url = url.as_str();
+        let client = redis::Client::open(url).unwrap();
+        let mut connection = client.get_connection_manager().await.unwrap();
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(&mut connection)
+            .await
+            .unwrap();
+
+        let make = || {
+            Arc::new(
+                AffinityStore::new(Some(url), Some("cooling-test-secret"), 3600, 60, 200).unwrap(),
+            )
+        };
+        let first = make();
+        let email = "sub-one@example.com";
+        assert_eq!(first.cooling_hint(email).await, Ok(None));
+
+        let until = now_secs() + 600;
+        first.write_cooling_hint(email, until).await.unwrap();
+        assert_eq!(first.cooling_hint(email).await, Ok(Some(until)));
+
+        // A shorter sibling hint must never overwrite a longer one.
+        first.write_cooling_hint(email, until - 300).await.unwrap();
+        assert_eq!(first.cooling_hint(email).await, Ok(Some(until)));
+
+        // A sibling process (second store instance, same fleet secret) observes the hint: this is
+        // the entire point of the publish — the fresh 429 crosses slots before pool_state does.
+        let sibling = make();
+        assert_eq!(sibling.cooling_hint(email).await, Ok(Some(until)));
+
+        // A different fleet secret namespaces the keyspace: hints never leak across fleets.
+        let foreign = Arc::new(
+            AffinityStore::new(Some(url), Some("foreign-cooling-secret"), 3600, 60, 200).unwrap(),
+        );
+        assert_eq!(foreign.cooling_hint(email).await, Ok(None));
+
+        // Sub-threshold hints are noise and are never written.
+        first
+            .write_cooling_hint("sub-two@example.com", now_secs() + 1)
+            .await
+            .unwrap();
+        assert_eq!(first.cooling_hint("sub-two@example.com").await, Ok(None));
+
+        // The keyspace stays opaque for the new prefix as well.
+        let mut dump = String::new();
+        let mut keys: Vec<String> = redis::cmd("KEYS")
+            .arg("*")
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        for key in keys.drain(..) {
+            dump.push_str(&key);
+            if let Ok(values) = redis::cmd("GET")
+                .arg(&key)
+                .query_async::<String>(&mut connection)
+                .await
+            {
+                dump.push_str(&values);
+            }
+        }
+        assert!(!dump.contains("sub-one@example.com"));
+        assert!(!dump.contains("sub-two@example.com"));
     }
 }
