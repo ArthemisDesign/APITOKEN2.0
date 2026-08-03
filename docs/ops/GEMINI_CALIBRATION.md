@@ -64,6 +64,10 @@ Backend estimator остаётся workload-dependent: он оценивает A
   malformed JSON/SSE, отсутствие terminal usage/finish, single-frame SSE, не вызванный forced tool
   или расхождение response usage с immutable turn являются terminal coverage failure. Runner уже
   учитывает подтверждённый расход, не повторяет запрос и прекращает оставшуюся платную матрицу.
+  Для явных `low`/`medium`/`high` thinking levels immutable usage обязан содержать ненулевые
+  thinking output tokens. `minimal` допускает нулевой счётчик: этот уровень использует dynamic
+  thinking и успешный ответ с полным public identity/output/terminal usage proof не становится
+  coverage miss только из-за отсутствия отдельного thinking token class.
   HTTP 400/403/404 required capability ведёт к тому же fail-closed исходу. Единственное
   неблокирующее `unavailable_capabilities` — заранее пропущенный без generation Search с
   документированно неограниченным per-query fanout (`blocking=false`,
@@ -105,8 +109,14 @@ python3 tools/gemini_calibration/run_live.py \
 совпадать с checkpoint. `complete=false`, `resume_safe=true`,
 `resume_proof=x-apitoken-execution-state:not_started` и `pending_legs` явно показывают, что
 ещё осталось после cooling. `resume_safe=false` означает терминальный ручной разбор без повторения
-платного запроса. Смена paid plan или effective tariff schedule между попытками также прекращает
-resume: evidence разных денежных identity в один прогон не объединяется.
+платного запроса. Узкое versioned-исключение существует только для уже завершённого `minimal` turn,
+который старый runner ошибочно остановил исключительно из-за нулевого thinking token count: новый
+runner сохраняет exact spend и доказанный record, снимает только этот obsolete coverage miss и
+продолжает pending legs без replay. Для этого обязаны точно совпасть public `modelVersion`, реальный
+visible output, terminal finish/usage, response/event usage parity, non-stream identity и
+единственный blocking miss; любое отличие оставляет report терминальным. Смена paid plan или
+effective tariff schedule между попытками также прекращает resume: evidence разных денежных
+identity в один прогон не объединяется.
 
 Production SSH path читает `/gemini-subs` через стабильную Gemini-плоскость `127.0.0.1:8794` и
 отправляет generation туда же с remote-only forwarding-admin key. Секрет не возвращается через SSH.
@@ -127,7 +137,8 @@ python3 -m unittest tools.gemini_calibration.test_run_live
 нескольких новых событий, cost-vector integrity, long-context/search/image bounds, полную матрицу
 capabilities, byte-identical cache/audio replay, forced tool call, public model identity, реальный
 non-thought output, terminal response/event usage parity, incremental SSE и fail-closed resume с
-точным восстановлением spend.
+точным восстановлением spend, включая non-replay reclassification доказанного `minimal` turn с
+нулевым thinking token count и fail-closed отклонение подменённого evidence.
 
 ## Результат
 

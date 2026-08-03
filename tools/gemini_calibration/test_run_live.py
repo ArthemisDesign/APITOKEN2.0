@@ -62,6 +62,68 @@ def report_record(
     }
 
 
+def minimal_zero_thinking_false_negative_report():
+    profile = "profile-a"
+    model = "gemini-3-flash-preview"
+    leg = f"thinking:{model}:minimal"
+    reason = run_live.THINKING_TOKENS_NOT_OBSERVED
+    record = report_record(
+        request_id="req-minimal-complete",
+        profile=profile,
+        model=model,
+        leg=leg,
+    )
+    record.update({
+        "kind": "thinking",
+        "thinking_level": "minimal",
+        "stream": False,
+        "actual_nanousd": "556500",
+        "coverage_error": reason,
+        "response_evidence": {
+            "model_version": model,
+            "visible_text_chars": 336,
+            "terminal_finish": True,
+            "terminal_usage": True,
+            "usage_matches_immutable_event": True,
+            "response_frames": 1,
+        },
+    })
+    record["usage"]["output_tokens"] = "182"
+    record["usage"]["thinking_output_tokens"] = "0"
+    record["api_cost"].update({
+        "api_input_nanousd": "556500",
+        "api_total_nanousd": "556500",
+    })
+    miss = {
+        "profile_id": profile,
+        "model": model,
+        "capability": leg,
+        "reason": reason,
+        "blocking": True,
+    }
+    return {
+        "schema": "gemini-live-calibration/v2",
+        "run_id": "gemini-cal-12345678-deadbeef",
+        "complete": False,
+        "failure": f"{profile}/{leg}: paid response proof failed: {reason}",
+        "resume_safe": False,
+        "resume_proof": None,
+        "budget_nanousd_total": "21000000000",
+        "spent_nanousd_total": "556500",
+        "spent_nanousd_per_profile": {profile: "556500"},
+        "profiles": [profile],
+        "models": [model],
+        "records": [record],
+        "unavailable_capabilities": [dict(miss)],
+        "blocking_unavailable_capabilities": [dict(miss)],
+        "pending_legs": [{
+            "profile_id": profile,
+            "model": model,
+            "capability": f"thinking:{model}:low",
+        }],
+    }
+
+
 class GeminiLiveCalibrationTests(unittest.TestCase):
     def test_dry_run_is_the_default_and_sends_nothing(self):
         with mock.patch.object(run_live, "CapacityReader") as capacity_reader, mock.patch.object(
@@ -385,6 +447,31 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         parsed["tool_prompt_tokens"] = 1
         self.assertIsNone(run_live.verify_leg_usage(tool, parsed))
 
+    def test_minimal_allows_zero_thinking_tokens_but_higher_levels_remain_strict(self):
+        raw = event(model="gemini-3-flash-preview")
+        raw["output_tokens"] = "2"
+        parsed = run_live.recent_turn_events(capacity([raw]))["req-1"]
+
+        minimal = run_live.Leg(
+            "thinking:gemini-3-flash-preview:minimal",
+            "gemini-3-flash-preview",
+            "thinking",
+            "minimal",
+        )
+        self.assertIsNone(run_live.verify_leg_usage(minimal, parsed))
+
+        for level in ("low", "medium", "high"):
+            with self.subTest(level=level):
+                leg = dataclasses.replace(
+                    minimal,
+                    name=f"thinking:gemini-3-flash-preview:{level}",
+                    thinking_level=level,
+                )
+                self.assertEqual(
+                    run_live.verify_leg_usage(leg, parsed),
+                    run_live.THINKING_TOKENS_NOT_OBSERVED,
+                )
+
     def test_fraction_delta_rejects_window_reset_or_missing_reset_identity(self):
         before = {"used_5h": 10, "reset_5h": 100}
         self.assertEqual(
@@ -659,6 +746,99 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
                 json.dump(payload, report_file)
             with self.assertRaises(run_live.CalibrationError):
                 run_live.load_resume_report(report, 1_000_000_000, None)
+
+    def test_resume_reclassifies_only_the_completed_minimal_zero_thinking_false_negative(self):
+        payload = minimal_zero_thinking_false_negative_report()
+        with tempfile.TemporaryDirectory() as directory:
+            report = os.path.join(directory, "report.json")
+            with open(report, "w", encoding="utf-8") as report_file:
+                json.dump(payload, report_file)
+            state = run_live.load_resume_report(
+                report,
+                21_000_000_000,
+                ["gemini-3-flash-preview"],
+            )
+
+        self.assertEqual(state.spent_nano, 556_500)
+        self.assertEqual(state.spent_by_profile, {"profile-a": 556_500})
+        self.assertEqual(len(state.records), 1)
+        self.assertEqual(state.records[0]["coverage_error"], None)
+        self.assertTrue(
+            state.records[0]["response_evidence"]["minimal_zero_thinking_accepted"]
+        )
+        self.assertEqual(state.unavailable, [])
+        self.assertEqual(
+            {(record["profile_id"], record["leg"]) for record in state.records},
+            {("profile-a", "thinking:gemini-3-flash-preview:minimal")},
+        )
+
+    def test_resume_rejects_tampered_minimal_zero_thinking_evidence(self):
+        cases = []
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["failure"] = "different failure"
+        cases.append(("failure", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0].pop("response_evidence")
+        cases.append(("missing response evidence", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0]["response_evidence"]["model_version"] = "gemini-3-flash"
+        cases.append(("private model identity", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["unavailable_capabilities"].append({
+            "profile_id": "profile-a",
+            "model": "gemini-3-flash-preview",
+            "capability": "thinking:gemini-3-flash-preview:low",
+            "reason": run_live.THINKING_TOKENS_NOT_OBSERVED,
+            "blocking": True,
+        })
+        cases.append(("multiple unavailable outcomes", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0]["thinking_level"] = "low"
+        cases.append(("wrong thinking level", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0]["model"] = "gemini-3-flash"
+        cases.append(("wrong record model", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["models"] = ["gemini-3.6-flash"]
+        payload["records"][0]["model"] = "gemini-3.6-flash"
+        payload["records"][0]["response_evidence"]["model_version"] = "gemini-3.6-flash"
+        payload["unavailable_capabilities"][0]["model"] = "gemini-3.6-flash"
+        payload["blocking_unavailable_capabilities"][0]["model"] = "gemini-3.6-flash"
+        payload["pending_legs"][0]["model"] = "gemini-3.6-flash"
+        cases.append(("different model", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0]["leg"] = "thinking:gemini-3-flash-preview:other"
+        payload["unavailable_capabilities"][0]["capability"] = (
+            "thinking:gemini-3-flash-preview:other"
+        )
+        payload["blocking_unavailable_capabilities"][0]["capability"] = (
+            "thinking:gemini-3-flash-preview:other"
+        )
+        cases.append(("wrong capability", payload))
+
+        payload = minimal_zero_thinking_false_negative_report()
+        payload["records"][0]["stream"] = True
+        cases.append(("streaming record", payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = os.path.join(directory, "report.json")
+            for name, payload in cases:
+                with self.subTest(name=name), open(report, "w", encoding="utf-8") as report_file:
+                    json.dump(payload, report_file)
+                with self.assertRaises(run_live.CalibrationError):
+                    run_live.load_resume_report(
+                        report,
+                        21_000_000_000,
+                        ["gemini-3-flash-preview"],
+                    )
 
     def test_legacy_retryinfo_503_partial_report_can_resume_but_keeps_budget_identity(self):
         payload = {

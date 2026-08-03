@@ -62,6 +62,7 @@ EVENT_MONEY_FIELDS = (
     "api_search_nanousd",
     "api_total_nanousd",
 )
+THINKING_TOKENS_NOT_OBSERVED = "thinking output token class was not observed"
 
 
 class CalibrationError(RuntimeError):
@@ -147,6 +148,91 @@ def _string_list(value: Any, field: str) -> list[str]:
     return parsed
 
 
+def _minimal_thinking_reclassification(payload: dict[str, Any]) -> tuple[str, str] | None:
+    """Recognize one completed turn stopped only by the obsolete minimal-token assertion.
+
+    This proof never authorizes replay of a paid request. It permits a newer runner to retain the
+    exact completed record and continue only the still-pending matrix legs.
+    """
+
+    records = payload.get("records")
+    unavailable = payload.get("unavailable_capabilities")
+    blocking = payload.get("blocking_unavailable_capabilities")
+    pending = payload.get("pending_legs")
+    if (
+        payload.get("schema") != "gemini-live-calibration/v2"
+        or payload.get("complete") is not False
+        or payload.get("resume_safe") is not False
+        or not isinstance(records, list)
+        or not isinstance(unavailable, list)
+        or not isinstance(blocking, list)
+        or not isinstance(pending, list)
+        or not pending
+        or len(blocking) != 1
+    ):
+        return None
+    miss = blocking[0]
+    if (
+        not isinstance(miss, dict)
+        or miss.get("blocking") is not True
+        or miss.get("reason") != THINKING_TOKENS_NOT_OBSERVED
+    ):
+        return None
+    profile_id, leg = miss.get("profile_id"), miss.get("capability")
+    model = miss.get("model")
+    if (
+        not all(isinstance(value, str) and value for value in (profile_id, leg, model))
+        or model != "gemini-3-flash-preview"
+        or leg != f"thinking:{model}:minimal"
+    ):
+        return None
+    matching_unavailable = [
+        item
+        for item in unavailable
+        if isinstance(item, dict)
+        and item.get("profile_id") == profile_id
+        and item.get("capability") == leg
+        and item.get("model") == model
+        and item.get("reason") == THINKING_TOKENS_NOT_OBSERVED
+        and item.get("blocking") is True
+    ]
+    matching_records = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and record.get("profile_id") == profile_id
+        and record.get("leg") == leg
+        and record.get("model") == model
+    ]
+    if len(matching_unavailable) != 1 or len(unavailable) != 1 or len(matching_records) != 1:
+        return None
+    record = matching_records[0]
+    evidence = record.get("response_evidence")
+    usage = record.get("usage")
+    expected_failure = (
+        f"{profile_id}/{leg}: paid response proof failed: {THINKING_TOKENS_NOT_OBSERVED}"
+    )
+    if (
+        payload.get("failure") != expected_failure
+        or record.get("kind") != "thinking"
+        or record.get("thinking_level") != "minimal"
+        or record.get("stream") is not False
+        or record.get("coverage_error") != THINKING_TOKENS_NOT_OBSERVED
+        or not isinstance(evidence, dict)
+        or evidence.get("model_version") != model
+        or evidence.get("terminal_finish") is not True
+        or evidence.get("terminal_usage") is not True
+        or evidence.get("usage_matches_immutable_event") is not True
+        or evidence.get("response_frames") != 1
+        or not isinstance(evidence.get("visible_text_chars"), int)
+        or evidence["visible_text_chars"] <= 0
+        or not isinstance(usage, dict)
+        or usage.get("thinking_output_tokens") not in {0, "0"}
+    ):
+        return None
+    return profile_id, leg
+
+
 def load_resume_report(path: str, budget_nano: int, requested_models: list[str] | None) -> ResumeState:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -185,7 +271,13 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
         and payload.get("resume_safe") is True
         and payload.get("resume_proof") == "x-apitoken-execution-state:not_started"
     )
-    if not proved_checkpoint and not legacy_explicit_stop and not legacy_checkpoint:
+    minimal_reclassification = _minimal_thinking_reclassification(payload)
+    if (
+        not proved_checkpoint
+        and not legacy_explicit_stop
+        and not legacy_checkpoint
+        and minimal_reclassification is None
+    ):
         raise CalibrationError(
             "resume report is not proven safe; an ambiguous paid request must never be repeated"
         )
@@ -260,6 +352,11 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
         calculated_by_profile[profile_id] += actual
         parsed_record = dict(raw)
         parsed_record["tariff_schedule_id"] = schedule
+        if minimal_reclassification == key:
+            parsed_record["coverage_error"] = None
+            evidence = dict(parsed_record["response_evidence"])
+            evidence["minimal_zero_thinking_accepted"] = True
+            parsed_record["response_evidence"] = evidence
         records.append(parsed_record)
     for raw in raw_unavailable:
         if not isinstance(raw, dict):
@@ -279,6 +376,8 @@ def load_resume_report(path: str, budget_nano: int, requested_models: list[str] 
             raise CalibrationError("resume report contains duplicate unavailable outcomes")
         unavailable_keys.add(key)
         outcome_keys.add(key)
+        if minimal_reclassification == key:
+            continue
         unavailable.append(dict(raw))
 
     spent_nano = as_int(payload.get("spent_nanousd_total"), "resume spent total")
@@ -679,8 +778,13 @@ def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
         return "audio input token class was not observed"
     if leg.kind == "cache" and leg.cache_phase == "read" and event["cache_read_tokens"] <= 0:
         return "cached input token class was not observed"
-    if leg.kind == "thinking" and leg.thinking_level and event["thinking_output_tokens"] <= 0:
-        return "thinking output token class was not observed"
+    if (
+        leg.kind == "thinking"
+        and leg.thinking_level
+        and leg.thinking_level != "minimal"
+        and event["thinking_output_tokens"] <= 0
+    ):
+        return THINKING_TOKENS_NOT_OBSERVED
     if leg.kind == "tool" and event["tool_prompt_tokens"] <= 0:
         return "tool prompt token class was not observed"
     if leg.kind == "search" and event["search_queries"] + event["grounded_search_prompts"] <= 0:
@@ -1428,7 +1532,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "full-input-context-ceiling-for-hidden-provider-prompts",
             "single-aggregate-budget",
             "no-paid-request-retry",
-            "resume-only-from-authoritative-not-started-proof",
+            "resume-only-from-not-started-or-completed-turn-proof",
             "public-modelVersion-and-real-output",
             "terminal-response-usage-equals-immutable-event",
             "multiple-incremental-sse-candidate-frames",
