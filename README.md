@@ -135,9 +135,10 @@ rollback на выпуски до slot-safe markers; untemplated
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
 Инстанс делят два потребителя с разным радиусом поражения: affinity (fail-open, теряется только
-prompt-cache hit) и Codex response history (потеря записи возвращается клиенту как 400). Под
-`allkeys-lru` политика вытеснения их не различает, поэтому память и eviction сняты отдельным
-`redis_exporter` на `127.0.0.1:9121` с алертами `AffinityRedis*` —
+prompt-cache hit) и Codex response history (потеря записи возвращается клиенту как 400). Поскольку
+`maxmemory` и `maxmemory-policy` в Redis задаются на инстанс, они разведены на два: history —
+`127.0.0.1:6379` (`volatile-lru`, 384 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
+Память и eviction каждого сняты своим `redis_exporter` (`9121`/`9122`) с алертами `AffinityRedis*` —
 см. [`docs/ops/MONITORING.md`](docs/ops/MONITORING.md).
 
 Опциональный native Codex-транспорт для строгого OpenAI-compatible text subset (пул sealed

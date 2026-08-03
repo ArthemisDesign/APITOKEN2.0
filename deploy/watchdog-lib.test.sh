@@ -1372,6 +1372,36 @@ grep -Fq 'set apitoken:healthcheck' "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq "grep -qx 'aof_enabled:1'" "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq "grep -qx 'aof_last_bgrewrite_status:ok'" "$ROOT/deploy/affinity-redis.compose.yaml"
 grep -Fq "grep -qx 'rdb_last_bgsave_status:ok'" "$ROOT/deploy/affinity-redis.compose.yaml"
+
+# Cache affinity and Codex response history run as separate instances. maxmemory and
+# maxmemory-policy are per-instance in Redis, so a single instance cannot give them independent
+# budgets: a few dozen 16 MiB conversations could evict affinity, and affinity churn could delete
+# conversations, which clients see as a permanent 400.
+grep -Fq '127.0.0.1:6380:6379' "$ROOT/deploy/affinity-redis.compose.yaml" \
+  || wd_die 'cache affinity does not have its own Redis instance'
+grep -Fq '/var/lib/apitoken/affinity-redis-l2:/data' "$ROOT/deploy/affinity-redis.compose.yaml" \
+  || wd_die 'the second Redis instance does not have its own data directory'
+grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the second Redis data directory is not provisioned for the image uid/gid'
+grep -Fq "[[ ! -L /var/lib/apitoken/affinity-redis-l2 ]]" "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the second Redis data directory is not symlink-fenced'
+grep -Fq 'CLAUDE_API_AFFINITY_REDIS_URL=redis://default:%s@127.0.0.1:6380/0' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the affinity Redis URL is not provisioned for the second instance'
+# History keeps 6379 and the existing data directory. Moving that side instead would strand every
+# stored conversation at cutover — the exact customer-visible failure this split prevents.
+grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '127.0.0.1:6379:6379' \
+  || wd_die 'response history must keep the port that already holds its conversations'
+grep -F 'history-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '/var/lib/apitoken/affinity-redis:/data' \
+  || wd_die 'response history must keep its existing data directory'
+# The engine must fall back to the shared URL when the second instance is not yet provisioned:
+# a shared instance is worse than a split one, but far better than affinity losing its L2 silently.
+grep -Fq 'ev("CLAUDE_API_AFFINITY_REDIS_URL").or_else(|| redis_url.clone())' \
+  "$ROOT/crates/server/src/config.rs" \
+  || wd_die 'the engine does not fall back to the shared Redis URL before provisioning'
 grep -Fq 'Wants=network-online.target apitoken-affinity-redis.service' \
   "$ROOT/systemd/claude-api-anthropic@.service"
 ! grep -Fq 'Requires=apitoken-affinity-redis.service' "$ROOT/systemd/claude-api-anthropic@.service"

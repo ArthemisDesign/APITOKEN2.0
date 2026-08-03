@@ -1,6 +1,73 @@
 name: apitoken-affinity
 
+# Two instances, not two logical databases. `maxmemory` and `maxmemory-policy` are per-instance in
+# Redis, so selecting a database would leave both consumers sharing one budget and one eviction
+# policy — which is exactly the failure this file exists to prevent.
+#
+# The two consumers have very different blast radii:
+#   * cache affinity stores short keyed digests. Losing one costs a prompt-cache hit. Fail-open.
+#   * Codex response history stores whole conversations, up to 16 MiB each. Losing one makes the
+#     engine answer previous_response_id with a 400 that well-behaved clients treat as permanent,
+#     so they discard a conversation the customer already paid to build.
+# While they shared a 512 MiB instance under allkeys-lru, a few dozen large conversations could
+# evict affinity, and affinity churn could evict conversations. The combined budget is unchanged.
+#
+# WHICH CONSUMER MOVED, AND WHY. Response history keeps port 6379 and the existing data directory;
+# cache affinity moves to the new instance. The reverse would have been tidier to name but would
+# have stranded every stored conversation at cutover — precisely the customer-visible 400 this
+# change exists to prevent. Affinity is designed to be lossy, so moving it costs only prompt-cache
+# hit rate for one TTL. The directory below therefore keeps its historical name: renaming it would
+# mean abandoning the conversations it holds.
 services:
+  history-redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    restart: unless-stopped
+    environment:
+      CLAUDE_API_REDIS_PASSWORD: ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 384mb
+      # volatile-lru rather than allkeys-lru: every history entry is written with an explicit EX,
+      # so the two behave identically in normal operation. The difference is the failure mode — if
+      # a future change ever writes an unexpiring key here, memory pressure surfaces as a loud
+      # write failure on that bug instead of silently deleting a customer's conversation.
+      - --maxmemory-policy
+      - volatile-lru
+      - --requirepass
+      - ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - /var/lib/apitoken/affinity-redis:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          set apitoken:healthcheck "$${HOSTNAME}" EX 10 | grep -qx OK &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'aof_enabled:1' &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'aof_last_bgrewrite_status:ok' &&
+          REDISCLI_AUTH=$$CLAUDE_API_REDIS_PASSWORD redis-cli --no-auth-warning
+          info persistence | tr -d '\r' | grep -qx 'rdb_last_bgsave_status:ok'
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Cache-lineage affinity. Same password and trust domain as history: both are loopback-only,
+  # root-provisioned and read by the same engine process, so separate credentials would add
+  # provisioning failure modes without isolating anything.
   affinity-redis:
     image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
     restart: unless-stopped
@@ -13,15 +80,15 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 512mb
+      - 128mb
       - --maxmemory-policy
       - allkeys-lru
       - --requirepass
       - ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
-      - /var/lib/apitoken/affinity-redis:/data
+      - /var/lib/apitoken/affinity-redis-l2:/data
     healthcheck:
       test:
         - CMD-SHELL

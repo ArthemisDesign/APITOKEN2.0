@@ -237,49 +237,65 @@ and where its loss is customer-visible rather than a cache-hit regression.
 
 ## AffinityRedisDown
 
-The exporter on `127.0.0.1:9121` is unavailable or cannot reach Redis. Check the `redis` target in
-Prometheus, then inspect both `apitoken-monitoring-redis-exporter-1` and
-`apitoken-affinity-redis.service`. The password map remains root-owned mode `0600`; the exporter
-runs as UID 0 solely to read that bind mount and drops every Linux capability before startup. A
-`permission denied` for `/run/secrets/affinity_redis_password` means this sandbox contract or the
-file mode drifted; do not make the secret world-readable.
+Two Redis instances now run side by side, and the `instance_role` label says which one fired:
 
-The monitoring installer must prove the exporter `/metrics` endpoint, authenticated
-`redis_up == 1`, and all ten fixed internal targets before committing a new configuration. If that
+| role | listener | exporter | holds | loss impact |
+|---|---|---|---|---|
+| `history` | 6379 | 9121 | Codex response history | customer-visible 400 |
+| `affinity` | 6380 | 9122 | cache-lineage affinity | prompt-cache hit rate only |
+
+The exporter is unavailable or cannot reach its instance. Check the `redis` targets in Prometheus,
+then inspect `apitoken-monitoring-redis-exporter-1` / `apitoken-monitoring-redis-exporter-affinity-1`
+and `apitoken-affinity-redis.service`. The password map remains root-owned mode `0600`; both
+exporters run as UID 0 solely to read that bind mount and drop every Linux capability before
+startup. A `permission denied` for `/run/secrets/affinity_redis_password` means this sandbox
+contract or the file mode drifted; do not make the secret world-readable.
+
+The monitoring installer must prove both exporter `/metrics` endpoints, `sum(redis_up == 1) == 2`,
+and all eleven fixed internal targets before committing a new configuration. If that
 admission passed but the alert fires later, confirm with `systemctl status
 apitoken-affinity-redis.service` and `docker compose -f
 /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml ps`.
-Claude and Gemini traffic degrade only in prompt-cache hit rate. The OpenAI plane is affected more
-sharply: Codex `previous_response_id` continuity falls back to per-process memory, so a
-conversation started on one slot cannot be continued on the other. Do not restart engine slots to
-"fix" this — restarting discards the local history that is currently the only copy.
+Losing the `affinity` instance degrades Claude, Gemini and OpenAI alike in prompt-cache hit rate
+only. Losing the `history` instance is sharper: Codex `previous_response_id` continuity falls back
+to per-process memory, so a conversation started on one slot cannot be continued on the other. Do
+not restart engine slots to "fix" that — restarting discards the local history that is then the
+only copy.
 
 ## AffinityRedisEvictingKeys
 
-Redis reached `maxmemory` and `allkeys-lru` began deleting keys. The policy cannot distinguish the
-two consumers sharing the instance:
+An instance reached its `maxmemory` and began deleting keys. Read `instance_role` first, because the
+consequence differs completely:
 
-- Affinity keys are short digests; losing them costs prompt-cache hits and money, not correctness.
-- Codex response history entries are whole conversations, up to 16 MiB each
-  (`MAX_SERIALIZED_HISTORY_BYTES`), retained for `CLAUDE_API_CODEX_HISTORY_TTL_SECS` (24 h by
-  default). Losing one makes `prepare_turn` answer `previous_response_id was not found` as a 400,
-  which well-behaved clients treat as permanent and respond to by discarding the conversation.
+- `affinity` — short digests under `allkeys-lru`. Losing them costs prompt-cache hits and money,
+  not correctness. Raise `--maxmemory` for that service if it is chronic.
+- `history` — whole conversations, up to 16 MiB each (`MAX_SERIALIZED_HISTORY_BYTES`), retained for
+  `CLAUDE_API_CODEX_HISTORY_TTL_SECS` (24 h by default). Losing one makes `prepare_turn` answer
+  `previous_response_id was not found` as a 400, which well-behaved clients treat as permanent and
+  respond to by discarding the conversation. Treat this as customer-visible.
 
-Because history entries are orders of magnitude larger, a few dozen large conversations can fill the
-instance and evict everything else. Check the split with
-`redis-cli --no-auth-warning info memory` and by counting the two prefixes
-(`claude-api:aff:` versus `claude-api:codex-history:`).
-Immediate mitigations, in order of preference: raise `--maxmemory` in
-`deploy/affinity-redis.compose.yaml`, or lower `CLAUDE_API_CODEX_HISTORY_TTL_SECS` so history
-expires before it crowds out affinity. Restarting Redis is not a mitigation — it discards
-everything at once.
+The two ran in one instance until the split; a few dozen large conversations could fill it and evict
+affinity, and affinity churn could delete conversations. They now have independent budgets
+(128 MiB affinity, 384 MiB history) so each can be sized on its own evidence.
+
+The `history` instance uses `volatile-lru`, not `allkeys-lru`. Every entry is written with an
+explicit `EX`, so in normal operation the two behave identically. The difference is the failure
+mode: if a future change ever writes an unexpiring key there, the instance answers `OOM command not
+allowed` on that write instead of silently deleting a customer's conversation. An OOM on this
+instance therefore means a code bug, not a capacity problem — find the key without a TTL.
+
+Inspect with `redis-cli -p 6379 --no-auth-warning info memory` (history) and
+`redis-cli -p 6380 ...` (affinity). Mitigations, in order of preference: raise `--maxmemory` for the
+affected service in `deploy/affinity-redis.compose.yaml`, or for `history` lower
+`CLAUDE_API_CODEX_HISTORY_TTL_SECS`. Restarting Redis is not a mitigation — it discards everything
+at once.
 
 ## AffinityRedisMemoryHigh
 
-Usage passed 85 % of `maxmemory`. This fires before `AffinityRedisEvictingKeys` so the budget can be
-adjusted while no data has been lost yet. Same mitigations as above. If this recurs, the instance is
-genuinely undersized for the history retention in force; treat the TTL and the memory budget as one
-decision.
+Usage passed 85 % of that instance's `maxmemory`. This fires before `AffinityRedisEvictingKeys` so
+the budget can be adjusted while no data has been lost yet. Raise the budget of the instance named
+by `instance_role` rather than both. If this recurs on `history`, it is genuinely undersized for the
+retention in force; treat the TTL and the memory budget as one decision.
 
 ## CodexHistoryWriteFailures
 

@@ -263,12 +263,28 @@ if ! grep -Eq '^CLAUDE_API_REDIS_URL=.+$' "$server_env"; then
     || { echo 'managed Redis password must be 64 hex characters' >&2; exit 1; }
   printf 'CLAUDE_API_REDIS_URL=redis://default:%s@127.0.0.1:6379/0\n' "$redis_password" >>"$server_env"
 fi
+# Cache affinity has its own instance so it cannot evict Codex response history, and history cannot
+# evict it. 6379 deliberately stays with history: it already holds stored conversations, and moving
+# that side would strand them at cutover. Affinity is lossy by design, so it is the safe side to
+# move — the cost is one TTL of reduced cross-slot prompt-cache hits.
+if ! grep -Eq '^CLAUDE_API_AFFINITY_REDIS_URL=.+$' "$server_env"; then
+  redis_password=$(sed -n 's/^CLAUDE_API_REDIS_PASSWORD=//p' "$server_env" | tail -n 1)
+  [[ $redis_password =~ ^[0-9a-fA-F]{64}$ ]] \
+    || { echo 'managed Redis password must be 64 hex characters' >&2; exit 1; }
+  printf 'CLAUDE_API_AFFINITY_REDIS_URL=redis://default:%s@127.0.0.1:6380/0\n' "$redis_password" \
+    >>"$server_env"
+fi
 # redis:7.4-alpine runs as the image's fixed redis uid/gid (999:1000). Re-applying root ownership
 # while the container remains up makes the live process lose write access to its bind-mounted /data;
 # Redis then enters MISCONF after the next persistence cycle even though PING remains healthy.
 [[ ! -L /var/lib/apitoken/affinity-redis ]] \
   || { echo '/var/lib/apitoken/affinity-redis must not be a symlink' >&2; exit 1; }
 install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis
+# Second instance for cache affinity. The historical directory name above now belongs to response
+# history, because renaming it would mean abandoning the conversations it already holds.
+[[ ! -L /var/lib/apitoken/affinity-redis-l2 ]] \
+  || { echo '/var/lib/apitoken/affinity-redis-l2 must not be a symlink' >&2; exit 1; }
+install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2
 install -d -o root -g deploy -m 0775 /run/lock
 for lock in apitoken-watchdog apitoken-candidate-validator apitoken-source-fetch \
   apitoken-deploy apitoken-db-migrate; do

@@ -28,6 +28,10 @@ pub struct Settings {
     pub drain_deadline_secs: u64, // предел graceful-дренажа до принудительного обрыва
     pub max_inflight: i64, // мягкий Claude spill/load threshold; не admission cap
     /// Optional shared L2 for ephemeral cache affinity. PostgreSQL remains authoritative.
+    ///
+    /// Sourced from `CLAUDE_API_AFFINITY_REDIS_URL`, falling back to `CLAUDE_API_REDIS_URL`. It is
+    /// a different instance from Codex response history so the two cannot evict each other: one is
+    /// lossy by design, the other holds conversations whose loss is customer-visible.
     pub redis_url: Option<String>,
     pub affinity_secret: Option<String>,
     pub affinity_ttl_secs: u64,
@@ -790,7 +794,13 @@ impl Settings {
             .collect::<BTreeMap<_, _>>();
         let pricing_shadow = parse_pricing_shadow_config(&pricing_shadow_values)
             .unwrap_or_else(|message| panic!("{message}"));
+        // Two Redis instances with independent memory budgets and eviction policies. History keeps
+        // CLAUDE_API_REDIS_URL and its stored conversations; affinity moves to its own instance.
+        // The fallback keeps a host that has not yet been provisioned with the second instance
+        // working exactly as before — a shared instance is worse than a split one, but far better
+        // than affinity silently losing its L2 because an env var was missing.
         let redis_url = ev("CLAUDE_API_REDIS_URL");
+        let affinity_redis_url = ev("CLAUDE_API_AFFINITY_REDIS_URL").or_else(|| redis_url.clone());
         let affinity_secret = ev("CLAUDE_API_AFFINITY_SECRET");
         let codex = if provider.serves_openai() {
             codex_config(redis_url.clone(), affinity_secret.clone())
@@ -842,7 +852,7 @@ impl Settings {
             // Мягкий порог spill/балансировки по подпискам. Он не ждёт и не отклоняет запросы:
             // весь флот выше порога обслуживается fail-open по минимальному in-flight.
             max_inflight: bounded_i64("CLAUDE_API_MAX_INFLIGHT", 6, 1, 1_024),
-            redis_url,
+            redis_url: affinity_redis_url,
             affinity_secret,
             affinity_ttl_secs: bounded_u64(
                 "CLAUDE_API_AFFINITY_TTL_SECS",

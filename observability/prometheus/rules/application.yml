@@ -126,14 +126,14 @@ groups:
   - name: affinity-redis
     rules:
       - alert: AffinityRedisDown
-        expr: redis_up == 0 or absent(redis_up)
+        expr: redis_up == 0 or sum(absent(redis_up{instance_role="history"}) or absent(redis_up{instance_role="affinity"})) > 0
         for: 5m
         labels:
           severity: warning
           component: affinity-redis
         annotations:
-          summary: 'Cache-affinity Redis is unreachable'
-          description: 'The exporter cannot reach Redis. Engine traffic stays available on local fail-open affinity, but Codex previous_response_id continuity is lost across slots.'
+          summary: 'Shared Redis instance {{ $labels.instance_role }} is unreachable'
+          description: 'Losing the affinity instance costs only cross-slot prompt-cache hits. Losing the history instance breaks Codex previous_response_id continuity across slots, which clients see as a permanent 400.'
           runbook: 'docs/ops/MONITORING.md#affinityredisdown'
 
       - alert: AffinityRedisEvictingKeys
@@ -143,8 +143,8 @@ groups:
           severity: warning
           component: affinity-redis
         annotations:
-          summary: 'Cache-affinity Redis is evicting keys under memory pressure'
-          description: 'allkeys-lru does not distinguish affinity digests from Codex response history, so sustained eviction drops stored conversations and clients receive a permanent-looking 400.'
+          summary: 'Shared Redis instance {{ $labels.instance_role }} is evicting keys under memory pressure'
+          description: 'On the affinity instance this costs prompt-cache hits only. On the history instance it deletes stored conversations and clients receive a permanent-looking 400, so treat that case as customer-visible.'
           runbook: 'docs/ops/MONITORING.md#affinityredisevictingkeys'
 
       - alert: AffinityRedisMemoryHigh
@@ -154,8 +154,8 @@ groups:
           severity: warning
           component: affinity-redis
         annotations:
-          summary: 'Cache-affinity Redis is near its memory ceiling'
-          description: 'Eviction begins at the ceiling. This fires before keys are lost so the budget can be raised or the history TTL shortened first.'
+          summary: 'Shared Redis instance {{ $labels.instance_role }} is near its memory ceiling'
+          description: 'Eviction begins at the ceiling. Each instance has its own budget, so raise that one rather than the pair; for the history instance, lowering CLAUDE_API_CODEX_HISTORY_TTL_SECS is the other lever.'
           runbook: 'docs/ops/MONITORING.md#affinityredismemoryhigh'
 
       - alert: CodexHistoryWriteFailures

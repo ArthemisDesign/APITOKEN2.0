@@ -96,6 +96,11 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
   после чего она сразу получает отдельный lineage и не связывает rebind разных диалогов.
   Ключи и значения — keyed BLAKE3 digests (без prompt/API key/account/subscription ID). Local L1
   остаётся всегда; таймаут/отказ/eviction Redis fail-open и влияет только на prompt-cache hit rate.
+  Affinity живёт в СВОЁМ Redis-инстансе (`CLAUDE_API_AFFINITY_REDIS_URL`, 6380), отдельно от Codex
+  response history (`CLAUDE_API_REDIS_URL`, 6379). `maxmemory` и `maxmemory-policy` в Redis задаются
+  на инстанс, поэтому общий инстанс не давал им независимых бюджетов: крупные разговоры вытесняли
+  affinity, а churn affinity удалял оплаченные разговоры. Потеря affinity безопасна по построению,
+  потеря history — нет, поэтому переехал именно affinity.
 - **PostgreSQL — durable authority.** Generated request IDs own exact reservation rows. Settlement
   first lands in a durable outbox, then atomically closes that exact reservation, updates the account,
   and inserts a charge unique on `(kind, request_id)`. SQLite is retained only as the guarded import

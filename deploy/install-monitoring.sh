@@ -118,7 +118,8 @@ cp -a -- "$SOURCE/." "$STAGE/"
 install -d -o root -g root -m 0700 "$STAGE/secrets" "$STAGE/rendered"
 printf '%s\n' "$engine_key" >"$STAGE/secrets/engine_metrics_token"
 chmod 0600 "$STAGE/secrets/engine_metrics_token"
-printf '{"redis://127.0.0.1:6379":"%s"}\n' "$affinity_redis_password" \
+printf '{"redis://127.0.0.1:6379":"%s","redis://127.0.0.1:6380":"%s"}\n' \
+  "$affinity_redis_password" "$affinity_redis_password" \
   >"$STAGE/secrets/affinity_redis_password"
 chmod 0600 "$STAGE/secrets/affinity_redis_password"
 # Optional devbot webhook: the secret lives only in the operator-provisioned devbot env file,
@@ -196,6 +197,7 @@ wait_http Alloy http://127.0.0.1:12345/-/ready
 wait_http Node-Exporter http://127.0.0.1:9100/metrics
 wait_http Postgres-Exporter http://127.0.0.1:9187/metrics
 wait_http Redis-Exporter http://127.0.0.1:9121/metrics
+wait_http Redis-Exporter-Affinity http://127.0.0.1:9122/metrics
 wait_http Blackbox-Exporter http://127.0.0.1:9115/metrics
 
 systemctl enable --now apitoken-monitoring-collector.timer
@@ -218,9 +220,11 @@ wait_prometheus_result() {
 wait_prometheus_result business-collector 'time() - apitoken_monitoring_collector_last_success_unixtime < 180'
 wait_prometheus_result systemd-collector 'node_scrape_collector_success{collector="systemd"} == 1'
 wait_prometheus_result PostgreSQL 'pg_up == 1'
-wait_prometheus_result Redis 'redis_up == 1'
+# Both instances must answer authenticated, not just one: they hold different data with different
+# consequences on loss, and a split that is only half-monitored is worse than no split.
+wait_prometheus_result Redis 'sum(redis_up == 1) == 2'
 wait_prometheus_result monitoring-targets \
-  'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 10'
+  'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 11'
 
 COMMITTED=1
 trap - EXIT

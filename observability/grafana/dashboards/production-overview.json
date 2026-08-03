@@ -1622,7 +1622,7 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 107 },
       "id": 75,
       "panels": [],
-      "title": "Shared Redis (cache affinity + Codex response history)",
+      "title": "Redis instances (affinity 6380 / Codex response history 6379)",
       "type": "row"
     },
     {
@@ -1639,7 +1639,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 108 },
       "id": 76,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "redis_up", "refId": "A" }],
+      "targets": [{ "expr": "redis_up", "legendFormat": "{{instance_role}}", "refId": "A" }],
       "title": "Redis up",
       "type": "stat"
     },
@@ -1658,7 +1658,7 @@
       "gridPos": { "h": 4, "w": 5, "x": 4, "y": 108 },
       "id": 77,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "redis_memory_used_bytes / redis_config_maxmemory", "refId": "A" }],
+      "targets": [{ "expr": "redis_memory_used_bytes / redis_config_maxmemory", "legendFormat": "{{instance_role}}", "refId": "A" }],
       "title": "Redis memory used",
       "type": "stat"
     },
@@ -1676,7 +1676,7 @@
       "gridPos": { "h": 4, "w": 5, "x": 9, "y": 108 },
       "id": 78,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "clamp_min(increase(redis_evicted_keys_total[15m]), 0)", "refId": "A" }],
+      "targets": [{ "expr": "clamp_min(increase(redis_evicted_keys_total[15m]), 0)", "legendFormat": "{{instance_role}}", "refId": "A" }],
       "title": "Evicted keys (15m)",
       "type": "stat"
     },
@@ -1733,8 +1733,8 @@
       "id": 81,
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A" },
-        { "expr": "redis_config_maxmemory", "legendFormat": "maxmemory", "refId": "B" }
+        { "expr": "redis_memory_used_bytes", "legendFormat": "{{instance_role}} used", "refId": "A" },
+        { "expr": "redis_config_maxmemory", "legendFormat": "{{instance_role}} maxmemory", "refId": "B" }
       ],
       "title": "Redis memory headroom",
       "type": "timeseries"

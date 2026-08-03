@@ -51,38 +51,64 @@ for pinned_image in \
   grep -Fq "image: $pinned_image" "$ROOT/observability/compose.yaml"
 done
 
-[[ $(grep -Fc 'network_mode: host' "$ROOT/observability/compose.yaml") == 9 ]]
+[[ $(grep -Fc 'network_mode: host' "$ROOT/observability/compose.yaml") == 10 ]]
 for listener in 127.0.0.1:9090 127.0.0.1:9093 127.0.0.1:12345 127.0.0.1:9100 \
-  127.0.0.1:9187 127.0.0.1:9121 127.0.0.1:9115; do
+  127.0.0.1:9187 127.0.0.1:9121 127.0.0.1:9122 127.0.0.1:9115; do
   grep -Fq "$listener" "$ROOT/observability/compose.yaml" "$ROOT/observability/loki/loki.yml"
 done
 
-# Shared Redis carries two consumers with different blast radii: affinity digests (fail-open) and
-# Codex response history (a lost entry becomes a customer-visible 400). Memory pressure under
-# allkeys-lru cannot tell them apart, so eviction and headroom must stay measured.
+# Redis carries two consumers with very different blast radii: affinity digests (fail-open, losing
+# one costs a prompt-cache hit) and Codex response history (losing one is a customer-visible 400).
+# They now run as separate instances because maxmemory and maxmemory-policy are per-instance, so a
+# shared one could not give them independent budgets. Both must stay measured independently.
 grep -Fq -- '--redis.password-file=/run/secrets/affinity_redis_password' \
   "$ROOT/observability/compose.yaml"
 grep -Fq './secrets/affinity_redis_password:/run/secrets/affinity_redis_password:ro' \
   "$ROOT/observability/compose.yaml"
 grep -Fq 'job_name: redis' "$ROOT/observability/prometheus/prometheus.yml"
+grep -Fq 'instance_role: history' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'the history Redis instance is not labelled for alert routing\n' >&2; exit 1; }
+grep -Fq 'instance_role: affinity' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'the affinity Redis instance is not labelled for alert routing\n' >&2; exit 1; }
 # redis_exporter reads a JSON address-to-password map, not a bare secret; a plain string makes it
-# exit at startup. Verified against v1.67.0.
-grep -Fq 'printf '"'"'{"redis://127.0.0.1:6379":"%s"}\n'"'"'' "$ROOT/deploy/install-monitoring.sh"
+# exit at startup. Verified against v1.67.0. Both instances share one map.
+grep -Fq 'printf '"'"'{"redis://127.0.0.1:6379":"%s","redis://127.0.0.1:6380":"%s"}\n'"'"'' \
+  "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'chmod 0600 "$STAGE/secrets/affinity_redis_password"' "$ROOT/deploy/install-monitoring.sh"
-grep -F 'redis-exporter:' -A 14 "$ROOT/observability/compose.yaml" \
-  | grep -Fq 'user: "0:0"' \
-  || { printf 'Redis exporter cannot read the root-owned 0600 password map\n' >&2; exit 1; }
-grep -F 'redis-exporter:' -A 14 "$ROOT/observability/compose.yaml" \
-  | grep -Fq 'cap_drop:' \
-  || { printf 'root Redis exporter does not drop Linux capabilities\n' >&2; exit 1; }
-grep -Fq 'wait_http Redis-Exporter http://127.0.0.1:9121/metrics' \
+for redis_exporter_service in 'redis-exporter:' 'redis-exporter-affinity:'; do
+  grep -F "$redis_exporter_service" -A 16 "$ROOT/observability/compose.yaml" \
+    | grep -Fq 'user: "0:0"' \
+    || { printf 'Redis exporter cannot read the root-owned 0600 password map\n' >&2; exit 1; }
+  grep -F "$redis_exporter_service" -A 16 "$ROOT/observability/compose.yaml" \
+    | grep -Fq 'cap_drop:' \
+    || { printf 'root Redis exporter does not drop Linux capabilities\n' >&2; exit 1; }
+done
+# History keeps 6379 and the existing data directory on purpose: moving that side would strand
+# every stored conversation at cutover, which is the exact customer-visible failure being fixed.
+grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '127.0.0.1:6379:6379' \
+  || { printf 'response history must keep its existing port\n' >&2; exit 1; }
+grep -F 'history-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '/var/lib/apitoken/affinity-redis:/data' \
+  || { printf 'response history must keep its existing data directory\n' >&2; exit 1; }
+# volatile-lru refuses to evict a key without an expiry. Every history entry is written with EX, so
+# a future unexpiring key surfaces as a loud write failure instead of a deleted conversation.
+grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq 'volatile-lru' \
+  || { printf 'response history must not use an allkeys eviction policy\n' >&2; exit 1; }
+grep -F 'affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '127.0.0.1:6380:6379' \
+  || { printf 'cache affinity is not on its own instance\n' >&2; exit 1; }
+for redis_listener in 'wait_http Redis-Exporter http://127.0.0.1:9121/metrics' \
+  'wait_http Redis-Exporter-Affinity http://127.0.0.1:9122/metrics'; do
+  grep -Fq "$redis_listener" "$ROOT/deploy/install-monitoring.sh" \
+    || { printf 'monitoring install can commit before a Redis exporter starts\n' >&2; exit 1; }
+done
+grep -Fq "wait_prometheus_result Redis 'sum(redis_up == 1) == 2'" "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring install does not prove both Redis instances are scraped\n' >&2; exit 1; }
+grep -Fq 'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 11' \
   "$ROOT/deploy/install-monitoring.sh" \
-  || { printf 'monitoring install can commit before Redis exporter starts\n' >&2; exit 1; }
-grep -Fq "wait_prometheus_result Redis 'redis_up == 1'" "$ROOT/deploy/install-monitoring.sh" \
-  || { printf 'monitoring install does not prove authenticated Redis scraping\n' >&2; exit 1; }
-grep -Fq 'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 10' \
-  "$ROOT/deploy/install-monitoring.sh" \
-  || { printf 'monitoring install target count omits the Redis exporter\n' >&2; exit 1; }
+  || { printf 'monitoring install target count omits a Redis exporter\n' >&2; exit 1; }
 # The affinity alert must not be scoped to one plane. It was pinned to {provider="anthropic"},
 # which excluded the OpenAI plane — the only plane where Redis also holds Codex history. It keeps a
 # per-provider aggregation so the firing plane is still identifiable.
@@ -111,7 +137,11 @@ for redis_alert in AffinityRedisDown AffinityRedisEvictingKeys AffinityRedisMemo
   grep -Fqi "## $redis_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$redis_alert" >&2; exit 1; }
 done
-grep -Fq 'redis_up == 0 or absent(redis_up)' "$ROOT/observability/prometheus/rules/application.yml" \
+# A crashed exporter publishes no redis_up series at all, so `== 0` alone would stay silent. With
+# two instances the check must be per-instance: a plain absent(redis_up) is satisfied by the
+# surviving instance and would hide the dead one. This form covers both, and both-absent too.
+grep -Fq 'redis_up == 0 or sum(absent(redis_up{instance_role="history"}) or absent(redis_up{instance_role="affinity"})) > 0' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'Redis-down alert misses a crashed exporter with no redis_up series\n' >&2; exit 1; }
 grep -Fq 'GF_SERVER_HTTP_ADDR: 127.0.0.1' "$ROOT/observability/compose.yaml"
 grep -Fq 'GF_SERVER_HTTP_PORT: "3600"' "$ROOT/observability/compose.yaml"
