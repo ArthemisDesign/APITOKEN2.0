@@ -42,6 +42,8 @@
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | ветка |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | ветка |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | ветка |
+| Плоскость: классы ошибок + single-flight refresh | `crates/forward/src/kimi/transport.rs` | ветка |
+| Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | ветка |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -53,10 +55,14 @@
 
 ## Следующее действие
 
-`crates/forward/src/kimi/transport.rs` — per-profile HTTP к `api.kimi.com/coding` поверх
-назначенного прокси, single-flight refresh ротирующей семьи (победитель атомарно перезапечатывает
-конверт до снятия lock), классы ошибок 401/402/403/429/5xx по §4.1 манифеста. Загрузчик roster уже
-готов: движок видит опубликованные профили, но ещё не умеет к ним ходить.
+**Диагностировать падение deployment-полосы gate'а.** Последний прогон `agent-merge.sh` дал
+`typescript=0 rust=0 deployment=1 static=0` — единственная красная полоса deployment, при зелёных
+rust/ts/static. Причину найти до следующего мёржа; вероятные кандидаты —
+`deploy/monitoring-config.test.sh` (алерт без секции-анкора в `docs/ops/MONITORING.md`) или
+проверки `systemd`/`Caddyfile`, которые классификатор включил из-за новых путей.
+
+После этого — HTTP-клиент плоскости: реальные запросы поверх назначенного прокси, применение
+`transport::classify_status` и `selection::select` в цикле попыток, стрим и reserve/settle.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
