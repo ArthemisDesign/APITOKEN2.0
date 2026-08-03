@@ -16,11 +16,6 @@
 //! quota limit of 1000 measures to 0.1% instead of a whole percent, which narrows the
 //! quantisation envelope and lets a finite high bound be proved far sooner.
 
-// Dormant estimator: the durable read/write path and the /usages poller that drive it land in a
-// later step of this series, so nothing calls these entry points yet. The module is fully covered
-// by its own deterministic tests in the meantime.
-#![allow(dead_code)]
-
 use anyhow::Context as _;
 use registry::{KimiCalibrationRow, KimiWindowObservation, KIMI_FRACTION_SCALE};
 
@@ -315,6 +310,25 @@ pub(crate) fn rebuild_from_history(
         current = Some(apply_observation(current, observation)?);
     }
     Ok(current)
+}
+
+/// Apply one observation, rebuilding a stale estimator version only from immutable raw history.
+pub(crate) fn apply_observation_with_history(
+    existing: Option<KimiCalibrationRow>,
+    history: &[KimiWindowObservation],
+    observation: &KimiWindowObservation,
+) -> anyhow::Result<KimiCalibrationRow> {
+    if existing
+        .as_ref()
+        .is_none_or(|row| row.estimator_version == ESTIMATOR_VERSION)
+    {
+        return apply_observation(existing, observation);
+    }
+    let version = existing.as_ref().map_or(0, |row| row.version);
+    let mut rebuilt = rebuild_from_history(history)?
+        .context("missing immutable history for KIMI estimator rebuild")?;
+    rebuilt.version = version;
+    apply_observation(Some(rebuilt), observation)
 }
 
 fn interval_fraction_uncertainty(anchor_resolution: i64, current_resolution: i64) -> i64 {
@@ -640,19 +654,37 @@ mod tests {
 
     #[test]
     fn an_estimator_version_change_rebuilds_instead_of_trusting_stored_values() {
-        let mut legacy = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
+        let anchor = obs(WEEK, T0, T0 - 200, 0, 1_000, 0);
+        let mut legacy = apply_observation(None, &anchor).unwrap();
         legacy.estimator_version = ESTIMATOR_VERSION + 1;
         legacy.current_capacity_nano = Some(999_999_999);
         legacy.samples = 42;
-        let rebuilt = apply_observation(
+        legacy.version = 7;
+        let rebuilt = apply_observation_with_history(
             Some(legacy),
+            &[anchor],
             &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
         )
         .unwrap();
         assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
-        // The stale derived values are gone: this row re-anchored from the observation.
-        assert_eq!(rebuilt.samples, 0);
+        assert_eq!(
+            rebuilt.version, 7,
+            "the outer CAS generation must be preserved"
+        );
+        assert_eq!(rebuilt.samples, 1);
         assert_ne!(rebuilt.current_capacity_nano, Some(999_999_999));
+    }
+
+    #[test]
+    fn an_estimator_version_change_without_history_fails_closed() {
+        let mut legacy = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
+        legacy.estimator_version = ESTIMATOR_VERSION + 1;
+        assert!(apply_observation_with_history(
+            Some(legacy),
+            &[],
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .is_err());
     }
 
     #[test]

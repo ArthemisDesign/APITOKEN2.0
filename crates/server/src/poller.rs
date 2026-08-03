@@ -221,14 +221,27 @@ pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
     }
 }
 
-/// Discover atomic Auth Bot roster publications without making customer traffic or process
-/// restart the activation mechanism. The gateway itself owns full-generation validation,
-/// authenticated admission and last-good retention.
-pub async fn kimi_roster_loop(gateway: Arc<forward::KimiGateway>) {
+/// Discover atomic Auth Bot roster publications and poll free subscription quota independently.
+/// The gateway owns profile-idle exclusion, turn-FIFO ordering and durable observation/CAS; this
+/// server loop owns only cadence and never consumes customer concurrency permits.
+pub async fn kimi_maintenance_loop(gateway: Arc<forward::KimiGateway>) {
     const PROFILE_DISCOVERY_SECS: u64 = 15;
+    let mut discovery = tokio::time::interval(Duration::from_secs(PROFILE_DISCOVERY_SECS));
+    discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The startup preflight just authenticated the roster. Delay discovery's first immediate tick
+    // while allowing quota to anchor immediately without waiting a whole configured interval.
+    discovery.tick().await;
+    let mut quota = tokio::time::interval(gateway.quota_poll_interval());
+    quota.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)).await;
-        gateway.refresh_profiles().await;
+        tokio::select! {
+            _ = discovery.tick() => {
+                gateway.refresh_profiles().await;
+            }
+            _ = quota.tick() => {
+                gateway.poll_quotas().await;
+            }
+        }
     }
 }
 

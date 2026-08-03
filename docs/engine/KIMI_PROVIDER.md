@@ -210,8 +210,13 @@ pricing и pool mutation. Alias никогда не уходит в Claude upstr
   даже при downstream disconnect, а shutdown ждёт stream finalizer;
 - metered turn проходит customer reserve → durable delivering marker → terminal settlement;
   actual charge берётся по **served model**, а отсутствие terminal usage сохраняет полный hold;
-- immutable turn evidence доставляется через bounded FIFO; quota polling остаётся выключенным,
-  пока следующий checkpoint не соединит drain с `/usages`;
+- immutable turn evidence доставляется через bounded FIFO; `/usages` не выполняется при pending
+  head, а после HTTP-снимка writer повторно дренирует FIFO, читает durable cumulative spend и
+  завершает immutable observation/CAS до публикации quota steering;
+- poll берёт только idle profile snapshot и не вводит customer semaphore: generation, начавшаяся
+  во время HTTP, меняет monotonic epoch и целиком инвалидирует снимок. После финальной epoch-check
+  новый turn может идти параллельно, но его enqueue удерживается FIFO-барьером до записи более
+  раннего quota snapshot;
 - OAuth refresh держит per-profile single-flight, требует новую rotating refresh family и атомарно
   re-seal'ит envelope до снятия lock; blue-green loser перечитывает shared disk authority;
 - readiness проверяет только authenticated `/me`; первый 401 заставляет один forced refresh/retry;
@@ -317,6 +322,8 @@ ceiling). Отдельной per-call цены в актуальных прай�
   `TIME_UNIT_MINUTE`. `decision` → длительность нормализуется в секунды и хранится точно;
   окна 5ч и 7д живут **независимо** (§10.3).
 - `resetTime` — RFC3339, прямое reset evidence для машины состояний интервала.
+  `decision` → отсутствующий, невозможный или нестрогий timestamp отклоняет весь snapshot;
+  нормализация в Unix seconds выполняется до durable write, без локального `now + duration`.
 - `boosterWallet` — Extra Usage, реальные деньги в fixed-point (делитель 1 000 000 → центы),
   с валютой USD/CNY. `decision` → это **третий, отдельный** ledger: он не смешивается ни с
   нативной квотой, ни с API-долларами.
@@ -365,6 +372,31 @@ per-turn нативный ledger не из чего, и выводить его 
 длительности окна. `unknown` план блокирует агрегацию когорты — в отличие от Claude, здесь план
 машиночитаем, поэтому блокировка ожидается редкой.
 
+### 5.4 Runtime ordering
+
+`decision` Server запускает первый бесплатный `/usages` anchor сразу после `/me` preflight, затем
+повторяет его с `CLAUDE_API_KIMI_QUOTA_POLL_SECS`; roster discovery остаётся независимым
+15-секундным tick. Poll идёт последовательно по snapshot текущей whole-generation roster и не
+возвращает удалённый profile обратно в generation.
+
+Для каждого subject порядок load-bearing:
+
+1. профиль должен быть idle; poll запоминает monotonic generation-start epoch;
+2. известный bounded turn FIFO полностью дренируется, иначе HTTP вообще не выполняется;
+3. после `/usages` epoch и in-flight проверяются снова; любой turn, стартовавший во время GET,
+   инвалидирует весь snapshot без локальной очереди или ограничения customer concurrency;
+4. под FIFO-барьером выполняется ещё один drain, serial PostgreSQL writer читает cumulative
+   official API spend и для каждого независимого окна делает immutable observation + estimator
+   CAS; conflict одного turn quarantines только этот event, transient head удерживается;
+5. runtime публикует tightest used fraction и full-window cooling до exact reset только после
+   durable успеха **всех** окон. DB/CAS/parser/upstream failure сохраняет last-good quota.
+
+Shutdown закрывает admission и steady maintenance, ждёт stream finalizers, затем повторяет тот же
+turn-before-quota порядок. Финальный provider read ограничен уже существующим process deadline;
+его отмена не позволяет старому maintenance task записывать данные после общего billing flush.
+Под deadline не начинается rotating OAuth refresh: финальный poll использует только ещё валидный
+access token, а refresh/reseal остаётся неделимой steady-state операцией.
+
 ## 6. Что остаётся недоказанным
 
 Ниже — полный список `unknown`, каждый из которых fail closed и снимается только контролируемым
@@ -395,7 +427,7 @@ default-off и backend-only: ни одна публичная поверхнос
 | calibration authority (schema) | `crates/registry/migrations_pg/0027_kimi_window_calibration.sql` | готово, expand-only, 2 теста |
 | типы наблюдений | `crates/registry/src/kimi_calibration.rs` | готово, 10 тестов |
 | credential | `crates/kimi-credential` | готово, 18 тестов |
-| calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 18 тестов |
+| calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 19 тестов |
 | Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
 | Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово, device flow → atomic roster до выплаты |
 | transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config |
@@ -403,15 +435,14 @@ default-off и backend-only: ни одна публичная поверхнос
 | server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config |
 | server/forward: gateway + readiness | `crates/{server,forward}` | готово на mock-гейтах: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
 | last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
-| quota observations | `crates/{server,forward}` | **не сделано**: `/usages` ещё не дренирует FIFO и не пишет live observations/CAS |
+| quota observations | `crates/{server,forward}` | готово на mock/real-PG гейтах: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable и bounded shutdown |
 | observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — `/usages` poll только после полного FIFO drain, затем immutable
-quota observation и estimator CAS. После него следуют reset-aware health steering,
-observability/blue-green, live-runner и контролируемый живой прогон. Публикация не планируется
-вовсе (см. §0).
+Следующий producer-first шаг — bounded-cardinality observability и admin-only operational
+projection для runtime/delivery/calibration evidence. Затем следуют blue-green wiring,
+live-runner и контролируемый живой прогон. Публикация не планируется вовсе (см. §0).
 
 ## 8. Источники
 

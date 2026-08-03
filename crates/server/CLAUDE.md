@@ -101,9 +101,11 @@
   Отдельный Gemini health loop каждые 15 секунд обнаруживает новые roster profiles и по настроенной
   cadence проверяет health/quota. После durable settlement admin-only exact-target turn он принимает
   coalesced `Notify` и сразу выполняет бесплатный probe; обычные customer turns этот wake не посылают.
-  Отдельный KIMI roster loop каждые 15 секунд обнаруживает атомарную публикацию Auth Bot. Gateway
-  сам валидирует целую generation, проверяет новые/изменённые profiles через `/me`, сохраняет
-  last-good при любой ошибке и не обрывает in-flight lease удалённого profile.
+  Отдельный KIMI maintenance loop каждые 15 секунд обнаруживает атомарную публикацию Auth Bot, а
+  по `CLAUDE_API_KIMI_QUOTA_POLL_SECS` запускает бесплатный `/usages` sweep (первый anchor — сразу
+  после preflight). Gateway сам валидирует roster generation, idle/epoch границу quota snapshot,
+  turn-FIFO→durable spend→observation/CAS порядок и last-good publication; server владеет только
+  cadence. Ошибка одного profile не останавливает sweep остальных.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
   и PostgreSQL-only read evidence `db stage8-evidence`.
 
@@ -262,9 +264,10 @@
   а env/upstream pin и startup-fixed service composition — только здесь. Production unit обязан
   argv-level pin-ить Antigravity version + Cloud Code host + Node binary/version/SHA после shared
   EnvironmentFile.
-- Shutdown KIMI закрывает admission и roster reload, ждёт detached stream drain и turn FIFO; на
-  deadline abort-ит upstream read, сохраняет консервативный settlement и только затем разрешает
-  общий billing flush.
+- Shutdown KIMI закрывает admission и steady maintenance, отменяет висящий quota GET, ждёт detached
+  stream drain и turn FIFO; на deadline abort-ит stream read, сохраняет консервативный settlement,
+  затем под тем же deadline делает финальный turn-before-`/usages` pass. Ни старый poll, ни
+  финальный provider read не могут пережить общий billing flush.
 - Shutdown Claude после stream drain вызывает общий billing FIFO barrier: pending calibration head
   повторяется до outbox reconcile; процесс не объявляет flush успешным, пока exact evidence остаётся
   неприменённым.

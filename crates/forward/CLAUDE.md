@@ -950,9 +950,19 @@ runtime `Arc`; новый/изменённый credential проходит `/me`
 read/decrypt/client/probe и исчезнувший файл сохраняют last-good. Намеренное удаление — только
 валидный пустой roster; старый in-flight lease доживает на своём `Arc`. Перед публикацией affected
 refresh locks и повторное чтение не дают snapshot'у, устаревшему во время rotating reseal, заменить
-новую credential family. `/usages` runtime poll и quota observation/CAS — следующий checkpoint;
-до него provider остаётся mock-verified backend preview без quota-aware steering. Публичного
-каталога и router namespace нет.
+новую credential family.
+
+`/usages` poll выполняется только для idle profile без customer semaphore. Monotonic turn epoch
+инвалидирует весь HTTP snapshot, если generation стартовала во время GET; уже полученный snapshot
+защищён `turn_drain`, поэтому более новый finalizer не может добавить spend до observation. Перед
+HTTP и повторно перед writer-командой bounded turn FIFO обязан полностью дренироваться. Serial
+PostgreSQL writer сам читает cumulative subject spend, пишет immutable observations независимых
+окон и применяет estimator CAS; runtime quota/tightest-window steering меняется только после
+успеха всех окон. Transient head/DB/CAS/parser failure сохраняет last-good quota, exact replay —
+no-op, poisoned request-id quarantines только один turn. Shutdown отменяет steady poll, после
+stream barrier повторяет тот же turn-before-quota порядок и ограничивает финальный provider read
+общим deadline. Финальный pass не начинает rotating OAuth refresh: неделимый refresh/reseal
+остаётся только steady-state операцией. Публичного каталога и router namespace нет.
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.

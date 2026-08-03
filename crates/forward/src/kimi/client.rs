@@ -32,8 +32,8 @@ pub struct QuotaWindow {
     pub limit_units: i64,
     pub used_fraction_units: i64,
     pub measurement_resolution_fraction_units: i64,
-    /// RFC3339 reset instant as reported.
-    pub resets_at: Option<String>,
+    /// Exact RFC3339 reset instant normalized to Unix seconds.
+    pub resets_at: i64,
 }
 
 /// Extra Usage wallet: real money, a ledger of its own that mixes with neither the API-dollar nor
@@ -64,11 +64,15 @@ fn as_int(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn reset_from(raw: &Value) -> Option<String> {
-    raw.get("resetTime")
+fn reset_from(raw: &Value) -> Result<i64> {
+    let value = raw
+        .get("resetTime")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
-        .map(str::to_string)
+        .ok_or_else(|| anyhow!("KIMI quota window has no reset time"))?;
+    parse_rfc3339_seconds(value)
+        .filter(|timestamp| *timestamp > 0)
+        .ok_or_else(|| anyhow!("KIMI quota window has an invalid reset time"))
 }
 
 fn window_from(detail: &Value, duration_secs: i64, name: Option<String>) -> Result<QuotaWindow> {
@@ -83,8 +87,88 @@ fn window_from(detail: &Value, duration_secs: i64, name: Option<String>) -> Resu
         limit_units: limit,
         used_fraction_units: derived.used_fraction_units,
         measurement_resolution_fraction_units: derived.measurement_resolution_fraction_units,
-        resets_at: reset_from(detail),
+        resets_at: reset_from(detail)?,
     })
+}
+
+/// Strict RFC3339-to-Unix conversion for provider reset timestamps. Fractional seconds are
+/// accepted but ignored because the durable window authority is second-granular.
+fn parse_rfc3339_seconds(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let number = |start: usize, end: usize| value.get(start..end)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut timezone_index = 19usize;
+    if bytes.get(timezone_index) == Some(&b'.') {
+        timezone_index += 1;
+        let fraction_start = timezone_index;
+        while bytes.get(timezone_index).is_some_and(u8::is_ascii_digit) {
+            timezone_index += 1;
+        }
+        if timezone_index == fraction_start {
+            return None;
+        }
+    }
+    let offset = match bytes.get(timezone_index).copied()? {
+        b'Z' if timezone_index + 1 == bytes.len() => 0,
+        sign @ (b'+' | b'-') if timezone_index + 6 == bytes.len() => {
+            if bytes[timezone_index + 3] != b':' {
+                return None;
+            }
+            let hours = value
+                .get(timezone_index + 1..timezone_index + 3)?
+                .parse::<i64>()
+                .ok()?;
+            let minutes = value
+                .get(timezone_index + 4..timezone_index + 6)?
+                .parse::<i64>()
+                .ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = hours * 3_600 + minutes * 60;
+            if sign == b'+' {
+                seconds
+            } else {
+                -seconds
+            }
+        }
+        _ => return None,
+    };
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    days.checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)?
+        .checked_sub(offset)
 }
 
 /// Parse a `/usages` payload.
@@ -284,6 +368,7 @@ mod tests {
         assert_eq!(weekly.duration_secs, KIMI_WEEKLY_WINDOW_SECS);
         assert_eq!(weekly.used_units, 40);
         assert_eq!(weekly.limit_units, 1_000);
+        assert_eq!(weekly.resets_at, 1_786_339_251);
         // 40/1000 == 4%, and one native unit is 0.1% — far finer than a whole percent.
         assert_eq!(weekly.used_fraction_units, 4_000_000);
         assert_eq!(weekly.measurement_resolution_fraction_units, 100_000);
@@ -299,7 +384,9 @@ mod tests {
     fn the_weekly_summary_gets_its_documented_duration_rather_than_a_guess() {
         // The backend omits the window on the summary; the seven-day duration is a recorded fact
         // from the provider's own docs, applied explicitly.
-        let payload = json!({"usage": {"used": "0", "limit": "10"}});
+        let payload = json!({"usage": {
+            "used": "0", "limit": "10", "resetTime": "2099-01-01T00:00:00Z"
+        }});
         let snapshot = parse_usage(&payload).unwrap();
         assert_eq!(snapshot.windows[0].duration_secs, KIMI_WEEKLY_WINDOW_SECS);
     }
@@ -322,9 +409,9 @@ mod tests {
         let payload = json!({
             "limits": [
                 {"window": {"duration": 5, "timeUnit": "TIME_UNIT_HOUR"},
-                 "detail": {"used": "1", "limit": "10"}},
+                 "detail": {"used": "1", "limit": "10", "resetTime": "2099-01-01T00:00:00Z"}},
                 {"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
-                 "detail": {"used": "2", "limit": "10"}}
+                 "detail": {"used": "2", "limit": "10", "resetTime": "2099-01-01T00:00:00Z"}}
             ]
         });
         assert!(parse_usage(&payload).is_err());
@@ -332,7 +419,9 @@ mod tests {
 
     #[test]
     fn integers_are_accepted_as_strings_or_numbers() {
-        let payload = json!({"usage": {"used": 40, "limit": 1000}});
+        let payload = json!({"usage": {
+            "used": 40, "limit": 1000, "resetTime": "2099-01-01T00:00:00Z"
+        }});
         assert_eq!(parse_usage(&payload).unwrap().windows[0].used_units, 40);
     }
 
@@ -346,8 +435,38 @@ mod tests {
 
     #[test]
     fn used_above_limit_fails_closed() {
-        let payload = json!({"usage": {"used": "11", "limit": "10"}});
+        let payload = json!({"usage": {
+            "used": "11", "limit": "10", "resetTime": "2099-01-01T00:00:00Z"
+        }});
         assert!(parse_usage(&payload).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_invalid_reset_fails_closed() {
+        for payload in [
+            json!({"usage": {"used": "1", "limit": "10"}}),
+            json!({"usage": {
+                "used": "1", "limit": "10", "resetTime": "2099-02-30T00:00:00Z"
+            }}),
+        ] {
+            assert!(parse_usage(&payload).is_err());
+        }
+    }
+
+    #[test]
+    fn reset_parser_accepts_offsets_and_fractional_seconds() {
+        assert_eq!(
+            parse_rfc3339_seconds("2000-01-01T05:00:00.125+05:00"),
+            Some(946_684_800)
+        );
+        for invalid in [
+            "2000-01-01T00:00:00",
+            "2000-13-01T00:00:00Z",
+            "2000-01-01T00:00:00+24:00",
+            "2000-01-01T00:00:00.Z",
+        ] {
+            assert_eq!(parse_rfc3339_seconds(invalid), None, "accepted {invalid}");
+        }
     }
 
     #[test]

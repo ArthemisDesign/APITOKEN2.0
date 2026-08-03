@@ -56,7 +56,8 @@
 | Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | `9b61c443` |
 | Cleanup daemon: untouched managed worktree больше не считается merged | `deploy/agent-worktree.sh`, regression-suite, runbook | `05810766` |
 | Плоскость: exact Messages gateway, `/me`, refresh/reseal, stream lifecycle и settlement | `crates/forward/src/kimi/gateway.rs`, server composition | `137dec16` |
-| Плоскость: last-good atomic roster reload + server discovery loop | `crates/forward/src/kimi/{gateway,roster}.rs`, `crates/server` | текущий checkpoint |
+| Плоскость: last-good atomic roster reload + server discovery loop | `crates/forward/src/kimi/{gateway,roster}.rs`, `crates/server` | `31f27baa` |
+| Плоскость: `/usages` → FIFO/spend → immutable observation/CAS → steering | `crates/forward/src/{billing,kimi/**}`, `crates/server` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -71,16 +72,18 @@
    profiles, проверяет новые/изменённые через `/me`, публикует только целую generation и сохраняет
    last-good при read/decrypt/client/probe failure или исчезновении файла. Валидный пустой roster
    закрывает только новые admissions; in-flight lease продолжает жить.
-4. **Quota authority не подключена к runtime.** `/usages` parser и FIFO-ordering готовы, но нет
-   poll loop, который сначала полностью доставляет turn evidence, затем пишет quota observation и
-   обновляет estimator CAS. Поэтому пункт 4 терминального состояния ещё не выполнен.
+4. ~~Quota authority не была подключена к runtime.~~ **Закрыто на mock + real-PG гейтах.** Первый
+   `/usages` anchor выполняется после preflight, далее cadence независима от 15-секундного roster
+   discovery. Pending FIFO блокирует сам HTTP; generation во время GET инвалидирует snapshot без
+   customer semaphore; после ответа повторный drain предшествует exact spend read, immutable
+   independent-window observations и CAS. Steering/full-reset публикуются только после durable
+   успеха всех окон, а shutdown отменяет steady poll и повторяет порядок под общим deadline.
 
 ## Следующее действие
 
-**Подключить `/usages` poll к durable calibration authority:** перед каждым quota observation
-полностью дренировать bounded turn FIFO, затем записать immutable observation и применить
-estimator CAS. Не публиковать quota snapshot и не будить steering, пока exact spend head остаётся
-pending; shutdown обязан завершить тот же порядок.
+**Добавить bounded-cardinality observability и admin-only operational projection KIMI:** показать
+fleet/live profiles, quota freshness, FIFO pending/drop/persistence и calibration coverage без
+subject/credential/PII; добавить алерты с runbook-секциями и fault-тесты cardinality/redaction.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -102,13 +105,11 @@ pending; shutdown обязан завершить тот же порядок.
 
 ## Очередь после этого
 
-1. Поллер `/usages` с полным дренажом turn-FIFO перед каждым observation, immutable quota write,
-   estimator CAS, reset-aware health steering и shutdown drain.
-2. Observability: bounded-cardinality metrics, alerts/runbook и admin-only operational evidence.
-3. Blue-green/deploy wiring с default-off secret/config и rollback gate.
-4. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
+1. Observability: bounded-cardinality metrics, alerts/runbook и admin-only operational evidence.
+2. Blue-green/deploy wiring с default-off secret/config и rollback gate.
+3. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
-5. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
+4. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
 
 ## Заблокировано человеком
 

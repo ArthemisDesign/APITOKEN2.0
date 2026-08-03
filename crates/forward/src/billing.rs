@@ -34,8 +34,9 @@ use registry::{
     CodexTurnCalibrationEvent, CodexWindowObservation, FundingNormalizationApplyRequestV2,
     FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, GeminiExactCalibrationRow,
     GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
-    KimiTurnCalibrationEvent, ProviderCalibrationSubjectSpend,
-    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
+    KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation,
+    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -114,6 +115,21 @@ pub(crate) struct GeminiQuotaSnapshot {
     pub used_fraction_units: i64,
     pub measurement_resolution_fraction_units: i64,
     pub observed_at: i64,
+}
+
+/// One parsed `/usages` window before the billing writer pairs it with the subject's exact
+/// durable cumulative spend. The gateway never supplies that spend: reading it and storing the
+/// immutable observation belong to the same serial PostgreSQL writer hop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KimiQuotaSnapshot {
+    pub window_duration_secs: i64,
+    pub window_name: Option<String>,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    pub native_used_units: i64,
+    pub native_limit_units: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
 }
 
 type GeminiTurnPersistenceResult = (
@@ -1175,6 +1191,85 @@ fn observe_gemini_postgres(
     }
 }
 
+fn kimi_observation(
+    subject_id: &str,
+    plan: &str,
+    snapshot: &KimiQuotaSnapshot,
+    cumulative_api_spend_nano: i64,
+) -> KimiWindowObservation {
+    KimiWindowObservation {
+        subject_id: subject_id.to_owned(),
+        plan: plan.to_owned(),
+        window_duration_secs: snapshot.window_duration_secs,
+        window_name: snapshot.window_name.clone(),
+        resets_at: snapshot.resets_at,
+        observed_at: snapshot.observed_at,
+        native_used_units: snapshot.native_used_units,
+        native_limit_units: snapshot.native_limit_units,
+        used_fraction_units: snapshot.used_fraction_units,
+        measurement_resolution_fraction_units: snapshot.measurement_resolution_fraction_units,
+        cumulative_api_spend_nano,
+    }
+}
+
+fn kimi_observation_is_stale_or_duplicate(
+    row: &KimiCalibrationRow,
+    observation: &KimiWindowObservation,
+) -> bool {
+    observation.observed_at < row.observed_at
+        || (observation.observed_at == row.observed_at
+            && observation.resets_at == row.resets_at
+            && observation.native_used_units == row.native_used_units
+            && observation.native_limit_units == row.native_limit_units
+            && observation.used_fraction_units == row.used_fraction_units
+            && observation.measurement_resolution_fraction_units
+                == row.measurement_resolution_fraction_units
+            // A quota point can be observed before the matching turn reaches durable spend.
+            // An equal-second retry with higher spend is settlement catch-up, not a duplicate.
+            && !(row.used_fraction_units > row.anchor_used_fraction_units
+                && observation.cumulative_api_spend_nano > row.anchor_spend_nano))
+}
+
+fn observe_kimi_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &KimiWindowObservation,
+) -> anyhow::Result<KimiCalibrationRow> {
+    loop {
+        let existing = pg.load_kimi_calibration(
+            &observation.subject_id,
+            &observation.plan,
+            observation.window_duration_secs,
+        )?;
+        if let Some(existing) = existing.as_ref().filter(|row| {
+            row.estimator_version == crate::kimi_calibration::ESTIMATOR_VERSION
+                && kimi_observation_is_stale_or_duplicate(row, observation)
+        }) {
+            return Ok(existing.clone());
+        }
+        let history = if existing
+            .as_ref()
+            .is_some_and(|row| row.estimator_version != crate::kimi_calibration::ESTIMATOR_VERSION)
+        {
+            pg.load_kimi_window_observations(
+                &observation.subject_id,
+                &observation.plan,
+                observation.window_duration_secs,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state = crate::kimi_calibration::apply_observation_with_history(
+            existing,
+            &history,
+            observation,
+        )?;
+        if let Some(version) = pg.save_kimi_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
+}
+
 fn persist_gemini_turn_postgres(
     pg: &mut registry::pg::PgStore,
     url: &str,
@@ -1226,6 +1321,12 @@ enum WriteCmd {
     KimiRecordTurn {
         event: KimiTurnCalibrationEvent,
         reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    KimiObserveWindows {
+        subject_id: String,
+        plan: String,
+        snapshots: Vec<KimiQuotaSnapshot>,
+        reply: oneshot::Sender<anyhow::Result<Vec<KimiCalibrationRow>>>,
     },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
@@ -2048,6 +2149,36 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    /// Pair one whole `/usages` snapshot with exact durable subject spend and advance every
+    /// independent window through immutable observation + estimator CAS.
+    ///
+    /// The caller has already drained the gateway's bounded turn FIFO and keeps that drain
+    /// barrier held until this command returns. The writer still owns the spend read so no async
+    /// caller can accidentally construct an observation from a stale total.
+    pub(crate) async fn observe_kimi_windows(
+        &self,
+        subject_id: &str,
+        plan: &str,
+        snapshots: Vec<KimiQuotaSnapshot>,
+    ) -> anyhow::Result<Vec<KimiCalibrationRow>> {
+        if subject_id.is_empty() || plan.is_empty() || snapshots.is_empty() {
+            anyhow::bail!("invalid KIMI quota observation command");
+        }
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::KimiObserveWindows {
+                subject_id: subject_id.to_owned(),
+                plan: plan.to_owned(),
+                snapshots,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -2511,6 +2642,11 @@ impl AsyncBilling {
                         let _ = reply.send(result);
                     }
                     WriteCmd::KimiRecordTurn { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "KIMI calibration authority requires PostgreSQL"
+                        )));
+                    }
+                    WriteCmd::KimiObserveWindows { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "KIMI calibration authority requires PostgreSQL"
                         )));
@@ -3245,6 +3381,34 @@ impl AsyncBilling {
                                 &writer_owner,
                                 "KIMI turn calibration event",
                                 |pg| pg.record_kimi_turn(&event),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::KimiObserveWindows {
+                            subject_id,
+                            plan,
+                            snapshots,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "KIMI window observations",
+                                |pg| {
+                                    let spend = pg.kimi_subject_spend(&subject_id)?;
+                                    let mut states = Vec::with_capacity(snapshots.len());
+                                    for snapshot in &snapshots {
+                                        let observation = kimi_observation(
+                                            &subject_id,
+                                            &plan,
+                                            snapshot,
+                                            spend,
+                                        );
+                                        states.push(observe_kimi_postgres(pg, &observation)?);
+                                    }
+                                    Ok(states)
+                                },
                             );
                             let _ = reply.send(result);
                         }
@@ -5671,6 +5835,65 @@ mod tests {
         }
     }
 
+    fn kimi_event(
+        request_id: &str,
+        api_total_nanousd: i64,
+        completed_at: i64,
+    ) -> KimiTurnCalibrationEvent {
+        KimiTurnCalibrationEvent {
+            request_id: request_id.into(),
+            subject_id: "kimi-subject-a".into(),
+            plan: "Moderato".into(),
+            requested_model: "kimi-for-coding".into(),
+            served_model: "kimi-k2.7-code".into(),
+            context_mode: "256k".into(),
+            reasoning_effort: "high".into(),
+            tariff_schedule_id: "moonshot/test/v1".into(),
+            priced_ts: completed_at,
+            completed_at,
+            input_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            api_input_nanousd: api_total_nanousd,
+            api_cache_read_nanousd: 0,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 0,
+            api_total_nanousd,
+        }
+    }
+
+    fn kimi_snapshot(
+        duration_secs: i64,
+        used: i64,
+        limit: i64,
+        observed_at: i64,
+    ) -> KimiQuotaSnapshot {
+        let fraction = registry::kimi_fraction_from_native(used, limit).unwrap();
+        KimiQuotaSnapshot {
+            window_duration_secs: duration_secs,
+            window_name: Some(
+                if duration_secs == registry::KIMI_ROLLING_WINDOW_SECS {
+                    "rate"
+                } else {
+                    "weekly"
+                }
+                .into(),
+            ),
+            resets_at: if duration_secs == registry::KIMI_ROLLING_WINDOW_SECS {
+                2_000_000_000
+            } else {
+                2_000_500_000
+            },
+            observed_at,
+            native_used_units: used,
+            native_limit_units: limit,
+            used_fraction_units: fraction.used_fraction_units,
+            measurement_resolution_fraction_units: fraction.measurement_resolution_fraction_units,
+        }
+    }
+
     fn codex_event(
         request_id: &str,
         api_total_nanousd: i64,
@@ -7322,6 +7545,128 @@ mod tests {
 
         drop(billing);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn kimi_postgres_actor_pairs_spend_before_independent_window_cas() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping KIMI PostgreSQL actor matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("kimi-actor-{}-{unique}", std::process::id());
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let first = vec![
+                kimi_snapshot(registry::KIMI_ROLLING_WINDOW_SECS, 100, 1_000, 100),
+                kimi_snapshot(registry::KIMI_WEEKLY_WINDOW_SECS, 200, 1_000, 100),
+            ];
+            let anchored = billing
+                .observe_kimi_windows("kimi-subject-a", "Moderato", first)
+                .await
+                .unwrap();
+            assert_eq!(anchored.len(), 2);
+            assert!(anchored
+                .iter()
+                .all(|row| row.samples == 0 && row.version == 1));
+
+            assert!(billing
+                .record_kimi_turn(kimi_event("kimi-actor-turn", 1_000_000_000, 101))
+                .await
+                .unwrap());
+            let second = vec![
+                kimi_snapshot(registry::KIMI_ROLLING_WINDOW_SECS, 110, 1_000, 102),
+                kimi_snapshot(registry::KIMI_WEEKLY_WINDOW_SECS, 230, 1_000, 102),
+            ];
+            let measured = billing
+                .observe_kimi_windows("kimi-subject-a", "Moderato", second.clone())
+                .await
+                .unwrap();
+            assert_eq!(measured.len(), 2);
+            assert!(measured.iter().all(|row| {
+                row.samples == 1
+                    && row.observed_spend_nano == 1_000_000_000
+                    && row.current_capacity_nano.is_some()
+                    && row.version == 2
+            }));
+
+            // Exact replay is idempotent: no extra immutable row, sample or CAS version.
+            let replay = billing
+                .observe_kimi_windows("kimi-subject-a", "Moderato", second)
+                .await
+                .unwrap();
+            assert!(replay
+                .iter()
+                .all(|row| row.samples == 1 && row.version == 2));
+            billing.flush().await.unwrap();
+        });
+        drop(billing);
+
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        assert_eq!(
+            pg.kimi_subject_spend("kimi-subject-a").unwrap(),
+            1_000_000_000
+        );
+        for duration in [
+            registry::KIMI_ROLLING_WINDOW_SECS,
+            registry::KIMI_WEEKLY_WINDOW_SECS,
+        ] {
+            let history = pg
+                .load_kimi_window_observations("kimi-subject-a", "Moderato", duration)
+                .unwrap();
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[0].cumulative_api_spend_nano, 0);
+            assert_eq!(history[1].cumulative_api_spend_nano, 1_000_000_000);
+        }
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 
     #[test]

@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
-use crate::billing::AsyncBilling;
+use crate::billing::{AsyncBilling, KimiQuotaSnapshot};
 use crate::proxy::{local_err_for, HoldGuard, LocalErr};
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 
@@ -106,6 +106,9 @@ struct RuntimeProfile {
     client: wreq::Client,
     health: Mutex<ProfileHealth>,
     inflight: AtomicU32,
+    /// Monotonic start boundary for quota polls. If any customer lease starts while `/usages` is
+    /// in flight, that snapshot is discarded even when the turn finishes before the GET returns.
+    turn_epoch: AtomicU64,
 }
 
 impl RuntimeProfile {
@@ -126,6 +129,7 @@ impl RuntimeProfile {
             client,
             health: Mutex::new(ProfileHealth::default()),
             inflight: AtomicU32::new(0),
+            turn_epoch: AtomicU64::new(0),
         }))
     }
 
@@ -190,6 +194,26 @@ impl RuntimeProfile {
         health.transport_cool_until = 0;
     }
 
+    fn publish_quota(&self, snapshots: &[KimiQuotaSnapshot], observed_at: i64) {
+        let used = snapshots
+            .iter()
+            .map(|snapshot| snapshot.used_fraction_units)
+            .max();
+        let cool_until = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.used_fraction_units >= registry::KIMI_FRACTION_SCALE)
+            .map(|snapshot| snapshot.resets_at)
+            .max()
+            .unwrap_or(0);
+        let mut health = self.health.lock().expect("KIMI profile health lock");
+        health.authenticated = true;
+        health.auth_quarantined_until = 0;
+        health.transport_cool_until = 0;
+        health.quota_cool_until = cool_until;
+        health.quota_used_fraction_units = used;
+        health.quota_observed_at = Some(observed_at);
+    }
+
     fn authenticated(&self) -> bool {
         self.health
             .lock()
@@ -231,7 +255,10 @@ struct ProfileLease {
 
 impl ProfileLease {
     fn new(profile: Arc<RuntimeProfile>) -> Self {
-        profile.inflight.fetch_add(1, Ordering::AcqRel);
+        // Publish the live lease before its epoch. Pollers read in the opposite order, so every
+        // interleaving observes either in-flight work or an epoch change, never a false idle gap.
+        profile.inflight.fetch_add(1, Ordering::SeqCst);
+        profile.turn_epoch.fetch_add(1, Ordering::SeqCst);
         Self { profile }
     }
 }
@@ -337,6 +364,8 @@ pub struct KimiGateway {
     billing: Option<Arc<AsyncBilling>>,
     turn_queue: Mutex<TurnQueue>,
     turn_drain: AsyncMutex<()>,
+    quota_sweep: AsyncMutex<()>,
+    maintenance_abort: Notify,
     background: Arc<ActiveTaskTracker>,
     shutting_down: AtomicBool,
     abort_streams: AtomicBool,
@@ -381,6 +410,8 @@ impl KimiGateway {
             billing,
             turn_queue: Mutex::new(TurnQueue::new(DEFAULT_QUEUE_CAPACITY)),
             turn_drain: AsyncMutex::new(()),
+            quota_sweep: AsyncMutex::new(()),
+            maintenance_abort: Notify::new(),
             background: Arc::new(ActiveTaskTracker::default()),
             shutting_down: AtomicBool::new(false),
             abort_streams: AtomicBool::new(false),
@@ -522,6 +553,220 @@ impl KimiGateway {
         }
         self.live_profiles.store(live, Ordering::Release);
         live
+    }
+
+    pub fn quota_poll_interval(&self) -> Duration {
+        self.config.quota_poll_interval
+    }
+
+    /// Poll every currently published idle profile without imposing a customer concurrency cap.
+    /// Any lease that starts while `/usages` is in flight invalidates that profile's snapshot;
+    /// customer traffic is never queued or rejected merely because maintenance is reading quota.
+    pub async fn poll_quotas(&self) -> usize {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return 0;
+        }
+        let _sweep = self.quota_sweep.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return 0;
+        }
+        self.poll_quota_generation(false).await
+    }
+
+    async fn poll_quota_generation(&self, during_shutdown: bool) -> usize {
+        let mut published = 0usize;
+        for profile in self.profiles_snapshot() {
+            if !during_shutdown && self.shutting_down.load(Ordering::Acquire) {
+                break;
+            }
+            if self.poll_profile_quota(&profile, during_shutdown).await {
+                published += 1;
+            }
+        }
+        published
+    }
+
+    async fn poll_profile_quota(
+        &self,
+        profile: &Arc<RuntimeProfile>,
+        during_shutdown: bool,
+    ) -> bool {
+        let turn_epoch = profile.turn_epoch.load(Ordering::SeqCst);
+        if profile.inflight.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+
+        // Do not spend a provider request while an already-known turn head is undelivered.
+        {
+            let _drain = self.turn_drain.lock().await;
+            if !self.drain_turn_queue_locked().await {
+                return false;
+            }
+        }
+
+        let snapshot = match self.fetch_quota(profile, during_shutdown).await {
+            Ok(snapshot) if !snapshot.windows.is_empty() => snapshot,
+            Ok(_) => {
+                eprintln!(
+                    "KIMI quota poll returned no usable windows profile={}",
+                    profile.id
+                );
+                return false;
+            }
+            Err(error) => {
+                let effect = match error.verdict() {
+                    UpstreamVerdict::Auth => ProfileEffect::AuthQuarantine,
+                    UpstreamVerdict::QuotaExhausted => ProfileEffect::CoolUntilReset,
+                    UpstreamVerdict::Transport | UpstreamVerdict::MembershipTemporary => {
+                        ProfileEffect::TransportFault
+                    }
+                    UpstreamVerdict::Ok | UpstreamVerdict::ClientError => ProfileEffect::None,
+                };
+                profile.apply_effect(effect, now_unix());
+                self.refresh_live_profile_count();
+                eprintln!(
+                    "KIMI quota poll failed profile={} class={}",
+                    profile.id,
+                    error.class()
+                );
+                return false;
+            }
+        };
+        if profile.turn_epoch.load(Ordering::SeqCst) != turn_epoch
+            || profile.inflight.load(Ordering::SeqCst) != 0
+        {
+            // The provider snapshot can already include that turn while its durable spend is not
+            // yet paired. Discard the whole generation; the next idle poll will observe both.
+            return false;
+        }
+        let observed_at = now_unix();
+        let snapshots = snapshot
+            .windows
+            .into_iter()
+            .map(|window| KimiQuotaSnapshot {
+                window_duration_secs: window.duration_secs,
+                window_name: window.name,
+                resets_at: window.resets_at,
+                observed_at,
+                native_used_units: window.used_units,
+                native_limit_units: window.limit_units,
+                used_fraction_units: window.used_fraction_units,
+                measurement_resolution_fraction_units: window.measurement_resolution_fraction_units,
+            })
+            .collect::<Vec<_>>();
+
+        // Enqueue takes this same barrier before pushing a turn. Once acquired, a full drain stays
+        // full until every observation has crossed the serial writer and its CAS.
+        let _drain = self.turn_drain.lock().await;
+        if profile.turn_epoch.load(Ordering::SeqCst) != turn_epoch
+            || profile.inflight.load(Ordering::SeqCst) != 0
+        {
+            return false;
+        }
+        if !self.drain_turn_queue_locked().await {
+            return false;
+        }
+        let Some(billing) = &self.billing else {
+            return false;
+        };
+        if let Err(error) = billing
+            .observe_kimi_windows(&profile.subject_id, &profile.plan, snapshots.clone())
+            .await
+        {
+            eprintln!(
+                "KIMI quota observation persistence deferred profile={}: {error:#}",
+                profile.id
+            );
+            return false;
+        }
+
+        // Steering sees a snapshot only after every independent window is durable. A transient
+        // turn/observation/CAS failure therefore retains the exact previous quota generation.
+        profile.publish_quota(&snapshots, observed_at);
+        self.refresh_live_profile_count();
+        true
+    }
+
+    fn refresh_live_profile_count(&self) {
+        self.live_profiles.store(
+            self.profiles_snapshot()
+                .iter()
+                .filter(|candidate| candidate.authenticated())
+                .count(),
+            Ordering::Release,
+        );
+    }
+
+    async fn fetch_quota(
+        &self,
+        profile: &Arc<RuntimeProfile>,
+        during_shutdown: bool,
+    ) -> Result<client::QuotaSnapshot, GatewayFailure> {
+        let mut rejected_token = None;
+        loop {
+            let token = if during_shutdown {
+                // Never begin or cancel a rotating refresh family under the process deadline. A
+                // final free poll may use a still-valid token; steady maintenance owns refresh.
+                if rejected_token.is_some() {
+                    return Err(GatewayFailure::Auth);
+                }
+                let state = profile.credential.lock().await;
+                if needs_refresh(&state.credential, now_unix(), &self.config.transport) {
+                    return Err(GatewayFailure::Unavailable("kimi_refresh_deferred"));
+                }
+                state.credential.access_token.clone()
+            } else {
+                self.access_token(profile, rejected_token.as_deref()).await?
+            };
+            let send = profile
+                .client
+                .get(probe_url(&self.config.transport, ProbeRoute::Usage))
+                .header(
+                    self.config.transport.auth_scheme.header_name(),
+                    self.config.transport.auth_scheme.header_value(&token),
+                )
+                .header("accept", "application/json")
+                .send();
+            tokio::pin!(send);
+            let response = if during_shutdown {
+                send.await
+            } else {
+                tokio::select! {
+                    response = &mut send => response,
+                    _ = self.maintenance_shutdown_requested() => {
+                        return Err(GatewayFailure::Unavailable("kimi_shutdown"));
+                    }
+                }
+            }
+            .map_err(|_| GatewayFailure::Transport)?;
+            let status = response.status().as_u16();
+            let verdict = classify_status(status);
+            if verdict == UpstreamVerdict::Auth && rejected_token.is_none() {
+                drop_bounded(response, ERROR_BODY_LIMIT).await;
+                rejected_token = Some(token);
+                continue;
+            }
+            if verdict != UpstreamVerdict::Ok {
+                drop_bounded(response, ERROR_BODY_LIMIT).await;
+                return Err(GatewayFailure::from_verdict(verdict, status));
+            }
+            let body = read_bounded(response, ERROR_BODY_LIMIT).await?;
+            let payload: Value =
+                serde_json::from_slice(&body).map_err(|_| GatewayFailure::Protocol)?;
+            return client::parse_usage(&payload).map_err(|_| GatewayFailure::Protocol);
+        }
+    }
+
+    async fn maintenance_shutdown_requested(&self) {
+        loop {
+            let notified = self.maintenance_abort.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.shutting_down.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub fn operational_status(&self) -> KimiOperationalStatus {
@@ -1379,6 +1624,7 @@ impl KimiGateway {
     }
 
     async fn enqueue_turn(&self, event: KimiTurnCalibrationEvent) {
+        let _drain = self.turn_drain.lock().await;
         let accepted = self
             .turn_queue
             .lock()
@@ -1388,7 +1634,12 @@ impl KimiGateway {
             eprintln!("KIMI calibration event dropped because the bounded FIFO is full");
             return;
         }
-        let _drain = self.turn_drain.lock().await;
+        self.drain_turn_queue_locked().await;
+    }
+
+    /// Drain under `turn_drain`. A transient head remains in place and keeps quota publication
+    /// blocked; a permanent replay conflict quarantines exactly that event and continues.
+    async fn drain_turn_queue_locked(&self) -> bool {
         loop {
             let head = self
                 .turn_queue
@@ -1418,10 +1669,15 @@ impl KimiGateway {
                 break;
             }
         }
+        self.turn_queue
+            .lock()
+            .expect("KIMI turn queue lock")
+            .may_poll_quota()
     }
 
     pub async fn shutdown_until(&self, deadline: Option<tokio::time::Instant>) {
         self.shutting_down.store(true, Ordering::Release);
+        self.maintenance_abort.notify_waiters();
         self.background.close();
         match deadline {
             Some(deadline) => {
@@ -1436,7 +1692,23 @@ impl KimiGateway {
             }
             None => self.background.wait_idle().await,
         }
-        let _drain = self.turn_drain.lock().await;
+        let final_calibration = async {
+            let _sweep = self.quota_sweep.lock().await;
+            // Admission is closed and every stream finalizer is idle, so each profile is stable:
+            // finish the same turn-before-quota ordering used by the steady-state poller.
+            self.poll_quota_generation(true).await;
+            let _drain = self.turn_drain.lock().await;
+            self.drain_turn_queue_locked().await
+        };
+        let complete = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, final_calibration)
+                .await
+                .unwrap_or(false),
+            None => final_calibration.await,
+        };
+        if !complete {
+            eprintln!("KIMI shutdown calibration drain remained incomplete at deadline");
+        }
     }
 }
 
@@ -2052,9 +2324,10 @@ mod tests {
             for _ in 0..requests {
                 let (mut stream, _) = listener.accept().unwrap();
                 request_sender.send(read_request(&mut stream)).unwrap();
-                stream
-                    .write_all(&response_receiver.recv().unwrap())
-                    .unwrap();
+                let Ok(response) = response_receiver.recv() else {
+                    return;
+                };
+                stream.write_all(&response).unwrap();
             }
         });
         (
@@ -2102,6 +2375,286 @@ mod tests {
 
     fn affinity() -> Arc<AffinityStore> {
         Arc::new(AffinityStore::new(None, None, 3_600, 60, 10).unwrap())
+    }
+
+    fn calibration_event(request_id: &str) -> KimiTurnCalibrationEvent {
+        KimiTurnCalibrationEvent {
+            request_id: request_id.into(),
+            subject_id: "subject-1".into(),
+            plan: "unreviewed-base-plan".into(),
+            requested_model: "kimi-for-coding".into(),
+            served_model: "kimi-k2.7-code".into(),
+            context_mode: "256k".into(),
+            reasoning_effort: "high".into(),
+            tariff_schedule_id: KIMI_TARIFF_SCHEDULE_ID.into(),
+            priced_ts: 1_800_000_000,
+            completed_at: 1_800_000_001,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 2,
+            reasoning_output_tokens: 0,
+            api_input_nanousd: 600_000,
+            api_cache_read_nanousd: 0,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 600_000,
+            api_total_nanousd: 1_200_000,
+        }
+    }
+
+    fn quota_body(used: i64) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "usage": {
+                "used": used.to_string(),
+                "limit": "1000",
+                "resetTime": "2099-01-07T00:00:00Z"
+            },
+            "limits": [{
+                "name": "rate",
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {
+                    "used": used.to_string(),
+                    "limit": "100",
+                    "resetTime": "2099-01-01T00:00:00Z"
+                }
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_pending_turn_blocks_the_provider_quota_read() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let (base_url, mut requests, _responses) = controlled_mock_server(1);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        gateway
+            .turn_queue
+            .lock()
+            .unwrap()
+            .push(calibration_event("pending-before-poll"));
+
+        assert_eq!(gateway.poll_quotas().await, 0);
+        assert_eq!(gateway.operational_status().delivery.pending_events, 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), requests.recv())
+                .await
+                .is_err(),
+            "/usages must not run past an undelivered spend head"
+        );
+    }
+
+    #[tokio::test]
+    async fn customer_generation_start_invalidates_a_concurrent_quota_snapshot_without_waiting() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let (base_url, mut requests, responses) = controlled_mock_server(1);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        let profile = gateway.profiles_snapshot()[0].clone();
+
+        let poll = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move { gateway.poll_quotas().await })
+        };
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(b"GET /usages "));
+
+        // No semaphore or maintenance wait: a customer lease starts immediately while the GET is
+        // outstanding. Its epoch makes the returned snapshot unusable for calibration.
+        let lease = ProfileLease::new(profile.clone());
+        assert_eq!(profile.inflight.load(Ordering::Acquire), 1);
+        responses
+            .send(http_response("application/json", &quota_body(10)))
+            .unwrap();
+        assert_eq!(poll.await.unwrap(), 0);
+        drop(lease);
+        assert_eq!(
+            profile
+                .candidate("kimi-for-coding", now_unix())
+                .used_fraction_units,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_observation_failure_keeps_the_previous_quota_generation() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let (base_url, requests) =
+            mock_server(vec![http_response("application/json", &quota_body(10))]);
+        let sqlite = fixture.root.join("billing.sqlite");
+        let billing =
+            Arc::new(AsyncBilling::start(sqlite.to_string_lossy().into_owned(), 1).unwrap());
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), Some(billing))
+                .unwrap();
+        let profile = gateway.profiles_snapshot()[0].clone();
+
+        // SQLite deliberately refuses KIMI calibration. A successful provider GET is not enough
+        // to publish steering before the durable PostgreSQL observation/CAS succeeds.
+        assert_eq!(gateway.poll_quotas().await, 0);
+        assert!(requests.recv().unwrap().starts_with(b"GET /usages "));
+        let candidate = profile.candidate("kimi-for-coding", now_unix());
+        assert_eq!(candidate.used_fraction_units, None);
+        assert_eq!(candidate.quota_age_secs, None);
+    }
+
+    #[test]
+    fn a_durable_snapshot_publishes_the_tightest_window_and_exact_full_reset() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let gateway = KimiGateway::new_with_calibration(
+            config(&fixture.root, "http://127.0.0.1:1".into()),
+            None,
+        )
+        .unwrap();
+        let profile = gateway.profiles_snapshot()[0].clone();
+        let observed_at = now_unix();
+        let snapshots = vec![
+            KimiQuotaSnapshot {
+                window_duration_secs: registry::KIMI_ROLLING_WINDOW_SECS,
+                window_name: Some("rate".into()),
+                resets_at: observed_at + 300,
+                observed_at,
+                native_used_units: 60,
+                native_limit_units: 100,
+                used_fraction_units: 60_000_000,
+                measurement_resolution_fraction_units: 1_000_000,
+            },
+            KimiQuotaSnapshot {
+                window_duration_secs: registry::KIMI_WEEKLY_WINDOW_SECS,
+                window_name: None,
+                resets_at: observed_at + 600,
+                observed_at,
+                native_used_units: 1_000,
+                native_limit_units: 1_000,
+                used_fraction_units: registry::KIMI_FRACTION_SCALE,
+                measurement_resolution_fraction_units: 100_000,
+            },
+        ];
+        profile.publish_quota(&snapshots, observed_at);
+        let candidate = profile.candidate("kimi-for-coding", observed_at);
+        assert_eq!(
+            candidate.used_fraction_units,
+            Some(registry::KIMI_FRACTION_SCALE)
+        );
+        assert_eq!(candidate.quota_age_secs, Some(0));
+        assert_eq!(candidate.ineligible, Some(Ineligible::QuotaWall));
+        assert_eq!(
+            profile.health.lock().unwrap().quota_cool_until,
+            observed_at + 600
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_auth_capacity_and_transport_failures_stay_profile_local() {
+        for (status, responses, expected) in [
+            ("401 Unauthorized", 2, Some(Ineligible::AuthQuarantined)),
+            ("403 Forbidden", 1, Some(Ineligible::QuotaWall)),
+            (
+                "429 Too Many Requests",
+                1,
+                Some(Ineligible::TransportWedged),
+            ),
+            (
+                "503 Service Unavailable",
+                1,
+                Some(Ineligible::TransportWedged),
+            ),
+        ] {
+            let fixture = Fixture::new();
+            fixture.publish_console_profile();
+            let response = http_status_response(status, "application/json", br#"{}"#);
+            let (base_url, requests) = mock_server(vec![response; responses]);
+            let gateway =
+                KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+            let profile = gateway.profiles_snapshot()[0].clone();
+            profile.mark_healthy();
+            gateway.live_profiles.store(1, Ordering::Release);
+
+            assert_eq!(gateway.poll_quotas().await, 0, "status {status}");
+            assert_eq!(gateway.profiles_snapshot().len(), 1, "status {status}");
+            assert_eq!(
+                profile.candidate("kimi-for-coding", now_unix()).ineligible,
+                expected,
+                "status {status}"
+            );
+            for _ in 0..responses {
+                assert!(requests.recv().unwrap().starts_with(b"GET /usages "));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_profile_removed_during_quota_io_is_never_reintroduced() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let (base_url, mut requests, responses) = controlled_mock_server(1);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        let poll = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move { gateway.poll_quotas().await })
+        };
+        assert!(requests.recv().await.unwrap().starts_with(b"GET /usages "));
+
+        fixture.publish_empty_roster();
+        assert!(gateway.refresh_profiles().await);
+        assert!(gateway.profiles_snapshot().is_empty());
+        responses
+            .send(http_response("application/json", &quota_body(10)))
+            .unwrap();
+        assert_eq!(poll.await.unwrap(), 0);
+        assert!(gateway.profiles_snapshot().is_empty());
+        assert_eq!(gateway.readiness(), Err(NotReady::NoLiveProfile));
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_the_steady_poll_and_bounds_its_final_quota_read() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let (base_url, mut requests, responses) = controlled_mock_server(2);
+        let mut test_config = config(&fixture.root, base_url);
+        test_config.transport.request_timeout = Duration::from_secs(30);
+        let gateway = Arc::new(KimiGateway::new_with_calibration(test_config, None).unwrap());
+        let steady = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move { gateway.poll_quotas().await })
+        };
+        assert!(requests.recv().await.unwrap().starts_with(b"GET /usages "));
+
+        let started = tokio::time::Instant::now();
+        let stopping = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move {
+                gateway
+                    .shutdown_until(Some(started + Duration::from_millis(300)))
+                    .await
+            })
+        };
+        // The test server handles connections serially. Let it retire the cancelled steady-state
+        // socket so the final bounded shutdown attempt can be observed on the next connection.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        responses
+            .send(http_status_response(
+                "503 Service Unavailable",
+                "application/json",
+                br#"{}"#,
+            ))
+            .unwrap();
+        assert_eq!(steady.await.unwrap(), 0);
+        // The regular request was cancelled by shutdown; one final ordered attempt was permitted
+        // inside the existing process deadline and cancelled at that boundary.
+        assert!(requests.recv().await.unwrap().starts_with(b"GET /usages "));
+        stopping.await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "provider I/O must not extend shutdown past the bounded deadline"
+        );
     }
 
     #[tokio::test]
