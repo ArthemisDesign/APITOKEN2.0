@@ -5,7 +5,7 @@
 //! gateway owns only provider concerns — sealed profile state, native HTTP, placement, one-byte
 //! retry policy, terminal usage evidence and graceful stream drain.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -35,7 +35,7 @@ use super::client::{self, RefreshedTokens};
 use super::config::{readiness, KimiPlaneConfig, NotReady};
 use super::pool::{decide, AttemptPolicy, Delivery, NextStep, ProfileEffect};
 use super::queue::{DeliveryHealth, TurnQueue, WriteOutcome, DEFAULT_QUEUE_CAPACITY};
-use super::roster::{load_roster, reseal_credential, KimiProfile};
+use super::roster::{load_roster, load_roster_for_reload, reseal_credential, KimiProfile};
 use super::selection::{select, Candidate, Ineligible};
 use super::transport::{
     classify_status, needs_refresh, probe_url, ProbeRoute, RefreshLocks, UpstreamVerdict,
@@ -196,6 +196,33 @@ impl RuntimeProfile {
             .expect("KIMI profile health lock")
             .authenticated
     }
+
+    async fn matches_roster(&self, profile: &KimiProfile) -> bool {
+        if self.id != profile.id
+            || self.subject_id != profile.subject_id
+            || self.plan != profile.plan_name
+        {
+            return false;
+        }
+        let state = self.credential.lock().await;
+        state.key_id == profile.credential_key_id
+            && credentials_match(&state.credential, &profile.credential)
+    }
+}
+
+fn credentials_match(left: &KimiCredential, right: &KimiCredential) -> bool {
+    left.version == right.version
+        && left.kind == right.kind
+        && left.access_token == right.access_token
+        && left.refresh_token == right.refresh_token
+        && left.expires_at == right.expires_at
+        && left.scope == right.scope
+        && left.subject_id == right.subject_id
+        && left.plan_name == right.plan_name
+        && left.plan_level == right.plan_level
+        && left.status == right.status
+        && left.region == right.region
+        && left.proxy_url == right.proxy_url
 }
 
 struct ProfileLease {
@@ -306,6 +333,7 @@ pub struct KimiGateway {
     profiles: RwLock<Vec<Arc<RuntimeProfile>>>,
     cursor: AtomicU64,
     refresh_locks: RefreshLocks,
+    reload_lock: AsyncMutex<()>,
     billing: Option<Arc<AsyncBilling>>,
     turn_queue: Mutex<TurnQueue>,
     turn_drain: AsyncMutex<()>,
@@ -349,6 +377,7 @@ impl KimiGateway {
             profiles: RwLock::new(profiles),
             cursor: AtomicU64::new(0),
             refresh_locks: RefreshLocks::default(),
+            reload_lock: AsyncMutex::new(()),
             billing,
             turn_queue: Mutex::new(TurnQueue::new(DEFAULT_QUEUE_CAPACITY)),
             turn_drain: AsyncMutex::new(()),
@@ -366,6 +395,111 @@ impl KimiGateway {
 
     fn profiles_snapshot(&self) -> Vec<Arc<RuntimeProfile>> {
         self.profiles.read().expect("KIMI profiles lock").clone()
+    }
+
+    /// Atomically adopt one fully validated roster generation and retain the last-good snapshot on
+    /// every read, decrypt, client-build or identity-probe failure.
+    ///
+    /// Unchanged profiles keep their exact `Arc`, preserving health, in-flight accounting and HTTP
+    /// state. Changed/new profiles are authenticated through `/me` before publication. A final
+    /// roster read under every affected per-profile refresh lock prevents a blue-green rotating
+    /// refresh from being overwritten by an older credential snapshot.
+    pub async fn refresh_profiles(&self) -> bool {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return false;
+        }
+        let _reload = self.reload_lock.lock().await;
+        match self.reload_profiles().await {
+            Ok(changed) => changed,
+            Err(_) => {
+                // Do not render the error: malformed proxy URLs and credential envelopes may
+                // contain private egress or token material.
+                eprintln!("KIMI encrypted roster refresh skipped; last-good capacity retained");
+                false
+            }
+        }
+    }
+
+    async fn reload_profiles(&self) -> anyhow::Result<bool> {
+        const MAX_SNAPSHOT_RACES: usize = 3;
+        for _ in 0..MAX_SNAPSHOT_RACES {
+            let current = self.profiles_snapshot();
+            let loaded = self.load_reload_snapshot(!current.is_empty()).await?;
+            let mut next = Vec::with_capacity(loaded.len());
+            let mut needs_probe = Vec::new();
+            for loaded_profile in loaded {
+                let mut reused = None;
+                for existing in &current {
+                    if existing.matches_roster(&loaded_profile).await {
+                        reused = Some(existing.clone());
+                        break;
+                    }
+                }
+                match reused {
+                    Some(existing) => next.push(existing),
+                    None => {
+                        let profile = RuntimeProfile::from_roster(loaded_profile, &self.config)?;
+                        needs_probe.push(profile.clone());
+                        next.push(profile);
+                    }
+                }
+            }
+
+            if same_profile_generation(&current, &next) {
+                return Ok(false);
+            }
+
+            for profile in needs_probe {
+                self.probe_identity(&profile)
+                    .await
+                    .map_err(|error| anyhow!("KIMI reload identity class={}", error.class()))?;
+                profile.mark_healthy();
+            }
+
+            let ids = current
+                .iter()
+                .chain(&next)
+                .map(|profile| profile.id.clone())
+                .collect::<BTreeSet<_>>();
+            let mut locks = Vec::with_capacity(ids.len());
+            for id in ids {
+                locks.push(self.refresh_locks.for_profile(&id).await);
+            }
+            let mut guards = Vec::with_capacity(locks.len());
+            for lock in locks {
+                guards.push(lock.lock_owned().await);
+            }
+
+            let verified = self.load_reload_snapshot(!current.is_empty()).await?;
+            if !profiles_match_roster(&next, &verified).await {
+                drop(guards);
+                continue;
+            }
+            if self.shutting_down.load(Ordering::Acquire) {
+                return Ok(false);
+            }
+            let live = next
+                .iter()
+                .filter(|profile| profile.authenticated())
+                .count();
+            *self.profiles.write().expect("KIMI profiles lock") = next;
+            self.live_profiles.store(live, Ordering::Release);
+            return Ok(true);
+        }
+        anyhow::bail!("KIMI roster changed repeatedly during reload")
+    }
+
+    async fn load_reload_snapshot(
+        &self,
+        has_last_good_capacity: bool,
+    ) -> anyhow::Result<Vec<KimiProfile>> {
+        let root = self.config.roster_dir.clone();
+        let keyring = self.config.keyring.clone();
+        tokio::task::spawn_blocking(move || {
+            load_roster_for_reload(&root, &keyring, has_last_good_capacity)
+        })
+        .await
+        .map_err(|_| anyhow!("KIMI roster reader stopped"))?
     }
 
     pub async fn preflight(&self) -> usize {
@@ -1306,6 +1440,26 @@ impl KimiGateway {
     }
 }
 
+fn same_profile_generation(left: &[Arc<RuntimeProfile>], right: &[Arc<RuntimeProfile>]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| Arc::ptr_eq(left, right))
+}
+
+async fn profiles_match_roster(profiles: &[Arc<RuntimeProfile>], roster: &[KimiProfile]) -> bool {
+    if profiles.len() != roster.len() {
+        return false;
+    }
+    for (profile, loaded) in profiles.iter().zip(roster) {
+        if !profile.matches_roster(loaded).await {
+            return false;
+        }
+    }
+    true
+}
+
 fn bounded_requested_output(body: &mut Value) -> u64 {
     let supplied = body
         .get("max_tokens")
@@ -1754,10 +1908,11 @@ mod tests {
     };
     use std::fs;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
+    use tokio::sync::mpsc as async_mpsc;
 
     struct Fixture {
         root: PathBuf,
@@ -1780,10 +1935,14 @@ mod tests {
         }
 
         fn publish_console_profile(&self) {
+            self.publish_console_profile_with("console-secret");
+        }
+
+        fn publish_console_profile_with(&self, access_token: &str) {
             let credential = KimiCredential {
                 version: 1,
                 kind: KimiCredentialKind::ConsoleKey,
-                access_token: "console-secret".into(),
+                access_token: access_token.into(),
                 refresh_token: String::new(),
                 expires_at: 0,
                 scope: "coding".into(),
@@ -1807,6 +1966,13 @@ mod tests {
             write_private(
                 &self.root.join("profiles.json"),
                 &serde_json::to_vec(&roster).unwrap(),
+            );
+        }
+
+        fn publish_empty_roster(&self) {
+            write_private(
+                &self.root.join("profiles.json"),
+                &serde_json::to_vec(&json!({"profiles": []})).unwrap(),
             );
         }
     }
@@ -1863,43 +2029,75 @@ mod tests {
         std::thread::spawn(move || {
             for response in responses {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = Vec::new();
-                let mut scratch = [0u8; 4096];
-                let mut expected = None;
-                loop {
-                    let read = stream.read(&mut scratch).unwrap();
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&scratch[..read]);
-                    if expected.is_none() {
-                        if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                            let headers = String::from_utf8_lossy(&request[..end]);
-                            let length = headers
-                                .lines()
-                                .find_map(|line| {
-                                    line.split_once(':').and_then(|(name, value)| {
-                                        name.eq_ignore_ascii_case("content-length")
-                                            .then(|| value.trim().parse::<usize>().ok())
-                                            .flatten()
-                                    })
-                                })
-                                .unwrap_or(0);
-                            expected = Some(end + 4 + length);
-                        }
-                    }
-                    if expected.is_some_and(|expected| request.len() >= expected) {
-                        break;
-                    }
-                }
+                let request = read_request(&mut stream);
                 sender.send(request).unwrap();
                 stream.write_all(&response).unwrap();
             }
         });
         (format!("http://{address}"), receiver)
+    }
+
+    fn controlled_mock_server(
+        requests: usize,
+    ) -> (
+        String,
+        async_mpsc::UnboundedReceiver<Vec<u8>>,
+        mpsc::Sender<Vec<u8>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_sender, request_receiver) = async_mpsc::unbounded_channel();
+        let (response_sender, response_receiver) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                request_sender.send(read_request(&mut stream)).unwrap();
+                stream
+                    .write_all(&response_receiver.recv().unwrap())
+                    .unwrap();
+            }
+        });
+        (
+            format!("http://{address}"),
+            request_receiver,
+            response_sender,
+        )
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut scratch = [0u8; 4096];
+        let mut expected = None;
+        loop {
+            let read = stream.read(&mut scratch).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&scratch[..read]);
+            if expected.is_none() {
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':').and_then(|(name, value)| {
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                        })
+                        .unwrap_or(0);
+                    expected = Some(end + 4 + length);
+                }
+            }
+            if expected.is_some_and(|expected| request.len() >= expected) {
+                break;
+            }
+        }
+        request
     }
 
     fn affinity() -> Arc<AffinityStore> {
@@ -1980,6 +2178,200 @@ mod tests {
                 .contains("authorization: bearer console-secret"));
         }
         assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_cold_degraded_gateway_adopts_a_new_profile_only_after_identity_probe() {
+        let fixture = Fixture::new();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway = KimiGateway::new_degraded(config(&fixture.root, base_url), None);
+        assert_eq!(gateway.readiness(), Err(NotReady::NoLiveProfile));
+
+        fixture.publish_console_profile();
+        assert!(gateway.refresh_profiles().await);
+        assert_eq!(gateway.readiness(), Ok(()));
+        assert_eq!(gateway.operational_status().profiles, 1);
+        let request = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(request.starts_with("GET /me "));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer console-secret"));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_roster_reuses_the_exact_profile_without_another_probe() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let original = gateway.profiles_snapshot()[0].clone();
+
+        assert!(!gateway.refresh_profiles().await);
+        assert!(Arc::ptr_eq(&original, &gateway.profiles_snapshot()[0]));
+        assert_eq!(gateway.readiness(), Ok(()));
+        assert!(requests.recv().unwrap().starts_with(b"GET /me "));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn broken_or_disappeared_rosters_retain_the_last_good_ready_profile() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, _requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let original = gateway.profiles_snapshot()[0].clone();
+
+        write_private(&fixture.root.join("profiles.json"), br#"{"profiles":["#);
+        assert!(!gateway.refresh_profiles().await);
+        assert!(Arc::ptr_eq(&original, &gateway.profiles_snapshot()[0]));
+        assert_eq!(gateway.readiness(), Ok(()));
+
+        fs::remove_file(fixture.root.join("profiles.json")).unwrap();
+        assert!(!gateway.refresh_profiles().await);
+        assert!(Arc::ptr_eq(&original, &gateway.profiles_snapshot()[0]));
+        assert_eq!(gateway.readiness(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_empty_roster_removes_new_admission_but_not_an_existing_lease() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, _requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let original = gateway.profiles_snapshot()[0].clone();
+        let lease = ProfileLease::new(original.clone());
+        assert_eq!(original.inflight.load(Ordering::Acquire), 1);
+
+        fixture.publish_empty_roster();
+        assert!(gateway.refresh_profiles().await);
+        assert!(gateway.profiles_snapshot().is_empty());
+        assert_eq!(gateway.readiness(), Err(NotReady::NoLiveProfile));
+        assert_eq!(original.inflight.load(Ordering::Acquire), 1);
+        drop(lease);
+        assert_eq!(original.inflight.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn a_changed_credential_is_published_only_after_a_successful_identity_probe() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity),
+            http_response("application/json", identity),
+        ]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let original = gateway.profiles_snapshot()[0].clone();
+
+        fixture.publish_console_profile_with("replacement-secret");
+        assert!(gateway.refresh_profiles().await);
+        let replacement = gateway.profiles_snapshot()[0].clone();
+        assert!(!Arc::ptr_eq(&original, &replacement));
+        assert_eq!(gateway.readiness(), Ok(()));
+
+        let first = String::from_utf8(requests.recv().unwrap()).unwrap();
+        let second = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(first
+            .to_ascii_lowercase()
+            .contains("authorization: bearer console-secret"));
+        assert!(second
+            .to_ascii_lowercase()
+            .contains("authorization: bearer replacement-secret"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_probe_for_a_changed_credential_keeps_the_old_ready_snapshot() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let rejected = http_status_response("403 Forbidden", "application/json", br#"{}"#);
+        let (base_url, requests) =
+            mock_server(vec![http_response("application/json", identity), rejected]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let original = gateway.profiles_snapshot()[0].clone();
+
+        fixture.publish_console_profile_with("rejected-secret");
+        assert!(!gateway.refresh_profiles().await);
+        assert!(Arc::ptr_eq(&original, &gateway.profiles_snapshot()[0]));
+        assert_eq!(gateway.readiness(), Ok(()));
+        for expected in ["console-secret", "rejected-secret"] {
+            let request = String::from_utf8(requests.recv().unwrap()).unwrap();
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {expected}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn final_verification_never_publishes_a_credential_rotated_during_probe() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, mut requests, responses) = controlled_mock_server(2);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        let original = gateway.profiles_snapshot()[0].clone();
+        original.mark_healthy();
+        gateway.live_profiles.store(1, Ordering::Release);
+
+        fixture.publish_console_profile_with("candidate-secret");
+        let reload = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move { gateway.refresh_profiles().await })
+        };
+        let first = String::from_utf8(
+            tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(first
+            .to_ascii_lowercase()
+            .contains("authorization: bearer candidate-secret"));
+
+        // Simulate the other blue-green generation atomically rotating the shared envelope after
+        // this generation loaded it but before its candidate probe completed.
+        fixture.publish_console_profile_with("peer-rotated-secret");
+        responses
+            .send(http_response("application/json", identity))
+            .unwrap();
+
+        let second = String::from_utf8(
+            tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(second
+            .to_ascii_lowercase()
+            .contains("authorization: bearer peer-rotated-secret"));
+        responses
+            .send(http_response("application/json", identity))
+            .unwrap();
+
+        assert!(reload.await.unwrap());
+        let published = gateway.profiles_snapshot()[0].clone();
+        let state = published.credential.lock().await;
+        assert_eq!(state.credential.access_token, "peer-rotated-secret");
+        assert!(!Arc::ptr_eq(&original, &published));
+        assert_eq!(gateway.readiness(), Ok(()));
     }
 
     #[tokio::test]

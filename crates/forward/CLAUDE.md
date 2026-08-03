@@ -903,11 +903,11 @@ Consumer-контракт и нормализация трёх native shapes о�
    disconnect drain+settlement и shutdown deadline barrier.
 
 
-**KIMI provider foundation — dormant, server/handler пока не подключены:**
+**KIMI backend preview runtime — default-off, без публичного каталога:**
 `kimi_calibration.rs` содержит чистый estimator одного окна подписки Kimi Code, а `kimi/` —
-строгий loader encrypted roster, refresh/quota client, unlimited-parallel selector, provider fault
-classification, one-byte attempt policy, bounded turn FIFO и default-off typed config. Контракт и
-факты — `docs/engine/KIMI_PROVIDER.md`, схема — миграция
+строгий loader encrypted roster, last-good atomic reload, refresh/quota client,
+unlimited-parallel selector, provider fault classification, one-byte attempt policy, bounded turn
+FIFO и exact Anthropic Messages gateway. Контракт и факты — `docs/engine/KIMI_PROVIDER.md`, схема — миграция
 `0027_kimi_window_calibration.sql`, типы и PostgreSQL authority —
 `registry::kimi_calibration`/`PgStore::{record_kimi_turn,save_kimi_calibration}`.
 
@@ -931,11 +931,20 @@ Identity строки — `subject + exact paid plan + exact native duration в 
 `unattributed`; rollback к старому high-water не является новым расходом; смена estimator version
 перестраивает состояние из immutable history. Prior/EMA/WLS/float money нет.
 
-Foundation пока не является живой плоскостью: `server` уже читает и fail-closed валидирует
-default-off env/config, но generation/SSE не соединены с reserve→delivering→settlement, roster
-reload и quota poll не запущены. Поэтому наличие профиля в roster или включённого switch ещё не
-означает маршрутизируемую ёмкость. Провайдер backend-only, без публичного каталога и router
-namespace.
+Server композирует gateway только при strict default-off enable. Exact KIMI aliases внутри
+Anthropic `/v1/messages` проходят `/me` readiness, sticky unlimited-parallel selection,
+pre-byte-only rotation, transparent non-stream/SSE, disconnect drain и
+reserve→delivering→settlement→turn-FIFO. Cold/сломанный roster остаётся отдельным KIMI fail-closed
+path и никогда не проваливается в Claude.
+
+Roster discovery идёт каждые 15 секунд. Неизменённый profile обязан переиспользовать тот же
+runtime `Arc`; новый/изменённый credential проходит `/me` до whole-generation swap. Любая ошибка
+read/decrypt/client/probe и исчезнувший файл сохраняют last-good. Намеренное удаление — только
+валидный пустой roster; старый in-flight lease доживает на своём `Arc`. Перед публикацией affected
+refresh locks и повторное чтение не дают snapshot'у, устаревшему во время rotating reseal, заменить
+новую credential family. `/usages` runtime poll и quota observation/CAS — следующий checkpoint;
+до него provider остаётся mock-verified backend preview без quota-aware steering. Публичного
+каталога и router namespace нет.
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.

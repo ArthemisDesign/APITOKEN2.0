@@ -215,6 +215,14 @@ pricing и pool mutation. Alias никогда не уходит в Claude upstr
 - OAuth refresh держит per-profile single-flight, требует новую rotating refresh family и атомарно
   re-seal'ит envelope до снятия lock; blue-green loser перечитывает shared disk authority;
 - readiness проверяет только authenticated `/me`; первый 401 заставляет один forced refresh/retry;
+- server каждые 15 секунд ищет новую атомарную публикацию roster; неизменённый profile сохраняет
+  тот же runtime `Arc` с health/client/in-flight state, а новый или изменённый credential проходит
+  `/me` до публикации всей generation;
+- malformed/decrypt/client/probe failure и исчезнувший `profiles.json` сохраняют last-good
+  capacity. Намеренное удаление флота выражается только валидным пустым roster; удалённый profile
+  сразу закрыт для новых запросов, но уже выданный in-flight lease живёт до своего natural drop;
+- перед atomic swap gateway берёт affected refresh locks и повторно читает roster: snapshot,
+  устаревший из-за параллельной rotating refresh/re-seal, не может стать новой in-memory authority;
 - bearer redirect запрещён, неизвестные tool/media surfaces и неподдержанный reasoning fail closed;
 - синтетические ошибки проходят общий Anthropic-compatible sanitizer и не раскрывают клиенту имя
   внутреннего backend, roster, subscription или provider body;
@@ -394,14 +402,14 @@ default-off и backend-only: ни одна публичная поверхнос
 | durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
 | server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config |
 | server/forward: gateway + readiness | `crates/{server,forward}` | готово на mock-гейтах: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
-| roster reload + quota observations | `crates/{server,forward}` | **не сделано**: startup roster snapshot не reload'ится, `/usages` не пишет live observations |
+| last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
+| quota observations | `crates/{server,forward}` | **не сделано**: `/usages` ещё не дренирует FIFO и не пишет live observations/CAS |
 | observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — last-good roster reload: валидный новый snapshot атомарно заменяет
-runtime profiles, а ошибочный оставляет предыдущую ёмкость без частичной публикации. После него
-следуют `/usages` poll только после полного FIFO drain, запись quota observations/CAS,
+Следующий producer-first шаг — `/usages` poll только после полного FIFO drain, затем immutable
+quota observation и estimator CAS. После него следуют reset-aware health steering,
 observability/blue-green, live-runner и контролируемый живой прогон. Публикация не планируется
 вовсе (см. §0).
 

@@ -55,7 +55,8 @@
 | Плоскость: классы ошибок + single-flight refresh | `crates/forward/src/kimi/transport.rs` | `9b61c443` |
 | Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | `9b61c443` |
 | Cleanup daemon: untouched managed worktree больше не считается merged | `deploy/agent-worktree.sh`, regression-suite, runbook | `05810766` |
-| Плоскость: exact Messages gateway, `/me`, refresh/reseal, stream lifecycle и settlement | `crates/forward/src/kimi/gateway.rs`, server composition | текущий checkpoint |
+| Плоскость: exact Messages gateway, `/me`, refresh/reseal, stream lifecycle и settlement | `crates/forward/src/kimi/gateway.rs`, server composition | `137dec16` |
+| Плоскость: last-good atomic roster reload + server discovery loop | `crates/forward/src/kimi/{gateway,roster}.rs`, `crates/server` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -65,19 +66,21 @@
    загружает roster, `/me` подтверждает identity, exact Kimi aliases идут через selection,
    pre-byte policy, transparent non-stream/SSE и reserve→delivering→settlement→FIFO. Cold или
    повреждённый initial roster остаётся отдельным fail-closed Kimi path и не утекает в Claude.
-3. **Roster пока является startup snapshot.** После публикации/замены credential работающий
-   процесс не перечитывает roster; при ошибке последующего чтения ещё нет last-good reload,
-   сохраняющего текущую ёмкость.
+3. ~~Roster являлся startup snapshot.~~ **Закрыт на fault-гейтах.** Server каждые 15 секунд
+   обнаруживает атомарную публикацию; gateway повторно использует exact runtime state неизменённых
+   profiles, проверяет новые/изменённые через `/me`, публикует только целую generation и сохраняет
+   last-good при read/decrypt/client/probe failure или исчезновении файла. Валидный пустой roster
+   закрывает только новые admissions; in-flight lease продолжает жить.
 4. **Quota authority не подключена к runtime.** `/usages` parser и FIFO-ordering готовы, но нет
    poll loop, который сначала полностью доставляет turn evidence, затем пишет quota observation и
    обновляет estimator CAS. Поэтому пункт 4 терминального состояния ещё не выполнен.
 
 ## Следующее действие
 
-**Last-good roster reload в `crates/forward` + server poller:** периодически полностью прочитать и
-провалидировать roster, атомарно заменить runtime profile snapshot только после полного успеха,
-сохранить существующую ёмкость при любой ошибке и authenticated `/me`-проверкой ввести новые
-профили. Reload не должен обрывать in-flight lease или сбрасывать refresh single-flight.
+**Подключить `/usages` poll к durable calibration authority:** перед каждым quota observation
+полностью дренировать bounded turn FIFO, затем записать immutable observation и применить
+estimator CAS. Не публиковать quota snapshot и не будить steering, пока exact spend head остаётся
+pending; shutdown обязан завершить тот же порядок.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -99,14 +102,13 @@
 
 ## Очередь после этого
 
-1. Last-good roster reload без потери in-flight state и с `/me` admission новых profiles.
-2. Поллер `/usages` с полным дренажом turn-FIFO перед каждым observation, immutable quota write,
+1. Поллер `/usages` с полным дренажом turn-FIFO перед каждым observation, immutable quota write,
    estimator CAS, reset-aware health steering и shutdown drain.
-3. Observability: bounded-cardinality metrics, alerts/runbook и admin-only operational evidence.
-4. Blue-green/deploy wiring с default-off secret/config и rollback gate.
-5. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
+2. Observability: bounded-cardinality metrics, alerts/runbook и admin-only operational evidence.
+3. Blue-green/deploy wiring с default-off secret/config и rollback gate.
+4. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
-6. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
+5. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
 
 ## Заблокировано человеком
 

@@ -1359,6 +1359,7 @@ async fn serve() -> Result<()> {
                     // outage must not take unrelated Claude traffic out of readiness.
                     eprintln!("KIMI backend preview has no authenticated profile; exact KIMI aliases fail closed");
                 }
+                tokio::spawn(poller::kimi_roster_loop(gateway.clone()));
                 Some(gateway)
             }
             Err(_) => {
@@ -1368,10 +1369,12 @@ async fn serve() -> Result<()> {
                 eprintln!(
                     "KIMI backend preview initialization failed; exact KIMI aliases fail closed"
                 );
-                Some(Arc::new(forward::KimiGateway::new_degraded(
+                let gateway = Arc::new(forward::KimiGateway::new_degraded(
                     config,
                     Some(calibration_store),
-                )))
+                ));
+                tokio::spawn(poller::kimi_roster_loop(gateway.clone()));
+                Some(gateway)
             }
         }
     } else {

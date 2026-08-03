@@ -75,13 +75,29 @@ struct RosterEntry {
 /// unreadable is a roster we do not understand, and serving from a half-parsed one would quietly
 /// change which subscriptions carry traffic.
 pub fn load_roster(root: &Path, keyring: &CredentialKeyring) -> Result<Vec<KimiProfile>> {
+    load_roster_inner(root, keyring, true)
+}
+
+fn load_roster_inner(
+    root: &Path,
+    keyring: &CredentialKeyring,
+    missing_is_empty: bool,
+) -> Result<Vec<KimiProfile>> {
     let roster_path = root.join("profiles.json");
-    if !roster_path.exists() {
-        // An absent roster is a legitimate cold state, not a failure: the plane simply has no
-        // capacity yet.
-        return Ok(Vec::new());
-    }
-    let bytes = read_private(&roster_path)?;
+    let bytes = match read_private(&roster_path) {
+        Ok(bytes) => bytes,
+        Err(error)
+            if missing_is_empty
+                && error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            // An absent roster is a legitimate cold state, not a failure: the plane simply has no
+            // capacity yet. Decide from the protected read itself, not a racy exists-then-read.
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
+    };
     let parsed: ProfilesFile =
         serde_json::from_slice(&bytes).context("decode KIMI roster")?;
 
@@ -123,6 +139,30 @@ pub fn load_roster(root: &Path, keyring: &CredentialKeyring) -> Result<Vec<KimiP
         });
     }
     Ok(profiles)
+}
+
+/// Reload an already serving roster without treating disappearance as an intentional empty fleet.
+///
+/// Startup accepts an absent file as a legitimate cold plane. Once the gateway has last-good
+/// capacity, however, an absent file is indistinguishable from a partial/failed publication and
+/// must preserve that capacity. An operator who intentionally removes every profile publishes a
+/// valid `profiles.json` with an empty array.
+pub fn load_roster_for_reload(
+    root: &Path,
+    keyring: &CredentialKeyring,
+    has_last_good_capacity: bool,
+) -> Result<Vec<KimiProfile>> {
+    load_roster_inner(root, keyring, !has_last_good_capacity).map_err(|error| {
+        if has_last_good_capacity
+            && error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
+        {
+            anyhow::anyhow!("KIMI roster disappeared while last-good capacity exists")
+        } else {
+            error
+        }
+    })
 }
 
 /// Atomically replace one refreshed credential envelope before its in-memory refresh lock opens.
@@ -278,6 +318,25 @@ mod tests {
     fn an_absent_roster_is_a_cold_plane_not_an_error() {
         let fixture = Fixture::new();
         assert!(load_roster(&fixture.root, &keyring()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_serving_reload_never_treats_a_disappeared_roster_as_an_empty_fleet() {
+        let fixture = Fixture::new();
+        assert!(load_roster_for_reload(&fixture.root, &keyring(), false)
+            .unwrap()
+            .is_empty());
+        let error = load_roster_for_reload(&fixture.root, &keyring(), true).unwrap_err();
+        assert!(error.to_string().contains("roster disappeared"));
+    }
+
+    #[test]
+    fn an_explicit_empty_roster_is_the_only_way_to_remove_a_serving_fleet() {
+        let fixture = Fixture::new();
+        fixture.write_roster(&[]);
+        assert!(load_roster_for_reload(&fixture.root, &keyring(), true)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

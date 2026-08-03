@@ -101,6 +101,9 @@
   Отдельный Gemini health loop каждые 15 секунд обнаруживает новые roster profiles и по настроенной
   cadence проверяет health/quota. После durable settlement admin-only exact-target turn он принимает
   coalesced `Notify` и сразу выполняет бесплатный probe; обычные customer turns этот wake не посылают.
+  Отдельный KIMI roster loop каждые 15 секунд обнаруживает атомарную публикацию Auth Bot. Gateway
+  сам валидирует целую generation, проверяет новые/изменённые profiles через `/me`, сохраняет
+  last-good при любой ошибке и не обрывает in-flight lease удалённого profile.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
   и PostgreSQL-only read evidence `db stage8-evidence`.
 
@@ -117,8 +120,9 @@
   `CLAUDE_API_KIMI_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,BASE_URL,AUTH_SCHEME,QUOTA_POLL_SECS}` и
   передаётся целиком в `forward::kimi::config::build`. Disabled-плоскость не валидирует dormant
   значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, HTTPS,
-  известную auth-схему и положительный poll interval. До появления generation runtime успешная
-  валидация не означает readiness или маршрутизируемую ёмкость.
+  известную auth-схему и положительный poll interval. Exact KIMI aliases обслуживаются только
+  authenticated profiles; initial degraded gateway и ошибочный reload сохраняют отдельный
+  fail-closed KIMI path, не влияя на Claude readiness и не проваливая alias в Claude pool.
 - Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
@@ -253,6 +257,9 @@
   а env/upstream pin и startup-fixed service composition — только здесь. Production unit обязан
   argv-level pin-ить Antigravity version + Cloud Code host + Node binary/version/SHA после shared
   EnvironmentFile.
+- Shutdown KIMI закрывает admission и roster reload, ждёт detached stream drain и turn FIFO; на
+  deadline abort-ит upstream read, сохраняет консервативный settlement и только затем разрешает
+  общий billing flush.
 - Shutdown Claude после stream drain вызывает общий billing FIFO barrier: pending calibration head
   повторяется до outbox reconcile; процесс не объявляет flush успешным, пока exact evidence остаётся
   неприменённым.

@@ -221,6 +221,17 @@ pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
     }
 }
 
+/// Discover atomic Auth Bot roster publications without making customer traffic or process
+/// restart the activation mechanism. The gateway itself owns full-generation validation,
+/// authenticated admission and last-good retention.
+pub async fn kimi_roster_loop(gateway: Arc<forward::KimiGateway>) {
+    const PROFILE_DISCOVERY_SECS: u64 = 15;
+    loop {
+        tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)).await;
+        gateway.refresh_profiles().await;
+    }
+}
+
 pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64) {
     const SNAP_SECS: u64 = 60;
     let mut ticks: u64 = 0;
