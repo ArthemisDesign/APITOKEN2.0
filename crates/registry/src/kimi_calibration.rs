@@ -41,6 +41,146 @@ pub struct KimiWindowObservation {
     pub cumulative_api_spend_nano: i64,
 }
 
+/// One immutable, priced KIMI turn.
+///
+/// Requested and served model are separate fields on purpose: disabling thinking re-routes k3 and
+/// kimi-for-coding to K2.6, which carries a different rate card, so billing follows `served_model`
+/// while `requested_model` preserves what the customer actually asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KimiTurnCalibrationEvent {
+    /// Internal CSPRNG id, stable across every pre-byte retry. Never an upstream id.
+    pub request_id: String,
+    pub subject_id: String,
+    pub plan: String,
+    pub requested_model: String,
+    pub served_model: String,
+    /// `256k` or `1m`.
+    pub context_mode: String,
+    /// `low`, `high`, `max` or `off`.
+    pub reasoning_effort: String,
+    pub tariff_schedule_id: String,
+    pub priced_ts: i64,
+    pub completed_at: i64,
+
+    pub input_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
+    /// Subset of `output_tokens`.
+    pub reasoning_output_tokens: i64,
+
+    pub api_input_nanousd: i64,
+    pub api_cache_read_nanousd: i64,
+    pub api_cache_write_nanousd: i64,
+    pub api_output_nanousd: i64,
+    pub api_total_nanousd: i64,
+}
+
+/// Why a turn event cannot be persisted. Every variant refuses before money or evidence moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KimiEventError {
+    MissingIdentity,
+    InvalidTimestamp,
+    NegativeCounter,
+    ReasoningExceedsOutput,
+    /// Legs do not sum to the recorded total.
+    LegsDoNotSum,
+    /// A turn with no usage at all is not evidence of anything.
+    EmptyUsage,
+    UnsupportedContextMode,
+    UnsupportedReasoningEffort,
+}
+
+impl std::fmt::Display for KimiEventError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::MissingIdentity => "KIMI turn event is missing an identity field",
+            Self::InvalidTimestamp => "KIMI turn event has an invalid timestamp",
+            Self::NegativeCounter => "KIMI turn event has a negative counter",
+            Self::ReasoningExceedsOutput => "KIMI reasoning tokens exceed output tokens",
+            Self::LegsDoNotSum => "KIMI cost legs do not sum to the recorded total",
+            Self::EmptyUsage => "KIMI turn event carries no usage",
+            Self::UnsupportedContextMode => "KIMI turn event has an unsupported context mode",
+            Self::UnsupportedReasoningEffort => {
+                "KIMI turn event has an unsupported reasoning effort"
+            }
+        };
+        formatter.write_str(text)
+    }
+}
+
+impl std::error::Error for KimiEventError {}
+
+impl KimiTurnCalibrationEvent {
+    /// Validate before persistence. These mirror the migration's CHECK constraints so a bad event
+    /// is refused in Rust with a typed reason rather than as an opaque database error.
+    pub fn validate(&self) -> std::result::Result<(), KimiEventError> {
+        for field in [
+            &self.request_id,
+            &self.subject_id,
+            &self.plan,
+            &self.requested_model,
+            &self.served_model,
+            &self.tariff_schedule_id,
+        ] {
+            if field.is_empty() {
+                return Err(KimiEventError::MissingIdentity);
+            }
+        }
+        if !matches!(self.context_mode.as_str(), "256k" | "1m") {
+            return Err(KimiEventError::UnsupportedContextMode);
+        }
+        if !matches!(self.reasoning_effort.as_str(), "low" | "high" | "max" | "off") {
+            return Err(KimiEventError::UnsupportedReasoningEffort);
+        }
+        if self.priced_ts <= 0 || self.completed_at <= 0 {
+            return Err(KimiEventError::InvalidTimestamp);
+        }
+        let counters = [
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+            self.output_tokens,
+            self.reasoning_output_tokens,
+            self.api_input_nanousd,
+            self.api_cache_read_nanousd,
+            self.api_cache_write_nanousd,
+            self.api_output_nanousd,
+        ];
+        if counters.iter().any(|value| *value < 0) || self.api_total_nanousd <= 0 {
+            return Err(KimiEventError::NegativeCounter);
+        }
+        if self.reasoning_output_tokens > self.output_tokens {
+            return Err(KimiEventError::ReasoningExceedsOutput);
+        }
+        if self.input_tokens == 0
+            && self.cache_read_tokens == 0
+            && self.cache_write_tokens == 0
+            && self.output_tokens == 0
+        {
+            return Err(KimiEventError::EmptyUsage);
+        }
+        let sum = self
+            .api_input_nanousd
+            .checked_add(self.api_cache_read_nanousd)
+            .and_then(|value| value.checked_add(self.api_cache_write_nanousd))
+            .and_then(|value| value.checked_add(self.api_output_nanousd))
+            .ok_or(KimiEventError::LegsDoNotSum)?;
+        if sum != self.api_total_nanousd {
+            return Err(KimiEventError::LegsDoNotSum);
+        }
+        Ok(())
+    }
+
+    /// Whether a stored row is the exact same semantic event, for idempotent replay.
+    ///
+    /// A retry of the same internal request id must be a no-op. A *different* payload under that
+    /// id is a typed conflict, never an update: overwriting would silently rewrite priced history.
+    pub fn is_exact_replay_of(&self, stored: &Self) -> bool {
+        self == stored
+    }
+}
+
 /// Estimator state for one subject + paid plan + exact native window duration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KimiCalibrationRow {
@@ -172,6 +312,125 @@ pub const KIMI_ROLLING_WINDOW_SECS: i64 = 18_000;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event() -> KimiTurnCalibrationEvent {
+        KimiTurnCalibrationEvent {
+            request_id: "cal_1".into(),
+            subject_id: "u_1".into(),
+            plan: "Moderato".into(),
+            requested_model: "k3".into(),
+            served_model: "kimi-k3".into(),
+            context_mode: "1m".into(),
+            reasoning_effort: "high".into(),
+            tariff_schedule_id: "moonshot/kimi-open-platform/2026-08-03".into(),
+            priced_ts: 1_800_000_000,
+            completed_at: 1_800_000_001,
+            input_tokens: 100,
+            cache_read_tokens: 10,
+            cache_write_tokens: 5,
+            output_tokens: 20,
+            reasoning_output_tokens: 8,
+            api_input_nanousd: 300_000,
+            api_cache_read_nanousd: 3_000,
+            api_cache_write_nanousd: 15_000,
+            api_output_nanousd: 300_000,
+            api_total_nanousd: 618_000,
+        }
+    }
+
+    #[test]
+    fn a_well_formed_turn_event_validates() {
+        event().validate().unwrap();
+    }
+
+    #[test]
+    fn requested_and_served_model_are_both_preserved() {
+        // Disabling thinking re-routes to K2.6, which is priced differently; losing either side
+        // would make the charge unauditable.
+        let mut rerouted = event();
+        rerouted.requested_model = "k3".into();
+        rerouted.served_model = "kimi-k2.6".into();
+        rerouted.validate().unwrap();
+        assert_ne!(rerouted.requested_model, rerouted.served_model);
+    }
+
+    #[test]
+    fn legs_that_do_not_sum_to_the_total_fail_closed() {
+        // A total that does not equal its parts means the charge cannot be reconstructed.
+        let mut broken = event();
+        broken.api_total_nanousd += 1;
+        assert_eq!(broken.validate(), Err(KimiEventError::LegsDoNotSum));
+    }
+
+    #[test]
+    fn reasoning_above_output_fails_closed() {
+        let mut broken = event();
+        broken.reasoning_output_tokens = broken.output_tokens + 1;
+        assert_eq!(
+            broken.validate(),
+            Err(KimiEventError::ReasoningExceedsOutput)
+        );
+    }
+
+    #[test]
+    fn a_turn_with_no_usage_is_not_evidence() {
+        let mut empty = event();
+        empty.input_tokens = 0;
+        empty.cache_read_tokens = 0;
+        empty.cache_write_tokens = 0;
+        empty.output_tokens = 0;
+        empty.reasoning_output_tokens = 0;
+        assert_eq!(empty.validate(), Err(KimiEventError::EmptyUsage));
+    }
+
+    #[test]
+    fn missing_identity_or_bad_enums_fail_closed() {
+        for mutate in [
+            (|e: &mut KimiTurnCalibrationEvent| e.plan = String::new()) as fn(&mut _),
+            |e: &mut KimiTurnCalibrationEvent| e.served_model = String::new(),
+            |e: &mut KimiTurnCalibrationEvent| e.request_id = String::new(),
+        ] {
+            let mut broken = event();
+            mutate(&mut broken);
+            assert_eq!(broken.validate(), Err(KimiEventError::MissingIdentity));
+        }
+        let mut bad_mode = event();
+        bad_mode.context_mode = "512k".into();
+        assert_eq!(
+            bad_mode.validate(),
+            Err(KimiEventError::UnsupportedContextMode)
+        );
+        let mut bad_effort = event();
+        bad_effort.reasoning_effort = "ultra".into();
+        assert_eq!(
+            bad_effort.validate(),
+            Err(KimiEventError::UnsupportedReasoningEffort)
+        );
+    }
+
+    #[test]
+    fn a_zero_cost_turn_is_refused_so_free_traffic_never_becomes_evidence() {
+        let mut free = event();
+        free.api_input_nanousd = 0;
+        free.api_cache_read_nanousd = 0;
+        free.api_cache_write_nanousd = 0;
+        free.api_output_nanousd = 0;
+        free.api_total_nanousd = 0;
+        assert_eq!(free.validate(), Err(KimiEventError::NegativeCounter));
+    }
+
+    #[test]
+    fn exact_replay_is_recognised_and_a_changed_payload_is_not() {
+        let stored = event();
+        assert!(event().is_exact_replay_of(&stored));
+        // A different payload under the same request id must be a typed conflict upstream, never
+        // an update: overwriting would silently rewrite priced history.
+        let mut changed = event();
+        changed.api_total_nanousd += 1_000;
+        changed.api_output_nanousd += 1_000;
+        assert!(!changed.is_exact_replay_of(&stored));
+        assert_eq!(changed.request_id, stored.request_id);
+    }
 
     #[test]
     fn resolution_follows_the_real_limit_not_the_fixed_point_scale() {
