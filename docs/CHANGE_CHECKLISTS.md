@@ -67,6 +67,9 @@ withdrawal: публичные поверхности снимаются, а imm
       fresh exact plan digest, meaningful mutation reason, attributed audit и strict status;
       package CLI/ручной SSH не считать operator surface. UI consumer подключать отдельным
       коммитом только после GREEN producer SHA.
+- [ ] Terminal pre-cutover `strict + legacy_single` delivery восстанавливается только exact-CAS
+      `/v1/admin/pricing-policy-delivery-repairs`: старый payload не переписывать, generic dead job
+      не ретраить и commerce rows вручную не исправлять.
 - [ ] B2B current discount остаётся independent Anthropic rule; OpenKeys остаётся 1:1; service
       остаётся `meter_only` и all-model. Явно отметить неприменимые классы.
 - [ ] Партнёрские расчёты: `docs/sales/SALES_PAYOUT_PERIODS.md`, логика `apps/sales-api` —

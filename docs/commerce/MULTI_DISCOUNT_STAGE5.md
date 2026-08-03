@@ -31,6 +31,39 @@ Mutation не создаёт engine account, release или activation и не �
 Exact replay существующей service identity остаётся `unchanged`; смена metadata уже immutable
 active assignment требует следующей release generation и не переписывается на месте.
 
+## Восстановление terminal pre-cutover policy delivery
+
+Аккаунт, созданный старым commerce writer до фикса `strict + legacy_single`, мог получить active
+engine account, но terminal `engine_policy_jobs.status=dead` и остаться `pending` в commerce. Такой
+исторический blocker восстанавливается только защищённым producer endpoint:
+
+```text
+POST /v1/admin/pricing-policy-delivery-repairs
+{
+  "job_id":"<exact-dead-job-uuid>",
+  "expected_effective_version":1,
+  "expected_content_digest":"sha256:v1:<exact-job-digest>",
+  "reason":"repair reviewed pre-cutover compatibility failure"
+}
+```
+
+Endpoint требует AdminGuard key и проверенный `x-admin-actor`, а также подтверждает отсутствие
+global release head через engine provisioning context. В одной `SERIALIZABLE` transaction он
+принимает только current `dead` job с exact expected identity, исходным payload
+`strict + legacy_single + verified`, всё ещё не применённым commerce binding
+`legacy_scalar + legacy_single + verified`, terminal `sync_state=failed` и неизменившимся source
+policy head. Payload и identity старого job не переписываются и не запускаются повторно: меняется
+только lifecycle status на `superseded`, а новая immutable effective version получает корректный
+`shadow + legacy_single` payload и обычный
+durable worker job. Actor, reason и обе job identities записываются в `audit_log`; exact replay
+возвращает `unchanged` по этому audit link. Другой permanent error, изменившийся binding/source,
+уже применённая policy или post-cutover state отклоняются. Ручное изменение commerce rows или
+повторная отправка старого invalid payload не являются recovery-процедурой.
+
+После обычного worker ACK binding становится `confirmed`, а только тогда соответствующая
+commerce mapping переходит `pending → active`. Операция не меняет engine account, баланс, ledger,
+ключи, release head или клиентский трафик.
+
 Ручная assignment matrix больше не является authority. Все владельцы должны следовать из
 authoritative inventory. Один account в двух inventories, неизвестный account, active account без
 owner или отсутствующий engine account — typed blocker. Аккаунты не исключаются из target release

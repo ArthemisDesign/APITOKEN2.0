@@ -9,6 +9,7 @@ import {
   pricingPolicyEditorRulesSchema,
   type AccountPolicyBinding,
   type AccountPolicySpec,
+  type PricingPolicyDeliveryRepairResponseV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
   type ProviderSwitchSpec,
@@ -105,6 +106,20 @@ export class PricingPolicyWriteError extends Error {
   ) {
     super(message);
     this.name = "PricingPolicyWriteError";
+  }
+}
+
+export class PricingPolicyDeliveryRepairError extends Error {
+  constructor(
+    public readonly code:
+      | "repair_job_not_found"
+      | "repair_job_changed"
+      | "repair_not_eligible"
+      | "repair_precondition_changed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "PricingPolicyDeliveryRepairError";
   }
 }
 
@@ -562,6 +577,273 @@ async function materializeBinding(
     JSON.stringify({ policy, binding }),
   ]);
   return { effectiveVersion, digest: policy.content_digest, jobId };
+}
+
+interface DeadPolicyDeliveryRepairRow {
+  job_id: string;
+  job_status: "pending" | "processing" | "retry" | "confirmed" | "superseded" | "dead";
+  effective_version: string;
+  engine_account_id: string;
+  policy_id: string;
+  policy_version: string;
+  catalog_generation: string;
+  switch_generation: string;
+  schema_version: string;
+  content_digest: string;
+  payload: unknown;
+  binding_id: string;
+  binding_engine_account_id: string;
+  binding_policy_id: string;
+  policy_enforcement: AccountPolicyBinding["policy_enforcement"];
+  funding_enforcement: AccountPolicyBinding["funding_enforcement"];
+  reconciliation_state: AccountPolicyBinding["reconciliation_state"];
+  sync_state: "legacy" | "pending" | "confirmed" | "failed";
+  desired_effective_version: string | null;
+  desired_digest: string | null;
+  applied_effective_version: string | null;
+  applied_digest: string | null;
+}
+
+async function replayedPolicyDeliveryRepair(
+  client: PoolClient,
+  row: DeadPolicyDeliveryRepairRow,
+): Promise<PricingPolicyDeliveryRepairResponseV2 | null> {
+  const replay = await client.query<{
+    replacement_job_id: string;
+    replacement_effective_version: string;
+    replacement_content_digest: string;
+  }>(`
+    SELECT replacement.id::text AS replacement_job_id,
+           replacement.effective_version::text AS replacement_effective_version,
+           replacement.content_digest AS replacement_content_digest
+    FROM audit_log audit
+    JOIN engine_policy_jobs replacement
+      ON replacement.id::text = audit.metadata->>'replacementJobId'
+    WHERE audit.action = 'pricing.policy_delivery.compatibility_repaired'
+      AND audit.target_type = 'engine_policy_job'
+      AND audit.target_id = $1
+      AND audit.metadata->>'supersededJobId' = $1
+      AND audit.metadata->>'bindingId' = $2
+      AND audit.metadata->>'engineAccountId' = $3
+      AND audit.metadata->>'previousEffectiveVersion' = $4
+      AND audit.metadata->>'previousContentDigest' = $5
+    ORDER BY audit.created_at DESC, audit.id DESC
+    LIMIT 1
+  `, [
+    row.job_id,
+    row.binding_id,
+    row.engine_account_id,
+    row.effective_version,
+    row.content_digest,
+  ]);
+  const stored = replay.rows[0];
+  if (!stored) return null;
+  return {
+    status: "unchanged",
+    superseded_job_id: row.job_id,
+    replacement_job_id: stored.replacement_job_id,
+    binding_id: row.binding_id,
+    engine_account_id: row.engine_account_id,
+    previous_effective_version: positiveVersion(row.effective_version, "previous effective version"),
+    replacement_effective_version: positiveVersion(
+      stored.replacement_effective_version,
+      "replacement effective version",
+    ),
+    replacement_content_digest: stored.replacement_content_digest,
+  };
+}
+
+/**
+ * Rebuild one exact terminal pre-cutover delivery that was produced before the
+ * strict-policy + legacy-funding guard existed. Immutable policy/job history is retained: the
+ * invalid job becomes superseded and a newer shadow-policy delivery is queued atomically.
+ */
+export async function repairDeadPreCutoverPolicyDelivery(
+  database: Database,
+  input: {
+    jobId: string;
+    expectedEffectiveVersion: number;
+    expectedContentDigest: string;
+    actorId: string;
+    reason: string;
+  },
+): Promise<PricingPolicyDeliveryRepairResponseV2> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const result = await client.query<DeadPolicyDeliveryRepairRow>(`
+      SELECT job.id::text AS job_id, job.status AS job_status,
+             job.effective_version::text, job.engine_account_id, job.policy_id,
+             job.policy_version::text, job.catalog_generation::text,
+             job.switch_generation::text, job.schema_version::text,
+             job.content_digest, job.payload,
+             binding.id::text AS binding_id,
+             binding.engine_account_id AS binding_engine_account_id,
+             binding.policy_id AS binding_policy_id,
+             binding.policy_enforcement, binding.funding_enforcement,
+             binding.reconciliation_state, binding.sync_state,
+             binding.desired_effective_version::text,
+             binding.desired_digest,
+             binding.applied_effective_version::text,
+             binding.applied_digest
+      FROM engine_policy_jobs job
+      JOIN account_policy_bindings binding ON binding.id = job.binding_id
+      WHERE job.id = $1
+      FOR UPDATE OF job, binding
+    `, [input.jobId]);
+    const row = result.rows[0];
+    if (!row) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_job_not_found",
+        `pricing policy delivery ${input.jobId} was not found`,
+      );
+    }
+    const effectiveVersion = positiveVersion(row.effective_version, "effective version");
+    if (
+      effectiveVersion !== input.expectedEffectiveVersion
+      || row.content_digest !== input.expectedContentDigest
+    ) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_job_changed",
+        `pricing policy delivery ${input.jobId} does not match the expected immutable identity`,
+      );
+    }
+
+    if (row.job_status === "superseded") {
+      const replay = await replayedPolicyDeliveryRepair(client, row);
+      if (!replay) {
+        throw new PricingPolicyDeliveryRepairError(
+          "repair_precondition_changed",
+          `pricing policy delivery ${input.jobId} was superseded outside this repair`,
+        );
+      }
+      await client.query("COMMIT");
+      return replay;
+    }
+    if (row.job_status !== "dead") {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_not_eligible",
+        `pricing policy delivery ${input.jobId} is ${row.job_status}, not dead`,
+      );
+    }
+
+    const rawPayload = row.payload as { policy?: unknown; binding?: unknown } | null;
+    const policy = accountPolicySpecSchema.safeParse(rawPayload?.policy);
+    const rejectedBinding = accountPolicyBindingSchema.safeParse(rawPayload?.binding);
+    const exactRejectedIdentity = policy.success
+      && rejectedBinding.success
+      && policy.data.account_id === row.engine_account_id
+      && policy.data.effective_version === effectiveVersion
+      && policy.data.policy_id === row.policy_id
+      && policy.data.policy_version === positiveVersion(row.policy_version, "policy version")
+      && policy.data.catalog_generation === positiveVersion(row.catalog_generation, "catalog generation")
+      && policy.data.switch_generation === positiveVersion(row.switch_generation, "switch generation")
+      && policy.data.schema_version === positiveVersion(row.schema_version, "schema version")
+      && policy.data.content_digest === row.content_digest
+      && rejectedBinding.data.policy_enforcement === "strict"
+      && rejectedBinding.data.funding_enforcement === "legacy_single"
+      && rejectedBinding.data.reconciliation_state === "verified";
+    if (!exactRejectedIdentity) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_not_eligible",
+        `pricing policy delivery ${input.jobId} is not the historical strict + legacy_single incompatibility`,
+      );
+    }
+
+    const currentBindingIsExact = row.binding_id.length > 0
+      && row.binding_engine_account_id === row.engine_account_id
+      && row.binding_policy_id === row.policy_id
+      && row.policy_enforcement === "legacy_scalar"
+      && row.funding_enforcement === "legacy_single"
+      && row.reconciliation_state === "verified"
+      && row.sync_state === "failed"
+      && row.desired_effective_version === row.effective_version
+      && row.desired_digest === row.content_digest
+      && row.applied_effective_version === null
+      && row.applied_digest === null;
+    if (!currentBindingIsExact) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_precondition_changed",
+        `pricing policy binding ${row.binding_id} changed after the terminal delivery`,
+      );
+    }
+
+    const source = await sourcePolicyById(client, row.policy_id, "share");
+    if (
+      source.policy.version !== policy.data.policy_version
+      || source.policy.content_digest !== policy.data.source_policy_digest
+      || source.catalogGeneration !== policy.data.catalog_generation
+    ) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_precondition_changed",
+        `source policy ${row.policy_id} changed after the terminal delivery`,
+      );
+    }
+
+    const replacement = await materializeBinding(
+      client,
+      row.binding_id,
+      source.policy,
+      source.catalogGeneration,
+    );
+    const superseded = await client.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'superseded',
+          last_error = 'superseded by audited pre-cutover compatibility repair',
+          updated_at = now()
+      WHERE id = $1 AND status = 'dead'
+    `, [row.job_id]);
+    if ((superseded.rowCount ?? 0) !== 1) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_precondition_changed",
+        `pricing policy delivery ${input.jobId} changed during repair`,
+      );
+    }
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'pricing.policy_delivery.compatibility_repaired',
+              'engine_policy_job', $2, $3::jsonb)
+    `, [input.actorId, row.job_id, JSON.stringify({
+      supersededJobId: row.job_id,
+      replacementJobId: replacement.jobId,
+      bindingId: row.binding_id,
+      engineAccountId: row.engine_account_id,
+      previousEffectiveVersion: effectiveVersion,
+      previousContentDigest: row.content_digest,
+      replacementEffectiveVersion: replacement.effectiveVersion,
+      replacementContentDigest: replacement.digest,
+      reason: input.reason,
+    })]);
+    const response: PricingPolicyDeliveryRepairResponseV2 = {
+      status: "queued",
+      superseded_job_id: row.job_id,
+      replacement_job_id: replacement.jobId,
+      binding_id: row.binding_id,
+      engine_account_id: row.engine_account_id,
+      previous_effective_version: effectiveVersion,
+      replacement_effective_version: replacement.effectiveVersion,
+      replacement_content_digest: replacement.digest,
+    };
+    await client.query("COMMIT");
+    return response;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (
+      error instanceof PricingPolicyDeliveryRepairError
+      || !(error instanceof Error)
+    ) {
+      throw error;
+    }
+    if ((error as Error & { code?: string }).code === "40001") {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_precondition_changed",
+        "pricing policy delivery changed concurrently; read it again before repair",
+      );
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function createPolicyIdentityAndVersion(client: PoolClient, input: {

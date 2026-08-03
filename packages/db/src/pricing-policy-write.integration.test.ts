@@ -13,6 +13,7 @@ import {
   getManagedPricingCatalog,
   getManagedPricingPolicy,
   materializeProvisionedUserPolicy,
+  repairDeadPreCutoverPolicyDelivery,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
 } from "./pricing-policy-write.js";
@@ -445,6 +446,185 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       copied_to_user_id: userId,
       copied_client_policy_digest: policies.rows[1]!.content_digest,
       redeemed_source_policy_digest: policies.rows[0]!.content_digest,
+    });
+  });
+
+  it("replaces only the exact dead strict + legacy_single delivery and preserves immutable history", async () => {
+    const token = `repair-invite-${randomUUID()}`;
+    const email = `policy-repair-${randomUUID()}@example.test`;
+    await createBusinessInvite(database, {
+      ...inviteInput(randomUUID(), [ANTHROPIC_60]),
+      email,
+      tokenHash: tokenHash(token),
+    });
+    const user = await createEmailUser(
+      database,
+      email,
+      "password-hash",
+      tokenHash(token),
+    );
+    const engineAccountId = `acct_repair_${user.id.replaceAll("-", "")}`;
+    const staged = await materializeProvisionedUserPolicy(database, {
+      userId: user.id,
+      engineAccountId,
+    });
+    expect(staged).toMatchObject({ policyRequired: true, ready: false, jobId: expect.any(String) });
+
+    const original = await seedClient.query<{
+      id: string;
+      binding_id: string;
+      effective_version: string;
+      content_digest: string;
+    }>(`
+      SELECT id::text, binding_id::text, effective_version::text, content_digest
+      FROM engine_policy_jobs WHERE id = $1
+    `, [staged.jobId]);
+    const terminal = original.rows[0]!;
+    await seedClient.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'dead', attempts = 1,
+          payload = jsonb_set(payload, '{binding,policy_enforcement}', '"strict"'::jsonb),
+          last_error = 'account-policy activation rejected with invalid', updated_at = now()
+      WHERE id = $1
+    `, [terminal.id]);
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET sync_state = 'failed', last_error = 'account-policy activation rejected with invalid',
+          updated_at = now()
+      WHERE id = $1
+    `, [terminal.binding_id]);
+
+    const repaired = await repairDeadPreCutoverPolicyDelivery(database, {
+      jobId: terminal.id,
+      expectedEffectiveVersion: Number(terminal.effective_version),
+      expectedContentDigest: terminal.content_digest,
+      actorId: "operator@example.test",
+      reason: "repair the historical pre-cutover compatibility failure",
+    });
+    expect(repaired).toMatchObject({
+      status: "queued",
+      superseded_job_id: terminal.id,
+      replacement_job_id: expect.any(String),
+      binding_id: terminal.binding_id,
+      engine_account_id: engineAccountId,
+      previous_effective_version: 1,
+      replacement_effective_version: 2,
+    });
+
+    const stored = await seedClient.query<{
+      id: string;
+      status: string;
+      effective_version: string;
+      binding: Record<string, string>;
+      desired_effective_version: string;
+      sync_state: string;
+    }>(`
+      SELECT job.id::text, job.status, job.effective_version::text,
+             job.payload->'binding' AS binding,
+             binding.desired_effective_version::text,
+             binding.sync_state
+      FROM engine_policy_jobs job
+      JOIN account_policy_bindings binding ON binding.id = job.binding_id
+      WHERE job.binding_id = $1
+      ORDER BY job.effective_version
+    `, [terminal.binding_id]);
+    expect(stored.rows).toEqual([
+      expect.objectContaining({
+        id: terminal.id,
+        status: "superseded",
+        effective_version: "1",
+        desired_effective_version: "2",
+        sync_state: "pending",
+        binding: {
+          policy_enforcement: "strict",
+          funding_enforcement: "legacy_single",
+          reconciliation_state: "verified",
+        },
+      }),
+      expect.objectContaining({
+        id: repaired.replacement_job_id,
+        status: "pending",
+        effective_version: "2",
+        desired_effective_version: "2",
+        sync_state: "pending",
+        binding: {
+          policy_enforcement: "shadow",
+          funding_enforcement: "legacy_single",
+          reconciliation_state: "verified",
+        },
+      }),
+    ]);
+    await expect(repairDeadPreCutoverPolicyDelivery(database, {
+      jobId: terminal.id,
+      expectedEffectiveVersion: 1,
+      expectedContentDigest: terminal.content_digest,
+      actorId: "operator@example.test",
+      reason: "exact retry after a lost response",
+    })).resolves.toMatchObject({
+      status: "unchanged",
+      replacement_job_id: repaired.replacement_job_id,
+    });
+    await expect(repairDeadPreCutoverPolicyDelivery(database, {
+      jobId: terminal.id,
+      expectedEffectiveVersion: 1,
+      expectedContentDigest: `sha256:v1:${"0".repeat(64)}`,
+      actorId: "operator@example.test",
+      reason: "stale identity must not win",
+    })).rejects.toMatchObject({ code: "repair_job_changed" });
+
+    let replacementClaimed = false;
+    for (let index = 0; index < 5; index += 1) {
+      const job = await claimNextPricingControlJob(database, `policy-repair-${index}`);
+      if (!job) break;
+      if (job.kind === "catalog") {
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: { catalog: job.spec, expectation: "absent" },
+        });
+      } else if (job.kind === "switches") {
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: { switches: job.spec, expectation: "absent" },
+        });
+      } else {
+        replacementClaimed = job.id === repaired.replacement_job_id;
+        await confirmPricingControlJob(database, job, {
+          result: "applied",
+          identity: {
+            policy: job.spec,
+            activation: {
+              account_id: job.spec.account_id,
+              effective_version: job.spec.effective_version,
+              content_digest: job.spec.content_digest,
+              binding: job.binding,
+            },
+            expectation: "unbound",
+          },
+        });
+      }
+    }
+    expect(replacementClaimed).toBe(true);
+    const completed = await seedClient.query<{ account_status: string; sync_state: string }>(`
+      SELECT account.status AS account_status, binding.sync_state
+      FROM engine_accounts account
+      JOIN account_policy_bindings binding ON binding.user_id = account.user_id
+      WHERE account.user_id = $1
+    `, [user.id]);
+    expect(completed.rows[0]).toEqual({ account_status: "active", sync_state: "confirmed" });
+
+    const audit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'pricing.policy_delivery.compatibility_repaired'
+        AND target_id = $1
+    `, [terminal.id]);
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.metadata).toMatchObject({
+      supersededJobId: terminal.id,
+      replacementJobId: repaired.replacement_job_id,
+      bindingId: terminal.binding_id,
+      engineAccountId,
+      previousEffectiveVersion: 1,
+      replacementEffectiveVersion: 2,
     });
   });
 }, TEST_TIMEOUT_MS);

@@ -162,6 +162,7 @@ GET       /admin/service-policies
 GET/PATCH /admin/service-policies/{id}?product_id=...
 GET       /admin/service-account-inventory
 PUT       /admin/service-account-inventory/{service_id}
+POST      /admin/pricing-policy-delivery-repairs
 GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
@@ -239,6 +240,13 @@ a fresh dry-run digest and then performs one attributed idempotent full-class ap
 POST /v1/admin/pricing-stage5-v2/dry-run       body: {}
 POST /v1/admin/pricing-stage5-v2/materialize   body: {plan_digest, reason}
 ```
+
+Если созданный до pre-cutover compatibility fix аккаунт застрял на exact terminal policy job с
+историческим `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs` принимает
+его UUID, effective version, content digest и reason. Producer работает только при отсутствующем
+global release head, атомарно сохраняет старый job как `superseded`, создаёт следующую immutable
+`shadow + legacy_single` delivery и audit link. Он не является generic retry permanent-ошибок и
+не разрешает ручное редактирование job/binding rows.
 
 The operation exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
 `REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact

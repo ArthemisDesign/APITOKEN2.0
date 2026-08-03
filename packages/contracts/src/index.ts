@@ -1050,6 +1050,35 @@ export const pricingStage6StageRequestV2Schema = pricingStage6PlanQueryV2Schema.
 }).strict();
 export type PricingStage6StageRequestV2 = z.infer<typeof pricingStage6StageRequestV2Schema>;
 
+const legacyPricingControlDigestV1Schema = z.string().regex(/^sha256:v1:[0-9a-f]{64}$/);
+
+/**
+ * Narrow operator repair for a dead pre-cutover policy delivery that was durably built with the
+ * historical invalid strict-policy + legacy-funding binding. The exact terminal job is the CAS
+ * source; the producer creates a newer immutable effective policy instead of rewriting history.
+ */
+export const pricingPolicyDeliveryRepairRequestV2Schema = z.object({
+  job_id: z.string().uuid(),
+  expected_effective_version: z.number().int().safe().positive(),
+  expected_content_digest: legacyPricingControlDigestV1Schema,
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingPolicyDeliveryRepairRequestV2 =
+  z.infer<typeof pricingPolicyDeliveryRepairRequestV2Schema>;
+
+export const pricingPolicyDeliveryRepairResponseV2Schema = z.object({
+  status: z.enum(["queued", "unchanged"]),
+  superseded_job_id: z.string().uuid(),
+  replacement_job_id: z.string().uuid(),
+  binding_id: z.string().uuid(),
+  engine_account_id: z.string().startsWith("acct_").max(200),
+  previous_effective_version: z.number().int().safe().positive(),
+  replacement_effective_version: z.number().int().safe().positive(),
+  replacement_content_digest: legacyPricingControlDigestV1Schema,
+}).strict();
+export type PricingPolicyDeliveryRepairResponseV2 =
+  z.infer<typeof pricingPolicyDeliveryRepairResponseV2Schema>;
+
 const pricingStageControlPositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
   (value) => BigInt(value) > 0n,
   "value must be positive",

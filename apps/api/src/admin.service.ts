@@ -4,12 +4,15 @@ import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
+  pricingPolicyDeliveryRepairResponseV2Schema,
   pricingReleaseActivationStageResponseV2Schema,
   pricingStage5ControlResultV2Schema,
   pricingStage6StatusV2Schema,
   pricingStage8CaptureControlV2Schema,
   pricingStage8CaptureStageResponseV2Schema,
   type PricingReleaseActivationStageRequestV2,
+  type PricingPolicyDeliveryRepairRequestV2,
+  type PricingPolicyDeliveryRepairResponseV2,
   type PricingStage5ControlResultV2,
   type PricingStage5MaterializeRequestV2,
   type PricingStage6StageRequestV2,
@@ -42,6 +45,8 @@ import {
   readServiceAccountInventoryV2,
   readPricingReleaseActivationControlV2,
   readPricingStage8CaptureControlV2,
+  repairDeadPreCutoverPolicyDelivery,
+  PricingPolicyDeliveryRepairError,
   runStage5MaterializerV2,
   revokeBusinessInvite,
   rotateBusinessInvite,
@@ -270,6 +275,28 @@ export class AdminService {
     });
     const status = await getFundingNormalizationStageStatusV2(this.database, input.plan_digest);
     return pricingStage6StatusV2Schema.parse({ staged_job_id: stagedJobId, ...status });
+  }
+
+  async repairPricingPolicyDeliveryV2(
+    input: PricingPolicyDeliveryRepairRequestV2,
+    actorId: string,
+  ): Promise<PricingPolicyDeliveryRepairResponseV2> {
+    const provisioningContext = await this.engine.getPricingReleaseProvisioningContextV2();
+    if (provisioningContext !== null) {
+      throw new PricingPolicyDeliveryRepairError(
+        "repair_not_eligible",
+        "legacy policy delivery repair is unavailable after the global pricing release cutover",
+      );
+    }
+    return pricingPolicyDeliveryRepairResponseV2Schema.parse(
+      await repairDeadPreCutoverPolicyDelivery(this.database, {
+        jobId: input.job_id,
+        expectedEffectiveVersion: input.expected_effective_version,
+        expectedContentDigest: input.expected_content_digest,
+        actorId,
+        reason: input.reason,
+      }),
+    );
   }
 
   async getPricingReleaseActivationControlV2(): Promise<Record<string, unknown>> {

@@ -1,6 +1,7 @@
 import { BadRequestException, HttpException, NotFoundException } from "@nestjs/common";
 import {
   FundingNormalizationJobV2Error,
+  PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
   PricingStage8CaptureJobV2Error,
@@ -439,6 +440,45 @@ describe("managed pricing HTTP contract", () => {
       ...body,
       expected_content_digest: `sha256:v2:${"a".repeat(64)}`,
     })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("queues only an exact audited policy-delivery repair with a verified actor", async () => {
+    const repairPricingPolicyDeliveryV2 = vi.fn().mockResolvedValue({
+      status: "queued",
+      replacement_job_id: "22222222-2222-4222-8222-222222222222",
+    });
+    const controller = new AdminController({ repairPricingPolicyDeliveryV2 } as unknown as AdminService);
+    const body = {
+      job_id: "11111111-1111-4111-8111-111111111111",
+      expected_effective_version: 1,
+      expected_content_digest: `sha256:v1:${"a".repeat(64)}`,
+      reason: "repair the reviewed historical pre-cutover delivery",
+    };
+
+    await expect(controller.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
+      .resolves.toMatchObject({ status: "queued" });
+    expect(repairPricingPolicyDeliveryV2).toHaveBeenCalledWith(body, "owner@example.test");
+    await expect(controller.repairPricingPolicyDeliveryV2(body))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.repairPricingPolicyDeliveryV2({
+      ...body,
+      expected_content_digest: `sha256:v2:${"a".repeat(64)}`,
+    }, "owner@example.test")).rejects.toBeInstanceOf(BadRequestException);
+
+    const missing = new AdminController({
+      repairPricingPolicyDeliveryV2: vi.fn().mockRejectedValue(
+        new PricingPolicyDeliveryRepairError("repair_job_not_found", "missing"),
+      ),
+    } as unknown as AdminService);
+    const conflict = new AdminController({
+      repairPricingPolicyDeliveryV2: vi.fn().mockRejectedValue(
+        new PricingPolicyDeliveryRepairError("repair_precondition_changed", "changed"),
+      ),
+    } as unknown as AdminService);
+    await expect(missing.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
+      .rejects.toBeInstanceOf(NotFoundException);
+    await expect(conflict.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
+      .rejects.toMatchObject({ status: 409 });
   });
 
   it("maps missing engine accounts to 404 and all ownership/CAS races to 409", async () => {

@@ -16,6 +16,7 @@ import {
 } from "@nestjs/common";
 import {
   createBusinessInviteSchema,
+  pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
   pricingStage5DryRunRequestV2Schema,
@@ -34,6 +35,7 @@ import {
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
   FundingNormalizationJobV2Error,
+  PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
   Stage5MaterializerV2Error,
@@ -297,6 +299,23 @@ export class AdminController {
     const actor = verifiedAdminActor(actorHeader);
     try {
       return await this.admin.stagePricingStage6V2(input.data, actor);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
+  @Post("pricing-policy-delivery-repairs")
+  @Header("Cache-Control", "no-store")
+  async repairPricingPolicyDeliveryV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingPolicyDeliveryRepairRequestV2Schema.safeParse(body);
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    const actor = verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.repairPricingPolicyDeliveryV2(input.data, actor);
     } catch (error) {
       throwPricingStageControlHttpError(error);
       throw error;
@@ -571,6 +590,10 @@ function throwPricingPolicyHttpError(error: unknown): void {
 }
 
 function throwPricingStageControlHttpError(error: unknown): void {
+  if (error instanceof PricingPolicyDeliveryRepairError) {
+    if (error.code === "repair_job_not_found") throw new NotFoundException(error.message);
+    throw new HttpException(error.message, 409);
+  }
   if (error instanceof Stage5MaterializerV2Error) {
     throw new HttpException(error.message, error.code.endsWith("_unavailable") ? 503 : 409);
   }

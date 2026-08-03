@@ -1,6 +1,7 @@
 import type { ConfigService } from "@nestjs/config";
 import {
   getFundingNormalizationStageStatusV2,
+  repairDeadPreCutoverPolicyDelivery,
   runStage5MaterializerV2,
   stageFundingNormalizationJobV2,
   type Database,
@@ -15,6 +16,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
   return {
     ...original,
     getFundingNormalizationStageStatusV2: vi.fn(),
+    repairDeadPreCutoverPolicyDelivery: vi.fn(),
     runStage5MaterializerV2: vi.fn(),
     stageFundingNormalizationJobV2: vi.fn(),
   };
@@ -23,6 +25,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
 const mockedRunStage5 = vi.mocked(runStage5MaterializerV2);
 const mockedGetStage6 = vi.mocked(getFundingNormalizationStageStatusV2);
 const mockedStage6 = vi.mocked(stageFundingNormalizationJobV2);
+const mockedRepairPolicyDelivery = vi.mocked(repairDeadPreCutoverPolicyDelivery);
 
 const digest = (seed: string): string => `sha256:v2:${seed.repeat(64)}`;
 
@@ -157,5 +160,42 @@ describe("managed pricing Stage 5/6 service", () => {
       },
     });
     expect(mockedGetStage6).toHaveBeenCalledWith(fixture.database, digest("a"));
+  });
+
+  it("repairs a terminal legacy delivery only while the global release head is absent", async () => {
+    const fixture = service();
+    const getPricingReleaseProvisioningContextV2 = vi.fn().mockResolvedValue(null);
+    fixture.engine.getPricingReleaseProvisioningContextV2 = getPricingReleaseProvisioningContextV2;
+    const request = {
+      job_id: "11111111-1111-4111-8111-111111111111",
+      expected_effective_version: 1,
+      expected_content_digest: `sha256:v1:${"a".repeat(64)}`,
+      reason: "repair the reviewed historical compatibility failure",
+    };
+    mockedRepairPolicyDelivery.mockResolvedValue({
+      status: "queued",
+      superseded_job_id: request.job_id,
+      replacement_job_id: "22222222-2222-4222-8222-222222222222",
+      binding_id: "33333333-3333-4333-8333-333333333333",
+      engine_account_id: "acct_repaired",
+      previous_effective_version: 1,
+      replacement_effective_version: 2,
+      replacement_content_digest: `sha256:v1:${"b".repeat(64)}`,
+    });
+
+    await expect(fixture.service.repairPricingPolicyDeliveryV2(request, "operator@example.test"))
+      .resolves.toMatchObject({ status: "queued", replacement_effective_version: 2 });
+    expect(mockedRepairPolicyDelivery).toHaveBeenCalledWith(fixture.database, {
+      jobId: request.job_id,
+      expectedEffectiveVersion: 1,
+      expectedContentDigest: request.expected_content_digest,
+      actorId: "operator@example.test",
+      reason: request.reason,
+    });
+
+    getPricingReleaseProvisioningContextV2.mockResolvedValue({} as never);
+    await expect(fixture.service.repairPricingPolicyDeliveryV2(request, "operator@example.test"))
+      .rejects.toMatchObject({ code: "repair_not_eligible" });
+    expect(mockedRepairPolicyDelivery).toHaveBeenCalledTimes(1);
   });
 });
