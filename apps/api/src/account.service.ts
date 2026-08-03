@@ -4,9 +4,11 @@ import {
   findOwnedApiKey,
   getCustomerPricingPolicyView,
   getPricingView,
+  ensurePricingReleaseProvisioningV2,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
   materializeProvisionedUserPolicy,
+  PricingReleaseProvisioningV2Error,
   PricingPolicyWriteError,
   saveIssuedApiKey,
   syncEngineApiKey,
@@ -284,14 +286,18 @@ export class AccountService {
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
       userId,
-      (id) => this.engine.issueKey(id, {
-        ...(input.label !== undefined ? { label: input.label } : {}),
-        ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
-        ...(expiresAt !== undefined ? { expiresAt } : {}),
-      }),
+      async (id) => {
+        await this.ensureReleaseReadyForKey(userId, id);
+        return this.engine.issueKey(id, {
+          ...(input.label !== undefined ? { label: input.label } : {}),
+          ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+        });
+      },
     );
     try {
       await this.ensurePolicyReadyForKey(userId);
+      await this.ensureReleaseReadyForKey(userId, accountId);
     } catch (error) {
       try {
         await this.engine.disableKey(issued.key_id);
@@ -432,6 +438,17 @@ export class AccountService {
     } catch (error) {
       if (error instanceof PricingPolicyWriteError && error.code === "provisioning_policy_missing") {
         throw new ConflictException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  private async ensureReleaseReadyForKey(userId: string, engineAccountId: string): Promise<void> {
+    try {
+      await ensurePricingReleaseProvisioningV2(this.database, this.engine, { userId, engineAccountId });
+    } catch (error) {
+      if (error instanceof PricingReleaseProvisioningV2Error) {
+        throw new ConflictException("pricing release provisioning is still pending");
       }
       throw error;
     }

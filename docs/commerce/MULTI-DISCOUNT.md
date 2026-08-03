@@ -336,10 +336,14 @@ active funding head под account funding lock и отсутствие account 
 provisioning перечитывает новую active/recovery pair и повторяет шаг без частичной записи. Только
 после exact GET-readback разрешена выдача/активация ключа.
 
-Engine producer и runtime resolver этого checkpoint уже поддерживают extension. Strict
-`packages/contracts`/`packages/engine-client` и commerce provisioning consumer подключаются
-отдельным producer-first шагом после зелёного engine SHA; один лишь доступный route ещё не делает
-новый account provisioned.
+После зелёного engine producer SHA подключён отдельный consumer checkpoint: `packages/contracts`
+проверяет strict body/readback и одинаковую account/policy/funding-семантику active/recovery pair,
+`packages/engine-client` предоставляет typed prepare/GET, а `packages/db/src/pricing-provisioning-v2.ts`
+ведёт account-local orchestration. При `head=null` он сохраняет pre-cutover path. После появления
+head он принимает только base assignment либо выполняет funding normalization, готовит exact
+release-v2 policy, пишет extension и сверяет полный GET-readback. `apps/api` выполняет эту проверку
+до remote issue и повторно до возврата raw key; ошибка postflight отключает только что выпущенный
+ключ. Наличие consumer не активирует release и не создаёт account заранее: до Stage 9 он dormant.
 
 Data-plane reserve/settlement этот глобальный lock не берут. На время CAS может на миллисекунды
 подождать только создание/активация аккаунта, но не клиентский traffic.

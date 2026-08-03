@@ -17,6 +17,8 @@ import {
   pricingCatalogSpecSchema,
   pricingMutationAckSchema,
   pricingPolicySnapshotSchema,
+  pricingReleaseAssignmentExtensionIdentityV2Schema,
+  pricingReleaseAssignmentExtensionV2Schema,
   pricingReleaseHeadV2Schema,
   pricingReleaseInventoryPageV2Schema,
   pricingReleasePolicyV2Schema,
@@ -40,6 +42,8 @@ import {
   type PricingCatalogSpec,
   type PricingMutationAck,
   type PricingPolicySnapshot,
+  type PricingReleaseAssignmentExtensionIdentityV2,
+  type PricingReleaseAssignmentExtensionV2,
   type PricingReleaseHeadV2,
   type PricingReleaseInventoryPageV2,
   type PricingReleasePolicyV2,
@@ -708,6 +712,48 @@ export class EngineClient {
       throw new EngineClientError("engine returned a different pricing recovery link", response.status, false);
     }
     return recoveryLink;
+  }
+
+  async preparePricingReleaseAssignmentExtensionV2(
+    input: PricingReleaseAssignmentExtensionV2,
+  ): Promise<TypedPricingMutationAck<PricingReleaseAssignmentExtensionIdentityV2>> {
+    const extension = pricingReleaseAssignmentExtensionV2Schema.parse(input);
+    const identity = pricingReleaseAssignmentExtensionIdentityV2Schema.parse({
+      provisioning_head_generation: extension.provisioning_head_generation,
+      provisioning_head_version: extension.provisioning_head_version,
+      account_id: extension.members[0]!.assignment.account_id,
+      extension_group_digest: extension.extension_group_digest,
+    });
+    return this.pricingMutation(
+      "/admin/pricing/v2/assignment-extension/prepare",
+      extension,
+      pricingReleaseAssignmentExtensionIdentityV2Schema,
+      identity,
+    );
+  }
+
+  async getPricingReleaseAssignmentExtensionV2(
+    provisioningHeadVersion: number,
+    accountId: string,
+  ): Promise<PricingReleaseAssignmentExtensionV2 | null> {
+    const target = pricingReleaseAssignmentExtensionIdentityV2Schema
+      .pick({ provisioning_head_version: true, account_id: true })
+      .parse({ provisioning_head_version: provisioningHeadVersion, account_id: accountId });
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/assignment-extension/${target.provisioning_head_version}/${encodeURIComponent(target.account_id)}`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const extension = this.parsePricingResponse(
+      z.object({ extension: pricingReleaseAssignmentExtensionV2Schema }).strict(),
+      payload,
+      response,
+    ).extension;
+    if (extension.provisioning_head_version !== target.provisioning_head_version
+        || extension.members.some((member) => member.assignment.account_id !== target.account_id)) {
+      throw new EngineClientError("engine returned a different pricing assignment extension", response.status, false);
+    }
+    return extension;
   }
 
   async getPricingReleaseHeadV2(): Promise<PricingReleaseHeadV2 | null> {

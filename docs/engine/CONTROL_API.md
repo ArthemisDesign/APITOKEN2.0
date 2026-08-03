@@ -556,15 +556,20 @@ Apply берёт тот же account funding lock, что reserve/settlement/top
 lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
 перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
 
-Поздние checkpoints подключают assignment-extension typed TS consumer, provisioning writer, Stage 8
-evidence и наконец один activation CAS. До подключения consumer новый account после cutover нельзя
-считать provisioned только потому, что engine producer уже умеет принять extension. Account
-creation/activation и тот future CAS координируются через release control-plane contract;
-data-plane reserve/settlement этот глобальный lock не берут.
+Assignment-extension typed TS consumer и commerce provisioning writer подключены только после
+зелёного exact producer SHA. `packages/contracts` валидирует strict active/recovery pair,
+`packages/engine-client` выполняет typed prepare/GET, а
+`packages/db/src/pricing-provisioning-v2.ts` при ненулевом head завершает account-local funding,
+policy prepare/readback и extension prepare/readback до выдачи usable key. `apps/api` повторяет
+проверку после remote issue; если head или authority изменились, ключ отключается до возврата raw
+secret. При `head=null` consumer ничего не материализует, поэтому его deploy не запускает cutover.
+Stage 8 evidence и один activation CAS остаются следующими checkpoints; data-plane
+reserve/settlement release control-plane lock не берут.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
-strict release and funding-normalization wire schemas and `packages/engine-client` gained typed
-prepare/read plus account-local normalization plan/apply methods. The client surface still has no
-activation method. The bounded full-inventory application job is a separate `apps/worker` consumer:
+strict release, funding-normalization and assignment-extension wire schemas, while
+`packages/engine-client` gained typed prepare/read plus account-local normalization and extension
+methods. The client surface still has no activation method. The bounded full-inventory application
+job is a separate `apps/worker` consumer:
 it runs only for an explicitly staged target-release job, re-GETs exact plan digests before every
 POST, excludes service `meter_only` accounts and confirms only complete funding-manifest coverage.
 Merely having a typed client or a deployed worker does not materialize any account.

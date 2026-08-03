@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  PricingReleaseAssignmentExtensionV2,
   PricingReleasePolicyV2,
   PricingReleaseRecoveryLinkV2,
   PricingReleaseV2,
@@ -683,6 +684,34 @@ describe("EngineClient", () => {
       recovery_digest: "recovery-release-v2",
       link_digest: "target-recovery-link-v2",
     };
+    const extension: PricingReleaseAssignmentExtensionV2 = {
+      provisioning_head_generation: 10,
+      provisioning_head_digest: "target-release-v2",
+      provisioning_head_version: 1,
+      paired_recovery_generation: 11,
+      paired_recovery_digest: "recovery-release-v2",
+      extension_group_digest: "extension-group-acct-new-v2",
+      members: [
+        {
+          release_generation: 10,
+          assignment: {
+            ...release.assignments[0]!,
+            account_id: "acct_new",
+            assignment_digest: "assignment-acct-new-target-v2",
+          },
+          extension_digest: "extension-acct-new-target-v2",
+        },
+        {
+          release_generation: 11,
+          assignment: {
+            ...release.assignments[0]!,
+            account_id: "acct_new",
+            assignment_digest: "assignment-acct-new-recovery-v2",
+          },
+          extension_digest: "extension-acct-new-recovery-v2",
+        },
+      ],
+    };
     const sourceStateDigest = `sha256:v2:${"a".repeat(64)}`;
     const normalizationDigest = `sha256:v2:${"b".repeat(64)}`;
     const normalizationPlan = {
@@ -756,6 +785,20 @@ describe("EngineClient", () => {
         if (url.endsWith("/pricing/v2/recovery-link/10/11")) {
           return Response.json({ recovery_link: recoveryLink });
         }
+        if (url.endsWith("/pricing/v2/assignment-extension/prepare")) {
+          return Response.json({
+            result: "stored",
+            identity: {
+              provisioning_head_generation: extension.provisioning_head_generation,
+              provisioning_head_version: extension.provisioning_head_version,
+              account_id: "acct_new",
+              extension_group_digest: extension.extension_group_digest,
+            },
+          });
+        }
+        if (url.endsWith("/pricing/v2/assignment-extension/1/acct_new")) {
+          return Response.json({ extension });
+        }
         if (url.endsWith("/pricing/v2/head")) {
           return Response.json({ head: null });
         }
@@ -790,6 +833,11 @@ describe("EngineClient", () => {
     await expect(client.getPricingReleaseV2(10)).resolves.toEqual(release);
     await expect(client.preparePricingReleaseRecoveryLinkV2(recoveryLink)).resolves.toMatchObject({ result: "stored" });
     await expect(client.getPricingReleaseRecoveryLinkV2(10, 11)).resolves.toEqual(recoveryLink);
+    await expect(client.preparePricingReleaseAssignmentExtensionV2(extension)).resolves.toMatchObject({
+      result: "stored",
+      identity: { account_id: "acct_new", provisioning_head_version: 1 },
+    });
+    await expect(client.getPricingReleaseAssignmentExtensionV2(1, "acct_new")).resolves.toEqual(extension);
     await expect(client.getPricingReleaseHeadV2()).resolves.toBeNull();
     await expect(client.getPricingReleaseInventoryV2({
       afterAccountId: "acct_before",
@@ -815,6 +863,8 @@ describe("EngineClient", () => {
       .toMatchObject({ method: "POST", body: policy });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/release/prepare")))
       .toMatchObject({ method: "POST", body: release });
+    expect(requests.find((request) => request.url.endsWith("/pricing/v2/assignment-extension/prepare")))
+      .toMatchObject({ method: "POST", body: extension });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/funding/acct_test/normalization")
       && request.method === "POST")).toMatchObject({
       body: {
@@ -880,6 +930,16 @@ describe("EngineClient", () => {
       expected_source_state_digest: "sha256:v2:not-canonical",
       expected_normalization_digest: `sha256:v2:${"b".repeat(64)}`,
     })).rejects.toThrow();
+    await expect(client.preparePricingReleaseAssignmentExtensionV2({
+      provisioning_head_generation: 10,
+      provisioning_head_digest: "target-v2",
+      provisioning_head_version: 1,
+      paired_recovery_generation: 11,
+      paired_recovery_digest: null,
+      extension_group_digest: "group-v2",
+      members: [],
+    } as never)).rejects.toThrow();
+    await expect(client.getPricingReleaseAssignmentExtensionV2(0, "acct_test")).rejects.toThrow();
     expect(calls).toBe(0);
   });
 

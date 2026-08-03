@@ -92,6 +92,7 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       controlKey: "test-control-key",
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
+        if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
         if (path === "/admin/key" && init?.method === "POST") {
           issued += 1;
           const client = await database.pool.connect();
@@ -135,6 +136,65 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
     // Once authority exists, the preflight itself blocks another remote issuance until exact ACK.
     await expect(service.createApiKey(userId, { label: "blocked" })).rejects.toBeInstanceOf(ConflictException);
     expect(issued).toBe(1);
+  });
+
+  it("does not issue a key when a live release head lacks its exact provisioning receipt", async () => {
+    const userId = randomUUID();
+    const accountId = `acct_release_pending_${userId.replaceAll("-", "")}`;
+    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1,$2,'Release pending')", [
+      userId,
+      `release-pending-${userId}@example.test`,
+    ]);
+    await database.pool.query(`
+      INSERT INTO customer_profiles (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
+      VALUES ($1,'b2b',NULL,7000,date_trunc('month',now())::date)
+    `, [userId]);
+    await database.pool.query(`
+      INSERT INTO engine_accounts (id,user_id,engine_account_id,mult_bp,status)
+      VALUES ($1,$2,$3,7000,'active')
+    `, [randomUUID(), userId, accountId]);
+    let issued = 0;
+    const releaseDigest = `sha256:v2:${createHash("sha256").update("release-pending").digest("hex")}`;
+    const engine = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/admin/pricing/v2/head") {
+          return Response.json({
+            head: { active_generation: 10, active_digest: releaseDigest, head_version: 1, updated_ts: 1 },
+          });
+        }
+        if (path === "/admin/pricing/v2/release/10") {
+          return Response.json({ release: {
+            generation: 10,
+            release_kind: "target",
+            schema_version: 2,
+            capability_generation: 3,
+            capability_digest: "capability-v3",
+            main_catalog_generation: 3,
+            main_catalog_digest: "main-v3",
+            openkeys_catalog_generation: 3,
+            openkeys_catalog_digest: "openkeys-v3",
+            switch_generation: 3,
+            switch_digest: "switch-v3",
+            inventory_digest: "inventory-v3",
+            policy_manifest_digest: "policies-v3",
+            assignment_manifest_digest: "assignments-v3",
+            funding_manifest_digest: "funding-v3",
+            minimum_runtime_schema_version: 2,
+            content_digest: releaseDigest,
+            assignments: [],
+          } });
+        }
+        if (path === "/admin/key" && init?.method === "POST") issued += 1;
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+
+    await expect(new AccountService(database, engine).createApiKey(userId, { label: "blocked" }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(issued).toBe(0);
   });
 
   it("materializes a managed policy while recovering an account before key preflight", async () => {
@@ -187,6 +247,7 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       controlKey: "test-control-key",
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
+        if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
         if (path === "/admin/account" && init?.method === "POST") {
           createdAccounts += 1;
           return Response.json({ account: engineAccountId, mult_bp: 10_000, handle: `user:${userId}` });
@@ -263,6 +324,7 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       controlKey: "test-control-key",
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
+        if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
         if (path === "/admin/account" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { handle: string; mult_bp: number };
           createdAccountId = `acct_invited_${body.handle.slice("user:".length).replaceAll("-", "")}`;

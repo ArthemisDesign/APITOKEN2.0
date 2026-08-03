@@ -40,10 +40,12 @@ account-local POST, full-coverage parent confirmation, одинаковое targ
 digest и доступен через DB package entrypoint только будущему защищённому production control-plane;
 CLI не является разрешением на ручной SSH. Наличие transport-методов или runner без явно staged
 job не запускает backfill, не создаёт Stage 8 evidence и не активирует release.
-Assignment-extension wire этого checkpoint остаётся producer-only до зелёного exact SHA: следующим
-отдельным consumer-коммитом `packages/contracts` и `packages/engine-client` должны получить strict
-body/readback schema и typed methods, а commerce provisioning writer — завершать active/recovery
-extension до выдачи usable key. Прямой вызов нового route из `apps/api`/`apps/worker` запрещён.
+После зелёного assignment-extension producer SHA отдельный consumer использует только эту цепочку:
+strict body/readback schema в `packages/contracts` → typed prepare/GET в
+`packages/engine-client` → `packages/db/src/pricing-provisioning-v2.ts` → `apps/api` key issuance.
+При ненулевом head writer завершает funding/policy/active+recovery extension и exact readback до
+usable key; postflight drift компенсируется disable выпущенного ключа. При null head путь dormant.
+Прямые вызовы route из `apps/api`/`apps/worker` по-прежнему запрещены; activation method отсутствует.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

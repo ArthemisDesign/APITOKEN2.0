@@ -738,6 +738,102 @@ export const pricingReleaseAssignmentV2Schema = z.object({
 }).strict();
 export type PricingReleaseAssignmentV2 = z.infer<typeof pricingReleaseAssignmentV2Schema>;
 
+export const pricingReleaseAssignmentExtensionMemberV2Schema = z.object({
+  release_generation: pricingVersionSchema,
+  assignment: pricingReleaseAssignmentV2Schema,
+  extension_digest: pricingIdentifierSchema,
+}).strict();
+export type PricingReleaseAssignmentExtensionMemberV2 =
+  z.infer<typeof pricingReleaseAssignmentExtensionMemberV2Schema>;
+
+export const pricingReleaseAssignmentExtensionV2Schema = z.object({
+  provisioning_head_generation: pricingVersionSchema,
+  provisioning_head_digest: pricingIdentifierSchema,
+  provisioning_head_version: pricingVersionSchema,
+  paired_recovery_generation: pricingVersionSchema.nullable(),
+  paired_recovery_digest: pricingIdentifierSchema.nullable(),
+  extension_group_digest: pricingIdentifierSchema,
+  members: z.array(pricingReleaseAssignmentExtensionMemberV2Schema).min(1).max(2),
+}).strict().superRefine((extension, context) => {
+  const paired = extension.paired_recovery_generation !== null;
+  if (paired !== (extension.paired_recovery_digest !== null)) {
+    context.addIssue({
+      code: "custom",
+      message: "paired recovery generation and digest must both be null or both be set",
+    });
+  }
+  if (extension.paired_recovery_generation !== null
+      && extension.paired_recovery_generation <= extension.provisioning_head_generation) {
+    context.addIssue({ code: "custom", message: "paired recovery generation must be newer than the active head" });
+  }
+  if (extension.members.length !== (paired ? 2 : 1)) {
+    context.addIssue({ code: "custom", message: "members must contain the exact active/recovery pair" });
+  }
+
+  const expectedGenerations = new Set([extension.provisioning_head_generation]);
+  if (extension.paired_recovery_generation !== null) {
+    expectedGenerations.add(extension.paired_recovery_generation);
+  }
+  const actualGenerations = new Set(extension.members.map((member) => member.release_generation));
+  if (actualGenerations.size !== extension.members.length
+      || actualGenerations.size !== expectedGenerations.size
+      || [...expectedGenerations].some((generation) => !actualGenerations.has(generation))) {
+    context.addIssue({ code: "custom", message: "members do not cover the exact active/recovery generations" });
+  }
+  if (new Set(extension.members.map((member) => member.extension_digest)).size !== extension.members.length) {
+    context.addIssue({ code: "custom", message: "member extension digests must be unique" });
+  }
+
+  const first = extension.members[0]?.assignment;
+  if (first) {
+    const semantics = (assignment: PricingReleaseAssignmentV2): string => JSON.stringify({
+      account_id: assignment.account_id,
+      account_class: assignment.account_class,
+      policy_id: assignment.policy_id,
+      policy_version: assignment.policy_version,
+      policy_digest: assignment.policy_digest,
+      billing_mode: assignment.billing_mode,
+      funding_generation: assignment.funding_generation,
+      purpose: assignment.purpose,
+      responsible: assignment.responsible,
+    });
+    if (extension.members.some((member) => semantics(member.assignment) !== semantics(first))) {
+      context.addIssue({ code: "custom", message: "active/recovery members must have identical assignment semantics" });
+    }
+  }
+  for (const member of extension.members) {
+    const assignment = member.assignment;
+    const service = assignment.account_class === "service";
+    const validService = service
+      && assignment.billing_mode === "meter_only"
+      && assignment.funding_generation === null
+      && assignment.purpose !== null
+      && assignment.responsible !== null;
+    const validCustomer = !service
+      && assignment.billing_mode === "balance"
+      && assignment.funding_generation !== null
+      && assignment.purpose === null
+      && assignment.responsible === null;
+    if (!validService && !validCustomer) {
+      context.addIssue({
+        code: "custom",
+        message: "service assignments must be meter_only; customer assignments require one funding generation",
+      });
+    }
+  }
+});
+export type PricingReleaseAssignmentExtensionV2 =
+  z.infer<typeof pricingReleaseAssignmentExtensionV2Schema>;
+
+export const pricingReleaseAssignmentExtensionIdentityV2Schema = z.object({
+  provisioning_head_generation: pricingVersionSchema,
+  provisioning_head_version: pricingVersionSchema,
+  account_id: z.string().startsWith("acct_").max(200),
+  extension_group_digest: pricingIdentifierSchema,
+}).strict();
+export type PricingReleaseAssignmentExtensionIdentityV2 =
+  z.infer<typeof pricingReleaseAssignmentExtensionIdentityV2Schema>;
+
 export const pricingReleaseV2Schema = z.object({
   generation: pricingVersionSchema,
   release_kind: pricingReleaseKindV2Schema,

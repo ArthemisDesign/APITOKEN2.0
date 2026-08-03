@@ -119,6 +119,14 @@ key as compensation and never stores it as usable. A provider-switch update crea
 generation and rematerializes every existing managed binding against it, preserving unrelated
 product/OpenKeys scopes while preventing stale switch lineage.
 
+The same preflight/postflight boundary now covers release-v2 provisioning. While the global release
+head is null, it is a no-op and preserves the pre-cutover path. Once a head exists, a key can be
+returned only when the account is already in the immutable base release or after account-local
+funding normalization, exact release-policy prepare/readback, atomic active/recovery assignment
+extension and exact extension GET readback. A stale head retries the complete bounded chain; a
+conflict or blocked funding plan fails closed. If the postflight check fails, the raw key is disabled
+before it can reach the browser. This consumer has no activation method and cannot move the head.
+
 The commercial admin API exposes the complete managed surface:
 
 ```text
