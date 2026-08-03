@@ -31,9 +31,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   `account_set_mult_bp`. Control reads use `account_funding_snapshot` so scalar totals and grouped
   paid/welcome/other buckets are one snapshot; the residual remains explicit `unattributed`.
   `ledger_recent`/`ledger_after` read each immutable ledger page and its normalized funding
-  allocations in one backend snapshot. A pre-column charge whose ledger provider is `NULL` may use
-  only the same request's immutable `usage_events.provider`; conflicting persisted identities fail
-  the read. No model-name inference is allowed. SQLite and PostgreSQL semantics must stay identical.
+  allocations in one backend snapshot. A pre-column charge whose ledger provider is `NULL` first
+  uses exact `account_id + request_id` evidence. Older rows with no request ID may use only a
+  request-less usage row with the same account, null-safe key/ref/model, exact charge and at most
+  one second of settlement timestamp drift. Every candidate must carry the same non-empty provider;
+  ambiguity stays unknown, and a conflict with persisted ledger provider fails the read. The model
+  is a fingerprint field only, never provider inference. SQLite and PostgreSQL semantics must stay
+  identical.
   Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. Reservation updates
   key `reserved_nano` in the same transaction and enforces
   `spent_nano + reserved_nano + hold <= spend_limit_nano`; settlement atomically converts the hold

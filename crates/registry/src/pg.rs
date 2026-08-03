@@ -354,7 +354,36 @@ const POSTGRES_LEDGER_READ_COLUMNS: &str = "
     ledger.admission_switch_digest,ledger.runtime_manifest_generation,
     ledger.runtime_manifest_digest,ledger.release_schema_version,ledger.release_generation,
     ledger.release_digest,ledger.release_billing_mode,ledger.release_funding_generation,
-    NULLIF(usage_events.provider,'')";
+    CASE
+      WHEN ledger.kind<>'charge' THEN NULL
+      WHEN ledger.request_id IS NOT NULL THEN (
+        SELECT CASE
+          WHEN COUNT(*) > 0
+           AND COUNT(NULLIF(candidate.provider,''))=COUNT(*)
+           AND COUNT(DISTINCT NULLIF(candidate.provider,''))=1
+          THEN MIN(NULLIF(candidate.provider,''))
+        END
+          FROM usage_events candidate
+         WHERE candidate.account_id=ledger.account_id
+           AND candidate.request_id=ledger.request_id
+      )
+      ELSE (
+        SELECT CASE
+          WHEN COUNT(*) > 0
+           AND COUNT(NULLIF(candidate.provider,''))=COUNT(*)
+           AND COUNT(DISTINCT NULLIF(candidate.provider,''))=1
+          THEN MIN(NULLIF(candidate.provider,''))
+        END
+          FROM usage_events candidate
+         WHERE candidate.account_id=ledger.account_id
+           AND candidate.request_id IS NULL
+           AND candidate.key IS NOT DISTINCT FROM ledger.key
+           AND candidate.charge_nano=ledger.amount_nano
+           AND candidate.ref IS NOT DISTINCT FROM ledger.ref
+           AND candidate.model IS NOT DISTINCT FROM ledger.model
+           AND ABS(candidate.ts-ledger.ts)<=1
+      )
+    END";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
@@ -4427,13 +4456,7 @@ impl PgStore {
         } else {
             "ledger.account_id=$1 ORDER BY ledger.id DESC LIMIT $2"
         };
-        let sql = format!(
-            "SELECT {POSTGRES_LEDGER_READ_COLUMNS} FROM ledger
-             LEFT JOIN usage_events
-               ON usage_events.request_id=ledger.request_id
-              AND usage_events.account_id=ledger.account_id
-             WHERE {predicate}"
-        );
+        let sql = format!("SELECT {POSTGRES_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
         let mut tx = self
             .client
             .build_transaction()
@@ -15571,6 +15594,39 @@ mod tests {
                  ) VALUES(
                      'read-provider-recovery','read-account','read-key','gpt-read',50,25,3,
                      'openai'
+                 );
+                 INSERT INTO ledger(
+                     account_id,key,kind,amount_nano,ref,balance_after_nano,ts,model,provider
+                 ) VALUES
+                     ('read-account','read-key','charge',30,'legacy:read',845,4,
+                      'gpt-legacy',NULL),
+                     ('read-account','read-key','charge',20,'legacy:claude',825,5,
+                      'claude-legacy',NULL),
+                     ('read-account','read-key','charge',15,'legacy:conflict',810,6,
+                      'ambiguous-model',NULL),
+                     ('read-account','read-key','charge',10,'legacy:model-only',800,7,
+                      'gpt-5',NULL);
+                 INSERT INTO usage_events(
+                     account_id,key,model,real_nano,charge_nano,ref,ts,provider
+                 ) VALUES
+                     ('read-account','read-key','gpt-legacy',60,30,'legacy:read',5,'openai');
+                 INSERT INTO usage_events(
+                     account_id,key,model,real_nano,charge_nano,ref,ts
+                 ) VALUES
+                     ('read-account','read-key','claude-legacy',40,20,'legacy:claude',5);
+                 INSERT INTO usage_events(
+                     account_id,key,model,real_nano,charge_nano,ref,ts,provider
+                 ) VALUES
+                     ('read-account','read-key','ambiguous-model',30,15,'legacy:conflict',6,
+                      'openai'),
+                     ('read-account','read-key','ambiguous-model',30,15,'legacy:conflict',6,
+                      'google'),
+                     ('read-account','wrong-key','gpt-5',20,10,'legacy:model-only',7,'openai');
+                 INSERT INTO usage_events(
+                     request_id,account_id,key,model,real_nano,charge_nano,ref,ts,provider
+                 ) VALUES(
+                     'unrelated-read-request','read-account','read-key','gpt-5',20,10,
+                     'legacy:model-only',7,'openai'
                  );",
             )
             .unwrap();
@@ -15610,8 +15666,8 @@ mod tests {
         );
         let recent = pg.ledger_recent("read-account", 10).unwrap();
         let after = pg.ledger_after("read-account", 0, 10).unwrap();
-        assert_eq!(recent.len(), 2);
-        assert_eq!(after.len(), 2);
+        assert_eq!(recent.len(), 6);
+        assert_eq!(after.len(), 6);
         let attributed = recent
             .iter()
             .find(|row| row.request_id.as_deref() == Some("read-request"))
@@ -15621,6 +15677,24 @@ mod tests {
             .find(|row| row.request_id.as_deref() == Some("read-provider-recovery"))
             .unwrap();
         assert_eq!(recovered.provider.as_deref(), Some(crate::PROVIDER_OPENAI));
+        let legacy_provider_for = |reference: &str| {
+            recent
+                .iter()
+                .find(|row| row.reference.as_deref() == Some(reference))
+                .unwrap()
+                .provider
+                .as_deref()
+        };
+        assert_eq!(
+            legacy_provider_for("legacy:read"),
+            Some(crate::PROVIDER_OPENAI)
+        );
+        assert_eq!(
+            legacy_provider_for("legacy:claude"),
+            Some(crate::PROVIDER_ANTHROPIC)
+        );
+        assert_eq!(legacy_provider_for("legacy:conflict"), None);
+        assert_eq!(legacy_provider_for("legacy:model-only"), None);
         assert_eq!(attributed.request_id.as_deref(), Some("read-request"));
         let attribution = attributed.attribution.as_ref().unwrap();
         assert_eq!(attribution.snapshot_kind.as_deref(), Some("policy_v1"));

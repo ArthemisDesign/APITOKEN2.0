@@ -6468,7 +6468,37 @@ const SQLITE_LEDGER_READ_COLUMNS: &str = "
     ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
     ledger.admission_catalog_digest,ledger.admission_switch_generation,
     ledger.admission_switch_digest,ledger.runtime_manifest_generation,
-    ledger.runtime_manifest_digest,NULLIF(usage_events.provider,'')";
+    ledger.runtime_manifest_digest,
+    CASE
+      WHEN ledger.kind<>'charge' THEN NULL
+      WHEN ledger.request_id IS NOT NULL THEN (
+        SELECT CASE
+          WHEN COUNT(*) > 0
+           AND COUNT(NULLIF(candidate.provider,''))=COUNT(*)
+           AND COUNT(DISTINCT NULLIF(candidate.provider,''))=1
+          THEN MIN(NULLIF(candidate.provider,''))
+        END
+          FROM usage_events candidate
+         WHERE candidate.account_id=ledger.account_id
+           AND candidate.request_id=ledger.request_id
+      )
+      ELSE (
+        SELECT CASE
+          WHEN COUNT(*) > 0
+           AND COUNT(NULLIF(candidate.provider,''))=COUNT(*)
+           AND COUNT(DISTINCT NULLIF(candidate.provider,''))=1
+          THEN MIN(NULLIF(candidate.provider,''))
+        END
+          FROM usage_events candidate
+         WHERE candidate.account_id=ledger.account_id
+           AND candidate.request_id IS NULL
+           AND candidate.key IS ledger.key
+           AND candidate.charge_nano=ledger.amount_nano
+           AND candidate.ref IS ledger.ref
+           AND candidate.model IS ledger.model
+           AND ABS(candidate.ts-ledger.ts)<=1
+      )
+    END";
 
 fn sqlite_ledger_allocations(
     conn: &Connection,
@@ -6535,13 +6565,7 @@ fn sqlite_ledger_page(
     } else {
         "ledger.account_id=?1 ORDER BY ledger.id DESC LIMIT ?2"
     };
-    let sql = format!(
-        "SELECT {SQLITE_LEDGER_READ_COLUMNS} FROM ledger
-         LEFT JOIN usage_events
-           ON usage_events.request_id=ledger.request_id
-          AND usage_events.account_id=ledger.account_id
-         WHERE {predicate}"
-    );
+    let sql = format!("SELECT {SQLITE_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
     let tx = conn.unchecked_transaction()?;
     let mut statement = tx.prepare(&sql)?;
     let mut query = match after_id {
@@ -11686,6 +11710,75 @@ mod tests {
         )
         .unwrap();
         assert!(ledger_after(&c, "provider-account", 0, 10).is_err());
+    }
+
+    #[test]
+    fn ledger_reads_recover_legacy_provider_only_from_strict_settlement_fingerprint() {
+        let c = db();
+        account_create(&c, "legacy-provider-account", None, 10_000).unwrap();
+        account_create(&c, "other-provider-account", None, 10_000).unwrap();
+        c.execute_batch(
+            "INSERT INTO ledger(
+                 account_id,key,kind,amount_nano,ref,balance_after_nano,ts,model,provider
+             ) VALUES
+                 ('legacy-provider-account','legacy-key','charge',250,'legacy:exact',9750,100,
+                  'gpt-legacy',NULL),
+                 ('legacy-provider-account','legacy-key','charge',125,'legacy:claude',9625,200,
+                  'claude-legacy',NULL),
+                 ('legacy-provider-account','legacy-key','charge',75,'legacy:conflict',9550,300,
+                  'ambiguous-model',NULL),
+                 ('legacy-provider-account','legacy-key','charge',60,'legacy:model-only',9490,400,
+                  'gpt-5',NULL);
+
+             INSERT INTO usage_events(
+                 account_id,key,model,real_nano,charge_nano,ref,ts,provider
+             ) VALUES
+                 ('legacy-provider-account','legacy-key','gpt-legacy',500,250,'legacy:exact',101,
+                  'openai');
+             INSERT INTO usage_events(
+                 account_id,key,model,real_nano,charge_nano,ref,ts
+             ) VALUES
+                 ('legacy-provider-account','legacy-key','claude-legacy',250,125,'legacy:claude',200);
+             INSERT INTO usage_events(
+                 account_id,key,model,real_nano,charge_nano,ref,ts,provider
+             ) VALUES
+                 ('legacy-provider-account','legacy-key','ambiguous-model',150,75,
+                  'legacy:conflict',300,'openai'),
+                 ('legacy-provider-account','legacy-key','ambiguous-model',150,75,
+                  'legacy:conflict',300,'google'),
+                 ('legacy-provider-account','wrong-key','gpt-5',120,60,'legacy:model-only',400,
+                  'openai'),
+                 ('legacy-provider-account','legacy-key','gpt-5',122,61,'legacy:model-only',400,
+                  'openai'),
+                 ('legacy-provider-account','legacy-key','gpt-5',120,60,'wrong-ref',400,'openai'),
+                 ('legacy-provider-account','legacy-key','wrong-model',120,60,
+                  'legacy:model-only',400,'openai'),
+                 ('legacy-provider-account','legacy-key','gpt-5',120,60,'legacy:model-only',402,
+                  'openai'),
+                 ('other-provider-account','legacy-key','gpt-5',120,60,'legacy:model-only',400,
+                  'openai');
+             INSERT INTO usage_events(
+                 request_id,account_id,key,model,real_nano,charge_nano,ref,ts,provider
+             ) VALUES(
+                 'unrelated-request','legacy-provider-account','legacy-key','gpt-5',120,60,
+                 'legacy:model-only',400,'openai'
+             );",
+        )
+        .unwrap();
+
+        let rows = ledger_after(&c, "legacy-provider-account", 0, 10).unwrap();
+        assert_eq!(rows.len(), 4);
+        let provider_for = |reference: &str| {
+            rows.iter()
+                .find(|row| row.reference.as_deref() == Some(reference))
+                .unwrap()
+                .provider
+                .as_deref()
+        };
+        assert_eq!(provider_for("legacy:exact"), Some(PROVIDER_OPENAI));
+        assert_eq!(provider_for("legacy:claude"), Some(PROVIDER_ANTHROPIC));
+        assert_eq!(provider_for("legacy:conflict"), None);
+        assert_eq!(provider_for("legacy:model-only"), None);
     }
 
     #[test]
