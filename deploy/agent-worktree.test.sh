@@ -65,12 +65,29 @@ dirty=$(run_manager create feat/dirty dirty)
 [[ $(git -C "$dirty" rev-parse --abbrev-ref HEAD) == feat/dirty ]] \
   || fail 'create checked out the wrong task branch'
 admin=$(git -C "$dirty" rev-parse --path-format=absolute --git-dir)
-grep -Fxq 'version=1' "$admin/agent-worktree-managed-v1" \
+grep -Fxq 'version=2' "$admin/agent-worktree-managed-v1" \
   || fail 'create did not persist managed lifecycle metadata'
 grep -Fxq "path=$dirty" "$admin/agent-worktree-managed-v1" \
   || fail 'managed lifecycle metadata lost the canonical path'
+grep -Fxq "base=$INITIAL_SHA" "$admin/agent-worktree-managed-v1" \
+  || fail 'managed lifecycle metadata lost the exact creation base'
+unstarted_report=$(run_manager doctor --grace-hours 0)
+printf '%s\n' "$unstarted_report" | grep -Fq $'UNSTARTED           \tfeat/dirty' \
+  || fail 'doctor exposed a managed worktree before its first task commit to automatic cleanup'
 git_test -C "$dirty" commit --quiet --allow-empty -m 'dirty branch work'
 printf 'uncommitted\n' >"$dirty/untracked.txt"
+
+invalid_metadata=$(run_manager create feat/invalid-metadata invalid-metadata)
+invalid_admin=$(git -C "$invalid_metadata" rev-parse --path-format=absolute --git-dir)
+awk '$0 !~ /^base=/' "$invalid_admin/agent-worktree-managed-v1" \
+  >"$invalid_admin/agent-worktree-managed-v1.tmp"
+mv "$invalid_admin/agent-worktree-managed-v1.tmp" "$invalid_admin/agent-worktree-managed-v1"
+invalid_report=$(run_manager doctor --grace-hours 0)
+printf '%s\n' "$invalid_report" | grep -Fq $'INVALID_METADATA    \tfeat/invalid-metadata' \
+  || fail 'doctor did not fail closed for incomplete version 2 creation metadata'
+run_manager finish "$invalid_metadata"
+[[ ! -e $invalid_metadata ]] \
+  || fail 'explicit finish did not remain available for manually reviewed metadata'
 
 unmerged=$(run_manager create feat/unmerged unmerged)
 git_test -C "$unmerged" commit --quiet --allow-empty -m 'unmerged branch work'

@@ -28,6 +28,10 @@ operations as root before login.
 
 The daemon polls every 15 seconds. A candidate must remain identical and eligible for at least two
 observations and 30 seconds, so a newly merged worktree is normally reclaimed within 30–45 seconds.
+For worktrees created by `deploy/agent-worktree.sh create`, automatic eligibility additionally
+requires the branch HEAD to differ from the exact `origin/master` SHA recorded at creation. This
+keeps a newly created task worktree alive until it has produced its first task commit, even though
+that untouched branch is technically already an ancestor of `origin/master`.
 State and logs live under `~/Library/Application Support/DELETE_WORKTREE/`:
 
 ```bash
@@ -53,6 +57,11 @@ The daemon does not call global `gc --apply --grace-hours 0`. It asks the canoni
 4. the final mutation is delegated to `agent-worktree.sh finish`, which takes the repository
    lifecycle lock, performs a strict fresh `fetch`, and rechecks clean status, lock state, protected
    names, branch ancestry, and the unchanged branch ref immediately before removal.
+
+The creation-base rule applies only to automatic cleanup. An owner may still explicitly call
+`agent-worktree.sh finish` for a clean read-only scratch worktree whose branch never needed a task
+commit. Legacy managed markers created before base tracking retain their previous cleanup behavior;
+new-format metadata that is missing or malformed fails closed and requires manual review.
 
 Primary/current, dirty, unmerged, detached, locked, `master`, `main`, and `comp/*` worktrees are
 never candidates. An unavailable network, failed `lsof`, malformed state, or failed final check is

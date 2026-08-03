@@ -86,6 +86,22 @@ if [[ $(uname -s) == Darwin ]]; then
     || fail 'install --dry-run did not render the stable runtime executable path'
 fi
 
+unstarted=$(run_manager create feat/unstarted unstarted)
+run_agent once
+run_agent once
+[[ -d $unstarted ]] || fail 'agent deleted a managed worktree before its first task commit'
+git -C "$PRIMARY" show-ref --verify --quiet refs/heads/feat/unstarted \
+  || fail 'agent deleted the branch of a managed worktree before its first task commit'
+git_test -C "$unstarted" commit --quiet --allow-empty -m unstarted-now-complete
+git_test -C "$unstarted" push --quiet origin HEAD:master
+git_test -C "$PRIMARY" fetch --quiet origin
+run_agent once
+[[ -d $unstarted ]] || fail 'agent deleted a newly completed worktree on its first observation'
+run_agent once
+[[ ! -e $unstarted ]] || fail 'agent retained a completed worktree after its task commit reached master'
+git -C "$PRIMARY" show-ref --verify --quiet refs/heads/feat/unstarted \
+  && fail 'agent retained the branch of a completed worktree'
+
 eligible=$(run_manager create feat/eligible eligible)
 git_test -C "$eligible" commit --quiet --allow-empty -m eligible
 git_test -C "$eligible" push --quiet origin HEAD:master

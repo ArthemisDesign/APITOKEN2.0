@@ -155,7 +155,7 @@ aw_admin_dir() {
 }
 
 aw_write_marker() {
-  local worktree=$1 branch=$2 admin marker staged owner
+  local worktree=$1 branch=$2 base=$3 admin marker staged owner
   admin=$(aw_admin_dir "$worktree") || return 1
   marker="$admin/$MANAGED_MARKER"
   staged="$marker.tmp.$$.$RANDOM"
@@ -165,11 +165,12 @@ aw_write_marker() {
   esac
   umask 077
   {
-    printf 'version=1\n'
+    printf 'version=2\n'
     printf 'created=%s\n' "$(aw_now)"
     printf 'owner=%s\n' "$owner"
     printf 'branch=%s\n' "$branch"
     printf 'path=%s\n' "$worktree"
+    printf 'base=%s\n' "$base"
   } >"$staged" || return 1
   mv -f -- "$staged" "$marker"
 }
@@ -180,6 +181,41 @@ aw_marker_value() {
   marker="$admin/$MANAGED_MARKER"
   [[ -f $marker ]] || return 1
   sed -n "s/^${key}=//p" "$marker" | head -1
+}
+
+aw_managed_creation_state() {
+  local worktree=$1 branch=$2 admin marker version base marker_branch marker_path current_head
+  admin=$(aw_admin_dir "$worktree" 2>/dev/null) || { printf 'invalid\n'; return 0; }
+  marker="$admin/$MANAGED_MARKER"
+  [[ -f $marker ]] || { printf 'legacy\n'; return 0; }
+  version=$(aw_marker_value "$worktree" version 2>/dev/null || printf '')
+  case "$version" in
+    1)
+      # Version 1 predates creation-base tracking. Preserve its established cleanup behavior so
+      # already completed worktrees do not become permanently ineligible after this upgrade.
+      printf 'legacy\n'
+      ;;
+    2)
+      base=$(aw_marker_value "$worktree" base 2>/dev/null || printf '')
+      marker_branch=$(aw_marker_value "$worktree" branch 2>/dev/null || printf '')
+      marker_path=$(aw_marker_value "$worktree" path 2>/dev/null || printf '')
+      current_head=$(git -C "$ROOT" rev-parse "refs/heads/$branch" 2>/dev/null || printf '')
+      if [[ $marker_branch != "$branch" || $marker_path != "$worktree" ]] \
+        || { [[ ! $base =~ ^[0-9a-f]{40}$ ]] && [[ ! $base =~ ^[0-9a-f]{64}$ ]]; } \
+        || [[ -z $current_head ]] \
+        || [[ $(git -C "$ROOT" rev-parse --verify "$base^{commit}" 2>/dev/null || printf '') != "$base" ]]; then
+        printf 'invalid\n'
+      elif [[ $current_head == "$base" ]]; then
+        printf 'unstarted\n'
+      else
+        printf 'started\n'
+      fi
+      ;;
+    *)
+      # Unknown or incomplete managed metadata must never make automatic deletion less strict.
+      printf 'invalid\n'
+      ;;
+  esac
 }
 
 aw_activity_epoch() {
@@ -303,7 +339,7 @@ aw_create() {
   expected=$(git -C "$ROOT" rev-parse "$TARGET_REF")
   aw_log "creating $target on $branch from $TARGET_REF ($expected)"
   git -C "$ROOT" worktree add "$target" -b "$branch" "$TARGET_REF" >&2
-  if ! aw_write_marker "$target" "$branch"; then
+  if ! aw_write_marker "$target" "$branch" "$expected"; then
     aw_log 'marker creation failed; rolling back the new empty worktree'
     git -C "$ROOT" worktree remove "$target" 2>/dev/null || true
     git -C "$ROOT" update-ref -d "refs/heads/$branch" "$expected" 2>/dev/null || true
@@ -408,7 +444,7 @@ aw_reset_record() {
 }
 
 aw_classify_record() {
-  local status_output age owner
+  local status_output age owner creation_state creation_base
   CLASS_STATUS=
   CLASS_DETAIL=
   CLASS_ACTION=
@@ -448,16 +484,30 @@ aw_classify_record() {
     CLASS_STATUS=UNMERGED
     CLASS_DETAIL='unique commits preserved'
   else
-    age=$(aw_age_hours "$RECORD_PATH" "$RECORD_BRANCH")
-    owner=$(aw_marker_value "$RECORD_PATH" owner 2>/dev/null || printf legacy)
-    if aw_grace_elapsed "$RECORD_PATH" "$RECORD_BRANCH" "$GC_GRACE_SECONDS"; then
-      CLASS_STATUS=MERGED_CANDIDATE
-      CLASS_DETAIL="age=${age}h owner=$owner"
-      CLASS_ACTION=remove-worktree
-    else
-      CLASS_STATUS=RECENT_MERGED
-      CLASS_DETAIL="age=${age}h owner=$owner grace=$((GC_GRACE_SECONDS / 3600))h"
-    fi
+    creation_state=$(aw_managed_creation_state "$RECORD_PATH" "$RECORD_BRANCH")
+    case "$creation_state" in
+      unstarted)
+        creation_base=$(aw_marker_value "$RECORD_PATH" base 2>/dev/null || printf unknown)
+        CLASS_STATUS=UNSTARTED
+        CLASS_DETAIL="base=$creation_base; automatic cleanup waits for a task commit"
+        ;;
+      invalid)
+        CLASS_STATUS=INVALID_METADATA
+        CLASS_DETAIL='managed creation metadata is invalid; manual review required'
+        ;;
+      *)
+        age=$(aw_age_hours "$RECORD_PATH" "$RECORD_BRANCH")
+        owner=$(aw_marker_value "$RECORD_PATH" owner 2>/dev/null || printf legacy)
+        if aw_grace_elapsed "$RECORD_PATH" "$RECORD_BRANCH" "$GC_GRACE_SECONDS"; then
+          CLASS_STATUS=MERGED_CANDIDATE
+          CLASS_DETAIL="age=${age}h owner=$owner"
+          CLASS_ACTION=remove-worktree
+        else
+          CLASS_STATUS=RECENT_MERGED
+          CLASS_DETAIL="age=${age}h owner=$owner grace=$((GC_GRACE_SECONDS / 3600))h"
+        fi
+        ;;
+    esac
   fi
 }
 
