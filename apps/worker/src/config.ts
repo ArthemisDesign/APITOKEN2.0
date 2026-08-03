@@ -6,6 +6,8 @@ const environmentSchema = z.object({
   ENGINE_BASE_URL: z.string().url(),
   ENGINE_CONTROL_KEY: z.string().min(32),
   ENGINE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  OPENKEYS_INTERNAL_BASE_URL: z.string().url().default("http://127.0.0.1:3410"),
+  OPENKEYS_CONTROL_KEY: z.string().min(32).optional(),
   CREDIT_POLL_MS: z.coerce.number().int().min(100).default(1000),
   PUBLIC_API_BASE_URL: z.string().url().default("https://backend.apitoken.sale"),
   PLATEGA_MERCHANT_ID: z.string().min(1).optional(),

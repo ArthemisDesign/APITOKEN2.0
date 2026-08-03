@@ -116,14 +116,37 @@ async function activationPair(
     recovery_digest: string;
   }>(`
     SELECT receipt.activation_kind,
-           evidence.target_generation::text, evidence.target_digest,
-           evidence.recovery_generation::text, evidence.recovery_digest
+           target.generation::text AS target_generation,
+           target.engine_release_digest AS target_digest,
+           recovery.generation::text AS recovery_generation,
+           recovery.engine_release_digest AS recovery_digest
     FROM pricing_release_activation_receipts_v2 receipt
     JOIN pricing_stage8_evidence_v2 evidence
       ON evidence.evidence_digest = receipt.evidence_digest
+    JOIN pricing_release_plans_v2 target
+      ON target.generation = evidence.target_generation
+     AND target.content_digest = evidence.target_digest
+     AND target.release_kind = 'target'
+    JOIN pricing_release_plans_v2 recovery
+      ON recovery.generation = evidence.recovery_generation
+     AND recovery.content_digest = evidence.recovery_digest
+     AND recovery.release_kind = 'recovery'
     WHERE receipt.head_version = $1
-      AND receipt.release_generation = $2
-      AND receipt.release_digest = $3
+      AND target.engine_release_digest IS NOT NULL
+      AND recovery.engine_release_digest IS NOT NULL
+      AND (
+        (receipt.activation_kind = 'cutover'
+         AND receipt.release_generation = target.generation
+         AND receipt.release_digest = target.content_digest
+         AND target.generation = $2
+         AND target.engine_release_digest = $3)
+        OR
+        (receipt.activation_kind = 'recovery'
+         AND receipt.release_generation = recovery.generation
+         AND receipt.release_digest = recovery.content_digest
+         AND recovery.generation = $2
+         AND recovery.engine_release_digest = $3)
+      )
   `, [head.head_version, head.active_generation, head.active_digest]);
   const row = current.rows[0];
   if (!row) {
@@ -149,12 +172,16 @@ async function activationPair(
   let targetHeadVersion = head.head_version;
   if (row.activation_kind === "recovery") {
     const targetReceipt = await database.pool.query<{ head_version: string }>(`
-      SELECT head_version::text
-      FROM pricing_release_activation_receipts_v2
-      WHERE activation_kind = 'cutover'
-        AND release_generation = $1
-        AND release_digest = $2
-      ORDER BY head_version DESC
+      SELECT receipt.head_version::text
+      FROM pricing_release_activation_receipts_v2 receipt
+      JOIN pricing_release_plans_v2 target
+        ON target.generation = receipt.release_generation
+       AND target.content_digest = receipt.release_digest
+       AND target.release_kind = 'target'
+      WHERE receipt.activation_kind = 'cutover'
+        AND target.generation = $1
+        AND target.engine_release_digest = $2
+      ORDER BY receipt.head_version DESC
       LIMIT 2
     `, [targetGeneration, row.target_digest]);
     if (targetReceipt.rows.length !== 1) {

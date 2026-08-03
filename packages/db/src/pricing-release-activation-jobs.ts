@@ -9,6 +9,10 @@ import {
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 import { stage5V2Digest } from "./pricing-stage5-materializer-v2.js";
+import {
+  capturePricingReleaseActivationAuthorityV2,
+  type PricingReleaseActivationAuthorityReadersV2,
+} from "./pricing-release-activation-authority.js";
 
 const ACTIVATION_LEASE_INTERVAL = "5 minutes";
 
@@ -41,7 +45,9 @@ interface ActivationEvidenceRow {
   target_digest: string;
   recovery_generation: string;
   recovery_digest: string;
+  commerce_inventory_digest: string;
   engine_inventory_digest: string;
+  openkeys_inventory_digest: string;
   funding_digest: string;
   shadow_digest: string;
   runtime_floor_digest: string;
@@ -55,6 +61,10 @@ interface ActivationEvidenceRow {
   target_engine_digest: string | null;
   recovery_status: string;
   recovery_engine_digest: string | null;
+  target_commerce_inventory_digest: string;
+  target_engine_inventory_digest: string;
+  target_openkeys_inventory_digest: string;
+  target_service_inventory_digest: string;
 }
 
 interface ActivationJobRow extends ActivationEvidenceRow {
@@ -145,7 +155,8 @@ async function loadActivationEvidence(
     SELECT evidence.evidence_digest, evidence.engine_evidence_digest,
            evidence.engine_captured_at, evidence.target_generation::text,
            evidence.target_digest, evidence.recovery_generation::text,
-           evidence.recovery_digest, evidence.engine_inventory_digest,
+           evidence.recovery_digest, evidence.commerce_inventory_digest,
+           evidence.engine_inventory_digest, evidence.openkeys_inventory_digest,
            evidence.funding_digest, evidence.shadow_digest,
            evidence.runtime_floor_digest, evidence.legacy_inflight_count::text,
            evidence.blocker_count::text, evidence.passed,
@@ -153,6 +164,10 @@ async function loadActivationEvidence(
            transaction_timestamp() AS database_now,
            target.status AS target_status,
            target.engine_release_digest AS target_engine_digest,
+           target.commerce_inventory_digest AS target_commerce_inventory_digest,
+           target.engine_inventory_digest AS target_engine_inventory_digest,
+           target.openkeys_inventory_digest AS target_openkeys_inventory_digest,
+           target.service_inventory_digest AS target_service_inventory_digest,
            recovery.status AS recovery_status,
            recovery.engine_release_digest AS recovery_engine_digest
     FROM pricing_stage8_evidence_v2 evidence
@@ -400,7 +415,8 @@ async function loadActivationJob(client: PoolClient, jobId: string): Promise<Act
            evidence.evidence_digest, evidence.engine_evidence_digest,
            evidence.engine_captured_at, evidence.target_generation::text,
            evidence.target_digest, evidence.recovery_generation::text,
-           evidence.recovery_digest, evidence.engine_inventory_digest,
+           evidence.recovery_digest, evidence.commerce_inventory_digest,
+           evidence.engine_inventory_digest, evidence.openkeys_inventory_digest,
            evidence.funding_digest, evidence.shadow_digest,
            evidence.runtime_floor_digest, evidence.legacy_inflight_count::text,
            evidence.blocker_count::text, evidence.passed,
@@ -408,6 +424,10 @@ async function loadActivationJob(client: PoolClient, jobId: string): Promise<Act
            transaction_timestamp() AS database_now,
            target.status AS target_status,
            target.engine_release_digest AS target_engine_digest,
+           target.commerce_inventory_digest AS target_commerce_inventory_digest,
+           target.engine_inventory_digest AS target_engine_inventory_digest,
+           target.openkeys_inventory_digest AS target_openkeys_inventory_digest,
+           target.service_inventory_digest AS target_service_inventory_digest,
            recovery.status AS recovery_status,
            recovery.engine_release_digest AS recovery_engine_digest
     FROM pricing_release_control_jobs_v2 job
@@ -432,6 +452,7 @@ async function loadActivationJob(client: PoolClient, jobId: string): Promise<Act
 async function claimedJobFromRow(
   client: PoolClient,
   row: ActivationJobRow,
+  authorityReaders: PricingReleaseActivationAuthorityReadersV2,
 ): Promise<ClaimedPricingReleaseActivationJobV2> {
   if (row.stage8_evidence_digest === null || row.expected_head_version === null) {
     throw permanent("activation job is missing its evidence or head expectation");
@@ -462,6 +483,34 @@ async function claimedJobFromRow(
     || row.stage8_evidence_digest !== row.evidence_digest
   ) {
     throw permanent("activation job payload differs from its durable evidence and release identity");
+  }
+  if (row.attempts === 1) {
+    const authority = await capturePricingReleaseActivationAuthorityV2(client, authorityReaders, {
+      activationKind,
+      targetGeneration: row.target_generation,
+      targetEngineDigest: row.target_engine_digest!,
+      recoveryGeneration: row.recovery_generation,
+      recoveryEngineDigest: row.recovery_engine_digest!,
+      targetCommerceInventoryDigest: row.target_commerce_inventory_digest,
+      targetEngineInventoryDigest: row.target_engine_inventory_digest,
+      targetOpenkeysInventoryDigest: row.target_openkeys_inventory_digest,
+      targetServiceInventoryDigest: row.target_service_inventory_digest,
+      expectedHead: storedRequest.expectation === "absent"
+        ? null
+        : storedRequest.expectation.exact,
+    });
+    const drift = [
+      ...authority.blockers.map((blocker) => blocker.code),
+      ...(authority.commerceInventoryDigest === row.commerce_inventory_digest
+        ? [] : ["commerce_evidence_authority_drift"]),
+      ...(authority.engineInventoryDigest === row.engine_inventory_digest
+        ? [] : ["engine_evidence_authority_drift"]),
+      ...(authority.openkeysInventoryDigest === row.openkeys_inventory_digest
+        ? [] : ["openkeys_evidence_authority_drift"]),
+    ];
+    if (drift.length > 0) {
+      throw permanent(`activation authority changed after Stage 8 evidence: ${[...new Set(drift)].join(",")}`);
+    }
   }
   return {
     id: row.id,
@@ -494,13 +543,16 @@ export async function recoverStalePricingReleaseActivationJobsV2(
 export async function claimNextPricingReleaseActivationJobV2(
   database: Database,
   workerId: string,
+  authorityReaders: PricingReleaseActivationAuthorityReadersV2,
 ): Promise<ClaimedPricingReleaseActivationJobV2 | null> {
   if (workerId.trim() === "") throw new RangeError("workerId is required");
   const client = await database.pool.connect();
   let transactionOpen = false;
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     transactionOpen = true;
+    await client.query("SET LOCAL statement_timeout = '30s'");
+    await client.query("SET LOCAL lock_timeout = '5s'");
     await client.query(`
       UPDATE pricing_release_control_jobs_v2
       SET status = 'retry', locked_at = NULL, locked_by = NULL,
@@ -555,7 +607,7 @@ export async function claimNextPricingReleaseActivationJobV2(
     `, [jobId, workerId]);
     try {
       const row = await loadActivationJob(client, jobId);
-      const job = await claimedJobFromRow(client, row);
+      const job = await claimedJobFromRow(client, row, authorityReaders);
       if (await unresolvedPricingJobCount(client, jobId) !== 0) {
         throw transient("another pricing job became unresolved after Stage 8 evidence collection");
       }
@@ -568,6 +620,10 @@ export async function claimNextPricingReleaseActivationJobV2(
       await client.query(`
         UPDATE pricing_release_control_jobs_v2
         SET status = $4,
+            attempts = CASE
+              WHEN $4 = 'retry' THEN GREATEST(attempts - 1, 0)
+              ELSE attempts
+            END,
             next_attempt_at = CASE
               WHEN $4 = 'retry' THEN now() + interval '5 seconds'
               ELSE next_attempt_at

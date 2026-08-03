@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import JSONbigFactory from "json-bigint";
+import { pricingReleaseHeadV2Schema } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Database } from "./client.js";
@@ -8,9 +9,12 @@ import {
   scanStage5OpenKeysInventoryV2,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
-  type Stage5V2OpenKeysReader,
 } from "./pricing-stage5-materializer-v2.js";
 import { readStage5V2CommerceAndServiceSnapshot } from "./pricing-stage5-materializer-v2-store.js";
+import {
+  capturePricingReleaseActivationAuthorityV2,
+  type PricingReleaseActivationAuthorityReadersV2,
+} from "./pricing-release-activation-authority.js";
 
 const JSONbig = JSONbigFactory({ alwaysParseAsBig: true, useNativeBigInt: true });
 const ENGINE_EVIDENCE_DOMAIN = Buffer.from(
@@ -233,6 +237,8 @@ interface ReleaseAssignmentLineageRow {
 
 interface StoredEvidenceRow {
   evidence_digest: string;
+  engine_evidence_digest: string | null;
+  engine_captured_at: Date | null;
   target_generation: string;
   target_digest: string;
   recovery_generation: string;
@@ -414,6 +420,8 @@ async function pendingPricingJobs(client: PoolClient): Promise<string[]> {
 function storedIdentity(row: StoredEvidenceRow): Record<string, unknown> {
   return {
     evidence_digest: row.evidence_digest,
+    engine_evidence_digest: row.engine_evidence_digest,
+    engine_captured_at: row.engine_captured_at?.toISOString() ?? null,
     target_generation: row.target_generation,
     target_digest: row.target_digest,
     recovery_generation: row.recovery_generation,
@@ -435,12 +443,12 @@ function storedIdentity(row: StoredEvidenceRow): Record<string, unknown> {
 
 export async function collectStage8CombinedEvidenceV2(
   database: Database,
-  openkeys: Stage5V2OpenKeysReader,
+  readers: PricingReleaseActivationAuthorityReadersV2,
   untrustedEngineEvidence: Stage8EngineEvidenceV2,
 ): Promise<Stage8CombinedEvidenceV2> {
   const engine = validateEngineEvidence(untrustedEngineEvidence);
-  const openkeysFirst = await scanStage5OpenKeysInventoryV2(openkeys);
-  const openkeysSecond = await scanStage5OpenKeysInventoryV2(openkeys);
+  const openkeysFirst = await scanStage5OpenKeysInventoryV2(readers.openkeys);
+  const openkeysSecond = await scanStage5OpenKeysInventoryV2(readers.openkeys);
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -501,15 +509,47 @@ export async function collectStage8CombinedEvidenceV2(
     pushLocalBlocker(blockers, "target_release_missing", target ? [] : [engine.release.target_generation.toString()]);
     pushLocalBlocker(blockers, "recovery_release_missing", recovery ? [] : [engine.release.recovery_generation.toString()]);
 
+    const activeHead = engine.release.active_head === null ? null : pricingReleaseHeadV2Schema.parse({
+      active_generation: Number(engine.release.active_head.active_generation),
+      active_digest: engine.release.active_head.active_digest,
+      head_version: Number(engine.release.active_head.head_version),
+      updated_ts: Number(engine.release.active_head.updated_ts),
+    });
+    const authority = target && recovery ? await capturePricingReleaseActivationAuthorityV2(
+      client,
+      readers,
+      {
+        activationKind: activeHead === null ? "cutover" : "recovery",
+        targetGeneration: target.generation,
+        targetEngineDigest: target.engine_release_digest ?? "",
+        recoveryGeneration: recovery.generation,
+        recoveryEngineDigest: recovery.engine_release_digest ?? "",
+        targetCommerceInventoryDigest: target.commerce_inventory_digest,
+        targetEngineInventoryDigest: target.engine_inventory_digest,
+        targetOpenkeysInventoryDigest: target.openkeys_inventory_digest,
+        targetServiceInventoryDigest: target.service_inventory_digest,
+        expectedHead: activeHead,
+      },
+    ) : null;
+    for (const item of authority?.blockers ?? []) {
+      const candidate = localBlocker(item.code, item.subjectDigests);
+      if (candidate) blockers.push({ ...candidate, count: String(item.count) });
+    }
+    const currentCommerceDigest = authority?.commerceInventoryDigest ?? commerceDigest;
+    const currentEngineDigest = authority?.engineInventoryDigest ?? engine.engine_inventory_digest;
+    const currentOpenkeysDigest = authority?.openkeysInventoryDigest ?? openkeysSecond.inventory_digest;
+    const currentServiceDigest = authority?.serviceInventoryDigest ?? serviceDigest;
+    const postCutover = activeHead !== null;
+
     if (target) {
       const drift: string[] = [];
       if (target.release_kind !== "target") drift.push("kind");
       if (target.status !== "prepared") drift.push(`status:${target.status}`);
       if (target.schema_version !== "2") drift.push("schema");
-      if (target.commerce_inventory_digest !== commerceDigest) drift.push("commerce-inventory");
-      if (target.engine_inventory_digest !== engine.engine_inventory_digest) drift.push("engine-inventory");
-      if (target.openkeys_inventory_digest !== openkeysSecond.inventory_digest) drift.push("openkeys-inventory");
-      if (target.service_inventory_digest !== serviceDigest) drift.push("service-inventory");
+      if (!postCutover && target.commerce_inventory_digest !== currentCommerceDigest) drift.push("commerce-inventory");
+      if (target.engine_inventory_digest !== currentEngineDigest) drift.push("engine-inventory");
+      if (!postCutover && target.openkeys_inventory_digest !== currentOpenkeysDigest) drift.push("openkeys-inventory");
+      if (!postCutover && target.service_inventory_digest !== currentServiceDigest) drift.push("service-inventory");
       if (target.funding_manifest_digest !== engine.funding_digest) drift.push("funding");
       if (target.engine_release_digest !== engine.release.target_digest) drift.push("engine-release");
       if (target.assignment_count !== engine.release.target_assignment_count.toString()) drift.push("assignments");
@@ -520,10 +560,10 @@ export async function collectStage8CombinedEvidenceV2(
       if (recovery.release_kind !== "recovery") drift.push("kind");
       if (recovery.status !== "prepared") drift.push(`status:${recovery.status}`);
       if (recovery.schema_version !== "2") drift.push("schema");
-      if (recovery.commerce_inventory_digest !== commerceDigest) drift.push("commerce-inventory");
-      if (recovery.engine_inventory_digest !== engine.engine_inventory_digest) drift.push("engine-inventory");
-      if (recovery.openkeys_inventory_digest !== openkeysSecond.inventory_digest) drift.push("openkeys-inventory");
-      if (recovery.service_inventory_digest !== serviceDigest) drift.push("service-inventory");
+      if (!postCutover && recovery.commerce_inventory_digest !== currentCommerceDigest) drift.push("commerce-inventory");
+      if (recovery.engine_inventory_digest !== currentEngineDigest) drift.push("engine-inventory");
+      if (!postCutover && recovery.openkeys_inventory_digest !== currentOpenkeysDigest) drift.push("openkeys-inventory");
+      if (!postCutover && recovery.service_inventory_digest !== currentServiceDigest) drift.push("service-inventory");
       if (recovery.funding_manifest_digest !== engine.funding_digest) drift.push("funding");
       if (recovery.engine_release_digest !== engine.release.recovery_digest) drift.push("engine-release");
       if (recovery.assignment_count !== engine.release.recovery_assignment_count.toString()) drift.push("assignments");
@@ -577,10 +617,10 @@ export async function collectStage8CombinedEvidenceV2(
         },
       },
       inventories: {
-        commerce_digest: commerceDigest,
-        engine_digest: engine.engine_inventory_digest,
-        openkeys_digest: openkeysSecond.inventory_digest,
-        service_digest: serviceDigest,
+        commerce_digest: currentCommerceDigest,
+        engine_digest: currentEngineDigest,
+        openkeys_digest: currentOpenkeysDigest,
+        service_digest: currentServiceDigest,
       },
       sales_contract_digest: STAGE8_SALES_CONTRACT_DIGEST,
       funding_digest: engine.funding_digest,
@@ -595,26 +635,29 @@ export async function collectStage8CombinedEvidenceV2(
     if (targetCommerceDigest !== null && recoveryCommerceDigest !== null) {
       const inserted = await client.query<{ evidence_digest: string }>(`
         INSERT INTO pricing_stage8_evidence_v2 (
-          evidence_digest, target_generation, target_digest,
+          evidence_digest, engine_evidence_digest, engine_captured_at,
+          target_generation, target_digest,
           recovery_generation, recovery_digest,
           commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
           sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
           legacy_inflight_count, blocker_count, passed, observed_at, valid_until
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-          $13, $14, $15, $16, $17
+          $1, $2, to_timestamp($3::bigint), $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19
         )
         ON CONFLICT (evidence_digest) DO NOTHING
         RETURNING evidence_digest
       `, [
         evidenceDigest,
+        engine.evidence_digest,
+        engine.captured_ts.toString(),
         engine.release.target_generation,
         targetCommerceDigest,
         engine.release.recovery_generation,
         recoveryCommerceDigest,
-        commerceDigest,
-        engine.engine_inventory_digest,
-        openkeysSecond.inventory_digest,
+        currentCommerceDigest,
+        currentEngineDigest,
+        currentOpenkeysDigest,
         STAGE8_SALES_CONTRACT_DIGEST,
         engine.funding_digest,
         engine.shadow_digest,
@@ -626,7 +669,8 @@ export async function collectStage8CombinedEvidenceV2(
         validUntil,
       ]);
       const stored = await client.query<StoredEvidenceRow>(`
-        SELECT evidence_digest, target_generation::text, target_digest,
+        SELECT evidence_digest, engine_evidence_digest, engine_captured_at,
+               target_generation::text, target_digest,
                recovery_generation::text, recovery_digest,
                commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
                sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
@@ -635,13 +679,15 @@ export async function collectStage8CombinedEvidenceV2(
       `, [evidenceDigest]);
       const expectedStored = {
         evidence_digest: evidenceDigest,
+        engine_evidence_digest: engine.evidence_digest,
+        engine_captured_at: new Date(Number(engine.captured_ts) * 1_000).toISOString(),
         target_generation: engine.release.target_generation.toString(),
         target_digest: targetCommerceDigest,
         recovery_generation: engine.release.recovery_generation.toString(),
         recovery_digest: recoveryCommerceDigest,
-        commerce_inventory_digest: commerceDigest,
-        engine_inventory_digest: engine.engine_inventory_digest,
-        openkeys_inventory_digest: openkeysSecond.inventory_digest,
+        commerce_inventory_digest: currentCommerceDigest,
+        engine_inventory_digest: currentEngineDigest,
+        openkeys_inventory_digest: currentOpenkeysDigest,
         sales_contract_digest: STAGE8_SALES_CONTRACT_DIGEST,
         funding_digest: engine.funding_digest,
         shadow_digest: engine.shadow_digest,

@@ -21,6 +21,7 @@ import {
   releasePricingReleaseActivationJobV2,
   retryPricingJob,
   utcMonthStart,
+  createStage5OpenKeysInventoryReaderV2,
   type Database,
   type ClaimedPricingControlJob,
   type ClaimedPricingReleaseActivationJobV2,
@@ -28,6 +29,7 @@ import {
   PricingReleaseActivationJobV2Error,
   type PricingReleaseActivationJobDispositionV2,
   type PricingSyncTarget,
+  type Stage5V2OpenKeysReader,
 } from "@claude-api/db";
 import type {
   PolicyActiveExpectation,
@@ -46,13 +48,20 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   private loop: Promise<void> | undefined;
   private stopSleep!: () => void;
   private readonly stopSignal = new Promise<void>((resolve) => { this.stopSleep = resolve; });
+  private readonly openkeys: Stage5V2OpenKeysReader;
 
   constructor(
     @Inject(DATABASE) private readonly database: Database,
     @Inject(ENGINE_CLIENT) private readonly engine: EngineClient,
     @Inject(WORKER_ID) private readonly workerId: string,
     private readonly config: ConfigService<Environment, true>,
-  ) {}
+  ) {
+    this.openkeys = createStage5OpenKeysInventoryReaderV2({
+      baseUrl: this.config.get("OPENKEYS_INTERNAL_BASE_URL", { infer: true }),
+      controlKey: this.config.get("OPENKEYS_CONTROL_KEY", { infer: true })
+        ?? this.config.get("ENGINE_CONTROL_KEY", { infer: true }),
+    });
+  }
 
   async onModuleInit(): Promise<void> {
     const recoveredControl = await recoverStalePricingControlJobs(this.database);
@@ -263,7 +272,11 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
 
   private async flushPricingReleaseActivationJobs(): Promise<void> {
     for (;;) {
-      const job = await claimNextPricingReleaseActivationJobV2(this.database, this.workerId);
+      const job = await claimNextPricingReleaseActivationJobV2(
+        this.database,
+        this.workerId,
+        { engine: this.engine, openkeys: this.openkeys },
+      );
       if (!job) return;
       try {
         const ack = await this.deliverPricingReleaseActivationJob(job);

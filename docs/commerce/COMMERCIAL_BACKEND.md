@@ -133,10 +133,15 @@ transport method; `packages/db/src/pricing-release-activation-jobs.ts` accepts o
 staged immutable job bound to persisted `passed=true`, zero-blocker Stage 8 evidence and prepared
 target/recovery engine digests. The request is stored before network I/O, expired leases replay that
 exact body, and confirmation atomically stores the complete validated ACK plus canonical
-request/receipt result digest. Forward recovery derives its exact expected target head only from the
-durable cutover receipt. No API, migration, startup hook or evidence collection automatically stages
-a job. Until the follow-up Stage 8 collector fills the nullable source evidence fields, staging
-fails closed and this deployed consumer cannot call the activation route.
+request/receipt result digest. Before the first delivery, the worker revalidates full engine and
+OpenKeys inventories around a stable commerce/service snapshot, exact ownership/status and
+post-cutover assignment-extension/funding authority. Subject identities remain hashed. Once a
+request may have reached the engine, retry deliberately skips TTL and mutable-authority checks and
+replays the immutable body so an applied CAS with a lost ACK can return `unchanged`. Forward
+recovery derives its exact expected target head only from the durable cutover receipt. No API,
+migration, startup hook or evidence collection automatically stages a job. Until the follow-up
+Stage 8 collector fills the nullable source evidence fields, staging fails closed and this deployed
+consumer cannot call the activation route.
 
 The commercial admin API exposes the complete managed surface:
 
@@ -227,16 +232,16 @@ pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json
 ```
 
 The consumer preserves signed-i64 JSON money, independently recomputes the Rust evidence digest,
-requires an engine source no older than 120 seconds, exhausts OpenKeys twice and observes commerce
-and service authority in one `SERIALIZABLE` snapshot. It binds exact prepared target/recovery
+requires an engine source no older than 120 seconds, exhausts engine and OpenKeys twice and observes
+commerce and service authority in one `SERIALIZABLE` snapshot. It binds exact prepared target/recovery
 generations, semantic assignments, funding/release lineage, current inventories, runtime/shadow
 evidence and the absence of pending or failed control jobs. A combined identity expires after 300
 seconds. Existing target/recovery plans allow both passed and blocked reports to be persisted
 immutably in `pricing_stage8_evidence_v2`; missing plans return `not_persisted`. Account and binding
 subjects are emitted only as SHA-256 digests, blockers exit non-zero, and the command never seeds a
 policy, retries a job or advances a head. Runtime credentials come only from `DATABASE_URL`,
-optional `OPENKEYS_INTERNAL_BASE_URL`, and `OPENKEYS_CONTROL_KEY` (or the shared
-`ENGINE_CONTROL_KEY` fallback).
+required `ENGINE_CONTROL_KEY`, optional `ENGINE_BASE_URL`/`OPENKEYS_INTERNAL_BASE_URL`, and optional
+dedicated `OPENKEYS_CONTROL_KEY` (otherwise OpenKeys uses the shared engine key).
 
 The combined `sales_contract_digest` identifies the intended paid-funded commission schema but is
 not deployed-sales-runtime evidence. Stage 9 separately requires the sales v2 consumer checkpoint.

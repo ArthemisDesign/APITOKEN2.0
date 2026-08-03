@@ -292,8 +292,10 @@ claude-api db stage8-evidence \
 ```
 
 Immediately consume that exact JSON with the deployed commerce checkpoint. Inject
-`DATABASE_URL` and `OPENKEYS_CONTROL_KEY` through the normal protected environment. A shared
-deployment may fall back to `ENGINE_CONTROL_KEY`; do not put credentials in arguments:
+`DATABASE_URL`, `ENGINE_CONTROL_KEY` and, when distinct, `OPENKEYS_CONTROL_KEY` through the normal
+protected environment. `ENGINE_BASE_URL` and `OPENKEYS_INTERNAL_BASE_URL` default to their stable
+loopback origins; OpenKeys authentication may fall back to `ENGINE_CONTROL_KEY`. Do not put
+credentials in arguments:
 
 ```bash
 pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json \
@@ -302,11 +304,15 @@ pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json
 
 The consumer parses nanoUSD as signed-i64-preserving integers, verifies the canonical Rust
 `sha256:v2` length-prefixed engine digest, rejects an engine source older than 120 seconds and
-exhausts the OpenKeys cursor twice. It then takes one commerce `SERIALIZABLE` snapshot under the
-release control-plane advisory lock, recomputes commerce/service identities and verifies the exact
-prepared target/recovery generations, semantic assignment lineage, engine release/funding
-identities and control-job backlog. Account/request/binding subjects are emitted only as digests;
-neither command prints a database DSN.
+exhausts both engine and OpenKeys cursors twice around one commerce `SERIALIZABLE` snapshot. It
+recomputes commerce/service identities and verifies exact ownership/status, B2B scalar parity,
+OpenKeys 1:1, the prepared target/recovery generations, semantic assignment lineage, engine
+release/funding identities and control-job backlog. После cutover immutable base manifest не
+переписывается: каждый новый account обязан иметь exact target/recovery assignment extension,
+matching policy и active funding generation/head/aggregates. Live balances не входят в стабильный
+engine identity digest и потому normal traffic/money writes не создают ложный inventory drift.
+Account/request/binding subjects are emitted only as digests; neither command prints a database
+DSN.
 
 The combined schema-v2 report is valid for 300 seconds. When both local release plans exist, the
 consumer stores its identity immutably in `pricing_stage8_evidence_v2`, including blocked reports
@@ -329,7 +335,8 @@ Required target evidence includes:
 - global B2C 50% plus exact provider/model override vectors;
 - every B2B policy, canonical OpenKeys 1:1 and service `meter_only` assignment;
 - Stage 6 funding generation for every account;
-- zero unfinished legacy-format reservations/outbox rows (active v2 rows are allowed);
+- exact format-aware counts for unfinished legacy reservations/outbox rows; nonzero legacy и
+  active-v2 work допускаются и продолжают settlement по immutable reserve-time snapshots;
 - 100% shadow coverage, exact nanoUSD parity and no unresolved outcome;
 - exact prepared target/recovery release and recovery-link digests, with equal runtime/funding
   lineage and one assignment for every active or disabled engine account;
@@ -352,7 +359,10 @@ the current runtime claim writer does not yet populate the release-v2/funding-v2
 live slots. Do not weaken this blocker and do not treat a producer-only report as completed Stage 8.
 
 Immediately before Stage 9, regenerate the engine input and combined report and require a fresh,
-persisted `passed=true` combined identity. Stage 9
+persisted `passed=true` combined identity. Первый claim activation job повторяет full authority
+capture непосредственно перед network delivery. Если delivery могла состояться, expired lease
+повторяет exact durable request без новой TTL/authority проверки, чтобы безопасно получить
+`unchanged` после lost ACK. Stage 9
 changes one global active release head; it does not select a canary list and does not require a
 maintenance window or zero active v2 reservations. The complete apply/recovery procedure is
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

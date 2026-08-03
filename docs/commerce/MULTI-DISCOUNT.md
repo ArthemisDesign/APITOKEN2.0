@@ -370,7 +370,9 @@ Canary-account list не создаётся. Stage 8 принимает толь
 
 Stage 9 выполняет одну короткую `SERIALIZABLE` транзакцию под pricing-release advisory lock:
 
-1. перечитывает exact Stage 8 evidence и prepared release digest;
+1. перечитывает exact Stage 8 evidence и prepared release digest; перед первой network delivery
+   consumer заново делает два полных engine/OpenKeys scan вокруг commerce/service snapshot,
+   проверяет ownership/status, B2B/OpenKeys authority и post-cutover extensions/funding;
 2. проверяет minimum runtime capability на обоих blue-green слотах и rollback floor;
 3. проверяет все active accounts/funding generations и format-aware settlement readiness для
    наблюдаемого legacy inflight;
@@ -381,6 +383,11 @@ Stage 9 выполняет одну короткую `SERIALIZABLE` транза
 Транзакция не изменяет балансы и не обновляет N account rows. После commit следующий reserve любого
 клиента видит новый release. Уже начатый запрос завершается по immutable snapshot, сохранённому при
 его reserve. Поэтому traffic не останавливается и один запрос не смешивает старую цену с новой.
+
+Activation request сохраняется до сети. Первый delivery требует fresh TTL и mutable-authority
+preflight; после него timeout/crash считается возможным lost ACK, поэтому retry не строит новый
+request и не повторяет изменчивый preflight, а отправляет exact durable body. Applied CAS тогда
+идемпотентно возвращает `unchanged`. Ни один blocker не публикует raw account/owner identity.
 
 ### 7.7. Recovery без остановки
 

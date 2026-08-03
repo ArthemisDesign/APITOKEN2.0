@@ -27,6 +27,26 @@ test("accepts authenticated Brevo STARTTLS configuration in production", () => {
   assert.equal(environment.FUNDING_NORMALIZATION_BATCH_SIZE, 25);
   assert.equal(environment.FUNDING_NORMALIZATION_INVENTORY_PAGE_SIZE, 500);
   assert.equal(environment.FUNDING_NORMALIZATION_LEASE_MS, 300_000);
+  assert.equal(environment.OPENKEYS_INTERNAL_BASE_URL, "http://127.0.0.1:3410");
+  assert.equal(environment.OPENKEYS_CONTROL_KEY, undefined);
+});
+
+test("accepts a dedicated OpenKeys activation-authority endpoint", () => {
+  const environment = validateEnvironment({
+    ...productionEnvironment,
+    OPENKEYS_INTERNAL_BASE_URL: "http://127.0.0.1:4410",
+    OPENKEYS_CONTROL_KEY: "o".repeat(32),
+  });
+
+  assert.equal(environment.OPENKEYS_INTERNAL_BASE_URL, "http://127.0.0.1:4410");
+  assert.equal(environment.OPENKEYS_CONTROL_KEY, "o".repeat(32));
+  assert.throws(
+    () => validateEnvironment({
+      ...productionEnvironment,
+      OPENKEYS_CONTROL_KEY: "too-short",
+    }),
+    /at least 32 character/,
+  );
 });
 
 test("bounds funding normalization work and leases", () => {

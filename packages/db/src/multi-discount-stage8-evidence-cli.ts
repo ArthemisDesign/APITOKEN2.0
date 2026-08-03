@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { EngineClient } from "@claude-api/engine-client";
 import { createDatabase } from "./client.js";
 import {
   Stage8EvidenceV2Error,
@@ -23,11 +24,9 @@ export async function runStage8CommerceEvidenceCli(
     throw new Error("usage: multi-discount-stage8-evidence-cli <engine-evidence-json-path>");
   }
   const connectionString = required(env, "DATABASE_URL");
+  const engineControlKey = required(env, "ENGINE_CONTROL_KEY");
   const openkeysControlKey = env.OPENKEYS_CONTROL_KEY?.trim()
-    || env.ENGINE_CONTROL_KEY?.trim();
-  if (!openkeysControlKey) {
-    throw new Error("OPENKEYS_CONTROL_KEY or ENGINE_CONTROL_KEY is required");
-  }
+    || engineControlKey;
   const engineEvidence = parseStage8EngineEvidenceV2(await readFile(engineEvidencePath, "utf8"));
   const openkeys = createStage5OpenKeysInventoryReaderV2({
     baseUrl: env.OPENKEYS_INTERNAL_BASE_URL?.trim() || "http://127.0.0.1:3410",
@@ -36,7 +35,15 @@ export async function runStage8CommerceEvidenceCli(
 
   const database = createDatabase(connectionString, "stage8-combined-evidence-v2");
   try {
-    const report = await collectStage8CombinedEvidenceV2(database, openkeys, engineEvidence);
+    const engine = new EngineClient({
+      baseUrl: env.ENGINE_BASE_URL?.trim() || "http://127.0.0.1:8790",
+      controlKey: engineControlKey,
+    });
+    const report = await collectStage8CombinedEvidenceV2(
+      database,
+      { engine, openkeys },
+      engineEvidence,
+    );
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     if (!report.passed) process.exitCode = 2;
   } finally {

@@ -13,8 +13,14 @@ schema SHA.
 После GREEN schema SHA durable consumer добавляет strict contracts, единственный typed engine
 transport и worker lifecycle `pending → processing → retry|dead|confirmed`. Explicit staging
 сохраняет immutable request до сети и принимает только persisted `passed=true`/zero-blocker
-evidence с prepared target/recovery engine digests. Timeout или lost ACK повторяет exact request;
-успех атомарно сохраняет complete validated ACK и canonical request/receipt result digest.
+evidence с prepared target/recovery engine digests. Перед первой сетевой доставкой worker в свежем
+`SERIALIZABLE` snapshot повторно исчерпывает engine и OpenKeys inventory, сверяет commerce/service
+ownership, status, B2B scalar authority и OpenKeys 1:1, а после cutover требует exact paired
+assignment extension, policy и active funding generation для каждого нового account. Наружу
+выходят только digest'ы субъектов. После того как exact request впервые выдан transport lane,
+timeout, crash или lost ACK повторяет только это сохранённое тело без TTL/mutable-authority
+preflight: CAS уже мог примениться, поэтому новая интерпретация retry была бы небезопасна. Успех
+атомарно сохраняет complete validated ACK и canonical request/receipt result digest.
 Recovery expectation не реконструируется: она читается только из полного durable cutover receipt.
 Consumer не создаёт job автоматически. Пока Stage 8 collector не заполнил nullable source digest и
 capture time из миграции 0031, staging fail-closed и production CAS невозможен.
@@ -28,8 +34,8 @@ capture time из миграции 0031, staging fail-closed и production CAS �
 - Stage 6 завершён для 100% inventory;
 - Stage 7 подтверждает canonical OpenKeys 1:1;
 - Stage 8 combined schema-v2 evidence persisted, unexpired и `passed=true`; его source engine
-  evidence прошло canonical digest и 120-second age checks, а OpenKeys был исчерпывающе просканирован
-  дважды;
+  evidence прошло canonical digest и 120-second age checks, а engine/OpenKeys были исчерпывающе
+  просканированы дважды и не изменились между проходами;
 - sales v2 runtime/consumer отдельно подтверждает commission только с `paid_funded_nano` и
   исключение welcome bonus; `sales_contract_digest` в Stage 8 сам по себе это не доказывает;
 - shadow evaluation покрывает 100% поддержанных запросов;
@@ -48,7 +54,10 @@ precondition.
 Protected control-plane передаёт exact target/recovery engine release digests, combined Stage 8
 evidence identity, source engine capture time/subdigests, complete expected head, operator и reason.
 До вызова engine CAS он требует exact immutable commerce row с `passed=true`, проверяет
-`valid_until` и заново сверяет commerce/service/OpenKeys authority с target/recovery. Engine
+`valid_until` и непосредственно перед первой delivery заново сверяет commerce/service/OpenKeys и
+engine authority с target/recovery. Этот preflight не блокирует traffic или money writers: live
+balances исключены из inventory identity и отдельно проверяются через active funding
+generation/head/aggregates. Engine
 открывает короткую `SERIALIZABLE` transaction под release advisory lock, повторяет engine-side
 freshness/coverage checks: immutable pair/link и active catalog/switch lineage, base inventory,
 funding manifest/parity, exact runtime-floor digest и owner-epoch claim каждого live instance. Затем
@@ -64,7 +73,9 @@ settle'ится по сохранённому прежнему snapshot.
 переписывается; exact extension pair добавляется одной транзакцией под тем же control-plane lock.
 
 Exact replay сверяется с durable activation audit и возвращает `unchanged`, даже если ACK был
-потерян, а исходный TTL затем истёк. Stale evidence, inventory drift, неподдержанный runtime или
+потерян, а исходный TTL затем истёк. Retry не перечитывает mutable authority, потому что отличить
+lost ACK от уже применённого CAS невозможно; он отправляет byte-for-byte тот же durable request.
+Stale evidence, inventory drift, неподдержанный runtime или
 унаследованный от чужого owner epoch claim, неполная funding generation либо CAS mismatch
 отклоняются до mutation. Отказ не требует выключать
 traffic: старый release продолжает обслуживаться.

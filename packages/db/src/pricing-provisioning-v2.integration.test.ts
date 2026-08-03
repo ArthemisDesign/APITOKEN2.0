@@ -177,13 +177,15 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
   let databaseName: string;
   let userId: string;
   const accountId = "acct_post_cutover";
-  const targetDigest = digest("target-release");
-  const recoveryDigest = digest("recovery-release");
-  const target = release(10, "target", targetDigest);
-  const recovery = release(11, "recovery", recoveryDigest);
+  const targetEngineDigest = digest("target-engine-release");
+  const recoveryEngineDigest = digest("recovery-engine-release");
+  const targetCommerceDigest = digest("target-commerce-plan");
+  const recoveryCommerceDigest = digest("recovery-commerce-plan");
+  const target = release(10, "target", targetEngineDigest);
+  const recovery = release(11, "recovery", recoveryEngineDigest);
   const head: PricingReleaseHeadV2 = {
     active_generation: 10,
-    active_digest: targetDigest,
+    active_digest: targetEngineDigest,
     head_version: 1,
     updated_ts: 1,
   };
@@ -295,7 +297,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
         item.assignment_manifest_digest,
         item.funding_manifest_digest,
         item.content_digest,
-        item.content_digest,
+        item.generation === target.generation ? targetCommerceDigest : recoveryCommerceDigest,
       ]);
       await seed.query(`
         INSERT INTO pricing_release_assignments_v2 (
@@ -322,8 +324,8 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
       ) VALUES ($1,10,$2,11,$3,$4,$5,$6,$7,$8,$9,$10,0,0,true,now(),now()+interval '5 minutes')
     `, [
       evidenceDigest,
-      targetDigest,
-      recoveryDigest,
+      targetCommerceDigest,
+      recoveryCommerceDigest,
       digest("commerce-evidence"),
       target.inventory_digest,
       digest("openkeys-evidence"),
@@ -337,7 +339,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
         activation_id,activation_kind,release_generation,release_digest,
         evidence_digest,head_version,receipt_digest,activated_at
       ) VALUES ($1,'cutover',10,$2,$3,1,$4,now())
-    `, [randomUUID(), targetDigest, evidenceDigest, digest("activation-receipt")]);
+    `, [randomUUID(), targetCommerceDigest, evidenceDigest, digest("activation-receipt")]);
   }, TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -385,10 +387,10 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
         activation_id,activation_kind,release_generation,release_digest,
         evidence_digest,head_version,receipt_digest,activated_at
       ) VALUES ($1,'recovery',11,$2,$3,2,$4,now())
-    `, [randomUUID(), recoveryDigest, digest("stage8-evidence"), digest("recovery-receipt")]);
+    `, [randomUUID(), recoveryCommerceDigest, digest("stage8-evidence"), digest("recovery-receipt")]);
     state.setHead({
       active_generation: 11,
-      active_digest: recoveryDigest,
+      active_digest: recoveryEngineDigest,
       head_version: 2,
       updated_ts: 2,
     });

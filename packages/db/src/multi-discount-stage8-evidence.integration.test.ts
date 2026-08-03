@@ -1,4 +1,11 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import type {
+  FundingNormalizationPlanV2,
+  PricingReleaseAssignmentExtensionV2,
+  PricingReleaseHeadV2,
+  PricingReleaseInventoryAccountV2,
+} from "@claude-api/contracts";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
@@ -13,7 +20,9 @@ import {
   stagePricingReleaseActivationJobV2,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
+  stage5V2EngineIdentityDigest,
   stage8EngineEvidenceDigestV2,
+  type PricingReleaseActivationAuthorityReadersV2,
   type Stage5V2OpenKeysReader,
   type Stage8EngineEvidenceV2,
 } from "./index.js";
@@ -31,6 +40,55 @@ function quoteIdentifier(identifier: string): string {
 
 function digest(label: string): string {
   return stage5V2Digest("stage8-integration", label);
+}
+
+interface AuthorityHarness {
+  readers: PricingReleaseActivationAuthorityReadersV2;
+  accounts: PricingReleaseInventoryAccountV2[];
+  extensions: Map<string, PricingReleaseAssignmentExtensionV2>;
+  funding: Map<string, FundingNormalizationPlanV2>;
+  setHead(head: PricingReleaseHeadV2 | null): void;
+}
+
+function authorityHarness(
+  accounts: PricingReleaseInventoryAccountV2[],
+  openkeys: Stage5V2OpenKeysReader,
+): AuthorityHarness {
+  let head: PricingReleaseHeadV2 | null = null;
+  const extensions = new Map<string, PricingReleaseAssignmentExtensionV2>();
+  const funding = new Map<string, FundingNormalizationPlanV2>();
+  return {
+    accounts,
+    extensions,
+    funding,
+    setHead: (next) => { head = next; },
+    readers: {
+      openkeys,
+      engine: {
+        getPricingReleaseHeadV2: async () => structuredClone(head),
+        getPricingReleaseInventoryV2: async (options = {}) => {
+          const { afterAccountId, limit = 500 } = options;
+          const ordered = [...accounts].sort((left, right) =>
+            Buffer.compare(Buffer.from(left.account_id), Buffer.from(right.account_id)));
+          const remaining = afterAccountId === undefined
+            ? ordered
+            : ordered.filter((account) => Buffer.compare(
+              Buffer.from(account.account_id),
+              Buffer.from(afterAccountId),
+            ) > 0);
+          const page = remaining.slice(0, limit);
+          return {
+            accounts: structuredClone(page),
+            next_after_account_id: remaining.length > page.length ? page.at(-1)!.account_id : null,
+          };
+        },
+        getPricingReleaseAssignmentExtensionV2: async (headVersion, accountId) =>
+          structuredClone(extensions.get(`${headVersion}:${accountId}`) ?? null),
+        getFundingNormalizationPlanV2: async (accountId) =>
+          structuredClone(funding.get(accountId) ?? null),
+      },
+    },
+  };
 }
 
 function engineEvidence(input: {
@@ -183,6 +241,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
   async function seedPreparedPair(options: { recoveryOwnerDrift?: boolean } = {}): Promise<{
     report: Stage8EngineEvidenceV2;
     openkeys: Stage5V2OpenKeysReader;
+    authority: AuthorityHarness;
     accountId: string;
     userId: string;
   }> {
@@ -216,7 +275,17 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       invitations: [],
     });
     const serviceDigest = buildStage5ServiceInventoryV2([]).inventory_digest;
-    const engineInventoryDigest = digest("engine-inventory");
+    const engineAccount: PricingReleaseInventoryAccountV2 = {
+      account_id: accountId,
+      status: "active",
+      multiplier_bp: 4_000,
+      balance_nano: "5000000000",
+      reserved_nano: "0",
+      spent_nano: "0",
+      funding_generation: 7,
+      funding_head_version: 1,
+    };
+    const engineInventoryDigest = stage5V2EngineIdentityDigest([engineAccount]);
     const openkeysDigest = digest("openkeys-inventory-empty");
     const fundingDigest = digest("funding-manifest");
     const targetPlanDigest = digest("target-plan");
@@ -299,6 +368,14 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       targetEngineDigest,
       recoveryEngineDigest,
     ]);
+    const openkeys: Stage5V2OpenKeysReader = {
+      getPage: async () => ({
+        inventory_digest: openkeysDigest,
+        accounts: [],
+        next_after_account_id: null,
+      }),
+    };
+    const authority = authorityHarness([engineAccount], openkeys);
     return {
       accountId,
       userId,
@@ -308,34 +385,142 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         targetEngineDigest,
         recoveryEngineDigest,
       }),
-      openkeys: {
-        getPage: async () => ({
-          inventory_digest: openkeysDigest,
-          accounts: [],
-          next_after_account_id: null,
-        }),
-      },
+      openkeys,
+      authority,
     };
   }
 
-  async function persistActivationSource(
-    evidenceDigest: string,
-    source: Stage8EngineEvidenceV2,
-  ): Promise<void> {
-    const updated = await seed.query(`
-      UPDATE pricing_stage8_evidence_v2
-      SET engine_evidence_digest = $2,
-          engine_captured_at = to_timestamp($3::bigint)
-      WHERE evidence_digest = $1
-    `, [evidenceDigest, source.evidence_digest, source.captured_ts]);
-    expect(updated.rowCount).toBe(1);
+  async function addPostCutoverB2c(
+    seeded: Awaited<ReturnType<typeof seedPreparedPair>>,
+    options: {
+      extension?: "exact" | "missing" | "policy_mismatch";
+      fundingHeadMismatch?: boolean;
+    } = {},
+  ): Promise<{ accountId: string; head: PricingReleaseHeadV2; report: Stage8EngineEvidenceV2 }> {
+    const accountId = "acct_stage8_post_cutover_b2c";
+    const userId = randomUUID();
+    const recordId = randomUUID();
+    await seed.query(`
+      INSERT INTO users (id, email, display_name, email_verified, status)
+      VALUES ($1, $2, 'Stage 8 post-cutover', true, 'active')
+    `, [userId, `${userId}@example.test`]);
+    await seed.query(`
+      INSERT INTO customer_profiles (
+        user_id, customer_type, current_tier, multiplier_bp, pricing_month_start
+      ) VALUES ($1, 'b2c', 0, 5000, now())
+    `, [userId]);
+    await seed.query(`
+      INSERT INTO engine_accounts (id, user_id, engine_account_id, mult_bp, status)
+      VALUES ($1, $2, $3, 5000, 'active')
+    `, [recordId, userId, accountId]);
+
+    const account: PricingReleaseInventoryAccountV2 = {
+      account_id: accountId,
+      status: "active",
+      multiplier_bp: 5_000,
+      balance_nano: "9000000000",
+      reserved_nano: "1000000000",
+      spent_nano: "2000000000",
+      funding_generation: 8,
+      funding_head_version: 1,
+    };
+    seeded.authority.accounts.push(account);
+    seeded.authority.funding.set(accountId, {
+      account_id: accountId,
+      account_status: "active",
+      status: "normalized",
+      source: "stored_generation",
+      source_state_digest: digest("post-cutover-funding-source"),
+      normalization_digest: digest("post-cutover-funding-generation"),
+      funding_generation: 8,
+      funding_head_version: options.fundingHeadMismatch ? 2 : 1,
+      balance_nano: account.balance_nano,
+      reserved_nano: account.reserved_nano,
+      spent_nano: account.spent_nano,
+      lots: [{
+        lot_id: "fundv2_stage8_post_cutover",
+        source_type: "paid",
+        source_ref: "stage8-post-cutover",
+        balance_nano: account.balance_nano,
+        reserved_nano: account.reserved_nano,
+        spent_nano: account.spent_nano,
+        version: 1,
+        status: "active",
+      }],
+      blockers: [],
+    });
+
+    const activatedTs = Math.floor(Date.now() / 1_000) - 1;
+    const head: PricingReleaseHeadV2 = {
+      active_generation: Number(TARGET_GENERATION),
+      active_digest: seeded.report.release.target_digest!,
+      head_version: 1,
+      updated_ts: activatedTs,
+    };
+    seeded.authority.setHead(head);
+    if ((options.extension ?? "exact") !== "missing") {
+      const policyDigest = options.extension === "policy_mismatch"
+        ? digest("post-cutover-wrong-policy")
+        : digest("policy");
+      const semantics = {
+        account_id: accountId,
+        account_class: "b2c" as const,
+        policy_id: "release-v2:b2c:global",
+        policy_version: 1,
+        policy_digest: policyDigest,
+        billing_mode: "balance" as const,
+        funding_generation: 8,
+        purpose: null,
+        responsible: null,
+      };
+      const members = [TARGET_GENERATION, RECOVERY_GENERATION].map((generation) => {
+        const assignment = {
+          ...semantics,
+          assignment_digest: digest(`post-cutover-assignment:${generation}`),
+        };
+        return {
+          release_generation: Number(generation),
+          assignment,
+          extension_digest: digest(`post-cutover-extension:${generation}`),
+        };
+      });
+      seeded.authority.extensions.set(`1:${accountId}`, {
+        provisioning_head_generation: Number(TARGET_GENERATION),
+        provisioning_head_digest: seeded.report.release.target_digest!,
+        provisioning_head_version: 1,
+        paired_recovery_generation: Number(RECOVERY_GENERATION),
+        paired_recovery_digest: seeded.report.release.recovery_digest!,
+        extension_group_digest: digest("post-cutover-extension-group"),
+        members,
+      });
+    }
+    return {
+      accountId,
+      head,
+      report: engineEvidence({
+        engineInventoryDigest: seeded.report.engine_inventory_digest,
+        fundingDigest: seeded.report.funding_digest,
+        targetEngineDigest: seeded.report.release.target_digest!,
+        recoveryEngineDigest: seeded.report.release.recovery_digest!,
+        activeHead: {
+          active_generation: BigInt(head.active_generation),
+          active_digest: head.active_digest,
+          head_version: BigInt(head.head_version),
+          updated_ts: BigInt(head.updated_ts),
+        },
+      }),
+    };
   }
 
   it("stores one passed identity bound to exact commerce, OpenKeys and engine evidence", async () => {
     const seeded = await seedPreparedPair();
     const database = createDatabase(databaseUrl, "stage8-combined-pass");
     try {
-      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, seeded.report);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
       expect(report).toMatchObject({
         schema_version: 2,
         passed: true,
@@ -348,17 +533,98 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       expect(JSON.stringify(report)).not.toContain(seeded.accountId);
       const stored = await seed.query<{
         evidence_digest: string;
+        engine_evidence_digest: string;
+        engine_captured_at: Date;
         passed: boolean;
         blocker_count: string;
       }>(`
-        SELECT evidence_digest, passed, blocker_count::text
+        SELECT evidence_digest, engine_evidence_digest, engine_captured_at,
+               passed, blocker_count::text
         FROM pricing_stage8_evidence_v2
       `);
       expect(stored.rows).toEqual([{
         evidence_digest: report.evidence_digest,
+        engine_evidence_digest: seeded.report.evidence_digest,
+        engine_captured_at: new Date(Number(seeded.report.captured_ts) * 1_000),
         passed: true,
         blocker_count: "0",
       }]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("rejects authority drift immediately before the first activation delivery", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-activation-authority-drift");
+    try {
+      const evidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      const jobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: evidence.evidence_digest,
+        operatorId: "pricing-control-worker:authority-drift",
+        reason: "prove the final mutable authority fence",
+      });
+      await seed.query(`
+        UPDATE engine_accounts SET status = 'disabled' WHERE engine_account_id = $1
+      `, [seeded.accountId]);
+
+      await expect(claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-authority-drift",
+        seeded.authority.readers,
+      )).rejects.toThrow("activation authority changed after Stage 8 evidence");
+      const stored = await seed.query<{ status: string; last_error: string }>(`
+        SELECT status, last_error FROM pricing_release_control_jobs_v2 WHERE id = $1
+      `, [jobId]);
+      expect(stored.rows[0]).toMatchObject({ status: "dead" });
+      expect(stored.rows[0]!.last_error).toContain("account_status_authority_drift");
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("accepts a post-cutover account only through an exact target/recovery extension", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-post-cutover-extension");
+    try {
+      const postCutover = await addPostCutoverB2c(seeded);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        postCutover.report,
+      );
+      expect(report).toMatchObject({ passed: true, blocker_count: "0", write_result: "stored" });
+      expect(JSON.stringify(report)).not.toContain(postCutover.accountId);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it.each([
+    ["missing extension", { extension: "missing" as const }, "post_cutover_assignment_extension_missing"],
+    ["mismatched policy", { extension: "policy_mismatch" as const }, "post_cutover_assignment_extension_drift"],
+    ["mismatched funding head", { fundingHeadMismatch: true }, "post_cutover_assignment_extension_drift"],
+  ])("rejects a post-cutover account with %s", async (_label, options, blockerCode) => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, `stage8-post-cutover-${blockerCode}`);
+    try {
+      const postCutover = await addPostCutoverB2c(seeded, options);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        postCutover.report,
+      );
+      expect(report.passed).toBe(false);
+      expect(report.blockers).toContainEqual(expect.objectContaining({
+        source: "commerce",
+        code: blockerCode,
+      }));
+      expect(JSON.stringify(report)).not.toContain(postCutover.accountId);
     } finally {
       await database.pool.end();
     }
@@ -370,16 +636,9 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     try {
       const cutoverEvidence = await collectStage8CombinedEvidenceV2(
         database,
-        seeded.openkeys,
+        seeded.authority.readers,
         seeded.report,
       );
-      await expect(stagePricingReleaseActivationJobV2(database, {
-        activationKind: "cutover",
-        evidenceDigest: cutoverEvidence.evidence_digest,
-        operatorId: "pricing-control-worker:integration",
-        reason: "activate exact prepared Stage 9 target",
-      })).rejects.toThrow("source engine evidence identity");
-      await persistActivationSource(cutoverEvidence.evidence_digest, seeded.report);
       const cutoverJobId = await stagePricingReleaseActivationJobV2(database, {
         activationKind: "cutover",
         evidenceDigest: cutoverEvidence.evidence_digest,
@@ -395,6 +654,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       await expect(claimNextPricingReleaseActivationJobV2(
         database,
         "activation-integration-blocked",
+        seeded.authority.readers,
       )).resolves.toBeNull();
       const deferred = await seed.query<{ status: string }>(`
         SELECT status FROM pricing_release_control_jobs_v2 WHERE id = $1
@@ -408,6 +668,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       const firstClaim = await claimNextPricingReleaseActivationJobV2(
         database,
         "activation-integration-first",
+        seeded.authority.readers,
       );
       expect(firstClaim).toMatchObject({
         id: cutoverJobId,
@@ -422,6 +683,16 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
           },
         },
       });
+      const cutoverActivatedTs = firstClaim!.request.evidence.observed_ts + 1;
+      const cutoverHead: PricingReleaseHeadV2 = {
+        active_generation: Number(TARGET_GENERATION),
+        active_digest: seeded.report.release.target_digest!,
+        head_version: 1,
+        updated_ts: cutoverActivatedTs,
+      };
+      // Simulate an applied CAS whose HTTP ACK was lost. Replay must keep the exact stored
+      // request even though the mutable head no longer satisfies the original cutover preflight.
+      seeded.authority.setHead(cutoverHead);
       await seed.query(`
         UPDATE pricing_release_control_jobs_v2
         SET locked_at = now() - interval '10 minutes'
@@ -431,10 +702,10 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       const replayClaim = await claimNextPricingReleaseActivationJobV2(
         database,
         "activation-integration-replay",
+        seeded.authority.readers,
       );
       expect(replayClaim).toMatchObject({ id: cutoverJobId, attempts: 2 });
       expect(replayClaim!.request).toEqual(firstClaim!.request);
-      const cutoverActivatedTs = replayClaim!.request.evidence.observed_ts + 1;
       const cutoverResultDigest = await confirmPricingReleaseActivationJobV2(
         database,
         replayClaim!,
@@ -447,12 +718,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
             from_generation: null,
             from_digest: null,
             expected_head_version: 0,
-            head: {
-              active_generation: Number(TARGET_GENERATION),
-              active_digest: seeded.report.release.target_digest!,
-              head_version: 1,
-              updated_ts: cutoverActivatedTs,
-            },
+            head: cutoverHead,
             evidence_digest: cutoverEvidence.evidence_digest,
             operator_id: "pricing-control-worker:integration",
             reason: "activate exact prepared Stage 9 target",
@@ -482,11 +748,10 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       });
       const recoveryEvidence = await collectStage8CombinedEvidenceV2(
         database,
-        seeded.openkeys,
+        seeded.authority.readers,
         recoverySource,
       );
       expect(recoveryEvidence.evidence_digest).not.toBe(cutoverEvidence.evidence_digest);
-      await persistActivationSource(recoveryEvidence.evidence_digest, recoverySource);
       const recoveryJobId = await stagePricingReleaseActivationJobV2(database, {
         activationKind: "recovery",
         evidenceDigest: recoveryEvidence.evidence_digest,
@@ -496,6 +761,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
       const recoveryClaim = await claimNextPricingReleaseActivationJobV2(
         database,
         "activation-integration-recovery",
+        seeded.authority.readers,
       );
       expect(recoveryClaim).toMatchObject({
         id: recoveryJobId,
@@ -572,7 +838,11 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     });
     const database = createDatabase(databaseUrl, "stage8-combined-zero-drain");
     try {
-      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, seeded.report);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
       expect(report).toMatchObject({
         passed: true,
         write_result: "stored",
@@ -602,7 +872,11 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     await seed.query("UPDATE engine_accounts SET mult_bp = 4100 WHERE engine_account_id = $1", [seeded.accountId]);
     const database = createDatabase(databaseUrl, "stage8-combined-drift");
     try {
-      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, seeded.report);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
       expect(report.passed).toBe(false);
       expect(report.write_result).toBe("stored");
       expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
@@ -624,7 +898,11 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     const seeded = await seedPreparedPair({ recoveryOwnerDrift: true });
     const database = createDatabase(databaseUrl, "stage8-combined-lineage-drift");
     try {
-      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, seeded.report);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
       expect(report.passed).toBe(false);
       expect(report.blockers).toContainEqual(expect.objectContaining({
         source: "commerce",
@@ -646,7 +924,11 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     });
     const database = createDatabase(databaseUrl, "stage8-combined-engine-blocker");
     try {
-      const report = await collectStage8CombinedEvidenceV2(database, seeded.openkeys, blocked);
+      const report = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        blocked,
+      );
       expect(report.passed).toBe(false);
       expect(report.blockers).toContainEqual(expect.objectContaining({
         source: "engine",
