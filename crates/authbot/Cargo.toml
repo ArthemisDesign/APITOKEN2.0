@@ -22,6 +22,7 @@ serde_urlencoded = "0.7"
 zeroize = { version = "1", features = ["derive"] }
 gemini-credential = { path = "../gemini-credential" }
 codex-credential = { path = "../codex-credential" }
+kimi-credential = { path = "../kimi-credential" }
 getrandom = "0.3"
 portable-pty = "0.8"                 # Фаза 3: гоним `claude setup-token` в PTY
 registry = { path = "../registry" }  # мост: запись подписки в пул напрямую
