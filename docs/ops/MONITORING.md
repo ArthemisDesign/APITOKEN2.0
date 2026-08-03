@@ -659,6 +659,76 @@ advertised reset or add a distinct authorized paid subject. Do not shorten cooli
 account. A sustained increase without exhausted profiles can indicate disproportionate affinity or
 load; compare profile in-flight gauges before changing capacity.
 
+## KimiNoLiveProfiles
+
+The KIMI plane is enabled but no roster profile is authenticated, so exact KIMI aliases fail
+closed while Claude keeps its existing path. KIMI is default-off: this alert stays silent until
+the first enable, and `CLAUDE_API_KIMI_ENABLED=false` keeps the plane dark at any time.
+
+Safely diagnose: read `GET /kimi-subs` with the control key (per-profile `live` and
+`cooling.auth_until`), then the unit journal of the Anthropic runtime for the bounded KIMI
+failure classes. Check that the roster directory still parses, every envelope decrypts under the
+configured keyring, and `/me` answers for at least one profile. Never decrypt or print an
+envelope, and never put tokens, subjects or proxy values into logs or argv. Do NOT restart the
+healthy Claude path, widen admission to unreviewed models, or hammer a quarantined profile —
+repeated provider refusals are themselves a ban signal; the 5-minute auth quarantine clears on
+its own once the credential is repaired through Auth Bot.
+
+## KimiNoAvailableProfiles
+
+Live KIMI profiles exist but every one of them is auth-quarantined, transport-cooled or
+quota-walled, so selection has nothing eligible and KIMI requests fail closed. KIMI is
+default-off: this alert stays silent until the first enable, and `CLAUDE_API_KIMI_ENABLED=false`
+keeps the plane dark at any time.
+
+Safely diagnose: `GET /kimi-subs` shows which cooling axis holds each profile
+(`cooling.auth_until` / `transport_until` / `quota_until`), and the aggregate gauges
+`claude_api_kimi_auth_quarantined_profiles`, `claude_api_kimi_transport_cooling_profiles` and
+`claude_api_kimi_quota_cooling_profiles` say which axis fired fleet-wide. Quota walls clear at
+the exact provider `resets_at`; transport cools clear in seconds once the egress path recovers.
+Do NOT shorten cooling, route KIMI aliases into the Claude pool, or add an unreviewed plan label
+to `KIMI_REVIEWED_PLANS` without a dated live observation. If capacity is genuinely exhausted,
+wait for the provider window or authorize another distinct subscription through Auth Bot.
+
+## KimiCalibrationPersistenceFailed
+
+The KIMI turn FIFO could not persist spend or quota evidence to PostgreSQL. Traffic intentionally
+remains fail-open, but measured window capacity may not survive a restart while this gauge is
+zero. KIMI is default-off: this alert stays silent until the first enable, and
+`CLAUDE_API_KIMI_ENABLED=false` keeps the plane dark at any time.
+
+Check PostgreSQL availability, that migration `0027_kimi_window_calibration.sql` is applied, the
+billing writer logs and the owner fencing. Do not seed manual capacity numbers: restore the
+authority and let the next real observations reconcile durable spend and calibration state. Do
+not delete the pending FIFO head from outside — exact replay is idempotent and the retained head
+drains by itself.
+
+## KimiCalibrationBacklog
+
+The bounded KIMI turn FIFO has held pending events for ten minutes, and the provider `/usages`
+read is suspended by design until the head drains — quota freshness will degrade next, so this
+alert usually precedes **KimiQuotaStale**. KIMI is default-off: this alert stays silent until the
+first enable, and `CLAUDE_API_KIMI_ENABLED=false` keeps the plane dark at any time.
+
+This almost always shares a root cause with **KimiCalibrationPersistenceFailed**: diagnose the
+PostgreSQL authority first. A permanently conflicting head (same request id, different payload)
+is quarantined as poisoned and dropped — check `claude_api_kimi_calibration_dropped_events_total`
+and the journal for the exact class; never hand-edit durable rows to unblock the queue.
+
+## KimiQuotaStale
+
+The newest KIMI `/usages` observation is older than three default poll intervals (3 × 300 s =
+900 s), so every quota reading reports a frozen value: the fleet can look perfectly healthy while
+the refresh path is broken. KIMI is default-off: this alert stays silent until the first enable,
+and `CLAUDE_API_KIMI_ENABLED=false` keeps the plane dark at any time.
+
+Safely diagnose: a pending calibration FIFO blocks the quota read by contract — check
+**KimiCalibrationBacklog** first. Otherwise inspect the maintenance loop journal: profiles with
+in-flight customer turns skip polling legitimately, and an auth-quarantined or transport-cooled
+fleet (see **KimiNoAvailableProfiles**) stops observing too. Do not treat the last published
+fraction as current when selling capacity, and do not restart the whole Anthropic runtime for a
+KIMI-only stall; the loop resumes on its own once the blocking condition clears.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

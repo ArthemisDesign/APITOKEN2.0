@@ -1648,6 +1648,12 @@ grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
 grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
+# KIMI lives inside the Anthropic runtime, so its admin projection is pinned on the existing
+# Anthropic-origin admin_data matcher — never a separate origin or key.
+grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs' \
+  "$ROOT/deploy/Caddyfile" || wd_die 'KIMI admin projection lost its Anthropic-origin route'
+! grep -Fq '@admin_kimi_data' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'KIMI must not grow a separate admin origin while it lives in the Anthropic runtime'
 grep -Fq 'http://127.0.0.1:8794 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8795 127.0.0.1:8799 {' "$ROOT/deploy/Caddyfile" \
   || wd_die 'stable Gemini origin does not expose both blue-green slots'

@@ -13,5 +13,8 @@ pub mod roster;
 pub mod selection;
 pub mod transport;
 
-pub use gateway::{KimiGateway, KimiOperationalStatus};
+pub use gateway::{
+    bounded_plan_label, KimiGateway, KimiOperationalStatus, KimiProfileStatus,
+    KimiQuotaWindowStatus,
+};
 pub(crate) use gateway::{KimiBillingInput, KimiRequest};

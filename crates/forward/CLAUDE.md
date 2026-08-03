@@ -964,6 +964,20 @@ stream barrier повторяет тот же turn-before-quota порядок �
 общим deadline. Финальный pass не начинает rotating OAuth refresh: неделимый refresh/reseal
 остаётся только steady-state операцией. Публичного каталога и router namespace нет.
 
+`KimiGateway::operational_status` публикует extended `KimiOperationalStatus` для readiness,
+`/metrics` и admin-only `GET /kimi-subs`: fleet counts (total/live/available, три оси cooling,
+суммарный inflight), per-profile `KimiProfileStatus` и bounded FIFO `DeliveryHealth`. Selection
+availability переиспользует `selection::ineligible_ids` поверх `kimi-for-coding` (его служит
+каждый план, поэтому capability-gap сюда не попадает). `publish_quota` сохраняет последний
+полный `/usages` snapshot per profile (`KimiQuotaWindowStatus`: exact used/limit, fraction и
+реальная measurement resolution, resets_at/observed_at); неизвестное отсутствует, а не
+заполнено нулём. Plan label ограничен `bounded_plan_label`: exact static name только для
+`KIMI_REVIEWED_PLANS`, иначе placeholder `"unreviewed"` — raw provider string наружу не
+проходит. Privacy by construction: subject остаётся private в `RuntimeProfile`; durable
+calibration rows (`AsyncBilling::kimi_calibration_report` поверх PostgreSQL-only
+`PgStore::list_kimi_calibrations`, на SQLite authority — пустой отчёт) join-ятся к opaque id
+только через `profile_id_for_subject`, и чужой subject наружу не сериализуется.
+
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.
 

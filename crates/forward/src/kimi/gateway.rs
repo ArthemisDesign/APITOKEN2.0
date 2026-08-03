@@ -36,7 +36,7 @@ use super::config::{readiness, KimiPlaneConfig, NotReady};
 use super::pool::{decide, AttemptPolicy, Delivery, NextStep, ProfileEffect};
 use super::queue::{DeliveryHealth, TurnQueue, WriteOutcome, DEFAULT_QUEUE_CAPACITY};
 use super::roster::{load_roster, load_roster_for_reload, reseal_credential, KimiProfile};
-use super::selection::{select, Candidate, Ineligible};
+use super::selection::{ineligible_ids, select, Candidate, Ineligible};
 use super::transport::{
     classify_status, needs_refresh, probe_url, ProbeRoute, RefreshLocks, UpstreamVerdict,
 };
@@ -76,11 +76,75 @@ pub(crate) struct KimiRequest {
     pub affinity_store: Arc<AffinityStore>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One retained `/usages` window exactly as last published by the provider. A window that was
+/// never observed is absent from the vector entirely; unknown is never zero-filled or invented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KimiQuotaWindowStatus {
+    pub duration_secs: i64,
+    pub used_units: i64,
+    pub limit_units: i64,
+    pub used_fraction_units: i64,
+    pub measurement_resolution_fraction_units: i64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+}
+
+/// Per-profile operational projection for readiness, metrics and the admin endpoint.
+///
+/// Privacy by construction: the opaque roster id and the bounded plan label are the only
+/// identities this struct can carry. The subject, email/phone (KIMI has neither), tokens, proxy,
+/// credential paths and raw provider errors never enter it — `RuntimeProfile.subject_id` stays
+/// private to the gateway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KimiProfileStatus {
+    /// Opaque roster id. Documented safe for logs, metrics and admin projections.
+    pub id: String,
+    /// Exact static provider plan name when the plan is reviewed, otherwise the bounded
+    /// `"unreviewed"` placeholder. The raw provider-controlled string is never published.
+    pub plan: &'static str,
+    /// Authenticated and serving (`/me` passed on this runtime generation).
+    pub live: bool,
+    /// Cooling axes as unix seconds; `None` means the axis is not cooling right now.
+    pub auth_quarantined_until: Option<i64>,
+    pub transport_cool_until: Option<i64>,
+    pub quota_cool_until: Option<i64>,
+    pub inflight: u32,
+    /// Last successful `/usages` observation, unix seconds. `None` means never observed.
+    pub quota_observed_at: Option<i64>,
+    pub quota_windows: Vec<KimiQuotaWindowStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KimiOperationalStatus {
-    pub profiles: usize,
+    pub total_profiles: usize,
     pub live_profiles: usize,
+    /// Eligible right now: not auth-quarantined, transport-cooled or quota-walled.
+    pub available_profiles: usize,
+    pub auth_quarantined_profiles: usize,
+    pub transport_cooling_profiles: usize,
+    pub quota_cooling_profiles: usize,
+    pub inflight_requests: u64,
+    pub profiles: Vec<KimiProfileStatus>,
     pub delivery: DeliveryHealth,
+}
+
+/// Bounded plan label for logs, metrics and admin projections.
+///
+/// Plan names are provider-controlled strings from `/me`. The exact static name is published only
+/// for a reviewed plan; anything else collapses to the bounded placeholder so an unreviewed
+/// provider string can never become a metric label or an admin-facing value.
+pub fn bounded_plan_label(plan: &str) -> &'static str {
+    kimi_credential::KIMI_REVIEWED_PLANS
+        .iter()
+        .find(|entry| entry.plan_name == plan)
+        .map(|entry| entry.plan_name)
+        .unwrap_or("unreviewed")
+}
+
+/// A cooling deadline is only meaningful while it is still in the future; an expired or never-set
+/// axis is "not cooling", not a timestamp in the past.
+fn active_cooling(until: i64, now: i64) -> Option<i64> {
+    (until > now).then_some(until)
 }
 
 struct CredentialState {
@@ -96,6 +160,9 @@ struct ProfileHealth {
     quota_cool_until: i64,
     quota_used_fraction_units: Option<i64>,
     quota_observed_at: Option<i64>,
+    /// Last full `/usages` snapshot, retained for the operational projection. Empty until the
+    /// first durable observation; never zero-filled.
+    quota_windows: Vec<KimiQuotaWindowStatus>,
 }
 
 struct RuntimeProfile {
@@ -205,6 +272,19 @@ impl RuntimeProfile {
             .map(|snapshot| snapshot.resets_at)
             .max()
             .unwrap_or(0);
+        let windows = snapshots
+            .iter()
+            .map(|snapshot| KimiQuotaWindowStatus {
+                duration_secs: snapshot.window_duration_secs,
+                used_units: snapshot.native_used_units,
+                limit_units: snapshot.native_limit_units,
+                used_fraction_units: snapshot.used_fraction_units,
+                measurement_resolution_fraction_units: snapshot
+                    .measurement_resolution_fraction_units,
+                resets_at: snapshot.resets_at,
+                observed_at: snapshot.observed_at,
+            })
+            .collect();
         let mut health = self.health.lock().expect("KIMI profile health lock");
         health.authenticated = true;
         health.auth_quarantined_until = 0;
@@ -212,6 +292,7 @@ impl RuntimeProfile {
         health.quota_cool_until = cool_until;
         health.quota_used_fraction_units = used;
         health.quota_observed_at = Some(observed_at);
+        health.quota_windows = windows;
     }
 
     fn authenticated(&self) -> bool {
@@ -769,17 +850,78 @@ impl KimiGateway {
         }
     }
 
+    /// Read only cached operational state. Metrics collection and the admin projection never
+    /// start a network request here.
     pub fn operational_status(&self) -> KimiOperationalStatus {
         let delivery = self
             .turn_queue
             .lock()
             .expect("KIMI turn queue lock")
             .health();
+        let now = now_unix();
+        let profiles = self.profiles.read().expect("KIMI profiles lock");
+        let mut auth_quarantined_profiles = 0;
+        let mut transport_cooling_profiles = 0;
+        let mut quota_cooling_profiles = 0;
+        let mut inflight_requests = 0u64;
+        let mut statuses = Vec::with_capacity(profiles.len());
+        for profile in profiles.iter() {
+            let health = profile.health.lock().expect("KIMI profile health lock");
+            let auth_until = active_cooling(health.auth_quarantined_until, now);
+            let transport_until = active_cooling(health.transport_cool_until, now);
+            let quota_until = active_cooling(health.quota_cool_until, now);
+            auth_quarantined_profiles += usize::from(auth_until.is_some());
+            transport_cooling_profiles += usize::from(transport_until.is_some());
+            quota_cooling_profiles += usize::from(quota_until.is_some());
+            let inflight = profile.inflight.load(Ordering::Acquire);
+            inflight_requests += u64::from(inflight);
+            statuses.push(KimiProfileStatus {
+                id: profile.id.clone(),
+                plan: bounded_plan_label(&profile.plan),
+                live: health.authenticated,
+                auth_quarantined_until: auth_until,
+                transport_cool_until: transport_until,
+                quota_cool_until: quota_until,
+                inflight,
+                quota_observed_at: health.quota_observed_at,
+                quota_windows: health.quota_windows.clone(),
+            });
+        }
+        drop(profiles);
+        // Availability reuses the selection ineligibility view. `kimi-for-coding` is served by
+        // every plan, so only the three cooling axes — never a capability gap — can mark a
+        // profile ineligible here.
+        let candidates: Vec<Candidate> = self
+            .profiles
+            .read()
+            .expect("KIMI profiles lock")
+            .iter()
+            .map(|profile| profile.candidate("kimi-for-coding", now))
+            .collect();
+        let available_profiles = candidates.len() - ineligible_ids(&candidates).len();
         KimiOperationalStatus {
-            profiles: self.profiles.read().expect("KIMI profiles lock").len(),
+            total_profiles: candidates.len(),
             live_profiles: self.live_profiles.load(Ordering::Acquire),
+            available_profiles,
+            auth_quarantined_profiles,
+            transport_cooling_profiles,
+            quota_cooling_profiles,
+            inflight_requests,
+            profiles: statuses,
             delivery,
         }
+    }
+
+    /// Resolve a durable calibration subject to its opaque roster id. The subject itself never
+    /// leaves the gateway; rows whose subject is no longer in the roster resolve to `None` so the
+    /// caller drops them instead of serializing an unresolvable identity.
+    pub fn profile_id_for_subject(&self, subject_id: &str) -> Option<String> {
+        self.profiles
+            .read()
+            .expect("KIMI profiles lock")
+            .iter()
+            .find(|profile| profile.subject_id == subject_id)
+            .map(|profile| profile.id.clone())
     }
 
     pub fn readiness(&self) -> Result<(), NotReady> {
@@ -2744,7 +2886,7 @@ mod tests {
         fixture.publish_console_profile();
         assert!(gateway.refresh_profiles().await);
         assert_eq!(gateway.readiness(), Ok(()));
-        assert_eq!(gateway.operational_status().profiles, 1);
+        assert_eq!(gateway.operational_status().total_profiles, 1);
         let request = String::from_utf8(requests.recv().unwrap()).unwrap();
         assert!(request.starts_with("GET /me "));
         assert!(request
@@ -3078,5 +3220,142 @@ mod tests {
             "max"
         );
         assert!(reasoning_effort(&json!({"reasoning_effort": "invented"})).is_err());
+    }
+
+    fn quota_snapshot(used: i64, limit: i64, resets_at: i64, observed_at: i64) -> KimiQuotaSnapshot {
+        let derived = registry::kimi_fraction_from_native(used, limit).unwrap();
+        KimiQuotaSnapshot {
+            window_duration_secs: 18_000,
+            window_name: None,
+            resets_at,
+            observed_at,
+            native_used_units: used,
+            native_limit_units: limit,
+            used_fraction_units: derived.used_fraction_units,
+            measurement_resolution_fraction_units: derived.measurement_resolution_fraction_units,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_status_projection_reports_cooling_axes_availability_and_inflight() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
+                .unwrap();
+        let now = now_unix();
+        let profile = gateway.profiles.read().unwrap()[0].clone();
+
+        let healthy = gateway.operational_status();
+        assert_eq!(healthy.total_profiles, 1);
+        assert_eq!(healthy.available_profiles, 1);
+        assert_eq!(healthy.auth_quarantined_profiles, 0);
+        assert_eq!(healthy.transport_cooling_profiles, 0);
+        assert_eq!(healthy.quota_cooling_profiles, 0);
+        assert_eq!(healthy.inflight_requests, 0);
+        assert_eq!(healthy.profiles[0].id, "kimi-01");
+        assert_eq!(healthy.profiles[0].auth_quarantined_until, None);
+        assert_eq!(healthy.profiles[0].transport_cool_until, None);
+        assert_eq!(healthy.profiles[0].quota_cool_until, None);
+        assert_eq!(healthy.profiles[0].quota_observed_at, None);
+        assert_eq!(healthy.profiles[0].quota_windows, Vec::new());
+        assert!(!healthy.profiles[0].live);
+
+        profile.inflight.store(3, Ordering::Release);
+        profile.apply_effect(ProfileEffect::AuthQuarantine, now);
+        let quarantined = gateway.operational_status();
+        assert_eq!(quarantined.available_profiles, 0);
+        assert_eq!(quarantined.auth_quarantined_profiles, 1);
+        assert_eq!(quarantined.inflight_requests, 3);
+        assert_eq!(quarantined.profiles[0].inflight, 3);
+        assert_eq!(
+            quarantined.profiles[0].auth_quarantined_until,
+            Some(now + AUTH_QUARANTINE_SECS)
+        );
+        assert!(!quarantined.profiles[0].live);
+
+        profile.apply_effect(ProfileEffect::TransportFault, now);
+        let wedged = gateway.operational_status();
+        assert_eq!(wedged.transport_cooling_profiles, 1);
+        assert_eq!(
+            wedged.profiles[0].transport_cool_until,
+            Some(now + TRANSPORT_COOL_SECS)
+        );
+
+        // An expired or cleared deadline is "not cooling", never a timestamp in the past.
+        profile.mark_healthy();
+        let recovered = gateway.operational_status();
+        assert_eq!(recovered.available_profiles, 1);
+        assert_eq!(recovered.auth_quarantined_profiles, 0);
+        assert_eq!(recovered.transport_cooling_profiles, 0);
+        assert_eq!(recovered.profiles[0].auth_quarantined_until, None);
+        assert_eq!(recovered.profiles[0].transport_cool_until, None);
+        assert!(recovered.profiles[0].live);
+    }
+
+    #[tokio::test]
+    async fn publish_quota_retains_the_exact_per_window_snapshot() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
+                .unwrap();
+        let profile = gateway.profiles.read().unwrap()[0].clone();
+        let observed_at = now_unix();
+        let five_hour = quota_snapshot(250, 1000, 4_102_444_800, observed_at);
+        let mut weekly = quota_snapshot(100, 100, 4_102_500_000, observed_at);
+        weekly.window_duration_secs = 604_800;
+        profile.publish_quota(&[five_hour, weekly], observed_at);
+
+        let status = gateway.operational_status();
+        let projected = &status.profiles[0];
+        assert_eq!(projected.quota_observed_at, Some(observed_at));
+        assert_eq!(projected.quota_windows.len(), 2);
+        let window = &projected.quota_windows[0];
+        assert_eq!(window.duration_secs, 18_000);
+        assert_eq!(window.used_units, 250);
+        assert_eq!(window.limit_units, 1000);
+        // Exact fraction semantics: 250/1000 is 25% in 10^-8 units, and the real measurement
+        // resolution of a limit-1000 counter is one 0.1% step, not one fixed-point unit.
+        assert_eq!(window.used_fraction_units, 25_000_000);
+        assert_eq!(window.measurement_resolution_fraction_units, 100_000);
+        assert_eq!(window.resets_at, 4_102_444_800);
+        assert_eq!(window.observed_at, observed_at);
+        assert_eq!(projected.quota_windows[1].duration_secs, 604_800);
+        // The full weekly window walls the profile until the exact provider reset instant.
+        assert_eq!(status.quota_cooling_profiles, 1);
+        assert_eq!(projected.quota_cool_until, Some(4_102_500_000));
+        assert_eq!(status.available_profiles, 0);
+        // A successful poll authenticates the profile on this runtime generation.
+        assert!(projected.live);
+    }
+
+    #[tokio::test]
+    async fn the_projection_bounds_plan_labels_and_cannot_carry_the_subject() {
+        // The reviewed list is empty today, so every provider-controlled string collapses to the
+        // bounded placeholder; a raw plan name must never reach logs, metrics or admin output.
+        assert_eq!(bounded_plan_label("unreviewed-base-plan"), "unreviewed");
+        assert_eq!(bounded_plan_label("Moderato"), "unreviewed");
+        for entry in kimi_credential::KIMI_REVIEWED_PLANS {
+            assert_eq!(bounded_plan_label(entry.plan_name), entry.plan_name);
+        }
+
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
+                .unwrap();
+        let status = gateway.operational_status();
+        assert_eq!(status.profiles[0].plan, "unreviewed");
+        // The durable-calibration join resolves only through the opaque roster id; an unknown
+        // subject resolves to nothing and its rows are dropped rather than serialized.
+        assert_eq!(
+            gateway.profile_id_for_subject("subject-1").as_deref(),
+            Some("kimi-01")
+        );
+        assert_eq!(gateway.profile_id_for_subject("subject-unknown"), None);
+        let rendered = format!("{status:?}");
+        assert!(!rendered.contains("subject-1"));
+        assert!(!rendered.contains("unreviewed-base-plan"));
     }
 }

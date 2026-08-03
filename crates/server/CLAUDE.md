@@ -173,7 +173,7 @@
   key/account identity и не делает reserve/settle. Endpoint одинаков на всех fixed planes и
   loopback-only; `crates/router` вызывает его до materialization каждого universal request body.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/codex-subs`, `/gemini-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
+  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого
   `admin.apitoken.sale/sales/calculator`; этот классификатор не является credential. `/codex-subs`
   гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
@@ -228,6 +228,16 @@
   Antigravity version без Google subject/full email/domain, project/proxy/OAuth. Ответ также
   публикует exact nanoUSD fleet totals, paid-tier conversion catalogue из `metering::gemini` и
   canonical-model → private quota-bucket mapping; отсутствующий provider amount остаётся `null`.
+  `/kimi-subs` существует в Combined и Anthropic режимах (KIMI — backend внутри Anthropic
+  runtime, отдельного ProviderMode нет), гейтится `control_authed`, а не panel key. Ответ — либо
+  disabled envelope `{"now", "enabled": false, "profiles": []}`, либо read-only operational
+  projection: bounded FIFO delivery, fleet counts и per-profile cooling/inflight/quota-window
+  state плюс per-window durable calibration (capacity/remaining как decimal nano strings).
+  Сериализуются только opaque roster ids и reviewed bounded plan labels (`"unreviewed"` для
+  любого нереviewed provider plan string); subject, email, phone, token, proxy, credential path,
+  customer/request id и raw provider errors не сериализуются никогда, неизвестное — `null`,
+  а не 0. Join durable subject→opaque id выполняется внутри HTTP-слоя через gateway, сам subject
+  в ответ не попадает; строки чужого subject остаются durable для аудита, но не публикуются.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂

@@ -1572,6 +1572,7 @@ enum ReadCmd {
         >,
     ),
     CodexCalibrationReport(oneshot::Sender<anyhow::Result<Vec<CodexTurnCalibrationAggregate>>>),
+    KimiCalibrationReport(oneshot::Sender<anyhow::Result<Vec<KimiCalibrationRow>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -2177,6 +2178,25 @@ impl AsyncBilling {
         result
             .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Read every durable KIMI window calibration row for the admin operational projection.
+    ///
+    /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
+    /// concern (the gateway owns that mapping). KIMI calibration is PostgreSQL-only, so a SQLite
+    /// authority reports an empty fleet rather than an error.
+    pub async fn kimi_calibration_report(
+        &self,
+    ) -> anyhow::Result<Vec<KimiCalibrationRow>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::KimiCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
@@ -2981,6 +3001,11 @@ impl AsyncBilling {
                             }
                             ReadCmd::CodexCalibrationReport(reply) => {
                                 let _ = reply.send(registry::codex_turn_calibration_report(&conn));
+                            }
+                            ReadCmd::KimiCalibrationReport(reply) => {
+                                // KIMI calibration authority is PostgreSQL-only; a SQLite
+                                // authority simply has no rows to report.
+                                let _ = reply.send(Ok(Vec::new()));
                             }
                             ReadCmd::KeyAuth(k, r) => {
                                 let _ = r.send(registry::key_account(&conn, &k));
@@ -4079,6 +4104,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::CodexCalibrationReport(reply) => {
                                 answer!(reply, pg.codex_turn_calibration_report())
+                            }
+                            ReadCmd::KimiCalibrationReport(reply) => {
+                                answer!(reply, pg.list_kimi_calibrations())
                             }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
@@ -7654,6 +7682,134 @@ mod tests {
             assert_eq!(history[0].cumulative_api_spend_nano, 0);
             assert_eq!(history[1].cumulative_api_spend_nano, 1_000_000_000);
         }
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn kimi_calibration_report_is_empty_on_a_sqlite_authority() {
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::new(":memory:".to_owned(), None),
+            None,
+            1,
+            0,
+        )
+        .unwrap();
+        // KIMI calibration authority is PostgreSQL-only: the report is empty, not an error,
+        // while the evidence commands themselves keep refusing the SQLite authority.
+        assert_eq!(billing.kimi_calibration_report().await.unwrap(), Vec::new());
+        assert!(billing
+            .record_kimi_turn(kimi_event("kimi-sqlite-turn", 1, 1))
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn kimi_postgres_calibration_report_lists_every_subject_window() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping KIMI PostgreSQL report matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("kimi-report-{}-{unique}", std::process::id());
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            billing
+                .observe_kimi_windows(
+                    "kimi-subject-a",
+                    "Moderato",
+                    vec![
+                        kimi_snapshot(registry::KIMI_ROLLING_WINDOW_SECS, 100, 1_000, 100),
+                        kimi_snapshot(registry::KIMI_WEEKLY_WINDOW_SECS, 200, 1_000, 100),
+                    ],
+                )
+                .await
+                .unwrap();
+            billing
+                .observe_kimi_windows(
+                    "kimi-subject-b",
+                    "unreviewed-base-plan",
+                    vec![kimi_snapshot(
+                        registry::KIMI_ROLLING_WINDOW_SECS,
+                        10,
+                        1_000,
+                        101,
+                    )],
+                )
+                .await
+                .unwrap();
+
+            let report = billing.kimi_calibration_report().await.unwrap();
+            // Every durable row is reported, across subjects, plans and independent windows.
+            assert_eq!(report.len(), 3);
+            assert!(report.iter().all(|row| row.samples == 0));
+            let subject_a: Vec<_> = report
+                .iter()
+                .filter(|row| row.subject_id == "kimi-subject-a")
+                .collect();
+            assert_eq!(subject_a.len(), 2);
+            assert!(subject_a
+                .iter()
+                .any(|row| row.window_duration_secs == registry::KIMI_WEEKLY_WINDOW_SECS
+                    && row.native_used_units == 200));
+            let subject_b: Vec<_> = report
+                .iter()
+                .filter(|row| row.subject_id == "kimi-subject-b")
+                .collect();
+            assert_eq!(subject_b.len(), 1);
+            assert_eq!(subject_b[0].plan, "unreviewed-base-plan");
+            assert_eq!(subject_b[0].native_used_units, 10);
+            billing.flush().await.unwrap();
+        });
+        drop(billing);
+
         lock_holder
             .batch_execute(
                 "TRUNCATE kimi_window_calibrations,kimi_window_observations,\

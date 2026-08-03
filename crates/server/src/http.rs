@@ -456,6 +456,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
+            .route("/kimi-subs", get(kimi_subs))
             .merge(admin)
             // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
             // services are installed. Fixed provider modes below never inspect this header.
@@ -483,6 +484,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/subs", get(subs))
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
+            .route("/kimi-subs", get(kimi_subs))
             // Universal lane (этап 3.1 UNIFIED_ROUTER.md): chat→Messages адаптер.
             .route("/v1/chat/completions", post(anthropic_chat_completions))
             // Universal Responses (этап 4.1 UNIFIED_ROUTER.md): Responses→Messages
@@ -1819,6 +1821,8 @@ async fn metrics(
              # TYPE claude_api_gemini_profiles_authenticated gauge\nclaude_api_gemini_profiles_authenticated 0"
         );
     }
+    let kimi_status = app.kimi.as_ref().map(|kimi| kimi.operational_status());
+    write_kimi_operational_metrics(&mut body, app.kimi.is_some(), kimi_status.as_ref());
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1827,6 +1831,69 @@ async fn metrics(
         body,
     )
         .into_response()
+}
+
+/// KIMI is a default-off backend inside the Anthropic plane. Aggregate-only, fixed cardinality:
+/// no per-profile series at all — a profile id, plan, subject, customer or provider error must
+/// never become a label. These series are scraped on the anthropic target, so they deliberately
+/// carry no provider label; the kimi_ name prefix is the discriminator. Zero gauges are always
+/// published so a disabled plane reads as zero rather than absent; the last-observation
+/// timestamp is the one exception — emitting 0 there would masquerade as a real 1970
+/// observation.
+fn write_kimi_operational_metrics(
+    body: &mut String,
+    enabled: bool,
+    status: Option<&forward::KimiOperationalStatus>,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_kimi_enabled gauge\nclaude_api_kimi_enabled {}",
+        u8::from(enabled)
+    );
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_kimi_profiles gauge\nclaude_api_kimi_profiles {}\n\
+         # TYPE claude_api_kimi_live_profiles gauge\nclaude_api_kimi_live_profiles {}\n\
+         # TYPE claude_api_kimi_available_profiles gauge\nclaude_api_kimi_available_profiles {}\n\
+         # TYPE claude_api_kimi_inflight_requests gauge\nclaude_api_kimi_inflight_requests {}\n\
+         # TYPE claude_api_kimi_auth_quarantined_profiles gauge\n\
+         claude_api_kimi_auth_quarantined_profiles {}\n\
+         # TYPE claude_api_kimi_transport_cooling_profiles gauge\n\
+         claude_api_kimi_transport_cooling_profiles {}\n\
+         # TYPE claude_api_kimi_quota_cooling_profiles gauge\n\
+         claude_api_kimi_quota_cooling_profiles {}\n\
+         # TYPE claude_api_kimi_calibration_pending_events gauge\n\
+         claude_api_kimi_calibration_pending_events {}\n\
+         # TYPE claude_api_kimi_calibration_dropped_events_total counter\n\
+         claude_api_kimi_calibration_dropped_events_total {}\n\
+         # TYPE claude_api_kimi_calibration_persistence_ok gauge\n\
+         claude_api_kimi_calibration_persistence_ok {}",
+        status.map_or(0, |status| status.total_profiles),
+        status.map_or(0, |status| status.live_profiles),
+        status.map_or(0, |status| status.available_profiles),
+        status.map_or(0, |status| status.inflight_requests),
+        status.map_or(0, |status| status.auth_quarantined_profiles),
+        status.map_or(0, |status| status.transport_cooling_profiles),
+        status.map_or(0, |status| status.quota_cooling_profiles),
+        status.map_or(0, |status| status.delivery.pending_events),
+        status.map_or(0, |status| status.delivery.dropped_events),
+        status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
+    );
+    if let Some(observed_at) = status.and_then(|status| {
+        status
+            .profiles
+            .iter()
+            .filter_map(|profile| profile.quota_observed_at)
+            .max()
+    }) {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_kimi_quota_last_observation_timestamp_seconds gauge\n\
+             claude_api_kimi_quota_last_observation_timestamp_seconds {observed_at}"
+        );
+    }
 }
 
 fn write_codex_home_capacity_metrics(body: &mut String, home: &forward::codex::CodexHomeStatus) {
@@ -3941,6 +4008,163 @@ async fn codex_subs(
     let mut value = codex_subs_value_with_report(&status, now, report.as_deref());
     value["conversion_models"] = Value::Array(codex_conversion_models(&codex.config().models, now));
     Json(value).into_response()
+}
+
+/// KIMI (Kimi Code) подписки: read-only operational projection для админки. Гейт —
+/// `control_authed` (admin-only, как `/codex-subs`). Сериализуются только opaque roster ids и
+/// bounded plan labels; subject, email, phone, token, proxy, credential path, customer/request id
+/// и raw provider errors никогда не попадают в ответ, а неизвестное остаётся `null`, а не 0.
+/// KIMI живёт внутри Anthropic-плоскости; на процессе без плоскости — codex-style disabled
+/// envelope.
+async fn kimi_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(kimi) = &app.kimi else {
+        return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
+    };
+    let status = kimi.operational_status();
+    let now = pool::now();
+    let report = match &app.billing {
+        Some(billing) => match billing.kimi_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("KIMI calibration report unavailable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    Json(kimi_subs_value_with_report(
+        kimi,
+        &status,
+        now,
+        report.as_deref(),
+    ))
+    .into_response()
+}
+
+fn kimi_subs_value_with_report(
+    gateway: &forward::KimiGateway,
+    status: &forward::KimiOperationalStatus,
+    now: i64,
+    report: Option<&[registry::KimiCalibrationRow]>,
+) -> Value {
+    // Durable rows are keyed by provider subject; the join to the opaque roster id happens here
+    // and the subject itself is never serialized. A row whose subject left the roster stays
+    // durable for audit but is NOT published.
+    let mut calibration_by_profile: std::collections::BTreeMap<
+        String,
+        Vec<&registry::KimiCalibrationRow>,
+    > = std::collections::BTreeMap::new();
+    for row in report.unwrap_or_default() {
+        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+            continue;
+        };
+        calibration_by_profile.entry(id).or_default().push(row);
+    }
+    json!({
+        "now": now,
+        "enabled": true,
+        "delivery": {
+            "pending_events": status.delivery.pending_events,
+            "dropped_events": status.delivery.dropped_events,
+            "persistence_ok": status.delivery.persistence_ok,
+        },
+        "fleet": {
+            "profiles": status.total_profiles,
+            "live_profiles": status.live_profiles,
+            "available_profiles": status.available_profiles,
+            "inflight_requests": status.inflight_requests,
+            "auth_quarantined_profiles": status.auth_quarantined_profiles,
+            "transport_cooling_profiles": status.transport_cooling_profiles,
+            "quota_cooling_profiles": status.quota_cooling_profiles,
+        },
+        "profiles": status
+            .profiles
+            .iter()
+            .map(|profile| {
+                let rows = calibration_by_profile
+                    .get(profile.id.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                kimi_profile_value(profile, &rows)
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn kimi_profile_value(
+    profile: &forward::KimiProfileStatus,
+    calibration: &[&registry::KimiCalibrationRow],
+) -> Value {
+    json!({
+        "id": profile.id,
+        "plan": profile.plan,
+        "live": profile.live,
+        "cooling": {
+            "auth_until": profile.auth_quarantined_until,
+            "transport_until": profile.transport_cool_until,
+            "quota_until": profile.quota_cool_until,
+        },
+        "inflight": profile.inflight,
+        "quota_observed_at": profile.quota_observed_at,
+        "quota": profile
+            .quota_windows
+            .iter()
+            .map(|window| json!({
+                "duration_secs": window.duration_secs,
+                "used_units": window.used_units,
+                "limit_units": window.limit_units,
+                "used_fraction_units": window.used_fraction_units,
+                "measurement_resolution_fraction_units": window
+                    .measurement_resolution_fraction_units,
+                "resets_at": window.resets_at,
+                "observed_at": window.observed_at,
+            }))
+            .collect::<Vec<_>>(),
+        "calibration": calibration
+            .iter()
+            .map(|row| kimi_calibration_value(row))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn kimi_calibration_value(row: &registry::KimiCalibrationRow) -> Value {
+    // Money and other big integers serialize as decimal strings (BigInt-safe); unknown stays
+    // null — never 0, never an invented nominal.
+    let nano = |value: Option<i64>| value.map(|value| value.to_string());
+    let remaining = match (row.native_remaining_units(), row.current_remaining_nano()) {
+        (None, None) => Value::Null,
+        (native_units, api_nano) => json!({
+            "native_units": native_units,
+            "api_nano": api_nano.map(|value| value.to_string()),
+        }),
+    };
+    json!({
+        "duration_secs": row.window_duration_secs,
+        "samples": row.samples,
+        "confidence_bp": row.current_confidence_bp,
+        "capacity": {
+            "current_nano": nano(row.current_capacity_nano),
+            "low_nano": nano(row.current_low_nano),
+            "high_nano": nano(row.current_high_nano),
+        },
+        "remaining": remaining,
+        "observed_spend_nano": row.observed_spend_nano.to_string(),
+        "unattributed_fraction_units": row.unattributed_fraction_units,
+        "last_measured_at": row.last_measured_at,
+        "estimator_version": row.estimator_version,
+    })
 }
 
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
@@ -7310,6 +7534,456 @@ mod tests {
                     assert!(!wire.contains(forbidden), "leaked field {forbidden}");
                 }
             }
+        }
+    }
+
+    struct KimiHttpFixture {
+        root: std::path::PathBuf,
+    }
+
+    impl KimiHttpFixture {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "kimi-subs-http-{}-{suffix}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(root.join("credentials")).unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(
+                root.join("credentials"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            let fixture = Self { root };
+            fixture.publish_console_profile();
+            fixture
+        }
+
+        // Same sealed-envelope roster idiom as the forward gateway tests: tempdir 0700, keyring,
+        // one console profile whose subject stays private to the gateway.
+        fn publish_console_profile(&self) {
+            use std::os::unix::fs::PermissionsExt;
+            let credential = kimi_credential::KimiCredential {
+                version: 1,
+                kind: kimi_credential::KimiCredentialKind::ConsoleKey,
+                access_token: "console-secret".into(),
+                refresh_token: String::new(),
+                expires_at: 0,
+                scope: "coding".into(),
+                subject_id: "subject-1".into(),
+                plan_name: "unreviewed-base-plan".into(),
+                plan_level: 1,
+                status: kimi_credential::KIMI_STATUS_NORMAL.into(),
+                region: "REGION_CN".into(),
+                proxy_url: String::new(),
+            };
+            let ring = kimi_credential::CredentialKeyring::parse(&format!("a1:{}", "11".repeat(32)))
+                .unwrap();
+            let envelope = ring.seal("a1", "kimi-01", &credential).unwrap();
+            let credential_path = self.root.join("credentials/kimi-01.json");
+            std::fs::write(
+                &credential_path,
+                kimi_credential::encode_envelope(&envelope).unwrap(),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                &credential_path,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            let roster = json!({
+                "profiles": [{
+                    "id": "kimi-01",
+                    "credential_file": credential_path.to_string_lossy(),
+                }]
+            });
+            let roster_path = self.root.join("profiles.json");
+            std::fs::write(&roster_path, serde_json::to_vec(&roster).unwrap()).unwrap();
+            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+
+        fn gateway(&self) -> forward::KimiGateway {
+            let config = forward::kimi::config::build(&forward::kimi::config::KimiPlaneInput {
+                enabled: true,
+                roster_dir: self.root.to_string_lossy().into_owned(),
+                credential_keys: Some(format!("a1:{}", "11".repeat(32))),
+                base_url: "https://127.0.0.1:9".into(),
+                ..forward::kimi::config::KimiPlaneInput::default()
+            })
+            .unwrap()
+            .unwrap();
+            forward::KimiGateway::new_with_calibration(config, None).unwrap()
+        }
+    }
+
+    impl Drop for KimiHttpFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn unknown_kimi_status() -> forward::KimiOperationalStatus {
+        forward::KimiOperationalStatus {
+            total_profiles: 1,
+            live_profiles: 1,
+            available_profiles: 1,
+            auth_quarantined_profiles: 0,
+            transport_cooling_profiles: 0,
+            quota_cooling_profiles: 0,
+            inflight_requests: 2,
+            profiles: vec![forward::KimiProfileStatus {
+                id: "kimi-01".to_string(),
+                plan: "unreviewed",
+                live: true,
+                auth_quarantined_until: None,
+                transport_cool_until: None,
+                quota_cool_until: None,
+                inflight: 2,
+                quota_observed_at: Some(1_800_000_000),
+                quota_windows: vec![forward::KimiQuotaWindowStatus {
+                    duration_secs: 18_000,
+                    used_units: 250,
+                    limit_units: 1_000,
+                    used_fraction_units: 25_000_000,
+                    measurement_resolution_fraction_units: 100_000,
+                    resets_at: 1_800_100_000,
+                    observed_at: 1_800_000_000,
+                }],
+            }],
+            delivery: forward::kimi::queue::DeliveryHealth {
+                pending_events: 1,
+                dropped_events: 0,
+                persistence_ok: true,
+            },
+        }
+    }
+
+    fn kimi_calibration_row(subject_id: &str) -> registry::KimiCalibrationRow {
+        registry::KimiCalibrationRow {
+            subject_id: subject_id.into(),
+            plan: "unreviewed-base-plan".into(),
+            window_duration_secs: 18_000,
+            window_name: Some("rate".into()),
+            resets_at: 1_800_100_000,
+            anchor_used_fraction_units: 25_000_000,
+            anchor_resolution_fraction_units: 100_000,
+            anchor_spend_nano: 0,
+            used_fraction_units: 25_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: 1_800_000_000,
+            native_limit_units: 1_000,
+            native_used_units: 250,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 1,
+            updated_ts: 1_800_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn kimi_subs_is_control_key_protected_and_runtime_scoped() {
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        for mode in [
+            forward::ProviderMode::Anthropic,
+            forward::ProviderMode::Combined,
+        ] {
+            let service = router(provider_test_app(mode), Arc::new(AtomicBool::new(true)));
+            for (credential, expected) in [
+                (None, StatusCode::UNAUTHORIZED),
+                (Some("panel-key"), StatusCode::UNAUTHORIZED),
+                (Some("control-key"), StatusCode::OK),
+                (Some("admin-key"), StatusCode::OK),
+            ] {
+                let mut request = Request::builder()
+                    .uri("/kimi-subs")
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(peer);
+                if let Some(key) = credential {
+                    request
+                        .headers_mut()
+                        .insert("x-api-key", key.parse().unwrap());
+                }
+                let response = service.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), expected, "{mode:?} credential {credential:?}");
+                if expected == StatusCode::OK {
+                    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["enabled"], false);
+                    assert_eq!(body["profiles"], json!([]));
+                    assert!(body["now"].is_i64());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn kimi_subs_enabled_shape_is_redacted_and_bounded() {
+        let fixture = KimiHttpFixture::new();
+        let mut app = provider_test_app(forward::ProviderMode::Anthropic);
+        app.kimi = Some(Arc::new(fixture.gateway()));
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/kimi-subs")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        request
+            .headers_mut()
+            .insert("x-api-key", "control-key".parse().unwrap());
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(body["enabled"], true);
+        assert!(body["now"].is_i64());
+        assert_eq!(body["delivery"]["pending_events"], 0);
+        assert_eq!(body["delivery"]["dropped_events"], 0);
+        assert_eq!(body["delivery"]["persistence_ok"], true);
+        assert_eq!(body["fleet"]["profiles"], 1);
+        assert_eq!(body["fleet"]["live_profiles"], 0);
+        assert_eq!(body["fleet"]["available_profiles"], 1);
+        assert_eq!(body["fleet"]["inflight_requests"], 0);
+        let profile = &body["profiles"][0];
+        assert_eq!(profile["id"], "kimi-01");
+        // The provider-controlled plan string is bounded to the reviewed placeholder.
+        assert_eq!(profile["plan"], "unreviewed");
+        assert_eq!(profile["live"], false);
+        assert!(profile["cooling"]["auth_until"].is_null());
+        assert!(profile["cooling"]["transport_until"].is_null());
+        assert!(profile["cooling"]["quota_until"].is_null());
+        assert_eq!(profile["inflight"], 0);
+        // Never observed stays null / empty, never zero or invented.
+        assert!(profile["quota_observed_at"].is_null());
+        assert_eq!(profile["quota"], json!([]));
+        assert_eq!(profile["calibration"], json!([]));
+
+        let wire = body.to_string();
+        for forbidden in [
+            "subject",
+            "email",
+            "phone",
+            "token",
+            "proxy",
+            "credential",
+            "request_id",
+            "unreviewed-base-plan",
+            "console-secret",
+        ] {
+            assert!(!wire.contains(forbidden), "leaked field {forbidden}");
+        }
+    }
+
+    #[test]
+    fn kimi_subs_value_serializes_the_exact_quota_window() {
+        let fixture = KimiHttpFixture::new();
+        let gateway = fixture.gateway();
+        let value = kimi_subs_value_with_report(&gateway, &unknown_kimi_status(), 1_800_000_100, None);
+        assert_eq!(value["fleet"]["inflight_requests"], 2);
+        assert_eq!(value["delivery"]["pending_events"], 1);
+        assert_eq!(value["profiles"][0]["quota_observed_at"], 1_800_000_000);
+        let window = &value["profiles"][0]["quota"][0];
+        assert_eq!(window["duration_secs"], 18_000);
+        assert_eq!(window["used_units"], 250);
+        assert_eq!(window["limit_units"], 1_000);
+        // Exact fraction semantics: 25% in 10^-8 units, real resolution of a limit-1000 counter.
+        assert_eq!(window["used_fraction_units"], 25_000_000);
+        assert_eq!(window["measurement_resolution_fraction_units"], 100_000);
+        assert_eq!(window["resets_at"], 1_800_100_000);
+        assert_eq!(window["observed_at"], 1_800_000_000);
+        assert_eq!(value["profiles"][0]["calibration"], json!([]));
+    }
+
+    #[test]
+    fn kimi_subs_value_joins_calibration_through_the_opaque_id_and_drops_unknown_subjects() {
+        let fixture = KimiHttpFixture::new();
+        let gateway = fixture.gateway();
+        let mut measured = kimi_calibration_row("subject-1");
+        measured.samples = 2;
+        measured.observed_spend_nano = 1_250_000_000;
+        measured.current_capacity_nano = Some(50_000_000_000);
+        measured.current_low_nano = Some(40_000_000_000);
+        measured.current_confidence_bp = 9_000;
+        measured.last_measured_at = Some(1_800_000_000);
+        let unknown = kimi_calibration_row("subject-unknown");
+        let report = vec![measured, unknown];
+
+        let value = kimi_subs_value_with_report(
+            &gateway,
+            &unknown_kimi_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        let calibration = &value["profiles"][0]["calibration"];
+        // The roster-less subject stays durable for audit but is never serialized.
+        assert_eq!(calibration.as_array().unwrap().len(), 1);
+        let entry = &calibration[0];
+        assert_eq!(entry["duration_secs"], 18_000);
+        assert_eq!(entry["samples"], 2);
+        assert_eq!(entry["confidence_bp"], 9_000);
+        // Money integers are decimal strings (BigInt-safe); unknown high stays null.
+        assert_eq!(entry["capacity"]["current_nano"], "50000000000");
+        assert_eq!(entry["capacity"]["low_nano"], "40000000000");
+        assert!(entry["capacity"]["high_nano"].is_null());
+        assert_eq!(entry["remaining"]["native_units"], 750);
+        assert_eq!(entry["remaining"]["api_nano"], "37500000000");
+        assert_eq!(entry["observed_spend_nano"], "1250000000");
+        assert_eq!(entry["last_measured_at"], 1_800_000_000);
+        assert_eq!(entry["estimator_version"], 1);
+
+        let wire = value.to_string();
+        for forbidden in ["subject", "unreviewed-base-plan"] {
+            assert!(!wire.contains(forbidden), "leaked field {forbidden}");
+        }
+    }
+
+    #[test]
+    fn kimi_subs_value_keeps_unknown_capacity_and_remaining_null_never_zero() {
+        let fixture = KimiHttpFixture::new();
+        let gateway = fixture.gateway();
+        let report = vec![kimi_calibration_row("subject-1")];
+        let value = kimi_subs_value_with_report(
+            &gateway,
+            &unknown_kimi_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        let entry = &value["profiles"][0]["calibration"][0];
+        assert!(entry["capacity"]["current_nano"].is_null());
+        assert!(entry["capacity"]["low_nano"].is_null());
+        assert!(entry["capacity"]["high_nano"].is_null());
+        // Native remaining needs no estimation; the API-dollar one stays null while capacity is
+        // unknown — never a zero or an invented nominal.
+        assert_eq!(entry["remaining"]["native_units"], 750);
+        assert!(entry["remaining"]["api_nano"].is_null());
+        assert_eq!(entry["observed_spend_nano"], "0");
+        assert_eq!(entry["samples"], 0);
+        assert!(entry["last_measured_at"].is_null());
+
+        // An overflowing row (used so negative the remainder cannot be represented) has no native
+        // remainder either: the whole object is null rather than a negative or zero figure.
+        let mut malformed = kimi_calibration_row("subject-1");
+        malformed.native_used_units = i64::MIN;
+        let report = vec![malformed];
+        let value = kimi_subs_value_with_report(
+            &gateway,
+            &unknown_kimi_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        assert!(value["profiles"][0]["calibration"][0]["remaining"].is_null());
+    }
+
+    #[test]
+    fn prometheus_kimi_series_are_zero_gauges_without_a_plane_and_never_labelled() {
+        let mut body = String::new();
+        write_kimi_operational_metrics(&mut body, false, None);
+        for sample in [
+            "claude_api_kimi_enabled 0",
+            "claude_api_kimi_profiles 0",
+            "claude_api_kimi_live_profiles 0",
+            "claude_api_kimi_available_profiles 0",
+            "claude_api_kimi_inflight_requests 0",
+            "claude_api_kimi_auth_quarantined_profiles 0",
+            "claude_api_kimi_transport_cooling_profiles 0",
+            "claude_api_kimi_quota_cooling_profiles 0",
+            "claude_api_kimi_calibration_pending_events 0",
+            "claude_api_kimi_calibration_dropped_events_total 0",
+            "claude_api_kimi_calibration_persistence_ok 0",
+        ] {
+            assert!(body.contains(sample), "missing {sample}");
+        }
+        // Never observed: the timestamp series is omitted entirely rather than emitted as 0.
+        assert!(!body.contains("claude_api_kimi_quota_last_observation_timestamp_seconds"));
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_kimi") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "kimi series must carry no labels at all: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn prometheus_kimi_series_report_fleet_aggregates_and_the_freshest_observation() {
+        let status = unknown_kimi_status();
+        let mut body = String::new();
+        write_kimi_operational_metrics(&mut body, true, Some(&status));
+        for sample in [
+            "claude_api_kimi_enabled 1",
+            "claude_api_kimi_profiles 1",
+            "claude_api_kimi_live_profiles 1",
+            "claude_api_kimi_available_profiles 1",
+            "claude_api_kimi_inflight_requests 2",
+            "claude_api_kimi_auth_quarantined_profiles 0",
+            "claude_api_kimi_transport_cooling_profiles 0",
+            "claude_api_kimi_quota_cooling_profiles 0",
+            "claude_api_kimi_calibration_pending_events 1",
+            "claude_api_kimi_calibration_dropped_events_total 0",
+            "claude_api_kimi_calibration_persistence_ok 1",
+            "claude_api_kimi_quota_last_observation_timestamp_seconds 1800000000",
+        ] {
+            assert!(body.contains(sample), "missing {sample}");
+        }
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_kimi") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "kimi series must carry no labels at all: {line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_publishes_label_free_kimi_zero_gauges_for_a_disabled_plane() {
+        let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("claude_api_kimi_enabled 0"));
+        assert!(body.contains("claude_api_kimi_profiles 0"));
+        assert!(!body.contains("claude_api_kimi_quota_last_observation_timestamp_seconds"));
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_kimi") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "kimi series must carry no labels at all: {line}"
+            );
         }
     }
 

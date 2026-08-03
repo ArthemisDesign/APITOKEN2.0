@@ -39,7 +39,8 @@
 
 ### Operator telemetry подписок
 
-Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs` и `GET /gemini-subs`.
+Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs`, `GET /gemini-subs`
+и `GET /kimi-subs`.
 Эти маршруты защищены server-side control/panel auth; браузер получает их только через закрытый
 `admin.apitoken.sale`, а ключи ему не выдаются.
 
@@ -164,6 +165,19 @@ Antigravity effort buckets. `remaining_amount` сериализуется decima
 только `remaining_fraction`, количество токенов/units остаётся неизвестным и не выводится из
 workload-dollar blend. Профиль содержит только bounded email hint (четыре символа local-part без
 домена); full email, subject, project, private tier, proxy и OAuth не сериализуются.
+
+`GET /kimi-subs` — read-only operational projection backend-only KIMI плоскости, которая живёт
+внутри Anthropic runtime (тот же origin 8790, отдельного процесса нет). Гейт — control key
+(`control_authed`, как `/codex-subs`; panel key не подходит). На процессе без плоскости ответ —
+disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. Enabled envelope публикует
+`delivery` (pending/dropped/persistence bounded FIFO), fleet counts (total/live/available
+profiles, inflight, три оси cooling) и per-profile объекты с cooling-until timestamps, последним
+quota snapshot по каждому окну (`used`/`limit` — provider authority, доля и реальная measurement
+resolution рядом) и per-window calibration из durable PostgreSQL evidence (samples, confidence,
+capacity/remaining как decimal nano strings, estimator version). Контракт редакции: сериализуются
+только opaque profile ids и reviewed bounded plan labels; subject, email, phone, token, proxy,
+credential path, customer/request id и raw provider errors никогда не сериализуются; неизвестное
+— `null`, а не 0. Плоскость default-off: пока KIMI не включён, envelope всегда disabled.
 
 ---
 

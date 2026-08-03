@@ -326,7 +326,9 @@ admin.apitoken.sale {
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
 	}
-	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health
+	# /kimi-subs stays on this same Anthropic origin: KIMI is a backend inside the Anthropic
+	# runtime, so unlike /codex-subs and /gemini-subs it needs no separate origin or key.
+	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs
 	handle @admin_data {
 		reverse_proxy 127.0.0.1:8790 {
 			header_up Host 127.0.0.1:8790

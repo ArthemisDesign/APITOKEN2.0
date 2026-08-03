@@ -27,3 +27,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }  # отдельная me
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+kimi-credential = { path = "../kimi-credential" }

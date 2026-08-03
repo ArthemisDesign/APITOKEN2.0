@@ -436,13 +436,14 @@ default-off и backend-only: ни одна публичная поверхнос
 | server/forward: gateway + readiness | `crates/{server,forward}` | готово на mock-гейтах: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
 | last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
 | quota observations | `crates/{server,forward}` | готово на mock/real-PG гейтах: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable и bounded shutdown |
-| observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
+| observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate метрики, `kimi-provider` алерты с runbook и consistency-тест |
+| blue-green | `systemd/**`, `deploy/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — bounded-cardinality observability и admin-only operational
-projection для runtime/delivery/calibration evidence. Затем следуют blue-green wiring,
-live-runner и контролируемый живой прогон. Публикация не планируется вовсе (см. §0).
+Следующий producer-first шаг — blue-green wiring с default-off secret/config и rollback gate для
+KIMI delivery плоскости. Затем следуют live-runner и контролируемый живой прогон. Публикация не
+планируется вовсе (см. §0).
 
 ## 8. Источники
 
