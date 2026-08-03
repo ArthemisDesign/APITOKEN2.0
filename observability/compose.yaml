@@ -153,6 +153,11 @@ services:
     image: quay.io/oliver006/redis_exporter:v1.67.0@sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7
     restart: unless-stopped
     network_mode: host
+    # The password map is intentionally root-owned 0600 on the host. Run as root only to read that
+    # bind-mounted file, but drop every Linux capability before the pinned exporter starts.
+    user: "0:0"
+    cap_drop:
+      - ALL
     command:
       - --redis.addr=redis://127.0.0.1:6379
       - --redis.password-file=/run/secrets/affinity_redis_password

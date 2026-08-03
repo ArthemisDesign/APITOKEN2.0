@@ -69,6 +69,20 @@ grep -Fq 'job_name: redis' "$ROOT/observability/prometheus/prometheus.yml"
 # exit at startup. Verified against v1.67.0.
 grep -Fq 'printf '"'"'{"redis://127.0.0.1:6379":"%s"}\n'"'"'' "$ROOT/deploy/install-monitoring.sh"
 grep -Fq 'chmod 0600 "$STAGE/secrets/affinity_redis_password"' "$ROOT/deploy/install-monitoring.sh"
+grep -F 'redis-exporter:' -A 14 "$ROOT/observability/compose.yaml" \
+  | grep -Fq 'user: "0:0"' \
+  || { printf 'Redis exporter cannot read the root-owned 0600 password map\n' >&2; exit 1; }
+grep -F 'redis-exporter:' -A 14 "$ROOT/observability/compose.yaml" \
+  | grep -Fq 'cap_drop:' \
+  || { printf 'root Redis exporter does not drop Linux capabilities\n' >&2; exit 1; }
+grep -Fq 'wait_http Redis-Exporter http://127.0.0.1:9121/metrics' \
+  "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring install can commit before Redis exporter starts\n' >&2; exit 1; }
+grep -Fq "wait_prometheus_result Redis 'redis_up == 1'" "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring install does not prove authenticated Redis scraping\n' >&2; exit 1; }
+grep -Fq 'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 10' \
+  "$ROOT/deploy/install-monitoring.sh" \
+  || { printf 'monitoring install target count omits the Redis exporter\n' >&2; exit 1; }
 # The affinity alert must not be scoped to one plane. It was pinned to {provider="anthropic"},
 # which excluded the OpenAI plane — the only plane where Redis also holds Codex history. It keeps a
 # per-provider aggregation so the firing plane is still identifiable.
@@ -97,6 +111,8 @@ for redis_alert in AffinityRedisDown AffinityRedisEvictingKeys AffinityRedisMemo
   grep -Fqi "## $redis_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$redis_alert" >&2; exit 1; }
 done
+grep -Fq 'redis_up == 0 or absent(redis_up)' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'Redis-down alert misses a crashed exporter with no redis_up series\n' >&2; exit 1; }
 grep -Fq 'GF_SERVER_HTTP_ADDR: 127.0.0.1' "$ROOT/observability/compose.yaml"
 grep -Fq 'GF_SERVER_HTTP_PORT: "3600"' "$ROOT/observability/compose.yaml"
 grep -Fq 'http_listen_address: 127.0.0.1' "$ROOT/observability/loki/loki.yml"

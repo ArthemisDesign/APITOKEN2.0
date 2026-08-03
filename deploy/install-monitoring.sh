@@ -195,6 +195,7 @@ wait_http Loki http://127.0.0.1:3101/ready
 wait_http Alloy http://127.0.0.1:12345/-/ready
 wait_http Node-Exporter http://127.0.0.1:9100/metrics
 wait_http Postgres-Exporter http://127.0.0.1:9187/metrics
+wait_http Redis-Exporter http://127.0.0.1:9121/metrics
 wait_http Blackbox-Exporter http://127.0.0.1:9115/metrics
 
 systemctl enable --now apitoken-monitoring-collector.timer
@@ -217,8 +218,9 @@ wait_prometheus_result() {
 wait_prometheus_result business-collector 'time() - apitoken_monitoring_collector_last_success_unixtime < 180'
 wait_prometheus_result systemd-collector 'node_scrape_collector_success{collector="systemd"} == 1'
 wait_prometheus_result PostgreSQL 'pg_up == 1'
+wait_prometheus_result Redis 'redis_up == 1'
 wait_prometheus_result monitoring-targets \
-  'sum(up{job=~"prometheus|node|postgres|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 9'
+  'sum(up{job=~"prometheus|node|postgres|redis|caddy|alertmanager|grafana|loki|alloy|blackbox-exporter"} == 1) == 10'
 
 COMMITTED=1
 trap - EXIT

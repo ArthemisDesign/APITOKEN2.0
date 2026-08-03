@@ -237,8 +237,17 @@ and where its loss is customer-visible rather than a cache-hit regression.
 
 ## AffinityRedisDown
 
-The exporter on `127.0.0.1:9121` cannot reach Redis. Confirm with
-`systemctl status apitoken-affinity-redis.service` and `docker compose -f
+The exporter on `127.0.0.1:9121` is unavailable or cannot reach Redis. Check the `redis` target in
+Prometheus, then inspect both `apitoken-monitoring-redis-exporter-1` and
+`apitoken-affinity-redis.service`. The password map remains root-owned mode `0600`; the exporter
+runs as UID 0 solely to read that bind mount and drops every Linux capability before startup. A
+`permission denied` for `/run/secrets/affinity_redis_password` means this sandbox contract or the
+file mode drifted; do not make the secret world-readable.
+
+The monitoring installer must prove the exporter `/metrics` endpoint, authenticated
+`redis_up == 1`, and all ten fixed internal targets before committing a new configuration. If that
+admission passed but the alert fires later, confirm with `systemctl status
+apitoken-affinity-redis.service` and `docker compose -f
 /usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml ps`.
 Claude and Gemini traffic degrade only in prompt-cache hit rate. The OpenAI plane is affected more
 sharply: Codex `previous_response_id` continuity falls back to per-process memory, so a

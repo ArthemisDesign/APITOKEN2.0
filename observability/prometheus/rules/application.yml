@@ -126,7 +126,7 @@ groups:
   - name: affinity-redis
     rules:
       - alert: AffinityRedisDown
-        expr: redis_up == 0
+        expr: redis_up == 0 or absent(redis_up)
         for: 5m
         labels:
           severity: warning
