@@ -57,7 +57,8 @@
 | Cleanup daemon: untouched managed worktree больше не считается merged | `deploy/agent-worktree.sh`, regression-suite, runbook | `05810766` |
 | Плоскость: exact Messages gateway, `/me`, refresh/reseal, stream lifecycle и settlement | `crates/forward/src/kimi/gateway.rs`, server composition | `137dec16` |
 | Плоскость: last-good atomic roster reload + server discovery loop | `crates/forward/src/kimi/{gateway,roster}.rs`, `crates/server` | `31f27baa` |
-| Плоскость: `/usages` → FIFO/spend → immutable observation/CAS → steering | `crates/forward/src/{billing,kimi/**}`, `crates/server` | текущий checkpoint |
+| Плоскость: `/usages` → FIFO/spend → immutable observation/CAS → steering | `crates/forward/src/{billing,kimi/**}`, `crates/server` | `23e7baba` |
+| Auth Bot: ввод прокси текстом на `km_proxy`, каноникализация до `km_ready`, карточка готовности на buyer/IPRoyal путях | `crates/authbot/src/bot.rs` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 

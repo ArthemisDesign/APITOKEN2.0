@@ -1509,6 +1509,54 @@ pub async fn on_message(
                     )
                     .await;
             }
+            "km_proxy" => {
+                let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+                    return;
+                };
+                if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Kimi) {
+                    return;
+                }
+                match select_kimi_proxy_input(store, &job.reference, &rec.hproxy, rec.hproxy_order, text)
+                {
+                    KimiProxyInput::SellerSupplied(proxy, credentials) => {
+                        if !credentials {
+                            // Тот же риск, что и у Gemini: обрезанная вставка без userinfo иначе
+                            // проявится только как отказ прокси внутри device-flow.
+                            let _ = bot
+                                .send(
+                                    chat,
+                                    "ℹ️ В этом прокси не распознаны логин и пароль — подключение пойдёт с авторизацией по IP. Если у прокси есть логин и пароль, пришли его целиком в формате <code>ip:port:user:pass</code>.",
+                                )
+                                .await;
+                        }
+                        // A manually supplied replacement is unrelated to any prior IPRoyal order.
+                        prepare_kimi_account(bot, store, cfg, chat, Some(&proxy), 0).await;
+                    }
+                    KimiProxyInput::Fixed(..) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Использую закреплённый за этой позицией прокси. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы получить код подтверждения. Сообщением продавца этот прокси заменить нельзя.",
+                            )
+                            .await;
+                        prepare_kimi_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
+                    }
+                    KimiProxyInput::Invalid => {
+                        eprintln!(
+                            "[kimi-proxy] chat={} rejected seller proxy input: {}",
+                            chat,
+                            proxy_input_fingerprint(text)
+                        );
+                        let _ = bot
+                            .send_kb(
+                                chat,
+                                KIMI_STEP_PROXY_RETRY,
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
+                            .await;
+                    }
+                }
+            }
             "ho_code" => match extract_code_state(text) {
                 Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
                 None => {
@@ -2157,12 +2205,60 @@ async fn prepare_kimi_account(
         let _ = bot.send(chat, KIMI_PROXY_PROMPT).await;
         return;
     }
+    // A proxy that only passed the shape check would strand the seller on km_ready: the device
+    // flow would fail against an egress that can never work, with no way to fix it in place.
+    // Canonicalise before pinning, exactly like the Gemini branch does.
+    let replaceable_proxy = job_accepts_seller_proxy(store, &expected_job, effective_order);
+    let effective_proxy = match kimi_credential::normalize_proxy_url(effective_proxy) {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            eprintln!(
+                "[kimi-proxy] chat={} canonicalisation rejected proxy: {}",
+                chat,
+                proxy_input_fingerprint(effective_proxy)
+            );
+            let (retry_proxy, retry_order) = if replaceable_proxy {
+                ("", 0)
+            } else {
+                (effective_proxy, effective_order)
+            };
+            if !store
+                .set_handoff_state_for_seller_job(
+                    chat,
+                    &expected_job,
+                    "km_proxy",
+                    retry_proxy,
+                    retry_order,
+                )
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let seller_message = if replaceable_proxy {
+                "❌ Не удалось разобрать этот прокси. Авторизация не начата — пришли его заново в указанном формате."
+            } else {
+                "⚠️ Закреплённый за этой позицией прокси имеет неверный формат. Авторизация не начата; администратор уведомлён."
+            };
+            let _ = bot.send(chat, seller_message).await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ KIMI proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
     if !store
         .set_handoff_state_for_seller_job(
             chat,
             &expected_job,
             "km_ready",
-            effective_proxy,
+            &effective_proxy,
             effective_order,
         )
         .unwrap_or(false)
@@ -2690,6 +2786,8 @@ async fn start_gemini_handoff(
 
 const GEMINI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
 
+const KIMI_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+
 /// Какой сценарий передачи доступа нужен по этому офферу.
 ///
 /// Claude отдаётся токеном в реестр, ChatGPT — device-флоу в отдельный CODEX_HOME, Gemini —
@@ -3087,7 +3185,7 @@ async fn send_handoff_step_card(
         Some(vec![handoff_back_row(back, back_step_wire(&want)?)])
     });
     match step {
-        "ho_proxy" | "cx_proxy" | "gm_gproxy" => {
+        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" => {
             let _ = bot
                 .send_kb(
                     chat,
@@ -3226,6 +3324,41 @@ fn is_gemini_proxy_retry(input: &str) -> bool {
         input.trim().to_lowercase().as_str(),
         "повторить" | "повтори" | "retry"
     )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum KimiProxyInput {
+    /// URL продавца плюс признак того, что в нём распознаны логин и пароль.
+    SellerSupplied(String, bool),
+    /// Закреплённый прокси покупателя/IPRoyal: сообщение продавца его заменить не может.
+    Fixed(String, i64),
+    /// Ввод не похож на прокси, а закреплённого egress подставить нечего.
+    Invalid,
+}
+
+/// Решение шага `km_proxy`. Зеркалит Gemini-шаг без слова «повторить»: одноразовый device-код
+/// живёт на более позднем шаге, поэтому здесь сообщение продавца — это всегда ввод egress, а не
+/// перезапуск авторизации. Закреплённый buyer/IPRoyal прокси сообщение заменить не может никогда.
+fn select_kimi_proxy_input(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy: &str,
+    current_proxy_order_id: i64,
+    input: &str,
+) -> KimiProxyInput {
+    if job_accepts_seller_proxy(store, expected, current_proxy_order_id) {
+        let parsed = parse_proxy_input(input);
+        return if parsed.url.is_empty() {
+            KimiProxyInput::Invalid
+        } else {
+            KimiProxyInput::SellerSupplied(parsed.url, parsed.credentials)
+        };
+    }
+    if current_proxy.is_empty() {
+        KimiProxyInput::Invalid
+    } else {
+        KimiProxyInput::Fixed(current_proxy.to_string(), current_proxy_order_id)
+    }
 }
 
 fn seller_job_matches_handoff(
@@ -3829,7 +3962,7 @@ async fn deliver_issued_proxy(
                 .await;
                 return;
             }
-            let next_prompt = if gemini {
+            let next_prompt = if gemini || next_step == "km_ready" {
                 "Сохрани эти данные: аккаунт нужно создать и подключить именно через этот прокси. Подробная инструкция придёт следующим сообщением."
             } else {
                 account_setup_prompt(next_step)
@@ -3849,6 +3982,8 @@ async fn deliver_issued_proxy(
                 .await;
             if gemini {
                 prepare_gemini_account(bot, store, cfg, seller_chat, None, px.order_id).await;
+            } else if next_step == "km_ready" {
+                prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
             }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
@@ -3929,7 +4064,7 @@ async fn start_buyer_offer_handoff(
     {
         return;
     }
-    let setup = if next_step == "gm_ready" {
+    let setup = if next_step == "gm_ready" || next_step == "km_ready" {
         ""
     } else {
         account_setup_prompt(next_step)
@@ -3940,6 +4075,8 @@ async fn start_buyer_offer_handoff(
     )).await;
     if next_step == "gm_ready" {
         prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
+    } else if next_step == "km_ready" {
+        prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
     }
 }
 
@@ -5576,6 +5713,134 @@ mod tests {
                 "{label} missing from the persistent keyboard"
             );
         }
+    }
+
+    /// Regression: a Kimi seller on `km_proxy` sent an HTTP proxy and the bot answered
+    /// «Доступна только команда /start.» — the step simply had no text arm. The decision is a
+    /// pure function so the accepted/rejected shapes are pinned without a Telegram mock.
+    #[test]
+    fn kimi_proxy_step_accepts_and_reconstructs_seller_input() {
+        let store = store();
+        store.register_user(111, 111, "kimi-seller").unwrap();
+        let offer = store
+            .create_offer("Kimi Allegretto", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        assert_eq!(
+            select_kimi_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+            KimiProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+        );
+        // Пароль с двоеточием обязан пережить реконструкцию: режем ровно на четыре поля и
+        // процент-кодируем userinfo, иначе в CONNECT уедет чужой пароль.
+        assert_eq!(
+            select_kimi_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pa:ss"),
+            KimiProxyInput::SellerSupplied("http://user:pa%3Ass@1.2.3.4:8080".into(), true)
+        );
+        assert_eq!(
+            select_kimi_proxy_input(&store, &reference, "", 0, "http://user:pass@1.2.3.4:8080"),
+            KimiProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+        );
+        // Авторизация по IP законна, но продавец получает явное предупреждение о ней.
+        assert_eq!(
+            select_kimi_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080"),
+            KimiProxyInput::SellerSupplied("http://1.2.3.4:8080".into(), false)
+        );
+    }
+
+    #[test]
+    fn kimi_proxy_step_rejects_malformed_input_without_leaking_it() {
+        let store = store();
+        store.register_user(111, 111, "kimi-seller").unwrap();
+        let offer = store
+            .create_offer("Kimi Allegretto", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        for rejected in ["", "не прокси", "1.2.3.4", "1.2.3.4:abc", "1.2.3.4:0"] {
+            assert_eq!(
+                select_kimi_proxy_input(&store, &reference, "", 0, rejected),
+                KimiProxyInput::Invalid,
+                "{rejected:?}"
+            );
+        }
+        // Отпечаток отвергнутого ввода — единственное, что попадает в журнал: ни логина, ни пароля.
+        let fingerprint = proxy_input_fingerprint("1.2.3.4:8080:secret-user:secret-pass");
+        assert!(!fingerprint.contains("secret-user"), "{fingerprint}");
+        assert!(!fingerprint.contains("secret-pass"), "{fingerprint}");
+    }
+
+    #[test]
+    fn kimi_proxy_step_never_replaces_a_pinned_proxy() {
+        let store = store();
+        store.register_user(111, 111, "kimi-seller").unwrap();
+        let offer = store
+            .create_offer("Kimi Allegretto", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        // Оплаченный лиз закреплён: валидное сообщение продавца не может его заменить.
+        store.mark_offer_proxy_issued(offer).unwrap();
+        assert_eq!(
+            select_kimi_proxy_input(
+                &store,
+                &reference,
+                "http://user:pass@5.6.7.8:8080",
+                0,
+                "1.2.3.4:8080:user:pass"
+            ),
+            KimiProxyInput::Fixed("http://user:pass@5.6.7.8:8080".into(), 0)
+        );
+        // Закреплённый egress потерян: принимать ввод продавца нельзя, остаёмся fail-closed.
+        assert_eq!(
+            select_kimi_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+            KimiProxyInput::Invalid
+        );
+    }
+
+    #[test]
+    fn kimi_seller_proxy_is_canonicalised_before_it_is_pinned() {
+        // parse_proxy_input проверяет только форму сообщения; мусор в URL-форме проходит форму,
+        // но не должен закрепляться за аккаунтом — иначе продавец застрял бы на km_ready с
+        // egress, на котором device-flow не может начаться.
+        let shaped = parse_proxy_input("http://foo bar:8080");
+        assert!(!shaped.url.is_empty());
+        assert!(kimi_credential::normalize_proxy_url(&shaped.url).is_err());
+        // Канонический вывод обеих форм ввода одинаково валиден для credential-контракта.
+        for raw in ["1.2.3.4:8080:user:pa:ss", "http://user:pa%3Ass@1.2.3.4:8080"] {
+            let parsed = parse_proxy_input(raw);
+            assert!(
+                kimi_credential::normalize_proxy_url(&parsed.url).is_ok(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_proxy_step_has_clean_manual_and_retry_prompts() {
+        assert!(!KIMI_PROXY_PROMPT.contains("не получилось"));
+        assert_eq!(
+            manual_proxy_prompt("km_proxy"),
+            format!("{MANUAL_PROXY_WARNING}{KIMI_PROXY_PROMPT}")
+        );
+        assert!(KIMI_STEP_PROXY_RETRY.contains("ip:port:user:pass"));
+        // Подсказка не может содержать сам присланный прокси: только форма, никаких секретов.
+        assert!(!KIMI_STEP_PROXY_RETRY.contains("<code>1"));
     }
 
     #[test]

@@ -429,7 +429,7 @@ default-off и backend-only: ни одна публичная поверхнос
 | credential | `crates/kimi-credential` | готово, 18 тестов |
 | calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 19 тестов |
 | Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
-| Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово, device flow → atomic roster до выплаты |
+| Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово: ввод прокси текстом на `km_proxy`, device flow → atomic roster до выплаты |
 | transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config |
 | durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
 | server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config |
