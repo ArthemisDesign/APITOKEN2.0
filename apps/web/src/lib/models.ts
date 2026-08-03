@@ -147,7 +147,7 @@ export const claudeModels: ClaudeModel[] = [
     ],
     faq: [
       { q: "How much does the Claude Opus 5 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens — unchanged from Opus 4.8. On apiToken.sale the same requests cost 50% less: $2.50/$12.50 at the flat discount applied to every call." },
-      { q: "What is the model ID for Claude Opus 5?", a: "claude-opus-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "What is the model ID for Claude Opus 5?", a: "claude-opus-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://router.apitoken.sale." },
       { q: "Opus 5 or Fable 5?", a: "Opus 5 is the default for almost everything — top-tier agentic quality at half the Fable token price. Route to Fable 5 only the longest-horizon runs where its edge is worth 2× the tokens." },
     ],
     related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
@@ -180,7 +180,7 @@ export const claudeModels: ClaudeModel[] = [
     ],
     faq: [
       { q: "How much does the Claude Fable 5 API cost?", a: "Officially $10 per 1M input tokens and $50 per 1M output tokens — double the Opus tariff. On apiToken.sale the flat 50% discount applies to every call: $5/$25." },
-      { q: "What is the model ID for Claude Fable 5?", a: "claude-fable-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "What is the model ID for Claude Fable 5?", a: "claude-fable-5. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://router.apitoken.sale." },
       { q: "Fable 5 or Mythos 5?", a: "They share weights and price; Mythos 5 stays restricted to Project Glasswing partners. Fable 5 is the publicly available model, and the one served here." },
     ],
     related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
@@ -212,7 +212,7 @@ export const claudeModels: ClaudeModel[] = [
     ],
     faq: [
       { q: "How much does the Claude Opus 4.8 API cost?", a: "Officially $5 per 1M input tokens and $25 per 1M output tokens. On apiToken.sale the same requests cost 50% less — $2.50/$12.50 at the flat discount applied to every call." },
-      { q: "What is the model ID for Claude Opus 4.8?", a: "claude-opus-4-8. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://api.apitoken.sale." },
+      { q: "What is the model ID for Claude Opus 4.8?", a: "claude-opus-4-8. Use it unchanged with the Anthropic SDK, Claude Code, Cursor or any compatible tool pointed at https://router.apitoken.sale." },
       { q: "Is Opus 4.8 worth the price over Sonnet?", a: "For hard agentic and reasoning work, usually yes. For routine coding, Sonnet 5 delivers near-Opus quality at 40% of the token price — many teams route by task." },
     ],
     related: ["claude-opus-api", "best-claude-model-for-coding", "claude-api-pricing-explained", "cheapest-claude-api"],
@@ -382,7 +382,7 @@ export const openaiModels: OpenAiModel[] = [
     ],
     faq: [
       { q: "How much does the GPT-5.6 Sol API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens, with cached input at $0.50. On apiToken.sale the same requests cost 50% less — $2.50/$15 at the flat discount applied to every call." },
-      { q: "What is the model ID for GPT-5.6 Sol?", a: "gpt-5.6-sol (gpt-5.6 is an alias of the same model). Use it with the OpenAI SDK, Codex CLI, opencode or any OpenAI-compatible tool pointed at https://openai.api.apitoken.sale/v1." },
+      { q: "What is the model ID for GPT-5.6 Sol?", a: "gpt-5.6-sol (gpt-5.6 is an alias of the same model). Use it with the OpenAI SDK, Codex CLI, opencode or any OpenAI-compatible tool pointed at https://router.apitoken.sale/v1." },
       { q: "Does the same key really work for GPT and Claude?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: Anthropic Messages API for Claude models and the OpenAI-compatible API for GPT models. The same discount applies to both." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
@@ -417,7 +417,7 @@ export const openaiModels: OpenAiModel[] = [
     faq: [
       { q: "How much does the GPT-5.6 Terra API cost?", a: "Officially $2.50 per 1M input tokens and $15 per 1M output tokens, with cached input at $0.25. With the flat 50% apiToken.sale discount that is $1.25/$7.50." },
       { q: "Terra or Sol?", a: "Terra is the balanced default for most workloads at half the price; route the hardest reasoning to gpt-5.6-sol. Both run on the same key, balance and endpoint." },
-      { q: "What is the model ID?", a: "gpt-5.6-terra. Point any OpenAI-compatible client at https://openai.api.apitoken.sale/v1 and send it as the model parameter." },
+      { q: "What is the model ID?", a: "gpt-5.6-terra. Point any OpenAI-compatible client at https://router.apitoken.sale/v1 and send it as the model parameter." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
   },
@@ -485,7 +485,7 @@ export const openaiModels: OpenAiModel[] = [
     faq: [
       { q: "How much does the GPT-5.5 API cost?", a: "Officially $5 per 1M input tokens and $30 per 1M output tokens — the same as GPT-5.6 Sol. With the flat 50% apiToken.sale discount that is $2.50/$15." },
       { q: "GPT-5.5 or GPT-5.6 Sol?", a: "They cost the same, so new projects should default to gpt-5.6-sol. Keep 5.5 when you have prompts or evals pinned to it." },
-      { q: "What is the model ID?", a: "gpt-5.5 — use it as-is on the OpenAI-compatible endpoint at https://openai.api.apitoken.sale/v1." },
+      { q: "What is the model ID?", a: "gpt-5.5 — use it as-is on the OpenAI-compatible endpoint at https://router.apitoken.sale/v1." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
   },
@@ -558,7 +558,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 3.6 Flash API cost?", a: "Officially $1.50 per 1M input tokens and $7.50 per 1M output tokens, with cached input at $0.15. On apiToken.sale the same requests cost 50% less — $0.75/$3.75 at the flat discount applied to every call." },
-      { q: "What is the model ID for Gemini 3.6 Flash?", a: "gemini-3.6-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "What is the model ID for Gemini 3.6 Flash?", a: "gemini-3.6-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
       { q: "Gemini 3.6 Flash or 3.5 Flash?", a: "3.6 Flash is newer and cheaper on output — $7.50 vs $9.00 per 1M at the same input price — so new projects should default to it. Keep 3.5 Flash only where prompts and evals are pinned to it." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
@@ -620,7 +620,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 3 Flash Preview API cost?", a: "Officially $0.50 per 1M text, image or video input tokens and $3 per 1M output tokens, including thinking. Cached text input is $0.05. With the flat 50% apiToken.sale discount that is $0.25/$1.50." },
-      { q: "What is the model ID?", a: "gemini-3-flash-preview. Use it unchanged with the Google GenAI SDK or another Gemini-compatible client pointed at https://gemini.api.apitoken.sale." },
+      { q: "What is the model ID?", a: "gemini-3-flash-preview. Use it unchanged with the Google GenAI SDK or another Gemini-compatible client pointed at https://router.apitoken.sale." },
       { q: "Does it support thinking levels?", a: "Yes. The native Gemini API accepts minimal, low, medium and high thinking levels for this model." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
@@ -652,7 +652,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 3.1 Pro Preview API cost?", a: "Officially $2 per 1M input tokens and $12 per 1M output tokens, with cached input at $0.20; above 200K input tokens the whole request bills at $4/$18. On apiToken.sale the flat 50% discount applies to every call — $1/$6, or $2/$9 at long-context rates." },
-      { q: "What is the model ID for Gemini 3.1 Pro Preview?", a: "gemini-3.1-pro-preview. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "What is the model ID for Gemini 3.1 Pro Preview?", a: "gemini-3.1-pro-preview. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
       { q: "Gemini 3.1 Pro Preview or 3.6 Flash?", a: "3.6 Flash covers most workloads at a lower token price; route the hardest reasoning and longest-horizon runs to 3.1 Pro Preview. Both run on the same key, balance and endpoint." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
@@ -683,7 +683,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 3.1 Flash-Lite API cost?", a: "Officially $0.25 per 1M input tokens and $1.50 per 1M output tokens, with cached input at $0.025. With the flat 50% apiToken.sale discount that is $0.125/$0.75." },
-      { q: "What is the model ID?", a: "gemini-3.1-flash-lite. Point any Gemini-compatible client at https://gemini.api.apitoken.sale and send it as the model, with the key in x-goog-api-key." },
+      { q: "What is the model ID?", a: "gemini-3.1-flash-lite. Point any Gemini-compatible client at https://router.apitoken.sale and send it as the model, with the key in x-goog-api-key." },
       { q: "Flash-Lite or Flash?", a: "Flash-Lite handles bulk, latency-sensitive work at a fraction of the price; step up to gemini-3.6-flash for agentic coding and harder reasoning. Many teams route by task on the same key." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
@@ -714,7 +714,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 2.5 Flash API cost?", a: "Officially $0.30 per 1M input tokens and $2.50 per 1M output tokens, with cached input at $0.03. With the flat 50% apiToken.sale discount that is $0.15/$1.25." },
-      { q: "What is the model ID for Gemini 2.5 Flash?", a: "gemini-2.5-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "What is the model ID for Gemini 2.5 Flash?", a: "gemini-2.5-flash. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
       { q: "Gemini 2.5 Flash or 3.5 Flash?", a: "2.5 Flash is far cheaper per token and proven in production; 3.5 Flash is the stronger current model. Keep 2.5 Flash where prompts and evals are pinned to it, default to the 3.x line for new work." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
@@ -777,7 +777,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     faq: [
       { q: "How much does the Gemini 3.1 Flash Image API cost?", a: "Officially $0.50 per 1M input tokens and $3.00 per 1M text output tokens, plus $60 per 1M image-output tokens. On apiToken.sale the flat 50% discount applies to every call — $0.25/$1.50, and $30 per 1M image-output tokens." },
-      { q: "What is the model ID for Nano Banana 2?", a: "gemini-3.1-flash-image. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://gemini.api.apitoken.sale, with the key sent as x-goog-api-key." },
+      { q: "What is the model ID for Nano Banana 2?", a: "gemini-3.1-flash-image. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
       { q: "Flash Image or a text Flash model?", a: "Flash Image is the image-generation model — use it when the response must include rendered images. For text-only work, gemini-3.6-flash gives you a larger context window and lower output cost." },
     ],
     related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],

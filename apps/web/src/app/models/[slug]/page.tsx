@@ -8,6 +8,8 @@ import {
   ANTHROPIC_BASE_URL,
   GEMINI_BASE_URL,
   OPENAI_BASE_URL,
+  ROUTER_BASE_URL,
+  ROUTER_OPENAI_BASE_URL,
   catalogModelBySlug,
   claudeModels,
   formatUsd,
@@ -73,19 +75,19 @@ const providerCopy = {
   anthropic: {
     officialCol: "Official Anthropic",
     othersHeading: "Other Claude models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ANTHROPIC_BASE_URL} with model ID <code>{id}</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ROUTER_BASE_URL} with model ID <code>{id}</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up. Existing integrations on the legacy host {ANTHROPIC_BASE_URL} keep working.</>,
     cta: (name: string) => `Run ${name} on the same Anthropic API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   openai: {
     officialCol: "Official OpenAI",
     othersHeading: "Other GPT models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {ROUTER_OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up. Existing integrations on the legacy host {OPENAI_BASE_URL} keep working.</>,
     cta: (name: string) => `Run ${name} on the OpenAI-compatible API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   gemini: {
     officialCol: "Official Google",
     othersHeading: "Other Gemini models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any Gemini-compatible tool at {GEMINI_BASE_URL} with model ID <code>{id}</code> — the native <code>{`/v1beta/models/${id}:generateContent`}</code> surface works, authenticated with <code>x-goog-api-key</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Gemini-compatible tool at {ROUTER_BASE_URL} with model ID <code>{id}</code> — the native <code>{`/v1beta/models/${id}:generateContent`}</code> surface works, authenticated with <code>x-goog-api-key</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up. Existing integrations on the legacy host {GEMINI_BASE_URL} keep working.</>,
     cta: (name: string) => `Run ${name} on the native Gemini API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
 } as const;

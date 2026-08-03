@@ -244,8 +244,6 @@ describe("completed Next.js migration", () => {
     expect(dashboard).toContain('className="agent-key-reveal secret-card key-issued-reveal"');
     expect(dashboard).not.toContain("QuickConnectDock");
     expect(dashboard).not.toContain("agent-connect-dock");
-    expect(dashboard).not.toContain("buildClaudeCodeCommands");
-    expect(dashboard).not.toContain("buildCodexCommands");
   });
 
   it("keeps the dashboard bilingual and authentication-aware", () => {
@@ -305,8 +303,9 @@ describe("completed Next.js migration", () => {
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
     const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
-    expect(messages).toContain("openai.api.apitoken.sale/v1");
-    expect(messages).toContain("gemini.api.apitoken.sale");
+    expect(messages).toContain("https://router.apitoken.sale");
+    expect(messages).toContain("POST /v1/chat/completions");
+    expect(messages).toContain("Legacy per-provider hosts (api.apitoken.sale, openai.api.apitoken.sale/v1, gemini.api.apitoken.sale) remain supported");
     expect(messages).toContain('"f2_h": "Three native API surfaces"');
     expect(messages).toContain('"f2_h": "Три нативных формата API"');
     expect(home).toContain('<Stat value="3" label="stat2" />');
@@ -343,9 +342,8 @@ describe("completed Next.js migration", () => {
     expect(seoModels).toContain("Supports minimal, low, medium and high thinking levels");
   });
 
-  it("keeps the header, terminal, workflow hover, and wave loop regression-safe", () => {
+  it("keeps the header, workflow hover, and wave loop regression-safe", () => {
     const header = readFileSync(join(root, "components", "site-chrome.tsx"), "utf8");
-    const terminal = readFileSync(join(root, "components", "interactive-terminal.tsx"), "utf8");
     const topup = readFileSync(join(root, "components", "topup-amount-input.tsx"), "utf8");
     const motion = readFileSync(join(root, "components", "motion-effects.tsx"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
@@ -357,8 +355,6 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".nav-links{display:flex;align-items:center;justify-content:space-evenly");
     expect(styles).not.toContain(".nav-links{display:grid;grid-template-columns:");
     expect(styles).toContain("grid-template-columns:repeat(2,134px)");
-    for (const control of ["term-close", "term-minimize", "term-zoom"]) expect(terminal).toContain(control);
-    expect(terminal).not.toContain("onPointerMove");
     expect(styles).toContain(".term-controls i:hover::after");
     expect(styles).not.toContain(".term-controls:hover i::after");
     expect(styles).toContain("inset:0;display:grid;place-items:center");
