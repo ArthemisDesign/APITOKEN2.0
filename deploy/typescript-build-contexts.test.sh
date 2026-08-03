@@ -55,8 +55,6 @@ grep -Fq -- '--filter=@claude-api/contracts' "$TEMP/state/shared.args" \
   || fail 'shared contracts package was not built'
 grep -Fq -- '--filter=@claude-api/openkeys-db' "$TEMP/state/shared.args" \
   || fail 'shared OpenKeys database package was not built'
-grep -Fq -- '--filter=@claude-api/opencode-router-plugin' "$TEMP/state/shared.args" \
-  || fail 'shared OpenCode plugin package was not built'
 [[ $(grep -o -- '--filter=@claude-api/contracts' "$TEMP/state/shared.args" | wc -l | tr -d ' ') == 1 ]] \
   || fail 'a shared package was built more than once'
 
@@ -73,9 +71,9 @@ rm -rf "$TEMP/state"
 mkdir -p "$TEMP/state/started"
 PATH="$TEMP/bin:$PATH" BUILD_CONTEXT_TEST_STATE="$TEMP/state" EXPECTED_CONTEXT_JOBS=1 \
   bash "$RUNNER" "$ROOT" web
-grep -Fq -- '--filter=@claude-api/opencode-router-plugin' "$TEMP/state/shared.args" \
+grep -Fq -- '--filter=@claude-api/opencode-router-plugin' "$TEMP/state/web.args" \
   || fail 'web-only build omitted the OpenCode plugin package'
-[[ -f $TEMP/state/web.args && ! -e $TEMP/state/commerce.args ]] \
+[[ -f $TEMP/state/web.args && ! -e $TEMP/state/shared.args && ! -e $TEMP/state/commerce.args ]] \
   || fail 'web-only build started an unrelated context'
 
 rm -rf "$TEMP/state"

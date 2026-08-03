@@ -48,6 +48,7 @@ fi
 PURE_PACKAGES=(
   @claude-api/content-studio
   @claude-api/web
+  @claude-api/opencode-router-plugin
   @claude-api/engine-client
   @claude-api/payments
   @claude-api/admin

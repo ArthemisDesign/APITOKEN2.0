@@ -684,9 +684,6 @@ for context in ${BUILD_CONTEXTS[@]+"${BUILD_CONTEXTS[@]}"}; do
       add_shared @claude-api/engine-client
       add_shared @claude-api/openkeys-db
       ;;
-    web)
-      add_shared @claude-api/opencode-router-plugin
-      ;;
   esac
 done
 
@@ -742,7 +739,7 @@ for context in "${BUILD_CONTEXTS[@]}"; do
       start_context openkeys @claude-api/openkeys
       ;;
     web)
-      start_context web @claude-api/web
+      start_context web @claude-api/opencode-router-plugin @claude-api/web
       ;;
     admin)
       start_context admin @claude-api/admin

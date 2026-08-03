@@ -83,6 +83,7 @@ case "$args" in
   *' --filter=@claude-api/sales-api '*|*' --filter=@claude-api/sales-db '*) group=sales ;;
   *' --filter=@claude-api/openkeys '*) group=openkeys ;;
   *' --filter=@claude-api/content-studio '*|*' --filter=@claude-api/web '*|\
+  *' --filter=@claude-api/opencode-router-plugin '*|\
   *' --filter=@claude-api/engine-client '*|*' --filter=@claude-api/payments '*|\
   *' --filter=@claude-api/admin '*|*' --filter=@claude-api/devbot '*) group=pure ;;
   *) printf 'could not identify test group: %s\n' "$*" >&2; exit 91 ;;
@@ -138,7 +139,7 @@ for group in commerce sales openkeys; do
 done
 grep -Fq -- '--workspace-concurrency=4' "$full_capture/pure.args" \
   || fail 'pure group lost bounded internal parallelism'
-for package in @claude-api/content-studio @claude-api/web \
+for package in @claude-api/content-studio @claude-api/web @claude-api/opencode-router-plugin \
   @claude-api/engine-client @claude-api/payments; do
   grep -Fq -- "--filter=$package" "$full_capture/pure.args" \
     || fail "pure group omitted $package"
