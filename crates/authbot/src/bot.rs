@@ -134,6 +134,8 @@ fn product_kb() -> Keyboard {
         vec![("Kimi Andante".into(), "noffer:kimi_andante".into())],
         vec![("Kimi Moderato".into(), "noffer:kimi_moderato".into())],
         vec![("Kimi Allegretto".into(), "noffer:kimi_allegretto".into())],
+        vec![("Kimi Allegro".into(), "noffer:kimi_allegro".into())],
+        vec![("Kimi Vivace".into(), "noffer:kimi_vivace".into())],
     ]
 }
 
@@ -184,6 +186,8 @@ fn tier_name(code: &str) -> Option<&'static str> {
         "kimi_andante" => Some("Kimi Andante"),
         "kimi_moderato" => Some("Kimi Moderato"),
         "kimi_allegretto" => Some("Kimi Allegretto"),
+        "kimi_allegro" => Some("Kimi Allegro"),
+        "kimi_vivace" => Some("Kimi Vivace"),
         _ => None,
     }
 }
@@ -203,6 +207,8 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 Kimi Andante" => Some("Kimi Andante"),
         "📦 Kimi Moderato" => Some("Kimi Moderato"),
         "📦 Kimi Allegretto" => Some("Kimi Allegretto"),
+        "📦 Kimi Allegro" => Some("Kimi Allegro"),
+        "📦 Kimi Vivace" => Some("Kimi Vivace"),
         _ => None,
     }
 }
@@ -215,6 +221,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
         vec!["📦 ChatGPT Plus", "📦 ChatGPT Pro"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
         vec!["📦 Kimi Andante", "📦 Kimi Moderato", "📦 Kimi Allegretto"],
+        vec!["📦 Kimi Allegro", "📦 Kimi Vivace"],
         vec!["🧺 Batch-покупка"],
         vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
@@ -5558,7 +5565,7 @@ mod tests {
                 (label, tier_name(code).expect("batch product code"))
             })
             .collect::<Vec<_>>();
-        assert_eq!(labels.len(), 10);
+        assert_eq!(labels.len(), 12);
         for (label, product) in labels {
             assert_eq!(label, product);
             assert!(matches!(
@@ -5626,7 +5633,13 @@ mod tests {
     fn kimi_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
         // A new product silently classified as Claude would be handed to the setup-token branch
         // and burn a paid subscription on the wrong flow.
-        for product in ["Kimi Andante", "Kimi Moderato", "Kimi Allegretto"] {
+        for product in [
+            "Kimi Andante",
+            "Kimi Moderato",
+            "Kimi Allegretto",
+            "Kimi Allegro",
+            "Kimi Vivace",
+        ] {
             assert_eq!(handoff_kind(product), HandoffKind::Kimi, "{product}");
         }
         assert_eq!(handoff_kind("Moonshot Kimi Code"), HandoffKind::Kimi);
@@ -5705,8 +5718,14 @@ mod tests {
             })
             .filter(|code| code.starts_with("kimi_"))
             .count();
-        assert_eq!(offer_codes, 3);
-        for label in ["📦 Kimi Andante", "📦 Kimi Moderato", "📦 Kimi Allegretto"] {
+        assert_eq!(offer_codes, 5);
+        for label in [
+            "📦 Kimi Andante",
+            "📦 Kimi Moderato",
+            "📦 Kimi Allegretto",
+            "📦 Kimi Allegro",
+            "📦 Kimi Vivace",
+        ] {
             assert!(admin_quick_tier(label).is_some(), "{label} missing");
             assert!(
                 admin_home_kb().iter().flatten().any(|b| *b == label),
