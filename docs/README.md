@@ -17,6 +17,7 @@ context'ов. Правила размещения и обновления — в
 - [CONTROL_API.md](engine/CONTROL_API.md) — интеграционный гайд движка для бэкенда сайта и оплаты.
 - [CODEX_PROVIDER.md](engine/CODEX_PROVIDER.md) — Codex (ChatGPT) OAuth subscription provider.
 - [GEMINI_PROVIDER.md](engine/GEMINI_PROVIDER.md) — Gemini OAuth subscription provider.
+- [KIMI_PROVIDER.md](engine/KIMI_PROVIDER.md) — KIMI (Moonshot) Kimi Code subscription provider: capability manifest, backend-only, не публикуется.
 - [PROVIDER_ONBOARDING.md](engine/PROVIDER_ONBOARDING.md) — полный playbook добавления нового subscription-провайдера до production GA.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — модель PostgreSQL authority и fencing Stage 2.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — целевая архитектура единого endpoint для всех провайдеров (design).
