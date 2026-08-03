@@ -129,3 +129,11 @@ startup producer, trigger or engine transport: applying the migration cannot adv
 engine heads, activate a policy, change traffic, touch money rows or stage Stage 8/9. The protected
 producer and durable worker consumer may be delivered only after this migration SHA has green
 `deploy/migration` and `deploy/watchdog` in production.
+
+Migration `0036_pricing_usage_provider_attribution.sql` adds a nullable `provider_id` to immutable
+commerce `pricing_usage_events`. It performs no backfill and keeps the deployed usage consumer
+compatible: historical rows remain `NULL` until a later consumer copies the authoritative top-level
+provider from the engine ledger, while new code is delivered only after this migration SHA has green
+`deploy/migration` and `deploy/watchdog` in production. The separate consumer checkpoint may use
+the existing exact attribution snapshot as a fallback but must never infer a provider from a model
+name.

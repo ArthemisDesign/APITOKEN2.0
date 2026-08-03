@@ -807,4 +807,39 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_shadow_policy_jobs_v2"]!.indexes)
       .toHaveProperty("pricing_shadow_policy_jobs_v2_claim_idx");
   });
+
+  it("adds nullable provider evidence to pricing usage events without rewriting history", () => {
+    const migrationName = "0036_pricing_usage_provider_attribution.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 35);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 36);
+
+    expect(currentEntry).toMatchObject({
+      idx: 36,
+      version: "7",
+      tag: "0036_pricing_usage_provider_attribution",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql.trim()).toBe(
+      'ALTER TABLE "pricing_usage_events" ADD COLUMN "provider_id" text;',
+    );
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0036_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, { columns: Record<string, { notNull: boolean; type: string }> }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0035_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.pricing_usage_events"]!.columns.provider_id)
+      .toMatchObject({ notNull: false, type: "text" });
+  });
 });

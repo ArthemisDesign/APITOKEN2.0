@@ -253,6 +253,13 @@
       "when": 1785763172383,
       "tag": "0035_pricing_shadow_rollout_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1785775929200,
+      "tag": "0036_pricing_usage_provider_attribution",
+      "breakpoints": true
     }
   ]
 }

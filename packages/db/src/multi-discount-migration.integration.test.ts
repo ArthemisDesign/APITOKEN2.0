@@ -281,7 +281,9 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
         ]
       : table === "email_outbox"
         ? ["business_invite_id"]
-        : table === "signup_profiles" ? ["bonus_amount_nano"] : [];
+        : table === "signup_profiles"
+          ? ["bonus_amount_nano"]
+          : table === "pricing_usage_events" ? ["provider_id"] : [];
     const result = await client.query<{ rows: string }>(`
       SELECT COALESCE(
         jsonb_agg(
@@ -813,7 +815,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(36);
+        expect(await migrationCount(client)).toBe(37);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -840,7 +842,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         ]);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(36);
+        expect(await migrationCount(client)).toBe(37);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -974,7 +976,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(36);
+        expect(await migrationCount(client)).toBe(37);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status
