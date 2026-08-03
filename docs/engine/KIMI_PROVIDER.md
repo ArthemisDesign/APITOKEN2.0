@@ -346,7 +346,33 @@ live-прогоном на принадлежащей нам подписке:
 Ни один из них не блокирует сборку runtime, метеринга, credential и калибровочной схемы —
 блокируются только соответствующие live-гейты (`PROVIDER_ONBOARDING.md` §2).
 
-## 7. Источники
+## 7. Состояние доставки
+
+Ветка `feat/kimi-provider-onboarding`. Всё ниже — dormant: ни одна публичная поверхность не
+содержит строки KIMI, ни один потребитель эти модули не вызывает.
+
+| Этап | Артефакт | Состояние |
+|---|---|---|
+| research / capability manifest | этот файл | готово |
+| официальный rate card | `crates/metering/src/kimi.rs` | готово, 18 тестов |
+| calibration authority (schema) | `crates/registry/migrations_pg/0027_kimi_window_calibration.sql` | готово, expand-only, 2 теста |
+| типы наблюдений | `crates/registry/src/kimi_calibration.rs` | готово, 10 тестов |
+| credential | `crates/kimi-credential` | готово, 18 тестов |
+| calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 18 тестов |
+| Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
+| Auth Bot: мастер продавца | `crates/authbot/src/{bot,db}.rs` | **не сделано** |
+| transport / pool / streaming / billing | `crates/forward/src/kimi/**` | **не сделано** |
+| durable read/write калибровки в PostgreSQL | `crates/registry` | **не сделано** |
+| server: env, plane wiring, readiness | `crates/server` | **не сделано** |
+| observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
+| безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
+| live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
+
+Порядок оставшихся работ задан §5: сначала durable read/write поверх уже вставшей схемы, затем
+транспорт и пул, затем мастер Auth Bot, затем live-runner, и только потом контролируемый живой
+прогон. Публикация не планируется вовсе (см. §0).
+
+## 8. Источники
 
 Все ссылки просмотрены 2026-08-03.
 
