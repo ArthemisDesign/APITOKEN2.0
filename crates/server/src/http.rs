@@ -980,6 +980,47 @@ async fn metrics(
         _ => body, // биллинг выключен ИЛИ вызов не control → только операционные метрики
     };
     use std::fmt::Write as _;
+    // The writer queue depth and PostgreSQL money-command latency are operational, not
+    // commercial: they expose saturation of the single-writer hot path that every reserve,
+    // settlement and capacity lease pays for synchronously, so the readonly panel key may see
+    // them. Absent billing (or the SQLite fallback for the histogram) simply omits the series.
+    if let Some(b) = &app.billing {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_billing_write_queue_depth gauge\n\
+             claude_api_billing_write_queue_depth {}",
+            b.write_queue_depth()
+        );
+        if let Some(pg) = b.pg_command_stats() {
+            let _ = writeln!(
+                body,
+                "# TYPE claude_api_billing_pg_command_duration_seconds histogram"
+            );
+            for op in forward::PgCommandOp::ALL {
+                let op_index = op as usize;
+                let op_label = op.label();
+                for (bucket_index, upper_ms) in
+                    forward::PG_COMMAND_LATENCY_BUCKETS_MS.iter().enumerate()
+                {
+                    let _ = writeln!(
+                        body,
+                        "claude_api_billing_pg_command_duration_seconds_bucket{{op=\"{op_label}\",le=\"{}\"}} {}",
+                        *upper_ms as f64 / 1_000.0,
+                        pg.buckets[op_index * forward::PG_COMMAND_LATENCY_BUCKETS_MS.len()
+                            + bucket_index],
+                    );
+                }
+                let command_count = pg.count[op_index];
+                let _ = writeln!(
+                    body,
+                    "claude_api_billing_pg_command_duration_seconds_bucket{{op=\"{op_label}\",le=\"+Inf\"}} {command_count}\n\
+                     claude_api_billing_pg_command_duration_seconds_sum{{op=\"{op_label}\"}} {}\n\
+                     claude_api_billing_pg_command_duration_seconds_count{{op=\"{op_label}\"}} {command_count}",
+                    pg.sum_micros[op_index] as f64 / 1_000_000.0,
+                );
+            }
+        }
+    }
     let _ = writeln!(
         body,
         "# TYPE claude_api_execution_group_double_winner_total counter\n\

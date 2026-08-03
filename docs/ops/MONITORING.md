@@ -312,6 +312,28 @@ client replaying a genuinely old id; illegitimate causes are eviction and a lost
 Correlate with `redis_evicted_keys_total` and with `claude_api_codex_history_write_failures_total`.
 If misses rise while writes are failing, the shared store — not the client — is at fault.
 
+## BillingPGCommandLatencyHigh
+
+`claude_api_billing_pg_command_duration_seconds` measures the PostgreSQL reserve, settle and
+acquire_capacity commands around the retry wrapper, so reconnects and retries count toward the
+latency a request actually pays. The writer is a single thread by design: while one command waits,
+every other money command queues behind it. Slow commands almost always mean the database, not the
+engine — check `pg_stat_activity` for sessions waiting on `pg_advisory_xact_lock` (reserve and
+settle serialize per account through it), look at node-exporter for disk/CPU saturation on the
+PostgreSQL host, and only then suspect connection churn (a repeatedly reconnecting writer shows up
+as latency spread across all three `op` labels at once). If latency is high and
+`BillingWriteQueueBacklog` fires too, treat it as a database incident, not a traffic spike.
+
+## BillingWriteQueueBacklog
+
+`claude_api_billing_write_queue_depth` counts occupied slots of the 4096-slot channel that feeds
+the single billing writer thread. Depth above half for five minutes means commands arrive faster
+than PostgreSQL drains them. First check `BillingPGCommandLatencyHigh`: if it fires, the queue is a
+symptom of a slow database — fix the database. If latency is normal, this is a genuine arrival
+burst outgrowing one writer; the queue absorbs it, but sustained growth eventually back-pressures
+request handling, so estimate the drain time (depth divided by commands per second from the
+histogram `_count`) and prepare to shed load if it exceeds the burst window.
+
 ## ExecutionGroupDoubleWinner
 
 Treat any increment as a correctness incident even though the durable fence protected customer

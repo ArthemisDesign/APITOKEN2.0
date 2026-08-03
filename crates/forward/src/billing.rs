@@ -37,7 +37,7 @@ use registry::{
     ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -1600,6 +1600,111 @@ enum PricingShadowReadCmd {
     },
 }
 
+/// Latency of the single-writer PostgreSQL money commands, measured around `run_pg_with_retry`
+/// so the observation covers reconnect and retry — the budget the request path actually pays.
+/// Owned here rather than in `forward::Metrics` because the billing writer starts before that
+/// struct exists; the `/metrics` handler reads a snapshot through `pg_command_stats`. Bucket
+/// boundaries match the pricing-bridge histogram so operator thresholds stay comparable, and the
+/// array sizes stay within what `#[derive(Default)]` can initialize.
+pub const PG_COMMAND_LATENCY_BUCKETS_MS: [u64; 10] =
+    [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000];
+
+/// The PostgreSQL write commands a request pays for synchronously. Compile-bounded so the metric
+/// label set can never grow at runtime.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum PgCommandOp {
+    Reserve = 0,
+    Settle = 1,
+    AcquireCapacity = 2,
+}
+
+pub const PG_COMMAND_OP_COUNT: usize = 3;
+
+impl PgCommandOp {
+    pub const ALL: [PgCommandOp; PG_COMMAND_OP_COUNT] = [
+        PgCommandOp::Reserve,
+        PgCommandOp::Settle,
+        PgCommandOp::AcquireCapacity,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PgCommandOp::Reserve => "reserve",
+            PgCommandOp::Settle => "settle",
+            PgCommandOp::AcquireCapacity => "acquire_capacity",
+        }
+    }
+}
+
+#[derive(Default)]
+struct PgCommandMetrics {
+    count: [AtomicU64; PG_COMMAND_OP_COUNT],
+    sum_micros: [AtomicU64; PG_COMMAND_OP_COUNT],
+    buckets: [AtomicU64; PG_COMMAND_OP_COUNT * PG_COMMAND_LATENCY_BUCKETS_MS.len()],
+}
+
+/// Point-in-time copy rendered by the `/metrics` handler.
+pub struct PgCommandLatencyStats {
+    pub count: [u64; PG_COMMAND_OP_COUNT],
+    pub sum_micros: [u64; PG_COMMAND_OP_COUNT],
+    pub buckets: [u64; PG_COMMAND_OP_COUNT * PG_COMMAND_LATENCY_BUCKETS_MS.len()],
+}
+
+struct PgCommandLatencyGuard<'a> {
+    metrics: &'a PgCommandMetrics,
+    op: PgCommandOp,
+    started: Instant,
+}
+
+impl Drop for PgCommandLatencyGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics.observe(self.op, self.started.elapsed());
+    }
+}
+
+impl PgCommandMetrics {
+    fn timer(&self, op: PgCommandOp) -> PgCommandLatencyGuard<'_> {
+        PgCommandLatencyGuard {
+            metrics: self,
+            op,
+            started: Instant::now(),
+        }
+    }
+
+    fn observe(&self, op: PgCommandOp, elapsed: Duration) {
+        let op_index = op as usize;
+        self.count[op_index].fetch_add(1, Ordering::Relaxed);
+        let micros = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
+        let _ = self.sum_micros[op_index].fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(micros)),
+        );
+        for (bucket_index, upper_ms) in PG_COMMAND_LATENCY_BUCKETS_MS.iter().enumerate() {
+            if elapsed <= Duration::from_millis(*upper_ms) {
+                let index = op_index * PG_COMMAND_LATENCY_BUCKETS_MS.len() + bucket_index;
+                self.buckets[index].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> PgCommandLatencyStats {
+        let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        PgCommandLatencyStats {
+            count: self.count.each_ref().map(load),
+            sum_micros: self.sum_micros.each_ref().map(load),
+            buckets: self.buckets.each_ref().map(load),
+        }
+    }
+}
+
+/// Occupied slots of a bounded tokio mpsc channel: what a queue-depth gauge needs and nothing
+/// the sender cannot already derive.
+fn channel_queue_depth<T>(sender: &mpsc::Sender<T>) -> usize {
+    sender.max_capacity().saturating_sub(sender.capacity())
+}
+
 /// Async-фасад биллинга: writer-канал + пул reader-каналов. Клонируется (в `Arc`) во все хендлеры.
 pub struct AsyncBilling {
     writer: mpsc::Sender<WriteCmd>,
@@ -1612,11 +1717,29 @@ pub struct AsyncBilling {
     /// the customer authorization reader budget and are absent from live SQLite composition.
     pricing_shadow_readers: Vec<mpsc::Sender<PricingShadowReadCmd>>,
     pricing_shadow_rr: AtomicUsize,
+    /// Present only for the PostgreSQL authority; the SQLite fallback keeps no latency stats
+    /// because it is never the production hot path.
+    pg_command: Option<Arc<PgCommandMetrics>>,
 }
 
 impl AsyncBilling {
     pub(crate) fn track_detached_work(&self) -> DetachedDispatchGuard {
         self.detached.begin()
+    }
+
+    /// Occupied slots of the single-writer command channel. A growing depth means the writer
+    /// thread drains slower than requests enqueue — the earliest saturation signal of the money
+    /// hot path, visible before any latency percentile moves.
+    pub fn write_queue_depth(&self) -> usize {
+        channel_queue_depth(&self.writer)
+    }
+
+    /// Latency histogram of the PostgreSQL reserve/settle/acquire_capacity commands, or `None`
+    /// when this facade runs on the SQLite fallback.
+    pub fn pg_command_stats(&self) -> Option<PgCommandLatencyStats> {
+        self.pg_command
+            .as_deref()
+            .map(PgCommandMetrics::snapshot)
     }
 
     pub fn anthropic_calibration_delivery_status(&self) -> AnthropicCalibrationDeliveryStatus {
@@ -2874,6 +2997,7 @@ impl AsyncBilling {
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: Vec::new(),
             pricing_shadow_rr: AtomicUsize::new(0),
+            pg_command: None,
         })
     }
 
@@ -2889,12 +3013,14 @@ impl AsyncBilling {
         let (wtx, mut wrx) = mpsc::channel::<WriteCmd>(WRITE_QUEUE_CAPACITY);
         let anthropic_calibration_delivery = Arc::new(AnthropicCalibrationDeliveryState::default());
         let gemini_calibration_delivery = Arc::new(GeminiCalibrationDeliveryState::default());
+        let pg_command = Arc::new(PgCommandMetrics::default());
         {
             let mut pg = registry::pg::PgStore::connect(&url)?;
             let writer_url = url.clone();
             let writer_owner = owner.clone();
             let writer_anthropic_delivery = Arc::clone(&anthropic_calibration_delivery);
             let writer_gemini_delivery = Arc::clone(&gemini_calibration_delivery);
+            let writer_pg_command = Arc::clone(&pg_command);
             std::thread::Builder::new().name("billing-pg-writer".into()).spawn(move || {
                 while let Some(cmd) = wrx.blocking_recv() {
                     match cmd {
@@ -3170,16 +3296,19 @@ impl AsyncBilling {
                             let _ = reply.send(result);
                         }
                         WriteCmd::Reserve { request_id, account_id, key, hold, execution, handoff, reply } => {
-                            let result = run_pg_with_retry(
-                                &mut pg,
-                                &writer_url,
-                                &writer_owner,
-                                "reserve",
-                                |pg| pg.reserve_request_for_execution(
-                                    &writer_owner, &request_id, &account_id, &key, hold,
-                                    RESERVATION_LEASE_SECS, &execution,
-                                ),
-                            );
+                            let result = {
+                                let _timer = writer_pg_command.timer(PgCommandOp::Reserve);
+                                run_pg_with_retry(
+                                    &mut pg,
+                                    &writer_url,
+                                    &writer_owner,
+                                    "reserve",
+                                    |pg| pg.reserve_request_for_execution(
+                                        &writer_owner, &request_id, &account_id, &key, hold,
+                                        RESERVATION_LEASE_SECS, &execution,
+                                    ),
+                                )
+                            };
                             let result = match result {
                                 Ok(result) => result,
                                 Err(error) => {
@@ -3471,21 +3600,24 @@ impl AsyncBilling {
                             }
                         }
                         WriteCmd::Settle { request_id, actual, reference, usage, reply, .. } => {
-                            let result = run_pg_with_retry(
-                                &mut pg, &writer_url, &writer_owner, "settlement",
-                                |pg| {
-                                    if actual == 0 && usage.is_none() {
-                                        pg.cancel_request(&request_id)
-                                    } else {
-                                        pg.settle_request(
-                                            &request_id,
-                                            actual,
-                                            reference.as_deref(),
-                                            usage.as_ref(),
-                                        )
-                                    }
-                                },
-                            );
+                            let result = {
+                                let _timer = writer_pg_command.timer(PgCommandOp::Settle);
+                                run_pg_with_retry(
+                                    &mut pg, &writer_url, &writer_owner, "settlement",
+                                    |pg| {
+                                        if actual == 0 && usage.is_none() {
+                                            pg.cancel_request(&request_id)
+                                        } else {
+                                            pg.settle_request(
+                                                &request_id,
+                                                actual,
+                                                reference.as_deref(),
+                                                usage.as_ref(),
+                                            )
+                                        }
+                                    },
+                                )
+                            };
                             if let Err(error) = &result {
                                 eprintln!("billing PostgreSQL settlement failed: {error:#}");
                             }
@@ -3514,12 +3646,15 @@ impl AsyncBilling {
                         }
                         WriteCmd::AcquireCapacity { lease_id, request_id, email, lease_secs,
                                                     util_cap, reply } => {
-                            let result = run_pg_with_retry(
-                                &mut pg, &writer_url, &writer_owner, "capacity acquisition",
-                                |pg| pg.acquire_capacity(
-                                    &writer_owner,&lease_id,&request_id,&email,lease_secs,util_cap,
-                                ),
-                            );
+                            let result = {
+                                let _timer = writer_pg_command.timer(PgCommandOp::AcquireCapacity);
+                                run_pg_with_retry(
+                                    &mut pg, &writer_url, &writer_owner, "capacity acquisition",
+                                    |pg| pg.acquire_capacity(
+                                        &writer_owner,&lease_id,&request_id,&email,lease_secs,util_cap,
+                                    ),
+                                )
+                            };
                             let _ = reply.send(result);
                         }
                         WriteCmd::ReleaseCapacity { lease_id } => {
@@ -3915,6 +4050,7 @@ impl AsyncBilling {
             rr: AtomicUsize::new(0),
             pricing_shadow_readers: pricing_shadow_rtxs,
             pricing_shadow_rr: AtomicUsize::new(0),
+            pg_command: Some(pg_command),
         })
     }
 
@@ -5247,6 +5383,65 @@ impl AsyncBilling {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn pg_command_metrics_buckets_are_cumulative_and_per_op() {
+        let metrics = PgCommandMetrics::default();
+        metrics.observe(PgCommandOp::Reserve, Duration::from_millis(5));
+        metrics.observe(PgCommandOp::Reserve, Duration::from_millis(600));
+        metrics.observe(PgCommandOp::Settle, Duration::from_millis(1));
+        let stats = metrics.snapshot();
+        let reserve = PgCommandOp::Reserve as usize;
+        let settle = PgCommandOp::Settle as usize;
+        let capacity = PgCommandOp::AcquireCapacity as usize;
+        let bucket = |op: usize, upper_ms: u64| {
+            let bucket_index = PG_COMMAND_LATENCY_BUCKETS_MS
+                .iter()
+                .position(|candidate| *candidate == upper_ms)
+                .expect("bucket boundary exists");
+            stats.buckets[op * PG_COMMAND_LATENCY_BUCKETS_MS.len() + bucket_index]
+        };
+        assert_eq!(stats.count[reserve], 2);
+        assert_eq!(stats.count[settle], 1);
+        assert_eq!(stats.count[capacity], 0);
+        // The 5 ms observation fits every bucket from 5 ms up; the 600 ms one fits only 1000 ms.
+        assert_eq!(bucket(reserve, 5), 1);
+        assert_eq!(bucket(reserve, 10), 1);
+        assert_eq!(bucket(reserve, 500), 1);
+        assert_eq!(bucket(reserve, 1_000), 2);
+        assert_eq!(bucket(settle, 1), 1);
+        assert_eq!(bucket(capacity, 1_000), 0);
+        assert_eq!(
+            stats.sum_micros[reserve],
+            5_000 + 600_000,
+            "sum must collect exact microseconds for the histogram _sum series"
+        );
+        assert_eq!(stats.sum_micros[settle], 1_000);
+    }
+
+    #[test]
+    fn pg_command_timer_observes_on_drop() {
+        let metrics = PgCommandMetrics::default();
+        {
+            let _timer = metrics.timer(PgCommandOp::AcquireCapacity);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let stats = metrics.snapshot();
+        assert_eq!(stats.count[PgCommandOp::AcquireCapacity as usize], 1);
+        assert!(stats.sum_micros[PgCommandOp::AcquireCapacity as usize] >= 2_000);
+    }
+
+    #[test]
+    fn channel_queue_depth_counts_occupied_slots() {
+        let (sender, mut receiver) = mpsc::channel::<u8>(4);
+        assert_eq!(channel_queue_depth(&sender), 0);
+        for value in 0..3 {
+            sender.try_send(value).expect("capacity available");
+        }
+        assert_eq!(channel_queue_depth(&sender), 3);
+        receiver.try_recv().expect("queued value");
+        assert_eq!(channel_queue_depth(&sender), 2);
+    }
 
     fn anthropic_event(
         request_id: &str,

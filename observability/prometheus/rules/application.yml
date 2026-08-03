@@ -180,6 +180,28 @@ groups:
           description: 'Each miss becomes a 400 that clients treat as permanent, so they discard a conversation the customer already paid to build. Check Redis eviction and history TTL together.'
           runbook: 'docs/ops/MONITORING.md#codexhistorymisseselevated'
 
+      - alert: BillingPGCommandLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(claude_api_billing_pg_command_duration_seconds_bucket[5m])) by (le, op)) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: billing
+        annotations:
+          summary: 'PostgreSQL money commands are slow on the billing hot path'
+          description: 'p99 of {{ $labels.op }} measured across reconnect and retry exceeds 500 ms for 10 minutes. Every reserve, settlement and capacity lease pays this synchronously; the pool authorizes nothing while the writer waits.'
+          runbook: 'docs/ops/MONITORING.md#billingpgcommandlatencyhigh'
+
+      - alert: BillingWriteQueueBacklog
+        expr: claude_api_billing_write_queue_depth > 2048
+        for: 5m
+        labels:
+          severity: warning
+          component: billing
+        annotations:
+          summary: 'Billing write queue is more than half full'
+          description: 'Over half of the 4096-slot single-writer channel is occupied for 5 minutes. A full channel back-pressures every request; correlate with BillingPGCommandLatencyHigh to tell a slow database from a traffic burst.'
+          runbook: 'docs/ops/MONITORING.md#billingwritequeuebacklog'
+
   # Serial continuation is off by default. These rules make the canary and eventual GA observable
   # without adding request, model, credential or execution-group identities to Prometheus labels.
   - name: router-fallback

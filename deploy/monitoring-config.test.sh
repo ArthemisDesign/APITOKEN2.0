@@ -144,6 +144,27 @@ done
 grep -Fq 'redis_up == 0 or sum(absent(redis_up{instance_role="history"}) or absent(redis_up{instance_role="affinity"})) > 0' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'Redis-down alert misses a crashed exporter with no redis_up series\n' >&2; exit 1; }
+
+# The billing single-writer hot path (reserve/settle/acquire_capacity plus the write queue) was
+# the last unmeasured money surface. Pin export and consumption in both directions: an alert on a
+# metric nothing emits is silently always-inactive, and an unalerted saturation signal is unseen.
+for billing_metric in \
+  'claude_api_billing_pg_command_duration_seconds' \
+  'claude_api_billing_write_queue_depth'; do
+  grep -Fq "$billing_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$billing_metric" >&2; exit 1; }
+  grep -Fq "$billing_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$billing_metric" >&2; exit 1; }
+done
+for billing_alert in BillingPGCommandLatencyHigh BillingWriteQueueBacklog; do
+  grep -Fq "alert: $billing_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing billing hot-path alert %s\n' "$billing_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$billing_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$billing_alert" >&2; exit 1; }
+  grep -Fqi "## $billing_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$billing_alert" >&2; exit 1; }
+done
 grep -Fq 'GF_SERVER_HTTP_ADDR: 127.0.0.1' "$ROOT/observability/compose.yaml"
 grep -Fq 'GF_SERVER_HTTP_PORT: "3600"' "$ROOT/observability/compose.yaml"
 grep -Fq 'http_listen_address: 127.0.0.1' "$ROOT/observability/loki/loki.yml"
