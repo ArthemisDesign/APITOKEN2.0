@@ -9142,6 +9142,21 @@ mod tests {
         pg.cancel_request("stage8-legacy-inflight-request")
             .expect("legacy reserve settles after target and recovery CAS");
 
+        // The active release head is process-global authority, not an account-scoped fixture.
+        // Remove the complete graph while the destructive-test lock is still held so the next
+        // serialized real-PG matrix always starts in the pre-cutover state it declares.
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .expect("clean Stage 8 activation authority before releasing the test lock");
+
         pg.client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",
