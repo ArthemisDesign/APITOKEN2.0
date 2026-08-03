@@ -14,6 +14,11 @@ audio payload, function-declaration tool prompt и Google Search. Для мод�
 `countTokens`; для image-модели отдельно выполняются 1K, 2K и 4K. Бесплатный
 `countTokens` является preflight каждого платного запроса. HTTP 400/403/404 и успешный turn без
 ожидаемого token class записываются в `unavailable_capabilities`, а не считаются нулевым расходом.
+После уже оплаченного generation runner также проверяет само native-тело ответа: публичный
+`modelVersion`, видимый non-thought text (либо обязательный `functionCall`/`inlineData` для
+соответствующего control), `finishReason`, terminal `usageMetadata` и точное совпадение response
+token vector с immutable event. SSE считается incremental только при нескольких candidate frames;
+один буферизованный кадр не проходит gate.
 
 Backend estimator остаётся workload-dependent: он оценивает API-долларовый эквивалент фактически
 наблюдаемой смеси. Plan является частью identity; 5-часовое и недельное окна независимы. Bounds
@@ -54,6 +59,15 @@ Backend estimator остаётся workload-dependent: он оценивает A
   evidence должен появиться именно этот request id с ожидаемыми profile/model и полным token/
   API-cost vector. Rebind, нарушенная сумма cost legs, pending FIFO или actual выше preflight bound
   останавливают прогон fail closed; параллельный customer traffic не участвует в атрибуции.
+- Успешный HTTP-код сам по себе не является evidence. Ответ декодируется в памяти без сохранения
+  сгенерированного текста в report. Private/отсутствующий `modelVersion`, thoughts-only output,
+  malformed JSON/SSE, отсутствие terminal usage/finish, single-frame SSE, не вызванный forced tool
+  или расхождение response usage с immutable turn являются terminal coverage failure. Runner уже
+  учитывает подтверждённый расход, не повторяет запрос и прекращает оставшуюся платную матрицу.
+  HTTP 400/403/404 required capability ведёт к тому же fail-closed исходу. Единственное
+  неблокирующее `unavailable_capabilities` — заранее пропущенный без generation Search с
+  документированно неограниченным per-query fanout (`blocking=false`,
+  `skipped_before_dispatch=true`).
 - Cache payload содержит уникальный `run_id`; write/read пары байт-в-байт одинаковы, но другой запуск
   не может принять старую cache warmth за свою.
 - После turn runner выдерживает минимум 16 секунд и затем опрашивает backend до quota snapshot с
@@ -111,7 +125,9 @@ python3 -m unittest tools.gemini_calibration.test_run_live
 
 Тесты покрывают dry-run, жёсткий `$40` guard, authority/FIFO baseline, exact attribution на фоне
 нескольких новых событий, cost-vector integrity, long-context/search/image bounds, полную матрицу
-capabilities, byte-identical cache/audio replay и fail-closed resume с точным восстановлением spend.
+capabilities, byte-identical cache/audio replay, forced tool call, public model identity, реальный
+non-thought output, terminal response/event usage parity, incremental SSE и fail-closed resume с
+точным восстановлением spend.
 
 ## Результат
 
@@ -120,7 +136,10 @@ Report `gemini-live-calibration/v2` сохраняет точный total и р�
 quota walls, before/after identity каждого окна, финальный backend snapshot и
 `model_profitability`, отсортированный по API nanoUSD на 1% соответствующего 5h/7d окна отдельно
 для каждого paid plan, model и token class. Смена reset identity никогда не считается model-specific
-fraction delta.
+fraction delta. Каждый успешный record дополнительно содержит только sanitized `response_evidence`
+(счётчики frames/output/control, публичный model id и booleans terminal/incremental/usage parity),
+но не текст ответа. `blocking_unavailable_capabilities` делает terminal publication miss явным;
+report может иметь `complete=true` только без таких miss и без незавершённых legs.
 
 Рейтинг допустимо использовать для коммерческого выбора только у строк с положительным различимым
 quota delta, если между before/after на том же профиле не появилось чужого immutable turn. Runner

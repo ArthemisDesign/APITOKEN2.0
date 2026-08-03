@@ -88,6 +88,15 @@ class UnboundedCostError(CalibrationError):
 
 
 @dataclasses.dataclass(frozen=True)
+class GenerationResponse:
+    """Parsed successful generation body retained only in memory for response proof."""
+
+    frames: tuple[dict[str, Any], ...]
+    stream: bool
+    parse_error: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class ResumeState:
     run_id: str
     profiles: list[str]
@@ -561,7 +570,10 @@ def build_coverage_legs(
         for level in thinking_levels(model):
             suffix = level or "default"
             legs.append(Leg(f"thinking:{model}:{suffix}", model, "thinking", level, max_output_tokens=512))
-        legs.append(Leg(f"sse:{model}", model, "fresh", stream=True))
+        # Gemini 3 may spend a small output ceiling entirely on thinking and emit one terminal
+        # frame. 256 proved enough for a genuinely incremental two-frame Flash response in the
+        # owned route probe and remains inside the runner's exact aggregate bound.
+        legs.append(Leg(f"sse:{model}", model, "fresh", stream=True, max_output_tokens=256))
         cache_key = f"{run_id}:{model}:text-cache"
         legs.extend((
             Leg(f"cache-write:{model}", model, "cache", cache_key=cache_key, cache_phase="write"),
@@ -609,6 +621,13 @@ def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
         parts = [{"text": f"Create a minimal blue circle on a white background. Run {run_id}."}]
     if leg.kind == "thinking":
         parts = [{"text": "Compute 137 * 149 step by step, then return only the integer."}]
+    if leg.kind == "tool":
+        parts = [{
+            "text": (
+                "Call calibration_probe exactly once with marker CALIBRATION_OK. "
+                "Do not answer with plain text."
+            )
+        }]
     if leg.kind == "long":
         parts = [{
             "text": ("x " * 220_000)
@@ -640,6 +659,12 @@ def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
                 },
             }]
         }]
+        body["toolConfig"] = {
+            "functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": ["calibration_probe"],
+            }
+        }
     return body
 
 
@@ -665,6 +690,296 @@ def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
     return None
 
 
+def _decode_sse_frames(raw: bytes) -> tuple[dict[str, Any], ...]:
+    try:
+        text = raw.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise CalibrationError("Gemini SSE response is not UTF-8") from error
+    frames: list[dict[str, Any]] = []
+    data_lines: list[str] = []
+    for line in text.splitlines() + [""]:
+        if not line:
+            if not data_lines:
+                continue
+            data = "\n".join(data_lines)
+            data_lines = []
+            if data == "[DONE]":
+                continue
+            try:
+                frame = json.loads(data)
+            except json.JSONDecodeError as error:
+                raise CalibrationError("Gemini SSE frame contains invalid JSON") from error
+            if not isinstance(frame, dict):
+                raise CalibrationError("Gemini SSE frame is not an object")
+            frames.append(frame)
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+        elif line.startswith(("event:", "id:", "retry:", ":")):
+            continue
+        else:
+            raise CalibrationError("Gemini SSE response contains an invalid field")
+    if not frames:
+        raise CalibrationError("Gemini SSE response contains no JSON frames")
+    return tuple(frames)
+
+
+def decode_generation_response(raw: bytes, stream: bool) -> GenerationResponse:
+    """Decode native JSON/SSE without retaining raw output in the persisted report."""
+
+    try:
+        if stream:
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                frames = _decode_sse_frames(raw)
+            else:
+                if isinstance(payload, list) and payload and all(
+                    isinstance(frame, dict) for frame in payload
+                ):
+                    frames = tuple(payload)
+                elif isinstance(payload, dict):
+                    frames = (payload,)
+                else:
+                    raise CalibrationError(
+                        "Gemini streaming response is not an object or non-empty object array"
+                    )
+        else:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise CalibrationError("Gemini generation response is not an object")
+            frames = (payload,)
+        return GenerationResponse(frames=frames, stream=stream)
+    except (CalibrationError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        return GenerationResponse(
+            frames=(),
+            stream=stream,
+            parse_error=str(error) or "Gemini generation response could not be decoded",
+        )
+
+
+def _response_int(value: Any, field: str, default: int | None = None) -> int:
+    if value is None and default is not None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CalibrationError(f"response {field} is not a non-negative integer")
+    return value
+
+
+def _modality_tokens(metadata: dict[str, Any], field: str, modality: str) -> int:
+    details = metadata.get(field, [])
+    if details is None:
+        return 0
+    if not isinstance(details, list):
+        raise CalibrationError(f"response usageMetadata.{field} is not an array")
+    total = 0
+    for detail in details:
+        if not isinstance(detail, dict):
+            raise CalibrationError(f"response usageMetadata.{field} has a non-object item")
+        if str(detail.get("modality", "")).upper() == modality:
+            total += _response_int(
+                detail.get("tokenCount"), f"usageMetadata.{field}.tokenCount"
+            )
+    return total
+
+
+def _response_usage_vector(
+    metadata: Any,
+    leg: Leg,
+    image_delivered: bool,
+) -> dict[str, int]:
+    if not isinstance(metadata, dict):
+        raise CalibrationError("terminal response has no usageMetadata object")
+    prompt = _response_int(metadata.get("promptTokenCount"), "usageMetadata.promptTokenCount")
+    candidates = _response_int(
+        metadata.get("candidatesTokenCount"), "usageMetadata.candidatesTokenCount", 0
+    )
+    thoughts = _response_int(
+        metadata.get("thoughtsTokenCount"), "usageMetadata.thoughtsTokenCount", 0
+    )
+    cached = min(
+        _response_int(
+            metadata.get("cachedContentTokenCount"),
+            "usageMetadata.cachedContentTokenCount",
+            0,
+        ),
+        prompt,
+    )
+    tool_prompt = _response_int(
+        metadata.get("toolUsePromptTokenCount"),
+        "usageMetadata.toolUsePromptTokenCount",
+        0,
+    )
+    audio_prompt = min(_modality_tokens(metadata, "promptTokensDetails", "AUDIO"), prompt)
+    cached_audio = min(
+        _modality_tokens(metadata, "cacheTokensDetails", "AUDIO"),
+        cached,
+        audio_prompt,
+    )
+    audio_input = audio_prompt - cached_audio
+    uncached_input = max(prompt - cached - audio_input, 0) + tool_prompt
+    image_output = min(
+        _modality_tokens(metadata, "candidatesTokensDetails", "IMAGE"), candidates
+    )
+    output = max(candidates - image_output, 0) + thoughts
+    if leg.kind == "image" and image_delivered and image_output == 0:
+        image_output = IMAGE_OUTPUT_TOKEN_CEILINGS.get(leg.image_size or "", 0)
+        output = max(output - image_output, 0)
+    vector = {
+        "input_tokens": uncached_input,
+        "audio_input_tokens": audio_input,
+        "cache_read_tokens": cached,
+        "cached_audio_input_tokens": cached_audio,
+        "output_tokens": output,
+        "thinking_output_tokens": thoughts,
+        "image_output_tokens": image_output,
+        "tool_prompt_tokens": min(tool_prompt, uncached_input),
+    }
+    if prompt <= 0 or vector["output_tokens"] + vector["image_output_tokens"] <= 0:
+        raise CalibrationError("terminal response usage has no positive input/output tokens")
+    return vector
+
+
+def verify_generation_response(
+    leg: Leg,
+    response: GenerationResponse,
+    event: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    """Return sanitized response proof and a fail-closed coverage error, if any."""
+
+    evidence: dict[str, Any] = {
+        "response_frames": len(response.frames),
+        "candidate_frames": 0,
+        "visible_text_chars": 0,
+        "function_calls": 0,
+        "inline_data_parts": 0,
+        "terminal_finish": False,
+        "terminal_usage": False,
+        "incremental_sse": False,
+        "model_version": None,
+        "usage_matches_immutable_event": False,
+    }
+    if response.parse_error:
+        return evidence, response.parse_error
+    if response.stream != leg.stream or not response.frames:
+        return evidence, "generation response transport does not match the requested mode"
+
+    model_versions: set[str] = set()
+    usage_indexes: list[int] = []
+    malformed: str | None = None
+    for index, frame in enumerate(response.frames):
+        if "error" in frame:
+            malformed = "successful generation body contains a provider error frame"
+            break
+        model_version = frame.get("modelVersion")
+        if model_version is not None:
+            if not isinstance(model_version, str) or not model_version:
+                malformed = "generation response has an invalid modelVersion"
+                break
+            model_versions.add(model_version)
+        if "usageMetadata" in frame:
+            usage_indexes.append(index)
+        candidates = frame.get("candidates", [])
+        if candidates is None:
+            candidates = []
+        if not isinstance(candidates, list):
+            malformed = "generation response candidates is not an array"
+            break
+        if candidates:
+            evidence["candidate_frames"] += 1
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                malformed = "generation response has a non-object candidate"
+                break
+            finish = candidate.get("finishReason")
+            if isinstance(finish, str) and finish:
+                evidence["terminal_finish"] = True
+            content = candidate.get("content", {})
+            if content is None:
+                content = {}
+            if not isinstance(content, dict):
+                malformed = "generation candidate content is not an object"
+                break
+            parts = content.get("parts", [])
+            if parts is None:
+                parts = []
+            if not isinstance(parts, list):
+                malformed = "generation candidate parts is not an array"
+                break
+            for part in parts:
+                if not isinstance(part, dict):
+                    malformed = "generation response has a non-object part"
+                    break
+                text_value = part.get("text")
+                if (
+                    isinstance(text_value, str)
+                    and text_value.strip()
+                    and part.get("thought") is not True
+                ):
+                    evidence["visible_text_chars"] += len(text_value.strip())
+                function_call = part.get("functionCall")
+                if (
+                    isinstance(function_call, dict)
+                    and isinstance(function_call.get("name"), str)
+                    and function_call["name"]
+                ):
+                    evidence["function_calls"] += 1
+                inline = part.get("inlineData", part.get("inline_data"))
+                if (
+                    isinstance(inline, dict)
+                    and isinstance(inline.get("data"), str)
+                    and inline["data"]
+                ):
+                    evidence["inline_data_parts"] += 1
+            if malformed:
+                break
+        if malformed:
+            break
+    if malformed:
+        return evidence, malformed
+    if model_versions != {leg.model}:
+        return evidence, (
+            f"generation modelVersion proof is {sorted(model_versions)!r}, expected {leg.model!r}"
+        )
+    evidence["model_version"] = leg.model
+    if not evidence["terminal_finish"]:
+        return evidence, "generation response has no terminal finishReason"
+    if not usage_indexes or usage_indexes[-1] != len(response.frames) - 1:
+        return evidence, "generation response has no terminal usageMetadata"
+    evidence["terminal_usage"] = True
+    if leg.stream:
+        evidence["incremental_sse"] = (
+            len(response.frames) >= 2 and evidence["candidate_frames"] >= 2
+        )
+        if not evidence["incremental_sse"]:
+            return evidence, "SSE response did not contain multiple incremental candidate frames"
+    if leg.kind == "tool":
+        if evidence["function_calls"] <= 0:
+            return evidence, "tool control returned no functionCall"
+    elif leg.kind == "image":
+        if evidence["inline_data_parts"] <= 0:
+            return evidence, "image control returned no inlineData"
+    elif evidence["visible_text_chars"] <= 0:
+        return evidence, "generation returned no visible non-thought text"
+    try:
+        response_usage = _response_usage_vector(
+            response.frames[-1].get("usageMetadata"),
+            leg,
+            evidence["inline_data_parts"] > 0,
+        )
+    except CalibrationError as error:
+        return evidence, str(error)
+    mismatched = {
+        field: (response_usage[field], event[field])
+        for field in response_usage
+        if response_usage[field] != event[field]
+    }
+    if mismatched:
+        return evidence, f"terminal response usage does not match immutable event: {mismatched}"
+    evidence["usage_matches_immutable_event"] = True
+    return evidence, None
+
+
 @dataclasses.dataclass
 class Budget:
     limit_nano: int
@@ -675,7 +990,7 @@ class Budget:
         if upper_bound_nano <= 0:
             raise CalibrationError("request upper bound must be positive")
         if self.total_nano + upper_bound_nano > self.limit_nano:
-            raise CalibrationError("global $40 Gemini budget guard stopped before dispatch")
+            raise CalibrationError("aggregate Gemini budget guard stopped before dispatch")
 
     def charge(self, profile_id: str, actual_nano: int, upper_bound_nano: int) -> None:
         if actual_nano <= 0 or actual_nano > upper_bound_nano:
@@ -694,7 +1009,7 @@ class JsonHttpClient:
 
     def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
                 target_profile: str | None = None, raw_ok: bool = False,
-                calibration_request_id: str | None = None) -> dict[str, Any]:
+                calibration_request_id: str | None = None) -> Any:
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {"x-goog-api-key": self.api_key, "content-type": "application/json", "accept": "application/json"}
         if target_profile:
@@ -715,14 +1030,13 @@ class JsonHttpClient:
             ) from error
         except urllib.error.URLError as error:
             raise CalibrationError(f"{path} transport failed: {error}") from error
+        generation = path.endswith(":generateContent") or ":streamGenerateContent" in path
+        if generation:
+            return decode_generation_response(raw, ":streamGenerateContent" in path)
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
-            if raw_ok:
-                return {"raw_bytes": len(raw)}
             raise CalibrationError(f"{path} returned invalid JSON") from error
-        if isinstance(payload, list) and raw_ok:
-            return {"frames": len(payload)}
         if not isinstance(payload, dict):
             raise CalibrationError(f"{path} returned a non-object")
         return payload
@@ -759,7 +1073,7 @@ class ProductionSshJsonHttpClient:
 
     def request(self, path: str, method: str = "GET", body: dict[str, Any] | None = None,
                 target_profile: str | None = None, raw_ok: bool = False,
-                calibration_request_id: str | None = None) -> dict[str, Any]:
+                calibration_request_id: str | None = None) -> Any:
         if method not in {"GET", "POST"} or not path.startswith("/v1beta/"):
             raise CalibrationError(f"unsupported Gemini SSH request: {method} {path}")
         if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-?=&.:" for char in path):
@@ -817,14 +1131,13 @@ class ProductionSshJsonHttpClient:
                 raw[:800].decode(errors="replace"),
                 execution_state.strip() == b"not_started",
             )
+        generation = path.endswith(":generateContent") or ":streamGenerateContent" in path
+        if generation:
+            return decode_generation_response(raw, ":streamGenerateContent" in path)
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as error:
-            if raw_ok:
-                return {"raw_bytes": len(raw)}
             raise CalibrationError(f"{path} returned invalid JSON") from error
-        if isinstance(payload, list) and raw_ok:
-            return {"frames": len(payload)}
         if not isinstance(payload, dict):
             raise CalibrationError(f"{path} returned a non-object")
         return payload
@@ -906,7 +1219,7 @@ class Runner:
         calibration_request_id = str(uuid.uuid4())
         if calibration_request_id in before_ids:
             raise CalibrationError("generated Gemini calibration request id already exists")
-        self.api.request(
+        generation_response = self.api.request(
             f"/v1beta/models/{model_path}:{suffix}",
             "POST",
             body,
@@ -939,6 +1252,13 @@ class Runner:
             )
         actual = event["api_total_nanousd"]
         self.budget.charge(profile_id, actual, upper)
+        if not isinstance(generation_response, GenerationResponse):
+            raise CalibrationError(
+                f"{leg.name}: generation client returned no verifiable response envelope"
+            )
+        response_evidence, response_error = verify_generation_response(
+            leg, generation_response, event
+        )
         completed_at = as_int(event.get("completed_at"), f"{leg.name}.completed_at")
         if self.delay > 0:
             time.sleep(self.delay)
@@ -995,7 +1315,8 @@ class Runner:
                 "5h": {"used_fraction_units": after_state.get("used_5h"), "resets_at": after_state.get("reset_5h")},
                 "7d": {"used_fraction_units": after_state.get("used_7d"), "resets_at": after_state.get("reset_7d")},
             },
-            "coverage_error": verify_leg_usage(leg, event),
+            "response_evidence": response_evidence,
+            "coverage_error": response_error or verify_leg_usage(leg, event),
             "usage": {field: str(event[field]) for field in EVENT_TOKEN_FIELDS},
             "api_cost": {field: str(event[field]) for field in EVENT_MONEY_FIELDS},
         }
@@ -1108,6 +1429,10 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "single-aggregate-budget",
             "no-paid-request-retry",
             "resume-only-from-authoritative-not-started-proof",
+            "public-modelVersion-and-real-output",
+            "terminal-response-usage-equals-immutable-event",
+            "multiple-incremental-sse-candidate-frames",
+            "forced-control-output",
         ],
         "execute_requires": "--execute plus a capacity source and production/admin API access",
     }
@@ -1230,13 +1555,21 @@ def main(argv: list[str] | None = None) -> int:
                             "model": leg.model,
                             "capability": leg.name,
                             "reason": record["coverage_error"],
+                            "blocking": True,
                         })
+                        completed.add(key)
+                        raise CalibrationError(
+                            f"{profile}/{leg.name}: paid response proof failed: "
+                            f"{record['coverage_error']}"
+                        )
                 except UnboundedCostError as error:
                     unavailable.append({
                         "profile_id": profile,
                         "model": leg.model,
                         "capability": leg.name,
                         "reason": str(error),
+                        "blocking": False,
+                        "skipped_before_dispatch": True,
                     })
                     completed.add(key)
                     continue
@@ -1248,9 +1581,13 @@ def main(argv: list[str] | None = None) -> int:
                             "capability": leg.name,
                             "http_status": error.status,
                             "reason": error.detail[:300],
+                            "blocking": True,
                         })
                         completed.add(key)
-                        continue
+                        raise CalibrationError(
+                            f"{profile}/{leg.name}: required generation capability returned "
+                            f"HTTP {error.status}"
+                        )
                     if is_explicit_transient_stop(error):
                         stopped[profile] = str(error)
                         continue
@@ -1271,8 +1608,9 @@ def main(argv: list[str] | None = None) -> int:
         for (profile, _), leg in expected.items()
         if (profile, leg.name) not in completed
     ]
-    complete = failure is None and not pending
-    resume_safe = failure is None and bool(pending)
+    blocking_unavailable = [item for item in unavailable if item.get("blocking", True)]
+    complete = failure is None and not pending and not blocking_unavailable
+    resume_safe = failure is None and bool(pending) and not blocking_unavailable
     report = {
         "schema": "gemini-live-calibration/v2",
         "run_id": run_id,
@@ -1289,6 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
         "models": models,
         "records": runner.records,
         "unavailable_capabilities": unavailable,
+        "blocking_unavailable_capabilities": blocking_unavailable,
         "profile_stops": stopped,
         "pending_legs": pending,
         "model_profitability": model_profitability(runner.records),
