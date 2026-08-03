@@ -41,6 +41,7 @@ pub struct Config {
     pub codex_roster: Option<codex_login::RosterConfig>, // encrypted roster движка (seal-публикация)
     pub gemini_dir: String, // каталог encrypted credentials + roster отдельного Gemini provider
     pub gemini_oauth: Option<gemini_oauth::Config>,
+    pub kimi_roster: Option<kimi_roster::RosterConfig>,
 }
 
 fn env_opt(k: &str) -> Option<String> {
@@ -71,6 +72,31 @@ fn codex_roster_config() -> Result<Option<codex_login::RosterConfig>> {
         ));
     }
     Ok(Some(codex_login::RosterConfig {
+        dir,
+        keyring,
+        active_key_id: active,
+    }))
+}
+
+/// Encrypted roster of the KIMI plane. Gated on the AEAD keyring exactly like Codex and Gemini:
+/// with no keys the branch publishes nothing instead of starting half-configured.
+fn kimi_roster_config() -> Result<Option<kimi_roster::RosterConfig>> {
+    let keys = env_opt("AUTH_BOT_KIMI_CREDENTIAL_KEYS");
+    let active = env_opt("AUTH_BOT_KIMI_CREDENTIAL_ACTIVE_KID");
+    if keys.is_none() && active.is_none() {
+        return Ok(None);
+    }
+    let keyring = kimi_credential::CredentialKeyring::parse(
+        &keys.ok_or_else(|| anyhow!("AUTH_BOT_KIMI_CREDENTIAL_KEYS не задан"))?,
+    )?;
+    let active = active.ok_or_else(|| anyhow!("AUTH_BOT_KIMI_CREDENTIAL_ACTIVE_KID не задан"))?;
+    let dir = std::path::PathBuf::from(
+        env_opt("AUTH_BOT_KIMI_DIR").unwrap_or_else(|| "/srv/claude-api/data/kimi".into()),
+    );
+    if dir.is_relative() {
+        return Err(anyhow!("AUTH_BOT_KIMI_DIR должен быть абсолютным путём"));
+    }
+    Ok(Some(kimi_roster::RosterConfig {
         dir,
         keyring,
         active_key_id: active,
@@ -529,6 +555,7 @@ async fn main() -> Result<()> {
         codex_roster: codex_roster_config()?,
         gemini_dir,
         gemini_oauth,
+        kimi_roster: kimi_roster_config()?,
     });
     let store = Arc::new(Store::open(&state_db())?);
     let recovered = store.recover_interrupted_handoffs()?;

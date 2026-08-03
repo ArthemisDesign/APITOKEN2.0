@@ -40,37 +40,32 @@
 | **всё вышеперечисленное в master, watchdog GREEN** | — | `62c49ab6` |
 | правило завершённости в скилле и карте | `SKILL.md`, чеклист | ветка |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | ветка |
+| Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | ветка |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
-1. **`km_ready` не обработан.** Оффер KIMI создаётся и принимается, но сделка не завершается:
-   device-код не выдаётся, `kimi_oauth` и `kimi_roster` никто не вызывает.
+1. ~~`km_ready` не обработан.~~ **Закрыт.** Путь продавца проходится целиком: device-код, поллинг
+   под generation guard, `/me`, публикация в roster до завершения выплаты.
 2. **Профиль в roster не читается никем.** Плоскости `crates/forward/src/kimi/` нет, поэтому
-   опубликованная подписка не становится ёмкостью и трафик по ней не идёт.
-
-Оба шва обязаны быть закрыты до любого заявления о готовности.
+   опубликованная подписка не становится ёмкостью и трафик по ней не идёт. Это единственный
+   оставшийся шов, и до его закрытия говорить «подписка в пуле» нельзя.
 
 ## Следующее действие
 
-Обработчик `km_ready` в `crates/authbot/src/bot.rs`: выдать device-код и
-`verification_uri_complete`, перевести продавца в `km_wait`, поллить
-`/api/oauth/token` под generation guard, получить `/me`, опубликовать через `kimi_roster::publish`
-**до** завершения выплаты. Образец — Codex `cx_wait` (тоже device-flow) и generation-fencing
-Gemini. Требования: cancel/retry/restart не платят и не двигают чужую сделку; истёкший или
-отказанный flow не оставляет ни конверта, ни строки roster.
+`crates/forward/src/kimi/` — roster loader, транспорт поверх `api.kimi.com/coding`
+(Anthropic-нативный, трансляционный слой не нужен), липкий пул, single-flight refresh ротирующей
+семьи, оси здоровья, стрим, reserve/settle. Именно этот шаг превращает опубликованный профиль в
+маршрутизируемую ёмкость.
 
 ## Очередь после этого
 
-1. `crates/forward/src/kimi/` — roster loader, транспорт поверх `api.kimi.com/coding`
-   (Anthropic-нативный, трансляционный слой не нужен), липкий пул, single-flight refresh
-   ротирующей семьи, оси здоровья, стрим, reserve/settle.
-2. Durable-калибровка: read/write поверх таблиц `0027` + поллер `/usages`, дренаж turn-FIFO перед
+1. Durable-калибровка: read/write поверх таблиц `0027` + поллер `/usages`, дренаж turn-FIFO перед
    каждым опросом квоты.
-3. `crates/server`: env, wiring плоскости, readiness. **Пробу нельзя вешать на `/v1/models`** —
+2. `crates/server`: env, wiring плоскости, readiness. **Пробу нельзя вешать на `/v1/models`** —
    он негейтед и отвечает 200 на мёртвый ключ; бить в `/messages` или `/me`.
-4. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
+3. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
-5. Observability, blue-green, live-матрица.
+4. Observability, blue-green, live-матрица.
 
 ## Заблокировано человеком
 

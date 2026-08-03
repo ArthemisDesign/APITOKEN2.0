@@ -3312,6 +3312,7 @@ mod tests {
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
             .unwrap();
         let bot_config = Arc::new(BotConfig {
+            kimi_roster: None,
             admins_id: HashSet::new(),
             admins_name: HashSet::new(),
             claude_bin: String::new(),

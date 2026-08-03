@@ -12,10 +12,6 @@
 //! and split its calibration evidence, so the same subject re-authorizing replaces its existing
 //! profile in place rather than creating a second one.
 
-// Dormant producer: the km_ready wizard step that calls this lands in the same series; nothing
-// invokes it yet.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -29,6 +25,29 @@ use kimi_credential::{
     decode_envelope, encode_envelope, validate_profile_id, CredentialKeyring, KimiCredential,
 };
 use serde::{Deserialize, Serialize};
+
+/// Engine roster location plus the AEAD keyring used to seal published profiles.
+///
+/// Mirrors `codex_login::RosterConfig`: intake is gated on the keyring alone, so without keys the
+/// module simply never publishes rather than half-configuring itself.
+#[derive(Clone)]
+pub struct RosterConfig {
+    /// Roster root: `<dir>/profiles.json` + `<dir>/credentials/<id>.json`.
+    pub dir: PathBuf,
+    pub keyring: CredentialKeyring,
+    pub active_key_id: String,
+}
+
+impl std::fmt::Debug for RosterConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RosterConfig")
+            .field("dir", &self.dir)
+            .field("active_key_id", &self.active_key_id)
+            .field("keyring", &"REDACTED")
+            .finish()
+    }
+}
 
 /// Why a publication was refused. Every variant leaves the roster untouched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

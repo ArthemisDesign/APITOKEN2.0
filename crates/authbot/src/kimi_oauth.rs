@@ -12,18 +12,13 @@
 //! seller only ever sees a short user code and a verification URL, and never sends a password,
 //! a 2FA code, a cookie or a token to the operator.
 
-// Dormant producer: the Telegram wizard that drives this flow lands in a dependent change, so
-// nothing calls these entry points yet. Delivering the protocol unit first keeps that change
-// reviewable on its own instead of folding a new provider contract into the seller state machine.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use kimi_credential::{
-    CredentialKeyring, KimiCredential, KimiCredentialKind, SealedCredential, KIMI_CODE_BASE_URL,
-    KIMI_DEVICE_AUTHORIZATION_PATH, KIMI_DEVICE_GRANT_TYPE, KIMI_IDENTITY_PATH,
-    KIMI_OAUTH_HOST, KIMI_OFFICIAL_OAUTH_CLIENT_ID, KIMI_STATUS_NORMAL, KIMI_TOKEN_PATH,
+    KimiCredential, KimiCredentialKind, KIMI_CODE_BASE_URL, KIMI_DEVICE_AUTHORIZATION_PATH,
+    KIMI_DEVICE_GRANT_TYPE, KIMI_IDENTITY_PATH, KIMI_OAUTH_HOST, KIMI_OFFICIAL_OAUTH_CLIENT_ID,
+    KIMI_STATUS_NORMAL, KIMI_TOKEN_PATH,
 };
 use serde::Deserialize;
 use zeroize::Zeroizing;
@@ -240,19 +235,6 @@ pub fn credential_from(
     };
     credential.validate()?;
     Ok(credential)
-}
-
-/// Seal an acquired credential under the active key.
-///
-/// The caller publishes the envelope and only then completes payout: a failed or wrong-plan flow
-/// must leave neither a credential file nor a roster row.
-pub fn seal_acquired(
-    keyring: &CredentialKeyring,
-    active_key_id: &str,
-    profile_id: &str,
-    credential: &KimiCredential,
-) -> Result<SealedCredential> {
-    keyring.seal(active_key_id, profile_id, credential)
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -500,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn an_acquired_credential_takes_its_identity_from_me_and_seals() {
+    fn an_acquired_credential_takes_its_identity_from_me() {
         let tokens = TokenSet {
             access_token: Zeroizing::new("access".into()),
             refresh_token: Zeroizing::new("refresh".into()),
@@ -517,12 +499,8 @@ mod tests {
         let credential = credential_from(&tokens, &identity, "").unwrap();
         assert_eq!(credential.subject_id, "u_1");
         assert_eq!(credential.plan_name, "Vivace");
-
-        let keyring =
-            CredentialKeyring::parse(&format!("a1:{}", "11".repeat(32))).unwrap();
-        let sealed = seal_acquired(&keyring, "a1", "kimi-01", &credential).unwrap();
-        let opened = keyring.open("kimi-01", &sealed).unwrap();
-        assert_eq!(opened.refresh_token, "refresh");
+        assert_eq!(credential.refresh_token, "refresh");
+        // Sealing and publication belong to kimi_roster, which owns the filesystem contract.
     }
 
     #[test]

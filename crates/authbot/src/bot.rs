@@ -3,6 +3,8 @@
 
 use crate::db::{AdminState, BatchOverview, PurchaseBatch, SellerJob, SellerJobRef, Store};
 use crate::gemini_oauth;
+use crate::kimi_oauth;
+use crate::kimi_roster;
 use crate::setup_token::{self, Outcome};
 use crate::tg::{Bot, CallbackQuery, Keyboard};
 use crate::Config;
@@ -499,6 +501,17 @@ const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTT
 const GEMINI_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Gemini</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй Google-аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
+
+fn kimi_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
+    let mut keyboard = vec![vec![(
+        "✅ Аккаунт готов — продолжить".into(),
+        "kimi:ready".into(),
+    )]];
+    if let Some(step) = back {
+        keyboard.push(handoff_back_row(step, "km_ready"));
+    }
+    keyboard
+}
 
 fn gemini_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     let mut keyboard = vec![vec![(
@@ -2107,6 +2120,66 @@ async fn do_feed_token(
 /// Перевести Gemini-сделку на самостоятельную регистрацию аккаунта. Прокси сохраняется до явного
 /// подтверждения готовности, поэтому авторизация не может случайно начаться раньше регистрации и
 /// активации тарифа.
+/// Put the seller on the KIMI "account ready" step and show the button that starts the device
+/// flow. Mirrors `prepare_gemini_account`, but the KIMI branch needs no OAuth service config to
+/// reach this step: the keyring is only required once something is actually sealed.
+async fn prepare_kimi_account(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: Option<&str>,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Kimi) {
+        return;
+    }
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let effective_proxy = proxy.unwrap_or(&user.hproxy);
+    let effective_order = if proxy.is_some() {
+        proxy_order_id
+    } else {
+        user.hproxy_order
+    };
+    if effective_proxy.is_empty() {
+        // Without an egress the seller must not open the account yet: registration and
+        // authorization have to come from the same IP.
+        if !store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "km_proxy", "", effective_order)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = bot.send(chat, KIMI_PROXY_PROMPT).await;
+        return;
+    }
+    if !store
+        .set_handoff_state_for_seller_job(
+            chat,
+            &expected_job,
+            "km_ready",
+            effective_proxy,
+            effective_order,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _ = bot
+        .send_kb(
+            chat,
+            KIMI_ACCOUNT_SETUP,
+            Some(&kimi_ready_kb(
+                current_handoff_back(store, cfg, chat).as_ref(),
+            )),
+        )
+        .await;
+}
+
 async fn prepare_gemini_account(
     bot: &Bot,
     store: &Arc<Store>,
@@ -2209,12 +2282,287 @@ async fn prepare_gemini_account(
 
 /// Return the proxy only for the explicit Gemini readiness state. Callback buttons can be old or
 /// forwarded, so neither the button itself nor a stored proxy alone authorizes a state transition.
+fn kimi_ready_handoff(store: &Store, chat: i64) -> Option<(String, i64)> {
+    let user = store.get_user(chat).ok().flatten()?;
+    if user.want != "km_ready" || user.hproxy.is_empty() {
+        return None;
+    }
+    Some((user.hproxy, user.hproxy_order))
+}
+
 fn gemini_ready_handoff(store: &Store, chat: i64) -> Option<(String, i64)> {
     let user = store.get_user(chat).ok().flatten()?;
     if user.want != "gm_ready" || user.hproxy.is_empty() {
         return None;
     }
     Some((user.hproxy, user.hproxy_order))
+}
+
+async fn continue_kimi_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
+    let Some((proxy, _proxy_order_id)) = kimi_ready_handoff(store, chat) else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    };
+    start_kimi_handoff(bot, store, cfg, chat, &proxy).await;
+}
+
+/// Run the KIMI device-code acquisition for the seller's current deal.
+///
+/// The whole exchange happens on the seller's assigned egress, because the account was opened
+/// there and authorizing from a different IP is what trips the provider's risk checks. The seller
+/// only ever sees a short user code and a verification URL: no password, 2FA, cookie or token
+/// crosses Telegram, and the device code itself is never shown.
+async fn start_kimi_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: &str,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Kimi) {
+        let _ = bot
+            .send(
+                chat,
+                "Текущая сделка не является KIMI-сделкой. Открой актуальную карточку через /start.",
+            )
+            .await;
+        return;
+    }
+    let Some(roster) = cfg.kimi_roster.as_ref() else {
+        // Without a keyring nothing can be sealed, so the seller must not be sent through a flow
+        // whose result we would have to throw away.
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+        let _ = bot
+            .send_kb(
+                chat,
+                "⚠️ Подключение KIMI сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз этой же кнопкой после исправления.",
+                Some(&kimi_ready_kb(None)),
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ KIMI handoff недоступен: не настроен AEAD keyring (AUTH_BOT_KIMI_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    };
+
+    let authorization = match kimi_oauth::request_device_authorization(proxy).await {
+        Ok(authorization) => authorization,
+        Err(_) => {
+            // The provider body may echo account details, so the seller gets a bounded message.
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⚠️ Не удалось начать авторизацию KIMI через твой прокси. Доступ не передан. Нажми кнопку ещё раз; если повторяется — напиши администратору.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let (user_code, verification_url) = authorization.seller_prompt();
+    let _ = store.set_want_for_seller_job(chat, &expected_job, "km_wait");
+    let _ = bot
+        .send(
+            chat,
+            &format!(
+                "🔐 <b>Этап 3 из 3 — подтверди устройство</b>\n\n                 1️⃣ В <b>том же профиле антидетект-браузера</b>, где ты создал аккаунт Kimi, открой:\n                 <code>{}</code>\n\n                 2️⃣ Проверь, что показан код <b><code>{}</code></b>, и подтверди вход.\n\n                 Не меняй профиль, прокси и устройство. Ничего присылать в чат не нужно — бот сам увидит подтверждение.",
+                esc(verification_url),
+                esc(user_code)
+            ),
+        )
+        .await;
+
+    let deadline = std::time::Instant::now() + kimi_oauth::acquisition_deadline(&authorization);
+    let mut interval = authorization.interval;
+    let tokens = loop {
+        if std::time::Instant::now() >= deadline {
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⌛ Время подтверждения истекло. Доступ не передан и выплата не завершена. Нажми кнопку ещё раз — бот выдаст новую ссылку и новый код.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+            return;
+        }
+        tokio::time::sleep(interval).await;
+
+        // Re-check the deal on every poll: a cancel, a step back or a restart must be able to
+        // stop an in-flight acquisition rather than have it publish into a deal that moved on.
+        if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Kimi) {
+            return;
+        }
+
+        match kimi_oauth::poll_device_token(proxy, &authorization.device_code, kimi_now_unix()).await {
+            Ok(kimi_oauth::DevicePoll::Pending) => continue,
+            Ok(kimi_oauth::DevicePoll::SlowDown) => {
+                interval = kimi_oauth::backed_off(interval);
+                continue;
+            }
+            Ok(kimi_oauth::DevicePoll::Granted(tokens)) => break tokens,
+            Ok(kimi_oauth::DevicePoll::Expired) => {
+                let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+                let _ = bot
+                    .send_kb(
+                        chat,
+                        "⌛ Код подтверждения истёк. Доступ не передан. Нажми кнопку ещё раз — бот выдаст новый.",
+                        Some(&kimi_ready_kb(None)),
+                    )
+                    .await;
+                return;
+            }
+            Ok(kimi_oauth::DevicePoll::Denied) => {
+                let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+                let _ = bot
+                    .send_kb(
+                        chat,
+                        "🚫 Подтверждение отклонено в браузере. Доступ не передан и выплата не завершена. Нажми кнопку ещё раз, если это была ошибка.",
+                        Some(&kimi_ready_kb(None)),
+                    )
+                    .await;
+                return;
+            }
+            Err(_) => {
+                // Polling the token endpoint is read-only, so a transport failure is safe to
+                // retry until the deadline; it never replays a paid or one-shot operation.
+                continue;
+            }
+        }
+    };
+
+    let identity = match kimi_oauth::fetch_identity(proxy, &tokens.access_token).await {
+        Ok(identity) => identity,
+        Err(_) => {
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⚠️ Не удалось подтвердить аккаунт Kimi после входа. Доступ не передан и выплата не завершена. Убедись, что оформлен тариф <b>Kimi Code</b>, и нажми кнопку ещё раз.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let credential = match kimi_oauth::credential_from(&tokens, &identity, proxy) {
+        Ok(credential) => credential,
+        Err(_) => {
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⚠️ Аккаунт Kimi не прошёл проверку и не был подключён. Доступ не передан и выплата не завершена.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Last generation check before anything durable is written. SQLite and the roster are not one
+    // transaction, so this only narrows the unavoidable cross-store window — it does not close it.
+    if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Kimi) {
+        return;
+    }
+
+    let profile_id = format!("kimi-{}", &new_profile_suffix());
+    match kimi_roster::publish(
+        &roster.dir,
+        &roster.keyring,
+        &roster.active_key_id,
+        &profile_id,
+        &credential,
+    ) {
+        Ok(published) => {
+            let _ = bot
+                .send(
+                    chat,
+                    if published.replaced_existing {
+                        "✅ Аккаунт Kimi подключён (обновлён существующий профиль этой подписки)."
+                    } else {
+                        "✅ Аккаунт Kimi подключён."
+                    },
+                )
+                .await;
+            complete_seller_job_after_handoff(
+                bot,
+                store,
+                cfg,
+                chat,
+                Some(expected_job),
+                HandoffKind::Kimi,
+            )
+            .await;
+        }
+        Err(kimi_roster::PublishError::Duplicate) => {
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⚠️ Этот аккаунт Kimi уже подключён к пулу. Доступ не передан и выплата не завершена — нужен новый аккаунт.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+        }
+        Err(kimi_roster::PublishError::Storage) => {
+            let _ = store.set_want_for_seller_job(chat, &expected_job, "km_ready");
+            let _ = bot
+                .send_kb(
+                    chat,
+                    "⚠️ Не удалось сохранить доступ. Доступ не передан и выплата не завершена; администратор уведомлён.",
+                    Some(&kimi_ready_kb(None)),
+                )
+                .await;
+            notify_admins(
+                bot,
+                cfg,
+                "⚠️ KIMI publication failed closed. Проверь права AUTH_BOT_KIMI_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
+                None,
+            )
+            .await;
+        }
+    }
+}
+
+/// Unix seconds for token expiry arithmetic.
+fn kimi_now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// CSPRNG suffix for a fresh profile id. Never derived from the subject: a profile id is published
+/// in the roster and must not leak account identity.
+fn new_profile_suffix() -> String {
+    let mut random = [0u8; 8];
+    if getrandom::fill(&mut random).is_err() {
+        return "0".repeat(16);
+    }
+    random.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 async fn continue_gemini_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
@@ -2418,6 +2766,27 @@ pub(crate) fn handoff_step_back(
             clears_proxy: false,
             invalidates_link: true,
         }),
+        (HandoffKind::Kimi, "km_ready") => to_proxy_step("km_proxy", false),
+        // Mirrors the Gemini edge: stepping back from an issued device code must invalidate it,
+        // and without a recoverable egress it degrades to the proxy step rather than landing on
+        // km_ready with an empty hproxy, which kimi_ready_handoff rejects.
+        (HandoffKind::Kimi, "km_wait") => {
+            if pinned_egress_known {
+                Some(HandoffStepBack {
+                    target: "km_ready",
+                    clears_proxy: false,
+                    invalidates_link: true,
+                })
+            } else if proxy_replaceable {
+                Some(HandoffStepBack {
+                    target: "km_proxy",
+                    clears_proxy: true,
+                    invalidates_link: true,
+                })
+            } else {
+                None
+            }
+        }
         (HandoffKind::Gemini, "gm_ready") => to_proxy_step("gm_gproxy", false),
         // Единственное двухисходное ребро. Без восстановленного egress шаг назад привёл бы на
         // `gm_ready` с пустым `hproxy`, который `gemini_ready_handoff` отвергает — это тупик,
@@ -2452,6 +2821,8 @@ fn back_step_wire(want: &str) -> Option<&'static str> {
         "cx_wait" => Some("cx_wait"),
         "gm_ready" => Some("gm_ready"),
         "gm_wait" => Some("gm_wait"),
+        "km_ready" => Some("km_ready"),
+        "km_wait" => Some("km_wait"),
         _ => None,
     }
 }
@@ -2571,6 +2942,7 @@ fn handoff_back_kb(store: &Store, cfg: &Config, chat: i64) -> Option<Keyboard> {
 fn handoff_back_confirm_text(want: &str) -> &'static str {
     match want {
         "ho_code" => "⚠️ Вернуться к вводу email?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору, чтобы он сверил результат.",
+        "km_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nВыданный код устройства Kimi перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "cx_wait" => "⚠️ Вернуться к вводу email?\n\nВыданный одноразовый код ChatGPT перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         _ => "⚠️ Вернуться на шаг назад?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую с тем же прокси. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору.",
     }
@@ -2749,6 +3121,18 @@ async fn send_handoff_step_card(
                         moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
                     ),
                     Some(&gemini_ready_kb(back.as_ref())),
+                )
+                .await;
+        }
+        "km_ready" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{KIMI_ACCOUNT_SETUP}",
+                        moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
+                    ),
+                    Some(&kimi_ready_kb(back.as_ref())),
                 )
                 .await;
         }
@@ -2946,7 +3330,7 @@ async fn start_batch_item(
         {
             return;
         }
-        let setup = if next_step == "gm_ready" {
+        let setup = if next_step == "gm_ready" || next_step == "km_ready" {
             ""
         } else {
             account_setup_prompt(next_step)
@@ -2962,6 +3346,8 @@ async fn start_batch_item(
             .await;
         if next_step == "gm_ready" {
             prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
+        } else if next_step == "km_ready" {
+            prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
         }
     } else {
         if !store
@@ -3604,6 +3990,11 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
     let admin = is_admin(cfg, store, uid, &uname);
 
     // Readiness is state-bound: an old or forwarded button cannot skip account preparation.
+    if data == "kimi:ready" {
+        continue_kimi_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
     if data == "gemini:ready" {
         continue_gemini_handoff(bot, store, cfg, chat).await;
         return;
@@ -5041,6 +5432,60 @@ mod tests {
     }
 
     #[test]
+    fn stepping_back_from_an_issued_kimi_device_code_invalidates_it() {
+        // The seller already holds a live code; going back must burn it, not leave two valid
+        // codes racing to publish into the same deal.
+        let back = handoff_step_back(HandoffKind::Kimi, "km_wait", true, true).expect("edge");
+        assert_eq!(back.target, "km_ready");
+        assert!(back.invalidates_link);
+        assert!(!back.clears_proxy, "the pinned egress must survive a step back");
+    }
+
+    #[test]
+    fn a_kimi_step_back_without_a_recoverable_egress_degrades_to_the_proxy_step() {
+        // Landing on km_ready with an empty hproxy would be a dead end: kimi_ready_handoff
+        // rejects it and the seller could never continue.
+        let back = handoff_step_back(HandoffKind::Kimi, "km_wait", true, false).expect("edge");
+        assert_eq!(back.target, "km_proxy");
+        assert!(back.clears_proxy);
+        // A seller who may not replace the proxy has no such step in their history at all.
+        assert!(handoff_step_back(HandoffKind::Kimi, "km_wait", false, false).is_none());
+    }
+
+    #[test]
+    fn kimi_ready_steps_back_to_its_own_proxy_step() {
+        let back = handoff_step_back(HandoffKind::Kimi, "km_ready", true, true).expect("edge");
+        assert_eq!(back.target, "km_proxy");
+        assert!(!back.invalidates_link, "no code has been issued yet");
+    }
+
+    #[test]
+    fn the_kimi_wait_confirmation_warns_that_the_code_dies() {
+        let text = handoff_back_confirm_text("km_wait");
+        assert!(text.contains("перестанет работать"));
+        assert!(text.contains("уже подтвердил"));
+    }
+
+    #[test]
+    fn the_kimi_ready_button_carries_its_own_callback() {
+        let keyboard = kimi_ready_kb(None);
+        assert_eq!(keyboard[0][0].1, "kimi:ready");
+        // A shared callback would let one provider's button advance another provider's deal.
+        assert_ne!(keyboard[0][0].1, gemini_ready_kb(None)[0][0].1);
+    }
+
+    #[test]
+    fn the_kimi_ready_gate_requires_both_its_step_and_a_stored_proxy() {
+        let store = store();
+        // Unknown seller, wrong step, or a right step with no stored egress must all leave the
+        // button inert: starting an acquisition without the assigned proxy would authorize from
+        // a different IP than the one the account was opened on.
+        assert!(kimi_ready_handoff(&store, 1).is_none());
+        let _ = store.set_want(1, "km_ready");
+        assert!(kimi_ready_handoff(&store, 1).is_none());
+    }
+
+    #[test]
     fn kimi_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
         // A new product silently classified as Claude would be handed to the setup-token branch
         // and burn a paid subscription on the wrong flow.
@@ -5565,7 +6010,8 @@ mod tests {
     #[test]
     fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         for step in [
-            "ho_email", "ho_code", "cx_email", "cx_wait", "gm_ready", "gm_wait",
+            "ho_email", "ho_code", "cx_email", "cx_wait", "gm_ready", "gm_wait", "km_ready",
+            "km_wait",
         ] {
             assert_eq!(back_step_wire(step), Some(step));
         }
@@ -5573,6 +6019,7 @@ mod tests {
             "ho_proxy",
             "cx_proxy",
             "gm_gproxy",
+            "km_proxy",
             "reg_address",
             "",
             "gm_wait:go",
