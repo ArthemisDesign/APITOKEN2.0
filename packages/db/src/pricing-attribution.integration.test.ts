@@ -239,6 +239,11 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       retention_eligible: isTrack,
       commission_eligible: isTrack,
       snapshot_digest: `snapshot-${input.id}`,
+      release_schema_version: null,
+      release_generation: null,
+      release_digest: null,
+      release_billing_mode: null,
+      release_funding_generation: null,
       ...input.attributionOverrides,
     };
     return {

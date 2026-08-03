@@ -3,6 +3,7 @@ import {
   B2C_PRICING_TIERS,
   paymentProviderSchema,
   type EngineLedgerEntry,
+  type EngineSettlementFundingEvidence,
   type PricingPolicyEditorRule,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
@@ -227,12 +228,24 @@ function validatePolicyFundingAllocations(
   if (!Array.isArray(attribution.funding_allocation_json)) {
     throw new PricingLedgerAttributionError("policy attribution is missing raw funding evidence");
   }
+  // The legacy bucket path only accepts legacy bucket evidence; release-v2 lot evidence belongs to
+  // the separate release-v2 validation path and must not leak into bucket reconciliation.
+  const bucketEvidence: EngineSettlementFundingEvidence[] = attribution.funding_allocation_json.map(
+    (allocation, index) => {
+      if (!("bucket_id" in allocation)) {
+        throw new PricingLedgerAttributionError(
+          `raw funding allocation ${index} is not legacy bucket evidence`,
+        );
+      }
+      return allocation;
+    },
+  );
   let previousOrder: bigint | null = null;
   const seenBuckets = new Set<string>();
   let paidFundedNano = 0n;
   let bonusFundedNano = 0n;
   let otherFundedNano = 0n;
-  const chargedEvidence = attribution.funding_allocation_json.filter((allocation, index) => {
+  const chargedEvidence = bucketEvidence.filter((allocation, index) => {
     const bucketId = requiredLedgerText(allocation.bucket_id, `raw funding allocation ${index} bucket`);
     const sourceType = requiredLedgerText(
       allocation.source_type,

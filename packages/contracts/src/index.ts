@@ -123,9 +123,22 @@ export const engineSettlementFundingEvidenceSchema = z.object({
 
 export type EngineSettlementFundingEvidence = z.infer<typeof engineSettlementFundingEvidenceSchema>;
 
+// Funding evidence of a release-v2 (Stage 9) charge row. Mirrors the durable
+// funding_ledger_allocations_v2 identity instead of the legacy bucket shape.
+export const engineSettlementFundingEvidenceV2Schema = z.object({
+  allocation_order: nonNegativeIntegerSchema,
+  lot_id: z.string().min(1),
+  lot_source_type: z.string().min(1),
+  lot_version: nonNegativeIntegerSchema,
+  direction: z.enum(["debit"]),
+  amount_nano: nonNegativeIntegerSchema,
+});
+
+export type EngineSettlementFundingEvidenceV2 = z.infer<typeof engineSettlementFundingEvidenceV2Schema>;
+
 export const engineLedgerAttributionSchema = z.object({
   attribution_schema_version: nonNegativeIntegerSchema,
-  snapshot_kind: z.enum(["policy_v1", "legacy_scalar"]).nullish()
+  snapshot_kind: z.enum(["policy_v1", "legacy_scalar", "release_v2"]).nullish()
     .transform((value) => value ?? null),
   provider_id: nullableStringSchema,
   product_id: nullableStringSchema,
@@ -139,7 +152,7 @@ export const engineLedgerAttributionSchema = z.object({
   alias_generation: nullableNonNegativeIntegerSchema,
   rule_id: nullableStringSchema,
   rule_digest: nullableStringSchema,
-  rule_scope: z.enum(["provider", "model"]).nullish().transform((value) => value ?? null),
+  rule_scope: z.enum(["global", "provider", "model"]).nullish().transform((value) => value ?? null),
   pricing_mode: z.enum(["track", "discount", "legacy_scalar"]).nullish()
     .transform((value) => value ?? null),
   rule_origin: z.enum(["managed", "legacy"]).nullish().transform((value) => value ?? null),
@@ -168,12 +181,20 @@ export const engineLedgerAttributionSchema = z.object({
   paid_funded_nano: nullableNonNegativeIntegerSchema,
   bonus_funded_nano: nullableNonNegativeIntegerSchema,
   other_funded_nano: nullableNonNegativeIntegerSchema,
-  funding_allocation_json: z.array(engineSettlementFundingEvidenceSchema).nullish()
+  funding_allocation_json: z.array(
+    z.union([engineSettlementFundingEvidenceSchema, engineSettlementFundingEvidenceV2Schema]),
+  ).nullish()
     .transform((value) => value ?? null),
   track_eligible: z.boolean().nullish().transform((value) => value ?? null),
   retention_eligible: z.boolean().nullish().transform((value) => value ?? null),
   commission_eligible: z.boolean().nullish().transform((value) => value ?? null),
   snapshot_digest: nullableStringSchema,
+  release_schema_version: nullableNonNegativeIntegerSchema,
+  release_generation: nullableNonNegativeIntegerSchema,
+  release_digest: nullableStringSchema,
+  release_billing_mode: z.enum(["balance", "meter_only"]).nullish()
+    .transform((value) => value ?? null),
+  release_funding_generation: nullableNonNegativeIntegerSchema,
 });
 
 export type EngineLedgerAttribution = z.infer<typeof engineLedgerAttributionSchema>;

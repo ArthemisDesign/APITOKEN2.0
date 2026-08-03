@@ -553,15 +553,26 @@ function ledgerAttributionView(attribution: EngineLedgerAttribution): Record<str
     paidFundedNano: attribution.paid_funded_nano,
     bonusFundedNano: attribution.bonus_funded_nano,
     otherFundedNano: attribution.other_funded_nano,
-    fundingEvidence: attribution.funding_allocation_json?.map((allocation) => ({
-      bucketId: allocation.bucket_id,
-      sourceType: allocation.source_type,
-      bucketVersion: allocation.bucket_version,
-      reservedNano: allocation.reserved_nano,
-      chargedNano: allocation.charged_nano,
-      releasedNano: allocation.released_nano,
-      allocationOrder: allocation.allocation_order,
-    })) ?? null,
+    fundingEvidence: attribution.funding_allocation_json?.map((allocation) =>
+      "bucket_id" in allocation
+        ? {
+            bucketId: allocation.bucket_id,
+            sourceType: allocation.source_type,
+            bucketVersion: allocation.bucket_version,
+            reservedNano: allocation.reserved_nano,
+            chargedNano: allocation.charged_nano,
+            releasedNano: allocation.released_nano,
+            allocationOrder: allocation.allocation_order,
+          }
+        : {
+            lotId: allocation.lot_id,
+            lotSourceType: allocation.lot_source_type,
+            lotVersion: allocation.lot_version,
+            direction: allocation.direction,
+            amountNano: allocation.amount_nano,
+            allocationOrder: allocation.allocation_order,
+          },
+    ) ?? null,
     trackEligible: attribution.track_eligible,
     retentionEligible: attribution.retention_eligible,
     commissionEligible: attribution.commission_eligible,
