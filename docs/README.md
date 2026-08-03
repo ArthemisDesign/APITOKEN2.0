@@ -70,6 +70,7 @@ context'ов. Правила размещения и обновления — в
 - [2026-08-01-AGENT_DOCS_AUDIT.md](audits/2026-08-01-AGENT_DOCS_AUDIT.md) — аудит системы координации агентов (AGENTS.md, DEPENDENCIES.md, чеклисты, docs-gate).
 - [2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md](audits/2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md) — production-readiness аудит unified router: resource/auth, protocol parity, catalog, OpenCode и zero-downtime delivery.
 - [2026-08-03-UNIFIED_ROUTER_REMEDIATION_CLOSEOUT.md](audits/2026-08-03-UNIFIED_ROUTER_REMEDIATION_CLOSEOUT.md) — closeout remediation unified router: production SHA, повторная live/negative/harness проверка и три внешних/GA остатка.
+- [GEMINI_ROUTER_POOL_ACCEPTANCE_2026-08-03.md](audits/GEMINI_ROUTER_POOL_ACCEPTANCE_2026-08-03.md) — production acceptance Gemini pool через unified router: sticky/cache/SSE, ротация, FIFO, бюджет и fail-closed audio remediation.
 
 ## Рядом с кодом (не переносить сюда)
 
