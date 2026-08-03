@@ -114,12 +114,21 @@ function customerLineage(release: PricingReleaseProvisioningReleaseV2) {
   };
 }
 
+function externalOwnerPolicyVersion(release: PricingReleaseProvisioningReleaseV2): number {
+  if (release.capability_generation <= 3) return 1;
+  if (release.capability_generation === 4) {
+    throw new Error("pricing_release_rejected_capability_generation");
+  }
+  if (release.capability_generation === 5) return 2;
+  throw new Error("pricing_release_unsupported_capability_generation");
+}
+
 export function buildOpenKeysPricingReleasePolicyV2(
   context: PricingReleaseProvisioningContextV2,
 ): PricingReleasePolicyV2 {
   return buildPolicy({
     policy_id: "release-v2:openkeys:global",
-    policy_version: 1,
+    policy_version: externalOwnerPolicyVersion(context.active_release),
     owner_type: "open_keys",
     owner_id: "openkeys",
     account_class: "open_keys",
@@ -139,7 +148,7 @@ export function buildServicePricingReleasePolicyV2(
 ): PricingReleasePolicyV2 {
   return buildPolicy({
     policy_id: `release-v2:service:${serviceId}`,
-    policy_version: 1,
+    policy_version: externalOwnerPolicyVersion(context.active_release),
     owner_type: "service",
     owner_id: serviceId,
     account_class: "service",

@@ -330,14 +330,17 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["GPT-5.4","gpt-5.4","272K","$2.50","$15"');
     expect(marketing).toContain('["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50"');
     expect(marketing).toContain('["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00"');
+    expect(marketing).toContain('["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00"');
     expect(marketing).toContain('["Gemini 3.1 Pro Preview","gemini-3.1-pro-preview","1M","$2*","$12*"');
     expect(marketing).toContain('["Gemini 3.1 Flash-Lite","gemini-3.1-flash-lite","1M","$0.25","$1.50"');
     expect(marketing).toContain('["Gemini 2.5 Flash","gemini-2.5-flash","1M","$0.30","$2.50"');
     expect(marketing).toContain('["Gemini 2.5 Flash-Lite","gemini-2.5-flash-lite","1M","$0.10","$0.40"');
     expect(marketing).toContain('["Gemini 3.1 Flash Image (Nano Banana 2)","gemini-3.1-flash-image","128K","$0.50","$3.00"');
     for (const publicSurface of [marketing, seoModels, integrationModels, llms]) {
-      expect(publicSurface).not.toContain("gemini-3-flash-preview");
+      expect(publicSurface).toContain("gemini-3-flash-preview");
     }
+    expect(seoModels).toContain("cachedInputPerM: 0.05");
+    expect(seoModels).toContain("Supports minimal, low, medium and high thinking levels");
   });
 
   it("keeps the header, terminal, workflow hover, and wave loop regression-safe", () => {

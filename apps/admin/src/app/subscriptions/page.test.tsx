@@ -979,13 +979,20 @@ describe("таблицы флотов (smoke render с данными)", () => {
       <GeminiModelDetails
         nowMs={nowMs}
         now={nowMs / 1000}
-        models={[{ id: "gemini-3-pro", available: 1, healthy: 1, degraded: 0, unknown: 0 }]}
+        models={[{
+          id: "gemini-3-flash-preview",
+          quota_model_ids: ["gemini-3-flash", "gemini-3-flash-agent"],
+          available: 1,
+          healthy: 1,
+          degraded: 0,
+          unknown: 0,
+        }]}
         profiles={[
           {
             id: "prof-1",
             quotas: [
               {
-                model_id: "gemini-3-pro",
+                model_id: "gemini-3-flash-agent",
                 token_type: "requests",
                 remaining_fraction: 0.25,
                 remaining_amount: "250",
@@ -997,7 +1004,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
       />,
     );
     expect(plain(html)).toContain("Каталог Gemini · 1 модель");
-    expect(html).toContain("gemini-3-pro");
+    expect(html).toContain("gemini-3-flash-preview");
     expect(plain(html)).toContain("1 healthy");
     expect(html).toContain("официальная quota");
     expect(plain(html)).toContain("75%"); // использовано при 25% остатка

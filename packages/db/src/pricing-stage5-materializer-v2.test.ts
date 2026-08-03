@@ -141,15 +141,15 @@ describe("pricing Stage 5 v2 planner", () => {
   it("pins Gemini only in main while keeping OpenKeys explicit", () => {
     const { catalogs, switches } = buildStage5V2CatalogsAndSwitches();
     const googleEntries = catalogs[0].entries.filter((entry) => entry.provider_id === "google");
-    expect(googleEntries).toHaveLength(8);
-    expect(googleEntries).not.toContainEqual(expect.objectContaining({
+    expect(googleEntries).toHaveLength(9);
+    expect(googleEntries).toContainEqual(expect.objectContaining({
       canonical_model_id: "gemini-3-flash-preview",
     }));
     expect(catalogs[1].entries.some((entry) => entry.provider_id === "google")).toBe(false);
     expect(switches.entries).toContainEqual({
       provider_id: "google",
       scope: { product: { product_id: "main" } },
-      catalog_generation: 3,
+      catalog_generation: 5,
       enabled: true,
     });
     expect(switches.entries).not.toContainEqual(expect.objectContaining({
@@ -167,6 +167,10 @@ describe("pricing Stage 5 v2 planner", () => {
     const plan = buildStage5V2Plan(completePlanInput());
 
     expect(plan.blockers).toEqual([]);
+    expect(plan.capability.generation).toBe(5);
+    expect(plan.catalogs.every((catalog) => catalog.generation === 5)).toBe(true);
+    expect(plan.switches.generation).toBe(5);
+    expect(plan.policies.every((policy) => policy.policy_version === 2)).toBe(true);
     expect(plan.target.assignments).toHaveLength(4);
     expect(plan.recovery.assignments).toHaveLength(4);
     expect(plan.target.assignments.every((item) => item.funding_generation === null)).toBe(true);

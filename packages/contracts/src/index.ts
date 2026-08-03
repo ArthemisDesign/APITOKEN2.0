@@ -463,6 +463,42 @@ export const MULTI_DISCOUNT_TARGET_MAIN_CATALOG_ENTRIES = Object.freeze([
 export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
 
+/**
+ * Admitted publication capability for Gemini 3 Flash Preview. Generation 4 remains an immutable
+ * rejected artifact; generation 5 repeats the exact reviewed model set under a new identity only
+ * after the complete Pro+Ultra live matrix passed on the implementation SHA. Keeping a separate
+ * frozen list prevents a later change to CURRENT_GEMINI_CANONICAL_MODELS from rewriting this
+ * capability generation.
+ */
+export const MULTI_DISCOUNT_GEN5_GEMINI_CANONICAL_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-image",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+] as const;
+
+export const MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION = 5;
+export const MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST =
+  "sha256:v1:f4f69a2032497741a6c5b1c60e14974ddbc7b0f5992e03516f720daa6492f185";
+
+export const MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
+  ...MULTI_DISCOUNT_GEN5_GEMINI_CANONICAL_MODELS.map((canonicalModelId) => ({
+    provider_id: "google" as const,
+    canonical_model_id: canonicalModelId,
+    enabled: true as const,
+  })),
+]);
+
+/** OpenKeys remains explicit in generation 5 and does not gain Gemini models. */
+export const MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES =
+  MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
+
 export const pricingCatalogSpecSchema = z.object({
   product_id: pricingIdentifierSchema,
   generation: pricingVersionSchema,

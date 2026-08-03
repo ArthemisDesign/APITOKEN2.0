@@ -85,9 +85,11 @@ owner или отсутствующий engine account — typed blocker. Акк
 `gemini-3-flash-preview`, но не стала target после failed production gate. OpenKeys target
 по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
 Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет 1:1.
-Capability publication не является таким enablement. После failed production generation gate
-generation 4 остаётся immutable rejected artifact: Stage 5 не должен materialize или финализировать
-target/recovery plan на её digest. До новой additive capability используется generation 3.
+Capability publication не является таким enablement. Generation 4 остаётся immutable rejected
+artifact: Stage 5 не materialize и не финализирует target/recovery plan на её digest. Fresh
+Pro+Ultra live matrix разрешила additive capability generation 5; текущий materializer строит
+main/OpenKeys catalogs и switches generation 5, policy version 2 и включает Preview только в main.
+OpenKeys generation 5 остаётся без Gemini.
 
 Planner резервирует target generation и recovery generation следующего monotonic номера и строит
 immutable source/policy/assignment plan для обеих. На этой фазе balance assignments намеренно имеют
@@ -149,10 +151,10 @@ nullable; engine release и Stage 6 parent job в этом independently deliver
 
 Local plan сначала фиксируется под advisory lock с повторной проверкой commerce/service snapshot;
 та же проверка обязательна перед сохранением terminal blocker evidence. Затем consumer делает
-только dormant engine prepare для main/OpenKeys catalog generation 3, provider switches generation
-3 и каждой v2 policy, немедленно читает exact version обратно и фиксирует ACK лишь для
+только dormant engine prepare для main/OpenKeys catalog generation 5, provider switches generation
+5 и каждой policy version 2, немедленно читает exact version обратно и фиксирует ACK лишь для
 `stored|unchanged` с совпавшим digest. Materializer строит capability projection, оба каталога,
-switches, customer и service policies только на generation 3. Rejected generation 4 остаётся
+switches, customer и service policies на admitted capability generation 5. Rejected generation 4 остаётся
 compile-fixed immutable history, не входит ни в один Stage 5 target/recovery artifact и не получает
 фиктивный capability ACK. Target/recovery release prepare, recovery link и control job до Stage 6
 отсутствуют.

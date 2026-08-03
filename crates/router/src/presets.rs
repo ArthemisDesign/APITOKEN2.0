@@ -309,11 +309,19 @@ mod tests {
         let parsed = parse_manifest().unwrap();
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.presets.len(), 4);
-        assert!(parsed.models.len() >= 22);
-        assert!(parsed
+        assert!(parsed.models.len() >= 23);
+        let flash_preview = parsed
             .models
             .iter()
-            .all(|model| model.id != "google/gemini-3-flash-preview"));
+            .find(|model| model.id == "google/gemini-3-flash-preview")
+            .expect("published Flash Preview must have reviewed router ranks");
+        assert_eq!(flash_preview.price_rank, 30);
+        assert_eq!(flash_preview.latency_rank, 15);
+        assert_eq!(flash_preview.context_tokens, 1_000_000);
+        assert!(parsed
+            .presets
+            .iter()
+            .all(|preset| !preset.models.contains(&flash_preview.id)));
     }
 
     #[test]

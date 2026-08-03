@@ -466,8 +466,9 @@ export const GeminiTable = memo(function GeminiTable({
 });
 
 function modelQuotaCell(model: GeminiModel, profiles: GeminiProfile[]): ReactNode {
+  const quotaModelIds = new Set([model.id, ...(model.quota_model_ids ?? [])].filter(Boolean));
   const quotaProfiles = profiles
-    .map((profile) => (profile.quotas ?? []).filter((quota) => quota.model_id === model.id))
+    .map((profile) => (profile.quotas ?? []).filter((quota) => quotaModelIds.has(quota.model_id)))
     .filter((quotas) => quotas.length > 0);
   const profileFractions = quotaProfiles
     .map((quotas) =>
@@ -521,11 +522,12 @@ export const GeminiModelDetails = memo(function GeminiModelDetails({
           <tbody>
             {models.length ? (
               models.map((model, index) => {
+                const quotaModelIds = new Set([model.id, ...(model.quota_model_ids ?? [])].filter(Boolean));
                 const healthy = Number(model.healthy || 0);
                 const degraded = Number(model.degraded || 0);
                 const unknown = Number(model.unknown || 0);
                 const resets = profiles
-                  .flatMap((profile) => (profile.quotas ?? []).filter((quota) => quota.model_id === model.id))
+                  .flatMap((profile) => (profile.quotas ?? []).filter((quota) => quotaModelIds.has(quota.model_id)))
                   .map((quota) => Date.parse(quota.reset_time ?? "") / 1000)
                   .filter((reset) => Number.isFinite(reset) && reset > 0);
                 const nearestReset = resets.length ? Math.min(...resets) : 0;

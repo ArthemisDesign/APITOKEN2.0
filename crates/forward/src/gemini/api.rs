@@ -1233,9 +1233,9 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
 
 fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
     if model.id != "gemini-3-flash-preview" && has_inline_audio_data(body) {
-        // Current published subscription routes collapse audio into generic prompt tokens and
-        // omit promptTokensDetails[AUDIO]. Only the dormant Flash Preview route has a bounded
-        // exact PCM WAV fallback; every other model must reject audio before provider dispatch.
+        // Current published subscription routes other than Flash Preview collapse audio into
+        // generic prompt tokens and omit promptTokensDetails[AUDIO]. Only Flash Preview has a
+        // bounded exact PCM WAV fallback; every other model must reject audio before dispatch.
         return Err(ApiError::invalid(
             "Audio input is not available through this subscription gateway.",
         ));

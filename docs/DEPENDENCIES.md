@@ -291,13 +291,13 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 `docs/CHANGE_CHECKLISTS.md`):
 
 - `packages/contracts` — `CURRENT_*_CANONICAL_MODELS`, catalog generations и pricing release
-  schemas. Frozen dormant capability generation 3 сохраняет исходный main
-  Anthropic/OpenAI/Gemini set. Immutable generation 4 исторически добавила
+  schemas. Frozen capability generation 3 сохраняет исходный main Anthropic/OpenAI/Gemini set.
+  Immutable generation 4 исторически добавила
   `gemini-3-flash-preview` (`google` — internal engine provider id), но gate старого public wire дал
   404, поэтому generation 4 остаётся rejected/dormant и не может быть материализована или
-  активирована; её digest не переписывается. Новая dormant private-wire implementation не меняет
-  этот исторический контракт: публикация после exact-SHA live gate потребует следующую additive
-  capability generation. OpenKeys target set остаётся явным Anthropic/OpenAI subset.
+  активирована; её digest не переписывается. После complete fresh exact-implementation Pro+Ultra
+  gate admitted generation 5 повторяет reviewed set под новым digest; Stage 5 main catalog включает
+  Preview. OpenKeys generation 5 остаётся явным Anthropic/OpenAI subset.
   `B2C_PRICING_TIERS` — cleanup target, не authority нового pricing.
 - `apps/web/src/lib/models.ts` — захардкоженный SEO-каталог моделей с официальными ценами;
   шапка файла требует синхронизации с `crates/metering/src/{codex,gemini}.rs`.

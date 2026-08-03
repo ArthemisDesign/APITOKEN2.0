@@ -407,9 +407,10 @@ fn gemini_config() -> Option<GeminiConfig> {
         // Public Gemini 3 ids require reviewed canonical→private tier routing. A model enters this
         // production default only after generate + native stream + countTokens pass on every
         // supported thinking level of the current subscription profile. In particular, 2.5 Pro
-        // and 3 Flash Preview advertise quota but generation remains unavailable/not found;
-        // quota evidence and countTokens alone never enable a model.
-        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
+        // still advertises quota without a working generation route. Gemini 3 Flash
+        // Preview entered this default only after the exact implementation passed generation,
+        // terminal usage, incremental SSE, cache, audio and tool controls on Pro and Ultra.
+        "gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite",
     )
     .split(',')
     .map(str::trim)
@@ -1148,8 +1149,8 @@ mod tests {
     #[test]
     fn pricing_shadow_manifest_is_fixed_registry_canonical_evidence() {
         let manifest = pricing_shadow_runtime_manifest();
-        assert_eq!(manifest.manifest_generation(), 4);
-        assert_eq!(manifest.capabilities().len(), 4);
+        assert_eq!(manifest.manifest_generation(), 5);
+        assert_eq!(manifest.capabilities().len(), 5);
         for (index, generation, digest) in [
             (
                 0,
@@ -1170,6 +1171,11 @@ mod tests {
                 3,
                 4,
                 "sha256:v1:10802bdb863c116518820df4f662b74d9a48d59db51dd1d2da2a1e8ff08dfab2",
+            ),
+            (
+                4,
+                5,
+                "sha256:v1:f4f69a2032497741a6c5b1c60e14974ddbc7b0f5992e03516f720daa6492f185",
             ),
         ] {
             assert_eq!(

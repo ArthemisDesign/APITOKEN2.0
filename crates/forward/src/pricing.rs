@@ -29,9 +29,9 @@ mod shadow;
 /// The manifest lists every reviewed capability generation side by side: generation 1 (the active
 /// production authority), generation 2 (`claude-opus-5` + `claude-fable-5`), frozen dormant
 /// generation 3 (the original tariff-pinned Gemini model set under engine provider id `google`),
-/// and rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview). Generation 4 is
-/// retained only because its digest is immutable; its failed live generation gate forbids catalog
-/// materialization or activation, and future admission requires a new capability generation.
+/// rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview), and admitted
+/// generation 5 after that model passed the complete Pro+Ultra publication gate. Generation 4 is
+/// retained only because its digest is immutable and must never be materialized or activated.
 /// Adding a member is inert — resolution keeps accepting the currently active pins until commerce
 /// materializes and the global release flow later activates a new catalog — and is required before
 /// preparation, because the resolver fails closed on any catalog/switch capability outside this
@@ -54,6 +54,10 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
             4,
             "sha256:v1:10802bdb863c116518820df4f662b74d9a48d59db51dd1d2da2a1e8ff08dfab2",
         ),
+        (
+            5,
+            "sha256:v1:f4f69a2032497741a6c5b1c60e14974ddbc7b0f5992e03516f720daa6492f185",
+        ),
     ]
     .into_iter()
     .map(|(capability_generation, capability_digest)| {
@@ -65,7 +69,7 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
         .expect("built-in pricing evaluator capability is valid")
     })
     .collect();
-    PricingRuntimeManifestEvidence::new(4, capabilities)
+    PricingRuntimeManifestEvidence::new(5, capabilities)
         .expect("built-in pricing evaluator manifest is valid")
 }
 

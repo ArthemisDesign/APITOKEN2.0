@@ -4,6 +4,11 @@ import {
   MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION,
   MULTI_DISCOUNT_GEN3_GEMINI_CANONICAL_MODELS,
   MULTI_DISCOUNT_GEN3_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN5_GEMINI_CANONICAL_MODELS,
+  MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST,
@@ -48,7 +53,7 @@ describe("target pricing capability", () => {
     return { digest: stage5Digest("capability", capability), entries };
   };
 
-  it("keeps generation 3 immutable and publishes reviewed generation 4", () => {
+  it("keeps rejected generations immutable and publishes admitted generation 5", () => {
     expect(MULTI_DISCOUNT_GEN3_GEMINI_CANONICAL_MODELS).toEqual([
       "gemini-2.5-flash",
       "gemini-2.5-flash-lite",
@@ -83,6 +88,15 @@ describe("target pricing capability", () => {
     );
     expect(generation4.entries).toHaveLength(21);
     expect(generation4.digest).toBe(MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST);
+
+    expect(MULTI_DISCOUNT_GEN5_GEMINI_CANONICAL_MODELS).toEqual(CURRENT_GEMINI_CANONICAL_MODELS);
+    const generation5 = capabilityDigest(
+      MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+      MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
+    );
+    expect(generation5.entries).toHaveLength(21);
+    expect(generation5.digest).toBe(MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST);
+    expect(generation5.digest).not.toBe(MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST);
   });
 
   it("does not silently add Gemini to the OpenKeys catalog", () => {
@@ -90,21 +104,25 @@ describe("target pricing capability", () => {
       .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
+    expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
+      .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
+    expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
+      .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
   });
 
-  it("keeps Stage 5 target and recovery materialization on admitted generation 3", () => {
+  it("moves Stage 5 target and recovery materialization to admitted generation 5", () => {
     const capability = buildStage5V2Capability();
     const graph = buildStage5V2CatalogsAndSwitches();
 
     expect(capability).toMatchObject({
-      generation: MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION,
-      content_digest: MULTI_DISCOUNT_GEN3_CAPABILITY_DIGEST,
+      generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+      content_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
     });
     expect(graph.catalogs.every((catalog) =>
-      catalog.capability_generation === MULTI_DISCOUNT_GEN3_CAPABILITY_GENERATION
-      && catalog.capability_digest === MULTI_DISCOUNT_GEN3_CAPABILITY_DIGEST
+      catalog.capability_generation === MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION
+      && catalog.capability_digest === MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST
     )).toBe(true);
     expect(graph.catalogs.find((catalog) => catalog.product_id === "main")?.entries)
-      .not.toContainEqual(expect.objectContaining({ canonical_model_id: "gemini-3-flash-preview" }));
+      .toContainEqual(expect.objectContaining({ canonical_model_id: "gemini-3-flash-preview" }));
   });
 });

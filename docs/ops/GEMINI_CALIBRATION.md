@@ -79,11 +79,12 @@ Backend estimator остаётся workload-dependent: он оценивает A
   неблокирующее `unavailable_capabilities` — заранее пропущенный без generation Search с
   документированно неограниченным per-query fanout (`blocking=false`,
   `skipped_before_dispatch=true`).
-- Published Gemini subscription routes intentionally reject inline audio before provider dispatch:
-  live Antigravity usage collapses it into generic prompt tokens, while free `countTokens` returns
-  only a total. Dormant Flash Preview is the sole bounded exception: strict integral-duration PCM
-  WAV generation may use its reviewed 32-token/second fallback, but every ambiguous format/cache
-  split remains blocking rather than pricing the higher audio SKU as text or guessing.
+- Published Gemini subscription routes other than Flash Preview intentionally reject inline audio
+  before provider dispatch: live Antigravity usage collapses it into generic prompt tokens, while
+  free `countTokens` returns only a total. Published Flash Preview is the sole bounded exception:
+  strict integral-duration PCM WAV generation may use its reviewed 32-token/second fallback, but
+  every ambiguous format/cache split remains blocking rather than pricing the higher audio SKU as
+  text or guessing.
 - Cache payload содержит уникальный `run_id` и стабильный порядковый profile scope; write/read пары
   одного профиля байт-в-байт одинаковы, но другой профиль или запуск не может принять чужую cache
   warmth за свою. Scope не содержит raw profile id или provider identity. Каждая replay-группа

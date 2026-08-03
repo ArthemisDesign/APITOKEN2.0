@@ -245,16 +245,15 @@ Engine хранит prepared releases и один active release head. Подг�
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
-Compile-fixed pricing runtime manifest заранее, отдельным producer-first checkpoint, принимает
-frozen capability generation 3 и additive generation 4, которая добавляет
-`gemini-3-flash-preview` к точному Anthropic/OpenAI/Gemini model set. Это только разрешает
-подготовить pinned catalog/release identities: публикация capability не двигает catalog,
-switches, account policies или release head и потому не меняет live traffic. Внутренний provider
-ID Gemini в pricing authority — `google`; продуктовые документы продолжают называть провайдера
-Gemini. Generation 4 теперь является immutable rejected artifact: production live generation
-вернул 404 без usage, поэтому её digest сохраняется для исторической воспроизводимости, но catalog,
-policy и release, которые ссылаются на generation 4, нельзя materialize или activate. Рабочим
-target остаётся generation 3 до отдельной новой additive capability после полного live gate.
+Compile-fixed pricing runtime manifest принимает frozen capability generations 3 и 4, а также
+admitted generation 5. Generation 4 исторически добавила `gemini-3-flash-preview`, но её старый
+public-wire live gate вернул 404 без usage: digest сохраняется для воспроизводимости, а catalog,
+policy и release на generation 4 нельзя materialize или activate. После полного fresh Pro+Ultra
+gate generation 5 повторяет точный reviewed Anthropic/OpenAI/Gemini model set под новым digest.
+Stage 5 materializer использует capability, main catalog и switches generation 5 и policy version
+2; это подготавливает новые immutable identities, но само по себе не двигает release head.
+Внутренний provider ID Gemini в pricing authority — `google`; продуктовые документы продолжают
+называть провайдера Gemini. OpenKeys catalog generation 5 сохраняет явный Anthropic/OpenAI subset.
 
 Все три migration surfaces пусты и dormant: наличие таблиц не создаёт policy, release head,
 funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных

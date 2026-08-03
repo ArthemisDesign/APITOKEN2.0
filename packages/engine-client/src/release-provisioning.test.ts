@@ -8,6 +8,8 @@ import type {
 } from "@claude-api/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildOpenKeysPricingReleasePolicyV2,
+  buildServicePricingReleasePolicyV2,
   ensureOpenKeysPricingReleaseProvisioningV2,
   ensureServicePricingReleaseProvisioningV2,
   type PricingReleaseProvisioningTransportV2,
@@ -196,6 +198,21 @@ function fakeTransport(contexts: PricingReleaseProvisioningContextV2[]) {
 }
 
 describe("release-v2 external-owner provisioning", () => {
+  it("versions external-owner policies by admitted capability generation", () => {
+    expect(buildOpenKeysPricingReleasePolicyV2(targetContext()).policy_version).toBe(1);
+    expect(buildServicePricingReleasePolicyV2(targetContext(), "worker").policy_version).toBe(1);
+
+    const generation5 = targetContext();
+    generation5.active_release = { ...generation5.active_release, capability_generation: 5 };
+    expect(buildOpenKeysPricingReleasePolicyV2(generation5).policy_version).toBe(2);
+    expect(buildServicePricingReleasePolicyV2(generation5, "worker").policy_version).toBe(2);
+
+    const rejected = targetContext();
+    rejected.active_release = { ...rejected.active_release, capability_generation: 4 };
+    expect(() => buildOpenKeysPricingReleasePolicyV2(rejected))
+      .toThrow("pricing_release_rejected_capability_generation");
+  });
+
   it("normalizes OpenKeys funding and stores the exact target/recovery pair", async () => {
     const state = fakeTransport([targetContext()]);
     await expect(ensureOpenKeysPricingReleaseProvisioningV2(state.engine, {

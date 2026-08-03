@@ -769,21 +769,19 @@ Consumer-контракт и нормализация трёх native shapes о�
    `/usr/bin/node` v24.18.0 Linux/x64 + SHA-256, native OpenSSL, HTTP/1.1 и authenticated CONNECT.
    Новые profiles обычно используют live-проверенный Antigravity 2.2.1 UA,
    `Go-http-client/2.0` refresh и reviewed bounded Antigravity
-   `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Dormant route
+   `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Published route
    `gemini-3-flash-preview` использует тот же 2.2.1 UA, но без старых IDE
    `Client-Metadata`/`x-goog-api-client`: именно этот минимальный tuple дал owned generation 2xx на
-   private wire `gemini-3-flash`. Exact-SHA gate 2026-08-03 прошёл thinking/SSE/cache на Pro+Ultra,
-   но остановился на audio generation без authoritative audio token class; free `countTokens` тоже
-   не дал modality breakdown. Следующий dormant candidate устраняет именно этот blocker только для
-   inline PCM WAV: официальный exact rate 32 tokens/second применяется лишь при длительности,
-   кратной 1/32 секунды, а неоднозначный partial-cache split fail-closed. Это ещё не live evidence:
-   publication по-прежнему withdrawn, production/public allowlist модель не содержит до нового
-   полного GREEN exact-SHA gate. Остальные модели и background quota/health сохраняют полный
-   live-проверенный tuple.
+   private wire `gemini-3-flash`. Fresh exact-implementation gate 2026-08-03 завершил все 22
+   Pro+Ultra turns: minimal/low/medium/high, incremental SSE, profile-local cache
+   `write → prime → read`, fresh/replayed exact PCM WAV и forced tools. PCM fallback применяет
+   официальный exact rate 32 tokens/second лишь при длительности, кратной 1/32 секунды, а
+   неоднозначный partial-cache split остаётся fail-closed. Модель входит в production/public
+   allowlist; остальные модели и background quota/health сохраняют полный live-проверенный tuple.
    Старые Gemini CLI credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
-   Antigravity text, включая dormant `gemini-3-flash-preview`, сохраняет live-verified configured
+   Antigravity text, включая published `gemini-3-flash-preview`, сохраняет live-verified configured
    endpoint; owned private-wire probe прошёл на production-configured sandbox daily origin. Image
    generation всегда идёт на
    production `cloudcode-pa.googleapis.com`, как официальный LS: sandbox публикует image quota row,
@@ -819,15 +817,14 @@ Consumer-контракт и нормализация трёх native shapes о�
    Public Gemini разрешает пустой/пропущенный `contents[].role`; для строгого private Antigravity
    wire wrapper выводит только такие роли чередованием `user`/`model`, не переписывая явные значения.
    Публичный model ceiling 65,536 сохраняется, но Antigravity wire `maxOutputTokens` ограничен 65,535.
-   Canonical Gemini 3 model id отдельно от private effort/quota id: dormant support для
+   Canonical Gemini 3 model id отдельно от private effort/quota id: published support для
    3 Flash Preview отображает public `gemini-3-flash-preview` в live-проверенный private wire
    `gemini-3-flash`, а quota admission консервативно связывает обе наблюдаемые строки
-   `gemini-3-flash`/`gemini-3-flash-agent` до точной атрибуции debit. Production allowlist не
-   публикует route: прошлый exact-SHA gate дал blocking miss на audio token attribution. Dormant
-   fallback принимает только inline PCM WAV с интегральным `duration × 32`, сохраняет любой
+   `gemini-3-flash`/`gemini-3-flash-agent` до точной атрибуции debit. Production allowlist публикует
+   route после полного GREEN Pro+Ultra gate. Fallback принимает только inline PCM WAV с
+   интегральным `duration × 32`, сохраняет любой
    provider `promptTokensDetails[AUDIO]` как authority и достраивает отсутствующий split только при
-   доказуемом cache-разделении (`cached=0`, `cached=prompt` либо explicit cached AUDIO). Нужен новый
-   полный GREEN gate на exact fix SHA. 3.6 Flash выбирает
+   доказуемом cache-разделении (`cached=0`, `cached=prompt` либо explicit cached AUDIO). 3.6 Flash выбирает
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
    Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,
@@ -866,7 +863,7 @@ Consumer-контракт и нормализация трёх native shapes о�
    `candidatesTokensDetails[IMAGE]` использует provider split;
    если private Antigravity отдаёт только aggregate candidates, реально доставленный `inlineData`
    выделяет официальный fixed token SKU requested size, а остаток остаётся text/thinking. Refusal
-   без image не получает media charge. Dormant Flash Preview audio fallback не угадывает
+   без image не получает media charge. Published Flash Preview audio fallback не угадывает
    fractional duration, compressed/file audio или partial cache: такие запросы/usage отклоняются,
    а реконструированный exact AUDIO row попадает и в public usageMetadata, и в тот же Rust metering.
    Metered non-stream без authoritative usage не доставляется и refund-ится; stream после первого
