@@ -13,11 +13,13 @@ pub mod funding_normalization_v2;
 mod funding_v2;
 pub mod pg;
 pub mod pricing;
+mod glm_calibration;
 mod kimi_calibration;
 mod provider_calibration;
 pub mod stage8;
 
 pub use funding_normalization_v2::*;
+pub use glm_calibration::*;
 pub use kimi_calibration::*;
 
 /// Column order shared by every KIMI calibration read. One list keeps SELECT and the row mapper
@@ -72,6 +74,88 @@ pub fn validate_kimi_calibration_pair(
         || state.window_duration_secs != observation.window_duration_secs
     {
         bail!("KIMI calibration state and observation describe different windows");
+    }
+    Ok(())
+}
+
+/// Column order shared by every GLM calibration read. One list keeps SELECT and the row mapper
+/// from drifting apart, which is the classic source of silently shifted columns.
+pub const GLM_CALIBRATION_COLUMNS: &str = "subject_id,plan,window_duration_secs,reset_at,\
+anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_api_nanousd,\
+anchor_spend_native_microcredits,used_fraction_units,measurement_resolution_fraction_units,\
+observed_at,native_limit_microcredits,native_used_microcredits,observed_fraction_units,\
+observed_spend_api_nanousd,observed_spend_native_microcredits,samples,\
+unattributed_fraction_units,current_capacity_nanousd,current_low_nanousd,current_high_nanousd,\
+current_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
+
+/// Validate a GLM calibration row read back from the authority.
+///
+/// A stored row that violates its own invariants is refused rather than served: publishing a
+/// capacity built on an impossible row would be worse than publishing nothing. Fraction legs
+/// and the native window halves are nullable because the quota endpoint's units are unproven —
+/// but a present half must be sane, and the fraction/resolution pair must move together.
+pub fn validate_glm_calibration_row(row: &GlmCalibrationRow) -> Result<()> {
+    if row.subject_id.is_empty() || row.plan.is_empty() {
+        bail!("GLM calibration row has no identity");
+    }
+    if row.window_duration_secs <= 0 {
+        bail!("GLM calibration row has an invalid window duration");
+    }
+    if row.native_limit_microcredits.is_some_and(|limit| limit <= 0)
+        || row.native_used_microcredits.is_some_and(|used| used < 0)
+        || match (row.native_used_microcredits, row.native_limit_microcredits) {
+            (Some(used), Some(limit)) => used > limit,
+            _ => false,
+        }
+    {
+        bail!("GLM calibration row has an invalid quota window");
+    }
+    if let Some(fraction) = row.used_fraction_units {
+        if !(0..=GLM_FRACTION_SCALE).contains(&fraction) {
+            bail!("GLM calibration row fraction is out of range");
+        }
+    }
+    if let Some(resolution) = row.measurement_resolution_fraction_units {
+        if !(1..=GLM_FRACTION_SCALE).contains(&resolution) {
+            bail!("GLM calibration row resolution is out of range");
+        }
+    }
+    if row.used_fraction_units.is_some() != row.measurement_resolution_fraction_units.is_some()
+    {
+        bail!("GLM calibration row fraction and resolution must move together");
+    }
+    if row.anchor_used_fraction_units.is_some()
+        != row.anchor_resolution_fraction_units.is_some()
+    {
+        bail!("GLM calibration row anchor fraction and resolution must move together");
+    }
+    match (
+        row.current_low_nanousd,
+        row.current_high_nanousd,
+        row.current_capacity_nanousd,
+    ) {
+        (Some(_), _, None) | (_, Some(_), None) => {
+            bail!("GLM calibration row has bounds without a capacity")
+        }
+        (Some(low), Some(high), _) if low > high => {
+            bail!("GLM calibration row bounds are inverted")
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validate that a state row and the observation about to advance it describe the same window.
+pub fn validate_glm_calibration_pair(
+    state: &GlmCalibrationRow,
+    observation: &GlmWindowObservation,
+) -> Result<()> {
+    validate_glm_calibration_row(state)?;
+    if state.subject_id != observation.subject_id
+        || state.plan != observation.plan
+        || state.window_duration_secs != observation.window_duration_secs
+    {
+        bail!("GLM calibration state and observation describe different windows");
     }
     Ok(())
 }
@@ -3682,6 +3766,10 @@ pub const PROVIDER_GOOGLE: &str = "google";
 /// Backend-only Kimi Code subscription pool. It shares the Anthropic public wire but keeps a
 /// distinct settlement attribution so Claude and KIMI economics can never be blended.
 pub const PROVIDER_KIMI: &str = "kimi";
+/// Backend-only GLM (Zhipu AI / Z.ai) Coding Plan subscription pool. It shares the Anthropic
+/// public wire but keeps a distinct settlement attribution and dual-ledger calibration so GLM
+/// economics can never be blended with any other provider.
+pub const PROVIDER_GLM: &str = "glm";
 
 fn default_provider() -> String {
     PROVIDER_ANTHROPIC.to_string()

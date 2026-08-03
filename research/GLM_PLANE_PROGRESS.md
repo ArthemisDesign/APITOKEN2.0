@@ -27,12 +27,14 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Скелет capability manifest + ledger | `docs/engine/GLM_PROVIDER.md`, этот файл | 03cf2582 |
 | Шаблон цепочки + pre-flight в ledger | этот файл | faf8c25a |
 | Полный research + capability manifest | `docs/engine/GLM_PROVIDER.md` | 2938d61e |
-| Metering: API rate card + credit schedule | `crates/metering/src/glm.rs` | _этот коммит_ |
+| Metering: API rate card + credit schedule | `crates/metering/src/glm.rs` | 9cc4a955 |
+| Migration 0029 + registry observation types | `crates/registry/{migrations_pg/0029_glm_window_calibration.sql,src/glm_calibration.rs,src/pg.rs}` | _этот коммит_ |
 
 ## Открытые швы
 
-- Нет. Research замкнут: все load-bearing факты имеют official/oss-метки, unknowns перечислены
-  в манифесте §6.
+- Нет. Authority запечатана expand-only миграцией 0029 (schema 28→29), стоит рядом с 0019
+  и 0027, ничего чужого не трогает. Зависимый код (credential/estimator/runtime) мёржится
+  только после зелёных deploy/migration + deploy/watchdog на SHA миграции.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
@@ -47,9 +49,9 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Миграция: `crates/registry/migrations_pg/0029_glm_window_calibration.sql` + типы
-`src/glm_calibration.rs` + регистрация в `pg.rs` (schema version 28→29) — код готов,
-тесты зелёные (170/170 incl. real-PG matrix в scratch-БД), коммит отдельным изменением.
+Мёрж metering + migration через `git push -u origin HEAD && ./deploy/agent-merge.sh`;
+дождаться зелёного deploy/watchdog (в т.ч. deploy/migration на SHA миграции). Затем
+credential crate `crates/glm-credential` по образцу `crates/kimi-credential`.
 
 ## Очередь
 

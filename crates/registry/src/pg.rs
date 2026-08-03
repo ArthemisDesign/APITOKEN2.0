@@ -8,7 +8,8 @@ use crate::{
     AnthropicWindowObservation, BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend,
     CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
     GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
-    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
+    GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
+    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
     KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution,
     LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
@@ -176,9 +177,11 @@ const MIGRATION_0027: &str =
     include_str!("../migrations_pg/0027_kimi_window_calibration.sql");
 const MIGRATION_0028: &str =
     include_str!("../migrations_pg/0028_pricing_ledger_release_v2_attribution.sql");
+const MIGRATION_0029: &str =
+    include_str!("../migrations_pg/0029_glm_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 28;
+pub const CURRENT_SCHEMA_VERSION: i64 = 29;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -210,6 +213,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (26, MIGRATION_0026),
     (27, MIGRATION_0027),
     (28, MIGRATION_0028),
+    (29, MIGRATION_0029),
 ];
 
 #[cfg(test)]
@@ -5535,6 +5539,379 @@ impl PgStore {
         Ok(Some(next_version))
     }
 
+    fn glm_calibration_row(row: &Row) -> GlmCalibrationRow {
+        GlmCalibrationRow {
+            subject_id: row.get(0),
+            plan: row.get(1),
+            window_duration_secs: row.get(2),
+            reset_at: row.get(3),
+            anchor_used_fraction_units: row.get(4),
+            anchor_resolution_fraction_units: row.get(5),
+            anchor_spend_api_nanousd: row.get(6),
+            anchor_spend_native_microcredits: row.get(7),
+            used_fraction_units: row.get(8),
+            measurement_resolution_fraction_units: row.get(9),
+            observed_at: row.get(10),
+            native_limit_microcredits: row.get(11),
+            native_used_microcredits: row.get(12),
+            observed_fraction_units: row.get(13),
+            observed_spend_api_nanousd: row.get(14),
+            observed_spend_native_microcredits: row.get(15),
+            samples: row.get(16),
+            unattributed_fraction_units: row.get(17),
+            current_capacity_nanousd: row.get(18),
+            current_low_nanousd: row.get(19),
+            current_high_nanousd: row.get(20),
+            current_confidence_bp: row.get(21),
+            last_measured_at: row.get(22),
+            estimator_version: row.get(23),
+            version: row.get(24),
+            updated_ts: row.get(25),
+        }
+    }
+
+    pub fn load_glm_calibration(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Option<GlmCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM glm_window_calibrations \
+                 WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3",
+                crate::GLM_CALIBRATION_COLUMNS
+            ),
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        let row = row.as_ref().map(Self::glm_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_glm_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_glm_calibrations(&mut self) -> Result<Vec<GlmCalibrationRow>> {
+        let rows = self.client.query(
+            &format!(
+                "SELECT {} FROM glm_window_calibrations \
+                 ORDER BY plan, window_duration_secs, subject_id",
+                crate::GLM_CALIBRATION_COLUMNS
+            ),
+            &[],
+        )?;
+        let rows: Vec<GlmCalibrationRow> = rows.iter().map(Self::glm_calibration_row).collect();
+        for row in &rows {
+            crate::validate_glm_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    /// Immutable observation history for one window, oldest first.
+    ///
+    /// This is what an estimator-version change rebuilds from: a stored derived value is never
+    /// authority, so the raw rows must remain readable in order.
+    pub fn load_glm_window_observations(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Vec<GlmWindowObservation>> {
+        let rows = self.client.query(
+            "SELECT subject_id,plan,window_duration_secs,reset_at,observed_at,\
+             native_used_units,native_limit_units,native_remaining_units,percentage_raw,\
+             used_fraction_units,measurement_resolution_fraction_units,cumulative_api_nanousd,\
+             cumulative_native_microcredits,observation_source,source_request_id \
+             FROM glm_window_observations \
+             WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3 \
+             ORDER BY observed_at, id",
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| GlmWindowObservation {
+                subject_id: row.get(0),
+                plan: row.get(1),
+                window_duration_secs: row.get(2),
+                reset_at: row.get(3),
+                observed_at: row.get(4),
+                native_used_units: row.get(5),
+                native_limit_units: row.get(6),
+                native_remaining_units: row.get(7),
+                percentage_raw: row.get(8),
+                used_fraction_units: row.get(9),
+                measurement_resolution_fraction_units: row.get(10),
+                cumulative_api_nanousd: row.get(11),
+                cumulative_native_microcredits: row.get(12),
+                observation_source: row.get(13),
+                source_request_id: row.get(14),
+            })
+            .collect())
+    }
+
+    /// Persist one priced turn and advance the subject's cumulative dual ledgers in the same
+    /// transaction.
+    ///
+    /// The pairing is the whole point: a quota observation read afterwards must never see a
+    /// window total that its own traffic has not yet been added to, or the estimator would
+    /// attribute our spend to somebody else's movement. API nanoUSD and native microcredits
+    /// advance together here, but remain two independent exact sums — one is never derived
+    /// from the other.
+    ///
+    /// Returns `Ok(true)` for a fresh insert and `Ok(false)` when the exact same payload was
+    /// already stored — the internal request id survives every pre-byte retry, so replay must
+    /// be a no-op. A *different* payload under that id is an error, never an update:
+    /// overwriting would silently rewrite priced history.
+    pub fn record_glm_turn(&mut self, event: &GlmTurnCalibrationEvent) -> Result<bool> {
+        event.validate()?;
+        let mut tx = self.client.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO glm_turn_calibration_events(request_id,subject_id,plan,requested_model,\
+             served_model,context_mode,reasoning_effort,api_tariff_schedule_id,\
+             credit_schedule_id,priced_ts,completed_at,fresh_input_tokens,cached_input_tokens,\
+             cache_write_tokens,output_tokens,reasoning_tokens,api_fresh_input_nanousd,\
+             api_cached_input_nanousd,api_output_nanousd,api_total_nanousd,\
+             native_fresh_input_microcredits,native_cached_input_microcredits,\
+             native_output_microcredits,native_total_microcredits,off_peak) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,\
+             $22,$23,$24,$25) \
+             ON CONFLICT(request_id) DO NOTHING",
+            &[
+                &event.request_id,
+                &event.subject_id,
+                &event.plan,
+                &event.requested_model,
+                &event.served_model,
+                &event.context_mode,
+                &event.reasoning_effort,
+                &event.api_tariff_schedule_id,
+                &event.credit_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.fresh_input_tokens,
+                &event.cached_input_tokens,
+                &event.cache_write_tokens,
+                &event.output_tokens,
+                &event.reasoning_tokens,
+                &event.api_fresh_input_nanousd,
+                &event.api_cached_input_nanousd,
+                &event.api_output_nanousd,
+                &event.api_total_nanousd,
+                &event.native_fresh_input_microcredits,
+                &event.native_cached_input_microcredits,
+                &event.native_output_microcredits,
+                &event.native_total_microcredits,
+                &event.off_peak,
+            ],
+        )? == 1;
+        if !inserted {
+            // `ON CONFLICT` serializes two simultaneous ambiguous replies on the immutable key.
+            // Once the winner commits, the loser reads its row and can distinguish an exact
+            // replay from a semantic conflict without ever advancing spend twice.
+            let row = tx.query_one(
+                "SELECT subject_id,plan,requested_model,served_model,context_mode,\
+                 reasoning_effort,api_tariff_schedule_id,credit_schedule_id,priced_ts,\
+                 completed_at,fresh_input_tokens,cached_input_tokens,cache_write_tokens,\
+                 output_tokens,reasoning_tokens,api_fresh_input_nanousd,api_cached_input_nanousd,\
+                 api_output_nanousd,api_total_nanousd,native_fresh_input_microcredits,\
+                 native_cached_input_microcredits,native_output_microcredits,\
+                 native_total_microcredits,off_peak \
+                 FROM glm_turn_calibration_events WHERE request_id=$1",
+                &[&event.request_id],
+            )?;
+            let stored = GlmTurnCalibrationEvent {
+                request_id: event.request_id.clone(),
+                subject_id: row.get(0),
+                plan: row.get(1),
+                requested_model: row.get(2),
+                served_model: row.get(3),
+                context_mode: row.get(4),
+                reasoning_effort: row.get(5),
+                api_tariff_schedule_id: row.get(6),
+                credit_schedule_id: row.get(7),
+                priced_ts: row.get(8),
+                completed_at: row.get(9),
+                fresh_input_tokens: row.get(10),
+                cached_input_tokens: row.get(11),
+                cache_write_tokens: row.get(12),
+                output_tokens: row.get(13),
+                reasoning_tokens: row.get(14),
+                api_fresh_input_nanousd: row.get(15),
+                api_cached_input_nanousd: row.get(16),
+                api_output_nanousd: row.get(17),
+                api_total_nanousd: row.get(18),
+                native_fresh_input_microcredits: row.get(19),
+                native_cached_input_microcredits: row.get(20),
+                native_output_microcredits: row.get(21),
+                native_total_microcredits: row.get(22),
+                off_peak: row.get(23),
+            };
+            if !event.is_exact_replay_of(&stored) {
+                return Err(crate::GlmTurnReplayConflict.into());
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "INSERT INTO glm_calibration_subject_spend(subject_id,spent_api_nanousd,\
+             spent_native_microcredits,tracking_started_ts,updated_ts) VALUES($1,$2,$3,$4,$4) \
+             ON CONFLICT(subject_id) DO UPDATE SET \
+             spent_api_nanousd=glm_calibration_subject_spend.spent_api_nanousd\
+                 +EXCLUDED.spent_api_nanousd, \
+             spent_native_microcredits=glm_calibration_subject_spend.spent_native_microcredits\
+                 +EXCLUDED.spent_native_microcredits, \
+             tracking_started_ts=LEAST(\
+                 glm_calibration_subject_spend.tracking_started_ts,EXCLUDED.tracking_started_ts), \
+             updated_ts=GREATEST(\
+                 glm_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
+            &[
+                &event.subject_id,
+                &event.api_total_nanousd,
+                &event.native_total_microcredits,
+                &event.completed_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Cumulative dual ledgers for a subject, or zeroes when nothing is tracked.
+    pub fn glm_subject_spend(&mut self, subject_id: &str) -> Result<GlmSubjectSpend> {
+        let row = self.client.query_opt(
+            "SELECT spent_api_nanousd,spent_native_microcredits \
+             FROM glm_calibration_subject_spend WHERE subject_id=$1",
+            &[&subject_id],
+        )?;
+        Ok(row
+            .map(|row| GlmSubjectSpend {
+                spent_api_nanousd: row.get(0),
+                spent_native_microcredits: row.get(1),
+            })
+            .unwrap_or_default())
+    }
+
+    /// Store an immutable observation and the estimator state it produced, under a CAS on
+    /// `version`.
+    ///
+    /// The observation row is inserted first and is idempotent by its own unique constraint,
+    /// so a duplicate poll adds no sample. Returns the new version, or `None` when the CAS
+    /// lost — a lost CAS means another writer advanced the same window and this caller must
+    /// re-read rather than overwrite.
+    pub fn save_glm_calibration(
+        &mut self,
+        state: &GlmCalibrationRow,
+        observation: &GlmWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_glm_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        tx.execute(
+            "INSERT INTO glm_window_observations(subject_id,plan,window_duration_secs,reset_at,\
+             observed_at,native_used_units,native_limit_units,native_remaining_units,\
+             percentage_raw,used_fraction_units,measurement_resolution_fraction_units,\
+             cumulative_api_nanousd,cumulative_native_microcredits,observation_source,\
+             source_request_id,estimator_version) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) \
+             ON CONFLICT DO NOTHING",
+            &[
+                &observation.subject_id,
+                &observation.plan,
+                &observation.window_duration_secs,
+                &observation.reset_at,
+                &observation.observed_at,
+                &observation.native_used_units,
+                &observation.native_limit_units,
+                &observation.native_remaining_units,
+                &observation.percentage_raw,
+                &observation.used_fraction_units,
+                &observation.measurement_resolution_fraction_units,
+                &observation.cumulative_api_nanousd,
+                &observation.cumulative_native_microcredits,
+                &observation.observation_source,
+                &observation.source_request_id,
+                &state.estimator_version,
+            ],
+        )?;
+        let next_version = state
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("GLM calibration version overflow"))?;
+        let updated = tx.execute(
+            "INSERT INTO glm_window_calibrations(subject_id,plan,window_duration_secs,reset_at,\
+             anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_api_nanousd,\
+             anchor_spend_native_microcredits,used_fraction_units,\
+             measurement_resolution_fraction_units,observed_at,native_limit_microcredits,\
+             native_used_microcredits,observed_fraction_units,observed_spend_api_nanousd,\
+             observed_spend_native_microcredits,samples,unattributed_fraction_units,\
+             current_capacity_nanousd,current_low_nanousd,current_high_nanousd,\
+             current_confidence_bp,last_measured_at,estimator_version,version,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,\
+             $22,$23,$24,$25,$26) \
+             ON CONFLICT(subject_id,plan,window_duration_secs) DO UPDATE SET \
+             reset_at=EXCLUDED.reset_at,\
+             anchor_used_fraction_units=EXCLUDED.anchor_used_fraction_units,\
+             anchor_resolution_fraction_units=EXCLUDED.anchor_resolution_fraction_units,\
+             anchor_spend_api_nanousd=EXCLUDED.anchor_spend_api_nanousd,\
+             anchor_spend_native_microcredits=EXCLUDED.anchor_spend_native_microcredits,\
+             used_fraction_units=EXCLUDED.used_fraction_units,\
+             measurement_resolution_fraction_units=\
+             EXCLUDED.measurement_resolution_fraction_units,\
+             observed_at=EXCLUDED.observed_at,\
+             native_limit_microcredits=EXCLUDED.native_limit_microcredits,\
+             native_used_microcredits=EXCLUDED.native_used_microcredits,\
+             observed_fraction_units=EXCLUDED.observed_fraction_units,\
+             observed_spend_api_nanousd=EXCLUDED.observed_spend_api_nanousd,\
+             observed_spend_native_microcredits=EXCLUDED.observed_spend_native_microcredits,\
+             samples=EXCLUDED.samples,\
+             unattributed_fraction_units=EXCLUDED.unattributed_fraction_units,\
+             current_capacity_nanousd=EXCLUDED.current_capacity_nanousd,\
+             current_low_nanousd=EXCLUDED.current_low_nanousd,\
+             current_high_nanousd=EXCLUDED.current_high_nanousd,\
+             current_confidence_bp=EXCLUDED.current_confidence_bp,\
+             last_measured_at=EXCLUDED.last_measured_at,\
+             estimator_version=EXCLUDED.estimator_version,version=EXCLUDED.version,\
+             updated_ts=EXCLUDED.updated_ts \
+             WHERE glm_window_calibrations.version=$27",
+            &[
+                &state.subject_id,
+                &state.plan,
+                &state.window_duration_secs,
+                &state.reset_at,
+                &state.anchor_used_fraction_units,
+                &state.anchor_resolution_fraction_units,
+                &state.anchor_spend_api_nanousd,
+                &state.anchor_spend_native_microcredits,
+                &state.used_fraction_units,
+                &state.measurement_resolution_fraction_units,
+                &state.observed_at,
+                &state.native_limit_microcredits,
+                &state.native_used_microcredits,
+                &state.observed_fraction_units,
+                &state.observed_spend_api_nanousd,
+                &state.observed_spend_native_microcredits,
+                &state.samples,
+                &state.unattributed_fraction_units,
+                &state.current_capacity_nanousd,
+                &state.current_low_nanousd,
+                &state.current_high_nanousd,
+                &state.current_confidence_bp,
+                &state.last_measured_at,
+                &state.estimator_version,
+                &next_version,
+                &state.updated_ts,
+                &state.version,
+            ],
+        )?;
+        if updated == 0 {
+            // Another writer advanced this window first. Rolling back keeps the observation and
+            // the state consistent; the caller re-reads and folds again.
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(next_version))
+    }
+
     pub fn load_anthropic_calibration(
         &mut self,
         subject_id: &str,
@@ -10285,13 +10662,103 @@ mod tests {
     }
 
     #[test]
-    fn pricing_ledger_release_v2_migration_is_registered_at_the_current_schema_version() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
+    fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
+        // Strip `--` comment lines first: the header prose deliberately names the 0019 and
+        // 0027 authorities to explain why this migration stands beside them, and those mentions
+        // must not be mistaken for statements touching them.
+        let ddl = MIGRATION_0029
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for table in [
+            "glm_turn_calibration_events",
+            "glm_calibration_subject_spend",
+            "glm_window_observations",
+            "glm_window_calibrations",
+        ] {
+            assert!(
+                normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing GLM calibration table {table}",
+            );
+        }
+
+        // Expand-only: nothing is dropped, truncated or altered.
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+        assert!(!normalized.contains(" DROP CONSTRAINT "));
+        assert!(!normalized.contains(" ALTER TABLE "));
+
+        // The shared 0019 authority and the KIMI 0027 authority must both be left completely
+        // untouched: neither durable identity can carry a served model distinct from the
+        // requested one plus a paid plan plus a per-turn native ledger.
+        assert!(!normalized.contains("provider_turn_calibration_events"));
+        assert!(!normalized.contains("provider_calibration_subject_spend"));
+        assert!(!normalized.contains("kimi_turn_calibration_events"));
+        assert!(!normalized.contains("kimi_calibration_subject_spend"));
+        assert!(!normalized.contains("kimi_window_observations"));
+        assert!(!normalized.contains("kimi_window_calibrations"));
+
+        // Billing follows the served model, so both identities are immutable columns.
+        assert!(normalized.contains("requested_model text NOT NULL"));
+        assert!(normalized.contains("served_model text NOT NULL"));
+
+        // Paid plan and the exact native window duration are part of the durable identity.
+        assert!(normalized.contains("PRIMARY KEY (subject_id, plan, window_duration_secs)"));
+
+        // Two effective-dated schedules price every turn: the API rate card and the native
+        // credit multipliers.
+        assert!(normalized.contains("api_tariff_schedule_id text NOT NULL"));
+        assert!(normalized.contains("credit_schedule_id text NOT NULL"));
+
+        // Only GLM-5.2 takes a reasoning effort, so the column stays nullable.
+        assert!(normalized.contains("reasoning_effort text CHECK (reasoning_effort IS NULL"));
+        assert!(!normalized.contains("reasoning_effort text NOT NULL"));
+
+        // Dual ledger: API nanoUSD and native microcredits legs each sum to their own total.
+        assert!(normalized.contains("spent_api_nanousd bigint NOT NULL"));
+        assert!(normalized.contains("spent_native_microcredits bigint NOT NULL"));
+        assert!(normalized.contains(
+            "api_total_nanousd = api_fresh_input_nanousd + api_cached_input_nanousd \
+             + api_output_nanousd"
+        ));
+        assert!(normalized.contains(
+            "native_total_microcredits = native_fresh_input_microcredits \
+             + native_cached_input_microcredits + native_output_microcredits"
+        ));
+        assert!(normalized.contains("CHECK (reasoning_tokens <= output_tokens)"));
+
+        // Raw quota counters have unproven units: unknown stays NULL, never 0, and the derived
+        // fraction pair exists only once the units are proven.
+        assert!(normalized
+            .contains("native_used_units bigint CHECK (native_used_units IS NULL OR native_used_units >= 0)"));
+        assert!(normalized
+            .contains("native_remaining_units bigint CHECK (native_remaining_units IS NULL"));
+        assert!(normalized.contains(
+            "used_fraction_units bigint CHECK (used_fraction_units IS NULL OR used_fraction_units BETWEEN 0 AND 100000000)"
+        ));
+        assert!(normalized
+            .contains("(used_fraction_units IS NULL) = (measurement_resolution_fraction_units IS NULL)"));
+
+        // Quota arrives by poll and on responses; a response names its request, a poll invents
+        // none, and the dedup key treats NULL raw counters as equal.
+        assert!(normalized.contains("observation_source IN ('poll', 'response')"));
+        assert!(normalized.contains("source_request_id"));
+        assert!(normalized.contains("UNIQUE NULLS NOT DISTINCT"));
+
+        assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (29)"));
+    }
+
+    #[test]
+    fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
         let registered = ENGINE_MIGRATIONS
             .iter()
-            .find(|(version, _)| *version == 28)
+            .find(|(version, _)| *version == 29)
             .map(|(_, sql)| *sql);
-        assert_eq!(registered, Some(MIGRATION_0028));
+        assert_eq!(registered, Some(MIGRATION_0029));
     }
 
     /// Real PostgreSQL proof for immutable turn replay, cumulative spend, observation history and
@@ -10513,6 +10980,275 @@ mod tests {
             .batch_execute(
                 "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
                  kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// Real PostgreSQL proof for immutable turn replay, cumulative dual-ledger spend,
+    /// observation history and estimator-state CAS. Skipped unless the dedicated destructive
+    /// test database is supplied:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::glm_calibration_postgres_matrix`
+    #[test]
+    fn glm_calibration_postgres_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping GLM PostgreSQL calibration matrix: test URL is unset");
+            return;
+        };
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let event = GlmTurnCalibrationEvent {
+            request_id: "glm-pg-replay".into(),
+            subject_id: "glm-pg-subject".into(),
+            plan: "Pro".into(),
+            requested_model: "glm-5".into(),
+            served_model: "glm-5.2".into(),
+            context_mode: "1m".into(),
+            reasoning_effort: Some("high".into()),
+            api_tariff_schedule_id: "zhipu/z.ai-open-platform/2026-08-03/v1".into(),
+            credit_schedule_id: "zhipu/glm-coding-plan-credits/2026-07-30/v1".into(),
+            priced_ts: 190,
+            completed_at: 200,
+            fresh_input_tokens: 100,
+            cached_input_tokens: 20,
+            cache_write_tokens: 0,
+            output_tokens: 10,
+            reasoning_tokens: 4,
+            api_fresh_input_nanousd: 600,
+            api_cached_input_nanousd: 100,
+            api_output_nanousd: 300,
+            api_total_nanousd: 1_000,
+            native_fresh_input_microcredits: 400,
+            native_cached_input_microcredits: 30,
+            native_output_microcredits: 70,
+            native_total_microcredits: 500,
+            off_peak: false,
+        };
+
+        // Two ambiguous replies may race from active and candidate blue-green generations. The
+        // immutable key must pick one insert while the loser observes an exact replay, not a
+        // unique-violation and never a second spend advance on either ledger.
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let url = url.clone();
+            let event = event.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let mut pg = PgStore::connect(&url).unwrap();
+                barrier.wait();
+                pg.record_glm_turn(&event).unwrap()
+            }));
+        }
+        let mut insert_outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        insert_outcomes.sort_unstable();
+        assert_eq!(insert_outcomes, vec![false, true]);
+        assert_eq!(
+            pg.glm_subject_spend(&event.subject_id).unwrap(),
+            GlmSubjectSpend {
+                spent_api_nanousd: 1_000,
+                spent_native_microcredits: 500,
+            }
+        );
+
+        let mut conflict = event.clone();
+        conflict.requested_model = "glm-5.1".into();
+        let error = pg.record_glm_turn(&conflict).unwrap_err().to_string();
+        assert!(
+            error.contains("replay conflict"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            pg.glm_subject_spend(&event.subject_id).unwrap(),
+            GlmSubjectSpend {
+                spent_api_nanousd: 1_000,
+                spent_native_microcredits: 500,
+            }
+        );
+
+        // Out-of-order finalizers still retain the earliest tracking start and latest update.
+        let older = GlmTurnCalibrationEvent {
+            request_id: "glm-pg-older".into(),
+            priced_ts: 90,
+            completed_at: 100,
+            api_fresh_input_nanousd: 300,
+            api_cached_input_nanousd: 50,
+            api_output_nanousd: 150,
+            api_total_nanousd: 500,
+            native_fresh_input_microcredits: 100,
+            native_cached_input_microcredits: 20,
+            native_output_microcredits: 30,
+            native_total_microcredits: 150,
+            ..event.clone()
+        };
+        assert!(pg.record_glm_turn(&older).unwrap());
+        assert_eq!(
+            pg.glm_subject_spend(&event.subject_id).unwrap(),
+            GlmSubjectSpend {
+                spent_api_nanousd: 1_500,
+                spent_native_microcredits: 650,
+            }
+        );
+        let spend_times = pg
+            .client
+            .query_one(
+                "SELECT tracking_started_ts,updated_ts FROM glm_calibration_subject_spend \
+                 WHERE subject_id=$1",
+                &[&event.subject_id],
+            )
+            .unwrap();
+        assert_eq!(
+            (spend_times.get::<_, i64>(0), spend_times.get::<_, i64>(1)),
+            (100, 200)
+        );
+
+        let fraction = crate::glm_fraction_from_native(100, 1_000).unwrap();
+        let observation = GlmWindowObservation {
+            subject_id: event.subject_id.clone(),
+            plan: event.plan.clone(),
+            window_duration_secs: crate::GLM_5H_WINDOW_SECS,
+            reset_at: Some(10_000),
+            observed_at: 300,
+            native_used_units: Some(100),
+            native_limit_units: Some(1_000),
+            native_remaining_units: Some(900),
+            percentage_raw: Some(10),
+            used_fraction_units: Some(fraction.used_fraction_units),
+            measurement_resolution_fraction_units: Some(
+                fraction.measurement_resolution_fraction_units,
+            ),
+            cumulative_api_nanousd: 1_500,
+            cumulative_native_microcredits: 650,
+            observation_source: "poll".into(),
+            source_request_id: None,
+        };
+        let state = GlmCalibrationRow {
+            subject_id: observation.subject_id.clone(),
+            plan: observation.plan.clone(),
+            window_duration_secs: observation.window_duration_secs,
+            reset_at: observation.reset_at,
+            anchor_used_fraction_units: observation.used_fraction_units,
+            anchor_resolution_fraction_units: observation.measurement_resolution_fraction_units,
+            anchor_spend_api_nanousd: observation.cumulative_api_nanousd,
+            anchor_spend_native_microcredits: observation.cumulative_native_microcredits,
+            used_fraction_units: observation.used_fraction_units,
+            measurement_resolution_fraction_units: observation
+                .measurement_resolution_fraction_units,
+            observed_at: observation.observed_at,
+            // Pro publishes 12 000 credits per 5-hour window.
+            native_limit_microcredits: Some(12_000_000_000),
+            native_used_microcredits: Some(650),
+            observed_fraction_units: 0,
+            observed_spend_api_nanousd: 0,
+            observed_spend_native_microcredits: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nanousd: None,
+            current_low_nanousd: None,
+            current_high_nanousd: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: observation.observed_at,
+        };
+        assert_eq!(
+            pg.save_glm_calibration(&state, &observation).unwrap(),
+            Some(1)
+        );
+
+        let mut second_observation = observation.clone();
+        let second_fraction = crate::glm_fraction_from_native(101, 1_000).unwrap();
+        second_observation.observed_at = 301;
+        second_observation.native_used_units = Some(101);
+        second_observation.native_remaining_units = Some(899);
+        second_observation.used_fraction_units = Some(second_fraction.used_fraction_units);
+        second_observation.measurement_resolution_fraction_units =
+            Some(second_fraction.measurement_resolution_fraction_units);
+        let mut second_state = pg
+            .load_glm_calibration(&state.subject_id, &state.plan, state.window_duration_secs)
+            .unwrap()
+            .unwrap();
+        second_state.observed_at = second_observation.observed_at;
+        second_state.native_used_microcredits = Some(700);
+        second_state.used_fraction_units = second_observation.used_fraction_units;
+        second_state.measurement_resolution_fraction_units =
+            second_observation.measurement_resolution_fraction_units;
+        second_state.updated_ts = second_observation.observed_at;
+        assert_eq!(
+            pg.save_glm_calibration(&second_state, &second_observation)
+                .unwrap(),
+            Some(2)
+        );
+
+        // A stale writer loses the CAS and rolls its observation back. Raw history remains
+        // exact, oldest-first and contains only the two winning transitions.
+        assert_eq!(
+            pg.save_glm_calibration(&state, &observation).unwrap(),
+            None
+        );
+        let history = pg
+            .load_glm_window_observations(
+                &state.subject_id,
+                &state.plan,
+                state.window_duration_secs,
+            )
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|row| row.observed_at)
+                .collect::<Vec<_>>(),
+            vec![300, 301]
+        );
+        let stored = pg
+            .load_glm_calibration(&state.subject_id, &state.plan, state.window_duration_secs)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.version, 2);
+        assert_eq!(stored.native_used_microcredits, Some(700));
+        assert_eq!(stored.native_remaining_units(), Some(11_999_999_300));
+
+        pg.client
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
                  RESTART IDENTITY CASCADE",
             )
             .unwrap();
