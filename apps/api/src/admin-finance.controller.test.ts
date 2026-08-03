@@ -13,6 +13,10 @@ describe("admin finance HTTP contract", () => {
     expect(() => controller.funnel("0")).toThrow(BadRequestException);
     expect(() => controller.topCustomers("30", "0")).toThrow(BadRequestException);
     expect(() => controller.topCustomers("30", "101")).toThrow(BadRequestException);
+    expect(() => controller.payingUsers("14")).toThrow(BadRequestException);
+    expect(() => controller.payingUsers("30", "101")).toThrow(BadRequestException);
+    expect(() => controller.payingUsers("30", "50", "0", "", undefined, "claude")).toThrow(BadRequestException);
+    expect(() => controller.payingUsers("30", "50", "0", "", undefined, undefined, "raw_sql")).toThrow(BadRequestException);
     expect(() => controller.cohorts("0")).toThrow(BadRequestException);
     expect(() => controller.churnSignals("91", undefined)).toThrow(BadRequestException);
     expect(() => controller.refunds("501", "0")).toThrow(BadRequestException);
@@ -27,6 +31,7 @@ describe("admin finance HTTP contract", () => {
     finance.revenue.mockResolvedValue({ series: [] });
     finance.refunds.mockResolvedValue({ rows: [] });
     finance.topCustomers.mockResolvedValue({ topups: [] });
+    finance.payingUsers.mockResolvedValue({ rows: [] });
     finance.churnSignals.mockResolvedValue({ rows: [] });
     finance.cohorts.mockResolvedValue({ cohorts: [] });
 
@@ -42,6 +47,16 @@ describe("admin finance HTTP contract", () => {
     expect(finance.topCustomers).toHaveBeenCalledWith(7, 5);
     await controller.topCustomers(undefined, undefined);
     expect(finance.topCustomers).toHaveBeenCalledWith(30, 20);
+
+    await controller.payingUsers(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined);
+    expect(finance.payingUsers).toHaveBeenCalledWith({
+      days: 30, limit: 50, offset: 0, sort: "spent", dir: "desc",
+    });
+    await controller.payingUsers("7", "25", "50", "paid@", "active", "openai", "paid", "asc");
+    expect(finance.payingUsers).toHaveBeenCalledWith({
+      days: 7, limit: 25, offset: 50, q: "paid@", status: "active", provider: "openai",
+      sort: "paid", dir: "asc",
+    });
 
     await controller.cohorts(undefined);
     expect(finance.cohorts).toHaveBeenCalledWith(8);
@@ -70,6 +85,7 @@ function fakeFinance() {
     revenue: vi.fn(),
     funnel: vi.fn(),
     topCustomers: vi.fn(),
+    payingUsers: vi.fn(),
     refunds: vi.fn(),
     cohorts: vi.fn(),
     churnSignals: vi.fn(),

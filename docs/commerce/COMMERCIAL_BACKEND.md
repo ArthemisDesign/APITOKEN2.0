@@ -167,7 +167,17 @@ GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
+GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...
 ```
+
+`GET /admin/finance/paying-users` is the read-only producer for the paid-customer control room.
+It includes only users with at least one `payments.status='paid'` row, paginates and searches on the
+server, and returns lifetime paid totals plus the selected-window charged spend split into
+`anthropic`, `openai`, `google`, and `other`. All money is a decimal nanoUSD string; `other` keeps
+legacy usage without an attribution and unknown future provider IDs visible instead of silently
+dropping them. The unfiltered summary remains fleet-wide while row filters narrow only the paged
+directory. `apps/admin` must consume this expand-only contract only after the producer SHA has a
+green `deploy/watchdog` verdict.
 
 The Stage 8 capture GET returns a bounded read-only view of durable job/artifact identities,
 status counts, freshness and sanitized combined blockers (`source/code/count` plus already-hashed

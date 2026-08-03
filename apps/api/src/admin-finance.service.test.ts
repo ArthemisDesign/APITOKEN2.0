@@ -10,6 +10,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
     listAdminFinanceCohorts: vi.fn(),
     listAdminFinanceRevenueDaily: vi.fn(),
     listAdminFinanceTopCustomers: vi.fn(),
+    listAdminPayingUsers: vi.fn(),
     listAdminRefunds: vi.fn(),
   };
 });
@@ -21,6 +22,7 @@ import {
   listAdminFinanceCohorts,
   listAdminFinanceRevenueDaily,
   listAdminFinanceTopCustomers,
+  listAdminPayingUsers,
   listAdminRefunds,
 } from "@claude-api/db";
 import { AdminFinanceService } from "./admin-finance.service.js";
@@ -29,6 +31,7 @@ const overviewMock = vi.mocked(getAdminFinanceOverview);
 const funnelMock = vi.mocked(getAdminFinanceFunnel);
 const revenueDailyMock = vi.mocked(listAdminFinanceRevenueDaily);
 const topCustomersMock = vi.mocked(listAdminFinanceTopCustomers);
+const payingUsersMock = vi.mocked(listAdminPayingUsers);
 const refundsMock = vi.mocked(listAdminRefunds);
 const cohortsMock = vi.mocked(listAdminFinanceCohorts);
 const churnMock = vi.mocked(listAdminFinanceChurnSignals);
@@ -284,6 +287,77 @@ describe("admin finance top customers", () => {
     expect(value.topups).toEqual([]);
     expect(value.totals).toMatchObject({ topups_nano: "0", spend_nano: "0" });
     expect(JSON.stringify(value)).not.toContain("NaN");
+  });
+});
+
+describe("admin finance paying users", () => {
+  it("serializes exact provider spend and dates without float money", async () => {
+    payingUsersMock.mockResolvedValue({
+      days: 30,
+      total: 1,
+      limit: 50,
+      offset: 0,
+      summary: {
+        payingUsers: 4,
+        activeSpenders: 3,
+        paidNano: "120000000000",
+        spentNano: "32000000000",
+        providerSpendNano: {
+          anthropic: "12000000000", openai: "15000000000", google: "5000000000", other: "0",
+        },
+        providerUsers: { anthropic: 2, openai: 3, google: 1, other: 0 },
+      },
+      rows: [{
+        userId: "u1",
+        email: "paid@example.com",
+        displayName: "Paid",
+        status: "active",
+        customerType: "b2c",
+        tier: 1,
+        multiplierBp: 5000,
+        paidNano: "25000000000",
+        paymentsCount: 2,
+        lastPaidAt: new Date("2026-07-30T10:00:00Z"),
+        spentNano: "7000000000",
+        providerSpendNano: {
+          anthropic: "2000000000", openai: "4000000000", google: "1000000000", other: "0",
+        },
+        activeApiKeys: 1,
+        lastSeenAt: null,
+        createdAt: new Date("2026-06-01T10:00:00Z"),
+      }],
+    });
+
+    const query = { days: 30 as const, limit: 50, sort: "spent" as const, dir: "desc" as const };
+    const value = await service.payingUsers(query) as {
+      summary: Record<string, unknown>; rows: Array<Record<string, unknown>>;
+    };
+    expect(payingUsersMock).toHaveBeenCalledWith(expect.anything(), query);
+    expect(value.summary).toMatchObject({
+      paying_users: 4,
+      paid_nano: "120000000000",
+      provider_spend: {
+        anthropic_nano: "12000000000",
+        openai_nano: "15000000000",
+        google_nano: "5000000000",
+        other_nano: "0",
+      },
+    });
+    expect(value.rows[0]).toMatchObject({
+      user_id: "u1",
+      paid_nano: "25000000000",
+      spent_nano: "7000000000",
+      provider_spend: {
+        anthropic_nano: "2000000000",
+        openai_nano: "4000000000",
+        google_nano: "1000000000",
+        other_nano: "0",
+      },
+      last_paid_at: "2026-07-30T10:00:00.000Z",
+      last_seen_at: null,
+      created_at: "2026-06-01T10:00:00.000Z",
+    });
+    expect(JSON.stringify(value)).not.toContain("_usd");
   });
 });
 

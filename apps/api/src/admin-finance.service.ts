@@ -6,7 +6,9 @@ import {
   listAdminFinanceCohorts,
   listAdminFinanceRevenueDaily,
   listAdminFinanceTopCustomers,
+  listAdminPayingUsers,
   listAdminRefunds,
+  type AdminPayingUsersQuery,
   type Database,
 } from "@claude-api/db";
 import { DATABASE } from "./infrastructure.module.js";
@@ -179,6 +181,53 @@ export class AdminFinanceService {
         spend_nano: value.spendTotalNano,
         spend_usd: nanoToUsd(value.spendTotalNano),
       },
+    };
+  }
+
+  async payingUsers(query: AdminPayingUsersQuery): Promise<Record<string, unknown>> {
+    const value = await listAdminPayingUsers(this.database, query);
+    const providerMoney = (amounts: Record<"anthropic" | "openai" | "google" | "other", string>) => ({
+      anthropic_nano: amounts.anthropic,
+      openai_nano: amounts.openai,
+      google_nano: amounts.google,
+      other_nano: amounts.other,
+    });
+    return {
+      generated_at: new Date().toISOString(),
+      days: value.days,
+      total: value.total,
+      limit: value.limit,
+      offset: value.offset,
+      summary: {
+        paying_users: value.summary.payingUsers,
+        active_spenders: value.summary.activeSpenders,
+        paid_nano: value.summary.paidNano,
+        spent_nano: value.summary.spentNano,
+        provider_spend: providerMoney(value.summary.providerSpendNano),
+        provider_users: {
+          anthropic: value.summary.providerUsers.anthropic,
+          openai: value.summary.providerUsers.openai,
+          google: value.summary.providerUsers.google,
+          other: value.summary.providerUsers.other,
+        },
+      },
+      rows: value.rows.map((row) => ({
+        user_id: row.userId,
+        email: row.email,
+        display_name: row.displayName,
+        status: row.status,
+        customer_type: row.customerType,
+        tier: row.tier,
+        multiplier_bp: row.multiplierBp,
+        paid_nano: row.paidNano,
+        payments_count: row.paymentsCount,
+        last_paid_at: row.lastPaidAt?.toISOString() ?? null,
+        spent_nano: row.spentNano,
+        provider_spend: providerMoney(row.providerSpendNano),
+        active_api_keys: row.activeApiKeys,
+        last_seen_at: row.lastSeenAt?.toISOString() ?? null,
+        created_at: row.createdAt.toISOString(),
+      })),
     };
   }
 

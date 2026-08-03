@@ -82,6 +82,56 @@ export interface AdminFinanceChurnRow {
   spent30dNano: string;
 }
 
+export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "other";
+export type AdminPayingUserSort = "spent" | "paid" | "last_paid" | "last_seen";
+
+export interface AdminPayingUsersQuery {
+  days: 1 | 7 | 30;
+  limit?: number;
+  offset?: number;
+  q?: string;
+  status?: "active" | "disabled";
+  provider?: AdminPayingUserProvider;
+  sort?: AdminPayingUserSort;
+  dir?: "asc" | "desc";
+}
+
+export interface AdminPayingUserRow {
+  userId: string;
+  email: string;
+  displayName: string;
+  status: "active" | "disabled";
+  customerType: "b2c" | "b2b" | null;
+  tier: number | null;
+  multiplierBp: number | null;
+  paidNano: string;
+  paymentsCount: number;
+  lastPaidAt: Date | null;
+  spentNano: string;
+  providerSpendNano: Record<AdminPayingUserProvider, string>;
+  activeApiKeys: number;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+}
+
+export interface AdminPayingUsersSummary {
+  payingUsers: number;
+  activeSpenders: number;
+  paidNano: string;
+  spentNano: string;
+  providerSpendNano: Record<AdminPayingUserProvider, string>;
+  providerUsers: Record<AdminPayingUserProvider, number>;
+}
+
+export interface AdminPayingUsersPage {
+  rows: AdminPayingUserRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  days: 1 | 7 | 30;
+  summary: AdminPayingUsersSummary;
+}
+
 /** Скалярная сводка: выручка текущих и предыдущих 30 дней + распределение клиентов по тирам. */
 export async function getAdminFinanceOverview(database: Database): Promise<AdminFinanceOverview> {
   const [scalars, tiers] = await Promise.all([
@@ -268,6 +318,216 @@ export async function listAdminFinanceTopCustomers(
       spentNano: row.spent_nano,
     })),
     spendTotalNano: spendTotal.rows[0]?.total_nano ?? "0",
+  };
+}
+
+const PAYING_USER_SORT_SQL: Record<AdminPayingUserSort, string> = {
+  spent: "COALESCE(usage.spent_nano, 0)",
+  paid: "paid.paid_nano",
+  last_paid: "paid.last_paid_at",
+  last_seen: "sessions.last_seen_at",
+};
+
+/**
+ * Пагинированный список только когда-либо плативших клиентов. Расход берётся из immutable
+ * pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot. Старые
+ * события без attribution и неизвестные будущие provider_id не теряются: они попадают в other.
+ */
+export async function listAdminPayingUsers(
+  database: Database,
+  query: AdminPayingUsersQuery,
+): Promise<AdminPayingUsersPage> {
+  if (![1, 7, 30].includes(query.days)) throw new Error(`unsupported paying users window: ${query.days}`);
+  const days = query.days;
+  const limit = Math.max(1, Math.min(100, query.limit ?? 50));
+  const offset = Math.max(0, query.offset ?? 0);
+  const q = query.q?.trim() ?? "";
+  const status = query.status ?? "";
+  const provider = query.provider ?? "";
+  const sort = query.sort ?? "spent";
+  const dir = query.dir ?? "desc";
+  const sortExpr = PAYING_USER_SORT_SQL[sort];
+  if (sortExpr === undefined) throw new Error(`unsupported paying users sort: ${String(query.sort)}`);
+  if (dir !== "asc" && dir !== "desc") throw new Error(`unsupported paying users sort dir: ${String(query.dir)}`);
+  if (provider && !["anthropic", "openai", "google", "other"].includes(provider)) {
+    throw new Error(`unsupported paying users provider: ${String(query.provider)}`);
+  }
+  if (status && status !== "active" && status !== "disabled") {
+    throw new Error(`unsupported paying users status: ${String(query.status)}`);
+  }
+
+  const commonCtes = `
+    WITH paid AS (
+      SELECT user_id, count(*) AS payments_count, sum(amount_nano) AS paid_nano,
+             max(paid_at) AS last_paid_at
+      FROM payments
+      WHERE status = 'paid'
+      GROUP BY user_id
+    ), usage AS (
+      SELECT e.user_id,
+        sum(e.amount_nano) AS spent_nano,
+        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'anthropic'), 0) AS anthropic_nano,
+        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'openai'), 0) AS openai_nano,
+        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'google'), 0) AS google_nano,
+        COALESCE(sum(e.amount_nano) FILTER (
+          WHERE a.provider_id IS NULL OR a.provider_id NOT IN ('anthropic', 'openai', 'google')
+        ), 0) AS other_nano
+      FROM pricing_usage_events e
+      LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
+      WHERE e.occurred_at >= now() - make_interval(days => $1)
+      GROUP BY e.user_id
+    ), sessions AS (
+      SELECT user_id, max(last_seen_at) AS last_seen_at
+      FROM auth_sessions
+      WHERE revoked_at IS NULL
+      GROUP BY user_id
+    ), api_keys AS (
+      SELECT user_id, count(*) FILTER (WHERE status = 'active') AS active_count
+      FROM api_keys
+      GROUP BY user_id
+    )
+  `;
+  const filters = `
+    ($2::text = '' OR u.email ILIKE '%' || $2 || '%'
+      OR u.display_name ILIKE '%' || $2 || '%' OR u.id::text ILIKE '%' || $2 || '%')
+    AND ($3::text = '' OR u.status::text = $3)
+    AND ($4::text = ''
+      OR ($4 = 'anthropic' AND COALESCE(usage.anthropic_nano, 0) > 0)
+      OR ($4 = 'openai' AND COALESCE(usage.openai_nano, 0) > 0)
+      OR ($4 = 'google' AND COALESCE(usage.google_nano, 0) > 0)
+      OR ($4 = 'other' AND COALESCE(usage.other_nano, 0) > 0))
+  `;
+  const [pageResult, countResult, summaryResult] = await Promise.all([
+    database.pool.query<{
+      user_id: string; email: string; display_name: string; status: "active" | "disabled";
+      customer_type: "b2c" | "b2b" | null; current_tier: number | null; multiplier_bp: number | null;
+      paid_nano: string; payments_count: string; last_paid_at: Date | null; spent_nano: string;
+      anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
+      active_api_keys: string; last_seen_at: Date | null; created_at: Date;
+    }>(`
+      /* admin-finance:paying-users */
+      ${commonCtes}
+      SELECT u.id AS user_id, u.email, u.display_name, u.status,
+        cp.customer_type, cp.current_tier, cp.multiplier_bp,
+        paid.paid_nano::text, paid.payments_count::text, paid.last_paid_at,
+        COALESCE(usage.spent_nano, 0)::text AS spent_nano,
+        COALESCE(usage.anthropic_nano, 0)::text AS anthropic_nano,
+        COALESCE(usage.openai_nano, 0)::text AS openai_nano,
+        COALESCE(usage.google_nano, 0)::text AS google_nano,
+        COALESCE(usage.other_nano, 0)::text AS other_nano,
+        COALESCE(api_keys.active_count, 0)::text AS active_api_keys,
+        sessions.last_seen_at, u.created_at
+      FROM users u
+      JOIN paid ON paid.user_id = u.id
+      LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+      LEFT JOIN usage ON usage.user_id = u.id
+      LEFT JOIN sessions ON sessions.user_id = u.id
+      LEFT JOIN api_keys ON api_keys.user_id = u.id
+      WHERE ${filters}
+      ORDER BY ${sortExpr} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, u.id ASC
+      LIMIT $5 OFFSET $6
+    `, [days, q, status, provider, limit, offset]),
+    database.pool.query<{ total: string }>(`
+      /* admin-finance:paying-users-count */
+      ${commonCtes}
+      SELECT count(*)::text AS total
+      FROM users u
+      JOIN paid ON paid.user_id = u.id
+      LEFT JOIN usage ON usage.user_id = u.id
+      WHERE ${filters}
+    `, [days, q, status, provider]),
+    database.pool.query<{
+      paying_users: string; active_spenders: string; paid_nano: string; spent_nano: string;
+      anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
+      anthropic_users: string; openai_users: string; google_users: string; other_users: string;
+    }>(`
+      /* admin-finance:paying-users-summary */
+      WITH paid AS (
+        SELECT user_id, sum(amount_nano) AS paid_nano
+        FROM payments
+        WHERE status = 'paid'
+        GROUP BY user_id
+      ), usage AS (
+        SELECT e.user_id,
+          sum(e.amount_nano) AS spent_nano,
+          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'anthropic'), 0) AS anthropic_nano,
+          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'openai'), 0) AS openai_nano,
+          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'google'), 0) AS google_nano,
+          COALESCE(sum(e.amount_nano) FILTER (
+            WHERE a.provider_id IS NULL OR a.provider_id NOT IN ('anthropic', 'openai', 'google')
+          ), 0) AS other_nano
+        FROM pricing_usage_events e
+        LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
+        WHERE e.occurred_at >= now() - make_interval(days => $1)
+        GROUP BY e.user_id
+      )
+      SELECT count(*)::text AS paying_users,
+        count(*) FILTER (WHERE COALESCE(usage.spent_nano, 0) > 0)::text AS active_spenders,
+        COALESCE(sum(paid.paid_nano), 0)::text AS paid_nano,
+        COALESCE(sum(usage.spent_nano), 0)::text AS spent_nano,
+        COALESCE(sum(usage.anthropic_nano), 0)::text AS anthropic_nano,
+        COALESCE(sum(usage.openai_nano), 0)::text AS openai_nano,
+        COALESCE(sum(usage.google_nano), 0)::text AS google_nano,
+        COALESCE(sum(usage.other_nano), 0)::text AS other_nano,
+        count(*) FILTER (WHERE COALESCE(usage.anthropic_nano, 0) > 0)::text AS anthropic_users,
+        count(*) FILTER (WHERE COALESCE(usage.openai_nano, 0) > 0)::text AS openai_users,
+        count(*) FILTER (WHERE COALESCE(usage.google_nano, 0) > 0)::text AS google_users,
+        count(*) FILTER (WHERE COALESCE(usage.other_nano, 0) > 0)::text AS other_users
+      FROM paid
+      LEFT JOIN usage ON usage.user_id = paid.user_id
+    `, [days]),
+  ]);
+
+  const summary = summaryResult.rows[0] ?? {
+    paying_users: "0", active_spenders: "0", paid_nano: "0", spent_nano: "0",
+    anthropic_nano: "0", openai_nano: "0", google_nano: "0", other_nano: "0",
+    anthropic_users: "0", openai_users: "0", google_users: "0", other_users: "0",
+  };
+  return {
+    rows: pageResult.rows.map((row) => ({
+      userId: row.user_id,
+      email: row.email,
+      displayName: row.display_name,
+      status: row.status,
+      customerType: row.customer_type,
+      tier: row.current_tier,
+      multiplierBp: row.multiplier_bp,
+      paidNano: row.paid_nano,
+      paymentsCount: Number(row.payments_count),
+      lastPaidAt: row.last_paid_at,
+      spentNano: row.spent_nano,
+      providerSpendNano: {
+        anthropic: row.anthropic_nano,
+        openai: row.openai_nano,
+        google: row.google_nano,
+        other: row.other_nano,
+      },
+      activeApiKeys: Number(row.active_api_keys),
+      lastSeenAt: row.last_seen_at,
+      createdAt: row.created_at,
+    })),
+    total: Number(countResult.rows[0]?.total ?? 0),
+    limit,
+    offset,
+    days,
+    summary: {
+      payingUsers: Number(summary.paying_users),
+      activeSpenders: Number(summary.active_spenders),
+      paidNano: summary.paid_nano,
+      spentNano: summary.spent_nano,
+      providerSpendNano: {
+        anthropic: summary.anthropic_nano,
+        openai: summary.openai_nano,
+        google: summary.google_nano,
+        other: summary.other_nano,
+      },
+      providerUsers: {
+        anthropic: Number(summary.anthropic_users),
+        openai: Number(summary.openai_users),
+        google: Number(summary.google_users),
+        other: Number(summary.other_users),
+      },
+    },
   };
 }
 

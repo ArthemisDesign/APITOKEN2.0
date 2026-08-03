@@ -19,6 +19,16 @@ const weeksSchema = z.coerce.number().int().min(1).max(26).default(8);
 const topLimitSchema = z.coerce.number().int().min(1).max(100).default(20);
 const limitSchema = z.coerce.number().int().min(1).max(500).default(50);
 const offsetSchema = z.coerce.number().int().min(0).max(1_000_000).default(0);
+const payingUsersSchema = z.object({
+  days: z.enum(["1", "7", "30"]).default("30").transform((value) => Number(value) as 1 | 7 | 30),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  q: z.string().trim().max(200).optional(),
+  status: z.enum(["active", "disabled"]).optional(),
+  provider: z.enum(["anthropic", "openai", "google", "other"]).optional(),
+  sort: z.enum(["spent", "paid", "last_paid", "last_seen"]).default("spent"),
+  dir: z.enum(["asc", "desc"]).default("desc"),
+});
 
 @Controller("admin")
 @UseGuards(AdminGuard)
@@ -53,6 +63,32 @@ export class AdminFinanceController {
       parseWith(windowDaysSchema, daysValue, "days must be an integer from 1 to 365"),
       parseWith(topLimitSchema, limitValue, "limit must be an integer from 1 to 100"),
     );
+  }
+
+  @Get("finance/paying-users")
+  @Header("Cache-Control", "no-store")
+  payingUsers(
+    @Query("days") days?: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+    @Query("q") q?: string,
+    @Query("status") status?: string,
+    @Query("provider") provider?: string,
+    @Query("sort") sort?: string,
+    @Query("dir") dir?: string,
+  ): Promise<Record<string, unknown>> {
+    const parsed = payingUsersSchema.safeParse({ days, limit, offset, q, status, provider, sort, dir });
+    if (!parsed.success) throw new BadRequestException("invalid paying users filters");
+    return this.finance.payingUsers({
+      days: parsed.data.days,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+      sort: parsed.data.sort,
+      dir: parsed.data.dir,
+      ...(parsed.data.q === undefined ? {} : { q: parsed.data.q }),
+      ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
+      ...(parsed.data.provider === undefined ? {} : { provider: parsed.data.provider }),
+    });
   }
 
   @Get("finance/cohorts")
