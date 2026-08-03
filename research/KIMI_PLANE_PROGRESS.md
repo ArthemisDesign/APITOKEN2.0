@@ -38,12 +38,15 @@
 | Auth Bot: продукт и кнопки тарифов | `crates/authbot/src/bot.rs` | `4ed97c07` |
 | механическая карта подключения | `docs/engine/PROVIDER_WIRING_CHECKLIST.md` | `98ab7093` |
 | **всё вышеперечисленное в master, watchdog GREEN** | — | `62c49ab6` |
-| правило завершённости в скилле и карте | `SKILL.md`, чеклист | ветка |
-| Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | ветка |
-| Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | ветка |
-| Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | ветка |
-| Плоскость: классы ошибок + single-flight refresh | `crates/forward/src/kimi/transport.rs` | ветка |
-| Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | ветка |
+| правило завершённости в скилле и карте | `SKILL.md`, чеклист | `bef32d75` |
+| resumable-леджер как общее правило | `SKILL.md`, чеклист | `2645edab` |
+| **всё вышеперечисленное в master, watchdog GREEN** | — | `f3974ac4` |
+| Плоскость: refresh + разбор `/usages` | `crates/forward/src/kimi/client.rs` | ветка |
+| Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
+| Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
+| Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
+| Плоскость: классы ошибок + single-flight refresh | `crates/forward/src/kimi/transport.rs` | `9b61c443` |
+| Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | `9b61c443` |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -55,8 +58,9 @@
 
 ## Следующее действие
 
-**HTTP-клиент плоскости**: реальные запросы поверх назначенного прокси, применение
-`transport::classify_status` и `selection::select` в цикле попыток, стрим и reserve/settle.
+**Цикл попыток плоскости** (`crates/forward/src/kimi/pool.rs`): связать `roster` → `selection` →
+`client`, применять `transport::classify_status` к каждому исходу, соблюдать бюджет ротации,
+запрещать ротацию после первого публичного байта. Refresh и разбор `/usages` уже готовы.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -64,7 +68,9 @@
    падает на несобранном срезе.
 2. Новая зависимость крейта — сразу коммить `Cargo.lock`. Гейт идёт с `--locked` и отказывается
    работать с грязным деревом.
-3. Красная deployment-полоса бывает транзиентной. Прогон 2026-08-03 дал
+3. После мёржа worktree становится clean+merged и его сносит `DELETE_WORKTREE`. Коммить первый
+   же файл сразу — иначе новая работа исчезнет вместе с деревом (уже случалось трижды).
+4. Красная deployment-полоса бывает транзиентной. Прогон 2026-08-03 дал
    `typescript=0 rust=0 deployment=1 static=0`, но все её тесты
    (`lib`, `codex-homes-migrate`, `sccache-cargo`, `agent-worktree`, `delete-worktree-agent`,
    `next-cache`, `typescript-*`, `commerce-release-bundle`, `agent-merge.suite`) зелёные и по
