@@ -1,9 +1,11 @@
 import { BadRequestException, HttpException, NotFoundException } from "@nestjs/common";
 import {
+  FundingNormalizationJobV2Error,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
   PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
+  Stage5MaterializerV2Error,
 } from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
 import { AdminController } from "./admin.controller.js";
@@ -178,6 +180,109 @@ describe("managed pricing HTTP contract", () => {
 
     await expect(controller.listServicePricingPolicies()).resolves.toEqual({ policies: [{ ownerId: "crm" }] });
     expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
+  });
+
+  it("runs Stage 5 only with an explicit operator and materializes the exact reviewed digest", async () => {
+    const planDigest = `sha256:v2:${"a".repeat(64)}`;
+    const dryRunPricingStage5V2 = vi.fn().mockResolvedValue({
+      mode: "dry_run",
+      status: "dry_run",
+      plan_digest: planDigest,
+    });
+    const materializePricingStage5V2 = vi.fn().mockResolvedValue({
+      mode: "apply",
+      status: "materializing",
+      plan_digest: planDigest,
+    });
+    const controller = new AdminController({
+      dryRunPricingStage5V2,
+      materializePricingStage5V2,
+    } as unknown as AdminService);
+
+    await expect(controller.dryRunPricingStage5V2({}, "operator@example.test"))
+      .resolves.toMatchObject({ status: "dry_run" });
+    expect(dryRunPricingStage5V2).toHaveBeenCalledOnce();
+    await expect(controller.materializePricingStage5V2({
+      plan_digest: planDigest,
+      reason: "materialize the reviewed complete inventory",
+    }, "operator@example.test")).resolves.toMatchObject({ status: "materializing" });
+    expect(materializePricingStage5V2).toHaveBeenCalledWith({
+      plan_digest: planDigest,
+      reason: "materialize the reviewed complete inventory",
+    }, "operator@example.test");
+
+    await expect(controller.dryRunPricingStage5V2({}, undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.dryRunPricingStage5V2({ extra: true }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.materializePricingStage5V2({
+      plan_digest: planDigest,
+      reason: "x",
+    }, "operator")).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("reads and stages Stage 6 by the same exact plan digest with attributed intent", async () => {
+    const planDigest = `sha256:v2:${"b".repeat(64)}`;
+    const getPricingStage6V2 = vi.fn().mockResolvedValue({
+      stage5_plan_digest: planDigest,
+      job_id: null,
+    });
+    const stagePricingStage6V2 = vi.fn().mockResolvedValue({
+      stage5_plan_digest: planDigest,
+      job_status: "pending",
+    });
+    const controller = new AdminController({
+      getPricingStage6V2,
+      stagePricingStage6V2,
+    } as unknown as AdminService);
+
+    await expect(controller.getPricingStage6V2(planDigest, "operator@example.test"))
+      .resolves.toMatchObject({ job_id: null });
+    expect(getPricingStage6V2).toHaveBeenCalledWith(planDigest);
+    const body = {
+      plan_digest: planDigest,
+      reason: "start full-inventory funding normalization",
+    };
+    await expect(controller.stagePricingStage6V2(body, "operator@example.test"))
+      .resolves.toMatchObject({ job_status: "pending" });
+    expect(stagePricingStage6V2).toHaveBeenCalledWith(body, "operator@example.test");
+
+    await expect(controller.getPricingStage6V2("bad-digest", "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.getPricingStage6V2(planDigest, undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingStage6V2({ ...body, extra: true }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("maps Stage 5/6 state conflicts to 409 and retryable authority failures to 503", async () => {
+    const planDigest = `sha256:v2:${"c".repeat(64)}`;
+    const stage5Conflict = new AdminController({
+      materializePricingStage5V2: vi.fn().mockRejectedValue(
+        new Stage5MaterializerV2Error("expected_plan_stale", "plan changed"),
+      ),
+    } as unknown as AdminService);
+    const stage5Unavailable = new AdminController({
+      dryRunPricingStage5V2: vi.fn().mockRejectedValue(
+        new Stage5MaterializerV2Error("openkeys_inventory_unavailable", "OpenKeys unavailable"),
+      ),
+    } as unknown as AdminService);
+    const stage6Conflict = new AdminController({
+      stagePricingStage6V2: vi.fn().mockRejectedValue(
+        new FundingNormalizationJobV2Error("Stage 5 is not materializing", true),
+      ),
+    } as unknown as AdminService);
+
+    await expect(stage5Conflict.materializePricingStage5V2({
+      plan_digest: planDigest,
+      reason: "materialize exact reviewed inventory",
+    }, "operator")).rejects.toMatchObject({ status: 409 });
+    await expect(stage5Unavailable.dryRunPricingStage5V2({}, "operator"))
+      .rejects.toMatchObject({ status: 503 });
+    await expect(stage6Conflict.stagePricingStage6V2({
+      plan_digest: planDigest,
+      reason: "stage exact funding normalization",
+    }, "operator")).rejects.toMatchObject({ status: 409 });
   });
 
   it("exposes read-only activation control and stages only an explicit attributed request", async () => {

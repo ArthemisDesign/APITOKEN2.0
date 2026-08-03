@@ -183,20 +183,21 @@ pricing policy.
 
 ## Staging и status
 
-CLI принимает только `DATABASE_URL` и exact Stage 5 plan digest; engine credentials ему не нужны,
-потому что все account-local и release prepare выполняет уже запущенный worker. `status` ничего не
-пишет и показывает lineage, состояния обоих plans/job, attempts/last error, разбиение queue и обе
-final identities.
-`stage` идемпотентно создаёт job и затем печатает тот же status snapshot:
+Production status и staging доступны только через AdminGuard-protected commerce API. Оба endpoint
+требуют проверенный `x-admin-actor`; stage дополнительно принимает осмысленный `reason`. Status
+ничего не пишет и показывает lineage, состояния обоих plans/job, attempts/last error, разбиение
+queue и обе final identities. Stage идемпотентно создаёт job, атомарно пишет attributed audit
+request и возвращает тот же strict status snapshot с `staged_job_id`:
 
-```bash
-pnpm --filter @claude-api/db pricing:stage6-v2 status sha256:v2:<exact-stage5-plan-digest>
-pnpm --filter @claude-api/db pricing:stage6-v2 stage sha256:v2:<exact-stage5-plan-digest>
+```text
+GET  /v1/admin/pricing-stage6-v2?plan_digest=sha256:v2:<exact-stage5-plan-digest>
+POST /v1/admin/pricing-stage6-v2/stage
+{"plan_digest":"sha256:v2:<exact-stage5-plan-digest>","reason":"normalize reviewed full inventory"}
 ```
 
-Это package entrypoint для защищённого production control-plane, а не разрешение запускать команду
-по SSH. До появления штатной host/admin operation production Stage 5/6 остаются невыполненными;
-наличие CLI или локального integration evidence не заменяет production `confirmed` status.
+Engine credentials endpoint'ам не нужны: account-local и release prepare выполняет уже запущенный
+worker. Package CLI остаётся диагностическим non-production entrypoint и не запускается по SSH.
+Наличие кода, API или локального integration evidence не заменяет production `confirmed` status.
 
 Bounded параметры worker имеют безопасные defaults и жёсткие пределы:
 

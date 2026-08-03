@@ -26,6 +26,25 @@ const engineBaseUrlSchema = z.string().url().superRefine((value, context) => {
   }
 });
 
+const openkeysInternalBaseUrlSchema = z.string().url().superRefine((value, context) => {
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    context.addIssue({ code: "custom", message: "OPENKEYS_INTERNAL_BASE_URL must use HTTP or HTTPS" });
+  }
+  if (url.username || url.password) {
+    context.addIssue({ code: "custom", message: "OPENKEYS_INTERNAL_BASE_URL must not include credentials" });
+  }
+  if (url.pathname !== "/" || url.search || url.hash) {
+    context.addIssue({ code: "custom", message: "OPENKEYS_INTERNAL_BASE_URL must contain only an origin" });
+  }
+  if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) {
+    context.addIssue({
+      code: "custom",
+      message: "HTTP OPENKEYS_INTERNAL_BASE_URL is allowed only for loopback hosts",
+    });
+  }
+});
+
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -35,6 +54,8 @@ const environmentSchema = z.object({
   ENGINE_BASE_URL: engineBaseUrlSchema,
   ENGINE_CONTROL_KEY: z.string().min(32),
   ENGINE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  OPENKEYS_INTERNAL_BASE_URL: openkeysInternalBaseUrlSchema.default("http://127.0.0.1:3410"),
+  OPENKEYS_CONTROL_KEY: z.string().min(32).optional(),
   PUBLIC_API_BASE_URL: z.string().url().default("https://backend.apitoken.sale"),
   PUBLIC_APP_BASE_URL: z.string().url().default("https://apitoken.sale"),
   MIN_TOPUP_USD: z.string().regex(/^[1-9]\d*$/).transform(BigInt).default("1"),

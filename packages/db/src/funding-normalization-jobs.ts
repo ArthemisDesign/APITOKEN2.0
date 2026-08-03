@@ -11,8 +11,10 @@ import {
   OPENKEYS_PRICING_PRODUCT_ID,
   PRICING_RELEASE_SCHEMA_VERSION_V2,
   pricingCatalogSpecSchema,
+  pricingReleaseActivationOperatorV2Schema,
   pricingReleaseRecoveryLinkV2Schema,
   pricingReleaseV2Schema,
+  pricingStageControlMutationReasonV2Schema,
   providerSwitchSpecSchema,
 } from "@claude-api/contracts";
 import type { EngineClient } from "@claude-api/engine-client";
@@ -132,6 +134,11 @@ export class FundingNormalizationJobV2Error extends Error {
     super(message);
     this.name = "FundingNormalizationJobV2Error";
   }
+}
+
+export interface FundingNormalizationStageAuditV2 {
+  actorId: string;
+  reason: string;
 }
 
 interface ParentJobRow {
@@ -505,9 +512,13 @@ async function selectStage5Run(
 
 export async function stageFundingNormalizationJobV2(
   database: Database,
-  input: { planDigest: string },
+  input: { planDigest: string; audit?: FundingNormalizationStageAuditV2 },
 ): Promise<string> {
   requireSha256V2(input.planDigest, "Stage 5 plan digest");
+  const audit = input.audit === undefined ? undefined : {
+    actorId: pricingReleaseActivationOperatorV2Schema.parse(input.audit.actorId.trim()),
+    reason: pricingStageControlMutationReasonV2Schema.parse(input.audit.reason),
+  };
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -568,6 +579,17 @@ export async function stageFundingNormalizationJobV2(
           true,
         );
       }
+      await recordFundingNormalizationStageAuditV2(client, {
+        jobId: row.id,
+        planDigest: run.plan_digest,
+        targetGeneration: run.target_generation,
+        targetPlanDigest: target.release_digest,
+        recoveryGeneration: run.recovery_generation,
+        recoveryPlanDigest: recovery.release_digest,
+        payloadDigest,
+        idempotentReplay: true,
+        audit,
+      });
       await client.query("COMMIT");
       return row.id;
     }
@@ -593,6 +615,17 @@ export async function stageFundingNormalizationJobV2(
       SET status = 'materializing', updated_at = now()
       WHERE generation IN ($1, $2) AND status IN ('planned', 'materializing')
     `, [targetGeneration, recoveryGeneration]);
+    await recordFundingNormalizationStageAuditV2(client, {
+      jobId: inserted.rows[0]!.id,
+      planDigest: run.plan_digest,
+      targetGeneration: run.target_generation,
+      targetPlanDigest: target.release_digest,
+      recoveryGeneration: run.recovery_generation,
+      recoveryPlanDigest: recovery.release_digest,
+      payloadDigest,
+      idempotentReplay: false,
+      audit,
+    });
     await client.query("COMMIT");
     return inserted.rows[0]!.id;
   } catch (error) {
@@ -601,6 +634,52 @@ export async function stageFundingNormalizationJobV2(
   } finally {
     client.release();
   }
+}
+
+async function recordFundingNormalizationStageAuditV2(
+  client: PoolClient,
+  input: {
+    jobId: string;
+    planDigest: string;
+    targetGeneration: string;
+    targetPlanDigest: string;
+    recoveryGeneration: string;
+    recoveryPlanDigest: string;
+    payloadDigest: string;
+    idempotentReplay: boolean;
+    audit: FundingNormalizationStageAuditV2 | undefined;
+  },
+): Promise<void> {
+  if (input.audit === undefined) return;
+  await client.query(`
+    INSERT INTO audit_log (
+      actor_type, actor_id, action, target_type, target_id, metadata
+    ) VALUES (
+      'admin', $1, 'pricing_stage6_funding_normalization_stage_requested',
+      'pricing_release_control_job_v2', $2,
+      jsonb_build_object(
+        'stage5_plan_digest', $3::text,
+        'target_generation', $4::text,
+        'target_plan_digest', $5::text,
+        'recovery_generation', $6::text,
+        'recovery_plan_digest', $7::text,
+        'payload_digest', $8::text,
+        'idempotent_replay', $9::boolean,
+        'reason', $10::text
+      )
+    )
+  `, [
+    input.audit.actorId,
+    input.jobId,
+    input.planDigest,
+    input.targetGeneration,
+    input.targetPlanDigest,
+    input.recoveryGeneration,
+    input.recoveryPlanDigest,
+    input.payloadDigest,
+    input.idempotentReplay,
+    input.audit.reason,
+  ]);
 }
 
 export interface FundingNormalizationStageStatusV2 {

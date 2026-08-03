@@ -78,15 +78,26 @@ Dry run ничего не пишет и не требует reviewer field. Лю
 plan digest: apply сохраняет свой свежий полный snapshot как evidence, а replay того же immutable
 плана не подменяет уже записанное evidence более поздними balance/reserved/spent значениями.
 
-Штатная команда запускается только из защищённого runtime-окружения с `DATABASE_URL`,
-`ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY`; OpenKeys читается напрямую на loopback
-`OPENKEYS_INTERNAL_BASE_URL` (по умолчанию `http://127.0.0.1:3410`) с отдельным
-`OPENKEYS_CONTROL_KEY` либо тем же server credential:
+Production dry-run запускается только через AdminGuard-protected commerce API. Оба POST требуют
+непустой проверенный `x-admin-actor`; mutation дополнительно требует осмысленный `reason`:
 
-```bash
-pnpm --filter @claude-api/db pricing:stage5-v2 dry_run
-pnpm --filter @claude-api/db pricing:stage5-v2 apply sha256:v2:<exact-dry-run-plan>
+```text
+POST /v1/admin/pricing-stage5-v2/dry-run
+{}
+
+POST /v1/admin/pricing-stage5-v2/materialize
+{"plan_digest":"sha256:v2:<exact-fresh-plan>","reason":"materialize reviewed full inventory"}
 ```
+
+Ответ — strict summary: source/plan digests, target/recovery generations и plan digests, total
+blocker count и полный exact blocker list. Dry-run не пишет даже audit row. Materialize заново
+собирает полный plan, отклоняет stale digest и атомарно с local
+run/plan пишет attributed audit request; dormant engine prepare/readback остаётся следующей частью
+той же идемпотентной операции. Runtime берёт `DATABASE_URL`, `ENGINE_BASE_URL`,
+`ENGINE_CONTROL_KEY`; OpenKeys читается напрямую на loopback `OPENKEYS_INTERNAL_BASE_URL` (по
+умолчанию `http://127.0.0.1:3410`) с отдельным `OPENKEYS_CONTROL_KEY` либо тем же server credential.
+Package CLI остаётся только диагностическим non-production entrypoint и не является разрешённым
+production control-plane или SSH-процедурой.
 
 Engine cursor исчерпывается дважды. Стабильность Stage 5 identity включает `account_id`, status и
 legacy scalar multiplier, но намеренно не включает меняющиеся `balance/reserved/spent` и funding

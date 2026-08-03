@@ -1,9 +1,11 @@
 import { Buffer } from "node:buffer";
-import type {
-  PricingCatalogSpec,
-  PricingReleasePolicyV2,
-  ProviderSwitchSpec,
-  ServiceAccountInventoryEntryV2,
+import {
+  pricingReleaseActivationOperatorV2Schema,
+  pricingStageControlMutationReasonV2Schema,
+  type PricingCatalogSpec,
+  type PricingReleasePolicyV2,
+  type ProviderSwitchSpec,
+  type ServiceAccountInventoryEntryV2,
 } from "@claude-api/contracts";
 import { EngineClient } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
@@ -34,6 +36,11 @@ export interface Stage5MaterializerV2Result {
   writes_committed: boolean;
   engine_prepared: boolean;
   status: "dry_run" | "blocked" | "planned" | "materializing";
+}
+
+export interface Stage5MaterializerV2Audit {
+  actorId: string;
+  reason: string;
 }
 
 interface StoredServiceRow {
@@ -303,7 +310,7 @@ async function ensureRun(
   client: PoolClient,
   plan: Stage5V2Plan,
   status: "blocked" | "planned",
-): Promise<string> {
+): Promise<{ runId: string; inserted: boolean }> {
   const inserted = await client.query<{ run_id: string }>(`
     INSERT INTO pricing_stage5_runs_v2 (
       schema_version, plan_digest, commerce_inventory_digest,
@@ -361,7 +368,52 @@ async function ensureRun(
       "stored Stage 5 run has different immutable content for the same plan digest",
     );
   }
-  return inserted.rows[0]?.run_id ?? runId;
+  return {
+    runId: inserted.rows[0]?.run_id ?? runId,
+    inserted: inserted.rowCount === 1,
+  };
+}
+
+async function recordStage5MaterializationAudit(
+  client: PoolClient,
+  runId: string,
+  plan: Stage5V2Plan,
+  status: "blocked" | "planned",
+  inserted: boolean,
+  audit: Stage5MaterializerV2Audit | undefined,
+): Promise<void> {
+  if (audit === undefined) return;
+  await client.query(`
+    INSERT INTO audit_log (
+      actor_type, actor_id, action, target_type, target_id, metadata
+    ) VALUES (
+      'admin', $1, 'pricing_stage5_materialization_requested',
+      'pricing_stage5_run_v2', $2,
+      jsonb_build_object(
+        'plan_digest', $3::text,
+        'target_generation', $4::text,
+        'target_plan_digest', $5::text,
+        'recovery_generation', $6::text,
+        'recovery_plan_digest', $7::text,
+        'blocker_count', $8::text,
+        'requested_status', $9::text,
+        'idempotent_replay', $10::boolean,
+        'reason', $11::text
+      )
+    )
+  `, [
+    audit.actorId,
+    runId,
+    plan.plan_digest,
+    String(plan.target_generation),
+    plan.target.content_digest,
+    String(plan.recovery_generation),
+    plan.recovery.content_digest,
+    String(plan.blockers.length),
+    status,
+    !inserted,
+    audit.reason,
+  ]);
 }
 
 async function ensureBlockers(
@@ -953,7 +1005,11 @@ async function ensureReleasePlan(client: PoolClient, release: Stage5V2ReleasePla
   }
 }
 
-async function persistBlockedPlan(database: Database, plan: Stage5V2Plan): Promise<string> {
+async function persistBlockedPlan(
+  database: Database,
+  plan: Stage5V2Plan,
+  audit?: Stage5MaterializerV2Audit,
+): Promise<string> {
   if (plan.engine_scan_first_digest !== plan.engine_scan_second_digest
       || plan.openkeys_scan_first_digest !== plan.openkeys_scan_second_digest) {
     throw new Stage5MaterializerV2Error(
@@ -973,8 +1029,10 @@ async function persistBlockedPlan(database: Database, plan: Stage5V2Plan): Promi
         "commerce or service authority changed after the exact Stage 5 plan was built",
       );
     }
-    const runId = await ensureRun(client, plan, "blocked");
+    const ensured = await ensureRun(client, plan, "blocked");
+    const runId = ensured.runId;
     await ensureBlockers(client, runId, plan.blockers);
+    await recordStage5MaterializationAudit(client, runId, plan, "blocked", ensured.inserted, audit);
     await client.query("COMMIT");
     return runId;
   } catch (error) {
@@ -985,7 +1043,11 @@ async function persistBlockedPlan(database: Database, plan: Stage5V2Plan): Promi
   }
 }
 
-async function persistLocalPlan(database: Database, plan: Stage5V2Plan): Promise<string> {
+async function persistLocalPlan(
+  database: Database,
+  plan: Stage5V2Plan,
+  audit?: Stage5MaterializerV2Audit,
+): Promise<string> {
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -998,7 +1060,8 @@ async function persistLocalPlan(database: Database, plan: Stage5V2Plan): Promise
         "commerce or service authority changed after the exact Stage 5 plan was built",
       );
     }
-    const runId = await ensureRun(client, plan, "planned");
+    const ensured = await ensureRun(client, plan, "planned");
+    const runId = ensured.runId;
     await ensureCapability(client, plan);
     for (const catalog of plan.catalogs) await ensureCatalog(client, catalog);
     await ensureSwitches(client, plan.switches);
@@ -1006,6 +1069,7 @@ async function persistLocalPlan(database: Database, plan: Stage5V2Plan): Promise
     await ensureInvitationSnapshots(client, plan);
     await ensureReleasePlan(client, plan.target);
     await ensureReleasePlan(client, plan.recovery);
+    await recordStage5MaterializationAudit(client, runId, plan, "planned", ensured.inserted, audit);
     await client.query("COMMIT");
     return runId;
   } catch (error) {
@@ -1183,8 +1247,13 @@ export async function runStage5MaterializerV2(
   options: {
     mode: Stage5MaterializerV2Mode;
     expectedPlanDigest?: string;
+    audit?: Stage5MaterializerV2Audit;
   },
 ): Promise<Stage5MaterializerV2Result> {
+  const audit = options.audit === undefined ? undefined : {
+    actorId: pricingReleaseActivationOperatorV2Schema.parse(options.audit.actorId.trim()),
+    reason: pricingStageControlMutationReasonV2Schema.parse(options.audit.reason),
+  };
   if (options.mode === "apply" && options.expectedPlanDigest === undefined) {
     throw new Stage5MaterializerV2Error(
       "expected_plan_digest_required",
@@ -1213,7 +1282,7 @@ export async function runStage5MaterializerV2(
     );
   }
   if (plan.blockers.length > 0) {
-    const runId = await persistBlockedPlan(database, plan);
+    const runId = await persistBlockedPlan(database, plan, audit);
     return {
       mode: "apply",
       plan,
@@ -1223,7 +1292,7 @@ export async function runStage5MaterializerV2(
       status: "blocked",
     };
   }
-  const runId = await persistLocalPlan(database, plan);
+  const runId = await persistLocalPlan(database, plan, audit);
   const acks = await prepareEngineArtifacts(engine, plan);
   await persistPrepareAcks(database, runId, plan, acks);
   return {

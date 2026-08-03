@@ -347,11 +347,34 @@ describe.runIf(Boolean(connectionString))("funding normalization jobs", () => {
 
     const firstId = await stageFundingNormalizationJobV2(database, {
       planDigest: lineage.planDigest,
+      audit: {
+        actorId: "operator@example.test",
+        reason: "normalize the reviewed complete inventory",
+      },
     });
     const replayId = await stageFundingNormalizationJobV2(database, {
       planDigest: lineage.planDigest,
     });
     expect(replayId).toBe(firstId);
+    const audits = await seed.query<{
+      actor_id: string;
+      target_id: string;
+      metadata: Record<string, unknown>;
+    }>(`
+      SELECT actor_id, target_id, metadata
+      FROM audit_log
+      WHERE action = 'pricing_stage6_funding_normalization_stage_requested'
+      ORDER BY id
+    `);
+    expect(audits.rows).toEqual([{
+      actor_id: "operator@example.test",
+      target_id: firstId,
+      metadata: expect.objectContaining({
+        stage5_plan_digest: lineage.planDigest,
+        idempotent_replay: false,
+        reason: "normalize the reviewed complete inventory",
+      }),
+    }]);
     await expect(getFundingNormalizationStageStatusV2(database, lineage.planDigest)).resolves.toMatchObject({
       stage5_status: "materializing",
       target_status: "materializing",

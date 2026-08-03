@@ -47,9 +47,12 @@ exact producer SHA `packages/contracts` валидирует strict release/fund
 application consumer: exhaustive cursor scans, exact service exclusion, fresh GET перед каждым
 account-local POST, full-coverage parent confirmation, одинаковое target/recovery funding evidence
 и prepare+readback обоих releases/recovery link. Job staging/status привязан к exact Stage 5 plan
-digest и доступен через DB package entrypoint только будущему защищённому production control-plane;
-CLI не является разрешением на ручной SSH. Наличие transport-методов или runner без явно staged
-job не запускает backfill, не создаёт Stage 8 evidence и не активирует release.
+digest. Production producer — AdminGuard-protected `apps/api` endpoints для Stage 5 dry-run /
+materialize и Stage 6 status / stage: они требуют verified `x-admin-actor`, exact plan digest,
+meaningful mutation reason, strict `packages/contracts` response и attributed transactional audit.
+DB package CLI остаётся non-production diagnostic и не является разрешением на ручной SSH. Наличие
+transport-методов или runner без явно staged job не запускает backfill, не создаёт Stage 8 evidence
+и не активирует release.
 После зелёного assignment-extension и provisioning-context producer SHA consumers используют только
 цепочку strict `packages/contracts` → typed/canonical `packages/engine-client`. Commerce key issuance
 идёт дальше через `packages/db/src/pricing-provisioning-v2.ts`; OpenKeys issuance и service-account
@@ -98,9 +101,9 @@ snapshot и fail-closed stage'ит только explicit cutover/recovery пос
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, canonical models и catalog pins; target pricing — global B2C/provider/model rules, B2B, OpenKeys 1:1, service `meter_only`, pricing releases | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | `docs/commerce/MULTI-DISCOUNT.md` |
+| `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, canonical models и catalog pins; target pricing — global B2C/provider/model rules, B2B, OpenKeys 1:1, service `meter_only`, pricing releases; strict Stage 5/6 admin request/status summaries | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | `docs/commerce/MULTI-DISCOUNT.md` |
 | `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
-| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; per-service CAS `/service-account-inventory/*` сверяет полный engine inventory и после cutover завершает exact `meter_only` release-v2 policy/extension до durable registration; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `packages/db` Stage 5 v2 читает durable `service_account_inventory_v2` в одном commerce snapshot; engine Control API — через typed `packages/engine-client`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/engine/CONTROL_API.md` |
+| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; protected Stage 5 dry-run/materialize и Stage 6 status/stage требуют verified actor, exact plan digest и audit mutation reason; per-service CAS `/service-account-inventory/*` сверяет полный engine inventory и после cutover завершает exact `meter_only` release-v2 policy/extension до durable registration; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | будущий отдельный `apps/admin` Stage 5/6 UI consumer подключается только после GREEN producer; `packages/db` materializer/orchestration; engine Control API — через typed `packages/engine-client`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE6.md`, `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 | `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
 | `apps/openkeys` (pricing inventory producer) | loopback/internal GET `/api/internal/pricing/v2/inventory`, bounded cursor + full `sha256:v2` manifest под `X-OpenKeys-Control-Key`; без secrets/live money | `packages/db` Stage 5/Stage 8 consumers и activation first-delivery preflight исчерпывают cursor дважды и требуют один неизменный full-manifest digest; подключены только после GREEN producer SHA | `docs/product/OPENKEYS.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/ops/DEPLOYMENT.md` |
 | `apps/sales-api` (публичный + админ API) | `partners.apitoken.sale/v1/*`; `/v1/admin` через Caddy `admin.apitoken.sale/partner-admin/*`, заголовок `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |

@@ -10,7 +10,28 @@ const requiredEnvironment = {
 
 describe("commercial API configuration", () => {
   it("keeps email verification disabled by default", () => {
-    expect(validateEnvironment(requiredEnvironment).EMAIL_VERIFICATION_REQUIRED).toBe(false);
+    const environment = validateEnvironment(requiredEnvironment);
+    expect(environment.EMAIL_VERIFICATION_REQUIRED).toBe(false);
+    expect(environment.OPENKEYS_INTERNAL_BASE_URL).toBe("http://127.0.0.1:3410");
+    expect(environment.OPENKEYS_CONTROL_KEY).toBeUndefined();
+  });
+
+  it("accepts a dedicated OpenKeys Stage 5 credential only on a safe internal origin", () => {
+    const environment = validateEnvironment({
+      ...requiredEnvironment,
+      OPENKEYS_INTERNAL_BASE_URL: "http://127.0.0.1:4410",
+      OPENKEYS_CONTROL_KEY: "o".repeat(32),
+    });
+    expect(environment.OPENKEYS_INTERNAL_BASE_URL).toBe("http://127.0.0.1:4410");
+    expect(environment.OPENKEYS_CONTROL_KEY).toBe("o".repeat(32));
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      OPENKEYS_INTERNAL_BASE_URL: "http://openkeys.example.test",
+    })).toThrow("HTTP OPENKEYS_INTERNAL_BASE_URL is allowed only for loopback hosts");
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      OPENKEYS_CONTROL_KEY: "too-short",
+    })).toThrow();
   });
 
   it("accepts an explicit email verification switch", () => {

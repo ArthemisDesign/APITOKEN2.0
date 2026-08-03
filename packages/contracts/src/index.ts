@@ -994,6 +994,93 @@ export const pricingReleaseActivationOperatorV2Schema = z.string().min(1).max(20
 export const pricingReleaseActivationReasonV2Schema = z.string().min(1).max(2_000)
   .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "reason contains control characters");
 
+/** Protected commerce operator contract for the pre-activation Stage 5/6 control-plane. */
+export const pricingStageControlMutationReasonV2Schema = z.string().trim().min(3).max(2_000)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "reason contains control characters");
+
+export const pricingStage5DryRunRequestV2Schema = z.object({}).strict();
+export type PricingStage5DryRunRequestV2 = z.infer<typeof pricingStage5DryRunRequestV2Schema>;
+
+export const pricingStage5MaterializeRequestV2Schema = z.object({
+  plan_digest: canonicalSha256V2Schema,
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingStage5MaterializeRequestV2 =
+  z.infer<typeof pricingStage5MaterializeRequestV2Schema>;
+
+export const pricingStage5BlockerV2Schema = z.object({
+  blocker_code: z.string().min(1).max(200),
+  blocker_context: z.enum(["commerce", "engine", "openkeys", "service", "funding", "release"]),
+  subject_id: z.string().min(1).max(500),
+  detail: z.string().min(1).max(2_000),
+  blocker_digest: canonicalSha256V2Schema,
+}).strict();
+export type PricingStage5BlockerV2 = z.infer<typeof pricingStage5BlockerV2Schema>;
+
+export const pricingStage5ControlResultV2Schema = z.object({
+  mode: z.enum(["dry_run", "apply"]),
+  status: z.enum(["dry_run", "blocked", "planned", "materializing"]),
+  plan_digest: canonicalSha256V2Schema,
+  run_id: z.string().uuid().nullable(),
+  writes_committed: z.boolean(),
+  engine_prepared: z.boolean(),
+  commerce_inventory_digest: canonicalSha256V2Schema,
+  engine_scan_first_digest: canonicalSha256V2Schema,
+  engine_scan_second_digest: canonicalSha256V2Schema,
+  openkeys_scan_first_digest: canonicalSha256V2Schema,
+  openkeys_scan_second_digest: canonicalSha256V2Schema,
+  service_inventory_digest: canonicalSha256V2Schema,
+  funding_plan_digest: canonicalSha256V2Schema,
+  target_generation: z.number().int().safe().positive(),
+  target_plan_digest: canonicalSha256V2Schema,
+  recovery_generation: z.number().int().safe().positive(),
+  recovery_plan_digest: canonicalSha256V2Schema,
+  blocker_count: z.number().int().safe().nonnegative(),
+  blockers: z.array(pricingStage5BlockerV2Schema),
+}).strict();
+export type PricingStage5ControlResultV2 = z.infer<typeof pricingStage5ControlResultV2Schema>;
+
+export const pricingStage6PlanQueryV2Schema = z.object({
+  plan_digest: canonicalSha256V2Schema,
+}).strict();
+export type PricingStage6PlanQueryV2 = z.infer<typeof pricingStage6PlanQueryV2Schema>;
+
+export const pricingStage6StageRequestV2Schema = pricingStage6PlanQueryV2Schema.extend({
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingStage6StageRequestV2 = z.infer<typeof pricingStage6StageRequestV2Schema>;
+
+const pricingStageControlPositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) > 0n,
+  "value must be positive",
+);
+export const pricingStage6StatusV2Schema = z.object({
+  stage5_plan_digest: canonicalSha256V2Schema,
+  stage5_status: z.enum(["blocked", "planned", "materializing", "prepared", "failed"]),
+  target_generation: pricingStageControlPositiveIntegerV2Schema,
+  target_plan_digest: canonicalSha256V2Schema,
+  target_release_digest: canonicalSha256V2Schema.nullable(),
+  target_status: z.enum(["planned", "materializing", "prepared", "active", "superseded", "failed"]),
+  recovery_generation: pricingStageControlPositiveIntegerV2Schema,
+  recovery_plan_digest: canonicalSha256V2Schema,
+  recovery_release_digest: canonicalSha256V2Schema.nullable(),
+  recovery_status: z.enum(["planned", "materializing", "prepared", "active", "superseded", "failed"]),
+  staged_job_id: z.string().uuid().optional(),
+  job_id: z.string().uuid().nullable(),
+  job_status: z.enum(["pending", "processing", "retry", "confirmed", "dead"]).nullable(),
+  job_attempts: z.number().int().safe().nonnegative().nullable(),
+  job_last_error: z.string().nullable(),
+  job_result_digest: canonicalSha256V2Schema.nullable(),
+  pending_accounts: z.number().int().safe().nonnegative(),
+  processing_accounts: z.number().int().safe().nonnegative(),
+  retry_accounts: z.number().int().safe().nonnegative(),
+  ready_accounts: z.number().int().safe().nonnegative(),
+  blocker_accounts: z.number().int().safe().nonnegative(),
+  target_funding_manifest_digest: canonicalSha256V2Schema.nullable(),
+  recovery_funding_manifest_digest: canonicalSha256V2Schema.nullable(),
+}).strict();
+export type PricingStage6StatusV2 = z.infer<typeof pricingStage6StatusV2Schema>;
+
 export const pricingReleaseActivationStageRequestV2Schema = z.object({
   activation_kind: pricingReleaseActivationKindV2Schema,
   evidence_digest: canonicalSha256V2Schema,

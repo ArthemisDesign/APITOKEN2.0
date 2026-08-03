@@ -262,6 +262,40 @@ candidate; an actual above the checked scalar quote is an invariant failure. Use
 evidence; account, key, request, and model identities belong only in protected durable attribution,
 never metric labels or error storms.
 
+## Managed Stage 5/6 preparation
+
+Production Stage 5/6 is driven only through the AdminGuard-protected commerce API. Do not run the
+package CLIs over SSH, invoke migration SQL manually, pause traffic, stop money writers or wait for
+zero inflight reservations. The API is reachable through the authenticated admin Caddy route
+(`/admin/pricing-stage5-v2/*`, `/admin/pricing-stage6-v2*`) and as `/v1/admin/*` on the protected
+loopback commerce origin. Caddy or the server operator supplies the admin credential; every request
+also requires the verified `x-admin-actor`. Never print either credential.
+
+Use this order:
+
+1. `POST /v1/admin/pricing-stage5-v2/dry-run` with `{}`. Review the returned exact
+   `plan_digest`, all source digests, target/recovery plan identities, `blocker_count` and the full
+   exact blocker list. Do not infer an omitted owner or classification.
+2. Do not materialize a report with unresolved ownership/inventory blockers. Fix the authority by
+   its normal producer, repeat the full dry-run, and use only the newest digest.
+3. `POST /v1/admin/pricing-stage5-v2/materialize` with exact `plan_digest` and a meaningful
+   `reason`. The server repeats both exhaustive inventories. A stale digest fails before local
+   commit. A stable blocker-free plan persists dormant target/recovery skeletons and exact engine
+   prepare/readback ACKs; it does not create Stage 6, move a head, change a balance or affect
+   admission. The local request and operator audit commit together.
+4. Read `GET /v1/admin/pricing-stage6-v2?plan_digest=...`. Stage only an exact fully ACKed Stage 5
+   run in `materializing` state.
+5. `POST /v1/admin/pricing-stage6-v2/stage` with the same digest and a meaningful `reason`. Job
+   creation and attributed audit commit together; replay is idempotent and returns the same job.
+6. Poll the paired GET until the parent is `confirmed`, both releases are `prepared`, every balance
+   account is `ready`, all pending/processing/retry/blocker counts are zero, and both funding
+   manifest digests are present and equal. A `dead` parent or blocker is diagnosed and fixed in
+   code/authority without stopping unrelated accounts.
+
+Stage 5/6 completion is this production evidence, not deployed dormant code or a successful local
+integration test. Neither operation stages Stage 8/9 activation; the global release head remains
+unchanged throughout.
+
 ## Stage 8 synchronization evidence
 
 Stage 8 is read-only full-inventory evidence for the zero-downtime release described in

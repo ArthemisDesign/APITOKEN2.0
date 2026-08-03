@@ -5,9 +5,15 @@ import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
   pricingReleaseActivationStageResponseV2Schema,
+  pricingStage5ControlResultV2Schema,
+  pricingStage6StatusV2Schema,
   pricingStage8CaptureControlV2Schema,
   pricingStage8CaptureStageResponseV2Schema,
   type PricingReleaseActivationStageRequestV2,
+  type PricingStage5ControlResultV2,
+  type PricingStage5MaterializeRequestV2,
+  type PricingStage6StageRequestV2,
+  type PricingStage6StatusV2,
   type PricingStage8CaptureStageRequestV2,
   type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
@@ -18,6 +24,7 @@ import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
+  createStage5OpenKeysInventoryReaderV2,
   createBusinessInvite,
   decodeAuthEncryptionKey,
   decryptAuthToken,
@@ -25,6 +32,7 @@ import {
   evaluateRefundEligibility,
   getManagedPricingPolicy,
   getManagedPricingCatalog,
+  getFundingNormalizationStageStatusV2,
   listManagedServicePricingPolicies,
   engineAccountIdentityInventoryDigestV2,
   getBusinessInviteToken,
@@ -34,10 +42,12 @@ import {
   readServiceAccountInventoryV2,
   readPricingReleaseActivationControlV2,
   readPricingStage8CaptureControlV2,
+  runStage5MaterializerV2,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
   stagePricingReleaseActivationJobV2,
+  stageFundingNormalizationJobV2,
   stagePricingStage8CaptureJobV2,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
@@ -47,6 +57,7 @@ import {
   type Database,
   type PricingReleaseActivationControlV2,
   type PricingStage8CaptureControlV2,
+  type Stage5MaterializerV2Result,
 } from "@claude-api/db";
 import {
   EngineClient,
@@ -214,6 +225,51 @@ export class AdminService {
 
   async getServiceAccountInventoryV2(): Promise<unknown> {
     return readServiceAccountInventoryV2(this.database);
+  }
+
+  async dryRunPricingStage5V2(): Promise<PricingStage5ControlResultV2> {
+    const result = await runStage5MaterializerV2(
+      this.database,
+      this.engine,
+      this.stage5OpenKeysInventoryReaderV2(),
+      { mode: "dry_run" },
+    );
+    return serializePricingStage5ControlResultV2(result);
+  }
+
+  async materializePricingStage5V2(
+    input: PricingStage5MaterializeRequestV2,
+    actorId: string,
+  ): Promise<PricingStage5ControlResultV2> {
+    const result = await runStage5MaterializerV2(
+      this.database,
+      this.engine,
+      this.stage5OpenKeysInventoryReaderV2(),
+      {
+        mode: "apply",
+        expectedPlanDigest: input.plan_digest,
+        audit: { actorId, reason: input.reason },
+      },
+    );
+    return serializePricingStage5ControlResultV2(result);
+  }
+
+  async getPricingStage6V2(planDigest: string): Promise<PricingStage6StatusV2> {
+    return pricingStage6StatusV2Schema.parse(
+      await getFundingNormalizationStageStatusV2(this.database, planDigest),
+    );
+  }
+
+  async stagePricingStage6V2(
+    input: PricingStage6StageRequestV2,
+    actorId: string,
+  ): Promise<PricingStage6StatusV2> {
+    const stagedJobId = await stageFundingNormalizationJobV2(this.database, {
+      planDigest: input.plan_digest,
+      audit: { actorId, reason: input.reason },
+    });
+    const status = await getFundingNormalizationStageStatusV2(this.database, input.plan_digest);
+    return pricingStage6StatusV2Schema.parse({ staged_job_id: stagedJobId, ...status });
   }
 
   async getPricingReleaseActivationControlV2(): Promise<Record<string, unknown>> {
@@ -425,6 +481,14 @@ export class AdminService {
       );
     }
     return second;
+  }
+
+  private stage5OpenKeysInventoryReaderV2() {
+    return createStage5OpenKeysInventoryReaderV2({
+      baseUrl: this.config.get("OPENKEYS_INTERNAL_BASE_URL", { infer: true }),
+      controlKey: this.config.get("OPENKEYS_CONTROL_KEY", { infer: true })
+        ?? this.config.get("ENGINE_CONTROL_KEY", { infer: true }),
+    });
   }
 
   async updateManagedPricingPolicy(
@@ -728,6 +792,32 @@ function serializePricingStage8CaptureControlV2(
       completed_at: artifact.completedAt?.toISOString() ?? null,
       created_at: artifact.createdAt.toISOString(),
     })),
+  });
+}
+
+function serializePricingStage5ControlResultV2(
+  result: Stage5MaterializerV2Result,
+): PricingStage5ControlResultV2 {
+  return pricingStage5ControlResultV2Schema.parse({
+    mode: result.mode,
+    status: result.status,
+    plan_digest: result.plan.plan_digest,
+    run_id: result.run_id,
+    writes_committed: result.writes_committed,
+    engine_prepared: result.engine_prepared,
+    commerce_inventory_digest: result.plan.commerce_inventory_digest,
+    engine_scan_first_digest: result.plan.engine_scan_first_digest,
+    engine_scan_second_digest: result.plan.engine_scan_second_digest,
+    openkeys_scan_first_digest: result.plan.openkeys_scan_first_digest,
+    openkeys_scan_second_digest: result.plan.openkeys_scan_second_digest,
+    service_inventory_digest: result.plan.service_inventory_digest,
+    funding_plan_digest: result.plan.funding_plan_digest,
+    target_generation: result.plan.target_generation,
+    target_plan_digest: result.plan.target.content_digest,
+    recovery_generation: result.plan.recovery_generation,
+    recovery_plan_digest: result.plan.recovery.content_digest,
+    blocker_count: result.plan.blockers.length,
+    blockers: result.plan.blockers,
   });
 }
 

@@ -245,6 +245,10 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
     const applied = await runStage5MaterializerV2(database, authorities.engine, authorities.openkeys, {
       mode: "apply",
       expectedPlanDigest: dryRun.plan.plan_digest,
+      audit: {
+        actorId: "operator@example.test",
+        reason: "materialize the reviewed complete inventory",
+      },
     });
     expect(applied).toMatchObject({
       status: "materializing",
@@ -293,6 +297,7 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
       capability_head: string;
       catalog_heads: string;
       switch_head: string;
+      audits: string;
     }>(`
       SELECT
         (SELECT count(*)::text FROM pricing_release_assignments_v2) AS assignments,
@@ -301,8 +306,13 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
         (SELECT count(*)::text FROM pricing_release_control_jobs_v2) AS control_jobs,
         (SELECT count(*)::text FROM provider_capability_head) AS capability_head,
         (SELECT count(*)::text FROM product_catalog_heads) AS catalog_heads,
-        (SELECT count(*)::text FROM provider_switch_head) AS switch_head
-    `);
+        (SELECT count(*)::text FROM provider_switch_head) AS switch_head,
+        (SELECT count(*)::text FROM audit_log
+          WHERE action = 'pricing_stage5_materialization_requested'
+            AND actor_id = 'operator@example.test'
+            AND metadata->>'plan_digest' = $1
+            AND metadata->>'reason' = 'materialize the reviewed complete inventory') AS audits
+    `, [dryRun.plan.plan_digest]);
     expect(counts.rows[0]).toEqual({
       assignments: "8",
       policies: "5",
@@ -311,6 +321,7 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
       capability_head: "0",
       catalog_heads: "0",
       switch_head: "0",
+      audits: "1",
     });
     expect(authorities.prepared.catalogs).toHaveLength(2);
     expect(authorities.prepared.switches).toHaveLength(1);

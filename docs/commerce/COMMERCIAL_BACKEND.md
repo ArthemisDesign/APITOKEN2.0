@@ -232,31 +232,35 @@ independent exact snapshots, and redemption copies the selected invitation versi
 client policy before provisioning.
 
 Stage 5 v2 consumes the already deployed engine/OpenKeys/service producers without changing a live
-head. It requires a fresh dry-run digest and then performs one idempotent full-class apply:
+head. Production uses only the AdminGuard-protected API with a verified `x-admin-actor`; it requires
+a fresh dry-run digest and then performs one attributed idempotent full-class apply:
 
-```bash
-pnpm --filter @claude-api/db pricing:stage5-v2 dry_run
-pnpm --filter @claude-api/db pricing:stage5-v2 apply sha256:v2:<exact-plan-digest>
+```text
+POST /v1/admin/pricing-stage5-v2/dry-run       body: {}
+POST /v1/admin/pricing-stage5-v2/materialize   body: {plan_digest, reason}
 ```
 
-The command exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
+The operation exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
 `REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact
 prepare+readback ACKs for dormant catalogs, switches and policies. It never creates a Stage 6 job,
 prepares an engine release or moves capability/catalog/switch/release heads. Runtime credentials
 come only from `DATABASE_URL`, `ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY` and optional loopback
-`OPENKEYS_INTERNAL_BASE_URL` / `OPENKEYS_CONTROL_KEY`; they are not command arguments or output.
+`OPENKEYS_INTERNAL_BASE_URL` / `OPENKEYS_CONTROL_KEY`; they are not request fields or output. The
+strict response exposes exact source/plan lineage and the complete blocker list. Materialization audit
+is committed with the local plan request; dry-run remains write-free.
 
 Stage 6 is explicitly staged and observed by the exact Stage 5 plan digest:
 
-```bash
-pnpm --filter @claude-api/db pricing:stage6-v2 status sha256:v2:<exact-stage5-plan-digest>
-pnpm --filter @claude-api/db pricing:stage6-v2 stage sha256:v2:<exact-stage5-plan-digest>
+```text
+GET  /v1/admin/pricing-stage6-v2?plan_digest=<exact-stage5-plan-digest>
+POST /v1/admin/pricing-stage6-v2/stage   body: {plan_digest, reason}
 ```
 
-The CLI reads only `DATABASE_URL`; the deployed worker performs bounded account-local engine
-normalization and target/recovery prepare. It never creates an activation job or advances a head.
-The entrypoint must be invoked by the protected production control-plane, not through ad-hoc SSH;
-until that operation records a confirmed production job, Stage 6 is not complete.
+The protected API reads only commerce state; the deployed worker performs bounded account-local
+engine normalization and target/recovery prepare. Staging and its operator/reason audit commit in
+one transaction. It never creates an activation job or advances a head. Package CLIs are
+non-production diagnostics and must not be invoked through ad-hoc SSH; until the managed job is
+`confirmed`, Stage 6 is not complete.
 
 Stage 8 consumes the canonical schema-v2 engine report and emits one combined synchronization
 identity through the managed durable workflow described in `docs/ops/DEPLOYMENT.md`. Production

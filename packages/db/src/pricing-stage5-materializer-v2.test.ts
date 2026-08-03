@@ -13,6 +13,7 @@ import {
   buildStage5ServiceInventoryV2,
   buildStage5V2CatalogsAndSwitches,
   buildStage5V2Plan,
+  createStage5OpenKeysInventoryReaderV2,
   scanStage5EngineInventoryV2,
   scanStage5OpenKeysInventoryV2,
   stage5V2Digest,
@@ -300,6 +301,28 @@ describe("pricing Stage 5 v2 planner", () => {
 });
 
 describe("pricing Stage 5 v2 exhaustive scanners", () => {
+  it("normalizes OpenKeys transport and strict-contract failures without leaking credentials", async () => {
+    const unavailable = createStage5OpenKeysInventoryReaderV2({
+      baseUrl: "http://127.0.0.1:3410",
+      controlKey: "secret-control-key",
+      fetch: async () => { throw new Error("request contained secret-control-key"); },
+    });
+    await expect(unavailable.getPage({ limit: 500 })).rejects.toMatchObject({
+      code: "openkeys_inventory_unavailable",
+      message: "OpenKeys inventory request failed",
+    });
+
+    const malformed = createStage5OpenKeysInventoryReaderV2({
+      baseUrl: "http://127.0.0.1:3410",
+      controlKey: "secret-control-key",
+      fetch: async () => new Response(JSON.stringify({ inventory: { accounts: [] } }), { status: 200 }),
+    });
+    await expect(malformed.getPage({ limit: 500 })).rejects.toMatchObject({
+      code: "openkeys_inventory_malformed",
+      message: "OpenKeys inventory response does not match the strict contract",
+    });
+  });
+
   it("exhausts the engine cursor and hashes stable identity separately from money", async () => {
     const pages = [
       {

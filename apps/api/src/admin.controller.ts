@@ -18,6 +18,10 @@ import {
   createBusinessInviteSchema,
   pricingReleaseActivationOperatorV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
+  pricingStage5DryRunRequestV2Schema,
+  pricingStage5MaterializeRequestV2Schema,
+  pricingStage6PlanQueryV2Schema,
+  pricingStage6StageRequestV2Schema,
   pricingStage8CaptureStageRequestV2Schema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
@@ -29,11 +33,14 @@ import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
+  FundingNormalizationJobV2Error,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  Stage5MaterializerV2Error,
   PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
+import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
 import { AdminGuard } from "./admin.guard.js";
 import {
@@ -226,6 +233,74 @@ export class AdminController {
   @Header("Cache-Control", "no-store")
   getServiceAccountInventoryV2(): Promise<unknown> {
     return this.admin.getServiceAccountInventoryV2();
+  }
+
+  @Post("pricing-stage5-v2/dry-run")
+  @Header("Cache-Control", "no-store")
+  async dryRunPricingStage5V2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage5DryRunRequestV2Schema.safeParse(body ?? {});
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.dryRunPricingStage5V2();
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
+  @Post("pricing-stage5-v2/materialize")
+  @Header("Cache-Control", "no-store")
+  async materializePricingStage5V2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage5MaterializeRequestV2Schema.safeParse(body);
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    const actor = verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.materializePricingStage5V2(input.data, actor);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
+  @Get("pricing-stage6-v2")
+  @Header("Cache-Control", "no-store")
+  async getPricingStage6V2(
+    @Query("plan_digest") planDigest: string | undefined,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage6PlanQueryV2Schema.safeParse({ plan_digest: planDigest });
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.getPricingStage6V2(input.data.plan_digest);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
+  @Post("pricing-stage6-v2/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingStage6V2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage6StageRequestV2Schema.safeParse(body);
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    const actor = verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.stagePricingStage6V2(input.data, actor);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
   }
 
   @Get("pricing-release-activation-v2")
@@ -460,6 +535,12 @@ function adminActor(value: string | undefined): string {
   return actor ? actor.slice(0, 200) : "admin-panel";
 }
 
+function verifiedAdminActor(value: string | undefined): string {
+  const actor = pricingReleaseActivationOperatorV2Schema.safeParse(value?.trim());
+  if (!actor.success) throw new BadRequestException("verified admin actor is required");
+  return actor.data;
+}
+
 function assertUuid(value: string, label: string): void {
   if (!uuidSchema.safeParse(value).success) throw new BadRequestException(`${label} must be a UUID`);
 }
@@ -487,4 +568,16 @@ function throwPricingPolicyHttpError(error: unknown): void {
     throw new BadRequestException(error.message);
   }
   throw new HttpException(error.message, 409);
+}
+
+function throwPricingStageControlHttpError(error: unknown): void {
+  if (error instanceof Stage5MaterializerV2Error) {
+    throw new HttpException(error.message, error.code.endsWith("_unavailable") ? 503 : 409);
+  }
+  if (error instanceof FundingNormalizationJobV2Error) {
+    throw new HttpException(error.message, error.terminal ? 409 : 503);
+  }
+  if (error instanceof EngineClientError) {
+    throw new HttpException(error.message, error.retryable ? 503 : 409);
+  }
 }

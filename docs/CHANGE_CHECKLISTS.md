@@ -63,6 +63,10 @@ withdrawal: публичные поверхности снимаются, а imm
 - [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service и bonus.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` + Stage 5/6/8/9 — target/recovery release, full inventory,
       100% shadow и one-head activation; per-account canary/maintenance rollout не добавлять.
+- [ ] Production Stage 5/6 запускается только защищённым AdminGuard producer API: verified actor,
+      fresh exact plan digest, meaningful mutation reason, attributed audit и strict status;
+      package CLI/ручной SSH не считать operator surface. UI consumer подключать отдельным
+      коммитом только после GREEN producer SHA.
 - [ ] B2B current discount остаётся independent Anthropic rule; OpenKeys остаётся 1:1; service
       остаётся `meter_only` и all-model. Явно отметить неприменимые классы.
 - [ ] Партнёрские расчёты: `docs/sales/SALES_PAYOUT_PERIODS.md`, логика `apps/sales-api` —

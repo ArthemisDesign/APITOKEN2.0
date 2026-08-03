@@ -340,28 +340,51 @@ export function createStage5OpenKeysInventoryReaderV2(input: {
       if (options.afterAccountId !== undefined) {
         url.searchParams.set("after_account_id", options.afterAccountId);
       }
-      const response = await fetchImpl(url, {
-        headers: {
-          accept: "application/json",
-          "x-openkeys-control-key": input.controlKey,
-        },
-      });
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          headers: {
+            accept: "application/json",
+            "x-openkeys-control-key": input.controlKey,
+          },
+        });
+      } catch {
+        throw new Stage5MaterializerV2Error(
+          "openkeys_inventory_unavailable",
+          "OpenKeys inventory request failed",
+        );
+      }
       if (!response.ok) {
         throw new Stage5MaterializerV2Error(
           "openkeys_inventory_unavailable",
           `OpenKeys inventory returned HTTP ${response.status}`,
         );
       }
-      const payload = await response.json() as unknown;
+      let payload: unknown;
+      try {
+        payload = await response.json() as unknown;
+      } catch {
+        throw new Stage5MaterializerV2Error(
+          "openkeys_inventory_malformed",
+          "OpenKeys inventory response is not valid JSON",
+        );
+      }
       if (payload === null || typeof payload !== "object" || !("inventory" in payload)) {
         throw new Stage5MaterializerV2Error(
           "openkeys_inventory_malformed",
           "OpenKeys inventory response has no strict inventory envelope",
         );
       }
-      return openKeysPricingInventoryPageV2Schema.parse(
+      const parsed = openKeysPricingInventoryPageV2Schema.safeParse(
         (payload as { inventory: unknown }).inventory,
       );
+      if (!parsed.success) {
+        throw new Stage5MaterializerV2Error(
+          "openkeys_inventory_malformed",
+          "OpenKeys inventory response does not match the strict contract",
+        );
+      }
+      return parsed.data;
     },
   };
 }
