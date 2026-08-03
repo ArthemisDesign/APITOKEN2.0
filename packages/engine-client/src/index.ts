@@ -13,6 +13,8 @@ import {
   fundingNormalizationApplyResultV2Schema,
   fundingNormalizationPlanV2Schema,
   issuedEngineApiKeySchema,
+  lockedOpenkeysPolicyTransitionIdentitySchema,
+  lockedOpenkeysPolicyTransitionRequestSchema,
   policyActiveExpectationSchema,
   pricingActiveExpectationSchema,
   pricingCatalogSpecSchema,
@@ -43,6 +45,8 @@ import {
   type FundingNormalizationApplyResultV2,
   type FundingNormalizationPlanV2,
   type IssuedEngineApiKey,
+  type LockedOpenkeysPolicyTransitionIdentity,
+  type LockedOpenkeysPolicyTransitionRequest,
   type PolicyActiveExpectation,
   type PricingActiveExpectation,
   type PricingCatalogSpec,
@@ -612,6 +616,42 @@ export class EngineClient {
       throw new EngineClientError("engine pricing ACK identity does not match the request", undefined, false);
     }
     return ack;
+  }
+
+  async lockedOpenkeysPolicyTransition(
+    accountId: string,
+    input: LockedOpenkeysPolicyTransitionRequest,
+  ): Promise<TypedPricingMutationAck<LockedOpenkeysPolicyTransitionIdentity>> {
+    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
+    const request = lockedOpenkeysPolicyTransitionRequestSchema.parse(input);
+    if (request.policy.account_id !== targetAccountId) {
+      throw new EngineClientError(
+        "locked OpenKeys transition policy does not match the target account",
+        undefined,
+        false,
+      );
+    }
+    const expectedIdentity: LockedOpenkeysPolicyTransitionIdentity = {
+      policy: request.policy,
+      active: {
+        target: {
+          version: request.policy.effective_version,
+          content_digest: request.policy.content_digest,
+        },
+        binding: {
+          policy_enforcement: "shadow",
+          funding_enforcement: "legacy_single",
+          reconciliation_state: "verified",
+        },
+      },
+      expected_active: request.expected_active,
+    };
+    return this.pricingMutation(
+      `/admin/pricing/policy/${encodeURIComponent(targetAccountId)}/locked-openkeys-transition`,
+      request,
+      lockedOpenkeysPolicyTransitionIdentitySchema,
+      expectedIdentity,
+    );
   }
 
   async preparePricingReleasePolicyV2(

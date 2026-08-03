@@ -20,7 +20,7 @@
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
-| `crates/server` + `crates/forward` + `crates/registry` locked-OpenKeys producer | `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`: strict exact request, atomic immutable successor insert + binding CAS, only managed provider-level 1:1 rules, fixed `shadow + legacy_single + verified` target; generic replacement lock remains intact | after GREEN exact producer SHA: `packages/contracts` → `packages/engine-client` → protected commerce rollout worker; no direct caller and no consumer in the producer commit | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI-DISCOUNT.md` |
+| `crates/server` + `crates/forward` + `crates/registry` locked-OpenKeys producer | `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`: strict exact request, atomic immutable successor insert + binding CAS, only managed provider-level 1:1 rules, fixed `shadow + legacy_single + verified` target; generic replacement lock remains intact | consumers подключены после GREEN exact producer SHA: strict `packages/contracts` → typed `packages/engine-client` → durable `packages/db` shadow-rollout store → bounded `apps/worker` delivery; единственный staging producer — AdminGuard `POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api`; никаких direct callers вне durable lane | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md` |
 | `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
 | `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | parity/diagnostic non-production input for `packages/db`; production no longer uses an SSH/file handoff | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
 | `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | after GREEN exact producer SHA: strict `packages/contracts` → raw-text/`json-bigint` `packages/engine-client` → `apps/worker`; exact raw engine bytes are durable before `packages/db` combines commerce/service and two exhaustive OpenKeys scans | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
@@ -100,6 +100,19 @@ Stage 8 collector и worker polling не stage'ят activation job. Единст
 snapshot и отдельно timestamped engine head. `apps/admin` подключён к этому expand-only
 контракту отдельным consumer-коммитом после GREEN producer SHA: `/pricing` показывает bounded
 snapshot и fail-closed stage'ит только explicit cutover/recovery после fresh browser preflight.
+Stage 7 durable shadow rollout (migration 0035) подключён цепочкой strict `packages/contracts` →
+typed `packages/engine-client` (включая `lockedOpenkeysPolicyTransition`) →
+`packages/db/src/pricing-shadow-rollout-jobs-v2.ts` → bounded `apps/worker`
+`PricingShadowRolloutWorkerService`. Единственный producer rollout'а — AdminGuard-protected
+`POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api` с UUID idempotency key, exact
+`stage5_run_id`, verified actor и reason; paired `GET /v1/admin/pricing-shadow-rollout-v2`
+возвращает bounded snapshot с subject digest'ами без raw account identity. Staging одной
+`SERIALIZABLE` транзакцией пинит exact prepared target/recovery pair, сверяет fresh engine
+inventory digest с Stage 5 run и fail closed на drift/collision/missing owner до записи; worker
+claim'ит per-account jobs с lease, доставляет generic `policy_shadow` (prepare → exact readback →
+activate) либо replacement-locked `locked_openkeys_transition`, хранит exact ACK digest/payload и
+атомарно закрывает rollout `confirmed|blocked|dead`. Startup, migration, polling и read endpoint
+не создают rollout/job; lane не двигает release head, балансы и live цену.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

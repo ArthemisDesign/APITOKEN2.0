@@ -4,6 +4,7 @@ import {
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  PricingShadowRolloutV2Error,
   PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
   Stage5MaterializerV2Error,
@@ -539,5 +540,70 @@ describe("managed pricing HTTP contract", () => {
     });
     await expect(rejected).rejects.toBeInstanceOf(HttpException);
     await expect(rejected).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("pricing shadow rollout admin HTTP contract", () => {
+  const stageBody = {
+    idempotency_key: "33333333-3333-4333-8333-333333333333",
+    stage5_run_id: "44444444-4444-4444-8444-444444444444",
+    reason: "align every account shadow policy before cutover",
+  };
+
+  it("stages only with a verified header actor and a strict body", async () => {
+    const stagePricingShadowRolloutV2 = vi.fn().mockResolvedValue({
+      rollout_id: "55555555-5555-4555-8555-555555555555",
+      rollout_digest: `sha256:v2:${"b".repeat(64)}`,
+      job_count: 5,
+      idempotent_replay: false,
+      status: "accepted",
+    });
+    const controller = new AdminController({ stagePricingShadowRolloutV2 } as unknown as AdminService);
+
+    await expect(controller.stagePricingShadowRolloutV2(stageBody, "owner@example.test"))
+      .resolves.toMatchObject({ status: "accepted", job_count: 5 });
+    expect(stagePricingShadowRolloutV2).toHaveBeenCalledWith(stageBody, "owner@example.test");
+
+    await expect(controller.stagePricingShadowRolloutV2(stageBody))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(stagePricingShadowRolloutV2).toHaveBeenCalledTimes(1);
+    await expect(controller.stagePricingShadowRolloutV2({
+      ...stageBody,
+      actor_id: "body-actor-is-forbidden",
+    }, "owner@example.test")).rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingShadowRolloutV2({
+      ...stageBody,
+      idempotency_key: "not-a-uuid",
+    }, "owner@example.test")).rejects.toBeInstanceOf(BadRequestException);
+    expect(stagePricingShadowRolloutV2).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps permanent staging conflicts to 409 and transient authority failures to 503", async () => {
+    const conflict = new AdminController({
+      stagePricingShadowRolloutV2: vi.fn().mockRejectedValue(
+        new PricingShadowRolloutV2Error("engine inventory drifted", true),
+      ),
+    } as unknown as AdminService);
+    const unavailable = new AdminController({
+      stagePricingShadowRolloutV2: vi.fn().mockRejectedValue(
+        new PricingShadowRolloutV2Error("engine inventory authority is temporarily unavailable", false),
+      ),
+    } as unknown as AdminService);
+    await expect(conflict.stagePricingShadowRolloutV2(stageBody, "owner@example.test"))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(unavailable.stagePricingShadowRolloutV2(stageBody, "owner@example.test"))
+      .rejects.toMatchObject({ status: 503 });
+  });
+
+  it("returns the bounded read-only rollout snapshot", async () => {
+    const getPricingShadowRolloutControlV2 = vi.fn().mockResolvedValue({
+      database_observed_at: "2026-08-04T00:00:00.000Z",
+      counts_by_status: { pending: 1 },
+      rollouts: [],
+      jobs: [],
+    });
+    const controller = new AdminController({ getPricingShadowRolloutControlV2 } as unknown as AdminService);
+    await expect(controller.getPricingShadowRolloutControlV2())
+      .resolves.toMatchObject({ counts_by_status: { pending: 1 } });
   });
 });

@@ -556,8 +556,11 @@ version conflicts retain the normal typed pricing errors. Any child insert or CA
 whole transaction back. Generic policy prepare/activate still return `423 locked` for this
 lineage. The transition changes neither live price nor funding authority: it only makes the
 canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
-CAS. Contracts/client/worker consumers may be connected only after this producer SHA has a green
-`deploy/watchdog`.
+CAS. Consumers are connected after the GREEN producer SHA: strict request/identity schemas live in
+`packages/contracts`, the typed transport is
+`EngineClient.lockedOpenkeysPolicyTransition`, and the durable Stage 7 shadow-rollout lane
+(`packages/db` store, bounded `apps/worker` delivery, AdminGuard staging/read endpoints in
+`apps/api`) is its only production caller — see `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Pricing release v2: producer and activation surface
 

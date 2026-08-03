@@ -722,6 +722,37 @@ export const pricingMutationAckSchema = z.union([
 ]);
 export type PricingMutationAck = z.infer<typeof pricingMutationAckSchema>;
 
+/**
+ * Replacement-locked legacy OpenKeys transition. The request names the complete managed
+ * provider-only 1:1 successor policy and the exact current replacement-locked legacy target;
+ * the ACK identity echoes the successor, the fixed shadow+legacy_single+verified active target
+ * and the expected legacy active target. Contract: docs/engine/CONTROL_API.md
+ * «Replacement-locked legacy OpenKeys transition».
+ */
+export const lockedOpenkeysPolicyTransitionRequestSchema = z.object({
+  policy: accountPolicySpecSchema,
+  expected_active: activePolicyTargetSchema,
+}).strict();
+export type LockedOpenkeysPolicyTransitionRequest =
+  z.infer<typeof lockedOpenkeysPolicyTransitionRequestSchema>;
+
+export const lockedOpenkeysPolicyTransitionBindingSchema = z.object({
+  policy_enforcement: z.literal("shadow"),
+  funding_enforcement: z.literal("legacy_single"),
+  reconciliation_state: z.literal("verified"),
+}).strict();
+
+export const lockedOpenkeysPolicyTransitionIdentitySchema = z.object({
+  policy: accountPolicySpecSchema,
+  active: z.object({
+    target: pricingVersionTargetSchema,
+    binding: lockedOpenkeysPolicyTransitionBindingSchema,
+  }).strict(),
+  expected_active: activePolicyTargetSchema,
+}).strict();
+export type LockedOpenkeysPolicyTransitionIdentity =
+  z.infer<typeof lockedOpenkeysPolicyTransitionIdentitySchema>;
+
 /** Additive prepare/read/activation contract for the pricing-release v2 authority. */
 export const PRICING_RELEASE_SCHEMA_VERSION_V2 = 2 as const;
 export const canonicalSha256V2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
@@ -1427,6 +1458,104 @@ export const pricingStage8CaptureControlV2Schema = z.object({
 }).strict();
 export type PricingStage8CaptureControlV2 =
   z.infer<typeof pricingStage8CaptureControlV2Schema>;
+
+/**
+ * Stage 7 durable shadow-rollout lane (migration 0035): the protected producer pins one exact
+ * prepared Stage 5 target/recovery pair and the complete per-account policy/binding/CAS request
+ * set; the bounded read model exposes only subject digests, never raw account identities.
+ */
+export const pricingShadowRolloutStageRequestV2Schema = z.object({
+  idempotency_key: z.string().uuid(),
+  stage5_run_id: z.string().uuid(),
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingShadowRolloutStageRequestV2 =
+  z.infer<typeof pricingShadowRolloutStageRequestV2Schema>;
+
+export const pricingShadowRolloutStageResponseV2Schema = z.object({
+  rollout_id: z.string().uuid(),
+  rollout_digest: canonicalSha256V2Schema,
+  job_count: z.number().int().safe().nonnegative(),
+  idempotent_replay: z.boolean(),
+  status: z.literal("accepted"),
+}).strict();
+export type PricingShadowRolloutStageResponseV2 =
+  z.infer<typeof pricingShadowRolloutStageResponseV2Schema>;
+
+export const pricingShadowRolloutStatusV2Schema = z.enum([
+  "pending",
+  "processing",
+  "confirmed",
+  "blocked",
+  "dead",
+]);
+export const pricingShadowRolloutJobStatusV2Schema = z.enum([
+  "pending",
+  "processing",
+  "retry",
+  "confirmed",
+  "blocked",
+  "dead",
+]);
+const pricingShadowRolloutPositiveCountV2Schema = nonNegativeIntegerSchema;
+const pricingShadowRolloutGenerationV2Schema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) > 0n,
+  "generation must be positive",
+);
+export const pricingShadowRolloutControlV2Schema = z.object({
+  database_observed_at: z.string().datetime({ offset: true }),
+  counts_by_status: z.record(pricingShadowRolloutStatusV2Schema, z.number().int().safe().nonnegative()),
+  rollouts: z.array(z.object({
+    id: z.string().uuid(),
+    idempotency_key: z.string().uuid(),
+    stage5_run_id: z.string().uuid(),
+    rollout_digest: canonicalSha256V2Schema,
+    target_generation: pricingShadowRolloutGenerationV2Schema,
+    target_digest: canonicalSha256V2Schema,
+    recovery_generation: pricingShadowRolloutGenerationV2Schema,
+    recovery_digest: canonicalSha256V2Schema,
+    catalog_generation: pricingShadowRolloutGenerationV2Schema,
+    main_catalog_digest: z.string().regex(/^sha256:v[12]:[0-9a-f]{64}$/),
+    openkeys_catalog_digest: z.string().regex(/^sha256:v[12]:[0-9a-f]{64}$/),
+    switch_generation: pricingShadowRolloutGenerationV2Schema,
+    switch_digest: z.string().regex(/^sha256:v[12]:[0-9a-f]{64}$/),
+    engine_inventory_digest: canonicalSha256V2Schema,
+    assignment_manifest_digest: canonicalSha256V2Schema,
+    policy_manifest_digest: canonicalSha256V2Schema,
+    assignment_count: pricingShadowRolloutPositiveCountV2Schema,
+    job_count: pricingShadowRolloutPositiveCountV2Schema,
+    job_counts_by_status: z.record(pricingShadowRolloutJobStatusV2Schema, z.number().int().safe().nonnegative()),
+    actor_id: pricingReleaseActivationOperatorV2Schema,
+    reason: z.string(),
+    status: pricingShadowRolloutStatusV2Schema,
+    last_error: z.string().nullable(),
+    completed_at: z.string().datetime({ offset: true }).nullable(),
+    created_at: z.string().datetime({ offset: true }),
+    updated_at: z.string().datetime({ offset: true }),
+  }).strict()).max(100),
+  jobs: z.array(z.object({
+    id: z.string().uuid(),
+    rollout_id: z.string().uuid(),
+    subject_digest: canonicalSha256V2Schema,
+    account_status: z.enum(["active", "disabled"]),
+    account_class: z.enum(["b2c", "b2b", "openkeys", "service"]),
+    owner_context: z.enum(["commerce", "openkeys", "service"]),
+    release_policy_digest: canonicalSha256V2Schema,
+    content_digest: canonicalSha256V2Schema,
+    expected_active_digest: z.string().regex(/^sha256:v[12]:[0-9a-f]{64}$/).nullable(),
+    request_digest: canonicalSha256V2Schema,
+    status: pricingShadowRolloutJobStatusV2Schema,
+    attempts: z.number().int().safe().nonnegative(),
+    last_error: z.string().nullable(),
+    ack_digest: canonicalSha256V2Schema.nullable(),
+    confirmed_at: z.string().datetime({ offset: true }).nullable(),
+    completed_at: z.string().datetime({ offset: true }).nullable(),
+    created_at: z.string().datetime({ offset: true }),
+    updated_at: z.string().datetime({ offset: true }),
+  }).strict()).max(100),
+}).strict();
+export type PricingShadowRolloutControlV2 =
+  z.infer<typeof pricingShadowRolloutControlV2Schema>;
 
 export const pricingReleaseActivationEvidenceV2Schema = z.object({
   evidence_digest: canonicalSha256V2Schema,

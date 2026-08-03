@@ -402,13 +402,27 @@ writer. The legacy `claude-api db stage8-evidence` and
 `pnpm --filter @claude-api/db pricing:stage8-evidence` commands remain parity/diagnostic tools for
 controlled non-production tests, not the production control-plane.
 
-Migration `0035_pricing_shadow_rollout_jobs.sql` is likewise storage-only. It prepares an empty
-durable lane for the required generation-3 pre-cutover policy alignment across the exact Stage 5
-inventory, including OpenKeys and service accounts that are not commerce-local bindings. The
-future AdminGuard producer must pin a prepared target/recovery pair and persist the complete
-policy/binding/CAS body before any delivery; the worker must store exact ACKs and expose only
-bounded aggregates. Until that producer and consumer have each passed their own GREEN checkpoint,
-operators must not emulate the lane with SQL, SSH loops or direct per-account mutations.
+Migration `0035_pricing_shadow_rollout_jobs.sql` supplies the durable lane for the required
+generation-3 pre-cutover policy alignment across the exact Stage 5 inventory, including OpenKeys
+and service accounts that are not commerce-local bindings. The lane is delivered: the only rollout
+producer is the AdminGuard-protected `POST /v1/admin/pricing-shadow-rollout-v2/stage` in
+`apps/api` (UUID idempotency key, exact `stage5_run_id`, verified `x-admin-actor`, reason), which
+pins a prepared target/recovery pair and persists the complete policy/binding/CAS body of every
+account before any delivery; the bounded `apps/worker` consumer claims per-account jobs with a
+lease, delivers generic `policy_shadow` requests through prepare/readback/activate and
+replacement-locked legacy OpenKeys only through `locked-openkeys-transition`, stores exact ACK
+digests/payloads and atomically closes the rollout `confirmed|blocked|dead`. The paired
+`GET /v1/admin/pricing-shadow-rollout-v2` exposes only bounded aggregates and subject digests.
+Startup, migration, polling and the read endpoint never create a rollout or job; the lane never
+moves the release head, balances, live price or money writers. Operators must not emulate the lane
+with SQL, SSH loops or direct per-account mutations.
+
+Shadow rollout worker bounds are validated at startup: `PRICING_SHADOW_ROLLOUT_POLL_MS=5000`
+(`1000..60000`), `PRICING_SHADOW_ROLLOUT_LEASE_MS=300000` (`30000..3600000`),
+`PRICING_SHADOW_ROLLOUT_RETRY_MS=15000` (`1000..3600000`),
+`PRICING_SHADOW_ROLLOUT_MAX_ATTEMPTS=10` (`1..100`) and
+`PRICING_SHADOW_ROLLOUT_BATCH_SIZE=25` (`1..500`). Defaults are production-safe; changing them is
+a separate observed worker configuration change, not part of staging a rollout.
 
 `sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
 contract. It is a contract identity, not proof that the sales runtime consumer is deployed; exact

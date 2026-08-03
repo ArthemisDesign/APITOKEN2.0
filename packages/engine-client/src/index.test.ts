@@ -593,6 +593,130 @@ describe("EngineClient", () => {
       .rejects.toThrow("ACK identity does not match");
   });
 
+  it("delivers one exact locked OpenKeys transition and distinguishes typed rejections", async () => {
+    const successor = {
+      account_id: "acct_ok_legacy",
+      effective_version: 2,
+      policy_id: "policy:openkeys:legacy:source-1",
+      policy_version: 2,
+      source_policy_digest: "sha256:managed-source",
+      owner_type: "open_keys" as const,
+      owner_id: "source-1",
+      account_class: "open_keys" as const,
+      product_id: "openkeys",
+      schema_version: 1,
+      catalog_generation: 5,
+      switch_generation: 5,
+      content_digest: "sha256:managed-policy",
+      replacement_locked: false,
+      rules: [{
+        rule_id: "openkeys-anthropic-1to1",
+        rule_digest: "sha256:anthropic-rule",
+        scope: { provider: { provider_id: "anthropic" } },
+        pricing_mode: "discount" as const,
+        rule_origin: "managed" as const,
+        discount_bps: 0,
+        payable_multiplier_bp: 10_000,
+        track_eligible: false,
+        retention_eligible: false,
+        commission_eligible: false,
+      }],
+    };
+    const expectedActive = {
+      target: { version: 1, content_digest: "sha256:legacy-policy" },
+      binding: {
+        policy_enforcement: "legacy_scalar" as const,
+        funding_enforcement: "legacy_single" as const,
+        reconciliation_state: "pending" as const,
+      },
+    };
+    const transitionIdentity = {
+      policy: successor,
+      active: {
+        target: { version: 2, content_digest: "sha256:managed-policy" },
+        binding: {
+          policy_enforcement: "shadow",
+          funding_enforcement: "legacy_single",
+          reconciliation_state: "verified",
+        },
+      },
+      expected_active: expectedActive,
+    };
+    const requests: Array<{ url: string; body: unknown }> = [];
+    let mode: "applied" | "unchanged" | "cas" | "locked" = "applied";
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        const url = String(input);
+        const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+        requests.push({ url, body });
+        if (url.endsWith("/policy/acct_ok_legacy/locked-openkeys-transition")) {
+          if (mode === "cas") {
+            return Response.json({
+              result: "rejected",
+              code: "policy_cas_mismatch",
+              identity: transitionIdentity,
+              rejection: { policy_cas_mismatch: { actual: "unbound" } },
+            }, { status: 409 });
+          }
+          if (mode === "locked") {
+            return Response.json({
+              result: "rejected",
+              code: "locked",
+              identity: transitionIdentity,
+              rejection: "locked",
+            }, { status: 423 });
+          }
+          return Response.json({ result: mode, identity: transitionIdentity });
+        }
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+
+    await expect(
+      client.lockedOpenkeysPolicyTransition("acct_ok_legacy", {
+        policy: successor,
+        expected_active: expectedActive,
+      }),
+    ).resolves.toMatchObject({ result: "applied", identity: transitionIdentity });
+    expect(requests.at(-1)).toEqual({
+      url: "http://engine.test/admin/pricing/policy/acct_ok_legacy/locked-openkeys-transition",
+      body: { policy: successor, expected_active: expectedActive },
+    });
+
+    mode = "unchanged";
+    await expect(
+      client.lockedOpenkeysPolicyTransition("acct_ok_legacy", {
+        policy: successor,
+        expected_active: expectedActive,
+      }),
+    ).resolves.toMatchObject({ result: "unchanged" });
+
+    mode = "cas";
+    await expect(
+      client.lockedOpenkeysPolicyTransition("acct_ok_legacy", {
+        policy: successor,
+        expected_active: expectedActive,
+      }),
+    ).resolves.toMatchObject({ result: "rejected", code: "policy_cas_mismatch" });
+
+    mode = "locked";
+    await expect(
+      client.lockedOpenkeysPolicyTransition("acct_ok_legacy", {
+        policy: successor,
+        expected_active: expectedActive,
+      }),
+    ).resolves.toMatchObject({ result: "rejected", code: "locked" });
+
+    await expect(
+      client.lockedOpenkeysPolicyTransition("acct_other", {
+        policy: successor,
+        expected_active: expectedActive,
+      }),
+    ).rejects.toThrow("does not match the target account");
+  });
+
   it("treats malformed pricing responses as permanent protocol failures", async () => {
     const catalog = {
       product_id: "main",

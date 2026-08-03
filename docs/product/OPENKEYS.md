@@ -106,10 +106,17 @@ recovery получает один member. Любой rejected ACK, funding bloc
 account. Поэтому OpenKeys не зависит от commerce activation tables и не требует остановки batch
 issuance во время global CAS.
 
-Stage 7 target materialization запускается только явной командой с exact Stage 5 plan/release
-digest. Сначала обязателен `dry_run`, затем idempotent `apply`. Команда включает disabled accounts,
-готовит canonical 1:1 bindings и не меняет OpenKeys rows, balances, key status или history. Она не
-активирует live цену: всё inventory переключается одним Stage 9 release-head CAS. Полный протокол —
+Stage 7 existing-inventory alignment идёт только через durable shadow-rollout lane (migration
+`0035_pricing_shadow_rollout_jobs.sql`), а не через OpenKeys-local backfill: защищённый AdminGuard
+producer `POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api` пинит exact prepared Stage 5
+target/recovery pair и materialize'ит один immutable per-account job на каждый assignment,
+включая replacement-locked legacy OpenKeys. Для locked legacy bindings доставка идёт исключительно
+через engine `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`; generic
+prepare/activate для них запрещены (engine отвечает `423 locked`). Bounded worker `apps/worker`
+claim'ит jobs с lease, хранит exact ACK digest/payload и завершает rollout `confirmed|blocked|dead`;
+статус читается через `GET /v1/admin/pricing-shadow-rollout-v2` только с digest'ами субъектов.
+Lane не меняет OpenKeys rows, balances, key status или history и не активирует live цену: всё
+inventory переключается одним Stage 9 release-head CAS. Полный протокол —
 `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Authoritative pricing inventory v2

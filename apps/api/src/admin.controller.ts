@@ -24,6 +24,7 @@ import {
   pricingStage6PlanQueryV2Schema,
   pricingStage6StageRequestV2Schema,
   pricingStage8CaptureStageRequestV2Schema,
+  pricingShadowRolloutStageRequestV2Schema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
   serviceAccountInventoryMutationV2Schema,
@@ -38,6 +39,7 @@ import {
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  PricingShadowRolloutV2Error,
   Stage5MaterializerV2Error,
   PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
@@ -348,6 +350,32 @@ export class AdminController {
       return await this.admin.stagePricingStage8CaptureV2(input.data, actor.data);
     } catch (error) {
       if (error instanceof PricingStage8CaptureJobV2Error) {
+        throw new HttpException(error.message, error.permanent ? 409 : 503);
+      }
+      throw error;
+    }
+  }
+
+  @Get("pricing-shadow-rollout-v2")
+  @Header("Cache-Control", "no-store")
+  getPricingShadowRolloutControlV2(): Promise<unknown> {
+    return this.admin.getPricingShadowRolloutControlV2();
+  }
+
+  @Post("pricing-shadow-rollout-v2/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingShadowRolloutV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingShadowRolloutStageRequestV2Schema.safeParse(body);
+    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    if (!actor.success) throw new BadRequestException("verified admin actor is required");
+    try {
+      return await this.admin.stagePricingShadowRolloutV2(input.data, actor.data);
+    } catch (error) {
+      if (error instanceof PricingShadowRolloutV2Error) {
         throw new HttpException(error.message, error.permanent ? 409 : 503);
       }
       throw error;

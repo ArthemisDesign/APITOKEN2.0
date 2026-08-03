@@ -230,11 +230,15 @@ Engine хранит prepared releases и один active release head. Подг�
   exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
   создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
   workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
-  head; `0035_pricing_shadow_rollout_jobs.sql` добавляет пустые parent/child таблицы для будущего
+  head; `0035_pricing_shadow_rollout_jobs.sql` добавляет пустые parent/child таблицы для
   full-inventory generation-3 shadow alignment. Parent связывает exact prepared target/recovery
   releases с catalog/switch/inventory manifests, child хранит неизменяемый policy/binding/CAS
   request и terminal ACK каждого commerce/OpenKeys/service account. Эта migration не создаёт
-  rollout/job, не активирует legacy policy и не меняет release head. Следующий за schema
+  rollout/job, не активирует legacy policy и не меняет release head. После GREEN exact engine
+  producer SHA отдельный consumer checkpoint подключает полный durable lane: strict contracts и
+  typed client (включая locked-openkeys-transition), `packages/db` staging/lifecycle store,
+  bounded `apps/worker` delivery и AdminGuard staging/read endpoints в `apps/api`
+  (`docs/commerce/MULTI_DISCOUNT_STAGE7.md`). Следующий за schema
   producer-first checkpoint добавил защищённый read-only
   `POST /admin/pricing/v2/stage8-evidence/capture`: server присоединяет compile-fixed manifest,
   bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`. После GREEN exact
@@ -445,8 +449,10 @@ Replacement-locked legacy bindings не обходятся generic prepare/activ
 `shadow + legacy_single + verified`. Catalog/switch target уже обязан быть active, identity
 сохраняется, обе версии увеличиваются ровно на один, exact replay возвращает `unchanged`, а
 discount/model/track/retention/commission rules запрещены. Этот pre-Stage-8 шаг не меняет live
-цену, funding authority или global release head; protected commerce rollout подключается отдельным
-consumer checkpoint только после GREEN producer SHA и должен охватить весь OpenKeys inventory.
+цену, funding authority или global release head; protected commerce rollout подключён после GREEN
+producer SHA как durable shadow-rollout lane (migration 0035): AdminGuard staging endpoint,
+`packages/db` store и bounded `apps/worker` consumer покрывают весь exact Stage 5 inventory,
+включая OpenKeys и service. Протокол — `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Stage 8 — full-inventory evidence
 

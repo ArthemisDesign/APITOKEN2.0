@@ -10,6 +10,7 @@ import { FundingNormalizationWorkerService } from "./funding-normalization-worke
 import { EmailWorkerService } from "./email-worker.service.js";
 import { PlategaReconcileService } from "./platega-reconcile.service.js";
 import { Stage8CaptureWorkerService } from "./stage8-capture-worker.service.js";
+import { PricingShadowRolloutWorkerService } from "./pricing-shadow-rollout-worker.service.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
 @Injectable()
@@ -43,6 +44,7 @@ class DatabaseShutdown implements OnApplicationShutdown {
     PricingWorkerService,
     FundingNormalizationWorkerService,
     Stage8CaptureWorkerService,
+    PricingShadowRolloutWorkerService,
     EmailWorkerService,
     PlategaReconcileService,
     DatabaseShutdown,

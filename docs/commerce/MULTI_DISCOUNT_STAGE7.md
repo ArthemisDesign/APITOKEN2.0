@@ -30,6 +30,58 @@ apply до первой записи.
 Apply идемпотентно materialize'ит exact target bindings и подтверждает readback. Он не двигает
 global active release head, не меняет balance/key/status и не выполняет отдельный OpenKeys cutover.
 
+## Durable shadow rollout lane (migration 0035)
+
+Pre-cutover policy alignment всего exact Stage 5 инвентаря — commerce B2C/B2B, OpenKeys (включая
+replacement-locked legacy) и service accounts — выполняется только durable lane поверх пустых
+parent/child таблиц `pricing_shadow_rollouts_v2` / `pricing_shadow_policy_jobs_v2`. Это заменяет
+упразднённый OpenKeys-local backfill с ручной assignment matrix: его модуль, CLI и тесты удалены,
+потому что generic prepare/activate для replacement-locked bindings принципиально возвращают
+`423 locked`, а ручная matrix не является durable authority.
+
+**Producer.** Единственный способ создать rollout — AdminGuard-protected
+`POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api` с UUID `idempotency_key`, exact
+`stage5_run_id`, meaningful `reason` и verified actor из заголовка `x-admin-actor` (actor в JSON
+body запрещён). `packages/db/src/pricing-shadow-rollout-jobs-v2.ts` одной `SERIALIZABLE`
+транзакцией под advisory lock читает exact prepared Stage 5 run (status `prepared`), prepared
+target/recovery release plans и делает fresh engine inventory scan: любой drift digest'ов,
+collision или missing owner — fail closed до первой записи. Rollout пинит target/recovery
+generation+digest, catalog/switch generations+digests, engine inventory, assignment/policy manifest
+и canonical `sha256:v2` rollout digest; per-account jobs несут release-policy identity, exact
+effective version/content digest, nullable expected active (только для детерминированно выводимых
+locked legacy bindings), request digest и полное byte-exact request payload. Идемпотентность по
+`idempotency_key` и `rollout_digest`: exact replay возвращает существующий rollout без записи.
+
+**Locked-OpenKeys путь.** Job для replacement-locked legacy аккаунта (`owner_context=openkeys`,
+`pricing_contract=legacy` в exact Stage 5 inventory) содержит только payload
+`locked_openkeys_transition`: successor строится детерминированно (+1 exact version, тот же
+immutable policy identity, managed provider-only 1:1 rules, без replacement lock), а
+expected active — exact legacy policy version 1 с digest в домене `multi-discount-stage5`.
+Worker доставляет его исключительно через
+`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` после fresh readback:
+расхождение active policy с durable expectation, потерянный replacement lock или typed отказ
+(400/409/423) — terminal `blocked` с `last_error`.
+
+**Generic путь.** Остальные jobs несут payload `policy_shadow` (exact AccountPolicySpec +
+binding `shadow + legacy_single + verified`). Worker читает engine state, подтверждает уже exact
+policy одним readback без mutation, иначе делает prepare → exact readback → activate с CAS
+expectation из fresh state. Любой version conflict, digest mismatch, newer engine policy или typed
+rejection — `blocked`; transient transport — bounded `retry` с lease; expired lease reclaim'ится,
+последняя попытка уходит в `dead`.
+
+**ACK evidence и terminal state.** Каждый confirmed job хранит canonical `sha256:v2` ACK digest и
+полный ACK payload (engine ACK либо exact readback evidence). Когда все jobs терминальны, rollout
+атомарно становится `confirmed` (все confirmed), `blocked` или `dead`. Read-only статус —
+`GET /v1/admin/pricing-shadow-rollout-v2`: bounded snapshot субъектов только как `sha256:v2`
+digest'ы, без raw account identities. Startup, migration, polling и read endpoint не создают
+rollout/job. Lane не меняет live цену, funding authority, release head, balances или OpenKeys rows.
+Worker bounds: `PRICING_SHADOW_ROLLOUT_POLL_MS=5000` (`1000..60000`),
+`PRICING_SHADOW_ROLLOUT_LEASE_MS=300000` (`30000..3600000`),
+`PRICING_SHADOW_ROLLOUT_RETRY_MS=15000` (`1000..3600000`),
+`PRICING_SHADOW_ROLLOUT_MAX_ATTEMPTS=10` (`1..100`),
+`PRICING_SHADOW_ROLLOUT_BATCH_SIZE=25` (`1..500`); дефолты production-safe и валидируются на
+старте worker.
+
 ## Invariants
 
 - В target release нет source-specific discounted legacy policy.

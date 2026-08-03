@@ -10,6 +10,8 @@ import {
   pricingStage6StatusV2Schema,
   pricingStage8CaptureControlV2Schema,
   pricingStage8CaptureStageResponseV2Schema,
+  pricingShadowRolloutControlV2Schema,
+  pricingShadowRolloutStageResponseV2Schema,
   type PricingReleaseActivationStageRequestV2,
   type PricingPolicyDeliveryRepairRequestV2,
   type PricingPolicyDeliveryRepairResponseV2,
@@ -18,6 +20,7 @@ import {
   type PricingStage6StageRequestV2,
   type PricingStage6StatusV2,
   type PricingStage8CaptureStageRequestV2,
+  type PricingShadowRolloutStageRequestV2,
   type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
@@ -44,6 +47,7 @@ import {
   recordAdminCredit,
   readServiceAccountInventoryV2,
   readPricingReleaseActivationControlV2,
+  readPricingShadowRolloutControlV2,
   readPricingStage8CaptureControlV2,
   repairDeadPreCutoverPolicyDelivery,
   PricingPolicyDeliveryRepairError,
@@ -53,6 +57,7 @@ import {
   setBusinessPricing,
   stagePricingReleaseActivationJobV2,
   stageFundingNormalizationJobV2,
+  stagePricingShadowRolloutV2,
   stagePricingStage8CaptureJobV2,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
@@ -61,6 +66,7 @@ import {
   type AdminUserOverviewQuery,
   type Database,
   type PricingReleaseActivationControlV2,
+  type PricingShadowRolloutControlV2,
   type PricingStage8CaptureControlV2,
   type Stage5MaterializerV2Result,
 } from "@claude-api/db";
@@ -363,6 +369,31 @@ export class AdminService {
     return pricingStage8CaptureStageResponseV2Schema.parse({
       job_id: staged.jobId,
       request_digest: staged.requestDigest,
+      status: "accepted",
+    });
+  }
+
+  async getPricingShadowRolloutControlV2(): Promise<Record<string, unknown>> {
+    return serializePricingShadowRolloutControlV2(
+      await readPricingShadowRolloutControlV2(this.database),
+    );
+  }
+
+  async stagePricingShadowRolloutV2(
+    input: PricingShadowRolloutStageRequestV2,
+    actorId: string,
+  ): Promise<Record<string, unknown>> {
+    const staged = await stagePricingShadowRolloutV2(this.database, this.engine, {
+      idempotencyKey: input.idempotency_key,
+      stage5RunId: input.stage5_run_id,
+      actorId,
+      reason: input.reason,
+    });
+    return pricingShadowRolloutStageResponseV2Schema.parse({
+      rollout_id: staged.rolloutId,
+      rollout_digest: staged.rolloutDigest,
+      job_count: staged.jobCount,
+      idempotent_replay: staged.idempotentReplay,
       status: "accepted",
     });
   }
@@ -768,6 +799,63 @@ function serializePricingReleaseActivationControlV2(
       created_at: receipt.createdAt.toISOString(),
     })),
   };
+}
+
+function serializePricingShadowRolloutControlV2(
+  control: PricingShadowRolloutControlV2,
+): Record<string, unknown> {
+  return pricingShadowRolloutControlV2Schema.parse({
+    database_observed_at: control.databaseObservedAt.toISOString(),
+    counts_by_status: control.countsByStatus,
+    rollouts: control.rollouts.map((rollout) => ({
+      id: rollout.id,
+      idempotency_key: rollout.idempotencyKey,
+      stage5_run_id: rollout.stage5RunId,
+      rollout_digest: rollout.rolloutDigest,
+      target_generation: rollout.targetGeneration,
+      target_digest: rollout.targetDigest,
+      recovery_generation: rollout.recoveryGeneration,
+      recovery_digest: rollout.recoveryDigest,
+      catalog_generation: rollout.catalogGeneration,
+      main_catalog_digest: rollout.mainCatalogDigest,
+      openkeys_catalog_digest: rollout.openkeysCatalogDigest,
+      switch_generation: rollout.switchGeneration,
+      switch_digest: rollout.switchDigest,
+      engine_inventory_digest: rollout.engineInventoryDigest,
+      assignment_manifest_digest: rollout.assignmentManifestDigest,
+      policy_manifest_digest: rollout.policyManifestDigest,
+      assignment_count: rollout.assignmentCount,
+      job_count: rollout.jobCount,
+      job_counts_by_status: rollout.jobCountsByStatus,
+      actor_id: rollout.actorId,
+      reason: rollout.reason,
+      status: rollout.status,
+      last_error: rollout.lastError,
+      completed_at: rollout.completedAt?.toISOString() ?? null,
+      created_at: rollout.createdAt.toISOString(),
+      updated_at: rollout.updatedAt.toISOString(),
+    })),
+    jobs: control.jobs.map((job) => ({
+      id: job.id,
+      rollout_id: job.rolloutId,
+      subject_digest: job.subjectDigest,
+      account_status: job.accountStatus,
+      account_class: job.accountClass,
+      owner_context: job.ownerContext,
+      release_policy_digest: job.releasePolicyDigest,
+      content_digest: job.contentDigest,
+      expected_active_digest: job.expectedActiveDigest,
+      request_digest: job.requestDigest,
+      status: job.status,
+      attempts: job.attempts,
+      last_error: job.lastError,
+      ack_digest: job.ackDigest,
+      confirmed_at: job.confirmedAt?.toISOString() ?? null,
+      completed_at: job.completedAt?.toISOString() ?? null,
+      created_at: job.createdAt.toISOString(),
+      updated_at: job.updatedAt.toISOString(),
+    })),
+  });
 }
 
 function serializePricingStage8CaptureControlV2(
