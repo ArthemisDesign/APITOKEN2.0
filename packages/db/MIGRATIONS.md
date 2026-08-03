@@ -119,3 +119,13 @@ continue claiming the boolean without knowing the new column. The dependent cons
 granted `NULL` row as the same historical `$4`, records `$5.000000000` atomically for every new
 claim, and uses the persisted amount for recovery and administrative revocation. The migration
 itself changes no grant, engine balance or eligibility decision.
+
+Migration `0035_pricing_shadow_rollout_jobs.sql` creates empty parent/child storage for one
+full-inventory pre-cutover shadow-policy alignment. A parent pins one prepared Stage 5
+target/recovery pair, exact generation-3 catalog/switch identities, inventory and policy manifests,
+operator and reason. Child rows retain the immutable engine policy/binding/CAS request and exact
+terminal ACK for each account across commerce, OpenKeys and service ownership. The tables have no
+startup producer, trigger or engine transport: applying the migration cannot advance commerce or
+engine heads, activate a policy, change traffic, touch money rows or stage Stage 8/9. The protected
+producer and durable worker consumer may be delivered only after this migration SHA has green
+`deploy/migration` and `deploy/watchdog` in production.

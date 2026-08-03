@@ -746,4 +746,65 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_stage8_capture_jobs_v2"]!.indexes)
       .toHaveProperty("pricing_stage8_capture_jobs_v2_claim_idx");
   });
+
+  it("adds dormant full-inventory shadow rollout jobs without activating pricing", () => {
+    const migrationName = "0035_pricing_shadow_rollout_jobs.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 34);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 35);
+
+    expect(currentEntry).toMatchObject({
+      idx: 35,
+      version: "7",
+      tag: "0035_pricing_shadow_rollout_jobs",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/\b(?:track|tier|retention)\b/i);
+    expect(
+      [...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm)].map((match) => match[1]).sort(),
+    ).toEqual([
+      "pricing_shadow_policy_jobs_v2",
+      "pricing_shadow_rollouts_v2",
+    ]);
+    expect(migrationSql).toContain("pricing_shadow_rollouts_v2_target_fk");
+    expect(migrationSql).toContain("pricing_shadow_rollouts_v2_recovery_fk");
+    expect(migrationSql).toContain("pricing_shadow_policy_jobs_v2_rollout_fk");
+    expect(migrationSql).toContain("'pending', 'processing', 'retry', 'confirmed', 'blocked', 'dead'");
+    expect(migrationSql).toContain('jsonb_typeof("pricing_shadow_policy_jobs_v2"."request_payload") = \'object\'');
+
+    const databaseObjectNames = [
+      ...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm),
+      ...migrationSql.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migrationSql.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0035_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, { notNull: boolean; type: string }>;
+        foreignKeys: Record<string, unknown>;
+        indexes: Record<string, unknown>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0034_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.pricing_shadow_rollouts_v2"]!.foreignKeys)
+      .toHaveProperty("pricing_shadow_rollouts_v2_target_fk");
+    expect(snapshot.tables["public.pricing_shadow_rollouts_v2"]!.foreignKeys)
+      .toHaveProperty("pricing_shadow_rollouts_v2_recovery_fk");
+    expect(snapshot.tables["public.pricing_shadow_policy_jobs_v2"]!.columns.request_payload)
+      .toMatchObject({ notNull: true, type: "jsonb" });
+    expect(snapshot.tables["public.pricing_shadow_policy_jobs_v2"]!.indexes)
+      .toHaveProperty("pricing_shadow_policy_jobs_v2_claim_idx");
+  });
 });

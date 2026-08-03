@@ -230,7 +230,12 @@ Engine хранит prepared releases и один active release head. Подг�
   exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
   создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
   workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
-  head. Следующий за schema producer-first checkpoint добавил защищённый read-only
+  head; `0035_pricing_shadow_rollout_jobs.sql` добавляет пустые parent/child таблицы для будущего
+  full-inventory generation-3 shadow alignment. Parent связывает exact prepared target/recovery
+  releases с catalog/switch/inventory manifests, child хранит неизменяемый policy/binding/CAS
+  request и terminal ACK каждого commerce/OpenKeys/service account. Эта migration не создаёт
+  rollout/job, не активирует legacy policy и не меняет release head. Следующий за schema
+  producer-first checkpoint добавил защищённый read-only
   `POST /admin/pricing/v2/stage8-evidence/capture`: server присоединяет compile-fixed manifest,
   bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`. После GREEN exact
   producer SHA отдельный commerce checkpoint подключает strict contracts/raw-text client,

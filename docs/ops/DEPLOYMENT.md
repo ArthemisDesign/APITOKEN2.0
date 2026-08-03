@@ -402,6 +402,14 @@ writer. The legacy `claude-api db stage8-evidence` and
 `pnpm --filter @claude-api/db pricing:stage8-evidence` commands remain parity/diagnostic tools for
 controlled non-production tests, not the production control-plane.
 
+Migration `0035_pricing_shadow_rollout_jobs.sql` is likewise storage-only. It prepares an empty
+durable lane for the required generation-3 pre-cutover policy alignment across the exact Stage 5
+inventory, including OpenKeys and service accounts that are not commerce-local bindings. The
+future AdminGuard producer must pin a prepared target/recovery pair and persist the complete
+policy/binding/CAS body before any delivery; the worker must store exact ACKs and expose only
+bounded aggregates. Until that producer and consumer have each passed their own GREEN checkpoint,
+operators must not emulate the lane with SQL, SSH loops or direct per-account mutations.
+
 `sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
 contract. It is a contract identity, not proof that the sales runtime consumer is deployed; exact
 sales v2 runtime evidence remains a separate pre-cutover requirement.

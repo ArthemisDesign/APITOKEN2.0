@@ -87,6 +87,11 @@ const PRICING_STAGE8_CAPTURE_TABLES = [
   "pricing_stage8_capture_jobs_v2",
 ] as const;
 
+const PRICING_SHADOW_ROLLOUT_TABLES = [
+  "pricing_shadow_policy_jobs_v2",
+  "pricing_shadow_rollouts_v2",
+] as const;
+
 const LEGACY_STATE_TABLES = [
   "business_invites",
   "customer_profiles",
@@ -298,6 +303,7 @@ async function expectExpandedTablesEmpty(client: Client): Promise<void> {
     ...PRICING_RELEASE_V2_TABLES,
     ...PRICING_STAGE5_EVIDENCE_TABLES,
     ...PRICING_STAGE8_CAPTURE_TABLES,
+    ...PRICING_SHADOW_ROLLOUT_TABLES,
   ];
   const existing = await client.query<{ table_name: string }>(`
     SELECT table_name
@@ -807,7 +813,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(35);
+        expect(await migrationCount(client)).toBe(36);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -834,7 +840,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         ]);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(35);
+        expect(await migrationCount(client)).toBe(36);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -968,7 +974,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(35);
+        expect(await migrationCount(client)).toBe(36);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status

@@ -2534,6 +2534,173 @@ export const pricingStage8CaptureArtifactsV2 = pgTable("pricing_stage8_capture_a
   `),
 ]);
 
+/**
+ * Dormant parent identity for one full-inventory pre-cutover shadow alignment.
+ * The later protected producer binds the exact prepared target/recovery pair to
+ * one reviewed catalog/switch lineage and creates child delivery jobs. Merely
+ * creating these tables cannot move a pricing head or contact the engine.
+ */
+export const pricingShadowRolloutsV2 = pgTable("pricing_shadow_rollouts_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  idempotencyKey: uuid("idempotency_key").notNull().unique(),
+  stage5RunId: uuid("stage5_run_id").notNull(),
+  targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
+  targetDigest: text("target_digest").notNull(),
+  recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
+  recoveryDigest: text("recovery_digest").notNull(),
+  catalogGeneration: bigint("catalog_generation", { mode: "bigint" }).notNull(),
+  mainCatalogDigest: text("main_catalog_digest").notNull(),
+  openkeysCatalogDigest: text("openkeys_catalog_digest").notNull(),
+  switchGeneration: bigint("switch_generation", { mode: "bigint" }).notNull(),
+  switchDigest: text("switch_digest").notNull(),
+  engineInventoryDigest: text("engine_inventory_digest").notNull(),
+  assignmentManifestDigest: text("assignment_manifest_digest").notNull(),
+  policyManifestDigest: text("policy_manifest_digest").notNull(),
+  rolloutDigest: text("rollout_digest").notNull().unique(),
+  assignmentCount: bigint("assignment_count", { mode: "bigint" }).notNull(),
+  jobCount: bigint("job_count", { mode: "bigint" }).notNull(),
+  actorId: text("actor_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("pending"),
+  lastError: text("last_error"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.stage5RunId],
+    foreignColumns: [pricingStage5RunsV2.runId],
+    name: "pricing_shadow_rollouts_v2_stage5_run_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.targetGeneration, table.targetDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_shadow_rollouts_v2_target_fk",
+  }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.recoveryGeneration, table.recoveryDigest],
+    foreignColumns: [pricingReleasePlansV2.generation, pricingReleasePlansV2.contentDigest],
+    name: "pricing_shadow_rollouts_v2_recovery_fk",
+  }).onDelete("restrict"),
+  index("pricing_shadow_rollouts_v2_status_idx").on(table.status, table.createdAt),
+  check("pricing_shadow_rollouts_v2_shape_check", sql`
+    ${table.targetGeneration} > 0
+    AND ${table.recoveryGeneration} > ${table.targetGeneration}
+    AND ${table.targetDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.recoveryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.catalogGeneration} > 0
+    AND ${table.mainCatalogDigest} ~ '^sha256:v[12]:[0-9a-f]{64}$'
+    AND ${table.openkeysCatalogDigest} ~ '^sha256:v[12]:[0-9a-f]{64}$'
+    AND ${table.switchGeneration} > 0
+    AND ${table.switchDigest} ~ '^sha256:v[12]:[0-9a-f]{64}$'
+    AND ${table.engineInventoryDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.assignmentManifestDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.policyManifestDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.rolloutDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.assignmentCount} > 0
+    AND ${table.jobCount} >= 0
+    AND ${table.jobCount} <= ${table.assignmentCount}
+    AND ${table.actorId} <> ''
+    AND ${table.reason} <> ''
+    AND ${table.status} IN ('pending', 'processing', 'confirmed', 'blocked', 'dead')
+    AND (
+      (${table.status} IN ('pending', 'processing') AND ${table.completedAt} IS NULL)
+      OR (${table.status} = 'confirmed' AND ${table.completedAt} IS NOT NULL AND ${table.lastError} IS NULL)
+      OR (${table.status} IN ('blocked', 'dead') AND ${table.completedAt} IS NOT NULL AND ${table.lastError} IS NOT NULL)
+    )
+  `),
+]);
+
+/**
+ * Exact engine mutation requests for every account that is not already aligned
+ * with the parent rollout. Payloads include the policy, shadow binding and CAS
+ * expectation so retries never rebuild a request from moving engine state.
+ */
+export const pricingShadowPolicyJobsV2 = pgTable("pricing_shadow_policy_jobs_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  rolloutId: uuid("rollout_id").notNull(),
+  engineAccountId: text("engine_account_id").notNull(),
+  accountStatus: text("account_status").notNull(),
+  accountClass: text("account_class").notNull(),
+  ownerContext: text("owner_context").notNull(),
+  releasePolicyId: text("release_policy_id").notNull(),
+  releasePolicyVersion: bigint("release_policy_version", { mode: "bigint" }).notNull(),
+  releasePolicyDigest: text("release_policy_digest").notNull(),
+  effectiveVersion: bigint("effective_version", { mode: "bigint" }).notNull(),
+  contentDigest: text("content_digest").notNull(),
+  expectedActiveVersion: bigint("expected_active_version", { mode: "bigint" }),
+  expectedActiveDigest: text("expected_active_digest"),
+  requestDigest: text("request_digest").notNull(),
+  requestPayload: jsonb("request_payload").$type<Record<string, unknown>>().notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  ackDigest: text("ack_digest"),
+  ackPayload: jsonb("ack_payload").$type<Record<string, unknown>>(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.rolloutId],
+    foreignColumns: [pricingShadowRolloutsV2.id],
+    name: "pricing_shadow_policy_jobs_v2_rollout_fk",
+  }).onDelete("restrict"),
+  unique("pricing_shadow_policy_jobs_v2_account_unique")
+    .on(table.rolloutId, table.engineAccountId),
+  unique("pricing_shadow_policy_jobs_v2_request_unique")
+    .on(table.rolloutId, table.requestDigest),
+  index("pricing_shadow_policy_jobs_v2_claim_idx")
+    .on(table.status, table.nextAttemptAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retry')`),
+  check("pricing_shadow_policy_jobs_v2_shape_check", sql`
+    ${table.engineAccountId} <> ''
+    AND ${table.accountStatus} IN ('active', 'disabled')
+    AND ${table.accountClass} IN ('b2c', 'b2b', 'openkeys', 'service')
+    AND ${table.ownerContext} IN ('commerce', 'openkeys', 'service')
+    AND ${table.releasePolicyId} <> ''
+    AND ${table.releasePolicyVersion} > 0
+    AND ${table.releasePolicyDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.effectiveVersion} > 0
+    AND ${table.contentDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ((${table.expectedActiveVersion} IS NULL) = (${table.expectedActiveDigest} IS NULL))
+    AND (${table.expectedActiveVersion} IS NULL OR ${table.expectedActiveVersion} > 0)
+    AND (${table.expectedActiveDigest} IS NULL OR ${table.expectedActiveDigest} ~ '^sha256:v[12]:[0-9a-f]{64}$')
+    AND ${table.requestDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND jsonb_typeof(${table.requestPayload}) = 'object'
+    AND ${table.attempts} >= 0
+    AND ${table.status} IN ('pending', 'processing', 'retry', 'confirmed', 'blocked', 'dead')
+    AND (
+      (${table.status} = 'processing' AND ${table.lockedAt} IS NOT NULL AND ${table.lockedBy} IS NOT NULL)
+      OR (${table.status} <> 'processing' AND ${table.lockedAt} IS NULL AND ${table.lockedBy} IS NULL)
+    )
+    AND (
+      (${table.status} = 'confirmed'
+        AND ${table.ackDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+        AND ${table.ackPayload} IS NOT NULL
+        AND jsonb_typeof(${table.ackPayload}) = 'object'
+        AND ${table.confirmedAt} IS NOT NULL
+        AND ${table.completedAt} IS NOT NULL
+        AND ${table.lastError} IS NULL)
+      OR (${table.status} IN ('blocked', 'dead')
+        AND ${table.ackDigest} IS NULL
+        AND ${table.ackPayload} IS NULL
+        AND ${table.confirmedAt} IS NULL
+        AND ${table.completedAt} IS NOT NULL
+        AND ${table.lastError} IS NOT NULL)
+      OR (${table.status} IN ('pending', 'processing', 'retry')
+        AND ${table.ackDigest} IS NULL
+        AND ${table.ackPayload} IS NULL
+        AND ${table.confirmedAt} IS NULL
+        AND ${table.completedAt} IS NULL)
+    )
+  `),
+]);
+
 export const pricingReleaseControlJobsV2 = pgTable("pricing_release_control_jobs_v2", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   jobKind: text("job_kind").notNull(),

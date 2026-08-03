@@ -246,6 +246,13 @@
       "when": 1785739193184,
       "tag": "0034_pricing_welcome_bonus_amount",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1785763172383,
+      "tag": "0035_pricing_shadow_rollout_jobs",
+      "breakpoints": true
     }
   ]
 }
