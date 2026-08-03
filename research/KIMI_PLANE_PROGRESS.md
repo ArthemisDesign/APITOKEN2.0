@@ -46,6 +46,7 @@
 | Durable-калибровка: типы turn event + валидация | `crates/registry/src/kimi_calibration.rs` | ветка |
 | Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | ветка |
 | Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | ветка |
+| Плоскость: конфиг, default-off switch, readiness | `crates/forward/src/kimi/config.rs` | ветка |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -62,11 +63,11 @@
 
 ## Следующее действие
 
-**`crates/server`: env, wiring плоскости, readiness.** Прочитать `CLAUDE_API_KIMI_*` (roster dir,
-keyring, active kid, base URL, auth scheme) — env читается ТОЛЬКО здесь; собрать плоскость за
-выключенным по умолчанию switch'ем; readiness бить в `/me` или `/messages`, **никогда** в
-`/v1/models` (негейтед, 200 на мёртвый ключ). Все чистые модули плоскости (roster, client,
-selection, transport, pool, queue) готовы и ждут композиции.
+**Чтение env в `crates/server/src/config.rs`** → `forward::kimi::config::KimiPlaneInput` →
+`build()`. Env читается ТОЛЬКО там; сам конфиг плоскости, default-off switch и readiness уже
+готовы и покрыты тестами. Нужны переменные `CLAUDE_API_KIMI_ENABLED`,
+`CLAUDE_API_KIMI_ROSTER_DIR`, `CLAUDE_API_KIMI_CREDENTIAL_KEYS`, `CLAUDE_API_KIMI_BASE_URL`,
+`CLAUDE_API_KIMI_AUTH_SCHEME`, `CLAUDE_API_KIMI_QUOTA_POLL_SECS`.
 
 **Не забыть:** real-PG матрица для `record_kimi_turn` и `save_kimi_calibration`
 (`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry`) — сейчас доказана только компиляция и

@@ -7,6 +7,7 @@
 //! Dormant: the plane is not wired into `server` yet, so nothing routes here.
 
 pub mod client;
+pub mod config;
 pub mod pool;
 pub mod queue;
 pub mod roster;
