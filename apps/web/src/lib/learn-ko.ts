@@ -12,7 +12,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "무료 계정을 만들고 대시보드를 여세요. 승인이나 대기열이 없습니다.",
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
-          "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
+          "Anthropic 호환 도구를 https://router.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -110,7 +110,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "기존 도구와 그대로 작동", blocks: [
-        { type: "p", text: "Claude Code, Cursor, Cline 또는 Anthropic SDK를 https://api.apitoken.sale로 지정하고 이전과 똑같이 작업하세요. 지원은 텔레그램에서 러시아어와 영어로 제공됩니다." },
+        { type: "p", text: "Claude Code, Cursor, Cline 또는 Anthropic SDK를 https://router.apitoken.sale로 지정하고 이전과 똑같이 작업하세요. 지원은 텔레그램에서 러시아어와 영어로 제공됩니다." },
       ] },
       { h2: "VPN 없이 러시아에서 Claude API 사용하기", blocks: [
         { type: "p", text: "키와 잔액 발급에는 Anthropic 청구 국가 요건이 없으므로 시작하는 데 외국 카드나 법인이 필요하지 않습니다. 네트워크 접근성은 본인의 연결 환경에 달려 있지만, 잔액 구매와 키 생성에는 지역 제한이 없습니다." },
@@ -175,7 +175,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "무료 계정을 만들고 대시보드를 여세요. 승인이나 대기열이 없습니다.",
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
-          "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
+          "Anthropic 호환 도구를 https://router.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -185,7 +185,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "제로에서 첫 호출까지", blocks: [
         { type: "list", items: [
           "가입하고 대시보드를 여세요 — 승인 단계 없음.",
-          "키를 생성하고 도구를 api.apitoken.sale로 지정하세요.",
+          "키를 생성하고 도구를 router.apitoken.sale로 지정하세요.",
           "요청을 보내고 사용량에 측정되는 것을 확인하세요.",
         ] },
         { type: "p", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로도 시작하므로, 충전 전에 전체 흐름을 검증할 수 있습니다." },
@@ -199,17 +199,17 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-quick-setup": {
     title: "2분 만에 Claude API 설정하기",
     h1: "2분 만에 Claude API 설정하기",
-    description: "2분짜리 Claude API 퀵스타트: 키를 만들고, base URL을 api.apitoken.sale로 설정한 뒤, curl·Python·IDE로 첫 /v1/messages 요청을 보내세요.",
+    description: "2분짜리 Claude API 퀵스타트: 키를 만들고, base URL을 router.apitoken.sale로 설정한 뒤, curl·Python·IDE로 첫 /v1/messages 요청을 보내세요.",
     keywords: ["claude api 퀵스타트", "claude api 설정", "claude api 첫 요청", "anthropic messages api", "claude api base url"],
     dek: "제로에서 작동하는 Claude API 호출까지 가장 빠른 길입니다. 아래 내용은 모두 표준 Anthropic Messages API를 사용하므로 기존 코드에 그대로 들어갑니다.",
     sections: [
       { h2: "1. 키 만들기", blocks: [ { type: "p", text: "가입하고 대시보드를 열어 키를 생성하세요. sk-pool-… 형태이며 지원되는 모든 모델에서 작동합니다." } ] },
       { h2: "2. 엔드포인트 설정하기", blocks: [
         { type: "p", text: "Anthropic 호환 클라이언트를 게이트웨이로 지정하세요:" },
-        { type: "code", code: `Base URL:  https://api.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
+        { type: "code", code: `Base URL:  https://router.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
       ] },
       { h2: "3. 첫 요청 보내기", blocks: [
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "흔한 첫 호출 오류", blocks: [
@@ -222,7 +222,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "어떤 base URL을 사용하나요?", a: "Anthropic 호환 도구에 https://api.apitoken.sale를 사용하고 /v1/messages로 요청을 보내세요." },
+      { q: "어떤 base URL을 사용하나요?", a: "Anthropic 호환 도구에 https://router.apitoken.sale를 사용하고 /v1/messages로 요청을 보내세요. 레거시 호스트 https://api.apitoken.sale를 사용하는 기존 통합도 계속 작동합니다 — 통합 라우터는 새 설정에 권장되는 엔드포인트입니다." },
       { q: "어떤 인증 헤더가 필요한가요?", a: "공식 Anthropic API와 똑같이 키를 담은 x-api-key와 anthropic-version을 보내세요." },
     ],
   },
@@ -245,7 +245,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Google 또는 GitHub로 계정을 만들고 대시보드를 여세요. 승인이나 대기열이 없습니다.",
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
-          "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
+          "Anthropic 호환 도구를 https://router.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
       ] },
       { h2: "Claude API는 영원히 무료인가요?", blocks: [
@@ -281,12 +281,12 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-code-without-subscription": {
     title: "구독 없이 Claude Code 사용하기",
     h1: "월 $200 요금제 없이 쓰는 Claude Code",
-    description: "월 구독 대신 종량제 API 잔액으로 Claude Code를 실행하세요. ANTHROPIC_BASE_URL을 api.apitoken.sale로 설정하고 사용한 만큼만 지불하세요.",
+    description: "월 구독 대신 종량제 API 잔액으로 Claude Code를 실행하세요. ANTHROPIC_BASE_URL을 router.apitoken.sale로 설정하고 사용한 만큼만 지불하세요.",
     keywords: ["구독 없이 claude code", "claude code api 키", "claude code 종량제", "claude code 저렴", "claude code 구독 없음"],
     dek: "Claude Code가 반드시 고정 월정액을 의미할 필요는 없습니다. 선불 잔액이 있는 API 키로 지정하면 토큰 단위로 지불하므로, 사용량이 들쭉날쭉하거나 그냥 한번 써보고 싶을 때 이상적입니다.",
     sections: [
       { h2: "환경 변수 두 개", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "이게 전부입니다. Claude Code는 모든 기능을 그대로 유지하며, 구독 대신 선불 잔액에 할인가로 과금할 뿐입니다." },
       ] },
       { h2: "종량제가 유리할 때", blocks: [
@@ -388,19 +388,19 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "Cursor용 Claude API 키",
     h1: "Cursor에서 Claude API 키 사용하기",
-    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 50% 통일 할인가로 코딩하세요.",
+    description: "apitoken.sale 키로 Cursor를 Claude에 연결하세요. Anthropic base URL을 router.apitoken.sale로 설정하고 키를 붙여넣은 뒤 모델을 골라 50% 통일 할인가로 코딩하세요.",
     keywords: ["cursor claude api 키", "cursor claude api", "cursor anthropic 키", "cursor에서 claude 사용", "cursor pro 없이"],
     dek: "Cursor는 자체 Anthropic 키를 가져올 수 있게 해 주므로, 번들 플랜 대신 할인된 선불 잔액으로 Cursor에서 Claude를 실행할 수 있습니다.",
     sections: [
       { h2: "세 단계 설정", blocks: [
         { type: "steps", items: [
           "Cursor → Settings → Models → Anthropic API를 여세요.",
-          "base URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣으세요.",
+          "base URL을 https://router.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣으세요.",
           "claude-opus-4-8 같은 모델을 선택하고 코딩을 시작하세요.",
         ] },
       ] },
       { h2: "구성", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "문제 해결", blocks: [
@@ -424,15 +424,15 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-for-vs-code": {
     title: "VS Code에서 Claude API 사용하기 (Cline, Continue)",
     h1: "VS Code에서 Claude API 사용하기",
-    description: "apitoken.sale 키로 Cline 또는 Continue를 사용해 VS Code에서 Claude를 실행하세요. Anthropic base URL을 api.apitoken.sale로 설정하고 토큰 단위로 할인가에 결제하세요.",
+    description: "apitoken.sale 키로 Cline 또는 Continue를 사용해 VS Code에서 Claude를 실행하세요. Anthropic base URL을 router.apitoken.sale로 설정하고 토큰 단위로 할인가에 결제하세요.",
     keywords: ["claude api vs code", "cline claude api", "continue claude api", "vscode claude", "vscode anthropic api 키"],
     dek: "Cline이나 Continue 같은 무료 VS Code 에이전트는 Anthropic 호환 엔드포인트를 모두 지원하므로, VS Code 안에서 할인된 잔액으로 Claude 코딩을 할 수 있습니다.",
     sections: [
       { h2: "Cline", blocks: [
-        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://api.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
+        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://router.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
       ] },
       { h2: "Continue", blocks: [
-        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
+        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://router.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "어떤 확장을 쓸지와 문제 해결", blocks: [
@@ -460,7 +460,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "Cursor는 Anthropic Messages API와 통신합니다. apitoken.sale은 바로 그 API를 그대로 노출하므로, Cursor는 차이를 알 수 없습니다. 그저 여러분의 키와 base URL을 사용할 뿐입니다." },
       ] },
       { h2: "설정하기", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "그대로 유지되는 것", blocks: [
@@ -480,15 +480,15 @@ export const learnKo: Record<string, LocalizedContent> = {
   "anthropic-sdk-base-url": {
     title: "커스텀 Base URL로 Anthropic SDK 사용하기",
     h1: "Anthropic SDK를 apitoken.sale로 지정하기",
-    description: "base_url을 api.apitoken.sale로 설정해 공식 Anthropic Python 및 TypeScript SDK를 apitoken.sale과 함께 사용하세요. 동일한 SDK, 동일한 코드, 더 낮은 토큰당 비용.",
+    description: "base_url을 router.apitoken.sale로 설정해 공식 Anthropic Python 및 TypeScript SDK를 apitoken.sale과 함께 사용하세요. 동일한 SDK, 동일한 코드, 더 낮은 토큰당 비용.",
     keywords: ["anthropic sdk base url", "anthropic python sdk 커스텀 엔드포인트", "claude sdk base url", "anthropic typescript sdk", "claude api sdk"],
     dek: "공식 Anthropic SDK는 base URL을 재정의할 수 있으므로, apitoken.sale로 전환하는 것은 한 줄만 바꾸면 됩니다. 모델 ID와 메시지 코드는 그대로 유지됩니다.",
     sections: [
       { h2: "Python", blocks: [
-        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
       ] },
       { h2: "TypeScript", blocks: [
-        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
+        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://router.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "전환이 제대로 되었는지 확인하기", blocks: [
@@ -544,7 +544,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     dek: "둘 다 Anthropic 계정 없이 Claude에 접근할 수 있게 해 주지만, 구조가 다릅니다. Claude가 주력 모델이라면 네이티브 Anthropic 엔드포인트가 일을 단순하게 유지합니다.",
     sections: [
       { h2: "네이티브 Anthropic 엔드포인트", blocks: [
-        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://api.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 어댑터 없이 작동합니다. 범용 멀티 제공자 추상화 계층을 거치지 않습니다." },
+        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://router.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 어댑터 없이 작동합니다. 범용 멀티 제공자 추상화 계층을 거치지 않습니다." },
       ] },
       { h2: "마크업이 아닌 선불 할인", blocks: [
         { type: "list", items: [
@@ -779,7 +779,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     dek: "둘 다 Anthropic 계정 없이 Claude에 접근할 수 있게 해 줍니다. 차이는 결제 방식, 절감 폭, 그리고 엔드포인트가 진정으로 Anthropic 네이티브인지에 있습니다.",
     sections: [
       { h2: "네이티브 Anthropic 엔드포인트", blocks: [
-        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://api.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 그대로 작동합니다. 여러분과 Claude 사이에 어댑터 계층이 없습니다." },
+        { type: "p", text: "apitoken.sale은 표준 Anthropic Messages API를 https://router.apitoken.sale에서 노출하므로, Claude Code, Cursor, Anthropic SDK가 그대로 작동합니다. 여러분과 Claude 사이에 어댑터 계층이 없습니다." },
       ] },
       { h2: "마크업이 아닌 할인", blocks: [
         { type: "list", items: [
@@ -811,7 +811,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "서로 다른 역할", blocks: [
         { type: "p", text: "Portkey는 여러분이 가져온 API 키 위에 라우팅, 캐싱, 관찰성을 더합니다. Claude 접근권이나 할인을 팔지는 않으며, 그 뒤에는 여전히 충전된 Anthropic 계정이 필요합니다." },
-        { type: "p", text: "apiToken.sale은 키와 잔액의 원천입니다. https://api.apitoken.sale의 네이티브 Anthropic 엔드포인트를 50% 통일 할인으로, Anthropic 계정 없이 제공합니다." },
+        { type: "p", text: "apiToken.sale은 키와 잔액의 원천입니다. https://router.apitoken.sale의 네이티브 Anthropic 엔드포인트를 50% 통일 할인으로, Anthropic 계정 없이 제공합니다." },
       ] },
       { h2: "함께 쓸 수도 있음", blocks: [
         { type: "p", text: "Portkey의 관찰성이 마음에 든다면, apiToken.sale 키를 Anthropic 공급자로 지정해 그 밑에서 할인을 받을 수 있습니다." },
@@ -960,7 +960,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "번역 계층이 아닌 네이티브", blocks: [
-        { type: "p", text: "apitoken.sale은 Anthropic 네이티브입니다. 어떤 클라이언트든 https://api.apitoken.sale/v1/messages로 지정하면 api.anthropic.com과 완전히 동일하게 동작하며, 여기에 할인과 대시보드 제어가 더해집니다." },
+        { type: "p", text: "apitoken.sale은 Anthropic 네이티브입니다. 어떤 클라이언트든 https://router.apitoken.sale/v1/messages로 지정하면 api.anthropic.com과 완전히 동일하게 동작하며, 여기에 할인과 대시보드 제어가 더해집니다." },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "게이트웨이에서 살펴봐야 할 것", blocks: [
@@ -1010,7 +1010,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "스트리밍하는 방법", blocks: [
         { type: "p", text: "요청에 \"stream\": true를 설정하세요(또는 SDK의 스트리밍 헬퍼를 사용하세요). 게이트웨이는 표준 Anthropic server-sent events를 반환합니다." },
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       ] },
       { h2: "과금은 동일합니다", blocks: [
         { type: "p", text: "스트리밍 요청과 비스트리밍 요청은 입력 및 출력 토큰 단위로 동일하게 과금되므로, 스트리밍한다고 손해 볼 것이 없습니다." },
@@ -1090,7 +1090,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     dek: "Claude Code는 두 개의 환경 변수를 읽습니다. 이를 apitoken.sale로 지정하면 모든 기능을 유지하면서 할인된 선불 잔액으로 과금됩니다.",
     sections: [
       { h2: "두 개의 변수", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "이게 설정의 전부입니다. 어려운 작업에는 claude-opus-4-8을, 일상적인 코딩에는 claude-sonnet-5를 사용하세요." },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -1118,20 +1118,20 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "첫 GPT 호출까지 세 단계", blocks: [
         { type: "steps", items: [
           "무료 계정을 만들고 API 키 하나를 발급받으세요(sk-pool-… 형태) — 이 키는 이미 Claude 모델도 커버합니다.",
-          "클라이언트를 https://openai.api.apitoken.sale/v1 로 지정하고 Authorization: Bearer로 인증하세요 — x-api-key가 아닙니다. 그 헤더는 Anthropic 서피스 전용입니다.",
-          "GET /v1/models로 활성화된 모델을 확인한 뒤 Responses 요청을 보내세요.",
+          "클라이언트를 https://router.apitoken.sale/v1 로 지정하고 Authorization: Bearer로 인증하세요 — x-api-key가 아닙니다. 그 헤더는 Anthropic 서피스 전용입니다.",
+          "GET https://router.apitoken.sale/v1/models로 활성화된 모델을 확인하세요 — 통합 카탈로그는 ID를 제공자별로 구분합니다(anthropic/*, openai/*, google/*) — 그런 다음 Responses 요청을 보내세요.",
         ] },
-        { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "공식 OpenAI SDK 사용", blocks: [
         { type: "p", text: "공식 SDK는 그대로 동작합니다 — base_url과 키만 바뀝니다. 프로덕션에서는 키를 서버 측 환경 변수에 보관하세요." },
-        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://openai.api.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
+        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://router.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
         { type: "p", text: "클라이언트가 필요로 한다면 같은 호스트에서 Chat Completions도 제공됩니다 — 모델 ID와 키는 동일합니다." },
         { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
       ] },
       { h2: "사용 가능한 GPT 모델", blocks: [
-        { type: "p", text: "제공되는 모델 세트는 엔진에 고정되어 가격이 매겨집니다. GET /v1/models가 항상 최신 답변입니다. 현재 세 가지 GPT-5.6 티어와 두 가지 이전 세대 모델을 제공합니다:" },
+        { type: "p", text: "제공되는 모델 세트는 엔진에 고정되어 가격이 매겨집니다. GET https://router.apitoken.sale/v1/models가 항상 최신 답변입니다. 현재 세 가지 GPT-5.6 티어와 두 가지 이전 세대 모델을 제공합니다:" },
         { type: "table", headers: ["모델 ID", "티어", "공식 입력 / 출력($ / 1M)", "캐시 입력"], rows: [
           ["gpt-5.6-sol(별칭: gpt-5.6)", "플래그십", "$5 / $30", "$0.50"],
           ["gpt-5.6-terra", "밸런스", "$2.50 / $15", "$0.25"],
@@ -1149,11 +1149,11 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "엔드포인트가 커버하는 범위", blocks: [
         { type: "p", text: "이것은 OpenAI Platform이 아닌 독립적인 OpenAI 호환 서비스입니다. 의도적으로 텍스트 생성만 제공합니다: 모델 목록, Responses, Chat Completions(스트리밍 및 이미지 입력 포함). 오디오, 파일, realtime, assistants, batches, fine-tuning은 제공되지 않습니다." },
-        { type: "note", text: "오류는 OpenAI 봉투로 반환됩니다 — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401은 키 또는 인증 헤더 오류(Bearer 사용, x-api-key 아님), 402는 공유 선불 잔액 충전 필요, 404는 모델 ID 미활성화를 의미합니다 — GET /v1/models를 확인하세요." },
+        { type: "note", text: "오류는 OpenAI 봉투로 반환됩니다 — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401은 키 또는 인증 헤더 오류(Bearer 사용, x-api-key 아님), 402는 공유 선불 잔액 충전 필요, 404는 모델 ID 미활성화를 의미합니다 — GET https://router.apitoken.sale/v1/models를 확인하세요." },
       ] },
     ],
     faq: [
-      { q: "정말 같은 키로 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 하나의 선불 잔액이 두 서피스를 모두 커버합니다: Claude 모델용 api.apitoken.sale의 Anthropic Messages API와 GPT 모델용 openai.api.apitoken.sale/v1의 OpenAI 호환 API. 할인도 공유됩니다." },
+      { q: "정말 같은 키로 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 하나의 선불 잔액이 두 서피스를 모두 커버합니다: Claude 모델용 router.apitoken.sale의 Anthropic Messages API와 GPT 모델용 router.apitoken.sale/v1의 OpenAI 호환 API. 할인도 공유됩니다." },
       { q: "OpenAI 호환 엔드포인트는 어떤 인증 헤더를 쓰나요?", a: "Authorization: Bearer sk-pool-… 입니다. x-api-key 헤더는 Anthropic 서피스 전용입니다 — OpenAI 엔드포인트에내면 401이 반환됩니다." },
       { q: "Responses와 Chat Completions 중 무엇을 쓰나요?", a: "둘 다 SSE 스트리밍으로 제공됩니다. 새 코드와 공식 SDK에는 Responses를, 클래식 형태를 기대하는 클라이언트와 프레임워크에는 Chat Completions를 사용하세요." },
       { q: "GPT 사용량은 어떻게 과금되나요?", a: "캐시 입력과 장문 컨텍스트 가격을 포함한 공식 OpenAI 요금으로 토큰당 과금된 후, 50% B2C 통일 할인이 차감되어 선불 잔액에서 청구됩니다 — Claude 사용량과 정확히 같습니다." },
@@ -1168,7 +1168,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "프로필 만들기", blocks: [
         { type: "p", text: "다음을 ~/.codex/apitoken.config.toml로 저장하세요. 이름 있는 프로필은 기본 Codex 설정과 기존 ChatGPT 로그인을 건드리지 않습니다 — 실행할 때 명시적으로 선택합니다." },
-        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
+        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key는 Codex가 키를 읽는 환경 변수의 이름을 지정합니다 — 시크릿은 셸에만 있고 TOML 파일에는 절대 들어가지 않습니다." },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -1177,7 +1177,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "항상 --profile apitoken을 명시적으로 전달해 어떤 프로바이더와 어떤 환경 변수가 활성인지 모호하지 않게 하세요.",
           "model 줄을 바꿔 프로젝트별로 모델을 전환하세요: 가장 어려운 작업은 gpt-5.6-sol, 일상적인 작업은 gpt-5.6-terra, 빠르고 저렴한 단계는 gpt-5.6-luna.",
-          "같은 Bearer 키로 GET https://openai.api.apitoken.sale/v1/models를 호출하면 현재 활성화된 모델 세트를 볼 수 있습니다.",
+          "같은 Bearer 키로 GET https://router.apitoken.sale/v1/models를 호출하면 현재 활성화된 모델 세트를 볼 수 있습니다 — 통합 카탈로그는 ID를 제공자별로 구분합니다(anthropic/*, openai/*, google/*).",
         ] },
         { type: "note", text: "wire_api = \"responses\"가 이 게이트웨이에 맞는 값입니다 — Responses와 Chat Completions를 모두 제공하며 Codex는 Responses로 스트리밍합니다. 특정 클라이언트가 클래식 형태를 요구할 때만 \"chat\"으로 설정하세요." },
       ] },
@@ -1185,7 +1185,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "Missing APITOKEN_API_KEY — env_key가 가리키는 변수가 codex를 실행하는 셸에 export되어 있지 않습니다. 같은 셸(또는 셸 프로필)에서 export하세요.",
           "stream error: unexpected status 401 — 키가 잘못되었거나 폐기되었거나, base_url에서 /v1 접미사가 빠졌습니다. Codex 밖에서 curl로 재현해 어느 쪽이 깨졌는지 확인하세요.",
-          "stream error: unexpected status 404 — 모델 ID가 활성화되어 있지 않습니다. 추측하지 말고 GET /v1/models를 확인하세요.",
+          "stream error: unexpected status 404 — 모델 ID가 활성화되어 있지 않습니다. 추측하지 말고 GET https://router.apitoken.sale/v1/models를 확인하세요.",
           "402 — 공유 선불 잔액을 충전해야 합니다. 기다린다고 해결되지 않습니다.",
         ] },
         { type: "link", text: "Codex 오류 전체 플레이북 — config.toml, auth.json, 스트림 오류", href: "/errors/codex" },
@@ -1209,7 +1209,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Cline이나 Roo Code 같은 무료 에이전트 확장을 설치하세요.",
           "API 제공자로 Anthropic을 선택하세요.",
-          "base URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣은 뒤 claude-sonnet-5 같은 모델을 선택하세요.",
+          "base URL을 https://router.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣은 뒤 claude-sonnet-5 같은 모델을 선택하세요.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
@@ -1289,17 +1289,17 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-langchain": {
     title: "LangChain에서 Claude API 사용하기",
     h1: "LangChain에서 Claude API 사용하기",
-    description: "apitoken.sale로 LangChain을 Claude에 연결하세요. ChatAnthropic을 api.apitoken.sale로 지정하면 모델 ID는 그대로, 토큰당 비용은 50% 저렴해집니다.",
+    description: "apitoken.sale로 LangChain을 Claude에 연결하세요. ChatAnthropic을 router.apitoken.sale로 지정하면 모델 ID는 그대로, 토큰당 비용은 50% 저렴해집니다.",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 키"],
     dek: "LangChain의 Anthropic 통합은 커스텀 API URL을 지원하므로, 두 줄만 바꾸면 체인과 에이전트가 apitoken.sale을 통해 Claude로 동작합니다. 같은 모델, 더 낮은 토큰 단가입니다.",
     sections: [
       { h2: "ChatAnthropic을 게이트웨이로 지정", blocks: [
-        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://router.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
         { type: "p", text: "통합은 이것이 전부입니다. 동일한 langchain-anthropic 패키지, 동일한 모델 ID, 동일한 스트리밍과 도구 호출 — 바뀌는 것은 엔드포인트와 가격뿐입니다." },
         { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "또는 환경 변수로 구성", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "code", code: `export ANTHROPIC_API_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
         { type: "p", text: "환경 변수를 설정하면 ChatAnthropic이 두 값을 자동으로 읽어오므로, 공유 코드베이스에서는 코드 수정이 전혀 필요 없습니다." },
       ] },
       { h2: "무엇이 작동하나", blocks: [
@@ -1311,7 +1311,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "LangChain이 커스텀 Claude API 엔드포인트를 지원하나요?", a: "네. ChatAnthropic은 anthropic_api_url(또는 ANTHROPIC_API_URL 환경 변수)을 받으므로, https://api.apitoken.sale로 지정하고 나머지는 그대로 두면 됩니다." },
+      { q: "LangChain이 커스텀 Claude API 엔드포인트를 지원하나요?", a: "네. ChatAnthropic은 anthropic_api_url(또는 ANTHROPIC_API_URL 환경 변수)을 받으므로, https://router.apitoken.sale로 지정하고 나머지는 그대로 두면 됩니다." },
       { q: "LangChain 에이전트와 도구 호출도 작동하나요?", a: "네 — 게이트웨이는 표준 Anthropic Messages API를 제공하므로 도구 호출, 스트리밍, LangGraph 에이전트가 공식 엔드포인트와 똑같이 동작합니다." },
       { q: "LangChain에서 어떤 모델을 쓸 수 있나요?", a: "지원되는 모든 Claude 모델 — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 등 — 을 하나의 키와 선불 잔액으로 사용할 수 있습니다." },
     ],
@@ -1319,16 +1319,16 @@ export const learnKo: Record<string, LocalizedContent> = {
   "claude-api-litellm": {
     title: "LiteLLM에서 Claude API 사용하기",
     h1: "LiteLLM에서 Claude API 사용하기",
-    description: "apitoken.sale로 LiteLLM을 Claude에 라우팅하세요. litellm_params 또는 프록시 설정에서 api_base를 api.apitoken.sale로 지정하면 토큰당 50% 저렴합니다.",
+    description: "apitoken.sale로 LiteLLM을 Claude에 라우팅하세요. litellm_params 또는 프록시 설정에서 api_base를 router.apitoken.sale로 지정하면 토큰당 50% 저렴합니다.",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 프록시 claude"],
     dek: "LiteLLM은 Anthropic을 네이티브로 지원하고 모델별 엔드포인트 재정의를 허용하므로, 설정 한 줄로 모든 Claude 트래픽이 할인 게이트웨이를 지나갑니다.",
     sections: [
       { h2: "SDK 직접 호출", blocks: [
-        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
         { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "LiteLLM 프록시 설정", blocks: [
-        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://router.apitoken.sale\n      api_key: sk-pool-•••` },
         { type: "p", text: "이 설정으로 프록시를 실행하면 LiteLLM 게이트웨이의 모든 클라이언트가 투명하게 할인된 Claude 엔드포인트를 사용합니다. 여러 서비스가 하나의 라우팅 계층을 공유할 때 유용합니다." },
       ] },
       { h2: "왜 LiteLLM으로 Claude를 이곳에 라우팅하나", blocks: [
@@ -1340,7 +1340,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "LiteLLM이 커스텀 Anthropic api_base를 지원하나요?", a: "네 — litellm.completion()이나 프록시 설정의 litellm_params에 api_base를 전달하면 LiteLLM이 Anthropic 형식 요청을 https://api.apitoken.sale로 보냅니다." },
+      { q: "LiteLLM이 커스텀 Anthropic api_base를 지원하나요?", a: "네 — litellm.completion()이나 프록시 설정의 litellm_params에 api_base를 전달하면 LiteLLM이 Anthropic 형식 요청을 https://router.apitoken.sale로 보냅니다." },
       { q: "anthropic/ 모델 접두사는 유지하나요?", a: "네. anthropic/claude-opus-4-8(또는 지원되는 모든 모델)을 사용해 LiteLLM이 Anthropic 프로토콜을 적용하게 하세요. 바뀌는 것은 엔드포인트와 키뿐입니다." },
       { q: "LiteLLM 기반 도구에도 적용되나요?", a: "네 — LiteLLM을 거치는 모든 것(많은 코딩 에이전트 포함)이 같은 설정에서 할인 엔드포인트를 물려받습니다." },
     ],
@@ -1353,7 +1353,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     dek: "Aider는 긴 세션에서 토큰을 빠르게 소모하는 터미널 페어 프로그래머입니다. 환경 변수 두 개로 할인 게이트웨이를 가리키게 하고 워크플로는 그대로 유지하세요.",
     sections: [
       { h2: "환경 변수 두 개", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://router.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
         { type: "p", text: "Aider는 내부적으로 LiteLLM을 통해 Anthropic 트래픽을 라우팅하며, LiteLLM은 ANTHROPIC_API_BASE를 인식합니다. 설정 파일이 필요 없습니다." },
         { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
@@ -1367,7 +1367,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Aider가 커스텀 Claude 엔드포인트를 지원하나요?", a: "네. Aider는 Anthropic 모델에 LiteLLM을 사용하고, LiteLLM은 ANTHROPIC_API_BASE 환경 변수를 인식합니다. https://api.apitoken.sale로 설정하고 평소처럼 Aider를 시작하세요." },
+      { q: "Aider가 커스텀 Claude 엔드포인트를 지원하나요?", a: "네. Aider는 Anthropic 모델에 LiteLLM을 사용하고, LiteLLM은 ANTHROPIC_API_BASE 환경 변수를 인식합니다. https://router.apitoken.sale로 설정하고 평소처럼 Aider를 시작하세요." },
       { q: "Aider에서 어떤 Claude 모델이 가장 좋나요?", a: "대부분의 코딩에는 claude-sonnet-5가 최선의 기본값이고, 가장 어려운 다중 파일 작업은 claude-opus-4-8로 전환하세요. 둘 다 같은 키에서 동작합니다." },
       { q: "긴 Aider 세션은 얼마나 저렴해지나요?", a: "모든 요청이 공식 토큰 요율에서 50% 통일 할인을 뺀 금액으로 과금되므로, 직접 연결로 $10짜리 세션이 여기서는 $5입니다." },
     ],
@@ -1382,7 +1382,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "세 단계 설정", blocks: [
         { type: "steps", items: [
           "Roo Code 설정을 열고 API 제공자로 Anthropic을 선택하세요.",
-          "커스텀 base URL 옵션을 켜고 https://api.apitoken.sale로 설정한 뒤 sk-pool-… 키를 붙여넣으세요.",
+          "커스텀 base URL 옵션을 켜고 https://router.apitoken.sale로 설정한 뒤 sk-pool-… 키를 붙여넣으세요.",
           "claude-opus-4-8이나 claude-sonnet-5 같은 모델을 골라 작업을 시작하세요.",
         ] },
         { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
@@ -1397,7 +1397,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Roo Code가 커스텀 Anthropic base URL을 지원하나요?", a: "네 — Anthropic 제공자 설정에 커스텀 base URL 옵션이 있습니다. https://api.apitoken.sale로 설정하고 apitoken.sale 키를 사용하세요." },
+      { q: "Roo Code가 커스텀 Anthropic base URL을 지원하나요?", a: "네 — Anthropic 제공자 설정에 커스텀 base URL 옵션이 있습니다. https://router.apitoken.sale로 설정하고 apitoken.sale 키를 사용하세요." },
       { q: "이 키로 Roo Code에서 어떤 모델을 쓸 수 있나요?", a: "지원되는 모든 Claude 모델 — Opus 4.8과 4.7, Sonnet 5와 4.6, Haiku 4.5 — 을 하나의 키와 선불 잔액으로 사용할 수 있습니다." },
       { q: "Cline과는 무엇이 다른가요?", a: "설정은 거의 동일합니다. 둘 다 커스텀 base URL을 받는 Anthropic 제공자를 갖춘 VS Code 에이전트입니다. 선호하는 쪽을 쓰면 되고, 키는 양쪽에서 모두 작동합니다." },
     ],

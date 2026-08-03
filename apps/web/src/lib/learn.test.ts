@@ -66,7 +66,7 @@ describe("learn localization", () => {
     const zh = resolveArticle("claude-api-quick-setup", "zh")!;
     const flatten = (a: typeof ru) => JSON.stringify(a.content);
     for (const resolved of [ru, zh]) {
-      expect(flatten(resolved)).toContain("https://api.apitoken.sale");
+      expect(flatten(resolved)).toContain("https://router.apitoken.sale");
       expect(flatten(resolved)).toContain("claude-opus-4-8");
     }
   });

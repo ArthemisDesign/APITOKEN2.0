@@ -204,8 +204,8 @@ export const learnUi: Record<Locale, {
   },
 };
 
-const BASE = "https://api.apitoken.sale";
-const OPENAI_BASE = "https://openai.api.apitoken.sale/v1";
+const BASE = "https://router.apitoken.sale";
+const OPENAI_BASE = "https://router.apitoken.sale/v1";
 const KEY = "sk-pool-•••";
 
 // Shared reusable blocks -----------------------------------------------------
@@ -410,7 +410,7 @@ export const learnArticles: LearnArticle[] = [
       { h2: "From zero to first call", blocks: [
         { type: "list", items: [
           "Sign up and open the dashboard — no approval step.",
-          "Generate a key and point your tool at api.apitoken.sale.",
+          "Generate a key and point your tool at router.apitoken.sale.",
           "Send a request and see it metered in your usage.",
         ] },
         { type: "p", text: "New accounts created with Google or GitHub also start with $5 of platform bonus credit, so you can validate the whole flow before topping up." },
@@ -427,7 +427,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "buy",
     title: "Claude API Setup in Two Minutes",
     h1: "Set up the Claude API in two minutes",
-    description: "A two-minute Claude API quickstart: create a key, set your base URL to api.apitoken.sale, and send your first /v1/messages request with curl, Python or your IDE.",
+    description: "A two-minute Claude API quickstart: create a key, set your base URL to router.apitoken.sale, and send your first /v1/messages request with curl, Python or your IDE.",
     keywords: ["claude api quickstart", "claude api setup", "claude api first request", "anthropic messages api", "claude api base url", "buy claude api", "claude api access", "claude api tokens", "claude api top up", "claude api reseller", "claude api provider"],
     dek: "This is the fastest path from zero to a working Claude API call. Everything below uses the standard Anthropic Messages API, so it drops straight into your existing code.",
     sections: [
@@ -450,7 +450,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "What base URL do I use?", a: `Use ${BASE} with any Anthropic-compatible tool and send requests to /v1/messages.` },
+      { q: "What base URL do I use?", a: `Use ${BASE} with any Anthropic-compatible tool and send requests to /v1/messages. Existing integrations on the legacy https://api.apitoken.sale host keep working — the unified router is the recommended endpoint for new setups.` },
       { q: "Which auth header is required?", a: "Send x-api-key with your key and anthropic-version, exactly like the official Anthropic API." },
     ],
     related: ["claude-api-key-for-cursor", "anthropic-sdk-base-url", "how-to-buy-claude-api-key", "claude-api-for-vs-code"],
@@ -518,7 +518,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "free",
     title: "Use Claude Code Without a Subscription",
     h1: "Claude Code without the $200/month plan",
-    description: "Run Claude Code on pay-as-you-go API balance instead of a monthly subscription. Set ANTHROPIC_BASE_URL to api.apitoken.sale and pay only for what you use.",
+    description: "Run Claude Code on pay-as-you-go API balance instead of a monthly subscription. Set ANTHROPIC_BASE_URL to router.apitoken.sale and pay only for what you use.",
     keywords: ["claude code without subscription", "claude code api key", "claude code pay as you go", "claude code cheap", "claude code no subscription", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
     dek: "Claude Code does not have to mean a fixed monthly plan. Point it at an API key with prepaid balance and you pay per token — ideal if your usage is spiky or you just want to try it.",
     sections: [
@@ -642,7 +642,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Claude API Key for Cursor",
     h1: "Use a Claude API key in Cursor",
-    description: "Connect Cursor to Claude with an apiToken.sale key: set the Anthropic base URL to api.apitoken.sale, paste your key, pick a model, and code at a flat 50% off.",
+    description: "Connect Cursor to Claude with an apiToken.sale key: set the Anthropic base URL to router.apitoken.sale, paste your key, pick a model, and code at a flat 50% off.",
     keywords: ["claude api key for cursor", "cursor claude api", "cursor anthropic key", "use claude in cursor", "cursor without cursor pro", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude api cursor"],
     dek: "Cursor lets you bring your own Anthropic key, which means you can run Claude in Cursor on discounted prepaid balance instead of a bundled plan.",
     sections: [
@@ -682,7 +682,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Claude API in VS Code (Cline, Continue)",
     h1: "Use the Claude API in VS Code",
-    description: "Run Claude in VS Code with Cline or Continue using an apiToken.sale key. Set the Anthropic base URL to api.apitoken.sale and pay per token at a discount.",
+    description: "Run Claude in VS Code with Cline or Continue using an apiToken.sale key. Set the Anthropic base URL to router.apitoken.sale and pay per token at a discount.",
     keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude in vscode", "vscode anthropic api key", "claude api key", "anthropic-compatible api", "claude api base url", "claude api setup", "claude api integration", "claude api vscode"],
     dek: "Free VS Code agents like Cline and Continue accept any Anthropic-compatible endpoint, so you can code with Claude inside VS Code on discounted balance.",
     sections: [
@@ -744,7 +744,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Use Anthropic SDKs with a Custom Base URL",
     h1: "Point the Anthropic SDK at apiToken.sale",
-    description: "Use the official Anthropic Python and TypeScript SDKs with apiToken.sale by setting base_url to api.apitoken.sale. Same SDK, same code, lower cost per token.",
+    description: "Use the official Anthropic Python and TypeScript SDKs with apiToken.sale by setting base_url to router.apitoken.sale. Same SDK, same code, lower cost per token.",
     keywords: ["anthropic sdk base url", "anthropic python sdk custom endpoint", "claude sdk base url", "anthropic typescript sdk", "claude api sdk"],
     dek: "The official Anthropic SDKs let you override the base URL, so switching to apiToken.sale is a one-line change — your model IDs and message code stay exactly the same.",
     sections: [
@@ -775,7 +775,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Use the Claude API with LangChain",
     h1: "Use the Claude API with LangChain",
-    description: "Connect LangChain to Claude through apiToken.sale: point ChatAnthropic at api.apitoken.sale, keep the same model IDs, and pay 50% less per token.",
+    description: "Connect LangChain to Claude through apiToken.sale: point ChatAnthropic at router.apitoken.sale, keep the same model IDs, and pay 50% less per token.",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api key", "langchain anthropic_api_url"],
     dek: "LangChain's Anthropic integration accepts a custom API URL, so your chains and agents can run on Claude through apiToken.sale with a two-line change — same models, lower token price.",
     published: "2026-07-17",
@@ -799,7 +799,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "Does LangChain work with a custom Claude API endpoint?", a: "Yes. ChatAnthropic accepts anthropic_api_url (or the ANTHROPIC_API_URL environment variable), so you can point it at https://api.apitoken.sale and keep everything else unchanged." },
+      { q: "Does LangChain work with a custom Claude API endpoint?", a: "Yes. ChatAnthropic accepts anthropic_api_url (or the ANTHROPIC_API_URL environment variable), so you can point it at https://router.apitoken.sale and keep everything else unchanged." },
       { q: "Do LangChain agents and tool calling still work?", a: "Yes — the gateway serves the standard Anthropic Messages API, so tool calling, streaming and LangGraph agents behave exactly as with the official endpoint." },
       { q: "Which models can I use from LangChain?", a: "All supported Claude models — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 and more — on the same key and prepaid balance." },
     ],
@@ -810,7 +810,7 @@ export const learnArticles: LearnArticle[] = [
     cluster: "integrate",
     title: "Use the Claude API with LiteLLM",
     h1: "Use the Claude API with LiteLLM",
-    description: "Route LiteLLM to Claude through apiToken.sale: set api_base to api.apitoken.sale in litellm_params or the proxy config and pay 50% less per token.",
+    description: "Route LiteLLM to Claude through apiToken.sale: set api_base to router.apitoken.sale in litellm_params or the proxy config and pay 50% less per token.",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm proxy claude", "litellm claude api key"],
     dek: "LiteLLM speaks to Anthropic natively and lets you override the endpoint per model, so one config line sends all your Claude traffic through the discounted gateway.",
     published: "2026-07-17",
@@ -833,7 +833,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "Does LiteLLM support a custom Anthropic api_base?", a: "Yes — pass api_base in litellm.completion() or in litellm_params in the proxy config, and LiteLLM sends Anthropic-format requests to https://api.apitoken.sale." },
+      { q: "Does LiteLLM support a custom Anthropic api_base?", a: "Yes — pass api_base in litellm.completion() or in litellm_params in the proxy config, and LiteLLM sends Anthropic-format requests to https://router.apitoken.sale." },
       { q: "Do I keep the anthropic/ model prefix?", a: "Yes. Use anthropic/claude-opus-4-8 (or any supported model) so LiteLLM applies the Anthropic protocol; only the endpoint and key change." },
       { q: "Does this work for tools built on LiteLLM?", a: "Yes — anything that routes through LiteLLM (including many coding agents) inherits the discounted endpoint from the same configuration." },
     ],
@@ -865,7 +865,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "Does Aider work with a custom Claude endpoint?", a: "Yes. Aider uses LiteLLM for Anthropic models, and LiteLLM honours the ANTHROPIC_API_BASE environment variable — set it to https://api.apitoken.sale and start Aider normally." },
+      { q: "Does Aider work with a custom Claude endpoint?", a: "Yes. Aider uses LiteLLM for Anthropic models, and LiteLLM honours the ANTHROPIC_API_BASE environment variable — set it to https://router.apitoken.sale and start Aider normally." },
       { q: "Which Claude model is best in Aider?", a: "claude-sonnet-5 is the best default for most coding; switch to claude-opus-4-8 for the hardest multi-file work. Both run on the same key." },
       { q: "How much cheaper is a long Aider session?", a: "Every request is billed at official token rates minus your flat 50% discount, so a session that would cost $10 direct costs $5 here." },
     ],
@@ -900,7 +900,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "Does Roo Code support a custom Anthropic base URL?", a: "Yes — the Anthropic provider settings include a custom base URL option; set it to https://api.apitoken.sale and use your apiToken.sale key." },
+      { q: "Does Roo Code support a custom Anthropic base URL?", a: "Yes — the Anthropic provider settings include a custom base URL option; set it to https://router.apitoken.sale and use your apiToken.sale key." },
       { q: "Which models does Roo Code get on this key?", a: "Every supported Claude model — Opus 4.8 and 4.7, Sonnet 5 and 4.6, Haiku 4.5 — on one key and one prepaid balance." },
       { q: "Is this different from using Cline?", a: "The setup is nearly identical: both are VS Code agents with an Anthropic provider that accepts a custom base URL. Use whichever agent you prefer; the key works in both." },
     ],
@@ -1602,7 +1602,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "steps", items: [
           "Create a free account and generate one API key (it looks like sk-pool-…) — the same key already covers Claude models too.",
           `Point your client at ${OPENAI_BASE} and authenticate with Authorization: Bearer — not x-api-key; that header belongs to the Anthropic surface.`,
-          "Confirm the enabled models with GET /v1/models, then send a Responses request.",
+          "Confirm the enabled models with GET https://router.apitoken.sale/v1/models — the unified catalog namespaces IDs by provider (anthropic/*, openai/*, google/*) — then send a Responses request.",
         ] },
         { type: "code", code: `curl ${OPENAI_BASE}/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
         cta(),
@@ -1614,7 +1614,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
       ] },
       { h2: "Which GPT models are available", blocks: [
-        { type: "p", text: "The served set is pinned and priced in the engine; GET /v1/models is always the live answer. Today the line covers three GPT-5.6 tiers and two previous-generation models:" },
+        { type: "p", text: "The served set is pinned and priced in the engine; GET https://router.apitoken.sale/v1/models is always the live answer. Today the line covers three GPT-5.6 tiers and two previous-generation models:" },
         { type: "table", headers: ["Model ID", "Tier", "Official in / out ($ per 1M)", "Cached input"], rows: [
           ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$5 / $30", "$0.50"],
           ["gpt-5.6-terra", "Balanced", "$2.50 / $15", "$0.25"],
@@ -1632,11 +1632,11 @@ export const learnArticles: LearnArticle[] = [
       ] },
       { h2: "What the endpoint does and does not cover", blocks: [
         { type: "p", text: "This is an independent OpenAI-compatible service, not the OpenAI Platform. It deliberately serves text generation only: model discovery, Responses, and Chat Completions with streaming and image input. Audio, files, realtime, assistants, batches and fine-tuning are not available." },
-        { type: "note", text: "Errors come in the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. A 401 means the key or the auth header is wrong (use Bearer, not x-api-key), a 402 means the shared prepaid balance needs a top-up, and a 404 means the model ID is not enabled — check GET /v1/models." },
+        { type: "note", text: "Errors come in the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. A 401 means the key or the auth header is wrong (use Bearer, not x-api-key), a 402 means the shared prepaid balance needs a top-up, and a 404 means the model ID is not enabled — check GET https://router.apitoken.sale/v1/models." },
       ] },
     ],
     faq: [
-      { q: "Does the same key really work for Claude and GPT?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: the Anthropic Messages API at api.apitoken.sale for Claude models and the OpenAI-compatible API at openai.api.apitoken.sale/v1 for GPT models. The discount is shared too." },
+      { q: "Does the same key really work for Claude and GPT?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: the Anthropic Messages API at router.apitoken.sale for Claude models and the OpenAI-compatible API at router.apitoken.sale/v1 for GPT models. The discount is shared too." },
       { q: "Which auth header does the OpenAI-compatible endpoint use?", a: "Authorization: Bearer sk-pool-…. The x-api-key header is only for the Anthropic surface — sending it to the OpenAI endpoint returns a 401." },
       { q: "Responses or Chat Completions?", a: "Both are served with SSE streaming. Use Responses for new code and the official SDKs; Chat Completions works for clients and frameworks that expect the classic shape." },
       { q: "How is GPT usage billed?", a: "Per token at official OpenAI rates — including cached-input and long-context pricing — then your flat 50% B2C discount is subtracted before the charge touches your prepaid balance, exactly like Claude usage." },
@@ -1665,7 +1665,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Always pass --profile apitoken explicitly so there is no ambiguity about which provider — and which env var — is active.",
           "Switch models per project by editing the model line: gpt-5.6-sol for the hardest work, gpt-5.6-terra for the daily driver, gpt-5.6-luna for fast cheap steps.",
-          "GET " + OPENAI_BASE + "/models with the same Bearer key lists the currently enabled set.",
+          "GET " + OPENAI_BASE + "/models with the same Bearer key lists the currently enabled set — the unified catalog namespaces IDs by provider (anthropic/*, openai/*, google/*).",
         ] },
         { type: "note", text: "wire_api = \"responses\" is the right value for this gateway — it serves both Responses and Chat Completions, and Codex streams over Responses. Set it only to \"chat\" if a specific client requires the classic shape." },
       ] },
@@ -1673,7 +1673,7 @@ export const learnArticles: LearnArticle[] = [
         { type: "list", items: [
           "Missing APITOKEN_API_KEY — the variable named by env_key is not exported in the shell that runs codex. Export it in that same shell, or in your shell profile.",
           "stream error: unexpected status 401 — the key is wrong, revoked, or the base_url lost its /v1 suffix. Reproduce with curl outside Codex to isolate which half is broken.",
-          "stream error: unexpected status 404 — the model ID is not enabled; check GET /v1/models instead of assuming.",
+          "stream error: unexpected status 404 — the model ID is not enabled; check GET https://router.apitoken.sale/v1/models instead of assuming.",
           "402 — the shared prepaid balance needs a top-up; backoff will not fix it.",
         ] },
         { type: "link", text: "The full Codex error playbook — config.toml, auth.json, stream errors", href: "/errors/codex" },

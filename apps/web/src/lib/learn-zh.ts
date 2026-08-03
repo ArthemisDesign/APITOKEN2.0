@@ -12,7 +12,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "创建一个免费账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
-          "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
+          "将任意兼容 Anthropic 的工具指向 https://router.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
@@ -110,7 +110,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "与你现有的工具兼容", blocks: [
-        { type: "p", text: "将 Claude Code、Cursor、Cline 或 Anthropic SDK 指向 https://api.apitoken.sale，即可像以前一样继续工作。支持提供俄语和英语服务，通过 Telegram 联系。" },
+        { type: "p", text: "将 Claude Code、Cursor、Cline 或 Anthropic SDK 指向 https://router.apitoken.sale，即可像以前一样继续工作。支持提供俄语和英语服务，通过 Telegram 联系。" },
       ] },
       { h2: "在俄罗斯免 VPN 使用 Claude API", blocks: [
         { type: "p", text: "签发密钥和余额没有 Anthropic 开票国家的门槛，因此你不需要外国银行卡或公司即可开始。网络可达性取决于你自己的连接，但购买余额和生成密钥都没有地域限制。" },
@@ -174,7 +174,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "即时、自助开通", blocks: [ { type: "steps", items: [
           "创建一个免费账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
-          "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
+          "将任意兼容 Anthropic 的工具指向 https://router.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] }, { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" } ] },
       { h2: "「即时」到底是什么意思", blocks: [
         { type: "p", text: "你一生成密钥它就是激活的。从注册到第一个成功请求之间没有任何人工审核步骤，因此你可以在同一次坐下就接通工具并交付。" },
@@ -182,7 +182,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "从零到第一个调用", blocks: [
         { type: "list", items: [
           "注册并打开控制台——没有审批步骤。",
-          "生成密钥并把你的工具指向 api.apitoken.sale。",
+          "生成密钥并把你的工具指向 router.apitoken.sale。",
           "发出请求，即可在用量中看到它被计量。",
         ] },
         { type: "p", text: "通过 Google 或 GitHub 创建的新账户还会附带 $5 平台欢迎奖励余额，因此你可以在充值前验证整个流程。" },
@@ -196,17 +196,17 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-quick-setup": {
     title: "两分钟完成 Claude API 配置",
     h1: "两分钟配置好 Claude API",
-    description: "两分钟的 Claude API 快速上手：创建密钥、把 Base URL 设为 api.apitoken.sale，然后用 curl、Python 或你的 IDE 发出第一个 /v1/messages 请求。",
+    description: "两分钟的 Claude API 快速上手：创建密钥、把 Base URL 设为 router.apitoken.sale，然后用 curl、Python 或你的 IDE 发出第一个 /v1/messages 请求。",
     keywords: ["claude api 快速上手", "claude api 配置", "claude api 第一个请求", "anthropic messages api", "claude api base url"],
     dek: "这是从零到跑通 Claude API 调用的最快路径。下面的一切都使用标准的 Anthropic Messages API，因此可以直接嵌入你现有的代码。",
     sections: [
       { h2: "1. 创建密钥", blocks: [ { type: "p", text: "注册、打开控制台并生成一把密钥。它形如 sk-pool-…，可用于所有受支持的模型。" } ] },
       { h2: "2. 设置端点", blocks: [
         { type: "p", text: "将任意兼容 Anthropic 的客户端指向网关：" },
-        { type: "code", code: `Base URL:  https://api.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
+        { type: "code", code: `Base URL:  https://router.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
       ] },
       { h2: "3. 发出第一个请求", blocks: [
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "首次调用的常见错误", blocks: [
@@ -219,7 +219,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "我该用哪个 Base URL？", a: "在任意兼容 Anthropic 的工具中使用 https://api.apitoken.sale，并向 /v1/messages 发送请求。" },
+      { q: "我该用哪个 Base URL？", a: "在任意兼容 Anthropic 的工具中使用 https://router.apitoken.sale，并向 /v1/messages 发送请求。基于旧主机 https://api.apitoken.sale 的既有集成仍可正常使用——统一 router 只是新设置的推荐端点。" },
       { q: "需要哪个鉴权请求头？", a: "发送 x-api-key（携带你的密钥）和 anthropic-version，与官方 Anthropic API 完全一致。" },
     ],
   },
@@ -242,7 +242,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "通过 Google 或 GitHub 创建账户并打开控制台——无需审批、无需排队。",
           "生成一把 API 密钥（形如 sk-pool-…）。同一把密钥可用于所有受支持的 Claude 模型。",
-          "将任意兼容 Anthropic 的工具指向 https://api.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
+          "将任意兼容 Anthropic 的工具指向 https://router.apitoken.sale，并携带 x-api-key 请求头向 /v1/messages 发送请求。",
         ] },
       ] },
       { h2: "Claude API 是永久免费的吗？", blocks: [
@@ -278,12 +278,12 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-code-without-subscription": {
     title: "无需订阅即可使用 Claude Code",
     h1: "无需 $200/月套餐使用 Claude Code",
-    description: "用即用即付的 API 余额运行 Claude Code，而非按月订阅。将 ANTHROPIC_BASE_URL 设为 api.apitoken.sale，只为实际使用量付费。",
+    description: "用即用即付的 API 余额运行 Claude Code，而非按月订阅。将 ANTHROPIC_BASE_URL 设为 router.apitoken.sale，只为实际使用量付费。",
     keywords: ["claude code 无需订阅", "claude code api 密钥", "claude code 即用即付", "claude code 便宜", "claude code 免订阅"],
     dek: "使用 Claude Code 不一定意味着固定月费套餐。把它指向一把带预付余额的 API 密钥，你就按 token 付费——如果你的用量起伏不定或只是想试试，这非常理想。",
     sections: [
       { h2: "两个环境变量", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "全部改动就这些。Claude Code 保留每一项功能——它只是以折扣价从你的预付余额扣费，而非走订阅。" },
       ] },
       { h2: "即用即付何时更划算", blocks: [
@@ -385,19 +385,19 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "用于 Cursor 的 Claude API 密钥",
     h1: "在 Cursor 中使用 Claude API 密钥",
-    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic Base URL 设为 api.apitoken.sale，粘贴密钥，选择模型，即可以统一 50% 折扣编码。",
+    description: "用 apitoken.sale 密钥把 Cursor 接入 Claude：将 Anthropic Base URL 设为 router.apitoken.sale，粘贴密钥，选择模型，即可以统一 50% 折扣编码。",
     keywords: ["用于 cursor 的 claude api 密钥", "cursor claude api", "cursor anthropic 密钥", "在 cursor 中用 claude", "不买 cursor pro 用 cursor"],
     dek: "Cursor 允许你自带 Anthropic 密钥，这意味着你可以用折扣预付余额在 Cursor 中运行 Claude，而不必依赖捆绑套餐。",
     sections: [
       { h2: "三步配置", blocks: [
         { type: "steps", items: [
           "打开 Cursor → Settings → Models → Anthropic API。",
-          "把 Base URL 设为 https://api.apitoken.sale，并粘贴你的 sk-pool-••• 密钥。",
+          "把 Base URL 设为 https://router.apitoken.sale，并粘贴你的 sk-pool-••• 密钥。",
           "选择一个模型，例如 claude-opus-4-8，即可开始编码。",
         ] },
       ] },
       { h2: "配置", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "故障排查", blocks: [
@@ -421,15 +421,15 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-for-vs-code": {
     title: "在 VS Code 中使用 Claude API（Cline、Continue）",
     h1: "在 VS Code 中使用 Claude API",
-    description: "使用 apitoken.sale 密钥，通过 Cline 或 Continue 在 VS Code 中运行 Claude。把 Anthropic Base URL 设为 api.apitoken.sale，即可按 token 折扣付费。",
+    description: "使用 apitoken.sale 密钥，通过 Cline 或 Continue 在 VS Code 中运行 Claude。把 Anthropic Base URL 设为 router.apitoken.sale，即可按 token 折扣付费。",
     keywords: ["claude api vs code", "cline claude api", "continue claude api", "vscode 用 claude", "vscode anthropic api 密钥"],
     dek: "Cline、Continue 等免费的 VS Code 智能体接受任何兼容 Anthropic 的端点，因此你可以用折扣余额在 VS Code 里用 Claude 编码。",
     sections: [
       { h2: "Cline", blocks: [
-        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://api.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
+        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://router.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
       ] },
       { h2: "Continue", blocks: [
-        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
+        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://router.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "选哪个扩展与故障排查", blocks: [
@@ -457,7 +457,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "p", text: "Cursor 与 Anthropic Messages API 通信。apitoken.sale 对外暴露的正是这套 API，因此 Cursor 分辨不出差别——它只是使用你的密钥和 Base URL。" },
       ] },
       { h2: "配置方法", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "你能保留什么", blocks: [
@@ -477,15 +477,15 @@ export const learnZh: Record<string, LocalizedContent> = {
   "anthropic-sdk-base-url": {
     title: "在 Anthropic SDK 中使用自定义 Base URL",
     h1: "将 Anthropic SDK 指向 apitoken.sale",
-    description: "只需把 base_url 设为 api.apitoken.sale，即可在官方 Anthropic Python 和 TypeScript SDK 中使用 apitoken.sale。同样的 SDK、同样的代码，每 token 成本更低。",
+    description: "只需把 base_url 设为 router.apitoken.sale，即可在官方 Anthropic Python 和 TypeScript SDK 中使用 apitoken.sale。同样的 SDK、同样的代码，每 token 成本更低。",
     keywords: ["anthropic sdk base url", "anthropic python sdk 自定义端点", "claude sdk base url", "anthropic typescript sdk", "claude api sdk 配置"],
     dek: "官方 Anthropic SDK 允许覆盖 Base URL，因此切换到 apitoken.sale 只是一行改动——你的模型 ID 和消息代码完全保持不变。",
     sections: [
       { h2: "Python", blocks: [
-        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
       ] },
       { h2: "TypeScript", blocks: [
-        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
+        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://router.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "验证切换是否成功", blocks: [
@@ -541,7 +541,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     dek: "两者都能让你无需 Anthropic 账户就用上 Claude，但架构不同。如果 Claude 是你的主力模型，原生 Anthropic 端点会让一切更简单。",
     sections: [
       { h2: "原生 Anthropic 端点", blocks: [
-        { type: "p", text: "apiToken.sale 在 https://api.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 都无需任何适配器即可使用。你不必经过一层通用的多提供方抽象。" },
+        { type: "p", text: "apiToken.sale 在 https://router.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 都无需任何适配器即可使用。你不必经过一层通用的多提供方抽象。" },
       ] },
       { h2: "是预付折扣，不是加价", blocks: [
         { type: "list", items: [
@@ -776,7 +776,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     dek: "两者都能让你无需 Anthropic 账户就用上 Claude。差别在于付款方式、能省多少，以及端点是否真正 Anthropic 原生。",
     sections: [
       { h2: "原生 Anthropic 端点", blocks: [
-        { type: "p", text: "apiToken.sale 在 https://api.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 无需改动即可使用——你与 Claude 之间没有一层适配层。" },
+        { type: "p", text: "apiToken.sale 在 https://router.apitoken.sale 上暴露标准的 Anthropic Messages API，因此 Claude Code、Cursor 和 Anthropic SDK 无需改动即可使用——你与 Claude 之间没有一层适配层。" },
       ] },
       { h2: "是折扣，不是加价", blocks: [
         { type: "list", items: [
@@ -808,7 +808,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     sections: [
       { h2: "各司其职", blocks: [
         { type: "p", text: "Portkey 在你自带的 API 密钥之上增加路由、缓存和可观测能力。它并不向你出售 Claude 权限或折扣——背后你仍需一个已充值的 Anthropic 账户。" },
-        { type: "p", text: "apitoken.sale 才是密钥和余额的来源：一个位于 https://api.apitoken.sale 的原生 Anthropic 端点，统一立省 50%，且无需 Anthropic 账户。" },
+        { type: "p", text: "apitoken.sale 才是密钥和余额的来源：一个位于 https://router.apitoken.sale 的原生 Anthropic 端点，统一立省 50%，且无需 Anthropic 账户。" },
       ] },
       { h2: "两者甚至可以组合", blocks: [
         { type: "p", text: "如果你喜欢 Portkey 的可观测能力，可以把 apiToken.sale 密钥设为它的 Anthropic 厂商，从而在底层享受折扣。" },
@@ -957,7 +957,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "原生，而非转译层", blocks: [
-        { type: "p", text: "apiToken.sale 是 Anthropic 原生的：把任意客户端指向 https://api.apitoken.sale/v1/messages，它的表现与 api.anthropic.com 完全一致——再加上你的折扣和控制台管控。" },
+        { type: "p", text: "apiToken.sale 是 Anthropic 原生的：把任意客户端指向 https://router.apitoken.sale/v1/messages，它的表现与 api.anthropic.com 完全一致——再加上你的折扣和控制台管控。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "挑选网关时看什么", blocks: [
@@ -1007,7 +1007,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     sections: [
       { h2: "如何流式输出", blocks: [
         { type: "p", text: "在请求中设置 \"stream\": true（或使用 SDK 的流式辅助方法）。网关会返回标准的 Anthropic 服务器发送事件（SSE）。" },
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       ] },
       { h2: "计费完全相同", blocks: [
         { type: "p", text: "流式与非流式请求的计费方式相同——都按输入和输出 token 计费——因此流式输出不会让你多花一分钱。" },
@@ -1087,7 +1087,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     dek: "Claude Code 读取两个环境变量。把它们指向 apitoken.sale，即可保留全部功能，同时按折扣预付余额计费。",
     sections: [
       { h2: "两个变量", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "整个配置就这么简单。高难度工作用 claude-opus-4-8，日常编码用 claude-sonnet-5。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
@@ -1115,20 +1115,20 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "三步完成第一次 GPT 调用", blocks: [
         { type: "steps", items: [
           "创建免费账户并生成一个 API 密钥（形如 sk-pool-…）——该密钥同时已覆盖 Claude 模型。",
-          "将客户端指向 https://openai.api.apitoken.sale/v1，使用 Authorization: Bearer 认证——不要用 x-api-key，那是 Anthropic 表面的请求头。",
-          "用 GET /v1/models 确认已启用的模型，然后发送 Responses 请求。",
+          "将客户端指向 https://router.apitoken.sale/v1，使用 Authorization: Bearer 认证——不要用 x-api-key，那是 Anthropic 表面的请求头。",
+          "用 GET https://router.apitoken.sale/v1/models 确认已启用的模型——统一目录按提供方命名 ID（anthropic/*、openai/*、google/*）——然后发送 Responses 请求。",
         ] },
-        { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于 Claude、GPT 和 Gemini 模型；邮箱密码账户不参与。" },
       ] },
       { h2: "使用官方 OpenAI SDK", blocks: [
         { type: "p", text: "官方 SDK 无需改动——只需更换 base_url 和密钥。生产环境请把密钥放在服务端环境变量中。" },
-        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://openai.api.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
+        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://router.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
         { type: "p", text: "如果客户端需要，Chat Completions 也在同一主机上提供——模型 ID 和密钥不变。" },
         { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
       ] },
       { h2: "可用的 GPT 模型", blocks: [
-        { type: "p", text: "模型集在引擎中固定定价；GET /v1/models 始终是实时答案。目前涵盖三个 GPT-5.6 档位和两个上一代模型：" },
+        { type: "p", text: "模型集在引擎中固定定价；GET https://router.apitoken.sale/v1/models 始终是实时答案。目前涵盖三个 GPT-5.6 档位和两个上一代模型：" },
         { type: "table", headers: ["模型 ID", "档位", "官方输入 / 输出（$ / 1M）", "缓存输入"], rows: [
           ["gpt-5.6-sol（别名：gpt-5.6）", "旗舰", "$5 / $30", "$0.50"],
           ["gpt-5.6-terra", "均衡", "$2.50 / $15", "$0.25"],
@@ -1146,11 +1146,11 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
       { h2: "端点的覆盖范围", blocks: [
         { type: "p", text: "这是独立的 OpenAI 兼容服务，并非 OpenAI Platform。它仅提供文本生成：模型列表、Responses 与 Chat Completions（含流式输出与图片输入）。音频、文件、realtime、assistants、batches 与 fine-tuning 均不可用。" },
-        { type: "note", text: "错误以 OpenAI 信封返回——{\"error\":{\"message\",\"type\",\"param\",\"code\"}}。401 表示密钥或认证头错误（应使用 Bearer 而非 x-api-key）；402 表示共享预付余额需要充值；404 表示模型 ID 未启用——请查询 GET /v1/models。" },
+        { type: "note", text: "错误以 OpenAI 信封返回——{\"error\":{\"message\",\"type\",\"param\",\"code\"}}。401 表示密钥或认证头错误（应使用 Bearer 而非 x-api-key）；402 表示共享预付余额需要充值；404 表示模型 ID 未启用——请查询 GET https://router.apitoken.sale/v1/models。" },
       ] },
     ],
     faq: [
-      { q: "同一个密钥真的能同时用于 Claude 和 GPT 吗？", a: "能。一个 sk-pool 密钥和一个预付余额覆盖两个表面：api.apitoken.sale 上的 Anthropic Messages API 用于 Claude 模型，openai.api.apitoken.sale/v1 上的 OpenAI 兼容 API 用于 GPT 模型。折扣也共用。" },
+      { q: "同一个密钥真的能同时用于 Claude 和 GPT 吗？", a: "能。一个 sk-pool 密钥和一个预付余额覆盖两个表面：router.apitoken.sale 上的 Anthropic Messages API 用于 Claude 模型，router.apitoken.sale/v1 上的 OpenAI 兼容 API 用于 GPT 模型。折扣也共用。" },
       { q: "OpenAI 兼容端点使用哪个认证头？", a: "Authorization: Bearer sk-pool-…。x-api-key 仅用于 Anthropic 表面——把它发给 OpenAI 端点会返回 401。" },
       { q: "选 Responses 还是 Chat Completions？", a: "两者都支持 SSE 流式输出。新代码和官方 SDK 用 Responses；需要经典形状的客户端和框架用 Chat Completions。" },
       { q: "GPT 用量如何计费？", a: "按官方 OpenAI 费率逐 token 计费——包括缓存输入和长上下文定价——然后在计入预付余额前减去你的 50% B2C 统一折扣，与 Claude 用量完全一致。" },
@@ -1165,7 +1165,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     sections: [
       { h2: "创建配置档", blocks: [
         { type: "p", text: "将以下内容保存为 ~/.codex/apitoken.config.toml。命名配置档不会改动你的默认 Codex 配置和可能的 ChatGPT 登录——每次运行显式选择启用。" },
-        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
+        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key 指定 Codex 读取密钥的环境变量名——密钥留在 shell 中，绝不写入 TOML 文件。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于 Claude、GPT 和 Gemini 模型；邮箱密码账户不参与。" },
       ] },
@@ -1174,7 +1174,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "始终显式传入 --profile apitoken，明确哪个提供商——以及哪个环境变量——在生效。",
           "按项目修改 model 行切换模型：最重的任务用 gpt-5.6-sol，日常使用 gpt-5.6-terra，快速便宜的步骤用 gpt-5.6-luna。",
-          "用同一个 Bearer 密钥 GET https://openai.api.apitoken.sale/v1/models 可列出当前启用的模型集。",
+          "用同一个 Bearer 密钥 GET https://router.apitoken.sale/v1/models 可列出当前启用的模型集——统一目录按提供方命名 ID（anthropic/*、openai/*、google/*）。",
         ] },
         { type: "note", text: "wire_api = \"responses\" 是本网关的正确值——它同时提供 Responses 和 Chat Completions，而 Codex 通过 Responses 流式输出。只有当特定客户端要求经典形状时才设为 \"chat\"。" },
       ] },
@@ -1182,7 +1182,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "Missing APITOKEN_API_KEY——env_key 指定的变量没有导出到运行 codex 的 shell。请在同一个 shell（或 shell 配置文件）中导出。",
           "stream error: unexpected status 401——密钥错误、已吊销，或 base_url 丢了 /v1 后缀。在 Codex 之外用 curl 复现以定位问题所在。",
-          "stream error: unexpected status 404——模型 ID 未启用；请查询 GET /v1/models 而不是凭空猜测。",
+          "stream error: unexpected status 404——模型 ID 未启用；请查询 GET https://router.apitoken.sale/v1/models 而不是凭空猜测。",
           "402——共享预付余额需要充值；等待无法解决。",
         ] },
         { type: "link", text: "完整的 Codex 错误手册——config.toml、auth.json、流式错误", href: "/errors/codex" },
@@ -1206,7 +1206,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "安装一个免费的智能体扩展，例如 Cline 或 Roo Code。",
           "选择 Anthropic 作为 API 提供方。",
-          "把 Base URL 设为 https://api.apitoken.sale，粘贴你的 sk-pool-••• 密钥，并选择一个模型，例如 claude-sonnet-5。",
+          "把 Base URL 设为 https://router.apitoken.sale，粘贴你的 sk-pool-••• 密钥，并选择一个模型，例如 claude-sonnet-5。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
@@ -1286,17 +1286,17 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-langchain": {
     title: "在 LangChain 中使用 Claude API",
     h1: "在 LangChain 中使用 Claude API",
-    description: "通过 apitoken.sale 将 LangChain 接入 Claude：把 ChatAnthropic 指向 api.apitoken.sale，模型 ID 保持不变，每 token 费用降低 50%。",
+    description: "通过 apitoken.sale 将 LangChain 接入 Claude：把 ChatAnthropic 指向 router.apitoken.sale，模型 ID 保持不变，每 token 费用降低 50%。",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api 密钥"],
     dek: "LangChain 的 Anthropic 集成支持自定义 API URL，因此只改两行，你的链和智能体就能通过 apitoken.sale 运行 Claude——同样的模型，更低的 token 单价。",
     sections: [
       { h2: "把 ChatAnthropic 指向网关", blocks: [
-        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://router.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
         { type: "p", text: "整个集成就是这些：同一个 langchain-anthropic 包、同样的模型 ID、同样的流式输出与工具调用——变的只有端点和价格。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额，足够你接通工具并在充值前跑通真实调用。" },
       ] },
       { h2: "或通过环境变量配置", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "code", code: `export ANTHROPIC_API_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
         { type: "p", text: "设置好环境变量后，ChatAnthropic 会自动读取这两个值，共享代码库完全无需改代码。" },
       ] },
       { h2: "哪些功能可用", blocks: [
@@ -1308,7 +1308,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "LangChain 支持自定义 Claude API 端点吗？", a: "支持。ChatAnthropic 接受 anthropic_api_url（或 ANTHROPIC_API_URL 环境变量），把它指向 https://api.apitoken.sale 即可，其余保持不变。" },
+      { q: "LangChain 支持自定义 Claude API 端点吗？", a: "支持。ChatAnthropic 接受 anthropic_api_url（或 ANTHROPIC_API_URL 环境变量），把它指向 https://router.apitoken.sale 即可，其余保持不变。" },
       { q: "LangChain 智能体和工具调用还能用吗？", a: "能——网关提供标准的 Anthropic Messages API，工具调用、流式输出和 LangGraph 智能体的行为与官方端点完全一致。" },
       { q: "从 LangChain 能用哪些模型？", a: "所有受支持的 Claude 模型——claude-opus-4-8、claude-sonnet-5、claude-haiku-4-5 等——共用一把密钥和预付余额。" },
     ],
@@ -1316,16 +1316,16 @@ export const learnZh: Record<string, LocalizedContent> = {
   "claude-api-litellm": {
     title: "在 LiteLLM 中使用 Claude API",
     h1: "在 LiteLLM 中使用 Claude API",
-    description: "通过 apitoken.sale 将 LiteLLM 路由到 Claude：在 litellm_params 或代理配置中把 api_base 设为 api.apitoken.sale，每 token 费用降低 50%。",
+    description: "通过 apitoken.sale 将 LiteLLM 路由到 Claude：在 litellm_params 或代理配置中把 api_base 设为 router.apitoken.sale，每 token 费用降低 50%。",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm 代理 claude"],
     dek: "LiteLLM 原生支持 Anthropic，并允许为每个模型覆盖端点——一行配置即可把你全部的 Claude 流量送经折扣网关。",
     sections: [
       { h2: "直接 SDK 调用", blocks: [
-        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额，足够你接通工具并在充值前跑通真实调用。" },
       ] },
       { h2: "LiteLLM 代理配置", blocks: [
-        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://router.apitoken.sale\n      api_key: sk-pool-•••` },
         { type: "p", text: "用这份配置运行代理，你的 LiteLLM 网关的每个客户端都会透明地使用折扣版 Claude 端点——当多个服务共享一个路由层时尤其方便。" },
       ] },
       { h2: "为什么在这里通过 LiteLLM 路由 Claude", blocks: [
@@ -1337,7 +1337,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "LiteLLM 支持自定义 Anthropic api_base 吗？", a: "支持——在 litellm.completion() 或代理配置的 litellm_params 中传入 api_base，LiteLLM 就会把 Anthropic 格式的请求发送到 https://api.apitoken.sale。" },
+      { q: "LiteLLM 支持自定义 Anthropic api_base 吗？", a: "支持——在 litellm.completion() 或代理配置的 litellm_params 中传入 api_base，LiteLLM 就会把 Anthropic 格式的请求发送到 https://router.apitoken.sale。" },
       { q: "模型还用 anthropic/ 前缀吗？", a: "是的。使用 anthropic/claude-opus-4-8（或任何受支持的模型），让 LiteLLM 应用 Anthropic 协议；变的只有端点和密钥。" },
       { q: "基于 LiteLLM 的工具也适用吗？", a: "适用——凡是经 LiteLLM 路由的东西（包括许多编码智能体）都会从同一份配置继承折扣端点。" },
     ],
@@ -1350,7 +1350,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     dek: "Aider 是终端里的结对程序员，长会话烧 token 很快。用两个环境变量把它指向折扣网关，工作流保持原样。",
     sections: [
       { h2: "两个环境变量", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://router.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
         { type: "p", text: "Aider 底层通过 LiteLLM 路由 Anthropic 流量，而 LiteLLM 会读取 ANTHROPIC_API_BASE——因此无需任何配置文件。" },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额，足够你接通工具并在充值前跑通真实调用。" },
       ] },
@@ -1364,7 +1364,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Aider 支持自定义 Claude 端点吗？", a: "支持。Aider 对 Anthropic 模型使用 LiteLLM，而 LiteLLM 读取 ANTHROPIC_API_BASE 环境变量——把它设为 https://api.apitoken.sale，然后正常启动 Aider 即可。" },
+      { q: "Aider 支持自定义 Claude 端点吗？", a: "支持。Aider 对 Anthropic 模型使用 LiteLLM，而 LiteLLM 读取 ANTHROPIC_API_BASE 环境变量——把它设为 https://router.apitoken.sale，然后正常启动 Aider 即可。" },
       { q: "在 Aider 里哪个 Claude 模型最好？", a: "claude-sonnet-5 是大多数编码工作的最佳默认；最难的多文件任务切到 claude-opus-4-8。两者共用同一把密钥。" },
       { q: "长 Aider 会话能便宜多少？", a: "每个请求按官方 token 费率计费再减去你 50% 的统一折扣，直连要花 $10 的会话在这里只需 $5。" },
     ],
@@ -1379,7 +1379,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       { h2: "三步设置", blocks: [
         { type: "steps", items: [
           "打开 Roo Code 设置，选择 Anthropic 作为 API 提供方。",
-          "启用自定义 base URL 选项并设为 https://api.apitoken.sale；粘贴你的 sk-pool-… 密钥。",
+          "启用自定义 base URL 选项并设为 https://router.apitoken.sale；粘贴你的 sk-pool-… 密钥。",
           "选择一个模型，例如 claude-opus-4-8 或 claude-sonnet-5，然后开始任务。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额，足够你接通工具并在充值前跑通真实调用。" },
@@ -1394,7 +1394,7 @@ export const learnZh: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Roo Code 支持自定义 Anthropic base URL 吗？", a: "支持——Anthropic 提供方设置里有自定义 base URL 选项；设为 https://api.apitoken.sale 并使用你的 apitoken.sale 密钥即可。" },
+      { q: "Roo Code 支持自定义 Anthropic base URL 吗？", a: "支持——Anthropic 提供方设置里有自定义 base URL 选项；设为 https://router.apitoken.sale 并使用你的 apitoken.sale 密钥即可。" },
       { q: "这把密钥能让 Roo Code 用哪些模型？", a: "所有受支持的 Claude 模型——Opus 4.8 和 4.7、Sonnet 5 和 4.6、Haiku 4.5——共用一把密钥和一个预付余额。" },
       { q: "和用 Cline 有什么区别？", a: "设置几乎一样：两者都是带 Anthropic 提供方、接受自定义 base URL 的 VS Code 智能体。用你喜欢的那个即可；密钥在两者中都能用。" },
     ],

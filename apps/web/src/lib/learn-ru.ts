@@ -12,7 +12,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Создайте бесплатный аккаунт и откройте панель — без одобрения и листа ожидания.",
           "Сгенерируйте один ключ API (он выглядит как sk-pool-…). Один и тот же ключ работает со всеми поддерживаемыми моделями Claude.",
-          "Направьте любой Anthropic-совместимый инструмент на https://api.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
+          "Направьте любой Anthropic-совместимый инструмент на https://router.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
         ] },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
@@ -110,7 +110,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Работает с вашими текущими инструментами", blocks: [
-        { type: "p", text: "Направьте Claude Code, Cursor, Cline или Anthropic SDK на https://api.apitoken.sale и работайте ровно как раньше. Поддержка доступна на русском и английском в Telegram." },
+        { type: "p", text: "Направьте Claude Code, Cursor, Cline или Anthropic SDK на https://router.apitoken.sale и работайте ровно как раньше. Поддержка доступна на русском и английском в Telegram." },
       ] },
       { h2: "Claude API из России без VPN", blocks: [
         { type: "p", text: "Выдача ключа и баланса не привязана к биллинговой стране Anthropic, поэтому иностранная карта или компания для старта не нужны. Сетевая доступность зависит от вашего подключения, но ни покупка баланса, ни генерация ключа не ограничены по региону." },
@@ -175,7 +175,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Создайте бесплатный аккаунт и откройте панель — без одобрения и листа ожидания.",
           "Сгенерируйте один ключ API (он выглядит как sk-pool-…). Один и тот же ключ работает со всеми поддерживаемыми моделями Claude.",
-          "Направьте любой Anthropic-совместимый инструмент на https://api.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
+          "Направьте любой Anthropic-совместимый инструмент на https://router.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
         ] },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
@@ -185,7 +185,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       { h2: "От нуля до первого вызова", blocks: [
         { type: "list", items: [
           "Зарегистрируйтесь и откройте панель — без шага одобрения.",
-          "Сгенерируйте ключ и направьте инструмент на api.apitoken.sale.",
+          "Сгенерируйте ключ и направьте инструмент на router.apitoken.sale.",
           "Отправьте запрос и увидьте его учёт в вашем расходе.",
         ] },
         { type: "p", text: "Новые аккаунты через Google или GitHub также получают приветственный бонус $5 на баланс платформы, поэтому можно проверить весь процесс до пополнения." },
@@ -199,17 +199,17 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-quick-setup": {
     title: "Настройка Claude API за две минуты",
     h1: "Настройте Claude API за две минуты",
-    description: "Быстрый старт Claude API за две минуты: создайте ключ, укажите base URL api.apitoken.sale и отправьте первый запрос /v1/messages через curl, Python или IDE.",
+    description: "Быстрый старт Claude API за две минуты: создайте ключ, укажите base URL router.apitoken.sale и отправьте первый запрос /v1/messages через curl, Python или IDE.",
     keywords: ["claude api быстрый старт", "claude api настройка", "claude api первый запрос", "anthropic messages api", "claude api base url"],
     dek: "Это самый быстрый путь от нуля до рабочего вызова Claude API. Всё ниже использует стандартный Anthropic Messages API, поэтому встраивается прямо в ваш существующий код.",
     sections: [
       { h2: "1. Создайте ключ", blocks: [ { type: "p", text: "Зарегистрируйтесь, откройте панель и сгенерируйте ключ. Он выглядит как sk-pool-… и работает со всеми поддерживаемыми моделями." } ] },
       { h2: "2. Укажите эндпоинт", blocks: [
         { type: "p", text: "Направьте любой Anthropic-совместимый клиент на шлюз:" },
-        { type: "code", code: `Base URL:  https://api.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
+        { type: "code", code: `Base URL:  https://router.apitoken.sale\nEndpoint:  POST /v1/messages\nHeaders:   x-api-key: sk-pool-•••\n           anthropic-version: 2023-06-01` },
       ] },
       { h2: "3. Отправьте первый запрос", blocks: [
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Частые ошибки первого вызова", blocks: [
@@ -222,7 +222,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Какой base URL использовать?", a: "Используйте https://api.apitoken.sale с любым Anthropic-совместимым инструментом и отправляйте запросы на /v1/messages." },
+      { q: "Какой base URL использовать?", a: "Используйте https://router.apitoken.sale с любым Anthropic-совместимым инструментом и отправляйте запросы на /v1/messages. Существующие интеграции на прежнем хосте https://api.apitoken.sale продолжают работать — единый роутер просто рекомендуемый эндпоинт для новых настроек." },
       { q: "Какой заголовок авторизации нужен?", a: "Отправляйте x-api-key с вашим ключом и anthropic-version — ровно как в официальном Anthropic API." },
     ],
   },
@@ -245,7 +245,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Создайте аккаунт через Google или GitHub и откройте панель — без одобрения и листа ожидания.",
           "Сгенерируйте один ключ API (он выглядит как sk-pool-…). Один и тот же ключ работает со всеми поддерживаемыми моделями Claude.",
-          "Направьте любой Anthropic-совместимый инструмент на https://api.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
+          "Направьте любой Anthropic-совместимый инструмент на https://router.apitoken.sale и отправляйте запросы на /v1/messages с заголовком x-api-key.",
         ] },
       ] },
       { h2: "Claude API бесплатен навсегда?", blocks: [
@@ -281,12 +281,12 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-code-without-subscription": {
     title: "Используйте Claude Code без подписки",
     h1: "Claude Code без плана за $200/месяц",
-    description: "Запускайте Claude Code на балансе pay-as-you-go вместо ежемесячной подписки. Укажите ANTHROPIC_BASE_URL на api.apitoken.sale и платите только за то, что используете.",
+    description: "Запускайте Claude Code на балансе pay-as-you-go вместо ежемесячной подписки. Укажите ANTHROPIC_BASE_URL на router.apitoken.sale и платите только за то, что используете.",
     keywords: ["claude code без подписки", "claude code api ключ", "claude code pay as you go", "claude code дешево", "claude code без ежемесячного плана"],
     dek: "Claude Code не обязан означать фиксированный ежемесячный план. Направьте его на ключ API с предоплаченным балансом — и платите за токены, что идеально при неравномерном использовании или если просто хотите попробовать.",
     sections: [
       { h2: "Две переменные окружения", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "Это всё изменение. Claude Code сохраняет все функции — он просто списывает с вашего предоплаченного баланса со скидкой вместо подписки." },
       ] },
       { h2: "Когда pay-as-you-go выгоднее", blocks: [
@@ -388,19 +388,19 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-key-for-cursor": {
     title: "Ключ Claude API для Cursor",
     h1: "Используйте ключ Claude API в Cursor",
-    description: "Подключите Cursor к Claude с ключом apiToken.sale: задайте base URL Anthropic на api.apitoken.sale, вставьте ключ, выберите модель и кодьте с единой скидкой 50%.",
+    description: "Подключите Cursor к Claude с ключом apiToken.sale: задайте base URL Anthropic на router.apitoken.sale, вставьте ключ, выберите модель и кодьте с единой скидкой 50%.",
     keywords: ["ключ claude api для cursor", "cursor claude api", "cursor anthropic ключ", "использовать claude в cursor", "cursor без cursor pro"],
     dek: "Cursor позволяет подключить собственный ключ Anthropic, а значит, вы можете запускать Claude в Cursor на предоплаченном балансе со скидкой вместо встроенного тарифа.",
     sections: [
       { h2: "Настройка в три шага", blocks: [
         { type: "steps", items: [
           "Откройте Cursor → Settings → Models → Anthropic API.",
-          "Задайте base URL на https://api.apitoken.sale и вставьте ваш ключ sk-pool-•••.",
+          "Задайте base URL на https://router.apitoken.sale и вставьте ваш ключ sk-pool-•••.",
           "Выберите модель, например claude-opus-4-8, и начинайте кодить.",
         ] },
       ] },
       { h2: "Конфигурация", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Решение проблем", blocks: [
@@ -424,15 +424,15 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-for-vs-code": {
     title: "Claude API в VS Code (Cline, Continue)",
     h1: "Используйте Claude API в VS Code",
-    description: "Запускайте Claude в VS Code через Cline или Continue с ключом apiToken.sale. Задайте base URL Anthropic на api.apitoken.sale и платите за токены со скидкой.",
+    description: "Запускайте Claude в VS Code через Cline или Continue с ключом apiToken.sale. Задайте base URL Anthropic на router.apitoken.sale и платите за токены со скидкой.",
     keywords: ["claude api vs code", "cline claude api", "continue claude api", "claude в vscode", "vscode anthropic api ключ"],
     dek: "Бесплатные VS Code-агенты вроде Cline и Continue принимают любой Anthropic-совместимый эндпоинт, поэтому вы можете кодить с Claude прямо в VS Code на балансе со скидкой.",
     sections: [
       { h2: "Cline", blocks: [
-        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://api.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
+        { type: "code", code: `# Cline → Settings\nAPI Provider : Anthropic\nBase URL     : https://router.apitoken.sale\nAPI Key      : sk-pool-•••\nModel        : claude-opus-4-8` },
       ] },
       { h2: "Continue", blocks: [
-        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
+        { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://router.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Какое расширение выбрать и решение проблем", blocks: [
@@ -460,7 +460,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "p", text: "Cursor общается с Anthropic Messages API. apiToken.sale отдаёт ровно этот API, поэтому Cursor не видит разницы — он просто использует ваш ключ и base URL." },
       ] },
       { h2: "Настройте", blocks: [
-        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
+        { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://router.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Что вы сохраняете", blocks: [
@@ -480,15 +480,15 @@ export const learnRu: Record<string, LocalizedContent> = {
   "anthropic-sdk-base-url": {
     title: "Официальные SDK Anthropic с кастомным base URL",
     h1: "Направьте SDK Anthropic на apiToken.sale",
-    description: "Используйте официальные SDK Anthropic для Python и TypeScript с apiToken.sale, задав base_url на api.apitoken.sale. Тот же SDK, тот же код, ниже цена за токен.",
+    description: "Используйте официальные SDK Anthropic для Python и TypeScript с apiToken.sale, задав base_url на router.apitoken.sale. Тот же SDK, тот же код, ниже цена за токен.",
     keywords: ["anthropic sdk base url", "anthropic python sdk кастомный endpoint", "claude sdk base url", "claude api sdk", "anthropic typescript sdk"],
     dek: "Официальные SDK Anthropic позволяют переопределить base URL, поэтому переход на apiToken.sale — это изменение в одну строку: идентификаторы моделей и код работы с сообщениями остаются ровно теми же.",
     sections: [
       { h2: "Python", blocks: [
-        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n)\nmsg = client.messages.create(\n    model="claude-opus-4-8",\n    max_tokens=1024,\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
       ] },
       { h2: "TypeScript", blocks: [
-        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
+        { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://router.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Проверьте, что переключение сработало", blocks: [
@@ -544,7 +544,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     dek: "Оба позволяют обращаться к Claude без аккаунта Anthropic, но устроены по-разному. Если Claude — ваша основная модель, нативный эндпоинт Anthropic всё упрощает.",
     sections: [
       { h2: "Нативный эндпоинт Anthropic", blocks: [
-        { type: "p", text: "apiToken.sale отдаёт стандартный Anthropic Messages API на https://api.apitoken.sale, поэтому Claude Code, Cursor и SDK Anthropic работают без адаптеров. Вы не маршрутизируете через универсальную мультипровайдерную абстракцию." },
+        { type: "p", text: "apiToken.sale отдаёт стандартный Anthropic Messages API на https://router.apitoken.sale, поэтому Claude Code, Cursor и SDK Anthropic работают без адаптеров. Вы не маршрутизируете через универсальную мультипровайдерную абстракцию." },
       ] },
       { h2: "Скидка на предоплате, а не наценка", blocks: [
         { type: "list", items: [
@@ -779,7 +779,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     dek: "Оба позволяют обращаться к Claude без аккаунта Anthropic. Разница — в способе оплаты, размере экономии и в том, насколько эндпоинт действительно нативен к Anthropic.",
     sections: [
       { h2: "Нативный эндпоинт Anthropic", blocks: [
-        { type: "p", text: "apiToken.sale отдаёт стандартный Anthropic Messages API на https://api.apitoken.sale, поэтому Claude Code, Cursor и SDK Anthropic работают без изменений — между вами и Claude нет слоя-адаптера." },
+        { type: "p", text: "apiToken.sale отдаёт стандартный Anthropic Messages API на https://router.apitoken.sale, поэтому Claude Code, Cursor и SDK Anthropic работают без изменений — между вами и Claude нет слоя-адаптера." },
       ] },
       { h2: "Скидка, а не наценка", blocks: [
         { type: "list", items: [
@@ -811,7 +811,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     sections: [
       { h2: "Разные задачи", blocks: [
         { type: "p", text: "Portkey добавляет маршрутизацию, кэширование и наблюдаемость поверх ключей API, которые вы приносите сами. Он не продаёт доступ к Claude или скидку — за ним всё равно нужен пополненный аккаунт Anthropic." },
-        { type: "p", text: "apiToken.sale — это источник ключа и баланса: нативный эндпоинт Anthropic по адресу https://api.apitoken.sale с единой скидкой 50% и без необходимости аккаунта Anthropic." },
+        { type: "p", text: "apiToken.sale — это источник ключа и баланса: нативный эндпоинт Anthropic по адресу https://router.apitoken.sale с единой скидкой 50% и без необходимости аккаунта Anthropic." },
       ] },
       { h2: "Их можно даже сочетать", blocks: [
         { type: "p", text: "Если вам нравится наблюдаемость Portkey, вы можете указать в нём ключ apiToken.sale как Anthropic-провайдера и получить скидку под капотом." },
@@ -960,7 +960,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "Нативный, а не слой трансляции", blocks: [
-        { type: "p", text: "apiToken.sale нативен к Anthropic: направьте любой клиент на https://api.apitoken.sale/v1/messages, и он ведёт себя ровно как api.anthropic.com — плюс ваша скидка и контроль в панели." },
+        { type: "p", text: "apiToken.sale нативен к Anthropic: направьте любой клиент на https://router.apitoken.sale/v1/messages, и он ведёт себя ровно как api.anthropic.com — плюс ваша скидка и контроль в панели." },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "На что смотреть при выборе шлюза", blocks: [
@@ -1010,7 +1010,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     sections: [
       { h2: "Как стримить", blocks: [
         { type: "p", text: "Задайте \"stream\": true в запросе (или используйте стриминговый хелпер SDK). Шлюз возвращает стандартные server-sent events Anthropic." },
-        { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-sonnet-5",\n    "max_tokens": 1024,\n    "stream": true,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
       ] },
       { h2: "Тарификация идентична", blocks: [
         { type: "p", text: "Запросы со стримингом и без него тарифицируются одинаково — по входным и выходным токенам — поэтому со стримингом вы ничего не теряете." },
@@ -1090,7 +1090,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     dek: "Claude Code читает две переменные окружения. Направьте их на apiToken.sale — и вы сохраняете все функции, оплачивая работу из предоплаченного баланса со скидкой.",
     sections: [
       { h2: "Две переменные", blocks: [
-        { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
+        { type: "code", code: `export ANTHROPIC_BASE_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "Это вся настройка. Используйте claude-opus-4-8 для сложной работы и claude-sonnet-5 для повседневного кодинга." },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
@@ -1118,20 +1118,20 @@ export const learnRu: Record<string, LocalizedContent> = {
       { h2: "Три шага до первого вызова GPT", blocks: [
         { type: "steps", items: [
           "Создайте бесплатный аккаунт и выпустите один API-ключ (вида sk-pool-…) — он уже покрывает и модели Claude.",
-          "Направьте клиент на https://openai.api.apitoken.sale/v1 и используйте Authorization: Bearer — не x-api-key: тот заголовок относится к Anthropic-поверхности.",
-          "Проверьте доступные модели через GET /v1/models, затем отправьте запрос Responses.",
+          "Направьте клиент на https://router.apitoken.sale/v1 и используйте Authorization: Bearer — не x-api-key: тот заголовок относится к Anthropic-поверхности.",
+          "Проверьте доступные модели через GET https://router.apitoken.sale/v1/models — единый каталог разделяет ID по провайдерам (anthropic/*, openai/*, google/*) — затем отправьте запрос Responses.",
         ] },
-        { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
+        { type: "code", code: `curl https://router.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы для моделей Claude, GPT и Gemini; аккаунтам по email и паролю бонус не начисляется." },
       ] },
       { h2: "Официальный OpenAI SDK", blocks: [
         { type: "p", text: "Официальные SDK работают без изменений — меняются только base_url и ключ. В production храните ключ в серверной переменной окружения." },
-        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://openai.api.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
+        { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="https://router.apitoken.sale/v1",\n)\n\nresponse = client.responses.create(\n    model="gpt-5.6-sol",\n    input="Reply with exactly: connected",\n)\nprint(response.output_text)` },
         { type: "p", text: "Chat Completions работает на том же хосте, если ваш клиент ожидает его — ID модели и ключ те же." },
         { type: "code", code: `completion = client.chat.completions.create(\n    model="gpt-5.6-sol",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(completion.choices[0].message.content)` },
       ] },
       { h2: "Какие модели GPT доступны", blocks: [
-        { type: "p", text: "Набор моделей закреплён и тарифицирован в движке; GET /v1/models — всегда актуальный ответ. Сегодня линейка включает три уровня GPT-5.6 и две модели прошлого поколения:" },
+        { type: "p", text: "Набор моделей закреплён и тарифицирован в движке; GET https://router.apitoken.sale/v1/models — всегда актуальный ответ. Сегодня линейка включает три уровня GPT-5.6 и две модели прошлого поколения:" },
         { type: "table", headers: ["ID модели", "Уровень", "Офиц. вход / выход ($ за 1M)", "Кэш входа"], rows: [
           ["gpt-5.6-sol (псевдоним: gpt-5.6)", "Флагман", "$5 / $30", "$0.50"],
           ["gpt-5.6-terra", "Сбалансированная", "$2.50 / $15", "$0.25"],
@@ -1149,11 +1149,11 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
       { h2: "Что эндпоинт покрывает, а что нет", blocks: [
         { type: "p", text: "Это независимый OpenAI-совместимый сервис, а не OpenAI Platform. Он осознанно обслуживает только генерацию текста: список моделей, Responses и Chat Completions со стримингом и входом изображений. Аудио, файлы, realtime, assistants, batches и fine-tuning недоступны." },
-        { type: "note", text: "Ошибки приходят в конверте OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401 означает неверный ключ или заголовок (нужен Bearer, не x-api-key), 402 — предоплаченный баланс нужно пополнить, 404 — ID модели не включён: проверьте GET /v1/models." },
+        { type: "note", text: "Ошибки приходят в конверте OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401 означает неверный ключ или заголовок (нужен Bearer, не x-api-key), 402 — предоплаченный баланс нужно пополнить, 404 — ID модели не включён: проверьте GET https://router.apitoken.sale/v1/models." },
       ] },
     ],
     faq: [
-      { q: "Правда ли один ключ работает и с Claude, и с GPT?", a: "Да. Один ключ sk-pool и один предоплаченный баланс покрывают обе поверхности: Anthropic Messages API на api.apitoken.sale для моделей Claude и OpenAI-совместимый API на openai.api.apitoken.sale/v1 для моделей GPT. Скидка тоже общая." },
+      { q: "Правда ли один ключ работает и с Claude, и с GPT?", a: "Да. Один ключ sk-pool и один предоплаченный баланс покрывают обе поверхности: Anthropic Messages API на router.apitoken.sale для моделей Claude и OpenAI-совместимый API на router.apitoken.sale/v1 для моделей GPT. Скидка тоже общая." },
       { q: "Какой заголовок авторизации у OpenAI-совместимого эндпоинта?", a: "Authorization: Bearer sk-pool-…. Заголовок x-api-key — только для Anthropic-поверхности; с ним OpenAI-эндпоинт вернёт 401." },
       { q: "Responses или Chat Completions?", a: "Обе службы доступны со SSE-стримингом. Для нового кода и официальных SDK берите Responses; Chat Completions подходит клиентам и фреймворкам, ожидающим классическую форму." },
       { q: "Как тарифицируется использование GPT?", a: "За токены по официальным ставкам OpenAI — включая кэш входа и длинный контекст, — затем ваша единая скидка B2C 50% вычитается перед списанием с предоплаченного баланса, ровно как у Claude." },
@@ -1168,7 +1168,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     sections: [
       { h2: "Создайте профиль", blocks: [
         { type: "p", text: "Сохраните это как ~/.codex/apitoken.config.toml. Именованный профиль не трогает конфигурацию Codex по умолчанию и возможный вход в ChatGPT — вы включаете его явно на каждый запуск." },
-        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
+        { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key задаёт имя переменной окружения, из которой Codex читает ключ, — секрет остаётся в шелле и никогда не попадает в TOML-файл." },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы для моделей Claude, GPT и Gemini; аккаунтам по email и паролю бонус не начисляется." },
       ] },
@@ -1177,7 +1177,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "Всегда явно передавайте --profile apitoken, чтобы не было двусмысленности, какой провайдер — и какая переменная — активен.",
           "Меняйте модель под проект строкой model: gpt-5.6-sol для самой сложной работы, gpt-5.6-terra на каждый день, gpt-5.6-luna для быстрых дешёвых шагов.",
-          "GET https://openai.api.apitoken.sale/v1/models с тем же Bearer-ключом показывает актуальный набор моделей.",
+          "GET https://router.apitoken.sale/v1/models с тем же Bearer-ключом показывает актуальный набор моделей — единый каталог разделяет ID по провайдерам (anthropic/*, openai/*, google/*).",
         ] },
         { type: "note", text: "wire_api = \"responses\" — правильное значение для этого шлюза: он обслуживает и Responses, и Chat Completions, а Codex стримит через Responses. Ставьте \"chat\" только если конкретный клиент требует классическую форму." },
       ] },
@@ -1185,7 +1185,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "Missing APITOKEN_API_KEY — переменная из env_key не экспортирована в шелле, который запускает codex. Экспортируйте её в том же шелле или в профиле оболочки.",
           "stream error: unexpected status 401 — ключ неверен, отозван или base_url потерял суффикс /v1. Воспроизведите curl'ом вне Codex, чтобы понять, какая половина сломана.",
-          "stream error: unexpected status 404 — ID модели не включён; проверьте GET /v1/models вместо предположений.",
+          "stream error: unexpected status 404 — ID модели не включён; проверьте GET https://router.apitoken.sale/v1/models вместо предположений.",
           "402 — предоплаченный баланс нужно пополнить; ожидание не поможет.",
         ] },
         { type: "link", text: "Полный разбор ошибок Codex — config.toml, auth.json, stream errors", href: "/errors/codex" },
@@ -1209,7 +1209,7 @@ export const learnRu: Record<string, LocalizedContent> = {
         { type: "steps", items: [
           "Установите бесплатное расширение-агент, например Cline или Roo Code.",
           "Выберите Anthropic в качестве провайдера API.",
-          "Задайте base URL на https://api.apitoken.sale, вставьте ваш ключ sk-pool-••• и выберите модель, например claude-sonnet-5.",
+          "Задайте base URL на https://router.apitoken.sale, вставьте ваш ключ sk-pool-••• и выберите модель, например claude-sonnet-5.",
         ] },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы; аккаунтам по email и паролю бонус не начисляется." },
       ] },
@@ -1289,17 +1289,17 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-langchain": {
     title: "Claude API в LangChain",
     h1: "Используйте Claude API в LangChain",
-    description: "Подключите LangChain к Claude через apiToken.sale: направьте ChatAnthropic на api.apitoken.sale, оставьте те же ID моделей и платите за токены на 50% меньше.",
+    description: "Подключите LangChain к Claude через apiToken.sale: направьте ChatAnthropic на router.apitoken.sale, оставьте те же ID моделей и платите за токены на 50% меньше.",
     keywords: ["claude api langchain", "langchain anthropic", "langchain claude", "chatanthropic base url", "langchain claude api ключ"],
     dek: "Интеграция Anthropic в LangChain принимает кастомный URL API, поэтому ваши цепочки и агенты работают с Claude через apiToken.sale после правки в две строки — те же модели, ниже цена за токен.",
     sections: [
       { h2: "Направьте ChatAnthropic на шлюз", blocks: [
-        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
+        { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://router.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
         { type: "p", text: "Это вся интеграция: тот же пакет langchain-anthropic, те же ID моделей, тот же стриминг и вызов инструментов — меняются только эндпоинт и цена." },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
       ] },
       { h2: "Или через переменные окружения", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
+        { type: "code", code: `export ANTHROPIC_API_URL=https://router.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
         { type: "p", text: "С заданным окружением ChatAnthropic подхватывает оба значения автоматически, поэтому в общих кодовых базах правки кода не нужны вовсе." },
       ] },
       { h2: "Что работает", blocks: [
@@ -1311,7 +1311,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Работает ли LangChain с кастомным эндпоинтом Claude API?", a: "Да. ChatAnthropic принимает anthropic_api_url (или переменную окружения ANTHROPIC_API_URL), поэтому можно направить его на https://api.apitoken.sale, не меняя больше ничего." },
+      { q: "Работает ли LangChain с кастомным эндпоинтом Claude API?", a: "Да. ChatAnthropic принимает anthropic_api_url (или переменную окружения ANTHROPIC_API_URL), поэтому можно направить его на https://router.apitoken.sale, не меняя больше ничего." },
       { q: "Работают ли агенты LangChain и вызов инструментов?", a: "Да — шлюз отдаёт стандартный Anthropic Messages API, поэтому вызов инструментов, стриминг и LangGraph-агенты ведут себя ровно как с официальным эндпоинтом." },
       { q: "Какие модели доступны из LangChain?", a: "Все поддерживаемые модели Claude — claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5 и другие — на одном ключе и предоплаченном балансе." },
     ],
@@ -1319,16 +1319,16 @@ export const learnRu: Record<string, LocalizedContent> = {
   "claude-api-litellm": {
     title: "Claude API в LiteLLM",
     h1: "Используйте Claude API в LiteLLM",
-    description: "Маршрутизируйте LiteLLM к Claude через apiToken.sale: задайте api_base на api.apitoken.sale в litellm_params или конфиге прокси и платите за токены на 50% меньше.",
+    description: "Маршрутизируйте LiteLLM к Claude через apiToken.sale: задайте api_base на router.apitoken.sale в litellm_params или конфиге прокси и платите за токены на 50% меньше.",
     keywords: ["claude api litellm", "litellm anthropic", "litellm claude", "litellm api_base anthropic", "litellm прокси claude"],
     dek: "LiteLLM говорит с Anthropic нативно и позволяет переопределить эндпоинт для каждой модели — одна строка конфига отправляет весь ваш Claude-трафик через шлюз со скидкой.",
     sections: [
       { h2: "Прямой вызов SDK", blocks: [
-        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
+        { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://router.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
       ] },
       { h2: "Конфиг LiteLLM-прокси", blocks: [
-        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
+        { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://router.apitoken.sale\n      api_key: sk-pool-•••` },
         { type: "p", text: "Запустите прокси с этим конфигом — и каждый клиент вашего LiteLLM-шлюза прозрачно использует дисконтный эндпоинт Claude. Удобно, когда много сервисов делят один слой маршрутизации." },
       ] },
       { h2: "Зачем вести Claude через LiteLLM сюда", blocks: [
@@ -1340,7 +1340,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Поддерживает ли LiteLLM кастомный api_base для Anthropic?", a: "Да — передайте api_base в litellm.completion() или в litellm_params конфига прокси, и LiteLLM будет слать Anthropic-запросы на https://api.apitoken.sale." },
+      { q: "Поддерживает ли LiteLLM кастомный api_base для Anthropic?", a: "Да — передайте api_base в litellm.completion() или в litellm_params конфига прокси, и LiteLLM будет слать Anthropic-запросы на https://router.apitoken.sale." },
       { q: "Сохраняется ли префикс anthropic/ у моделей?", a: "Да. Используйте anthropic/claude-opus-4-8 (или любую поддерживаемую модель), чтобы LiteLLM применял протокол Anthropic; меняются только эндпоинт и ключ." },
       { q: "Работает ли это для инструментов поверх LiteLLM?", a: "Да — всё, что маршрутизируется через LiteLLM (включая многие кодинг-агенты), наследует дисконтный эндпоинт из той же конфигурации." },
     ],
@@ -1353,7 +1353,7 @@ export const learnRu: Record<string, LocalizedContent> = {
     dek: "Aider — терминальный парный программист, который быстро сжигает токены в длинных сессиях. Направьте его на дисконтный шлюз двумя переменными окружения и сохраните привычный процесс.",
     sections: [
       { h2: "Две переменные окружения", blocks: [
-        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
+        { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://router.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
         { type: "p", text: "Под капотом Aider ведёт Anthropic-трафик через LiteLLM, который учитывает ANTHROPIC_API_BASE — конфиг-файл не нужен." },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
       ] },
@@ -1367,7 +1367,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Работает ли Aider с кастомным эндпоинтом Claude?", a: "Да. Aider использует LiteLLM для моделей Anthropic, а LiteLLM учитывает переменную окружения ANTHROPIC_API_BASE — задайте её в https://api.apitoken.sale и запускайте Aider как обычно." },
+      { q: "Работает ли Aider с кастомным эндпоинтом Claude?", a: "Да. Aider использует LiteLLM для моделей Anthropic, а LiteLLM учитывает переменную окружения ANTHROPIC_API_BASE — задайте её в https://router.apitoken.sale и запускайте Aider как обычно." },
       { q: "Какая модель Claude лучше в Aider?", a: "claude-sonnet-5 — лучший вариант по умолчанию для большинства задач; на сложнейшую многофайловую работу переключайтесь на claude-opus-4-8. Обе работают на одном ключе." },
       { q: "Насколько дешевле длинная сессия Aider?", a: "Каждый запрос тарифицируется по официальным потокенным ставкам минус ваша единая скидка 50%, поэтому сессия за $10 напрямую здесь стоит $5." },
     ],
@@ -1382,7 +1382,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       { h2: "Настройка в три шага", blocks: [
         { type: "steps", items: [
           "Откройте настройки Roo Code и выберите Anthropic как API-провайдера.",
-          "Включите опцию кастомного base URL и задайте его в https://api.apitoken.sale; вставьте ваш ключ sk-pool-….",
+          "Включите опцию кастомного base URL и задайте его в https://router.apitoken.sale; вставьте ваш ключ sk-pool-….",
           "Выберите модель, например claude-opus-4-8 или claude-sonnet-5, и запустите задачу.",
         ] },
         { type: "note", text: "Новые аккаунты через Google или GitHub получают приветственный бонус $5 на баланс платформы — этого хватит, чтобы подключить инструменты и сделать реальные вызовы до первого пополнения." },
@@ -1397,7 +1397,7 @@ export const learnRu: Record<string, LocalizedContent> = {
       ] },
     ],
     faq: [
-      { q: "Поддерживает ли Roo Code кастомный base URL для Anthropic?", a: "Да — в настройках провайдера Anthropic есть опция кастомного base URL; задайте её в https://api.apitoken.sale и используйте ключ apiToken.sale." },
+      { q: "Поддерживает ли Roo Code кастомный base URL для Anthropic?", a: "Да — в настройках провайдера Anthropic есть опция кастомного base URL; задайте её в https://router.apitoken.sale и используйте ключ apiToken.sale." },
       { q: "Какие модели получает Roo Code на этом ключе?", a: "Все поддерживаемые модели Claude — Opus 4.8 и 4.7, Sonnet 5 и 4.6, Haiku 4.5 — на одном ключе и одном предоплаченном балансе." },
       { q: "Чем это отличается от Cline?", a: "Настройка почти идентична: оба — агенты VS Code с провайдером Anthropic, принимающим кастомный base URL. Используйте того агента, который вам ближе; ключ работает в обоих." },
     ],
