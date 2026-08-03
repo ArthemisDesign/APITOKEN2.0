@@ -2420,6 +2420,30 @@ fn claude_current_quota(
     }
 }
 
+fn claude_last_known_reset(
+    cap: &pool::Cap,
+    row: Option<&registry::AnthropicCalibrationRow>,
+    window_kind: &str,
+) -> Option<i64> {
+    let durable = row.map(|row| (row.observed_at, row.resets_at));
+    let runtime = match window_kind {
+        "5h" => cap.quota5h,
+        "7d" => cap.quota7d,
+        _ => None,
+    }
+    .and_then(|snapshot| {
+        snapshot
+            .resets_at
+            .map(|resets_at| (snapshot.observed_at, resets_at))
+    });
+    match (durable, runtime) {
+        (Some(durable), Some(runtime)) if durable.0 > runtime.0 => Some(durable.1),
+        (_, Some(runtime)) => Some(runtime.1),
+        (Some(durable), None) => Some(durable.1),
+        (None, None) => None,
+    }
+}
+
 fn claude_plan_window_cohorts(
     caps: &[pool::Cap],
     rows: &[registry::AnthropicCalibrationRow],
@@ -3017,10 +3041,28 @@ pub(crate) fn capacity_value(
                     .as_i64()
                     .map_or(fallback, |units| units as f64 / 100_000_000.0)
             };
-            let reset_in = |value: &Value| {
+            let reset_in = |value: &Value, window_kind: &str| {
                 value["resets_at"]
                     .as_i64()
                     .map(|resets_at| resets_at.saturating_sub(now).max(0))
+                    // A quota-exhausted home is intentionally not probed again before its
+                    // provider reset, so the ordinary 900-second current-supply freshness expires.
+                    // Keep the newest already-authoritative provider deadline visible for operator
+                    // countdowns without reopening remaining money or marking the stale snapshot
+                    // fresh. Do not use pool::Cap's nominal no-header reset fallback here.
+                    .or_else(|| {
+                        cap.cooling
+                            .then(|| {
+                                claude_last_known_reset(
+                                    cap,
+                                    claude_row(rows, &cap.email, &cap.plan, window_kind),
+                                    window_kind,
+                                )
+                            })
+                            .flatten()
+                            .filter(|resets_at| *resets_at > now)
+                            .map(|resets_at| resets_at.saturating_sub(now))
+                    })
             };
             let sub_available = horizons.map(|horizon| {
                 claude_sub_horizon_available(cap, rows, &cohorts, now, horizon)
@@ -3033,8 +3075,8 @@ pub(crate) fn capacity_value(
                 "routable": cap.routable,
                 "util5h": fraction(&five, cap.util5h),
                 "util7d": fraction(&weekly, cap.util7d),
-                "reset5h_in": reset_in(&five),
-                "reset7d_in": reset_in(&weekly),
+                "reset5h_in": reset_in(&five, "5h"),
+                "reset7d_in": reset_in(&weekly, "7d"),
                 "cap5h_nano": five_capacity,
                 "cap7d_nano": weekly_capacity,
                 "rem5h_nano": five_remaining,
@@ -6309,6 +6351,68 @@ mod tests {
         assert!(five["current_quota_source"].is_null());
         assert_eq!(five["missing_reason"], "stale_current_quota_snapshot");
         assert!(value["window_totals"][0]["remaining_nano"].is_null());
+    }
+
+    #[test]
+    fn claude_cooling_preserves_provider_reset_after_quota_snapshot_stales() {
+        let now = 2_000;
+        let mut cap = capacity("cooling@example.test", 999.0, false, true);
+        cap.util5h = 1.0;
+        cap.util7d = 0.42;
+        cap.reset5h_in = 1_800;
+        cap.reset7d_in = 86_400;
+        cap.quota5h = Some(pool::QuotaSnapshot {
+            used_fraction_units: 100_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: now - CLAUDE_SNAPSHOT_MAX_AGE_SECS - 1,
+            resets_at: Some(now + 1_800),
+        });
+        cap.quota7d = Some(pool::QuotaSnapshot {
+            used_fraction_units: 42_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: now - CLAUDE_SNAPSHOT_MAX_AGE_SECS - 1,
+            resets_at: Some(now + 86_400),
+        });
+        let report = (
+            vec![claude_calibration(
+                "cooling@example.test",
+                "5h",
+                100_000_000,
+                10_000_000,
+                1_000_000_000,
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let value = capacity_value(&[cap], Some(&report), claude_delivery(0), now);
+        let five = &value["per_sub"][0]["windows"][0];
+        assert_eq!(five["snapshot_fresh"], false);
+        assert!(five["remaining_nano"].is_null());
+        assert!(five["resets_at"].is_null());
+        assert_eq!(value["per_sub"][0]["cooling"], true);
+        assert_eq!(value["per_sub"][0]["routable"], false);
+        assert_eq!(value["per_sub"][0]["reset5h_in"], 1_800);
+        assert_eq!(value["per_sub"][0]["reset7d_in"], 86_400);
+        assert!(value["window_totals"][0]["remaining_nano"].is_null());
+
+        let mut unknown_reset = capacity("unknown-reset@example.test", 999.0, false, true);
+        unknown_reset.util5h = 1.0;
+        unknown_reset.reset5h_in = 18_000;
+        unknown_reset.quota5h = Some(pool::QuotaSnapshot {
+            used_fraction_units: 100_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: now - CLAUDE_SNAPSHOT_MAX_AGE_SECS - 1,
+            resets_at: None,
+        });
+        let empty_report = (Vec::new(), Vec::new(), Vec::new());
+        let unknown = capacity_value(
+            &[unknown_reset],
+            Some(&empty_report),
+            claude_delivery(0),
+            now,
+        );
+        assert!(unknown["per_sub"][0]["reset5h_in"].is_null());
     }
 
     #[test]

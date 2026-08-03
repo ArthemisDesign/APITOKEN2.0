@@ -82,6 +82,11 @@ pending event или degraded integrity. `calibration_delivery` публикуе
 `dropped_events`, `persistence_ok` и `queue_limit`; нормальное состояние — `0/0/true`. Failed head
 переживает transient authority outage в памяти и повторяется раньше более поздних events/snapshots;
 immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
+Исключение только диагностическое: когда `cooling=true`, top-level `reset5h_in`/`reset7d_in`
+продолжают считать уже известный provider deadline даже после истечения 900-секундной freshness.
+Quota-exhausted подписка намеренно не probe-ится повторно до этого reset, а оператору нужен весь
+countdown. `windows[].snapshot_fresh` при этом остаётся `false`, remaining/horizon и продаваемая
+ёмкость остаются `null`; countdown нельзя трактовать как свежую денежную capacity.
 `calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
 token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
 `calibration_recent_turns` — bounded newest-first окно до 512 отдельных immutable Anthropic events.
