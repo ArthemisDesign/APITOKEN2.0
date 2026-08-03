@@ -923,10 +923,11 @@ Identity строки — `subject + exact paid plan + exact native duration в 
 `unattributed`; rollback к старому high-water не является новым расходом; смена estimator version
 перестраивает состояние из immutable history. Prior/EMA/WLS/float money нет.
 
-Foundation пока не является живой плоскостью: `server` не читает её env/config, generation/SSE не
-соединены с reserve→delivering→settlement, roster reload и quota poll не запущены. Поэтому наличие
-профиля в roster ещё не означает маршрутизируемую ёмкость. Провайдер backend-only, за выключенным
-switch'ем, без публичного каталога и router namespace.
+Foundation пока не является живой плоскостью: `server` уже читает и fail-closed валидирует
+default-off env/config, но generation/SSE не соединены с reserve→delivering→settlement, roster
+reload и quota poll не запущены. Поэтому наличие профиля в roster или включённого switch ещё не
+означает маршрутизируемую ёмкость. Провайдер backend-only, без публичного каталога и router
+namespace.
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.

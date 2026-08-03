@@ -348,8 +348,8 @@ live-прогоном на принадлежащей нам подписке:
 
 ## 7. Состояние доставки
 
-Текущая цепочка продолжается в `feat/kimi-plane-http`. Всё ниже — dormant: ни одна публичная
-поверхность не содержит строки KIMI, а server ещё не вызывает provider runtime.
+Текущая цепочка продолжается producer-first checkpoint'ами от `master`. Всё ниже — dormant: ни
+одна публичная поверхность не содержит строки KIMI, а server ещё не вызывает provider runtime.
 
 | Этап | Артефакт | Состояние |
 |---|---|---|
@@ -363,14 +363,16 @@ live-прогоном на принадлежащей нам подписке:
 | Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово, device flow → atomic roster до выплаты |
 | transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config; живой generation handler ещё не соединён |
 | durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
-| server: env, plane wiring, readiness | `crates/server` | **не сделано** |
+| server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config; generation/readiness ещё dormant |
+| server/forward: live gateway + readiness | `crates/{server,forward}` | **не сделано** |
 | observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — server env/config wiring. После него живой generation/stream/
-settlement orchestration соединяет уже готовые primitives, затем следуют live-runner,
-observability/blue-green и контролируемый живой прогон. Публикация не планируется вовсе (см. §0).
+Следующий producer-first шаг — живой generation/stream/settlement gateway: он соединяет готовые
+config/roster/selection/refresh/quota/FIFO primitives и только затем может включить реальную
+readiness. После него следуют live-runner, observability/blue-green и контролируемый живой прогон.
+Публикация не планируется вовсе (см. §0).
 
 ## 8. Источники
 

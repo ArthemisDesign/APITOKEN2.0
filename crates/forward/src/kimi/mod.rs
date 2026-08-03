@@ -4,7 +4,8 @@
 //! one: the subscription serves an Anthropic-compatible endpoint, so the engine's native protocol
 //! is forwarded without a translation layer.
 //!
-//! Dormant: the plane is not wired into `server` yet, so nothing routes here.
+//! Dormant: `server` validates the default-off operator config, but the generation gateway is not
+//! wired yet, so no roster profile routes traffic merely because the switch is enabled.
 
 pub mod client;
 pub mod config;

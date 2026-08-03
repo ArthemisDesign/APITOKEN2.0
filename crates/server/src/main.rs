@@ -1101,6 +1101,11 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
     let serves_anthropic = s.provider.serves_anthropic();
+    if s.kimi.is_some() {
+        // This checkpoint validates the operator contract without pretending the next runtime
+        // checkpoint already serves traffic. Never print the config itself: it owns the keyring.
+        eprintln!("KIMI backend preview: configuration validated; generation runtime is dormant");
+    }
     // Мягкий routing/spill threshold (env CLAUDE_API_MAX_INFLIGHT) ставим ДО создания пула.
     // Он балансирует нагрузку, но не является admission cap и никогда не блокирует dispatch.
     if serves_anthropic {

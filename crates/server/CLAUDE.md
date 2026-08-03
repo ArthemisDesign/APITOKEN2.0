@@ -108,6 +108,12 @@
   shape-validation/redacted Debug. Enable допустим лишь для `Combined|Anthropic`; production base
   URL compile-fixed в `forward`, env override отсутствует. Secret живёт только в root-owned
   `server.env`, а runtime-контракт — `docs/engine/CLAUDESTORE_FALLBACK.md`.
+- Backend-only KIMI switch читается здесь как строгий default-off набор
+  `CLAUDE_API_KIMI_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,BASE_URL,AUTH_SCHEME,QUOTA_POLL_SECS}` и
+  передаётся целиком в `forward::kimi::config::build`. Disabled-плоскость не валидирует dormant
+  значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, HTTPS,
+  известную auth-схему и положительный poll interval. До появления generation runtime успешная
+  валидация не означает readiness или маршрутизируемую ёмкость.
 - Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные

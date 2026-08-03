@@ -2,6 +2,7 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
+    kimi::config::{KimiPlaneConfig, KimiPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
     PricingBridgeConfig, PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
@@ -43,6 +44,9 @@ pub struct Settings {
     pub codex: Option<CodexConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
+    /// Backend-only KIMI plane. The generation runtime consumes this in a later checkpoint; merely
+    /// shipping the binary cannot enable it because the validated switch defaults to off.
+    pub kimi: Option<KimiPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
     pub pricing_shadow_manifest: registry::pricing::PricingRuntimeManifestEvidence,
     pub proxy: ProxyConfig,
@@ -175,6 +179,64 @@ const PRICING_SHADOW_ENV_KEYS: [&str; 11] = [
     "CLAUDE_API_PRICING_SHADOW_RATE_BURST",
     "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
 ];
+
+const KIMI_ENV_KEYS: [&str; 6] = [
+    "CLAUDE_API_KIMI_ENABLED",
+    "CLAUDE_API_KIMI_ROSTER_DIR",
+    "CLAUDE_API_KIMI_CREDENTIAL_KEYS",
+    "CLAUDE_API_KIMI_BASE_URL",
+    "CLAUDE_API_KIMI_AUTH_SCHEME",
+    "CLAUDE_API_KIMI_QUOTA_POLL_SECS",
+];
+
+fn parse_kimi_config(values: &BTreeMap<String, String>) -> Result<Option<KimiPlaneConfig>, String> {
+    let defaults = KimiPlaneInput::default();
+    let enabled = parse_strict_bool(
+        "CLAUDE_API_KIMI_ENABLED",
+        values.get("CLAUDE_API_KIMI_ENABLED").map(String::as_str),
+        defaults.enabled,
+    )?;
+    if !enabled {
+        return forward::kimi::config::build(&KimiPlaneInput::default())
+            .map_err(|error| format!("invalid KIMI plane config: {error}"));
+    }
+    let quota_poll_secs = values.get("CLAUDE_API_KIMI_QUOTA_POLL_SECS").map_or(
+        Ok(defaults.quota_poll_secs),
+        |value| {
+            value.parse::<u64>().map_err(|_| {
+                "CLAUDE_API_KIMI_QUOTA_POLL_SECS: expected a non-negative base-10 integer"
+                    .to_string()
+            })
+        },
+    )?;
+    let input = KimiPlaneInput {
+        enabled,
+        roster_dir: values
+            .get("CLAUDE_API_KIMI_ROSTER_DIR")
+            .cloned()
+            .unwrap_or(defaults.roster_dir),
+        credential_keys: values.get("CLAUDE_API_KIMI_CREDENTIAL_KEYS").cloned(),
+        base_url: values
+            .get("CLAUDE_API_KIMI_BASE_URL")
+            .cloned()
+            .unwrap_or(defaults.base_url),
+        auth_scheme: values
+            .get("CLAUDE_API_KIMI_AUTH_SCHEME")
+            .cloned()
+            .unwrap_or(defaults.auth_scheme),
+        quota_poll_secs,
+    };
+    forward::kimi::config::build(&input)
+        .map_err(|error| format!("invalid KIMI plane config: {error}"))
+}
+
+fn kimi_config() -> Option<KimiPlaneConfig> {
+    let values = KIMI_ENV_KEYS
+        .into_iter()
+        .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
+        .collect::<BTreeMap<_, _>>();
+    parse_kimi_config(&values).unwrap_or_else(|message| panic!("{message}"))
+}
 
 fn parse_pricing_shadow_config(
     values: &BTreeMap<String, String>,
@@ -850,6 +912,11 @@ impl Settings {
         } else {
             None
         };
+        let kimi = if provider.serves_anthropic() {
+            kimi_config()
+        } else {
+            None
+        };
         Settings {
             provider,
             db_path,
@@ -912,6 +979,7 @@ impl Settings {
             ),
             codex,
             gemini,
+            kimi,
             pricing_shadow_manifest: pricing_shadow_runtime_manifest(),
             proxy: ProxyConfig {
                 api_keys,
@@ -1059,6 +1127,100 @@ mod tests {
         assert!(
             parse_claudestore_fallback_config(ProviderMode::Gemini, Some("1"), secret,).is_err()
         );
+    }
+
+    #[test]
+    fn kimi_server_config_is_strict_default_off_and_ignores_dormant_values() {
+        assert!(parse_kimi_config(&BTreeMap::new()).unwrap().is_none());
+        let disabled_with_broken_dormant_values = BTreeMap::from([
+            ("CLAUDE_API_KIMI_ENABLED".to_owned(), "false".to_owned()),
+            (
+                "CLAUDE_API_KIMI_ROSTER_DIR".to_owned(),
+                "relative/roster".to_owned(),
+            ),
+            (
+                "CLAUDE_API_KIMI_BASE_URL".to_owned(),
+                "http://plaintext.invalid".to_owned(),
+            ),
+            (
+                "CLAUDE_API_KIMI_QUOTA_POLL_SECS".to_owned(),
+                "not-an-integer".to_owned(),
+            ),
+        ]);
+        assert!(parse_kimi_config(&disabled_with_broken_dormant_values)
+            .unwrap()
+            .is_none());
+        for invalid in ["yes", "on", "2", " true "] {
+            let values =
+                BTreeMap::from([("CLAUDE_API_KIMI_ENABLED".to_owned(), invalid.to_owned())]);
+            assert!(parse_kimi_config(&values).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn kimi_server_config_passes_every_operator_value_to_the_typed_builder() {
+        let values = BTreeMap::from([
+            ("CLAUDE_API_KIMI_ENABLED".to_owned(), "true".to_owned()),
+            (
+                "CLAUDE_API_KIMI_ROSTER_DIR".to_owned(),
+                "/srv/private/kimi".to_owned(),
+            ),
+            (
+                "CLAUDE_API_KIMI_CREDENTIAL_KEYS".to_owned(),
+                format!("active:{}", "11".repeat(32)),
+            ),
+            (
+                "CLAUDE_API_KIMI_BASE_URL".to_owned(),
+                "https://api.kimi.com/coding/v1/".to_owned(),
+            ),
+            (
+                "CLAUDE_API_KIMI_AUTH_SCHEME".to_owned(),
+                "x-api-key".to_owned(),
+            ),
+            (
+                "CLAUDE_API_KIMI_QUOTA_POLL_SECS".to_owned(),
+                "37".to_owned(),
+            ),
+        ]);
+        let config = parse_kimi_config(&values).unwrap().unwrap();
+        assert_eq!(
+            config.roster_dir,
+            std::path::PathBuf::from("/srv/private/kimi")
+        );
+        assert_eq!(config.transport.base_url, "https://api.kimi.com/coding/v1");
+        assert_eq!(
+            config.transport.auth_scheme,
+            forward::kimi::transport::AuthScheme::ApiKeyHeader
+        );
+        assert_eq!(
+            config.quota_poll_interval,
+            std::time::Duration::from_secs(37)
+        );
+        assert_eq!(
+            config.readiness_probe,
+            forward::kimi::transport::ProbeRoute::Identity
+        );
+    }
+
+    #[test]
+    fn enabled_kimi_server_config_fails_closed_before_runtime_start() {
+        let enabled = BTreeMap::from([("CLAUDE_API_KIMI_ENABLED".to_owned(), "true".to_owned())]);
+        assert!(parse_kimi_config(&enabled).is_err());
+
+        for value in ["0", "garbage", "-1"] {
+            let values = BTreeMap::from([
+                ("CLAUDE_API_KIMI_ENABLED".to_owned(), "true".to_owned()),
+                (
+                    "CLAUDE_API_KIMI_CREDENTIAL_KEYS".to_owned(),
+                    format!("active:{}", "11".repeat(32)),
+                ),
+                (
+                    "CLAUDE_API_KIMI_QUOTA_POLL_SECS".to_owned(),
+                    value.to_owned(),
+                ),
+            ]);
+            assert!(parse_kimi_config(&values).is_err(), "{value}");
+        }
     }
 
     #[test]

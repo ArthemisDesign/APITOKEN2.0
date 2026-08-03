@@ -47,7 +47,8 @@
 | Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | `34380519` |
 | Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | `de47a4d4` |
 | Плоскость: конфиг, default-off switch, readiness | `crates/forward/src/kimi/config.rs` | `c233a1b9` |
-| Durable-калибровка: concurrent replay + real-PG CAS/idempotency | `crates/registry/src/pg.rs` | текущий checkpoint |
+| Durable-калибровка: concurrent replay + real-PG CAS/idempotency | `crates/registry/src/pg.rs` | `10443334` |
+| Server: strict default-off env → typed plane config | `crates/server/src/config.rs` | текущий checkpoint |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -65,16 +66,12 @@
 
 ## Следующее действие
 
-**Чтение env в `crates/server/src/config.rs`** → `forward::kimi::config::KimiPlaneInput` →
-`build()`. Env читается ТОЛЬКО там; сам конфиг плоскости, default-off switch и readiness уже
-готовы и покрыты тестами. Нужны переменные `CLAUDE_API_KIMI_ENABLED`,
-`CLAUDE_API_KIMI_ROSTER_DIR`, `CLAUDE_API_KIMI_CREDENTIAL_KEYS`, `CLAUDE_API_KIMI_BASE_URL`,
-`CLAUDE_API_KIMI_AUTH_SCHEME`, `CLAUDE_API_KIMI_QUOTA_POLL_SECS`.
-
-**Закрыто в текущем checkpoint:** real-PG матрица для `record_kimi_turn` и
-`save_kimi_calibration` доказала concurrent exact replay, semantic conflict без второго spend,
-out-of-order cumulative timestamps, CAS loser rollback и oldest-first immutable history против
-настоящей PostgreSQL.
+**Живой KIMI gateway в `crates/forward` + server composition:** загрузить last-good roster, создать
+per-profile transport state, выполнить authenticated identity readiness и провести Anthropic
+Messages request через selection/one-byte attempt policy. Успешный turn обязан пройти
+reserve→delivering→terminal usage settlement→bounded FIFO; quota poll разрешён только после drain.
+Пока этого нет, включённый и валидный config намеренно логируется как dormant и не считается
+маршрутизируемой ёмкостью.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -94,9 +91,9 @@ out-of-order cumulative timestamps, CAS loser rollback и oldest-first immutable
 
 ## Очередь после этого
 
-1. `crates/server`: env, config wiring плоскости, readiness. **Пробу нельзя вешать на `/v1/models`** —
-   он негейтед и отвечает 200 на мёртвый ключ; бить в `/messages` или `/me`.
-2. `crates/forward` + `crates/server`: живой generation/stream/settlement handler, roster reload,
+1. `crates/forward` + `crates/server`: живой generation/stream/settlement handler и readiness
+   через `/me`. **Пробу нельзя вешать на `/v1/models`** — он негейтед и отвечает 200 на мёртвый ключ.
+2. Затем roster reload,
    поллер `/usages` с дренажом turn-FIFO перед каждым observation и shutdown drain.
 3. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
@@ -107,7 +104,3 @@ out-of-order cumulative timestamps, CAS loser rollback и oldest-first immutable
 - **Живая подписка Kimi Code.** Без неё не снимаются 8 `unknown` из §6 манифеста: auth-заголовок
   Anthropic-маршрута, форма terminal usage, реальная инкрементальность SSE, единица `used`,
   различение 401/403, набор планов, поведение месячного потолка, платные tool/search-единицы.
-- **Красный master (повторяется).** 2026-08-03: сначала `628b941e` уронил `deploy/watchdog` в
-  фазе `verifying` (починено чужим коммитом), затем `5f0f6ad2` — в фазе
-  `installing-infrastructure`, line 2364. Обе поломки чужие. Мёржить поверх красного нельзя:
-  это смешало бы две несвязанные поломки и лишило обе виновника. Ветка ждёт зелёного master.
