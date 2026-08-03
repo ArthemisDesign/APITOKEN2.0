@@ -149,6 +149,53 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     }]);
   });
 
+  it.each([
+    ["historical NULL amount", null, "4000000000", "4"],
+    ["persisted new amount", "5000000000", "5000000000", "5"],
+  ] as const)("revokes the exact %s welcome bonus and replays idempotently", async (
+    _case,
+    storedAmountNano,
+    expectedAmountNano,
+    expectedUsd,
+  ) => {
+    await database.pool.query(`
+      INSERT INTO signup_profiles (
+        user_id, email_canonical, bonus_granted, bonus_amount_nano
+      ) VALUES ($1, 'oauth@example.com', true, $2)
+    `, [oauthUserId, storedAmountNano]);
+    const input = {
+      userId: oauthUserId,
+      reason: "confirmed bonus abuse",
+      actorId: "admin-q",
+    };
+
+    await expect(service.revokeSignupBonus(input)).resolves.toMatchObject({
+      revoked_usd: expectedUsd,
+      idempotent_replay: false,
+    });
+    await expect(service.revokeSignupBonus(input)).resolves.toMatchObject({
+      revoked_usd: expectedUsd,
+      idempotent_replay: true,
+    });
+    expect(engine.debits).toEqual([{
+      account: "acct_oauth",
+      amountNano: expectedAmountNano,
+      ref: `bonus-revoke:${oauthUserId}`,
+    }]);
+    const stored = await database.pool.query(`
+      SELECT bonus_amount_nano::text, flagged_reason,
+             (SELECT metadata->>'amount_nano' FROM audit_log
+              WHERE action = 'admin.credit' AND metadata->>'ref' = $2) AS revoked_amount_nano
+      FROM signup_profiles
+      WHERE user_id = $1
+    `, [oauthUserId, `bonus-revoke:${oauthUserId}`]);
+    expect(stored.rows).toEqual([{
+      bonus_amount_nano: storedAmountNano,
+      flagged_reason: "admin-revoked",
+      revoked_amount_nano: `-${expectedAmountNano}`,
+    }]);
+  });
+
   it("disables and re-enables both commerce and the authoritative engine account", async () => {
     await expect(service.setUserStatus({
       userId: passwordUserId,
@@ -256,6 +303,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
 
 class FakeAdminEngine {
   readonly credits: Array<{ account: string; amountNano: string; ref: string }> = [];
+  readonly debits: Array<{ account: string; amountNano: string; ref: string }> = [];
   readonly statusChanges: Array<{ account: string; status: string }> = [];
   readonly accountBatchRequests: string[][] = [];
   readonly client = new EngineClient({
@@ -282,7 +330,16 @@ class FakeAdminEngine {
         });
       }
       if (url.pathname.endsWith("/credit")) {
-        this.credits.push({ account, amountNano: body.amount_nano!, ref: body.ref! });
+        const signedAmountNano = BigInt(body.amount_nano!);
+        if (signedAmountNano < 0n) {
+          this.debits.push({
+            account,
+            amountNano: (-signedAmountNano).toString(),
+            ref: body.ref!,
+          });
+        } else {
+          this.credits.push({ account, amountNano: signedAmountNano.toString(), ref: body.ref! });
+        }
         return Response.json({ account, balance_nano: "12000000000", balance: "$12.000000000" });
       }
       if (url.pathname.endsWith("/status")) {

@@ -40,7 +40,7 @@ const flow = [
 
 const faqItems = [
   { question: "q1", answer: "a1", q: "How much does API access cost?", a: "Enter any positive whole USD top-up amount. Each request is converted to official API spend, then your active discount is applied: B2C takes a flat 50% off every request, while B2B pricing is negotiated." },
-  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $10 of API usage at official prices, valid on Claude and GPT models. Email and password accounts are not eligible." },
+  { question: "q2", answer: "a2", q: "Is there a free option?", a: "Yes — new B2C accounts created with Google or GitHub get $5 of platform bonus credit, valid on Claude, GPT and Gemini models. Email and password accounts are not eligible." },
   { question: "q3", answer: "a3", q: "Which models are available?", a: "The Claude line — Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 4.6 and Haiku 4.5 — plus the GPT line — GPT-5.6 Sol, Terra and Luna, GPT-5.5 and GPT-5.4. One balance and one API key cover every model." },
   { question: "q4", answer: "a4", q: "Which model is best for coding?", a: "For agentic coding and long sessions, Claude Opus and Sonnet and GPT-5.6 Sol give the best results; Claude Haiku and GPT-5.6 Luna are ideal for fast, cheap calls." },
   { question: "q5", answer: "a5", q: "What base URL should I use?", a: "For Claude and Anthropic-compatible tools use https://api.apitoken.sale (POST /v1/messages, x-api-key). For GPT and OpenAI-compatible tools use https://openai.api.apitoken.sale/v1 (Responses and Chat Completions, Authorization: Bearer). Both draw on the same key and balance." },
@@ -150,8 +150,8 @@ function HeroDiscount() {
         <T k="offer_free_eyebrow" as="span" className="offer-kicker">Welcome credit</T>
         <T k="offer_no_card" as="span" className="offer-no-card">No card required</T>
       </div>
-      <h2 className="offer-free-head"><span className="ofa">$10</span><T k="offer_free_label" as="span" className="off-tag">Free</T></h2>
-      <T k="offer_free_sub" as="p" className="offer-free-sub">Claude API usage at official prices</T>
+      <h2 className="offer-free-head"><span className="ofa">$5</span><T k="offer_free_label" as="span" className="off-tag">Free</T></h2>
+      <T k="offer_free_sub" as="p" className="offer-free-sub">Platform bonus credit · Claude, GPT &amp; Gemini</T>
       <T k="offer_free_note" as="p" className="offer-free-note">For new accounts created with Google or GitHub</T>
       <T k="offer_free_terms" as="p" className="offer-free-terms">Granted after automated anti-fraud screening; may be withheld for duplicate or linked accounts.</T>
     </div>

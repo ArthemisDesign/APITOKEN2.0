@@ -190,9 +190,36 @@ describe("completed Next.js migration", () => {
     expect(pricing).toContain("Negotiated business pricing");
     expect(pricing).not.toContain("B2C_PRICING_MILESTONES");
     expect(pricing).not.toContain("BillingFormula");
-    expect(messages).toContain("$10 of API usage at official prices");
-    expect(messages).toContain("$10 на использование API по официальным ценам");
+    expect(messages).toContain("$5 of platform bonus credit");
+    expect(messages).toContain("приветственный бонус $5 на баланс платформы");
     expect(messages).not.toContain("$2.50");
+  });
+
+  it("advertises the exact $5 platform welcome credit in every public locale", () => {
+    const welcomeCopy = [
+      join(root, "lib", "messages.json"),
+      join(root, "lib", "learn.ts"),
+      join(root, "lib", "learn-ru.ts"),
+      join(root, "lib", "learn-ko.ts"),
+      join(root, "lib", "learn-zh.ts"),
+      join(root, "lib", "llms.ts"),
+      join(root, "lib", "md-pages.ts"),
+      join(appRoot, "page.tsx"),
+      join(appRoot, "models", "[slug]", "page.tsx"),
+      join(root, "components", "cost-calculator.tsx"),
+      join(root, "components", "compliance-pages.tsx"),
+      join(appRoot, "dashboard", "dashboard.tsx"),
+      join(appRoot, "dashboard", "sections", "credits.tsx"),
+    ].map((path) => readFileSync(path, "utf8")).join("\n");
+
+    expect(welcomeCopy).toContain("$5 of platform bonus credit");
+    expect(welcomeCopy).toContain("приветственный бонус $5 на баланс платформы");
+    expect(welcomeCopy).toContain("$5 플랫폼 웰컴 보너스 크레딧");
+    expect(welcomeCopy).toContain("$5 平台欢迎奖励余额");
+    expect(welcomeCopy).not.toContain("$10 of API usage at official prices");
+    expect(welcomeCopy).not.toContain("$10 использования API по официальным ценам");
+    expect(welcomeCopy).not.toContain("$4 welcome bonus");
+    expect(welcomeCopy).not.toContain("Track-only bonus");
   });
 
   it("renders dashboard pricing from the applied provider/model policy", () => {
@@ -247,7 +274,7 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
     expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
     expect(dashboard).toContain('paidBalance: "Paid balance"');
-    expect(dashboard).toContain('bonusBalance: "Track-only bonus"');
+    expect(dashboard).toContain('bonusBalance: "Welcome bonus"');
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
     expect(dashboardCopy).toContain('platformBalance: "Доступный баланс"');
     expect(dashboardCopy).toContain('usageLast30Days: "Usage · 30 days"');

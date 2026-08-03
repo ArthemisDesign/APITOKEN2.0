@@ -14,7 +14,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
           "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "결제 방식", blocks: [
         { type: "p", text: "원하는 만큼 달러 단위 정수 금액으로 충전하세요. 고정된 상품 카탈로그는 없습니다. 잔액은 선불이며 만료되지 않고, API 요청이 실행될 때만 차감됩니다." },
@@ -39,7 +39,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     faq: [
       { q: "Claude API 키를 사려면 Anthropic 계정이 필요한가요?", a: "아니요. apitoken.sale이 자체 키와 잔액을 발급하므로 Anthropic 계정, 초대장, 승인 없이 시작할 수 있습니다." },
       { q: "키는 얼마나 빨리 활성화되나요?", a: "즉시 활성화됩니다. 대시보드에서 키를 생성하면 다음 요청부터 바로 작동하며, 대기열이나 수동 심사가 없습니다." },
-      { q: "시작하는 데 비용이 얼마나 드나요?", a: "달러 단위 정수 금액으로 원하는 만큼 충전할 수 있으며, Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량도 무료로 받습니다." },
+      { q: "시작하는 데 비용이 얼마나 드나요?", a: "달러 단위 정수 금액으로 원하는 만큼 충전할 수 있으며, Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧도 받습니다." },
       { q: "이것이 공식 Claude API인가요?", a: "네 — 동일한 Anthropic Messages API와 동일한 Claude 모델을 제공합니다. 다른 것은 가격과 가입·결제 방식뿐입니다." },
     ],
   },
@@ -64,7 +64,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "구독 없음, 락인 없음", blocks: [
         { type: "p", text: "월 요금이 없습니다. 만료되지 않는 선불 잔액을 충전하고 요청이 실행될 때만 소비하므로, 사용하지 않는 날에는 비용이 발생하지 않습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "Claude API 할인이 적용되는 방식", blocks: [
         { type: "p", text: "마진도 없고 별도의 저가 모델도 없습니다. 완전히 동일한 Claude API에 대한 할인 접근을 얻는 것입니다." },
@@ -107,7 +107,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "본인에게 맞는 방식으로 은행 카드 또는 암호화폐로 결제하세요.",
           "즉시 활성화, 대기열 없음, 법인 인증 없음.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "기존 도구와 그대로 작동", blocks: [
         { type: "p", text: "Claude Code, Cursor, Cline 또는 Anthropic SDK를 https://api.apitoken.sale로 지정하고 이전과 똑같이 작업하세요. 지원은 텔레그램에서 러시아어와 영어로 제공됩니다." },
@@ -139,7 +139,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "카드가 거절되거나 사용할 수 없는 곳에서 유용합니다.",
           "잔액이 만료되지 않으므로, 한 번 충전하고 개발하면서 차감해 쓰면 됩니다.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "결제 시 예상되는 것", blocks: [
         { type: "p", text: "결제에서 암호화폐를 선택하고 표시된 주소로 금액을 보내면, 네트워크가 확인하는 즉시 잔액이 반영됩니다. 특정 충전에서 카드를 선호한다면 카드도 계속 사용할 수 있습니다." },
@@ -177,7 +177,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "API 키를 하나 생성하세요(sk-pool-… 형태). 동일한 키가 지원되는 모든 Claude 모델에서 작동합니다.",
           "Anthropic 호환 도구를 https://api.apitoken.sale로 지정하고 x-api-key 헤더와 함께 /v1/messages로 요청을 보내세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "'즉시'가 실제로 의미하는 것", blocks: [
         { type: "p", text: "키를 생성하는 순간 바로 유효합니다. 가입과 첫 성공 요청 사이에 수동 심사 단계가 없으므로, 한자리에서 도구를 연결하고 출시까지 할 수 있습니다." },
@@ -188,7 +188,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "키를 생성하고 도구를 api.apitoken.sale로 지정하세요.",
           "요청을 보내고 사용량에 측정되는 것을 확인하세요.",
         ] },
-        { type: "p", text: "Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10의 Claude 사용량으로도 시작하므로, 충전 전에 전체 흐름을 검증할 수 있습니다." },
+        { type: "p", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로도 시작하므로, 충전 전에 전체 흐름을 검증할 수 있습니다." },
       ] },
     ],
     faq: [
@@ -210,7 +210,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "3. 첫 요청 보내기", blocks: [
         { type: "code", code: `curl https://api.apitoken.sale/v1/messages \\\n  -H "x-api-key: sk-pool-•••" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "model": "claude-opus-4-8",\n    "max_tokens": 1024,\n    "messages": [{"role":"user","content":"Hello"}]\n  }'` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "흔한 첫 호출 오류", blocks: [
         { type: "list", items: [
@@ -229,14 +229,14 @@ export const learnKo: Record<string, LocalizedContent> = {
   "free-claude-api-key": {
     title: "시작을 위한 무료 Claude API 키",
     h1: "무료 Claude API 키로 시작하기",
-    description: "Google 또는 GitHub로 apitoken.sale Claude API 키를 만들고 공식 API 가격 기준 $10의 Claude 사용량을 받으세요. 카드와 Anthropic 계정은 필요 없습니다.",
+    description: "Google 또는 GitHub로 apitoken.sale Claude API 키를 만들고 $5 플랫폼 웰컴 보너스 크레딧을 받으세요. 카드와 Anthropic 계정은 필요 없습니다.",
     keywords: ["무료 claude api 키", "claude api 무료", "claude api 무료 크레딧", "무료 anthropic api 키", "claude api 카드 없이"],
-    dek: "Google 또는 GitHub로 계정을 만들면 공식 API 가격 기준 $10의 Claude 사용량으로 충전 전에 연동을 검증할 수 있습니다. 이메일/비밀번호 계정에는 보너스가 지급되지 않습니다.",
+    dek: "Google 또는 GitHub로 계정을 만들면 $5 플랫폼 웰컴 보너스 크레딧으로 충전 전에 연동을 검증할 수 있습니다. 이메일/비밀번호 계정에는 보너스가 지급되지 않습니다.",
     sections: [
       { h2: "'무료'에 포함된 것", blocks: [
         { type: "list", items: [
           "지원되는 모든 Claude 모델에서 작동하는 API 키.",
-          "Google/GitHub 신규 계정을 위한 공식 API 가격 기준 $10의 일회성 보너스.",
+          "Google/GitHub 신규 계정을 위한 $5 플랫폼 웰컴 보너스 크레딧.",
           "도구를 연결하고 실제 요청을 실행하기에 충분한 여유.",
         ] },
         { type: "p", text: "더 필요해지면 달러 단위 정수 금액으로 충전하세요. 할인이 자동으로 적용됩니다." },
@@ -249,32 +249,32 @@ export const learnKo: Record<string, LocalizedContent> = {
         ] },
       ] },
       { h2: "Claude API는 영원히 무료인가요?", blocks: [
-        { type: "p", text: "포함된 $10는 무제한 무료 요금제가 아니라 무료 시작 지원금입니다. 이후에는 사용한 토큰에 대해서만 비용을 내며, 구독도 월 최소 금액도 없고 선불 잔액은 만료되지 않습니다." },
+        { type: "p", text: "포함된 $5 플랫폼 보너스는 무제한 무료 요금제가 아니라 무료 시작 지원금입니다. 이후에는 사용한 토큰에 대해서만 비용을 내며, 구독도 월 최소 금액도 없고 선불 잔액은 만료되지 않습니다." },
       ] },
     ],
     faq: [
-      { q: "무료 사용량도 실제 API 접근인가요?", a: "네. Google/GitHub 계정의 $10 보너스는 유료 잔액과 동일한 Claude 모델 및 엔드포인트에서 실행됩니다." },
-      { q: "시작하려면 카드가 필요한가요?", a: "카드는 필요 없습니다. Google 또는 GitHub로 계정을 만들면 포함된 $10의 사용량을 받습니다." },
-      { q: "무료 Claude API 키에 신용카드가 필요한가요?", a: "아니요. Google 또는 GitHub로 계정을 만들면 카드 없이 공식 가격 기준 $10의 Claude 사용량을 받을 수 있습니다." },
+      { q: "무료 사용량도 실제 API 접근인가요?", a: "네. Google/GitHub 계정의 $5 플랫폼 보너스는 유료 잔액과 동일한 지원 모델 및 엔드포인트에서 실행됩니다." },
+      { q: "시작하려면 카드가 필요한가요?", a: "카드는 필요 없습니다. Google 또는 GitHub로 계정을 만들면 $5 플랫폼 웰컴 보너스 크레딧을 받습니다." },
+      { q: "무료 Claude API 키에 신용카드가 필요한가요?", a: "아니요. Google 또는 GitHub로 계정을 만들면 카드 없이 $5 플랫폼 웰컴 보너스 크레딧을 받을 수 있습니다." },
     ],
   },
   "claude-api-free-trial": {
     title: "Claude API 무료 체험 — 몇 분 만에 시작",
     h1: "Claude API 무료로 사용해 보기",
-    description: "몇 분 만에 Claude로 코딩을 시작하세요. Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10의 Claude 사용량을 받으며 카드가 필요 없습니다.",
+    description: "몇 분 만에 Claude로 코딩을 시작하세요. Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧을 받으며 카드가 필요 없습니다.",
     keywords: ["claude api 무료 체험", "claude api 체험판", "claude api 테스트", "claude api 샌드박스", "claude api 데모"],
-    dek: "별도로 신청할 체험판이 없습니다. Google 또는 GitHub로 가입하면 공식 API 가격 기준 $10의 사용량으로 지원되는 모든 모델에 실제 호출을 실행할 수 있습니다.",
+    dek: "별도로 신청할 체험판이 없습니다. Google 또는 GitHub로 가입하면 $5 플랫폼 웰컴 보너스 크레딧으로 지원되는 모든 모델에 실제 호출을 실행할 수 있습니다.",
     sections: [
       { h2: "결제 전에 검증하세요", blocks: [
         { type: "p", text: "포함된 사용량은 게이트웨이를 처음부터 끝까지 점검하도록 설계되었습니다. 키를 만들고, 에디터를 연결하고, 스트리밍·도구 사용·좋아하는 모델이 기대대로 작동하는지 확인하세요." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "그다음엔 원하는 대로 확장하세요", blocks: [
         { type: "p", text: "체험 사용량이 줄어들면 원하는 금액을 충전하세요. 구독이 없고 잔액이 만료되지 않으므로, 실제로 호출한 만큼만 지불합니다." },
       ] },
     ],
     faq: [
-      { q: "체험은 어떻게 시작하나요?", a: "Google 또는 GitHub로 새 계정을 만들면 $10의 사용량이 자동으로 추가됩니다. 이메일/비밀번호 계정은 제외됩니다." },
+      { q: "체험은 어떻게 시작하나요?", a: "Google 또는 GitHub로 새 계정을 만들면 $5 플랫폼 웰컴 보너스 크레딧이 자동으로 추가됩니다. 이메일/비밀번호 계정은 제외됩니다." },
       { q: "무료 사용량이 소진되면 어떻게 되나요?", a: "달러 단위 정수 금액을 충전하면 계속 사용할 수 있으며, 통일 할인이 즉시 적용됩니다." },
     ],
   },
@@ -295,7 +295,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "요금제에 약정하기 전에 Claude Code를 시험해 볼 때.",
           "여러 도구를 하나의 잔액과 하나의 키로 유지할 때.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -324,7 +324,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           ["Claude Opus 4.7", "$5 / $25", "$2.50 / $12.50"],
         ] },
         { type: "link", text: "Claude Opus 4.8 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-opus-4-8" },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -349,7 +349,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           ["Claude Sonnet 4.6", "$3 / $15", "$1.50 / $7.50"],
         ] },
         { type: "link", text: "Claude Sonnet 5 상세 가격(캐시, 컨텍스트, FAQ)", href: "/models/claude-sonnet-5" },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -370,7 +370,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "값싼 백그라운드 작업과 전처리.",
           "Opus가 필요 없는 작업에서 잔액을 오래 쓰기.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "하나의 키로 모델 섞어 쓰기", blocks: [
         { type: "p", text: "모든 모델이 하나의 키와 잔액을 공유하므로, 값싼 작업은 Haiku(claude-haiku-4-5)로 보내고 어려운 요청만 Sonnet이나 Opus로 승격하면 됩니다." },
@@ -401,7 +401,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "구성", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "문제 해결", blocks: [
         { type: "list", items: [
@@ -433,7 +433,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "Continue", blocks: [
         { type: "code", code: `// ~/.continue/config.json\n{\n  "models": [{\n    "title": "Claude via apiToken.sale",\n    "provider": "anthropic",\n    "apiBase": "https://api.apitoken.sale",\n    "apiKey": "sk-pool-•••",\n    "model": "claude-opus-4-8"\n  }]\n}` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "어떤 확장을 쓸지와 문제 해결", blocks: [
         { type: "p", text: "Cline은 자율 편집에 강한 기본 선택지이고, Continue는 더 가벼워서 인라인 채팅과 자동완성에 좋습니다. 둘 다 무료이며 선불 잔액을 사용합니다." },
@@ -461,7 +461,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "설정하기", blocks: [
         { type: "code", code: `# Cursor → Settings → Models → Anthropic API\nBase URL : https://api.apitoken.sale\nAPI key  : sk-pool-•••\nModel    : claude-opus-4-8` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "그대로 유지되는 것", blocks: [
         { type: "list", items: [
@@ -489,7 +489,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "TypeScript", blocks: [
         { type: "code", code: `import Anthropic from "@anthropic-ai/sdk";\n\nconst client = new Anthropic({\n  baseURL: "https://api.apitoken.sale",\n  apiKey: "sk-pool-•••",\n});\nconst msg = await client.messages.create({\n  model: "claude-opus-4-8",\n  max_tokens: 1024,\n  messages: [{ role: "user", content: "Hello" }],\n});` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "전환이 제대로 되었는지 확인하기", blocks: [
         { type: "p", text: "base URL을 바꾼 뒤 요청을 한 번 보내 정상적인 Anthropic 응답이 오는지 확인하세요. 스트리밍, 도구 사용, 시스템 프롬프트 모두 api.anthropic.com과 완전히 동일하게 동작하며, 바뀐 것은 과금 엔드포인트뿐입니다." },
@@ -525,7 +525,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "온보딩: Anthropic 계정, 대기열, 청구 국가 요구 없음.",
           "결제: 은행 카드 또는 암호화폐.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "각각 누구에게 맞는가", blocks: [
         { type: "p", text: "이미 마찰 없는 Anthropic 청구와 엔터프라이즈 계약이 있다면 직접 구매가 맞을 수 있습니다. 같은 모델을 더 싸게, 더 빠르게 시작하고, 카드나 암호화폐로 결제하고 싶다면 apiToken.sale이 실용적인 선택입니다." },
@@ -552,7 +552,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "Opus, Sonnet, Haiku를 위한 하나의 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "각각 언제 고를까", blocks: [
         { type: "list", items: [
@@ -587,7 +587,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           ["최적 용도", "어려운 추론, 긴 에이전트 실행", "일상 코딩과 에이전트"],
         ] },
         { type: "link", text: "모든 Claude 모델과 가격 비교", href: "/models" },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -614,7 +614,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "apiToken.sale 할인", blocks: [
         { type: "p", text: "각 호출은 공식 Anthropic 소비로 환산된 뒤 할인이 차감됩니다. B2C는 모든 요청에서 50% 통일 할인이 적용됩니다. 모든 요청은 토큰 단위 상세와 함께 대시보드에서 확인할 수 있습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "모델별 Claude API 토큰 가격", blocks: [
         { type: "p", text: "큰 모델일수록 토큰당 비용이 높습니다. Opus는 프리미엄 등급, Sonnet은 균형 잡힌 기본값, Haiku는 가장 저렴합니다. 할인은 모든 모델에 적용되므로 순위는 그대로지만 모든 가격이 낮아집니다." },
@@ -653,7 +653,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "긴 스레드는 통째로 다시 보내는 대신 요약하세요.",
           "max_tokens를 응답에 실제로 필요한 만큼으로 제한하세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -680,7 +680,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "완전한 가시성", blocks: [
         { type: "p", text: "모든 요청이 입력, 출력, 캐시, 사고 토큰과 함께 대시보드에 표시되므로 잔액이 어디로 가는지 항상 알 수 있습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -698,7 +698,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "설계상 즉시 활성화", blocks: [
         { type: "p", text: "키는 생성하는 순간 유효합니다. 충전은 결제가 확인되는 즉시 잔액에 반영되며, 카드 결제는 몇 초 안에 확인됩니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "짧은 지연을 유발할 수 있는 것", blocks: [
         { type: "p", text: "유일한 대기는 결제 확인입니다. 카드 충전은 몇 초 안에 처리되고, 암호화폐 충전은 네트워크가 거래를 확인하면 반영되며, 이는 선택한 코인과 수수료에 따라 달라집니다." },
@@ -727,7 +727,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "카드 및 암호화폐 결제 옵션.",
           "Telegram을 통한 영어 및 러시아어 지원.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "지역별 결제 방식", blocks: [
         { type: "p", text: "저희가 키와 잔액을 발급하므로 Anthropic이 지원하는 청구 국가에 묶이지 않습니다. 가능한 곳에서는 은행 카드로, 카드가 거절되는 곳에서는 암호화폐로 결제하세요." },
@@ -755,7 +755,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "도움 받기", blocks: [
         { type: "p", text: "지원은 Telegram을 통해 영어와 러시아어로, 그리고 apitokensale@gmail.com 이메일로 제공됩니다. 대부분의 통합 관련 질문은 빠르게 답변됩니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "충전과 잔액 작동 방식", blocks: [
         { type: "p", text: "달러 단위 정수 금액으로 잔액을 추가하며, 요청이 실행될 때만 차감됩니다. 만료되지 않으므로 과도하게 충전할 이유가 거의 없습니다. 쓰는 만큼 충전하세요." },
@@ -787,7 +787,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "Opus, Sonnet, Haiku를 위한 하나의 선불 키와 잔액.",
           "만료되지 않는 카드 또는 암호화폐 충전.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "각각 언제 맞을까", blocks: [
         { type: "list", items: [
@@ -815,7 +815,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "함께 쓸 수도 있음", blocks: [
         { type: "p", text: "Portkey의 관찰성이 마음에 든다면, apiToken.sale 키를 Anthropic 공급자로 지정해 그 밑에서 할인을 받을 수 있습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -836,7 +836,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "apitoken.sale: 완전 호스팅형 네이티브 Anthropic 엔드포인트로, 관리할 인프라가 없습니다.",
           "apitoken.sale은 순수 프록시가 할 수 없는 50% 통일 Claude 소비 할인을 더합니다.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "각각 언제 고를까", blocks: [
         { type: "list", items: [
@@ -866,7 +866,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "대량 처리에는 Haiku", blocks: [
         { type: "p", text: "Claude Haiku 4.5는 린팅, 추출, 빠른 편집 같은 빠르고 값싼 대량 작업을 처리해 잔액을 오래 쓰게 해줍니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -890,7 +890,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "하나의 키로 Claude Code, Cursor, 에이전트, 프로덕션 호출을 구동.",
           "apiToken.sale은 공식 토큰 요율에서 50%를 통일 할인.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -910,7 +910,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "마이그레이션 방법", blocks: [
         { type: "p", text: "모델 ID를 현재 것으로 교체하세요. 예를 들어 claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5로 바꾸고 기존 요청 코드는 그대로 두면 됩니다. apiToken.sale에서는 동일한 키와 엔드포인트입니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -933,7 +933,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "은행 카드 또는 암호화폐로 결제.",
           "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "하나의 잔액으로 쓰는 할인된 API 토큰", blocks: [
         { type: "p", text: "Claude와 GPT API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 50% 통일 할인을 받고, 두 프로바이더의 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
@@ -961,7 +961,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "번역 계층이 아닌 네이티브", blocks: [
         { type: "p", text: "apitoken.sale은 Anthropic 네이티브입니다. 어떤 클라이언트든 https://api.apitoken.sale/v1/messages로 지정하면 api.anthropic.com과 완전히 동일하게 동작하며, 여기에 할인과 대시보드 제어가 더해집니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "게이트웨이에서 살펴봐야 할 것", blocks: [
         { type: "list", items: [
@@ -993,7 +993,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "엔드포인트를 두들기는 대신 동시성을 줄이세요.",
           "지속적으로 더 높은 처리량이 필요하면 지원팀에 문의하세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -1014,7 +1014,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "과금은 동일합니다", blocks: [
         { type: "p", text: "스트리밍 요청과 비스트리밍 요청은 입력 및 출력 토큰 단위로 동일하게 과금되므로, 스트리밍한다고 손해 볼 것이 없습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "스트리밍이 유리한 경우", blocks: [
         { type: "list", items: [
@@ -1042,7 +1042,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       ] },
       { h2: "할인과 겹쳐집니다", blocks: [
         { type: "p", text: "캐싱은 토큰 개수를 낮추고, apiToken.sale 할인은 토큰당 가격을 낮춥니다. 둘이 합쳐지면 청구액이 훨씬 작아지며, 모든 캐시 항목이 사용량 내역에 표시됩니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -1066,7 +1066,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "429는 Retry-After와 백오프로 처리하세요.",
           "토큰 단위 사용량 분석을 살펴 낭비를 일찍 잡으세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "비용과 안정성 관리하기", blocks: [
         { type: "list", items: [
@@ -1092,7 +1092,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "두 개의 변수", blocks: [
         { type: "code", code: `export ANTHROPIC_BASE_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••\n\n# then just run\nclaude` },
         { type: "p", text: "이게 설정의 전부입니다. 어려운 작업에는 claude-opus-4-8을, 일상적인 코딩에는 claude-sonnet-5를 사용하세요." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "확인하고 모델 고르기", blocks: [
         { type: "p", text: "먼저 짧은 프롬프트를 실행해 키가 작동하는지 확인한 다음 기본 모델을 설정하세요. Claude Code가 인증 오류를 보고하면 두 환경 변수를 다시 확인하고 셸을 재시작해 변수가 export되도록 하세요." },
@@ -1122,7 +1122,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "GET /v1/models로 활성화된 모델을 확인한 뒤 Responses 요청을 보내세요.",
         ] },
         { type: "code", code: `curl https://openai.api.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10 상당의 API 사용량으로 시작합니다 — Claude와 GPT 모델 모두에 유효하며, 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "공식 OpenAI SDK 사용", blocks: [
         { type: "p", text: "공식 SDK는 그대로 동작합니다 — base_url과 키만 바뀝니다. 프로덕션에서는 키를 서버 측 환경 변수에 보관하세요." },
@@ -1170,7 +1170,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "다음을 ~/.codex/apitoken.config.toml로 저장하세요. 이름 있는 프로필은 기본 Codex 설정과 기존 ChatGPT 로그인을 건드리지 않습니다 — 실행할 때 명시적으로 선택합니다." },
         { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://openai.api.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key는 Codex가 키를 읽는 환경 변수의 이름을 지정합니다 — 시크릿은 셸에만 있고 TOML 파일에는 절대 들어가지 않습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 가격 기준 $10 상당의 API 사용량으로 시작합니다 — Claude와 GPT 모델 모두에 유효하며, 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "실행과 확인", blocks: [
         { type: "code", code: `export APITOKEN_API_KEY=sk-pool-•••\ncodex --profile apitoken` },
@@ -1211,7 +1211,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "API 제공자로 Anthropic을 선택하세요.",
           "base URL을 https://api.apitoken.sale로 설정하고 sk-pool-••• 키를 붙여넣은 뒤 claude-sonnet-5 같은 모델을 선택하세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "작업마다 알맞은 모델 고르기", blocks: [
         { type: "list", items: [
@@ -1248,7 +1248,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "키는 환경 변수나 시크릿 매니저에 저장하세요.",
           "키가 노출되면 즉시 폐기하고 순환하세요.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
     ],
     faq: [
@@ -1270,7 +1270,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "반복되는 시스템 프롬프트와 도구 정의를 위한 프롬프트 캐싱.",
           "폭주하는 루프가 키의 한도를 넘겨 지출하지 못하도록 하는 평생 누적 지출 한도.",
         ] },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "비용을 의식한 에이전트 루프", blocks: [
         { type: "p", text: "실전 패턴: 계획과 추론은 Sonnet으로, 값싼 하위 단계와 파싱은 Haiku로 라우팅하고, 가장 어려운 호출만 Opus로 올리세요. 시스템 프롬프트와 도구 정의를 캐시해 반복되는 컨텍스트를 거의 무료로 만드세요." },
@@ -1296,7 +1296,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "ChatAnthropic을 게이트웨이로 지정", blocks: [
         { type: "code", code: `from langchain_anthropic import ChatAnthropic\n\nllm = ChatAnthropic(\n    model="claude-opus-4-8",\n    anthropic_api_url="https://api.apitoken.sale",\n    anthropic_api_key="sk-pool-•••",\n)\nprint(llm.invoke("Hello").content)` },
         { type: "p", text: "통합은 이것이 전부입니다. 동일한 langchain-anthropic 패키지, 동일한 모델 ID, 동일한 스트리밍과 도구 호출 — 바뀌는 것은 엔드포인트와 가격뿐입니다." },
-        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+        { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "또는 환경 변수로 구성", blocks: [
         { type: "code", code: `export ANTHROPIC_API_URL=https://api.apitoken.sale\nexport ANTHROPIC_API_KEY=sk-pool-•••` },
@@ -1325,7 +1325,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     sections: [
       { h2: "SDK 직접 호출", blocks: [
         { type: "code", code: `import litellm\n\nresponse = litellm.completion(\n    model="anthropic/claude-opus-4-8",\n    api_base="https://api.apitoken.sale",\n    api_key="sk-pool-•••",\n    messages=[{"role": "user", "content": "Hello"}],\n)` },
-        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+        { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "LiteLLM 프록시 설정", blocks: [
         { type: "code", code: `# config.yaml\nmodel_list:\n  - model_name: claude-opus-4-8\n    litellm_params:\n      model: anthropic/claude-opus-4-8\n      api_base: https://api.apitoken.sale\n      api_key: sk-pool-•••` },
@@ -1355,7 +1355,7 @@ export const learnKo: Record<string, LocalizedContent> = {
       { h2: "환경 변수 두 개", blocks: [
         { type: "code", code: `export ANTHROPIC_API_KEY=sk-pool-•••\nexport ANTHROPIC_API_BASE=https://api.apitoken.sale\n\naider --model anthropic/claude-opus-4-8` },
         { type: "p", text: "Aider는 내부적으로 LiteLLM을 통해 Anthropic 트래픽을 라우팅하며, LiteLLM은 ANTHROPIC_API_BASE를 인식합니다. 설정 파일이 필요 없습니다." },
-        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+        { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "Aider용 모델 고르기", blocks: [
         { type: "list", items: [
@@ -1385,7 +1385,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "커스텀 base URL 옵션을 켜고 https://api.apitoken.sale로 설정한 뒤 sk-pool-… 키를 붙여넣으세요.",
           "claude-opus-4-8이나 claude-sonnet-5 같은 모델을 골라 작업을 시작하세요.",
         ] },
-        { type: "note", text: "신규 계정은 공식 API 가격 기준 $10의 Claude 사용량으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
+        { type: "note", text: "Google 또는 GitHub 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다. 충전 전에 도구를 연결하고 실제 호출을 실행해 보기에 충분한 금액입니다." },
       ] },
       { h2: "Roo Code가 토큰을 태우는 이유 — 그리고 덜 내는 법", blocks: [
         { type: "p", text: "에이전트형 확장은 파일을 읽고, 계획하고, 수정하고, 재검토하는 루프를 돌기 때문에 작업 하나가 많은 모델 호출을 실행할 수 있습니다. 토큰당 할인이 가장 중요한 워크로드가 바로 이것입니다. 같은 세션이 50% 저렴하고, 대시보드에서 토큰 단위로 확인됩니다." },

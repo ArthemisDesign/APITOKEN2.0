@@ -336,7 +336,7 @@ export function CostCalculator() {
           </div>
 
           <Link className="btn btn-primary calc-cta" href="/register">
-            Start free — $10 at official prices
+            Start free — $5 platform bonus
           </Link>
           <p className="calc-note">Same {providerInfo.apiDescription}, models and responses. You just pay less per call.</p>
         </div>

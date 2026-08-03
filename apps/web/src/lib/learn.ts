@@ -124,10 +124,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale Editorial",
     seeAlso: "See also:",
     ctaVariants: [
-      "Start with Google or GitHub and get $10 of API usage at official prices — no card required.",
-      "Try it before you pay: new Google/GitHub accounts include $10 of official-price API usage.",
-      "Create an account with Google or GitHub and test the gateway with $10 of included API usage.",
-      "Use Google or GitHub to create your key and get $10 of API usage before you top up.",
+      "Start with Google or GitHub and get $5 of platform bonus credit — no card required.",
+      "Try it before you pay: new Google/GitHub accounts include $5 of platform bonus credit.",
+      "Create an account with Google or GitHub and test the gateway with $5 of platform bonus credit.",
+      "Use Google or GitHub to create your key and get $5 of platform bonus credit before you top up.",
     ],
   },
   ru: {
@@ -148,10 +148,10 @@ export const learnUi: Record<Locale, {
     byline: "Редакция apiToken.sale",
     seeAlso: "Читайте также:",
     ctaVariants: [
-      "Войдите через Google или GitHub и получите $10 использования API по официальным ценам — без карты.",
-      "Проверьте до оплаты: новые аккаунты через Google/GitHub получают $10 использования API.",
-      "Создайте аккаунт через Google или GitHub и протестируйте шлюз на $10 использования API.",
-      "Используйте Google или GitHub, чтобы получить ключ и $10 использования API до пополнения.",
+      "Войдите через Google или GitHub и получите приветственный бонус $5 на баланс платформы — без карты.",
+      "Проверьте до оплаты: новые аккаунты через Google/GitHub получают бонус $5 на баланс платформы.",
+      "Создайте аккаунт через Google или GitHub и протестируйте шлюз с бонусом $5 на балансе платформы.",
+      "Используйте Google или GitHub, чтобы получить ключ и бонус $5 на баланс платформы до пополнения.",
     ],
   },
   zh: {
@@ -172,10 +172,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale 编辑部",
     seeAlso: "另见：",
     ctaVariants: [
-      "使用 Google 或 GitHub 创建账户，可获价值 $10 的官方价格 API 用量，无需绑卡。",
-      "先试后付：通过 Google/GitHub 创建的新账户包含 $10 的官方价格 API 用量。",
-      "通过 Google 或 GitHub 创建密钥，用 $10 的赠送 API 用量测试网关。",
-      "使用 Google 或 GitHub 创建账户并获得 $10 的 API 用量，充值前先跑通配置。",
+      "使用 Google 或 GitHub 创建账户，可获 $5 平台欢迎奖励余额，无需绑卡。",
+      "先试后付：通过 Google/GitHub 创建的新账户包含 $5 平台欢迎奖励余额。",
+      "通过 Google 或 GitHub 创建密钥，用 $5 平台欢迎奖励余额测试网关。",
+      "使用 Google 或 GitHub 创建账户并获得 $5 平台欢迎奖励余额，充值前先跑通配置。",
     ],
   },
   ko: {
@@ -196,10 +196,10 @@ export const learnUi: Record<Locale, {
     byline: "apiToken.sale 편집팀",
     seeAlso: "함께 보기:",
     ctaVariants: [
-      "Google 또는 GitHub로 가입하고 공식 가격 기준 $10 상당의 API 사용량을 카드 없이 받으세요.",
-      "결제 전에 사용해 보세요: Google/GitHub 신규 계정에는 $10 상당의 API 사용량이 포함됩니다.",
-      "Google 또는 GitHub로 키를 만들고 $10 상당의 API 사용량으로 게이트웨이를 테스트하세요.",
-      "Google 또는 GitHub로 계정을 만들고 $10 상당의 API 사용량으로 충전 전에 설정을 확인하세요.",
+      "Google 또는 GitHub로 가입하고 $5 플랫폼 웰컴 보너스 크레딧을 카드 없이 받으세요.",
+      "결제 전에 사용해 보세요: Google/GitHub 신규 계정에는 $5 플랫폼 웰컴 보너스 크레딧이 포함됩니다.",
+      "Google 또는 GitHub로 키를 만들고 $5 플랫폼 웰컴 보너스 크레딧으로 게이트웨이를 테스트하세요.",
+      "Google 또는 GitHub로 계정을 만들고 $5 플랫폼 웰컴 보너스 크레딧으로 충전 전에 설정을 확인하세요.",
     ],
   },
 };
@@ -218,7 +218,7 @@ const quickSetupSteps: LearnBlock = {
   ],
 };
 
-const cta = (): LearnBlock => ({ type: "note", text: "New accounts created with Google or GitHub start with $10 of API usage at official prices — valid on Claude and GPT models; email/password accounts do not receive the bonus." });
+const cta = (): LearnBlock => ({ type: "note", text: "New accounts created with Google or GitHub start with $5 of platform bonus credit — valid on Claude, GPT and Gemini models; email/password accounts do not receive the bonus." });
 
 export const learnArticles: LearnArticle[] = [
   // ─────────────────────────── BUY ───────────────────────────
@@ -255,7 +255,7 @@ export const learnArticles: LearnArticle[] = [
     faq: [
       { q: "Do I need an Anthropic account to buy a Claude API key?", a: "No. apiToken.sale issues its own key and balance, so you can start without an Anthropic account, invite, or approval." },
       { q: "How fast is the key active?", a: "Instantly. You generate the key in the dashboard and it works on the next request — there is no waitlist or manual review." },
-      { q: "How much does it cost to start?", a: "You can top up any whole-dollar amount. New accounts created with Google or GitHub also get $10 of Claude usage at official API prices for free." },
+      { q: "How much does it cost to start?", a: "You can top up any whole-dollar amount. New accounts created with Google or GitHub also get $5 of platform bonus credit." },
       { q: "Is this the official Claude API?", a: "Yes — it serves the same Anthropic Messages API and the same Claude models. Only the price and the way you sign up and pay are different." },
     ],
     related: ["claude-api-quick-setup", "cheapest-claude-api", "claude-api-crypto-payment", "free-claude-api-key"],
@@ -413,7 +413,7 @@ export const learnArticles: LearnArticle[] = [
           "Generate a key and point your tool at api.apitoken.sale.",
           "Send a request and see it metered in your usage.",
         ] },
-        { type: "p", text: "New accounts created with Google or GitHub also start with $10 of official-price Claude usage, so you can validate the whole flow before topping up." },
+        { type: "p", text: "New accounts created with Google or GitHub also start with $5 of platform bonus credit, so you can validate the whole flow before topping up." },
       ] },
     ],
     faq: [
@@ -462,14 +462,14 @@ export const learnArticles: LearnArticle[] = [
     cluster: "free",
     title: "Free Claude API Key to Get Started",
     h1: "Get a free Claude API key to start",
-    description: "Create a Claude API key with Google or GitHub and get $10 of Claude usage at official API prices — no card required, no Anthropic account, instant access.",
+    description: "Create a Claude API key with Google or GitHub and get $5 of platform bonus credit — no card required, no Anthropic account, instant access.",
     keywords: ["free claude api key", "claude api free", "free claude api", "claude api free tier", "free anthropic api key", "claude api no card", "claude api no credit card", "claude api free credits", "try claude api free"],
-    dek: "Create your account with Google or GitHub to receive $10 of Claude usage at official API prices and make real calls before spending anything. Email and password accounts do not receive the bonus.",
+    dek: "Create your account with Google or GitHub to receive $5 of platform bonus credit and make real calls before spending anything. Email and password accounts do not receive the bonus.",
     sections: [
       { h2: "What 'free' includes", blocks: [
         { type: "list", items: [
           "A working API key across all supported Claude models.",
-          "A one-time $10 welcome bonus for new Google/GitHub accounts, no card required.",
+          "A one-time $5 platform welcome bonus for new Google/GitHub accounts, no card required.",
           "Enough headroom to wire up your tools and run genuine requests.",
         ] },
         { type: "p", text: "When you are ready for more, top up any whole-dollar amount and your discount kicks in automatically." },
@@ -479,13 +479,13 @@ export const learnArticles: LearnArticle[] = [
         quickSetupSteps,
       ] },
       { h2: "Is the Claude API free forever?", blocks: [
-        { type: "p", text: "The included $10 is a free start, not an unlimited free tier. After it, you pay only for the tokens you use — there is no subscription and no monthly minimum, and your prepaid balance never expires." },
+        { type: "p", text: "The included $5 platform bonus is a free start, not an unlimited free tier. After it, you pay only for the tokens you use — there is no subscription and no monthly minimum, and your prepaid balance never expires." },
       ] },
     ],
     faq: [
-      { q: "Is the free usage real API access?", a: "Yes. The $10 Google/GitHub welcome bonus runs against the same Claude models and endpoints as paid balance." },
-      { q: "Do I need a card to start?", a: "No card is required. Create the account with Google or GitHub to receive the included $10 of usage." },
-      { q: "Do I need a credit card for a free Claude API key?", a: "No. Create the account with Google or GitHub to receive the included $10 of official-price Claude usage without a card." },
+      { q: "Is the free usage real API access?", a: "Yes. The $5 Google/GitHub platform bonus runs against the same supported models and endpoints as paid balance." },
+      { q: "Do I need a card to start?", a: "No card is required. Create the account with Google or GitHub to receive the included $5 platform bonus." },
+      { q: "Do I need a credit card for a free Claude API key?", a: "No. Create the account with Google or GitHub to receive the included $5 platform bonus without a card." },
     ],
     related: ["claude-api-free-trial", "how-to-buy-claude-api-key", "claude-code-without-subscription", "cheapest-claude-api"],
     updated: "2026-07-17",
@@ -495,9 +495,9 @@ export const learnArticles: LearnArticle[] = [
     cluster: "free",
     title: "Claude API Free Trial — Start in Minutes",
     h1: "Try the Claude API free",
-    description: "Start coding with Claude in minutes. New accounts created with Google or GitHub get $10 of Claude usage at official prices, with no card required.",
+    description: "Start coding with Claude in minutes. New accounts created with Google or GitHub get $5 of platform bonus credit, with no card required.",
     keywords: ["claude api free trial", "try claude api", "claude api test", "claude api sandbox", "claude api demo", "free claude api", "claude api free", "claude api no credit card", "claude api free credits", "try claude api free", "claude api free tier"],
-    dek: "There is no separate trial to apply for — create the account with Google or GitHub to get $10 of usage at official API prices and run real calls against every supported model.",
+    dek: "There is no separate trial to apply for — create the account with Google or GitHub to get $5 of platform bonus credit and run real calls against every supported model.",
     sections: [
       { h2: "Prove it before you pay", blocks: [
         { type: "p", text: "The included usage is designed to check the gateway end to end: create a key, connect your editor, and confirm streaming, tool use and your favorite model all behave as expected." },
@@ -508,7 +508,7 @@ export const learnArticles: LearnArticle[] = [
       ] },
     ],
     faq: [
-      { q: "How do I start the trial?", a: "Create a new account with Google or GitHub. The $10 of official-price usage is added automatically; email and password accounts are not eligible." },
+      { q: "How do I start the trial?", a: "Create a new account with Google or GitHub. The $5 platform bonus is added automatically; email and password accounts are not eligible." },
       { q: "What happens when the free usage runs out?", a: "Top up any whole-dollar amount to keep going; your flat discount applies immediately." },
     ],
     related: ["free-claude-api-key", "claude-api-without-waitlist", "claude-api-quick-setup", "claude-haiku-api"],
@@ -1810,7 +1810,7 @@ function enContent(article: LearnArticle): LocalizedContent {
   };
 }
 
-// The old boilerplate "$10 free" note was repeated on ~40 pages per locale.
+// The welcome-credit boilerplate is repeated on ~40 pages per locale.
 // Strip it from the body so it is not duplicate content; the article view
 // renders a single rotating CTA instead.
 function stripBoilerplateCta(content: LocalizedContent): LocalizedContent {
@@ -1818,7 +1818,7 @@ function stripBoilerplateCta(content: LocalizedContent): LocalizedContent {
     ...content,
     sections: content.sections.map((section) => ({
       ...section,
-      blocks: section.blocks.filter((block) => !(block.type === "note" && block.text.includes("$10"))),
+      blocks: section.blocks.filter((block) => !(block.type === "note" && block.text.includes("$5"))),
     })),
   };
 }

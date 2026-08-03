@@ -1,3 +1,4 @@
+import { B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 
 /**
@@ -118,14 +119,20 @@ export type SignupBonusClaim =
  * Пытается атомарно заклеймить бонус. Совпадение устройства/подсети/email с уже
  * выданным бонусом бьётся о частичный unique-индекс → отказ + flagged_reason.
  */
-export async function claimSignupBonus(database: Database, userId: string): Promise<SignupBonusClaim> {
+export async function claimSignupBonus(
+  database: Database,
+  userId: string,
+  amountNano: bigint,
+): Promise<SignupBonusClaim> {
+  if (amountNano <= 0n) throw new RangeError("signup bonus amount must be positive");
   try {
     // Флагнутый профиль (velocity/домен/дубль) НЕ клеймит никогда — иначе абузер пережидает
     // окно velocity и добирает бонусы повторным входом.
-    const result = await database.pool.query(
-      "UPDATE signup_profiles SET bonus_granted = true WHERE user_id = $1 AND NOT bonus_granted AND flagged_reason IS NULL",
-      [userId],
-    );
+    const result = await database.pool.query(`
+      UPDATE signup_profiles
+      SET bonus_granted = true, bonus_amount_nano = $2
+      WHERE user_id = $1 AND NOT bonus_granted AND flagged_reason IS NULL
+    `, [userId, amountNano.toString()]);
     return result.rowCount === 1 ? { claimed: true } : { claimed: false, reason: "already-granted" };
   } catch (error) {
     const reason = duplicateReason(error);
@@ -137,7 +144,34 @@ export async function claimSignupBonus(database: Database, userId: string): Prom
 
 /** Откат клейма, если зачисление в движок не удалось (повторный вход попробует снова). */
 export async function releaseSignupBonus(database: Database, userId: string): Promise<void> {
-  await database.pool.query("UPDATE signup_profiles SET bonus_granted = false WHERE user_id = $1", [userId]);
+  await database.pool.query(`
+    UPDATE signup_profiles
+    SET bonus_granted = false, bonus_amount_nano = NULL
+    WHERE user_id = $1
+  `, [userId]);
+}
+
+/**
+ * Exact amount that was granted to this profile. Rows written before migration 0034 have a
+ * deliberate NULL amount and retain their historical $4 nominal.
+ */
+export async function getGrantedSignupBonusAmount(
+  database: Database,
+  userId: string,
+): Promise<bigint | null> {
+  const result = await database.pool.query<{
+    bonus_granted: boolean;
+    bonus_amount_nano: string | null;
+  }>(`
+    SELECT bonus_granted, bonus_amount_nano
+    FROM signup_profiles
+    WHERE user_id = $1
+  `, [userId]);
+  const profile = result.rows[0];
+  if (!profile?.bonus_granted) return null;
+  return profile.bonus_amount_nano === null
+    ? B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO
+    : BigInt(profile.bonus_amount_nano);
 }
 
 /**

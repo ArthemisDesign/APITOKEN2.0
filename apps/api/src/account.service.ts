@@ -16,13 +16,14 @@ import {
   type StoredApiKey,
 } from "@claude-api/db";
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
-import type {
-  CreateApiKey,
-  EngineAccountFunding,
-  EngineApiKey,
-  EngineLedgerAttribution,
-  EngineLedgerFundingAllocation,
-  UpdateApiKeyPolicy,
+import {
+  B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO,
+  type CreateApiKey,
+  type EngineAccountFunding,
+  type EngineApiKey,
+  type EngineLedgerAttribution,
+  type EngineLedgerFundingAllocation,
+  type UpdateApiKeyPolicy,
 } from "@claude-api/contracts";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
@@ -49,24 +50,25 @@ export class AccountService {
       const mappingResult = await client.query<EngineAccountMappingRow>(`
         SELECT ea.engine_account_id, ea.status, ea.mult_bp,
                COALESCE(cp.customer_type, 'b2c') AS customer_type,
-               -- Welcome-бонус — только обычным (b2c) провайдер-верифицированным аккаунтам.
-               -- B2B (рефы партнёров) под обычные бонусы не подпадают.
-               (COALESCE(cp.customer_type, 'b2c') = 'b2c' AND EXISTS (
-                 SELECT 1 FROM auth_identities ai
-                 WHERE ai.user_id = ea.user_id AND ai.provider IN ('google', 'github')
-               )) AS welcome_bonus_eligible
+               CASE WHEN COALESCE(sp.bonus_granted, false)
+                 THEN COALESCE(sp.bonus_amount_nano, $2::bigint)
+                 ELSE NULL
+               END AS welcome_bonus_amount_nano
         FROM engine_accounts ea
         LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
+        LEFT JOIN signup_profiles sp ON sp.user_id = ea.user_id
         WHERE ea.user_id = $1
         FOR UPDATE OF ea
-      `, [userId]);
+      `, [userId, B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO.toString()]);
       const row = mappingResult.rows[0];
       const mapping = row ? {
         engineAccountId: row.engine_account_id,
         status: row.status,
         multBp: row.mult_bp,
         customerType: row.customer_type,
-        welcomeBonusEligible: row.welcome_bonus_eligible,
+        welcomeBonusAmountNano: row.welcome_bonus_amount_nano === null
+          ? null
+          : BigInt(row.welcome_bonus_amount_nano),
       } : null;
       if (!mapping) throw new EngineAccountUnavailableError("engine account mapping is missing");
       if (mapping.status === "disabled") throw new EngineAccountUnavailableError("engine account is disabled");
@@ -86,7 +88,7 @@ export class AccountService {
           customerType: mapping.customerType,
           handle: `user:${userId}`,
           multBp: mapping.multBp,
-          welcomeBonusEligible: mapping.welcomeBonusEligible,
+          welcomeBonusAmountNano: mapping.welcomeBonusAmountNano,
         });
       } catch (error) {
         // AUDIT(C65/C82): a failed attempt may only fail the exact state it observed.
@@ -572,7 +574,7 @@ interface EngineAccountMappingRow {
   status: "pending" | "active" | "error" | "disabled";
   mult_bp: number;
   customer_type: "b2c" | "b2b";
-  welcome_bonus_eligible: boolean;
+  welcome_bonus_amount_nano: string | null;
 }
 
 const rawPoolApiKeyPattern = /^sk-pool-[0-9a-f]{48}$/i;

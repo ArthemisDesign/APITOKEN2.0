@@ -158,6 +158,9 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     await database.pool.query(`
       UPDATE engine_accounts SET engine_account_id = NULL, status = 'error' WHERE user_id = $1
     `, [aliceId]);
+    await database.pool.query(`
+      UPDATE signup_profiles SET bonus_amount_nano = 5000000000 WHERE user_id = $1
+    `, [aliceId]);
     engine.recoveredAccountId = "acct_recovered";
     await expect(service.ensureEngineAccount(aliceId)).resolves.toBe("acct_recovered");
     const mapping = await database.pool.query(`
@@ -165,7 +168,7 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     `, [aliceId]);
     expect(mapping.rows[0]).toEqual({ engine_account_id: "acct_recovered", status: "active" });
     expect(engine.signupCredits).toEqual([{
-      account: "acct_recovered", amountNano: "4000000000", reference: `signup-bonus:${aliceId}`,
+      account: "acct_recovered", amountNano: "5000000000", reference: `signup-bonus:${aliceId}`,
     }]);
   });
 
@@ -217,6 +220,11 @@ async function createUser(
       INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified)
       VALUES ($1, $2, $3, $4, $5, true)
     `, [randomUUID(), userId, oauthProvider, `${oauthProvider}:${userId}`, email]);
+    // Historical pre-0034 grant: NULL retains the immutable $4 nominal during recovery.
+    await database.pool.query(`
+      INSERT INTO signup_profiles (user_id, email_canonical, bonus_granted)
+      VALUES ($1, $2, true)
+    `, [userId, email]);
   }
   return userId;
 }

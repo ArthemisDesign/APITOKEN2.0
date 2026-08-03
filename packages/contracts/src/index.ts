@@ -1743,10 +1743,10 @@ export const B2C_PRICING_TIERS = [
   { code: "scale", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "3333" },
 ] as const;
 
-export const B2C_SIGNUP_BONUS_OFFICIAL_USD = "10";
-export const B2C_SIGNUP_BONUS_OFFICIAL_NANO = 10_000_000_000n;
-export const B2C_SIGNUP_BONUS_BALANCE_NANO =
-  B2C_SIGNUP_BONUS_OFFICIAL_NANO * BigInt(B2C_PRICING_TIERS[0].multiplierBp) / 10_000n;
+// Welcome credit is an exact platform-balance amount, independent of the active pricing policy.
+// The legacy nominal remains explicit only for rows issued before exact per-claim storage existed.
+export const B2C_SIGNUP_BONUS_BALANCE_NANO = 5_000_000_000n;
+export const B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO = 4_000_000_000n;
 
 export const businessDiscountSchema = z.number().int().min(0).max(95);
 export const pricingPolicyEditorRuleSchema = z.object({

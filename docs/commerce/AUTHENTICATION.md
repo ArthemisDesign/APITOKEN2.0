@@ -32,11 +32,11 @@ After the zero-downtime pricing rollout, the first successful engine provisionin
 Google/GitHub B2C account grants an idempotent `$5.000000000` credit. The bonus is ordinary B2C
 funding across every allowed provider/model; it is not converted into a larger advertised amount of
 official-price usage. Password accounts—including addresses hosted by Gmail—remain ineligible, as
-do invited B2B accounts. Recovery derives eligibility from the stored Google/GitHub identity and
-reuses the same idempotency reference. Existing `$4` grants are not topped up retroactively.
-
-Current production code may still expose Starter/60% and issue `$4` until Stage 9 is implemented;
-that behavior is a documented migration gap, not permission to preserve it in the target runtime.
+do invited B2B accounts. The grant stores its exact amount on the signup profile. Recovery credits
+only that stored granted amount and reuses the same idempotency reference; it does not recompute
+eligibility or value from current OAuth or pricing state. A granted pre-0034 row without a stored
+amount means the historical `$4.000000000` grant. Existing `$4` grants are not topped up
+retroactively.
 
 Login failures use the same external response for an unknown email and a wrong password. A dummy
 Argon2 verification reduces timing-based email discovery. Password login is blocked until verification

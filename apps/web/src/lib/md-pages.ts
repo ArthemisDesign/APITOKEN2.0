@@ -539,7 +539,7 @@ Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT
 
 ## Get started
 
-- Create a key: ${SITE_ORIGIN}/register (Google or GitHub sign-up gets $10 of API usage at official prices)
+- Create a key: ${SITE_ORIGIN}/register (Google or GitHub sign-up gets $5 of platform bonus credit)
 - Agent setup runbook (OS, client detection, secure configuration and verification): ${SITE_ORIGIN}/md/connect
 - All guides (Markdown): ${SITE_ORIGIN}/docs/learn
 - Machine-readable index: ${SITE_ORIGIN}/md

@@ -1,9 +1,10 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { B2C_SIGNUP_BONUS_BALANCE_NANO, multiplierForDiscount } from "@claude-api/contracts";
+import { multiplierForDiscount } from "@claude-api/contracts";
 import {
   canonicalizeEmail,
   convertCustomerToBusiness,
   findAdminCreditByRef,
+  getGrantedSignupBonusAmount,
   markSignupProfileAdminRevoked,
   getAdminDashboard,
   getAdminUserControlTarget,
@@ -237,24 +238,32 @@ export class AdminOperationsService {
 
     const existing = await findAdminCreditByRef(this.database, ref);
     if (existing) {
+      const revokedAmountNano = -BigInt(existing.amountNano);
+      if (revokedAmountNano <= 0n) {
+        throw new AdminOperationError(409, "stored bonus revocation has an invalid amount");
+      }
       await markSignupProfileAdminRevoked(this.database, {
         userId: input.userId,
         emailCanonical: canonicalizeEmail(email.rows[0].email),
       });
       return {
         user_id: input.userId,
-        revoked_usd: nanoToUsd(B2C_SIGNUP_BONUS_BALANCE_NANO.toString()),
+        revoked_usd: nanoToUsd(revokedAmountNano.toString()),
         balance_nano: existing.balanceAfterNano,
         balance_usd: nanoToUsd(existing.balanceAfterNano),
         idempotent_replay: true,
       };
     }
 
-    const result = await this.engine.debitAccount(mapping.engineAccountId, B2C_SIGNUP_BONUS_BALANCE_NANO, ref);
+    const bonusAmountNano = await getGrantedSignupBonusAmount(this.database, input.userId);
+    if (bonusAmountNano === null) {
+      throw new AdminOperationError(409, "user has no granted welcome bonus");
+    }
+    const result = await this.engine.debitAccount(mapping.engineAccountId, bonusAmountNano, ref);
     await recordAdminCredit(this.database, {
       userId: input.userId,
       engineAccountId: mapping.engineAccountId,
-      amountNano: -B2C_SIGNUP_BONUS_BALANCE_NANO,
+      amountNano: -bonusAmountNano,
       ref,
       balanceAfterNano: result.balance_nano,
       reason: input.reason,
@@ -266,7 +275,7 @@ export class AdminOperationsService {
     });
     return {
       user_id: input.userId,
-      revoked_usd: nanoToUsd(B2C_SIGNUP_BONUS_BALANCE_NANO.toString()),
+      revoked_usd: nanoToUsd(bonusAmountNano.toString()),
       balance_nano: result.balance_nano,
       balance_usd: nanoToUsd(result.balance_nano),
       idempotent_replay: false,

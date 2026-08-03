@@ -27,7 +27,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     database = createDatabase(connectionString!);
     const engine = {
       createAccount: async () => ({ account: `acct_auth_${++accountCounter}`, multBp: 2000, handle: null }),
-      creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
+      creditAccount: async (account: string) => ({ account, balance_nano: "5000000000", balance: "$5.000000000" }),
     } as unknown as EngineClient;
     const config = new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
@@ -165,7 +165,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
   it("does not authenticate password registration before verification in every environment", async () => {
     const engine = {
       createAccount: async () => ({ account: "acct_verified_gate", multBp: 2000, handle: null }),
-      creditAccount: async (account: string) => ({ account, balance_nano: "4000000000", balance: "$4.000000000" }),
+      creditAccount: async (account: string) => ({ account, balance_nano: "5000000000", balance: "$5.000000000" }),
     } as unknown as EngineClient;
     const strictAuth = new AuthService(database, engine, new ConfigService<Environment, true>({
       SESSION_TTL_SECONDS: 604_800,
@@ -225,7 +225,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
       }),
     };
     const creditAccount = vi.fn(async (account: string) => ({
-      account, balance_nano: "4000000000", balance: "$4.000000000",
+      account, balance_nano: "5000000000", balance: "$5.000000000",
     }));
     const oauthAuth = new AuthService(
       database,
@@ -251,14 +251,21 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
     });
     expect(creditAccount).toHaveBeenCalledOnce();
     expect(creditAccount).toHaveBeenCalledWith(
-      "acct_oauth_1", 4_000_000_000n, `signup-bonus:${session.user.id}`,
+      "acct_oauth_1", 5_000_000_000n, `signup-bonus:${session.user.id}`,
     );
     const rows = await database.pool.query(`
       SELECT u.password_hash, u.email_verified, ai.provider,
+             (SELECT bonus_amount_nano::text FROM signup_profiles sp WHERE sp.user_id = u.id) AS bonus_amount_nano,
              (SELECT count(*)::int FROM email_outbox) AS emails
       FROM users u JOIN auth_identities ai ON ai.user_id = u.id
     `);
-    expect(rows.rows[0]).toMatchObject({ password_hash: null, email_verified: true, provider: "github", emails: 0 });
+    expect(rows.rows[0]).toMatchObject({
+      password_hash: null,
+      email_verified: true,
+      provider: "github",
+      bonus_amount_nano: "5000000000",
+      emails: 0,
+    });
   });
 
   it.each(["google", "github"] as const)(
@@ -277,7 +284,7 @@ describe.runIf(Boolean(connectionString))("email authentication and authorizatio
         }),
       };
       const creditAccount = vi.fn(async (account: string) => ({
-        account, balance_nano: "4000000000", balance: "$4.000000000",
+        account, balance_nano: "5000000000", balance: "$5.000000000",
       }));
       const oauthAuth = new AuthService(
         database,

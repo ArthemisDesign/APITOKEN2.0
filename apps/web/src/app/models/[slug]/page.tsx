@@ -73,19 +73,19 @@ const providerCopy = {
   anthropic: {
     officialCol: "Official Anthropic",
     othersHeading: "Other Claude models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ANTHROPIC_BASE_URL} with model ID <code>{id}</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ANTHROPIC_BASE_URL} with model ID <code>{id}</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
     cta: (name: string) => `Run ${name} on the same Anthropic API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   openai: {
     officialCol: "Official OpenAI",
     othersHeading: "Other GPT models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
     cta: (name: string) => `Run ${name} on the OpenAI-compatible API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   gemini: {
     officialCol: "Official Google",
     othersHeading: "Other Gemini models",
-    howTo: (id: string) => <>Create a free account, generate one key, and point any Gemini-compatible tool at {GEMINI_BASE_URL} with model ID <code>{id}</code> — the native <code>{`/v1beta/models/${id}:generateContent`}</code> surface works, authenticated with <code>x-goog-api-key</code>. New accounts include $10 of API usage at official prices — enough to test the model before topping up.</>,
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Gemini-compatible tool at {GEMINI_BASE_URL} with model ID <code>{id}</code> — the native <code>{`/v1beta/models/${id}:generateContent`}</code> surface works, authenticated with <code>x-goog-api-key</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
     cta: (name: string) => `Run ${name} on the native Gemini API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
 } as const;

@@ -31,7 +31,7 @@ JavaScript `number` для денег запрещены.
 
 ## Welcome bonus
 
-После rollout новая eligible Google/GitHub B2C-регистрация получает ровно `$5.000000000` с
+Новая eligible Google/GitHub B2C-регистрация получает ровно `$5.000000000` с
 идемпотентным `signup-bonus:<commercial-user-id>`. Password, invited B2B, OpenKeys и service
 аккаунты бонус не получают. Ранее выданные `$4` сохраняются без ретроактивного увеличения.
 

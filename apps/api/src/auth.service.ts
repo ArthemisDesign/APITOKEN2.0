@@ -121,7 +121,7 @@ export class AuthService {
     await this.attributeReferral(user.id, input.referralCode);
     await this.recordSignupProfile(user, input);
     if (verificationRequired) return { user: userView(user), session: null };
-    await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
+    await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
     // Атрибуция уже записана выше → применяем скидку-«пол» синхронно, до выдачи сессии,
     // чтобы первый же /account дашборда вернул правильную ставку (без ожидания sales-фида).
     await this.applyReferralFloorFromAttribution(user.id);
@@ -190,7 +190,7 @@ export class AuthService {
     if (this.emailVerificationRequired() && !user.emailVerified) {
       throw new EmailVerificationRequiredError("email verification is required");
     }
-    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
+    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), null);
     await clearAuthRateLimit(this.database, keys);
     return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
@@ -212,7 +212,7 @@ export class AuthService {
     if (!userId) throw new InvalidAuthTokenError("email verification link is invalid or expired");
     const user = await getAuthUser(this.database, userId);
     if (!user) throw new InvalidAuthTokenError("email verification user is unavailable");
-    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), false);
+    await this.provisionEngineAccount(user, await this.multiplierForUser(user.id), null);
     // Реф-код был записан ещё при register(); движок-аккаунт только что активирован → floor сразу.
     await this.applyReferralFloorFromAttribution(user.id);
     return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
@@ -290,7 +290,7 @@ export class AuthService {
     });
     const user = await completeExternalSignIn(this.database, identity, transaction.inviteTokenHash);
     if (user.status !== "active") throw new InvalidOAuthTransactionError("account is disabled");
-    await this.provisionEngineAccount(user, user.engineMultiplierBp, false);
+    await this.provisionEngineAccount(user, user.engineMultiplierBp, null);
     // Реф партнёра остаётся обычным b2c и получает welcome-бонус, как все. Реф-код закрепляет
     // атрибуцию (sales-фид подхватит для комиссии + атомарно закрепит одноразовую ссылку). Скидку-«пол»
     // применяем ЗДЕСЬ ЖЕ, синхронно — идентично password/email-verify, чтобы OAuth-реферал видел
@@ -433,7 +433,11 @@ export class AuthService {
       await flagSignupProfile(this.database, user.id, "subnet-velocity");
       return;
     }
-    const claim = await claimSignupBonus(this.database, user.id);
+    const claim = await claimSignupBonus(
+      this.database,
+      user.id,
+      B2C_SIGNUP_BONUS_BALANCE_NANO,
+    );
     if (!claim.claimed) return;
     const result = await this.database.pool.query<{ engine_account_id: string | null }>(`
       SELECT engine_account_id
@@ -476,7 +480,7 @@ export class AuthService {
   private async provisionEngineAccount(
     user: AuthUser,
     multiplierBp: number,
-    welcomeBonusEligible: boolean,
+    welcomeBonusAmountNano: bigint | null,
   ): Promise<void> {
     if (user.engineAccountStatus === "active") return;
     if (user.engineAccountStatus === "disabled") throw new EngineAccountDisabledError();
@@ -498,7 +502,7 @@ export class AuthService {
         customerType: user.customerType,
         handle: `user:${user.id}`,
         multBp: multiplierBp,
-        welcomeBonusEligible,
+        welcomeBonusAmountNano,
       });
       const materialized = await materializeProvisionedUserPolicy(this.database, {
         userId: user.id,

@@ -5,6 +5,7 @@ import {
   countRecentSubnetSignups,
   createDatabase,
   flagSignupProfile,
+  getGrantedSignupBonusAmount,
   recordDeviceSighting,
   releaseSignupBonus,
   upsertSignupProfile,
@@ -13,6 +14,7 @@ import {
 } from "./index.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
+const SIGNUP_BONUS_AMOUNT_NANO = 5_000_000_000n;
 
 describe.runIf(Boolean(connectionString))("signup bonus antifraud persistence", () => {
   let database: Database;
@@ -75,8 +77,8 @@ describe.runIf(Boolean(connectionString))("signup bonus antifraud persistence", 
       await upsertSignupProfile(database, first);
       await upsertSignupProfile(database, second);
 
-      await expect(claimSignupBonus(database, firstUserId)).resolves.toEqual({ claimed: true });
-      await expect(claimSignupBonus(database, secondUserId)).resolves.toEqual({
+      await expect(claimSignupBonus(database, firstUserId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({ claimed: true });
+      await expect(claimSignupBonus(database, secondUserId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({
         claimed: false,
         reason: expectedReason,
       });
@@ -105,8 +107,8 @@ describe.runIf(Boolean(connectionString))("signup bonus antifraud persistence", 
     ]);
 
     const outcomes = await Promise.all([
-      claimSignupBonus(database, firstUserId),
-      claimSignupBonus(database, secondUserId),
+      claimSignupBonus(database, firstUserId, SIGNUP_BONUS_AMOUNT_NANO),
+      claimSignupBonus(database, secondUserId, SIGNUP_BONUS_AMOUNT_NANO),
     ]);
     expect(outcomes.filter((outcome) => outcome.claimed)).toHaveLength(1);
     expect(outcomes.filter((outcome) => !outcome.claimed)).toEqual([{
@@ -134,7 +136,7 @@ describe.runIf(Boolean(connectionString))("signup bonus antifraud persistence", 
     await upsertSignupProfile(database, profile(userId, "flagged"));
     await flagSignupProfile(database, userId, "subnet-velocity");
 
-    await expect(claimSignupBonus(database, userId)).resolves.toEqual({
+    await expect(claimSignupBonus(database, userId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({
       claimed: false,
       reason: "already-granted",
     });
@@ -152,13 +154,33 @@ describe.runIf(Boolean(connectionString))("signup bonus antifraud persistence", 
     const userId = await createUser("release");
     await upsertSignupProfile(database, profile(userId, "release"));
 
-    await expect(claimSignupBonus(database, userId)).resolves.toEqual({ claimed: true });
-    await expect(claimSignupBonus(database, userId)).resolves.toEqual({
+    await expect(claimSignupBonus(database, userId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({ claimed: true });
+    await expect(claimSignupBonus(database, userId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({
       claimed: false,
       reason: "already-granted",
     });
     await releaseSignupBonus(database, userId);
-    await expect(claimSignupBonus(database, userId)).resolves.toEqual({ claimed: true });
+    const released = await database.pool.query(`
+      SELECT bonus_granted, bonus_amount_nano
+      FROM signup_profiles
+      WHERE user_id = $1
+    `, [userId]);
+    expect(released.rows).toEqual([{ bonus_granted: false, bonus_amount_nano: null }]);
+    await expect(claimSignupBonus(database, userId, SIGNUP_BONUS_AMOUNT_NANO)).resolves.toEqual({ claimed: true });
+  });
+
+  it("resolves the exact stored amount and the historical NULL fallback", async () => {
+    const userId = await createUser("stored-amount");
+    await upsertSignupProfile(database, profile(userId, "stored-amount"));
+
+    await claimSignupBonus(database, userId, SIGNUP_BONUS_AMOUNT_NANO);
+    await expect(getGrantedSignupBonusAmount(database, userId)).resolves.toBe(5_000_000_000n);
+
+    await database.pool.query(
+      "UPDATE signup_profiles SET bonus_amount_nano = NULL WHERE user_id = $1",
+      [userId],
+    );
+    await expect(getGrantedSignupBonusAmount(database, userId)).resolves.toBe(4_000_000_000n);
   });
 
   it("fills missing signup signals once without replacing the first observed identity", async () => {

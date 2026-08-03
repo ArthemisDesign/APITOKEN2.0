@@ -24,7 +24,7 @@ export const USER_ACTION_LABELS = {
   sessions: "Отозвать все активные сессии",
   totp: "Сбросить 2FA и отозвать сессии",
   business: "Перевести в B2B и установить договорную скидку",
-  bonus: "Отозвать welcome-бонус ($4). Идемпотентно: уже отозванный не спишется второй раз",
+  bonus: "Отозвать фактически выданный welcome-бонус. Идемпотентно: уже отозванный не спишется второй раз",
 } as const;
 export type UserAction = keyof typeof USER_ACTION_LABELS;
 
