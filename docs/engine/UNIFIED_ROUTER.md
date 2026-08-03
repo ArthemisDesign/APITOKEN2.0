@@ -372,6 +372,11 @@ schema-v1 success. Success не кэшируется между запросам
 - **Одинаковый backend.** Оба входа ведут в одни и те же provider-плоскости и один
   billing authority, поэтому ключ, баланс и ledger клиента идентичны на любом входе —
   переезд клиента это смена base URL, а не миграция аккаунта.
+- **Публичная документация ведёт с unified.** `apitoken.sale/docs` (портал, API
+  reference, integration builder, models & pricing, `/md/*`, llms.txt) представляет
+  `https://router.apitoken.sale` как рекомендуемый вход: native lanes для каждого
+  провайдера плюс OpenAI-compatible universal lane и единый каталог; per-provider
+  хосты описаны там как полностью поддерживаемые legacy-входы без sunset-даты.
 - **Новые возможности — сначала unified.** Universal lane, единый каталог и routing
   policy развиваются на unified endpoint; старые домены сохраняют текущий контракт
   (критические исправления, разумеется, общие — плоскости одни).

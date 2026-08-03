@@ -56,8 +56,8 @@ export const seoPages = {
   },
   docs: {
     path: "/docs",
-    title: "API Documentation & Quickstart — Claude & GPT",
-    description: "Connect to the Anthropic-compatible Messages API and the OpenAI-compatible API with curl, Python, TypeScript, Claude Code, Codex, and coding editors. Includes authentication, errors, and pricing.",
+    title: "API Documentation & Quickstart — Claude, GPT & Gemini",
+    description: "One unified router endpoint with native Anthropic Messages, OpenAI Responses and Google Gemini APIs plus an OpenAI-compatible route for any model. Quickstart for curl, Python, TypeScript, Claude Code, Codex, and coding editors — authentication, errors, and pricing.",
     priority: 0.9,
     changeFrequency: "weekly",
   },

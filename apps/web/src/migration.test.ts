@@ -296,7 +296,7 @@ describe("completed Next.js migration", () => {
     expect(docs).not.toContain("Connection details");
     expect(docs).not.toContain("Параметры подключения");
     expect(agentGuideRoute).toContain("buildAgentSetupMarkdown");
-    expect(apiReference).toContain("ANTHROPIC_BASE_URL");
+    expect(apiReference).toContain("ROUTER_BASE_URL");
     expect(apiReference).toContain("Python SDK");
     expect(dynamicRoute).not.toContain("DocsPage");
   });

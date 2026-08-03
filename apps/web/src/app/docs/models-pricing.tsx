@@ -16,7 +16,8 @@ export function ModelsPricing({ language }: { language: Language }) {
       language={language}
       provider="anthropic"
       title={tr(language, "Claude · Anthropic Messages API", "Claude · Anthropic Messages API")}
-      host="api.apitoken.sale"
+      host="router.apitoken.sale"
+      path="POST /v1/messages"
       auth="x-api-key"
       models={claudeModels}
       cacheNote={tr(language,
@@ -27,8 +28,9 @@ export function ModelsPricing({ language }: { language: Language }) {
     <ProviderPanel
       language={language}
       provider="openai"
-      title={tr(language, "GPT · OpenAI-compatible API", "GPT · OpenAI-совместимый API")}
-      host="openai.api.apitoken.sale/v1"
+      title={tr(language, "GPT · OpenAI Responses API", "GPT · OpenAI Responses API")}
+      host="router.apitoken.sale"
+      path="POST /v1/responses · POST /v1/chat/completions"
       auth="Authorization: Bearer"
       models={openaiModels}
       cacheNote={tr(language,
@@ -40,7 +42,8 @@ export function ModelsPricing({ language }: { language: Language }) {
       language={language}
       provider="gemini"
       title={tr(language, "Gemini · Google Gemini API", "Gemini · Google Gemini API")}
-      host="gemini.api.apitoken.sale"
+      host="router.apitoken.sale"
+      path="POST /v1beta/models/{model}:generateContent"
       auth="x-goog-api-key"
       models={geminiModels}
       cacheNote={tr(language,
@@ -64,17 +67,18 @@ export function ModelsPricing({ language }: { language: Language }) {
         "Gemini rates follow the official Google standard paid tier; image output on Nano Banana models bills per image-output token.",
         "Ставки Gemini соответствуют официальному стандартному платному тарифу Google; вывод изображений на моделях Nano Banana тарифицируется за токен вывода изображения.")}</li>
       <li><Prose text={tr(language,
-        "The live enabled set is always available at `GET /v1/models` on either surface.",
-        "Актуальный список доступных моделей — всегда в `GET /v1/models` на любой из поверхностей.")} /></li>
+        "The live enabled set is always available at `GET /v1/models` on the unified endpoint — one aggregated catalog for all providers.",
+        "Актуальный список доступных моделей — всегда в `GET /v1/models` на едином endpoint: один агрегированный каталог для всех провайдеров.")} /></li>
     </ul>
   </div>;
 }
 
-function ProviderPanel({ language, provider, title, host, auth, models, cacheNote }: {
+function ProviderPanel({ language, provider, title, host, path, auth, models, cacheNote }: {
   language: Language;
   provider: "anthropic" | "openai" | "gemini";
   title: string;
   host: string;
+  path: string;
   auth: string;
   models: CatalogModel[];
   cacheNote: string;
@@ -83,7 +87,7 @@ function ProviderPanel({ language, provider, title, host, auth, models, cacheNot
     <header className="mp-panel-head">
       <div className="mp-panel-title">
         <span className={`ib-icon p-${provider}`} aria-hidden="true" />
-        <div><h3>{title}</h3><code>{host}</code></div>
+        <div><h3>{title}</h3><code>{host}</code><code className="mp-path">{path}</code></div>
       </div>
       <span className="mp-auth">{auth}</span>
     </header>

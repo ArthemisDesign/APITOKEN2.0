@@ -218,8 +218,8 @@ export function ErrorsReference({ locale }: { locale: ErrorLocale }) {
               <p className="docs-para">
                 {SITE_NAME}
                 {locale === "ru"
-                  ? " отдаёт стандартный Anthropic Messages API и OpenAI-совместимый API, поэтому не-шлюзовые ошибки здесь ведут себя ровно так же, как против официальных эндпоинтов. "
-                  : " serves the standard Anthropic Messages API and an OpenAI-compatible API, so every non-gateway error on this page behaves exactly as it does against the official endpoints. "}
+                  ? " отдаёт нативные Anthropic Messages, OpenAI Responses и Gemini API плюс OpenAI-совместимый маршрут через единый router endpoint, поэтому не-шлюзовые ошибки здесь ведут себя ровно так же, как против официальных эндпоинтов. "
+                  : " serves the native Anthropic Messages, OpenAI Responses and Gemini APIs plus an OpenAI-compatible route through one unified router endpoint, so every non-gateway error on this page behaves exactly as it does against the official endpoints. "}
                 <Link href={locale === "ru" ? "/ru/docs/learn/claude-api-rate-limits" : "/docs/learn/claude-api-rate-limits"}>
                   {ui.seeAlso}
                 </Link>

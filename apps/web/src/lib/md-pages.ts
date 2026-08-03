@@ -2,9 +2,11 @@
 // Served by static route handlers under /md so crawlers and AI agents can consume every public
 // section as clean text. Add a model to the data and its Markdown updates on the next build.
 import {
-  ANTHROPIC_BASE_URL,
-  GEMINI_BASE_URL,
-  OPENAI_BASE_URL,
+  ANTHROPIC_BASE_URL as LEGACY_ANTHROPIC_BASE_URL,
+  GEMINI_BASE_URL as LEGACY_GEMINI_BASE_URL,
+  OPENAI_BASE_URL as LEGACY_OPENAI_BASE_URL,
+  ROUTER_BASE_URL,
+  ROUTER_OPENAI_BASE_URL,
   catalogModelBySlug,
   claudeModels,
   formatUsd,
@@ -18,7 +20,13 @@ import { B2C_DISCOUNT_PERCENT, B2C_VALUE_MULTIPLIER } from "./pricing-tiers";
 import { integrationGuideSeo, SITE_ORIGIN, type IntegrationGuideSlug } from "./seo";
 import { API_ERRORS } from "./api-errors";
 
-const API_BASE_URL = ANTHROPIC_BASE_URL;
+// Every machine-readable page recommends the unified router endpoint; the
+// protocol-specific instructions below stay valid because each lane keeps its
+// wire format on the router. Legacy per-provider hosts are referenced
+// explicitly where the text acknowledges them.
+const API_BASE_URL = ROUTER_BASE_URL;
+const OPENAI_BASE_URL = ROUTER_OPENAI_BASE_URL;
+const GEMINI_BASE_URL = ROUTER_BASE_URL;
 
 // Per-tool setup facts an agent needs; titles/descriptions come from integrationGuideSeo.
 const INTEGRATION_CONFIG: Record<IntegrationGuideSlug, string> = {
@@ -162,7 +170,7 @@ Use the remote/container OS that actually runs the client, not merely the deskto
 
 ## Step 2 — choose the compatible API surface
 
-Choose by the client's wire protocol, not by brand preference.
+Choose by the client's wire protocol, not by brand preference. All protocols live on one unified router endpoint; the per-protocol base URLs below differ only by path suffix.
 
 ### Anthropic Messages surface
 
@@ -194,7 +202,7 @@ Choose by the client's wire protocol, not by brand preference.
 - Auth: \`x-goog-api-key: sk-pool-…\`; do not use \`x-api-key\` or \`Authorization: Bearer\` on this surface.
 - Use this surface for Google GenAI SDKs and tools with a Gemini-compatible custom provider.
 
-The same \`sk-pool-…\` key and account balance work on all three surfaces. If a client supports both protocols, preserve the protocol it already uses unless the user requests a change. If it supports neither custom base URLs nor custom providers, explain the incompatibility and recommend a supported integration rather than pretending the setup succeeded.
+The same \`sk-pool-…\` key and account balance work on every lane of the unified endpoint. If a client supports both protocols, preserve the protocol it already uses unless the user requests a change. If it supports neither custom base URLs nor custom providers, explain the incompatibility and recommend a supported integration rather than pretending the setup succeeded.
 
 ## Current model catalog
 
@@ -378,50 +386,50 @@ export function buildApiReferenceMarkdown(): string {
     frontmatter({
       title: "apiToken.sale — API reference (Claude, GPT & Gemini)",
       description:
-        "Connect any Anthropic-compatible, OpenAI-compatible or Gemini-compatible client to apiToken.sale: base URLs, exact model IDs, headers, streaming, tool use, prompt caching and error codes for all three API surfaces.",
+        "One unified router endpoint for every provider: native Anthropic Messages, OpenAI Responses and Google Gemini APIs plus an OpenAI-compatible route for any catalog model — base URLs, exact model IDs, headers, streaming, tool use, prompt caching and error codes.",
       url: `${SITE_ORIGIN}/docs`,
       language: "en",
     }) +
     `# API reference — apiToken.sale
 
-apiToken.sale is an independent multi-provider gateway. It serves the **standard Anthropic Messages API** with the full Claude line, an **OpenAI-compatible API** (Responses and Chat Completions) with the GPT-5 line, and the **native Google Gemini API** with the Gemini line — from one prepaid balance and one \`sk-pool-…\` key at a flat 50% discount. Request bodies, responses, streaming and error shapes match the official APIs; only the host and key change.
+apiToken.sale is an independent multi-provider gateway built as a **unified router**. One endpoint — \`${API_BASE_URL}\` — serves the **native Anthropic Messages API**, the **native OpenAI Responses API** and the **native Google Gemini API**, plus an **OpenAI-compatible universal route** that reaches every catalog model from any OpenAI-compatible client. One prepaid balance and one \`sk-pool-…\` key at a flat 50% discount work on every lane. Native lanes pass requests through byte-faithfully — request bodies, responses, streaming and error shapes match the official APIs; the universal route translates fail-closed, so an unsupported parameter returns a clear \`400 unsupported_parameter\` instead of being silently dropped.
 
-## Surface 1 — Anthropic Messages API (Claude models)
+## Unified endpoint
 
 - **Base URL:** \`${API_BASE_URL}\`
-- **Endpoint:** \`POST /v1/messages\`
-- **Headers:** \`x-api-key: sk-pool-…\` and \`anthropic-version: 2023-06-01\`
-- **Auth:** on this surface the \`sk-pool-…\` key is sent in \`x-api-key\` (not as a bearer token).
+- **Key:** the same \`sk-pool-…\` on every lane, sent in the header style of the protocol: \`x-api-key\` (Anthropic), \`Authorization: Bearer\` (OpenAI lanes), \`x-goog-api-key\` (Gemini).
 
-Exact Claude model IDs (use the ID unchanged in the \`model\` field). Prices are official Anthropic $ per 1M tokens; you pay a flat 50% less on every request.
+| Lane | Endpoints | Auth header |
+|---|---|---|
+| Anthropic Messages (native) | \`POST /v1/messages\` · \`POST /v1/messages/count_tokens\` | \`x-api-key\` + \`anthropic-version\` |
+| OpenAI Responses (native) | \`POST /v1/responses\` · \`POST /v1/responses/input_tokens\` · \`GET /v1/responses/{id}\` | \`Authorization: Bearer\` |
+| OpenAI-compatible (universal) | \`POST /v1/chat/completions\` | \`Authorization: Bearer\` |
+| Unified catalog | \`GET /v1/models\` · \`GET /v1/models/{id}\` | any lane header |
+| Gemini (native) | \`GET /v1beta/models\` · \`POST /v1beta/models/{model}:generateContent\` · \`POST /v1beta/models/{model}:streamGenerateContent\` · \`POST /v1beta/models/{model}:countTokens\` | \`x-goog-api-key\` |
+
+- **Model dispatch:** native lanes also serve models of the other providers — \`POST /v1/messages\` accepts GPT and Gemini models, \`POST /v1/responses\` and \`POST /v1/chat/completions\` accept Claude and Gemini models. One client protocol, the whole catalog.
+- **Namespaced model IDs:** the unified catalog publishes \`anthropic/claude-*\`, \`openai/gpt-*\` and \`google/gemini-*\`. Prefer namespaced IDs on shared lanes; bare native IDs keep working while they are globally unambiguous.
+- **Modalities:** text and image input, text output (Gemini Nano Banana models also output images). Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent service, not the OpenAI Platform.
+
+## Claude models (Anthropic lane)
+
+Exact Claude model IDs (use the ID unchanged in the \`model\` field; on shared lanes the namespaced form is \`anthropic/<id>\`). Prices are official Anthropic $ per 1M tokens; you pay a flat 50% less on every request.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
 ${claudeRows}
 
-## Surface 2 — OpenAI-compatible API (GPT models)
+## GPT models (OpenAI lanes)
 
-- **Base URL:** \`${OPENAI_BASE_URL}\`
-- **Endpoints:** \`POST /v1/responses\` and \`POST /v1/chat/completions\` (SSE streaming on both)
-- **Models:** \`GET /v1/models\` lists the currently enabled set
-- **Auth:** the same \`sk-pool-…\` key sent as \`Authorization: Bearer sk-pool-…\` (x-api-key is not accepted on this surface).
-- **Modalities:** text and image input, text output. Audio, files, realtime, assistants, batches and fine-tuning are not available — this is an independent OpenAI-compatible service, not the OpenAI Platform.
-
-Exact GPT model IDs. Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
+Exact GPT model IDs (namespaced form \`openai/<id>\`). Prices are official OpenAI $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. Requests above 272K input tokens bill at OpenAI long-context rates (2× input, 1.5× output on the whole request). \`gpt-5.6\` is an alias of \`gpt-5.6-sol\`.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
 ${gptRows}
 
-## Surface 3 — Gemini API (Gemini models)
+## Gemini models (Gemini lane)
 
-- **Base URL:** \`${GEMINI_BASE_URL}\`
-- **Endpoints:** \`POST /v1beta/models/{model}:generateContent\` and \`POST /v1beta/models/{model}:streamGenerateContent\` (SSE streaming), \`POST /v1beta/models/{model}:countTokens\`
-- **Models:** \`GET /v1beta/models\` lists the currently enabled set
-- **Auth:** the same \`sk-pool-…\` key sent as \`x-goog-api-key: sk-pool-…\` (x-api-key and Authorization: Bearer are not accepted on this surface).
-- **Surface:** the native /v1beta generateContent API is served unchanged — request bodies, responses and streaming match the official Google Gemini API.
-
-Exact Gemini model IDs. Prices are official Google $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. gemini-3.1-pro-preview requests above 200K input tokens bill at long-context rates (2× input, 1.5× output on the whole request). gemini-3.1-flash-image bills image output at $60 per 1M image-output tokens.
+Exact Gemini model IDs (namespaced form \`google/<id>\`). Prices are official Google $ per 1M tokens with the same flat 50% discount; cached input bills at 10% of input. gemini-3.1-pro-preview requests above 200K input tokens bill at long-context rates (2× input, 1.5× output on the whole request). gemini-3.1-flash-image bills image output at $60 per 1M image-output tokens.
 
 | model ID | Tier | Context | Max output | Official in / out (per 1M) |
 |---|---|---|---|---|
@@ -429,7 +437,7 @@ ${geminiRows}
 
 Per-model detail pages: ${[...claudeModels, ...openaiModels, ...geminiModels].map((m) => `${SITE_ORIGIN}${modelPath(m.slug)}`).join(", ")}.
 
-## First request (curl, Claude)
+## First request (native Anthropic lane, curl)
 
 \`\`\`bash
 curl ${API_BASE_URL}/v1/messages \\
@@ -443,19 +451,21 @@ curl ${API_BASE_URL}/v1/messages \\
   }'
 \`\`\`
 
-## First request (curl, GPT)
+## First request (OpenAI-compatible universal route, curl)
 
 \`\`\`bash
-curl ${OPENAI_BASE_URL}/responses \\
+curl ${OPENAI_BASE_URL}/chat/completions \\
   -H "Authorization: Bearer $APITOKEN_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "gpt-5.6-sol",
-    "input": "Reply with exactly: connected"
+    "messages": [{"role": "user", "content": "Reply with exactly: connected"}]
   }'
 \`\`\`
 
-## First request (curl, Gemini)
+This one route serves the whole catalog: swap the model for \`anthropic/claude-opus-4-8\` or \`google/gemini-3.6-flash\` without changing code, endpoint or key. The native OpenAI Responses API is also on this host at \`POST ${OPENAI_BASE_URL}/responses\`.
+
+## First request (native Gemini lane, curl)
 
 \`\`\`bash
 curl ${GEMINI_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent \\
@@ -500,42 +510,44 @@ print(response.output_text)
 
 ## Coding tools
 
-Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`. Codex CLI and opencode run on the OpenAI-compatible surface — see the integration guides: ${SITE_ORIGIN}/md/int. Google GenAI SDKs and Gemini-compatible tools run on the native Gemini surface at \`${GEMINI_BASE_URL}\` with the key sent as \`x-goog-api-key\`.
+Claude Code, Cursor, Cline, Continue, Zed, Aider, Roo Code, LangChain and LiteLLM all work by pointing the Anthropic base URL at \`${API_BASE_URL}\`. For Claude Code: \`export ANTHROPIC_BASE_URL=${API_BASE_URL}\` and \`export ANTHROPIC_API_KEY=sk-pool-…\`. Codex CLI and OpenAI-compatible tools run on the OpenAI lanes at \`${OPENAI_BASE_URL}\` — see the integration guides: ${SITE_ORIGIN}/md/int. Google GenAI SDKs and Gemini-compatible tools run on the native Gemini lane at \`${GEMINI_BASE_URL}\` with the key sent as \`x-goog-api-key\`.
 
-## Capability parity (Anthropic surface)
+## Capability parity (native lanes)
 
-Everything the Anthropic Messages API supports passes through unchanged:
+Everything the provider APIs support passes through unchanged:
 
-- **Streaming:** \`"stream": true\` returns standard Anthropic SSE events.
+- **Streaming:** \`"stream": true\` returns standard Anthropic SSE events; OpenAI lanes stream SSE on both Responses and Chat Completions; the Gemini lane streams via \`:streamGenerateContent\`.
 - **Tool use / function calling:** \`tools\` and \`tool_choice\` work identically; multi-turn tool loops supported.
-- **Prompt caching:** \`cache_control\` breakpoints are honored and billed at cache read/write rates.
+- **Prompt caching:** Anthropic \`cache_control\` breakpoints are honored and billed at cache read/write rates; GPT prefixes cache automatically at 10% of input.
 - **Vision:** image content blocks are supported.
 - **System prompts, stop sequences, temperature, top_p, max_tokens:** identical semantics.
 
-## Error codes (Anthropic surface)
+## Error codes
+
+Every lane keeps its provider's error envelope: Anthropic lanes return Anthropic's JSON, OpenAI lanes return \`{"error":{"message","type","param","code"}}\`, and the Gemini lane returns \`{"error":{"code","message","status"}}\`.
 
 | Status | Meaning | What to do |
 |---|---|---|
-| 401 | API key missing, invalid or revoked | Send a valid \`sk-pool-…\` in \`x-api-key\`; if revoked, create a new key. |
+| 400 | Unsupported parameter on the target lane (\`unsupported_parameter\`) or malformed request | Remove the flagged parameter or switch to the model's native lane; the router never silently drops parameters. |
+| 401 | API key missing, invalid or revoked | Send a valid \`sk-pool-…\` in the lane's auth header; if revoked, create a new key. |
 | 402 | Prepaid balance too low | Top up any whole-dollar amount; retry after crediting. |
+| 404 | Unknown or disabled model ID | List enabled IDs with \`GET /v1/models\`; check for typos or use the namespaced form. |
 | 429 | Rate limit or temporary upstream capacity | Honor \`Retry-After\`; retry with capped exponential backoff and jitter. |
 | 5xx | Temporary gateway or upstream failure | Retry with bounded backoff; keep the request ID and avoid duplicate attempts. |
 
-## Error codes (OpenAI-compatible surface)
+## Legacy per-provider endpoints
 
-Envelope: \`{"error":{"message","type","param","code"}}\`.
+Already integrated? The original per-provider hosts remain fully supported with the same key and balance — no migration required:
 
-| Status | code | Meaning | What to do |
-|---|---|---|---|
-| 401 | invalid_api_key | Key missing or wrong auth header | Send \`Authorization: Bearer sk-pool-…\` — not x-api-key. |
-| 402 | insufficient_quota | Prepaid balance too low | Top up any whole-dollar amount; retry after crediting. |
-| 404 | model_not_found | Unknown or disabled model ID | List enabled IDs with \`GET /v1/models\`; check for typos. |
-| 429 | rate_limit_error | Rate or concurrency limit | Honor \`Retry-After\`; back off with jitter, cap concurrency. |
-| 503 | server_error | Model temporarily unavailable | Retry with bounded backoff; fall back to another model if urgent. |
+- Anthropic Messages: \`${LEGACY_ANTHROPIC_BASE_URL}\`
+- OpenAI-compatible: \`${LEGACY_OPENAI_BASE_URL}\`
+- Gemini: \`${LEGACY_GEMINI_BASE_URL}\`
+
+New integrations should use the unified router endpoint above — new capabilities land there first.
 
 ## Pricing
 
-Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by all three surfaces. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
+Prepaid, per-token at official provider rates minus the flat ${pct(DISCOUNT_FLAT)} discount on every request, shared by all lanes. No fixed packages or subscriptions; balance never expires. Pricing details: ${SITE_ORIGIN}/md/plans.
 
 ## Get started
 
@@ -554,10 +566,10 @@ export function buildModelsMarkdown(): string {
     const inHere = formatUsd(m.inputPerM * (1 - DISCOUNT_FLAT));
     const outHere = formatUsd(m.outputPerM * (1 - DISCOUNT_FLAT));
     const surface = m.provider === "anthropic"
-      ? `- **Surface:** Anthropic Messages API at \`${API_BASE_URL}\``
+      ? `- **Lane:** Anthropic Messages API (native) at \`${API_BASE_URL}\` · also callable via \`POST /v1/chat/completions\` as \`anthropic/${m.id}\``
       : m.provider === "openai"
-        ? `- **Surface:** OpenAI-compatible API at \`${OPENAI_BASE_URL}\` (Authorization: Bearer)`
-        : `- **Surface:** Gemini API at \`${GEMINI_BASE_URL}\` (x-goog-api-key)`;
+        ? `- **Lane:** OpenAI Responses / Chat Completions at \`${OPENAI_BASE_URL}\` (Authorization: Bearer) · namespaced ID \`openai/${m.id}\``
+        : `- **Lane:** Gemini API (native) at \`${GEMINI_BASE_URL}\` (x-goog-api-key) · also callable via \`POST /v1/chat/completions\` as \`google/${m.id}\``;
     const cached = m.provider === "openai"
       ? `\n- **Cached input (per 1M):** $${m.cachedInputPerM} · **Cache write:** $${m.cacheWritePerM}`
       : m.provider === "gemini"
@@ -588,7 +600,7 @@ export function buildModelsMarkdown(): string {
     }) +
     `# Model catalog
 
-All models run on one \`sk-pool-…\` key and one prepaid balance — Claude models via \`${API_BASE_URL}\`, GPT models via \`${OPENAI_BASE_URL}\`, Gemini models via \`${GEMINI_BASE_URL}\`. Use the model ID unchanged in the \`model\` field.
+All models run on one \`sk-pool-…\` key and one prepaid balance through the unified router endpoint \`${API_BASE_URL}\` — native Anthropic, OpenAI and Gemini lanes plus one OpenAI-compatible route for any model. Use the model ID unchanged in the \`model\` field; on shared lanes prefer the namespaced form (\`anthropic/<id>\`, \`openai/<id>\`, \`google/<id>\`).
 
 # Claude models (Anthropic Messages API)
 
@@ -870,9 +882,10 @@ ${openAiEntries.map(sectionFor).join("\n\n")}
 
 ---
 
-apiToken.sale serves the standard Anthropic Messages API and an OpenAI-compatible API, so
-non-gateway errors here behave exactly as they do against the official endpoints.
-Anthropic base URL: ${API_BASE_URL} · OpenAI-compatible base URL: ${OPENAI_BASE_URL}
+apiToken.sale serves the native Anthropic Messages, OpenAI Responses and Gemini APIs plus an
+OpenAI-compatible route through one unified router endpoint, so non-gateway errors here behave
+exactly as they do against the official endpoints.
+Unified base URL: ${API_BASE_URL} · OpenAI lanes: ${OPENAI_BASE_URL}
 `
   );
 }

@@ -4,14 +4,19 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { localeHref } from "@/lib/locale-routes";
 import type { IntegrationLanguage, IntegrationProvider } from "./integration-builder-data";
-import { buildApiGuide, type ApiLanguage } from "./api-reference-data";
+import { buildApiGuide, type ApiLanguage, type ApiStyle } from "./api-reference-data";
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
 
 const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
-  { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
+  { id: "openai", name: "GPT", en: "OpenAI Responses API", ru: "OpenAI Responses API" },
   { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
+];
+
+const apiStyles: Array<{ id: ApiStyle; en: string; ru: string }> = [
+  { id: "native", en: "Native", ru: "Нативный" },
+  { id: "openai-compatible", en: "OpenAI-compatible", ru: "OpenAI-совместимый" },
 ];
 
 const apiLanguages: Array<{ id: ApiLanguage; name: string }> = [
@@ -26,11 +31,12 @@ function tr(language: IntegrationLanguage, en: string, ru: string): string {
 
 export function ApiReference({ language }: { language: IntegrationLanguage }) {
   const [provider, setProvider] = useState<IntegrationProvider>("anthropic");
+  const [apiStyle, setApiStyle] = useState<ApiStyle>("native");
   const [apiLanguage, setApiLanguage] = useState<ApiLanguage>("curl");
   const [copiedStep, setCopiedStep] = useState<number | null>(null);
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
 
-  const guide = useMemo(() => buildApiGuide({ provider, apiLanguage, language }), [provider, apiLanguage, language]);
+  const guide = useMemo(() => buildApiGuide({ provider, apiStyle, apiLanguage, language }), [provider, apiStyle, apiLanguage, language]);
   const activeProvider = providers.find((candidate) => candidate.id === provider)!;
 
   async function copyStep(index: number, value: string) {
@@ -56,11 +62,19 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
           </button>;
         })}
       </div>
-      <div className="api-langs" role="group" aria-label={tr(language, "Programming language", "Язык программирования")}>
-        {apiLanguages.map((candidate) => {
-          const active = apiLanguage === candidate.id;
-          return <button type="button" key={candidate.id} className={active ? "api-lang active" : "api-lang"} aria-pressed={active} onClick={() => setApiLanguage(candidate.id)}>{candidate.name}</button>;
-        })}
+      <div className="api-toggles">
+        <div className="api-langs" role="group" aria-label={tr(language, "API style", "Стиль API")}>
+          {apiStyles.map((candidate) => {
+            const active = apiStyle === candidate.id;
+            return <button type="button" key={candidate.id} className={active ? "api-lang active" : "api-lang"} aria-pressed={active} onClick={() => setApiStyle(candidate.id)}>{tr(language, candidate.en, candidate.ru)}</button>;
+          })}
+        </div>
+        <div className="api-langs" role="group" aria-label={tr(language, "Programming language", "Язык программирования")}>
+          {apiLanguages.map((candidate) => {
+            const active = apiLanguage === candidate.id;
+            return <button type="button" key={candidate.id} className={active ? "api-lang active" : "api-lang"} aria-pressed={active} onClick={() => setApiLanguage(candidate.id)}>{candidate.name}</button>;
+          })}
+        </div>
       </div>
     </div>
 
@@ -80,7 +94,7 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
       </div>
 
       <ol className="ib-steps">
-        {guide.steps.map((step, index) => <li key={`${provider}-${apiLanguage}-${index}`}>
+        {guide.steps.map((step, index) => <li key={`${provider}-${apiStyle}-${apiLanguage}-${index}`}>
           <div className="ib-step-head">
             <span aria-hidden="true">{index + 1}</span>
             <h5>{step.title}</h5>
@@ -94,7 +108,7 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
       </ol>
 
       <footer className="ib-guide-foot">
-        <span><ShieldIcon />{tr(language, "One sk-pool key works on every surface. Never ship it in client-side code.", "Один ключ sk-pool работает на всех поверхностях. Не включайте его в клиентский код.")}</span>
+        <span><ShieldIcon />{tr(language, "One sk-pool key works on every lane of the unified endpoint. Never ship it in client-side code.", "Один ключ sk-pool работает на всех маршрутах единого endpoint. Не включайте его в клиентский код.")}</span>
         <Link href={localeHref("/dashboard?view=keys", language)}>{tr(language, "Get API key", "Получить API‑ключ")}<ArrowIcon /></Link>
       </footer>
     </section>

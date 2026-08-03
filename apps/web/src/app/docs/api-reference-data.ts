@@ -1,16 +1,16 @@
-// Interactive API reference: one guide per provider × programming language.
+// Interactive API reference: one guide per provider × API style × programming language.
 // Reuses the builder's endpoint constants and model catalog so the examples
 // can never drift away from what the gateway actually serves.
 import {
-  ANTHROPIC_BASE_URL,
-  GEMINI_BASE_URL,
   INTEGRATION_MODELS,
-  OPENAI_BASE_URL,
+  ROUTER_BASE_URL,
+  ROUTER_OPENAI_BASE_URL,
   type IntegrationLanguage,
   type IntegrationProvider,
 } from "./integration-builder-data";
 
 export type ApiLanguage = "curl" | "python" | "typescript";
+export type ApiStyle = "native" | "openai-compatible";
 
 export type ApiStep = {
   title: string;
@@ -33,23 +33,31 @@ function localize(language: IntegrationLanguage, en: string, ru: string): string
   return language === "ru" ? ru : en;
 }
 
-function endpointFor(provider: IntegrationProvider): string {
-  if (provider === "anthropic") return ANTHROPIC_BASE_URL;
-  if (provider === "gemini") return GEMINI_BASE_URL;
-  return OPENAI_BASE_URL;
+// The unified catalog publishes namespaced IDs (anthropic/*, openai/*, google/*).
+// On the OpenAI-compatible lane they are the safe way to address a model of any
+// provider; bare native IDs work only while they are globally unambiguous.
+export function namespacedModelId(provider: IntegrationProvider, modelId: string): string {
+  const namespace = provider === "anthropic" ? "anthropic" : provider === "gemini" ? "google" : "openai";
+  return `${namespace}/${modelId}`;
 }
 
-function authFor(provider: IntegrationProvider): string {
+function endpointFor(provider: IntegrationProvider, style: ApiStyle): string {
+  if (style === "openai-compatible") return ROUTER_OPENAI_BASE_URL;
+  return provider === "openai" ? ROUTER_OPENAI_BASE_URL : ROUTER_BASE_URL;
+}
+
+function authFor(provider: IntegrationProvider, style: ApiStyle): string {
+  if (style === "openai-compatible") return "Authorization: Bearer";
   if (provider === "anthropic") return "x-api-key · anthropic-version";
   if (provider === "gemini") return "x-goog-api-key";
   return "Authorization: Bearer";
 }
 
-function requestCode(provider: IntegrationProvider, apiLanguage: ApiLanguage, modelId: string): string {
+function nativeRequestCode(provider: IntegrationProvider, apiLanguage: ApiLanguage, modelId: string): string {
   const prompt = "Reply with exactly: connected";
   if (provider === "anthropic") {
     if (apiLanguage === "curl") {
-      return `curl ${ANTHROPIC_BASE_URL}/v1/messages \\
+      return `curl ${ROUTER_BASE_URL}/v1/messages \\
   -H "x-api-key: $APITOKEN_API_KEY" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
@@ -65,7 +73,7 @@ from anthropic import Anthropic
 
 client = Anthropic(
     api_key=os.environ["APITOKEN_API_KEY"],
-    base_url="${ANTHROPIC_BASE_URL}",
+    base_url="${ROUTER_BASE_URL}",
 )
 
 message = client.messages.create(
@@ -82,7 +90,7 @@ for block in message.content:
 
 const client = new Anthropic({
   apiKey: process.env["APITOKEN_API_KEY"],
-  baseURL: "${ANTHROPIC_BASE_URL}",
+  baseURL: "${ROUTER_BASE_URL}",
 });
 
 const message = await client.messages.create({
@@ -97,7 +105,7 @@ for (const block of message.content) {
   }
   if (provider === "gemini") {
     if (apiLanguage === "curl") {
-      return `curl ${GEMINI_BASE_URL}/v1beta/models/${modelId}:generateContent \\
+      return `curl ${ROUTER_BASE_URL}/v1beta/models/${modelId}:generateContent \\
   -H "x-goog-api-key: $APITOKEN_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -111,7 +119,7 @@ from google.genai import types
 
 client = genai.Client(
     api_key=os.environ["APITOKEN_API_KEY"],
-    http_options=types.HttpOptions(base_url="${GEMINI_BASE_URL}"),
+    http_options=types.HttpOptions(base_url="${ROUTER_BASE_URL}"),
 )
 
 response = client.models.generate_content(
@@ -124,7 +132,7 @@ print(response.text)`;
 
 const ai = new GoogleGenAI({
   apiKey: process.env["APITOKEN_API_KEY"],
-  httpOptions: { baseUrl: "${GEMINI_BASE_URL}" },
+  httpOptions: { baseUrl: "${ROUTER_BASE_URL}" },
 });
 
 const response = await ai.models.generateContent({
@@ -134,7 +142,7 @@ const response = await ai.models.generateContent({
 console.log(response.text);`;
   }
   if (apiLanguage === "curl") {
-    return `curl ${OPENAI_BASE_URL}/responses \\
+    return `curl ${ROUTER_OPENAI_BASE_URL}/responses \\
   -H "Authorization: Bearer $APITOKEN_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -148,7 +156,7 @@ from openai import OpenAI
 
 client = OpenAI(
     api_key=os.environ["APITOKEN_API_KEY"],
-    base_url="${OPENAI_BASE_URL}",
+    base_url="${ROUTER_OPENAI_BASE_URL}",
 )
 
 response = client.responses.create(
@@ -161,7 +169,7 @@ print(response.output_text)`;
 
 const client = new OpenAI({
   apiKey: process.env["APITOKEN_API_KEY"],
-  baseURL: "${OPENAI_BASE_URL}",
+  baseURL: "${ROUTER_OPENAI_BASE_URL}",
 });
 
 const response = await client.responses.create({
@@ -172,11 +180,54 @@ const response = await client.responses.create({
 console.log(response.output_text);`;
 }
 
-function installStep(provider: IntegrationProvider, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
+function compatibleRequestCode(provider: IntegrationProvider, apiLanguage: ApiLanguage, modelId: string): string {
+  const prompt = "Reply with exactly: connected";
+  const catalogId = namespacedModelId(provider, modelId);
+  if (apiLanguage === "curl") {
+    return `curl ${ROUTER_OPENAI_BASE_URL}/chat/completions \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${catalogId}",
+    "messages": [{"role": "user", "content": "${prompt}"}]
+  }'`;
+  }
+  if (apiLanguage === "python") {
+    return `import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="${ROUTER_OPENAI_BASE_URL}",
+)
+
+response = client.chat.completions.create(
+    model="${catalogId}",
+    messages=[{"role": "user", "content": "${prompt}"}],
+)
+print(response.choices[0].message.content)`;
+  }
+  return `import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env["APITOKEN_API_KEY"],
+  baseURL: "${ROUTER_OPENAI_BASE_URL}",
+});
+
+const response = await client.chat.completions.create({
+  model: "${catalogId}",
+  messages: [{ role: "user", content: "${prompt}" }],
+});
+
+console.log(response.choices[0]?.message.content);`;
+}
+
+function installStep(provider: IntegrationProvider, style: ApiStyle, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
   if (apiLanguage === "curl") return null;
+  const native = style === "native";
   const pkg = apiLanguage === "python"
-    ? (provider === "anthropic" ? "anthropic" : provider === "gemini" ? "google-genai" : "openai")
-    : (provider === "anthropic" ? "@anthropic-ai/sdk" : provider === "gemini" ? "@google/genai" : "openai");
+    ? (native && provider === "anthropic" ? "anthropic" : native && provider === "gemini" ? "google-genai" : "openai")
+    : (native && provider === "anthropic" ? "@anthropic-ai/sdk" : native && provider === "gemini" ? "@google/genai" : "openai");
   const command = apiLanguage === "python" ? `pip install ${pkg}` : `npm install ${pkg}`;
   return {
     title: localize(language,
@@ -190,18 +241,42 @@ function installStep(provider: IntegrationProvider, apiLanguage: ApiLanguage, la
   };
 }
 
+function summaryFor(provider: IntegrationProvider, style: ApiStyle, language: IntegrationLanguage): string {
+  if (style === "openai-compatible") {
+    return localize(language,
+      "One OpenAI-compatible route for every catalog model — any provider, any OpenAI client. Address the model by its namespaced catalog ID; unsupported parameters fail closed with a clear 400 instead of being silently dropped.",
+      "Один OpenAI-совместимый маршрут для всех моделей каталога — любой провайдер, любой OpenAI-клиент. Модель указывайте namespaced ID из каталога; неподдерживаемые параметры fail-closed с понятным 400, а не молча отбрасываются.");
+  }
+  if (provider === "anthropic") {
+    return localize(language,
+      "Anthropic Messages API on the unified endpoint — byte-faithful protocol with your sk-pool key in `x-api-key`. SDKs add `anthropic-version` automatically.",
+      "Anthropic Messages API на едином endpoint — протокол байт-в-байт, ключ sk-pool в `x-api-key`. SDK добавляют `anthropic-version` автоматически.");
+  }
+  if (provider === "gemini") {
+    return localize(language,
+      "Native Google Gemini API on the unified endpoint — protocol unchanged, same sk-pool key in `x-goog-api-key`.",
+      "Нативный Google Gemini API на едином endpoint — протокол без изменений, тот же ключ sk-pool в `x-goog-api-key`.");
+  }
+  return localize(language,
+    "OpenAI Responses API on the unified endpoint — native wire format with the same sk-pool key as `Authorization: Bearer`.",
+    "OpenAI Responses API на едином endpoint — нативный wire format с тем же ключом sk-pool в `Authorization: Bearer`.");
+}
+
 export function buildApiGuide({
   provider,
+  apiStyle,
   apiLanguage,
   language,
 }: {
   provider: IntegrationProvider;
+  apiStyle: ApiStyle;
   apiLanguage: ApiLanguage;
   language: IntegrationLanguage;
 }): ApiGuide {
   const model = INTEGRATION_MODELS[provider][0];
   const providerName = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
   const languageName = apiLanguage === "curl" ? "cURL" : apiLanguage === "python" ? "Python" : "TypeScript";
+  const native = apiStyle === "native";
 
   const steps: ApiStep[] = [
     {
@@ -213,32 +288,28 @@ export function buildApiGuide({
       codeLabel: localize(language, "Terminal", "Терминал"),
     },
   ];
-  const install = installStep(provider, apiLanguage, language);
+  const install = installStep(provider, apiStyle, apiLanguage, language);
   if (install) steps.push(install);
   steps.push({
     title: localize(language, "Send the first request", "Отправьте первый запрос"),
-    text: localize(language,
-      `Every available ${providerName} model answers on this route. Discover the current list with \`GET /models\` instead of hardcoding IDs.`,
-      `Все доступные модели ${providerName} отвечают на этом маршруте. Актуальный список получайте через \`GET /models\`, а не зашивайте ID в код.`),
-    code: requestCode(provider, apiLanguage, model.id),
+    text: native
+      ? localize(language,
+        `Every available ${providerName} model answers on this route. Discover the current list with \`GET /v1/models\` on the same endpoint instead of hardcoding IDs.`,
+        `Все доступные модели ${providerName} отвечают на этом маршруте. Актуальный список получайте через \`GET /v1/models\` на том же endpoint, а не зашивайте ID в код.`)
+      : localize(language,
+        `This one route serves every provider in the catalog — ${providerName} here. Swap the namespaced model ID for any entry from \`GET /v1/models\` without changing code or keys.`,
+        `Этот единый маршрут обслуживает всех провайдеров каталога — здесь ${providerName}. Подставьте namespaced ID любой модели из \`GET /v1/models\` — код и ключ не меняются.`),
+    code: native
+      ? nativeRequestCode(provider, apiLanguage, model.id)
+      : compatibleRequestCode(provider, apiLanguage, model.id),
     codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
   });
 
   return {
-    title: `${providerName} API · ${languageName}`,
-    summary: provider === "anthropic"
-      ? localize(language,
-        "Anthropic Messages API with your sk-pool key in `x-api-key`. SDKs add `anthropic-version` automatically.",
-        "Anthropic Messages API с ключом sk-pool в `x-api-key`. SDK добавляют `anthropic-version` автоматически.")
-      : provider === "gemini"
-        ? localize(language,
-          "Native Google Gemini API with the same sk-pool key in `x-goog-api-key`.",
-          "Нативный Google Gemini API с тем же ключом sk-pool в `x-goog-api-key`.")
-        : localize(language,
-          "OpenAI-compatible Responses API with the same sk-pool key as `Authorization: Bearer`.",
-          "OpenAI-совместимый Responses API с тем же ключом sk-pool в `Authorization: Bearer`."),
-    endpoint: endpointFor(provider),
-    auth: authFor(provider),
+    title: `${providerName} · ${native ? "Native API" : "OpenAI-compatible"} · ${languageName}`,
+    summary: summaryFor(provider, apiStyle, language),
+    endpoint: endpointFor(provider, apiStyle),
+    auth: authFor(provider, apiStyle),
     steps,
   };
 }

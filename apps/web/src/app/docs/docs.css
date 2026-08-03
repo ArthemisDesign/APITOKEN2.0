@@ -59,6 +59,27 @@
 .docs-support-actions>span{grid-column:1/-1;display:inline-flex;align-items:center;gap:8px;color:var(--txt-3);font-size:12px;line-height:1.3}
 .docs-support-actions i{width:9px;height:9px;flex:none;border-radius:50%;background:var(--ok);box-shadow:0 0 0 5px color-mix(in srgb,var(--ok) 13%,transparent)}
 
+/* Unified endpoint overview: one base URL bar + the three lane families
+   (native, OpenAI-compatible, catalog). Same editorial language as the
+   integration builder — hairlines, quiet cards, mono paths. */
+.docs-endpoints{margin:0 0 22px}
+.docs-endpoints-base{display:flex;align-items:center;gap:14px;padding:10px 10px 10px 18px;border:1px solid var(--line);border-radius:12px;background:var(--bg-soft)}
+.docs-endpoints-base>span{flex:none;color:var(--txt-4);font-size:10.5px;font-weight:650;letter-spacing:.09em;text-transform:uppercase}
+.docs-endpoints-base code{min-width:0;overflow:hidden;color:var(--txt);font:14px/1.4 var(--font-mono);text-overflow:ellipsis;white-space:nowrap}
+.docs-endpoints-base button{display:inline-flex;align-items:center;gap:6px;flex:none;margin-left:auto;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-card);color:var(--txt-3);font:600 12px var(--font-ui);cursor:pointer;transition:color .14s ease,border-color .14s ease}
+.docs-endpoints-base button:hover{color:var(--txt);border-color:var(--line-strong)}
+.docs-endpoints-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:14px}
+.docs-endpoint-card{display:flex;flex-direction:column;padding:20px 22px;border:1px solid var(--line);border-radius:16px;background:var(--bg-card);box-shadow:var(--shadow)}
+.docs-endpoint-card h3{margin:0 0 6px;font-size:15.5px;font-weight:650;letter-spacing:-.01em}
+.docs-endpoint-card>p{margin:0 0 14px;color:var(--txt-3);font-size:13.5px;line-height:1.5}
+.docs-endpoint-card ul{display:flex;flex-direction:column;gap:8px;margin:auto 0 0;padding:12px 0 0;border-top:1px solid var(--line);list-style:none}
+.docs-endpoint-card li{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:2px 9px}
+.docs-endpoint-card li b{padding:3px 6px;border-radius:6px;background:var(--accent-soft);color:var(--accent);font:650 10px/1.3 var(--font-ui);letter-spacing:.05em}
+.docs-endpoint-card li code{min-width:0;overflow:hidden;color:var(--txt);font:12px/1.4 var(--font-mono);text-overflow:ellipsis;white-space:nowrap}
+.docs-endpoint-card li span{grid-column:2;min-width:0;overflow:hidden;color:var(--txt-3);font-size:11px;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+.docs-endpoints-legacy{margin:14px 4px 0;color:var(--txt-3);font-size:13px;line-height:1.55}
+.docs-endpoints-legacy code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
+
 /* Integration builder: flat two-pane setup. Quiet rows on the left, the exact
    tested guide on the right. Monochrome brand marks, hairline separators, no
    glow/gradient surfaces — the OpenRouter-style editorial look. */
@@ -152,6 +173,7 @@
 
 /* API reference: provider + language pickers above the shared guide surface. */
 .api-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;padding:18px 32px;border-bottom:1px solid var(--line)}
+.api-toggles{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .api-providers{display:flex;flex-wrap:wrap;gap:8px}
 .api-provider{display:inline-flex;align-items:center;gap:10px;padding:10px 16px;border:1px solid var(--line);border-radius:12px;background:var(--bg-card);color:var(--txt);font-family:var(--font-ui);cursor:pointer;transition:border-color .14s ease,background-color .14s ease}
 .api-provider:hover{background:var(--bg-soft)}
@@ -202,6 +224,7 @@
 .mp-panel-title .ib-icon{width:22px;height:22px;background:var(--txt)}
 .mp-panel-title h3{margin:0;font-family:var(--font-ui);font-size:15.5px;font-weight:650;letter-spacing:-.01em}
 .mp-panel-title code{display:block;margin-top:2px;font:11px var(--font-mono);color:var(--txt-4)}
+.mp-panel-title code.mp-path{margin-top:1px;color:var(--txt-3)}
 .mp-auth{flex:none;padding:6px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft);
   color:var(--txt-3);font:600 10.5px var(--font-mono);white-space:nowrap}
 .mp-table-wrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
@@ -263,6 +286,7 @@
   .docs-layout{grid-template-columns:1fr}
   .docs-sidebar{display:none}
   .docs-main{max-width:none;padding:38px 28px 76px}
+  .docs-endpoints-grid{grid-template-columns:minmax(0,1fr)}
   .docs-essential-grid{grid-template-columns:1fr}
   .docs-connect-support{grid-template-columns:44px minmax(0,1fr)}
   .docs-support-actions{grid-column:2;justify-content:start;justify-items:start}
@@ -311,8 +335,10 @@
   .ib-code .tk-line{padding-left:26px}
   .ib-guide-foot{align-items:flex-start;flex-direction:column;gap:10px}
   .api-controls{flex-direction:column;align-items:stretch;padding:16px 18px}
+  .api-toggles{flex-direction:column;align-items:stretch}
   .api-langs{justify-content:stretch}
   .api-lang{flex:1}
+  .docs-endpoint-card li code{white-space:normal;overflow-wrap:anywhere}
   .docs-auth-flow{grid-template-columns:1fr}
   .docs-auth-flow>span{transform:rotate(90deg);text-align:center}
   .docs-checklist ul{grid-template-columns:1fr}

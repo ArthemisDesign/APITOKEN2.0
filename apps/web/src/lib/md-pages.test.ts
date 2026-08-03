@@ -6,9 +6,9 @@ describe("AI agent connection guide", () => {
   it("covers all three API surfaces, operating systems, verification, and every catalog model", () => {
     const guide = buildAgentSetupMarkdown();
 
-    expect(guide).toContain("https://api.apitoken.sale/v1/messages");
-    expect(guide).toContain("https://openai.api.apitoken.sale/v1/models");
-    expect(guide).toContain("https://gemini.api.apitoken.sale/v1beta/models");
+    expect(guide).toContain("https://router.apitoken.sale/v1/messages");
+    expect(guide).toContain("https://router.apitoken.sale/v1/models");
+    expect(guide).toContain("https://router.apitoken.sale/v1beta/models");
     expect(guide).toContain("x-goog-api-key");
     expect(guide).toContain("Windows PowerShell");
     expect(guide).toContain("macOS and Linux");

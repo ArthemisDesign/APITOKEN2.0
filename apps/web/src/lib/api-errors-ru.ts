@@ -258,22 +258,22 @@ export const apiErrorsRu: Record<string, LocalizedError> = {
   "openai-invalid-api-key": {
     title: "401 — Incorrect API key provided",
     causes: [
-      "Ключ отправлен в заголовке x-api-key. OpenAI-совместимый эндпоинт авторизуется через Authorization: Bearer — x-api-key предназначен только Anthropic-поверхности.",
+      "Ключ отправлен в заголовке x-api-key. Маршруты OpenAI авторизуются через Authorization: Bearer — x-api-key предназначен только маршруту Anthropic.",
       "В заголовке Authorization нет префикса Bearer, или переменная окружения, из которой он собран, пуста в том шелле, который запускает процесс.",
       "Ключ отозван или истёк, если он выпускался с датой окончания.",
-      "Ключ верен, но base URL ведёт на Anthropic-поверхность (api.apitoken.sale) вместо openai.api.apitoken.sale/v1.",
+      "Ключ верен, но base URL ведёт на адрес маршрута Anthropic (router.apitoken.sale без /v1 или legacy api.apitoken.sale) вместо router.apitoken.sale/v1.",
     ],
     fixes: [
-      "Отправляйте тот же ключ sk-pool как Authorization: Bearer sk-pool-… на https://openai.api.apitoken.sale/v1.",
+      "Отправляйте тот же ключ sk-pool как Authorization: Bearer sk-pool-… на https://router.apitoken.sale/v1.",
       "В официальном SDK OpenAI задайте api_key (или OPENAI_API_KEY) и base_url — заголовок Bearer SDK добавит сам.",
-      "Проверьте, что ключ активен в панели, а хост — именно OpenAI-совместимый.",
+      "Проверьте, что ключ активен в панели, а хост — маршрут OpenAI единого endpoint.",
     ],
     snippetLabel: "Воспроизведите вне инструмента",
   },
   "openai-insufficient-quota": {
     title: "402 — недостаточно средств на балансе",
     causes: [
-      "Общего предоплаченного баланса обеих API-поверхностей не хватает на резервирование запроса.",
+      "Общего предоплаченного баланса всех маршрутов единого endpoint не хватает на резервирование запроса.",
       "Большой лимит max output или длинный разговор поднимают резерв выше остатка баланса, даже когда предыдущие вызовы проходили.",
     ],
     fixes: [
@@ -284,11 +284,11 @@ export const apiErrorsRu: Record<string, LocalizedError> = {
   "openai-model-not-found": {
     title: "404 — модель не существует",
     causes: [
-      "ID модели написан с опечаткой или относится к другой поверхности: идентификаторы Claude (claude-*) существуют только на Anthropic-эндпоинте, GPT (gpt-*) — только на OpenAI-совместимом.",
+      "ID модели написан с опечаткой или требует namespaced-формы: на общих маршрутах каталог публикует anthropic/claude-*, openai/gpt-* и google/gemini-*, а обычный нативный ID перестаёт работать, когда становится неоднозначным.",
       "Модель не входит в текущий включённый каталог — обслуживаемый набор меняется по мере допуска моделей.",
     ],
     fixes: [
-      "Посмотрите, какие модели реально доступны вашему ключу: GET https://openai.api.apitoken.sale/v1/models с Authorization: Bearer.",
+      "Посмотрите, какие модели реально доступны вашему ключу: GET https://router.apitoken.sale/v1/models с Authorization: Bearer.",
       "Сверьте ID посимвольно — gpt-5.6-sol, а не gpt5.6 и не gpt-5.6.sol. gpt-5.6 — допустимый псевдоним gpt-5.6-sol.",
     ],
     snippetLabel: "Узнайте включённые модели",

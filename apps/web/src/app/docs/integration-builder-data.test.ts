@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ANTHROPIC_BASE_URL as CANONICAL_ANTHROPIC_BASE_URL, GEMINI_BASE_URL as CANONICAL_GEMINI_BASE_URL, OPENAI_BASE_URL as CANONICAL_OPENAI_BASE_URL, claudeModels, geminiModels, openaiModels } from "@/lib/models";
+import { ANTHROPIC_BASE_URL as CANONICAL_ANTHROPIC_BASE_URL, GEMINI_BASE_URL as CANONICAL_GEMINI_BASE_URL, OPENAI_BASE_URL as CANONICAL_OPENAI_BASE_URL, ROUTER_BASE_URL as CANONICAL_ROUTER_BASE_URL, ROUTER_OPENAI_BASE_URL as CANONICAL_ROUTER_OPENAI_BASE_URL, claudeModels, geminiModels, openaiModels } from "@/lib/models";
 import {
   ANTHROPIC_BASE_URL,
   GEMINI_BASE_URL,
   INTEGRATION_MODELS,
   OPENAI_BASE_URL,
+  ROUTER_BASE_URL,
+  ROUTER_OPENAI_BASE_URL,
   TOOL_COMPATIBILITY,
   buildIntegrationGuide,
   isToolCompatible,
@@ -19,9 +21,9 @@ const languages: IntegrationLanguage[] = ["en", "ru"];
 const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini"];
 const tools = Object.keys(TOOL_COMPATIBILITY) as IntegrationTool[];
 const providerEndpoints: Record<IntegrationProvider, string> = {
-  anthropic: ANTHROPIC_BASE_URL,
-  openai: OPENAI_BASE_URL,
-  gemini: GEMINI_BASE_URL,
+  anthropic: ROUTER_BASE_URL,
+  openai: ROUTER_OPENAI_BASE_URL,
+  gemini: ROUTER_BASE_URL,
 };
 const providerTitleNames: Record<IntegrationProvider, string> = {
   anthropic: "Claude",
@@ -31,6 +33,8 @@ const providerTitleNames: Record<IntegrationProvider, string> = {
 
 describe("integration builder guide", () => {
   it("keeps the browser catalog in parity with the canonical model registry", () => {
+    expect(ROUTER_BASE_URL).toBe(CANONICAL_ROUTER_BASE_URL);
+    expect(ROUTER_OPENAI_BASE_URL).toBe(CANONICAL_ROUTER_OPENAI_BASE_URL);
     expect(ANTHROPIC_BASE_URL).toBe(CANONICAL_ANTHROPIC_BASE_URL);
     expect(OPENAI_BASE_URL).toBe(CANONICAL_OPENAI_BASE_URL);
     expect(GEMINI_BASE_URL).toBe(CANONICAL_GEMINI_BASE_URL);
@@ -83,14 +87,14 @@ describe("integration builder guide", () => {
   it("emits parseable OpenCode and Pi configs without embedding a secret", () => {
     const openCode = buildIntegrationGuide({ provider: "openai", tool: "opencode", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     const openCodeConfig = JSON.parse(openCode.steps[0].code) as { provider: { apitoken: { options: { baseURL: string; apiKey: string }; models: Record<string, unknown> } } };
-    expect(openCodeConfig.provider.apitoken.options.baseURL).toBe(OPENAI_BASE_URL);
+    expect(openCodeConfig.provider.apitoken.options.baseURL).toBe(ROUTER_OPENAI_BASE_URL);
     expect(openCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
     expect(openCodeConfig.provider.apitoken.models["gpt-5.6-sol"]).toBeTruthy();
     expect(openCode.steps[1].code).toContain("export APITOKEN_API_KEY=\"sk-pool-•••\"");
 
     const pi = buildIntegrationGuide({ provider: "openai", tool: "pi", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     const piConfig = JSON.parse(pi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string; apiKey: string; models: Array<{ id: string }> } } };
-    expect(piConfig.providers.apitoken.baseUrl).toBe(OPENAI_BASE_URL);
+    expect(piConfig.providers.apitoken.baseUrl).toBe(ROUTER_OPENAI_BASE_URL);
     expect(piConfig.providers.apitoken.api).toBe("openai-completions");
     expect(piConfig.providers.apitoken.apiKey).toBe("$APITOKEN_API_KEY");
     expect(piConfig.providers.apitoken.models[0].id).toBe("gpt-5.6-sol");
@@ -98,18 +102,18 @@ describe("integration builder guide", () => {
     const geminiOpenCode = buildIntegrationGuide({ provider: "gemini", tool: "opencode", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
     const geminiOpenCodeConfig = JSON.parse(geminiOpenCode.steps[0].code) as { provider: { apitoken: { npm: string; options: { baseURL: string; apiKey: string } } } };
     expect(geminiOpenCodeConfig.provider.apitoken.npm).toBe("@ai-sdk/google");
-    expect(geminiOpenCodeConfig.provider.apitoken.options.baseURL).toBe(`${GEMINI_BASE_URL}/v1beta`);
+    expect(geminiOpenCodeConfig.provider.apitoken.options.baseURL).toBe(`${ROUTER_BASE_URL}/v1beta`);
     expect(geminiOpenCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
 
     const geminiPi = buildIntegrationGuide({ provider: "gemini", tool: "pi", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
     const geminiPiConfig = JSON.parse(geminiPi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string } } };
-    expect(geminiPiConfig.providers.apitoken.baseUrl).toBe(GEMINI_BASE_URL);
+    expect(geminiPiConfig.providers.apitoken.baseUrl).toBe(ROUTER_BASE_URL);
     expect(geminiPiConfig.providers.apitoken.api).toBe("google-generative-ai");
   });
 
   it("keeps shell syntax and provider-specific wire formats correct", () => {
     const claudeWindows = buildIntegrationGuide({ provider: "anthropic", tool: "claude-code", os: "powershell", modelId: "claude-opus-4-8", language: "en" });
-    expect(claudeWindows.steps[0].code).toContain('$env:ANTHROPIC_BASE_URL = "https://api.apitoken.sale"');
+    expect(claudeWindows.steps[0].code).toContain('$env:ANTHROPIC_BASE_URL = "https://router.apitoken.sale"');
     expect(claudeWindows.steps[0].code).toContain("Remove-Item Env:ANTHROPIC_AUTH_TOKEN");
 
     const codexWindows = buildIntegrationGuide({ provider: "openai", tool: "codex", os: "cmd", modelId: "gpt-5.6-sol", language: "en" });
@@ -123,8 +127,8 @@ describe("integration builder guide", () => {
     expect(hermes.securityNote).toContain("~/.hermes");
 
     const geminiCli = buildIntegrationGuide({ provider: "gemini", tool: "gemini-cli", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
-    expect(geminiCli.endpoint).toBe(GEMINI_BASE_URL);
-    expect(geminiCli.steps[0].code).toContain(`export GOOGLE_GEMINI_BASE_URL="${GEMINI_BASE_URL}"`);
+    expect(geminiCli.endpoint).toBe(ROUTER_BASE_URL);
+    expect(geminiCli.steps[0].code).toContain(`export GOOGLE_GEMINI_BASE_URL="${ROUTER_BASE_URL}"`);
     expect(geminiCli.steps[0].code).toContain('export GEMINI_API_KEY="sk-pool-•••"');
     expect(geminiCli.steps[1].code).toBe("gemini --model gemini-3.6-flash");
     expect(geminiCli.requirement).toContain("/auth");
@@ -135,6 +139,6 @@ describe("integration builder guide", () => {
     expect(geminiCli.steps[1].text).toContain("auto");
 
     const geminiCliWindows = buildIntegrationGuide({ provider: "gemini", tool: "gemini-cli", os: "powershell", modelId: "gemini-3.6-flash", language: "en" });
-    expect(geminiCliWindows.steps[0].code).toContain(`$env:GOOGLE_GEMINI_BASE_URL = "${GEMINI_BASE_URL}"`);
+    expect(geminiCliWindows.steps[0].code).toContain(`$env:GOOGLE_GEMINI_BASE_URL = "${ROUTER_BASE_URL}"`);
   });
 });

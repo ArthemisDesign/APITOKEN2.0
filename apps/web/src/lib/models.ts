@@ -109,6 +109,11 @@ export function formatUsd(value: number): string {
   return `$${rounded.toFixed(3).replace(/\.?0+$/, (m) => (m === ".000" ? "" : m.replace(/0+$/, "")))}`;
 }
 
+// Unified router endpoint — the recommended entry point: native Anthropic,
+// OpenAI and Gemini lanes plus the OpenAI-compatible universal lane on one host.
+// The legacy per-provider hosts below keep serving existing integrations.
+export const ROUTER_BASE_URL = "https://router.apitoken.sale";
+export const ROUTER_OPENAI_BASE_URL = "https://router.apitoken.sale/v1";
 export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";

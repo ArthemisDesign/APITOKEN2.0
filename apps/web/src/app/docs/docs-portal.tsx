@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/site-chrome";
 import { api } from "@/lib/api";
 import { localeHref } from "@/lib/locale-routes";
 import { IntegrationBuilder } from "./integration-builder";
+import { ROUTER_BASE_URL } from "./integration-builder-data";
 import { ApiReference } from "./api-reference";
 import { ModelsPricing } from "./models-pricing";
 import { HighlightedCode } from "./highlighted-code";
@@ -50,7 +51,7 @@ const copy = {
     api: "API",
     errors: "Errors",
     title: "Connect any model",
-    lead: "One API key for every available model. Your AI agent configures and verifies the connection.",
+    lead: "One API key, one endpoint, every available model — native Anthropic, OpenAI, and Gemini protocols plus an OpenAI-compatible API for any client. Your AI agent configures and verifies the connection.",
     agentPrompt: `Read ${AGENT_GUIDE_URL} and follow the instructions to connect this project to apiToken.sale.`,
     agentLabel: "For your agent",
     copyAgent: "Copy instruction",
@@ -61,8 +62,17 @@ const copy = {
     openSupport: "Telegram",
     supportOnline: "AI 24/7 · human when needed",
     quickstartText: "Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.",
-    apiTitle: "Use the API in your code",
-    apiText: "One sk-pool key, three compatible surfaces. Pick a provider and a programming language — the exact request for your app, bot, or script appears below.",
+    apiTitle: "One endpoint, every protocol",
+    apiText: "router.apitoken.sale is the single entry point for all providers. Coding agents and official SDKs get byte-faithful native APIs; any OpenAI-compatible client reaches every catalog model through one universal route. Same sk-pool key, same prepaid balance, everywhere.",
+    baseUrl: "Base URL",
+    nativeLaneTitle: "Native APIs",
+    nativeLaneText: "Byte-faithful provider protocols — for coding agents and official SDKs that need full fidelity: thinking, tool use, prompt caching, provider betas.",
+    compatibleLaneTitle: "OpenAI-compatible",
+    compatibleLaneText: "One universal route for every catalog model — Claude, GPT, and Gemini — from any OpenAI-compatible client or SDK. Unsupported parameters fail closed with a clear 400.",
+    anyModel: "Any catalog model",
+    catalogLaneTitle: "Unified catalog",
+    catalogLaneText: "Every enabled model under namespaced IDs — anthropic/*, openai/*, google/*. Bare native IDs keep working while they are unambiguous.",
+    legacyNote: "Already integrated? The per-provider endpoints `api.apitoken.sale`, `openai.api.apitoken.sale/v1` and `gemini.api.apitoken.sale` remain fully supported with the same key and balance — the unified router is the recommended entry for new integrations.",
     models: "Models & pricing",
     modelsTitle: "Models & pricing",
     modelsText: "All providers, every available model, and exact per-1M-token rates — official list price vs. what you actually pay at the flat 50% discount.",
@@ -74,7 +84,7 @@ const copy = {
     cacheGpt: "GPT — automatic",
     cacheGptText: "No opt-in: repeated prefixes are cached server-side. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses) bills at 10% of input automatically.",
     errorTitle: "Common response codes",
-    errorText: "Error bodies on the Anthropic surface use Anthropic's JSON envelope; the OpenAI-compatible surface returns the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}; the Gemini surface returns the Google envelope — {\"error\":{\"code\",\"message\",\"status\"}}. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.",
+    errorText: "On the unified endpoint every protocol keeps its own error envelope: Anthropic lanes return Anthropic's JSON, OpenAI lanes return {\"error\":{\"message\",\"type\",\"param\",\"code\"}}, and the Gemini lane returns {\"error\":{\"code\",\"message\",\"status\"}}. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.",
     status: "Status",
     meaning: "Meaning",
     action: "What to do",
@@ -97,7 +107,7 @@ const copy = {
     nextPricingText: "Top-ups, the flat 50% discount, and how billing works.",
     nextGuides: "Guides",
     nextGuidesText: "Step-by-step integration walkthroughs.",
-    footer: "apiToken.sale documentation · Claude, OpenAI-compatible, and Gemini API access",
+    footer: "apiToken.sale documentation · one router endpoint — native Claude, GPT & Gemini APIs and OpenAI-compatible access",
   },
   ru: {
     documentation: "Документация",
@@ -111,7 +121,7 @@ const copy = {
     api: "API",
     errors: "Ошибки",
     title: "Подключение моделей",
-    lead: "Один API‑ключ — все доступные модели. AI‑агент сам настроит и проверит подключение.",
+    lead: "Один API‑ключ, один endpoint, все доступные модели — нативные протоколы Anthropic, OpenAI и Gemini плюс OpenAI‑совместимый API для любого клиента. AI‑агент сам настроит и проверит подключение.",
     agentPrompt: `Прочитай ${AGENT_GUIDE_URL} и следуй инструкциям, чтобы подключить этот проект к apiToken.sale.`,
     agentLabel: "Для вашего AI‑агента",
     copyAgent: "Скопировать",
@@ -122,8 +132,17 @@ const copy = {
     openSupport: "Telegram",
     supportOnline: "AI 24/7 · человек при необходимости",
     quickstartText: "Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.",
-    apiTitle: "Используйте API в своём коде",
-    apiText: "Один ключ sk-pool, три совместимые поверхности. Выберите провайдера и язык программирования — готовый запрос для приложения, бота или скрипта появится ниже.",
+    apiTitle: "Один endpoint, все протоколы",
+    apiText: "router.apitoken.sale — единая точка входа для всех провайдеров. Coding‑агенты и официальные SDK получают нативные API байт‑в‑байт; любой OpenAI‑совместимый клиент работает со всеми моделями каталога через один универсальный маршрут. Тот же ключ sk‑pool и тот же предоплаченный баланс.",
+    baseUrl: "Base URL",
+    nativeLaneTitle: "Нативные API",
+    nativeLaneText: "Протоколы провайдеров байт‑в‑байт — для coding‑агентов и официальных SDK, которым нужна полная точность: thinking, tool use, кеширование промптов, beta‑возможности.",
+    compatibleLaneTitle: "OpenAI-совместимый",
+    compatibleLaneText: "Один универсальный маршрут для всех моделей каталога — Claude, GPT и Gemini — из любого OpenAI‑совместимого клиента или SDK. Неподдерживаемые параметры fail-closed с понятным 400.",
+    anyModel: "Любая модель каталога",
+    catalogLaneTitle: "Единый каталог",
+    catalogLaneText: "Все доступные модели с namespaced ID — anthropic/*, openai/*, google/*. Обычные нативные ID продолжают работать, пока они однозначны.",
+    legacyNote: "Уже подключены? Per-provider endpoint'ы `api.apitoken.sale`, `openai.api.apitoken.sale/v1` и `gemini.api.apitoken.sale` полностью поддерживаются с тем же ключом и балансом — единый router рекомендован для новых интеграций.",
     models: "Модели и цены",
     modelsTitle: "Модели и цены",
     modelsText: "Все провайдеры, все доступные модели и точные ставки за 1M токенов — официальная цена против той, что платите вы с единой скидкой 50%.",
@@ -135,7 +154,7 @@ const copy = {
     cacheGpt: "GPT — автоматически",
     cacheGptText: "Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) или `input_tokens_details.cached_tokens` (Responses) автоматически тарифицируются как 10% от цены ввода.",
     errorTitle: "Основные коды ответа",
-    errorText: "Тело ошибки на Anthropic-поверхности использует JSON-формат Anthropic; OpenAI-совместимая поверхность возвращает конверт OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}; поверхность Gemini возвращает конверт Google — {\"error\":{\"code\",\"message\",\"status\"}}. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.",
+    errorText: "На едином endpoint каждый протокол сохраняет свой формат ошибок: маршруты Anthropic возвращают JSON Anthropic, маршруты OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}, маршрут Gemini — {\"error\":{\"code\",\"message\",\"status\"}}. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.",
     status: "Статус",
     meaning: "Значение",
     action: "Что делать",
@@ -158,7 +177,7 @@ const copy = {
     nextPricingText: "Пополнения, единая скидка 50% и принцип расчёта.",
     nextGuides: "Гайды",
     nextGuidesText: "Пошаговые инструкции по интеграции.",
-    footer: "Документация apiToken.sale · Claude, OpenAI-совместимый и Gemini API",
+    footer: "Документация apiToken.sale · один router endpoint — нативные Claude, GPT и Gemini API и OpenAI‑совместимый доступ",
   },
 } as const;
 
@@ -251,6 +270,7 @@ export function DocsPortal() {
 
         <section className="docs-section" id="api">
           <div className="docs-section-heading"><span>03</span><div><h2>{t.apiTitle}</h2><p>{t.apiText}</p></div></div>
+          <EndpointsOverview t={t} />
           <ApiReference language={language} />
         </section>
 
@@ -287,8 +307,56 @@ export function DocsPortal() {
   </div>;
 }
 
-function BrandMark() {
-  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
+type DocsCopy = { [K in keyof (typeof copy)["en"]]: string };
+
+// The unified router at a glance: one base URL, then the three lane families —
+// native provider protocols, the OpenAI-compatible universal route, and the
+// aggregated catalog. Legacy per-provider hosts are acknowledged below.
+function EndpointsOverview({ t }: { t: DocsCopy }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(ROUTER_BASE_URL);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_200);
+  }
+
+  return <div className="docs-endpoints ym-hide-content">
+    <div className="docs-endpoints-base">
+      <span>{t.baseUrl}</span>
+      <code>{ROUTER_BASE_URL}</code>
+      <button type="button" onClick={handleCopy}><CopyIcon copied={copied} />{copied ? t.copied : t.copy}</button>
+    </div>
+    <div className="docs-endpoints-grid">
+      <article className="docs-endpoint-card">
+        <h3>{t.nativeLaneTitle}</h3>
+        <p>{t.nativeLaneText}</p>
+        <ul>
+          <li><b>POST</b><code>/v1/messages</code><span>Anthropic</span></li>
+          <li><b>POST</b><code>/v1/responses</code><span>OpenAI</span></li>
+          <li><b>POST</b><code>{"/v1beta/models/{model}:generateContent"}</code><span>Gemini</span></li>
+        </ul>
+      </article>
+      <article className="docs-endpoint-card">
+        <h3>{t.compatibleLaneTitle}</h3>
+        <p>{t.compatibleLaneText}</p>
+        <ul>
+          <li><b>POST</b><code>/v1/chat/completions</code><span>{t.anyModel}</span></li>
+        </ul>
+      </article>
+      <article className="docs-endpoint-card">
+        <h3>{t.catalogLaneTitle}</h3>
+        <p>{t.catalogLaneText}</p>
+        <ul>
+          <li><b>GET</b><code>/v1/models</code><span>{t.anyModel}</span></li>
+        </ul>
+      </article>
+    </div>
+    <p className="docs-endpoints-legacy"><Prose text={t.legacyNote} /></p>
+  </div>;
+}
+
+function BrandMark() {  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
 }
 
 function AgentCopyButton({ prompt, label, copiedLabel }: { prompt: string; label: string; copiedLabel: string }) {

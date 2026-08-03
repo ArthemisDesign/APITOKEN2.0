@@ -1,6 +1,12 @@
 // Keep the interactive builder's catalog deliberately small. Importing the SEO model
 // registry here would ship every long description/FAQ to the browser just to render
 // two endpoint strings.
+//
+// router.apitoken.sale is the unified entry point: native Anthropic, OpenAI and
+// Gemini lanes plus the OpenAI-compatible universal lane live on one host. The
+// legacy per-provider hosts keep serving existing integrations unchanged.
+export const ROUTER_BASE_URL = "https://router.apitoken.sale";
+export const ROUTER_OPENAI_BASE_URL = "https://router.apitoken.sale/v1";
 export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
@@ -80,9 +86,9 @@ const TOOL_NAMES: Record<IntegrationTool, string> = {
 const keyPlaceholder = "sk-pool-•••";
 
 const PROVIDER_ENDPOINTS: Record<IntegrationProvider, string> = {
-  anthropic: ANTHROPIC_BASE_URL,
-  openai: OPENAI_BASE_URL,
-  gemini: GEMINI_BASE_URL,
+  anthropic: ROUTER_BASE_URL,
+  openai: ROUTER_OPENAI_BASE_URL,
+  gemini: ROUTER_BASE_URL,
 };
 
 function localize(language: IntegrationLanguage, en: string, ru: string): string {
@@ -115,13 +121,13 @@ function environmentCommand(os: IntegrationOs, values: Record<string, string>, u
 
 function claudeCodeGuide(model: IntegrationModel, os: IntegrationOs, language: IntegrationLanguage): IntegrationGuide {
   const connection = environmentCommand(os, {
-    ANTHROPIC_BASE_URL,
+    ANTHROPIC_BASE_URL: ROUTER_BASE_URL,
     ANTHROPIC_API_KEY: keyPlaceholder,
   }, ["ANTHROPIC_AUTH_TOKEN"]);
   return {
     title: `Claude Code · ${model.name}`,
     summary: localize(language, "Native Claude coding agent through the Anthropic Messages API.", "Нативный coding agent Claude через Anthropic Messages API."),
-    endpoint: ANTHROPIC_BASE_URL,
+    endpoint: ROUTER_BASE_URL,
     steps: [
       {
         title: localize(language, "Set the connection", "Задайте подключение"),
@@ -152,14 +158,14 @@ model_provider = "apitoken"
 
 [model_providers.apitoken]
 name = "apiToken.sale"
-base_url = "${OPENAI_BASE_URL}"
+base_url = "${ROUTER_OPENAI_BASE_URL}"
 wire_api = "responses"
 env_key = "APITOKEN_API_KEY"`;
   const run = `${environmentCommand(os, { APITOKEN_API_KEY: keyPlaceholder })}\n\ncodex --profile apitoken`;
   return {
     title: `Codex · ${model.name}`,
     summary: localize(language, "Codex CLI through a separate Responses API profile.", "Codex CLI через отдельный профиль Responses API."),
-    endpoint: OPENAI_BASE_URL,
+    endpoint: ROUTER_OPENAI_BASE_URL,
     steps: [
       {
         title: localize(language, "Create a separate profile", "Создайте отдельный профиль"),
@@ -185,13 +191,13 @@ env_key = "APITOKEN_API_KEY"`;
 
 function geminiCliGuide(model: IntegrationModel, os: IntegrationOs, language: IntegrationLanguage): IntegrationGuide {
   const connection = environmentCommand(os, {
-    GOOGLE_GEMINI_BASE_URL: GEMINI_BASE_URL,
+    GOOGLE_GEMINI_BASE_URL: ROUTER_BASE_URL,
     GEMINI_API_KEY: keyPlaceholder,
   });
   return {
     title: `Gemini CLI · ${model.name}`,
     summary: localize(language, "Native Gemini coding agent through the Google Gemini API.", "Нативный coding agent Gemini через Google Gemini API."),
-    endpoint: GEMINI_BASE_URL,
+    endpoint: ROUTER_BASE_URL,
     requirement: localize(language,
       "Two things make or break the connection: the base URL must be set exactly as shown — the bare host, without /v1beta (the SDK appends it itself, a doubled prefix ends in 404) — and the model must always be passed explicitly, because the CLI's default auto model is not served by the gateway and answers \"not available\". If you previously signed in with a Google account, run /auth inside Gemini CLI and switch to the API key — a saved OAuth login can take precedence.",
       "Две вещи решают всё: base URL строго как показано — голый хост, без /v1beta (SDK добавляет его сам, удвоенный префикс даёт 404) — и модель всегда передавайте явно: дефолтная auto-модель CLI шлюзом не обслуживается и отвечает \"not available\". Если раньше входили через Google-аккаунт, выполните /auth внутри Gemini CLI и переключитесь на API key — сохранённый OAuth-логин может иметь приоритет."),
@@ -231,10 +237,10 @@ function openCodeConfig(provider: IntegrationProvider, model: IntegrationModel):
       ? "@ai-sdk/google"
       : "@ai-sdk/openai-compatible";
   const baseURL = provider === "anthropic"
-    ? `${ANTHROPIC_BASE_URL}/v1`
+    ? `${ROUTER_BASE_URL}/v1`
     : provider === "gemini"
-      ? `${GEMINI_BASE_URL}/v1beta`
-      : OPENAI_BASE_URL;
+      ? `${ROUTER_BASE_URL}/v1beta`
+      : ROUTER_OPENAI_BASE_URL;
   const label = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
   return JSON.stringify({
     $schema: "https://opencode.ai/config.json",
@@ -349,7 +355,7 @@ function hermesGuide(model: IntegrationModel, os: IntegrationOs, language: Integ
   return {
     title: `Hermes · ${model.name}`,
     summary: localize(language, "Advanced general agent with terminal, coding tools, memory, and automation.", "Advanced‑агент с терминалом, coding tools, памятью и автоматизациями."),
-    endpoint: OPENAI_BASE_URL,
+    endpoint: ROUTER_OPENAI_BASE_URL,
     requirement: localize(language, "Hermes is broader than a coding-only harness. Choose it when you also need persistent memory, messaging, or automations.", "Hermes шире обычного coding harness. Выбирайте его, если нужны ещё память, мессенджеры или автоматизации."),
     securityNote: localize(language, "Hermes stores the credential in `~/.hermes`. Keep that file private and never commit it.", "Hermes сохраняет ключ в `~/.hermes`. Держите эту папку приватной и не коммитьте её."),
     steps: [
@@ -362,7 +368,7 @@ function hermesGuide(model: IntegrationModel, os: IntegrationOs, language: Integ
       {
         title: localize(language, "Choose Custom endpoint", "Выберите Custom endpoint"),
         text: localize(language, "Run the model wizard and enter these values. Hermes verifies /models before saving them.", "Запустите мастер моделей и введите эти значения. Перед сохранением Hermes проверит /models."),
-        code: `hermes model\n\nProvider: Custom endpoint (self-hosted / VLLM / etc.)\nBase URL: ${OPENAI_BASE_URL}\nAPI mode: Chat Completions\nModel: ${model.id}\nAPI key: ${keyPlaceholder}`,
+        code: `hermes model\n\nProvider: Custom endpoint (self-hosted / VLLM / etc.)\nBase URL: ${ROUTER_OPENAI_BASE_URL}\nAPI mode: Chat Completions\nModel: ${model.id}\nAPI key: ${keyPlaceholder}`,
         codeLabel: localize(language, "Model wizard", "Мастер моделей"),
       },
       {

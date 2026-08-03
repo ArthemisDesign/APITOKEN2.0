@@ -1433,7 +1433,7 @@ async function verifyDocsTheme(client) {
   await clickSelector(client, ".theme-tgl");
   await waitForCondition(
     client,
-    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
+    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme:v1') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
     "the dark docs theme after a real toggle click",
   );
   await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => setTimeout(resolve, 450))` });
@@ -1456,18 +1456,18 @@ async function verifyDocsTheme(client) {
   await clickSelector(client, ".theme-tgl");
   await waitForCondition(
     client,
-    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
+    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme:v1') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
     "the light docs theme after switching back",
   );
   await clickSelector(client, ".theme-tgl");
-  await waitForCondition(client, `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark'`, "the persisted dark docs theme");
+  await waitForCondition(client, `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme:v1') === 'dark'`, "the persisted dark docs theme");
 
   const reloaded = client.once("Page.loadEventFired");
   await client.send("Page.reload");
   await reloaded;
   await waitForCondition(
     client,
-    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
+    `document.documentElement.dataset.theme === 'dark' && localStorage.getItem('theme:v1') === 'dark' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to light theme'`,
     "the dark docs theme after reload",
   );
 
@@ -1486,7 +1486,7 @@ async function verifyDocsTheme(client) {
   await clickSelector(client, ".theme-tgl");
   await waitForCondition(
     client,
-    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
+    `!document.documentElement.hasAttribute('data-theme') && localStorage.getItem('theme:v1') === 'light' && document.querySelector('.theme-tgl')?.getAttribute('aria-label') === 'Switch to dark theme'`,
     "the reduced-motion docs theme toggle",
   );
   await client.send("Emulation.setEmulatedMedia", {
@@ -1853,7 +1853,7 @@ async function verifyComplianceRouting(client) {
       language: document.documentElement.lang,
       storedLanguage: localStorage.getItem('lang'),
       theme: document.documentElement.dataset.theme,
-      storedTheme: localStorage.getItem('theme'),
+      storedTheme: localStorage.getItem('theme:v1'),
     })`,
     returnByValue: true,
   });
