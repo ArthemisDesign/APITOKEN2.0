@@ -50,7 +50,7 @@ import {
 } from "@claude-api/sales-db";
 import type { Environment } from "./config.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
-import { generateCode, partnerView } from "./auth.service.js";
+import { AuthService, generateCode, partnerView } from "./auth.service.js";
 import { normalizeTelegramUsername } from "./telegram.js";
 import { CommerceService } from "./commerce.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
@@ -92,6 +92,7 @@ export class PartnerController {
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
     private readonly commerce: CommerceService,
+    private readonly auth: AuthService,
   ) {}
 
   @Get("overview")
@@ -463,6 +464,7 @@ export class PartnerController {
       payoutDetails: { network: "BSC", asset: "USDT (BEP-20)", address: parsed.data.address },
     });
     if (!updated) throw new UnauthorizedException("partner account is unavailable");
+    this.auth.invalidatePartnerSessions(current.partner.id);
     // Смена адреса выплат — самое чувствительное действие партнёра: пишем в audit-trail (виден в
     // админ-ленте активности), чтобы подмена адреса перед выплатой не оставалась без следа.
     await insertSalesAudit(this.database, {
@@ -481,6 +483,7 @@ export class PartnerController {
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
     });
     if (!updated) throw new UnauthorizedException("partner account is unavailable");
+    this.auth.invalidatePartnerSessions(current.partner.id);
     return { partner: partnerView(updated) };
   }
 

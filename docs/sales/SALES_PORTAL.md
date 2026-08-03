@@ -211,7 +211,20 @@ attribution; bonus-funded/B2B/OpenKeys/service/ineligible строки до ра
 `SALES_DATABASE_URL`, `SALES_TOKEN_ENCRYPTION_KEY`, `SALES_ADMIN_KEY`, `SALES_CONTROL_KEY`
 (тот же, что у apps/api), `COMMERCE_BASE_URL` (прод: стабильный Caddy-balancer
 `http://127.0.0.1:8791`), `PUBLIC_SALES_BASE_URL`, `PUBLIC_MAIN_SITE_URL`, SMTP как у worker (Brevo),
-`SALES_SESSION_TTL_SECONDS`, `SYNC_INTERVAL_MS`. Полный список — `apps/sales-api/.env.example`.
+`SALES_SESSION_TTL_SECONDS`, `SALES_SESSION_CACHE_TTL_SECONDS`, `SYNC_INTERVAL_MS`. Полный список —
+`apps/sales-api/.env.example`.
+
+## Сессии и их кэш
+
+Каждый запрос под `SessionAuthGuard` разрешает сессию через `AuthService.authenticate`. Чтобы
+разрешение не ходило в PostgreSQL на каждый запрос, успешные резолвы кэшируются в процессе на
+`SALES_SESSION_CACHE_TTL_SECONDS` (по умолчанию 30, 0 — выключает кэш). Контракт свежести:
+logout, правки профиля самим партнёром и админские patch/delete инвалидируют кэш немедленно
+(всё это тот же процесс sales-api); единственное окно устаревания — смена статуса/профиля
+конкурентной генерацией в момент blue-green перекрытия, ограниченное TTL. Отдельно от кэша,
+запись `partner_sessions.last_seen_at` троттлится до одной за 60 секунд на сессию предикатом в
+самом UPDATE (без лишнего round trip): поле нужно для представлений «активный партнёр»,
+суб-минутная точность там ничего не даёт.
 
 ## Деплой (В ПРОДЕ с 2026-07-19)
 

@@ -53,7 +53,7 @@ import {
 import type { Environment } from "./config.js";
 import { AdminKeyGuard } from "./admin.guard.js";
 import { CommerceService } from "./commerce.service.js";
-import { generateCode } from "./auth.service.js";
+import { AuthService, generateCode } from "./auth.service.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 import { normalizeTelegramUsername } from "./telegram.js";
 import {
@@ -98,6 +98,7 @@ export class AdminController {
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
     private readonly commerce: CommerceService,
+    private readonly auth: AuthService,
   ) {}
 
   @Get("overview")
@@ -409,6 +410,7 @@ export class AdminController {
       actorId: "sales-admin-key",
     });
     if (!updated) throw new NotFoundException("partner not found");
+    this.auth.invalidatePartnerSessions(id);
     return { updated: true };
   }
 
@@ -420,6 +422,7 @@ export class AdminController {
     try {
       const deleted = await deletePartnerAdmin(this.database, id, "sales-admin-key");
       if (!deleted) throw new NotFoundException("partner not found");
+      this.auth.invalidatePartnerSessions(id);
       return { deleted: true };
     } catch (error) {
       if (error instanceof PartnerHasHistoryError) throw new UnprocessableEntityException(error.message);

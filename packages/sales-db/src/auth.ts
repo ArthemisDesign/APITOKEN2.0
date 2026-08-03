@@ -259,6 +259,7 @@ export async function createPartnerSession(database: SalesDatabase, input: {
 export async function resolvePartnerSession(
   database: SalesDatabase,
   tokenHash: string,
+  lastSeenIntervalSeconds = 60,
 ): Promise<{ sessionId: string; partner: Partner } | null> {
   const result = await database.pool.query<PartnerRow & { session_id: string }>(`
     SELECT s.id AS session_id, p.id, p.email, p.display_name, p.password_hash,
@@ -273,7 +274,13 @@ export async function resolvePartnerSession(
   `, [tokenHash]);
   const row = result.rows[0];
   if (!row) return null;
-  await database.pool.query("UPDATE partner_sessions SET last_seen_at = now() WHERE id = $1", [row.session_id]);
+  // last_seen_at exists for "active partner" views, so sub-minute precision buys nothing; an
+  // unconditional UPDATE here made every authenticated request a PostgreSQL write. The predicate
+  // keeps the write to at most one per interval per session without an extra round trip.
+  await database.pool.query(
+    "UPDATE partner_sessions SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - make_interval(secs => $2)",
+    [row.session_id, lastSeenIntervalSeconds],
+  );
   return { sessionId: row.session_id, partner: withoutPassword(mapPartner(row)) };
 }
 

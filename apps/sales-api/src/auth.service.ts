@@ -59,12 +59,29 @@ export class NoAccountError extends Error {}
 export class ApplicationPendingError extends Error {}
 export { InvalidInviteError };
 
+interface CachedSession {
+  sessionId: string;
+  partner: PartnerView;
+  expiresAtMs: number;
+}
+
+// A bounded count of partner sessions per process; far above any realistic active-partner count,
+// it exists only to keep a pathological token stream from growing the map without limit.
+const SESSION_CACHE_HARD_LIMIT = 10_000;
+
 @Injectable()
 export class AuthService {
   constructor(
     @Inject(SALES_DATABASE) private readonly database: SalesDatabase,
     private readonly config: ConfigService<Environment, true>,
   ) {}
+
+  // Every guarded request resolves its session, so the resolution went to PostgreSQL on each one.
+  // The cache keeps a successful resolution for SALES_SESSION_CACHE_TTL_SECONDS; revocation via
+  // logout invalidates immediately, while partner suspension propagates within the TTL — an
+  // accepted staleness window documented in docs/sales/SALES_PORTAL.md.
+  private readonly sessionCache = new Map<string, CachedSession>();
+  private readonly sessionCacheTokens = new Map<string, string>();
 
   telegramBotUsername(): string | null {
     return this.config.get("TELEGRAM_BOT_USERNAME", { infer: true }) ?? null;
@@ -181,12 +198,58 @@ export class AuthService {
 
   async authenticate(token: string): Promise<{ sessionId: string; partner: PartnerView } | null> {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-    const resolved = await resolvePartnerSession(this.database, tokenHash(token));
-    return resolved ? { sessionId: resolved.sessionId, partner: partnerView(resolved.partner) } : null;
+    const hash = tokenHash(token);
+    const cacheTtlSeconds = this.config.get("SALES_SESSION_CACHE_TTL_SECONDS", { infer: true });
+    if (cacheTtlSeconds > 0) {
+      const cached = this.sessionCache.get(hash);
+      if (cached) {
+        if (cached.expiresAtMs > Date.now()) {
+          return { sessionId: cached.sessionId, partner: cached.partner };
+        }
+        this.sessionCache.delete(hash);
+        this.sessionCacheTokens.delete(cached.sessionId);
+      }
+    }
+    const resolved = await resolvePartnerSession(this.database, hash);
+    if (!resolved) return null;
+    const view = { sessionId: resolved.sessionId, partner: partnerView(resolved.partner) };
+    if (cacheTtlSeconds > 0) {
+      if (this.sessionCache.size >= SESSION_CACHE_HARD_LIMIT) this.purgeExpiredSessions();
+      this.sessionCache.set(hash, { ...view, expiresAtMs: Date.now() + cacheTtlSeconds * 1000 });
+      this.sessionCacheTokens.set(resolved.sessionId, hash);
+    }
+    return view;
+  }
+
+  private purgeExpiredSessions(): void {
+    const now = Date.now();
+    for (const [hash, cached] of this.sessionCache) {
+      if (cached.expiresAtMs <= now) {
+        this.sessionCache.delete(hash);
+        this.sessionCacheTokens.delete(cached.sessionId);
+      }
+    }
   }
 
   async logout(sessionId: string, partnerId: string): Promise<void> {
     await revokePartnerSession(this.database, sessionId, partnerId);
+    const hash = this.sessionCacheTokens.get(sessionId);
+    if (hash !== undefined) {
+      this.sessionCache.delete(hash);
+      this.sessionCacheTokens.delete(sessionId);
+    }
+  }
+
+  /// Дропает все закэшированные сессии партнёра: вызывается любыми правками его профиля/статуса
+  /// в этом же процессе (self-service settings, admin patch/delete), чтобы кэш не отдавал
+  /// устаревший PartnerView или, хуже, доступ после suspend.
+  invalidatePartnerSessions(partnerId: string): void {
+    for (const [hash, cached] of this.sessionCache) {
+      if (cached.partner.id === partnerId) {
+        this.sessionCache.delete(hash);
+        this.sessionCacheTokens.delete(cached.sessionId);
+      }
+    }
   }
 
   private async issueSession(partner: Partner, userAgent: string | null, ipAddress: string | null): Promise<PartnerSession> {

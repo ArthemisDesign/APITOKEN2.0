@@ -8,6 +8,9 @@ const environmentSchema = z.object({
   SALES_DATABASE_URL: z.string().url(),
   SALES_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   SALES_SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(31_536_000).default(2_592_000),
+  // In-process TTL кэша разрешённых сессий (0 = выключен). Отзыв через logout инвалидируется
+  // сразу; отзыв прав админа (suspend) распространяется в пределах этого TTL.
+  SALES_SESSION_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(300).default(30),
   // Telegram Login Widget: оба заданы — вход включён; иначе /v1/auth/* отвечает 503.
   // Пустая строка в env == «не задано» (удобно для заготовленных строк в env-файле).
   TELEGRAM_BOT_TOKEN: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(30).optional()),
