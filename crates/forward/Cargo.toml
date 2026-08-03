@@ -13,6 +13,7 @@ pool = { path = "../pool" }
 metering = { path = "../metering" }
 gemini-credential = { path = "../gemini-credential" }
 codex-credential = { path = "../codex-credential" }
+kimi-credential = { path = "../kimi-credential" }
 tokio = { version = "1", features = ["sync", "rt", "time", "process", "io-util", "macros"] }
 anyhow = "1"
 axum = "0.8"

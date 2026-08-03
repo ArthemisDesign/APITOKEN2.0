@@ -16,6 +16,11 @@
 //! quota limit of 1000 measures to 0.1% instead of a whole percent, which narrows the
 //! quantisation envelope and lets a finite high bound be proved far sooner.
 
+// Dormant estimator: the durable read/write path and the /usages poller that drive it land in a
+// later step of this series, so nothing calls these entry points yet. The module is fully covered
+// by its own deterministic tests in the meantime.
+#![allow(dead_code)]
+
 use anyhow::Context as _;
 use registry::{KimiCalibrationRow, KimiWindowObservation, KIMI_FRACTION_SCALE};
 
